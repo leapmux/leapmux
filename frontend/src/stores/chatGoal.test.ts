@@ -8,7 +8,6 @@ import {
   goalActionToProto,
   goalStatusFromWire,
   goalStatusLabel,
-  hasGoalSurface,
   protoGoalToStore,
 } from './chatGoal'
 
@@ -52,6 +51,7 @@ describe('protoGoalToStore', () => {
       [AgentGoalStatus.PAUSED, 'paused'],
       [AgentGoalStatus.BLOCKED, 'blocked'],
       [AgentGoalStatus.DONE, 'done'],
+      [AgentGoalStatus.DORMANT, 'dormant'],
     ]
     for (const [wire, want] of cases)
       expect(protoGoalToStore(protoGoal({ status: wire })).status).toBe(want)
@@ -128,23 +128,6 @@ describe('goalActionState', () => {
     expect(goalActionState(surface, 'resume')).toEqual({ kind: 'enabled' })
     // Narrow that ONE surface's verbs, and the same goal now hides the verb.
     expect(goalActionState({ ...surface, actions: ['set'] }, 'resume')).toEqual({ kind: 'hidden' })
-  })
-})
-
-describe('hasGoalSurface', () => {
-  const active = protoGoalToStore(protoGoal({ status: AgentGoalStatus.ACTIVE }))
-
-  // The shell and the work panel both ask this, so an agent whose section
-  // appears always has a Goal tab that can hold something.
-  it('is true for a goal that exists, and for an agent that can be given one', () => {
-    expect(hasGoalSurface({ current: active, progress: {}, actions: [] })).toBe(true)
-    expect(hasGoalSurface({ progress: {}, actions: ['set'] })).toBe(true)
-  })
-
-  // A provider LeapMux reads no goal from and accepts no goal action for.
-  it('is false when there is no goal and none can be set', () => {
-    expect(hasGoalSurface({ progress: {}, actions: [] })).toBe(false)
-    expect(hasGoalSurface({ progress: {}, actions: ['clear', 'pause'] })).toBe(false)
   })
 })
 

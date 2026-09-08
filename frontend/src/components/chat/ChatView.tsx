@@ -231,7 +231,7 @@ export interface AgentLifecycleProps {
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
-  /** The ROOT session goal, for the goal chip and the popover's Goal tab. */
+  /** The root session goal for the Goals & To-dos popover. */
   goal?: GoalSurface
 }
 

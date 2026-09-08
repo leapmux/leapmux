@@ -1,5 +1,4 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { GoalAction, GoalSurface, SessionGoal } from '~/stores/chatGoal'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
@@ -15,25 +14,8 @@ function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): Background
   }
 }
 
-function goal(over: Partial<SessionGoal> = {}): SessionGoal {
-  return { objective: 'every test passes', status: 'active', ...over }
-}
-
-function renderPanel(props: {
-  tasks?: BackgroundTaskItem[]
-  goal?: SessionGoal
-  goalActions?: GoalAction[]
-} = {}) {
-  return render(() => (
-    <AgentWorkPanel
-      variant="sidebar"
-      tasks={props.tasks ?? []}
-      // `set` by default, because that is what a goal-capable provider reports
-      // and it is what gives the panel a Goal tab at all. A test that wants the
-      // no-surface case passes [].
-      goal={{ current: props.goal, progress: {}, actions: props.goalActions ?? ['set'] }}
-    />
-  ))
+function renderPanel(tasks: BackgroundTaskItem[] = []) {
+  return render(() => <AgentWorkPanel variant="sidebar" tasks={tasks} />)
 }
 
 function tab(container: HTMLElement, key: string): Element {
@@ -41,171 +23,51 @@ function tab(container: HTMLElement, key: string): Element {
 }
 
 describe('agentWorkPanel', () => {
-  /**
-   * The DOM contract the split had to preserve. The E2E specs and the sidebar
-   * both select on these ids, so a decomposition that renamed them would break
-   * suites that have nothing to do with the goal.
-   */
-  it('keeps the list root and the tab test ids the registry surfaces select on', () => {
+  it('keeps the registry test ids', () => {
     const { container } = renderPanel()
     expect(container.querySelector('[data-testid="bg-task-list"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="bg-task-filter-tab-bar"]')).not.toBeNull()
-    for (const key of ['all', 'subagent', 'shell', 'goal'])
+    for (const key of ['all', 'subagent', 'shell'])
       expect(tab(container, key)).not.toBeNull()
   })
 
-  it('renders the tabs in order, with Goal last', () => {
+  it('renders the three background-task tabs in order', () => {
     const { container } = renderPanel()
-    const labels = [...container.querySelectorAll('[role="tab"]')].map(t => t.textContent)
-    expect(labels).toEqual(['All', 'Subagents', 'Shell', 'Goal'])
-  })
-
-  // "All" means everything the agent is working on, which includes the
-  // objective it is working toward.
-  it('shows the goal card above the rows on the All tab', () => {
-    const { container, getByTestId } = renderPanel({
-      tasks: [row({ rowKey: 'a', title: 'Explore' })],
-      goal: goal(),
-    })
-    expect(getByTestId('goal-card')).not.toBeNull()
-    const panel = container.querySelector('[role="tabpanel"]')!
-    expect(panel.textContent).toContain('every test passes')
-    expect(panel.textContent).toContain('Explore')
-  })
-
-  it('shows the goal alone on the Goal tab, with no task rows', () => {
-    const { container, getByTestId, queryByTestId } = renderPanel({
-      tasks: [row({ rowKey: 'a', title: 'Explore' })],
-      goal: goal(),
-    })
-    fireEvent.click(tab(container, 'goal'))
-    expect(getByTestId('goal-card')).not.toBeNull()
-    expect(queryByTestId('bg-task-row')).toBeNull()
-  })
-
-  /**
-   * The rule under the goal separates it from the rows, so it belongs to the
-   * one tab that has rows. On the Goal tab the card is the last thing in the
-   * box, and a rule there underlines nothing.
-   */
-  it('rules off the goal from the rows on the All tab, and nowhere else', () => {
-    const { container, getByTestId, queryByTestId } = renderPanel({
-      tasks: [row({ rowKey: 'a' })],
-      goal: goal(),
-    })
-    // Between the two, so the rule separates what it stands between. Asserted
-    // as an exact prefix, never as `indexOf(a) < indexOf(b)`: a missing card
-    // gives `indexOf` a `-1`, which is less than every real index, so that
-    // comparison passes for the one regression this case exists to catch.
-    const panel = getByTestId('goal-card-separator').parentElement!
-    const order = [...panel.children].map(el => el.getAttribute('data-testid'))
-    expect(order.slice(0, 2)).toEqual(['goal-card', 'goal-card-separator'])
-
-    fireEvent.click(tab(container, 'goal'))
-    expect(getByTestId('goal-card')).not.toBeNull()
-    expect(queryByTestId('goal-card-separator')).toBeNull()
-  })
-
-  // The EMPTY card is still a card, and rows still follow it.
-  it('rules off an empty goal card from the rows too', () => {
-    const { getByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })] })
-    expect(getByTestId('goal-card-empty')).not.toBeNull()
-    expect(getByTestId('goal-card-separator')).not.toBeNull()
-  })
-
-  // No card, no rule: the rows would otherwise open with a line above them.
-  it('draws no rule for an agent with no goal surface', () => {
-    const { queryByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })], goalActions: [] })
-    expect(queryByTestId('goal-card')).toBeNull()
-    expect(queryByTestId('goal-card-separator')).toBeNull()
-  })
-
-  /**
-   * The tab buttons SURVIVE a goal broadcast.
-   *
-   * `FilterTabBar` renders them through `<For>`, which reconciles by
-   * reference, so a tab list rebuilt inside the memo replaced every button on
-   * every recompute -- and the memo recomputes whenever the goal surface does,
-   * which for a Codex agent is after each tool call. A keyboard user's focus
-   * left the tablist for `<body>` every couple of seconds while the agent
-   * worked.
-   */
-  it('keeps the same tab elements when the goal surface is replaced', () => {
-    const [surface, setSurface] = createSignal<GoalSurface>({
-      current: goal(),
-      progress: {},
-      actions: ['set'],
-    })
-    const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" tasks={[]} goal={surface()} />
-    ))
-    const before = container.querySelector('[data-testid="bg-task-filter-all"]')
-
-    // A fresh object with the same content, which is exactly what a progress
-    // broadcast produces upstream.
-    setSurface({ current: goal(), progress: { tokensUsed: 10 }, actions: ['set'] })
-
-    expect(container.querySelector('[data-testid="bg-task-filter-all"]')).toBe(before)
-  })
-
-  it('hides the goal card on the kind tabs', () => {
-    const { container, queryByTestId } = renderPanel({
-      tasks: [row({ rowKey: 'a' })],
-      goal: goal(),
-    })
-    fireEvent.click(tab(container, 'subagent'))
-    expect(queryByTestId('goal-card')).toBeNull()
-  })
-
-  /**
-   * The Goal tab appears for an agent that HAS a goal or that can be given one,
-   * and its empty state is a control rather than dead weight -- so it does not
-   * wait for a goal to exist.
-   */
-  it('offers the empty state on the Goal tab when there is no goal', () => {
-    const { container, getByTestId } = renderPanel()
-    fireEvent.click(tab(container, 'goal'))
-    expect(getByTestId('goal-card-empty')).not.toBeNull()
-  })
-
-  /**
-   * Five providers report no goal and accept no goal action (OpenCode, Pi,
-   * Cursor, Kilo, Goose). For them a Goal tab could only ever say "No session
-   * goal" and the All tab would carry a dead card above the rows.
-   */
-  it('offers no Goal tab and no card for an agent with no goal surface', () => {
-    const { container, queryByTestId } = renderPanel({
-      tasks: [row({ rowKey: 'a' })],
-      goalActions: [],
-    })
-    expect(tab(container, 'goal')).toBeNull()
-    const labels = [...container.querySelectorAll('[role="tab"]')].map(t => t.textContent)
+    const labels = [...container.querySelectorAll('[role="tab"]')].map(value => value.textContent)
     expect(labels).toEqual(['All', 'Subagents', 'Shell'])
-    expect(queryByTestId('goal-card')).toBeNull()
   })
 
-  // A goal that EXISTS gives the surface even when the agent can change
-  // nothing: Reasonix reports a goal and implements no control at all.
-  it('offers the Goal tab for a read-only goal', () => {
-    const { container, getByTestId } = renderPanel({ goal: goal(), goalActions: [] })
-    expect(tab(container, 'goal')).not.toBeNull()
-    expect(getByTestId('goal-card')).not.toBeNull()
+  it('filters the task list with the selected tab', () => {
+    const { container } = renderPanel([
+      row({ rowKey: 'agent', kind: 'subagent', title: 'Review' }),
+      row({ rowKey: 'shell', kind: 'shell', title: 'Run tests' }),
+    ])
+    fireEvent.click(tab(container, 'shell'))
+    expect(container.textContent).toContain('Run tests')
+    expect(container.textContent).not.toContain('Review')
   })
 
-  // The goal must never enter the registry's kind union: doing so would enrol it
-  // in countActiveBackgroundTasks, which feeds rootWorkState and would keep the
-  // thinking indicator spinning for the goal's whole life.
-  it('never renders the goal as a task row', () => {
-    const { container, queryByTestId } = renderPanel({ goal: goal() })
-    expect(queryByTestId('bg-task-row')).toBeNull()
-    fireEvent.click(tab(container, 'all'))
-    expect(queryByTestId('bg-task-row')).toBeNull()
+  // FilterTabBar reconciles by reference. Replacing the task list must not
+  // replace a focused tab button.
+  it('keeps the same tab elements when the task list changes', () => {
+    const [tasks, setTasks] = createSignal<BackgroundTaskItem[]>([
+      row({ rowKey: 'a' }),
+    ])
+    const { container } = render(() => (
+      <AgentWorkPanel variant="sidebar" tasks={tasks()} />
+    ))
+    const before = tab(container, 'all')
+
+    setTasks([row({ rowKey: 'b', title: 'New task' })])
+
+    expect(tab(container, 'all')).toBe(before)
+    expect(container.textContent).toContain('New task')
   })
 
   it('gives each mount its own panel id and points its tabs at it', () => {
     const first = renderPanel()
     const second = renderPanel()
-    const idOf = (c: HTMLElement) => c.querySelector('[role="tabpanel"]')!.id
+    const idOf = (container: HTMLElement) => container.querySelector('[role="tabpanel"]')!.id
     expect(idOf(first.container)).not.toBe(idOf(second.container))
     expect(tab(first.container, 'all').getAttribute('aria-controls')).toBe(idOf(first.container))
   })

@@ -2,7 +2,7 @@ import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, shouldShowGoalsAndTodosSection, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -138,6 +138,22 @@ describe('chatTodos', () => {
         { rowKey: 'b', content: 'b', status: 'completed' as const, activeForm: '' },
       ]
       expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
+    })
+  })
+
+  describe('shouldShowGoalsAndTodosSection', () => {
+    const oneTodo: TodoItem = { rowKey: '1', content: 'Ship', status: 'pending', activeForm: '' }
+
+    it('shows the section for a to-do', () => {
+      expect(shouldShowGoalsAndTodosSection([oneTodo], false)).toBe(true)
+    })
+
+    it('shows the section for a goal feature without any to-dos', () => {
+      expect(shouldShowGoalsAndTodosSection([], true)).toBe(true)
+    })
+
+    it('hides the section when both parts are absent', () => {
+      expect(shouldShowGoalsAndTodosSection([], false)).toBe(false)
     })
   })
 })

@@ -50,7 +50,7 @@ import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
+import { agentTabSupportsSessionGoal, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
@@ -868,10 +868,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
-              // A getter, for the reason the comment above gives: a plain value
-              // here compiles, renders once, and never updates. The whole goal
-              // surface is one field, so no hop below can forward part of it.
-              get goal(): GoalSurface {
+              // A getter keeps the goal reactive. Absence means that the
+              // provider has no session-goal feature.
+              get goal(): GoalSurface | undefined {
+                if (!agentTabSupportsSessionGoal(agent()))
+                  return undefined
                 return {
                   current: goalFor(agentId),
                   progress: goalProgressFor(agentId),

@@ -397,6 +397,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 // The lock covers only provider resolution. A blocked provider write must not
 // block a restart or explicit steering. A restart can still start between the
 // resolution and the write, but the interval is only the provider call setup.
+// After a successful delivery, a text-route provider observes goal commands.
 //
 // Never call this from a caller that already holds the lifecycle lock
 // (LockAgent, RestartAgent): the lock is not reentrant, so it deadlocks. Send
@@ -418,6 +419,11 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		// activity comes from its background-task registry row.
 		p.PublishTurnActive()
 	}
+	if err == nil {
+		if commander, ok := p.(GoalTextCommander); ok {
+			commander.ObserveGoalCommand(content)
+		}
+	}
 	return err
 }
 
@@ -434,6 +440,8 @@ func (m *Manager) CompactContext(agentID string) error {
 }
 
 func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
+	// Do not observe a goal command here. Goose and Copilot steering semantics
+	// are not verified, so claiming that steering changed a goal is unsafe.
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
 		return err
@@ -556,7 +564,7 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 }
 
 // SupportedGoalActions reports the session-goal actions the RUNNING agent can
-// perform, by type-asserting it to GoalController.
+// perform, by type-asserting it to GoalCapable.
 //
 // An agent that is not running answers with nothing, and so does a provider
 // that reports its goal without being able to change it (Reasonix). The browser
@@ -588,14 +596,15 @@ func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 	if !ok || exiting {
 		return nil
 	}
-	controller, ok := p.(GoalController)
+	capable, ok := p.(GoalCapable)
 	if !ok {
 		return nil
 	}
-	return controller.SupportedGoalActions()
+	return capable.SupportedGoalActions()
 }
 
-// UpdateGoal performs one session-goal action on the running agent.
+// UpdateGoal performs one session-goal action on the running agent. A non-empty
+// result is user-message text that the caller must enqueue before it takes effect.
 //
 // It refuses an action the agent does not list in SupportedGoalActions, so a
 // browser acting on a stale capability list gets a refusal instead of a call
@@ -603,7 +612,7 @@ func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 // rather than in the service: the two answers must come from the same agent
 // instance, and a service-side check would read the capability through a second
 // lookup that could resolve a different process.
-func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) error {
+func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) (string, error) {
 	// providerAfterLifecycle, like every other command dispatch here: the map
 	// read must happen AFTER a restart finishes, or it hands back the process
 	// that restart is destroying. A bare read can also miss the window between
@@ -614,26 +623,33 @@ func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string
 	// their comment: both run from callers that already hold it.
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
-		return err
+		return "", err
+	}
+	capable, ok := p.(GoalCapable)
+	if !ok {
+		return "", ErrGoalControlUnsupported
+	}
+	if !slices.Contains(capable.SupportedGoalActions(), action) {
+		return "", ErrGoalControlUnsupported
+	}
+	if commander, ok := p.(GoalTextCommander); ok {
+		return commander.GoalCommandText(action, objective)
 	}
 	controller, ok := p.(GoalController)
 	if !ok {
-		return ErrGoalControlUnsupported
-	}
-	if !slices.Contains(controller.SupportedGoalActions(), action) {
-		return ErrGoalControlUnsupported
+		return "", ErrGoalControlUnsupported
 	}
 	switch action {
 	case GoalActionSet:
-		return controller.SetGoal(objective)
+		return "", controller.SetGoal(objective)
 	case GoalActionClear:
-		return controller.ClearGoal()
+		return "", controller.ClearGoal()
 	case GoalActionPause:
-		return controller.PauseGoal()
+		return "", controller.PauseGoal()
 	case GoalActionResume:
-		return controller.ResumeGoal()
+		return "", controller.ResumeGoal()
 	default:
-		return ErrGoalControlUnsupported
+		return "", ErrGoalControlUnsupported
 	}
 }
 

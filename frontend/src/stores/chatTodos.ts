@@ -173,3 +173,15 @@ export function todoProgress(todos: TodoItem[]): { done: number, total: number }
   }
   return { done, total }
 }
+
+/**
+ * Whether the Goals & To-dos section belongs on screen.
+ *
+ * A to-do keeps the section visible. This is the complete rule for a provider
+ * without a session goal. A goal feature keeps the section visible even when
+ * the list and current goal are empty, because the card is the route to the
+ * first goal. The provider decides this, not the running process.
+ */
+export function shouldShowGoalsAndTodosSection(todos: TodoItem[], hasGoalFeature: boolean): boolean {
+  return todos.length > 0 || hasGoalFeature
+}

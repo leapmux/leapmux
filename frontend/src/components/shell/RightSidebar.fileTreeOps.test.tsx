@@ -73,7 +73,7 @@ function makeProps() {
     gitStatusStore: { refresh: vi.fn() },
     activeFilePath: '/repo/file.ts',
     hasActiveFileTab: true,
-    showTodos: false,
+    showGoalsAndTodos: false,
     activeTodos: [],
     turnEndTrigger: 0,
     activeTabReady: true,

@@ -56,13 +56,14 @@ export interface SidebarElementsOpts {
   gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab: boolean
-  showTodos: boolean
+  showGoalsAndTodos: boolean
   activeTodos: TodoItem[]
+  /** Absent when the active provider has no session-goal feature. */
+  activeGoal: GoalSurface | undefined
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
-  activeGoal: GoalSurface
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */

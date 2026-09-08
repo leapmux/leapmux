@@ -108,7 +108,7 @@ test.describe('workspace archive', () => {
 
     await openContextMenu(workspaceItem)
 
-    // Files and To-dos are sections, but not ones a workspace can live in, so
+    // Files and Goals & To-dos are sections, but a workspace cannot live in them.
     // no item of this menu may name them.
     //
     // This does NOT exercise the Move-to submenu, and its old name claimed it
@@ -121,7 +121,7 @@ test.describe('workspace archive', () => {
     // which creates the second section the submenu needs and then opens it.
     const allLabels = await page.getByRole('menuitem').allTextContents()
     expect(allLabels).not.toContain('Files')
-    expect(allLabels).not.toContain('To-dos')
+    expect(allLabels).not.toContain('Goals & To-dos')
   })
 
   test('should auto-expand archived section after archiving', async ({ page, authenticatedWorkspace }) => {

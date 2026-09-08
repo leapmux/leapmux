@@ -347,6 +347,12 @@ export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string
   return pluginFor(tab.agentProvider)?.supportsSubagentSend ?? false
 }
 
+/** Whether the tab's provider has a session-goal feature. */
+export function agentTabSupportsSessionGoal(tab: Pick<Tab, 'type'> & { agentProvider?: AgentProvider } | null | undefined): boolean {
+  return tab?.type === TabType.AGENT
+    && (pluginFor(tab.agentProvider)?.supportsSessionGoal ?? false)
+}
+
 /**
  * Find the most-recent agent tab that is STEERABLE. Used by callers that must
  * target a real (writable) agent for a mention/quote insert or a working-

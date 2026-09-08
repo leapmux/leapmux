@@ -77,8 +77,11 @@ func TestClaudeGoal_SupportsOnlySetAndClear(t *testing.T) {
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["clear","goal","compact"]}`))
 
 	assert.ElementsMatch(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
-	assert.ErrorIs(t, agent.PauseGoal(), ErrGoalControlUnsupported)
-	assert.ErrorIs(t, agent.ResumeGoal(), ErrGoalControlUnsupported)
+	var provider any = agent
+	_, controller := provider.(GoalController)
+	_, commander := provider.(GoalTextCommander)
+	assert.False(t, controller, "Claude has no side-band goal controller")
+	assert.True(t, commander, "Claude owns its text command syntax")
 }
 
 // /goal shipped in Claude Code 2.1.139. Against an older build the only effect
@@ -100,6 +103,121 @@ func TestClaudeGoal_ReportsNoActionsBeforeTheInitFrame(t *testing.T) {
 	t.Parallel()
 
 	assert.Empty(t, newTestAgent(&testSink{}).SupportedGoalActions())
+}
+
+func TestTextGoalObservationRequiresTheAdvertisedCapability(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		observe func(*testSink)
+	}{
+		{
+			name: "claude",
+			observe: func(sink *testSink) {
+				newTestAgent(sink).ObserveGoalCommand("/goal ship it")
+			},
+		},
+		{
+			name: "goose",
+			observe: func(sink *testSink) {
+				agent := &GooseCLIAgent{}
+				agent.sink = sink
+				agent.ObserveGoalCommand("/goal ship it")
+			},
+		},
+		{
+			name: "copilot",
+			observe: func(sink *testSink) {
+				agent := newCopilotCLIAgent("", false)
+				agent.sink = sink
+				agent.ObserveGoalCommand("/goal ship it")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &testSink{}
+			test.observe(sink)
+			assert.Empty(t, sink.Goals())
+			assert.Zero(t, sink.GoalClears())
+		})
+	}
+}
+
+func advertiseACPCommands(t *testing.T, base *acpBase, commands ...string) {
+	t.Helper()
+	values := make([]map[string]string, len(commands))
+	for i, command := range commands {
+		values[i] = map[string]string{"name": command}
+	}
+	update, err := json.Marshal(map[string]any{
+		"sessionUpdate":     acpUpdateAvailableCommandsUpdate,
+		"availableCommands": values,
+	})
+	require.NoError(t, err)
+	params, err := json.Marshal(map[string]any{"update": json.RawMessage(update)})
+	require.NoError(t, err)
+	base.handleACPSessionUpdate(params, nil)
+}
+
+func TestGooseGoal_UsesTheAdvertisedGoalCommand(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := &GooseCLIAgent{}
+	agent.sink = sink
+
+	assert.Empty(t, agent.SupportedGoalActions())
+	advertiseACPCommands(t, &agent.acpBase, "compact", "goal")
+	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
+	assert.Equal(t, 1, sink.GoalCapabilityPublishes())
+
+	setCommand, err := agent.GoalCommandText(GoalActionSet, "  ship\n it ")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal ship it", setCommand)
+	agent.ObserveGoalCommand(setCommand)
+	goal, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "ship it", goal.Objective)
+
+	for _, clearArg := range gooseGoalClearArguments {
+		agent.ObserveGoalCommand("/goal " + clearArg)
+	}
+	assert.Equal(t, len(gooseGoalClearArguments), sink.GoalClears())
+}
+
+func TestCopilotGoal_UsesTheAdvertisedAutopilotCommand(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := newCopilotCLIAgent("", false)
+	agent.sink = sink
+
+	advertiseACPCommands(t, &agent.acpBase, "autopilot")
+	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
+	setCommand, err := agent.GoalCommandText(GoalActionSet, "ship it")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal ship it", setCommand)
+	clearCommand, err := agent.GoalCommandText(GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal off", clearCommand)
+
+	agent.ObserveGoalCommand(setCommand)
+	goal, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "ship it", goal.Objective)
+	agent.ObserveGoalCommand(clearCommand)
+	assert.Equal(t, 1, sink.GoalClears())
+}
+
+func TestACPGoal_CommandRemovalRepublishesCapabilities(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := &GooseCLIAgent{}
+	agent.sink = sink
+
+	advertiseACPCommands(t, &agent.acpBase, "goal")
+	advertiseACPCommands(t, &agent.acpBase, "compact")
+	assert.Empty(t, agent.SupportedGoalActions())
+	assert.Equal(t, 2, sink.GoalCapabilityPublishes())
 }
 
 // A frame with no list at all is a shape this build does not recognize. It must
@@ -308,6 +426,8 @@ func TestReasonixGoal_ImplementsNoGoalController(t *testing.T) {
 	var a any = &ReasonixAgent{}
 	_, ok := a.(GoalController)
 	assert.False(t, ok, "Reasonix cannot honestly perform a goal action")
+	_, ok = a.(GoalCapable)
+	assert.True(t, ok, "Reasonix reports that its action list is empty")
 }
 
 // Reasonix's real wire vocabulary. `cancelled` and `failed` come from a
@@ -551,6 +671,44 @@ func TestZCodeGoal_TracksTheRevisionMonotonically(t *testing.T) {
 	assert.EqualValues(t, 12, got, "a stale or absent revision never moves it backwards")
 }
 
+// A goal replacement starts a turn, which can advance the revision after the
+// goal reply. Retry one revision conflict with the server's current revision.
+func TestZCodeGoal_RetriesARevisionConflictOnce(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+	agent.mu.Lock()
+	agent.stateRevision = 3
+	agent.mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() { result <- agent.SetGoal("ship it") }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	firstID := zcodeSentRequestID(t, first)
+	conflict, err := json.Marshal(map[string]any{
+		"id": firstID,
+		"error": map[string]any{
+			"code":    -32009,
+			"message": "Session state revision mismatch",
+			"data":    map[string]any{"actualRevision": 4},
+		},
+	})
+	require.NoError(t, err)
+	agent.HandleOutput(conflict)
+
+	require.Eventually(t, func() bool { return len(stdin.Requests(t)) == 2 },
+		time.Second, 5*time.Millisecond, "the revision conflict must cause one retry")
+	second := stdin.Requests(t)[1]
+	var params struct {
+		ExpectedRevision int64 `json:"expectedRevision"`
+	}
+	require.NoError(t, json.Unmarshal(second.Params, &params))
+	assert.EqualValues(t, 4, params.ExpectedRevision)
+	agent.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second),
+		json.RawMessage(`{"runtime":{"stateRevision":5}}`)))
+	require.NoError(t, <-result)
+}
+
 // A patch for a session ClearContext already replaced must not apply. It would
 // resurrect the goal the user just cleared and write a "Goal set" row for it.
 func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
@@ -568,9 +726,8 @@ func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
 	assert.Empty(t, sink.Goals(), "a patch for the replaced session is not this session's goal")
 }
 
-// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe, so
-// SendInput succeeds and SetGoal reaches its local write. The read end is
-// drained, or a long objective would block on a full pipe buffer.
+// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe. The read
+// end drains so a long command cannot fill the pipe buffer.
 func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
 	t.Helper()
 	readPipe, writePipe, err := os.Pipe()
@@ -585,61 +742,47 @@ func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
 	return agent
 }
 
-// Claude Code never reports its own goal back, so the provider writes the row
-// itself. Without this write the card stays empty for the life of the session
-// while the CLI honors the goal.
-func TestClaudeGoal_SetGoalWritesTheGoalItself(t *testing.T) {
+// Claude Code does not report a command-driven goal change. The observer writes
+// the row only after Manager.SendInput confirms delivery.
+func TestClaudeGoal_ObserveSetWritesTheGoalItself(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
-
-	require.NoError(t, agent.SetGoal("make the tests pass"))
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	agent.ObserveGoalCommand("/goal make the tests pass")
 
 	got, ok := sink.LastGoal()
-	require.True(t, ok, "the provider is the only writer here")
+	require.True(t, ok, "the observer is the only writer here")
 	assert.Equal(t, "make the tests pass", got.Objective)
 	assert.Equal(t, GoalStatusActive, got.Status)
-	assert.False(t, got.CreatedAt.IsZero(), "the provider mints the identity the CLI never sends")
+	assert.False(t, got.CreatedAt.IsZero(), "the observer mints the identity the CLI never sends")
 	assert.False(t, got.Snapshot, "the user just did this, so it is a real transition")
 }
 
-// The row must state the bytes the CLI received, not the bytes the user typed.
-// A newline ends the command and sends the rest as a second line, so the
-// objective is folded before it goes out -- and the write has to carry the same
-// folded text or the row and the CLI hold different goals.
-func TestClaudeGoal_SetGoalWritesTheFoldedObjective(t *testing.T) {
+func TestClaudeGoal_CommandTextFoldsTheObjective(t *testing.T) {
 	t.Parallel()
 
-	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
+	agent := newTestAgent(&testSink{})
+	command, err := agent.GoalCommandText(GoalActionSet, "  every  test\n\tpasses  ")
 
-	require.NoError(t, agent.SetGoal("  every  test\n\tpasses  "))
-
-	got, ok := sink.LastGoal()
-	require.True(t, ok)
-	assert.Equal(t, "every test passes", got.Objective)
+	require.NoError(t, err)
+	assert.Equal(t, "/goal every test passes", command)
 }
 
 // A fresh identity on every set, so re-setting the SAME objective reads as a
 // restart rather than as no change.
-func TestClaudeGoal_ARepeatedSetMintsAFreshIdentity(t *testing.T) {
+func TestClaudeGoal_ARepeatedObservationMintsAFreshIdentity(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
-
-	require.NoError(t, agent.SetGoal("ship it"))
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	agent.ObserveGoalCommand("/goal ship it")
 	first, ok := sink.LastGoal()
 	require.True(t, ok)
 
-	// The command IS a user turn, so the second one waits for the first to end.
-	// Without this the send returns ErrAgentBusy and never reaches the write.
-	agent.mu.Lock()
-	agent.turnActive = false
-	agent.mu.Unlock()
-
-	require.NoError(t, agent.SetGoal("ship it"))
+	agent.ObserveGoalCommand("/goal ship it")
 	second, ok := sink.LastGoal()
 	require.True(t, ok)
 
@@ -648,50 +791,45 @@ func TestClaudeGoal_ARepeatedSetMintsAFreshIdentity(t *testing.T) {
 	assert.Len(t, sink.Goals(), 2)
 }
 
-func TestClaudeGoal_ClearGoalClearsTheGoalItself(t *testing.T) {
+func TestClaudeGoal_ObservesEveryClearArgument(t *testing.T) {
 	t.Parallel()
 
-	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
-
-	require.NoError(t, agent.ClearGoal())
-
-	assert.Equal(t, 1, sink.GoalClears())
-	assert.Empty(t, sink.Goals())
+	for _, clearArg := range claudeGoalClearArguments {
+		sink := &testSink{}
+		agent := newTestAgent(sink)
+		agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+		agent.ObserveGoalCommand("/goal " + clearArg)
+		assert.Equal(t, 1, sink.GoalClears(), clearArg)
+	}
 }
 
-// The write follows the send, so a send that fails writes nothing. Otherwise
-// the row would state a goal that never reached the process.
-func TestClaudeGoal_AFailedSendWritesNothing(t *testing.T) {
+// A command does not update local state before the queue delivers it.
+func TestClaudeGoal_CommandTextWritesNothing(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
-	agent.mu.Lock()
-	agent.stopped = true
-	agent.mu.Unlock()
+	agent := newTestAgent(sink)
 
-	assert.Error(t, agent.SetGoal("ship it"))
-	assert.Error(t, agent.ClearGoal())
-	assert.Empty(t, sink.Goals(), "a refused send is not a goal")
+	_, setErr := agent.GoalCommandText(GoalActionSet, "ship it")
+	_, clearErr := agent.GoalCommandText(GoalActionClear, "")
+	require.NoError(t, setErr)
+	require.NoError(t, clearErr)
+	assert.Empty(t, sink.Goals())
 	assert.Zero(t, sink.GoalClears())
 }
 
 // An empty objective never reaches the CLI, so it never reaches the row either.
-func TestClaudeGoal_SetGoalRefusesAnEmptyObjective(t *testing.T) {
+func TestClaudeGoal_CommandTextRefusesAnEmptyObjective(t *testing.T) {
 	t.Parallel()
 
-	sink := &testSink{}
-	agent := newClaudeGoalAgent(t, sink)
+	agent := newTestAgent(&testSink{})
 
-	assert.Error(t, agent.SetGoal("   "))
-	assert.Empty(t, sink.Goals())
+	_, err := agent.GoalCommandText(GoalActionSet, "   ")
+	assert.Error(t, err)
 }
 
-// Every other provider reports its own change, and a local write there would
-// race the report already in flight -- the user would watch the control flip
-// back. So their SetGoal touches the sink not at all.
-func TestGoal_AnEchoingProviderWritesNothingLocally(t *testing.T) {
+// ZCode reports its own change. SetGoal must not write local state first.
+func TestGoal_ZCodeWritesNothingLocally(t *testing.T) {
 	t.Parallel()
 
 	zsink := &testSink{}

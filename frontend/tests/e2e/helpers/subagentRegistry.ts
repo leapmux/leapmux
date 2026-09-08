@@ -1,14 +1,15 @@
 /**
- * Shared helpers for the E2E specs that drive an agent's work panel: the
- * subagent and background-task registry, and the session goal.
+ * Shared helpers for the end-to-end specs that drive the background-task
+ * registry and the Goals & To-dos section.
  *
  * These wrap the common registry assertions so each per-provider spec stays
  * small. A locator that must MATCH an element is `:visible`-scoped, because the
  * chat rows and the sidebar both render twice; a locator that asserts a count of
  * ZERO is not, because `:visible` also reads zero for a collapsed section. All
- * worker-state reads go through the E2EE test channel (never optimistic CRDT
- * state). No per-call timeout overrides -- Playwright's global expect timeout
- * (playwright.config.ts) applies. `./subagentRegistry.test.ts` holds both halves
+ * worker-state reads go through the end-to-end encrypted test channel. They do
+ * not use optimistic conflict-free replicated data type (CRDT) state.
+ * Playwright's global expect timeout applies to each call. The config is in
+ * `playwright.config.ts`. `./subagentRegistry.test.ts` holds both halves
  * of the `:visible` rule as a source-level guard.
  */
 import type { Locator, Page } from '@playwright/test'
@@ -28,16 +29,29 @@ export function backgroundTasksSection(page: Page): Locator {
   return page.locator('[data-testid="section-header-background_tasks"]:visible')
 }
 
-/** Expand the section if collapsed (mirrors the Workers-section pattern). */
-export async function expandBackgroundTasksSection(page: Page): Promise<void> {
-  const section = backgroundTasksSection(page)
+/** Locator for the Goals & To-dos section header in the right sidebar. */
+export function goalsAndTodosSection(page: Page): Locator {
+  return page.locator('[data-testid="section-header-todos"]:visible')
+}
+
+async function expandSection(section: Locator): Promise<void> {
   const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
   if (!isOpen)
     await section.locator('> [role="button"]').click()
 }
 
+/** Expand the Background tasks section if it is collapsed. */
+export async function expandBackgroundTasksSection(page: Page): Promise<void> {
+  await expandSection(backgroundTasksSection(page))
+}
+
+/** Expand the Goals & To-dos section if it is collapsed. */
+export async function expandGoalsAndTodosSection(page: Page): Promise<void> {
+  await expandSection(goalsAndTodosSection(page))
+}
+
 /**
- * The session-goal card inside the work panel.
+ * The session-goal card inside Goals & To-dos.
  *
  * `:visible`-scoped for the reason every locator in this file is: the sidebar is
  * mounted twice, so the bare test id matches two elements.
@@ -46,19 +60,14 @@ export function goalCard(page: Page | Locator): Locator {
   return page.locator('[data-testid="goal-card"]:visible')
 }
 
-/** One of the panel's tabs, by key (`all`, `subagent`, `shell`, `goal`). */
-export function workPanelTab(page: Page, key: string): Locator {
-  return page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
-}
-
 /**
  * A verb on the goal card, by action (`set`, `clear`, `pause`, `resume`).
  *
  * Every verb but the empty state's own `set` lives inside the card's `...`
  * menu, so a caller opens that menu first -- see `openGoalMenu`.
  *
- * `page` takes a `Locator` as well, and a caller that can see TWO goal cards
- * must pass one. The sidebar card and the ThinkingIndicator popover's card are
+ * `page` takes a `Locator` as well. A caller that can see two goal cards must
+ * pass one. The sidebar card and the ThinkingIndicator popover card are
  * both on screen while that popover is open, so `:visible` alone resolves two
  * elements and Playwright's strict mode fails the call. Rooting the search at
  * the popover is the only thing that separates them.
@@ -81,6 +90,51 @@ export async function openGoalMenu(page: Page | Locator): Promise<void> {
 }
 
 /**
+ * Verify one provider's queued text route with its real command-line interface.
+ * The paused queue makes the before-delivery state deterministic.
+ */
+export async function exerciseTextGoalQueue(
+  page: Page,
+  objective: string,
+  clearCommand: string,
+  modeAfterSet?: string,
+  modeAfterClear?: string,
+): Promise<void> {
+  await expect(page.locator('[data-testid="composer-editor"]:visible .ProseMirror')).toBeVisible()
+  await expect(goalsAndTodosSection(page)).toBeVisible()
+  await expandGoalsAndTodosSection(page)
+  await expect(goalAction(page, 'set')).toBeVisible()
+
+  await page.getByTestId('queue-pause-button').click()
+  await goalAction(page, 'set').click()
+  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
+  await page.locator('[data-testid="set-goal-submit"]:visible').click()
+  await expect(page.getByTestId('agent-input-queue')).toContainText(`/goal ${objective}`)
+  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+
+  await page.getByTestId('queue-pause-button').click()
+  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
+  if (modeAfterSet)
+    await expect(page.getByTestId('composer-mode-trigger')).toContainText(modeAfterSet)
+
+  // Pause again so the clear command remains visible while the goal turn
+  // changes state quickly.
+  await page.getByTestId('queue-pause-button').click()
+  await openGoalMenu(page)
+  await goalAction(page, 'clear').click()
+  await expect(page.getByTestId('agent-input-queue')).toContainText(clearCommand)
+
+  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  if (await interrupt.count() > 0)
+    await interrupt.click()
+  await page.getByTestId('queue-pause-button').click()
+  await expect(page.getByTestId('agent-input-queue')).toHaveCount(0)
+  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+  if (modeAfterClear)
+    await expect(page.getByTestId('composer-mode-trigger')).toContainText(modeAfterClear)
+}
+
+/**
  * Wait for the goal card to report a status.
  *
  * Polls rather than asserting once: the status is worker state that arrives on a
@@ -96,12 +150,6 @@ export async function expectGoalStatus(page: Page, status: string): Promise<void
 /**
  * Verify the registry holds no ROWS, and reports no load failure, before a
  * spawn.
- *
- * It asserts on the rows rather than on the section, because the section is no
- * longer a proxy for them: it also opens for an agent that has a session goal,
- * or that can be given one, and the panel's empty state is the only route to a
- * first goal. Every goal-capable provider therefore shows the section from the
- * moment its process registers, with nothing in the registry.
  *
  * The load-failure assertion is what the row count alone loses. A worker that
  * cannot answer for the registry renders the failure message with ZERO rows, so

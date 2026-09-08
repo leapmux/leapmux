@@ -367,6 +367,7 @@ function claudeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsa
 }
 
 const claudeCodePlugin: Provider = {
+  supportsSessionGoal: true,
   permissionPresets: {
     smart: { sets: { permissionMode: CLAUDE_MODE.Auto } },
     bypass: { sets: { permissionMode: CLAUDE_MODE.BypassPermissions } },

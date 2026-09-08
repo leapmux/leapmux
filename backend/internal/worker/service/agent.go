@@ -863,11 +863,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 	// UpdateAgentGoal sets, clears, pauses or resumes the session goal.
 	//
-	// It writes NO optimistic local state, which is the same discipline
-	// InterruptAgent keeps and for a sharper reason here: the provider echoes
-	// every goal change back as a notification, so a local write would race an
-	// echo already in flight and the user would watch the button flip back. The
-	// provider's report is the sole writer of goal state.
+	// It writes no optimistic state. A side-band provider reports its change.
+	// A text-route provider returns a user message for the durable queue.
 	//
 	// A child agent has no goal of its own (see OutputSink.UpsertGoal), so it is
 	// refused rather than redirected to its root -- silently acting on a
@@ -910,12 +907,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				sendFailedPrecondition(sender, "a subagent has no session goal")
 				return
 			}
-			// The provider performs the action AND writes the resulting state.
-			// Almost every one of them writes it by reporting the change back,
-			// which this worker reads; Claude Code reports nothing and writes
-			// its own row instead. Either way the decision belongs to the
-			// provider, so nothing here needs to know which kind it holds.
-			if err := svc.Agents.UpdateGoal(agentID, action, objective); err != nil {
+			// A side-band provider performs the action now. A text-route provider
+			// returns command text that takes effect after queue delivery.
+			command, err := svc.Agents.UpdateGoal(agentID, action, objective)
+			if err != nil {
 				if errors.Is(err, agent.ErrGoalControlUnsupported) {
 					sendFailedPrecondition(sender, "this agent cannot perform that session-goal action")
 					return
@@ -923,6 +918,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				slog.Warn("update agent goal failed", "agent_id", agentID, "action", r.GetAction(), "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
 				return
+			}
+			if command != "" {
+				if sendQueueError(sender, svc.enqueueSyntheticUserInput(
+					agentID, command, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)) {
+					return
+				}
 			}
 			sendProtoResponse(sender, &leapmuxv1.UpdateAgentGoalResponse{})
 		})
@@ -3309,17 +3310,14 @@ func (svc *Service) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
-// enqueueSyntheticUserInput enqueues input that the Worker itself composes:
-// a control-feedback item for the user's answer to a control request, or an
-// auto-continue item for the plan-mode flow. Store.Accept derives the rail
-// mark from the kind, so the caller states the kind and nothing converts it
-// back and forth.
-func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leapmuxv1.AgentInputKind) {
-	if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+// enqueueSyntheticUserInput enqueues input that the Worker composes. This
+// includes control feedback, plan continuation, and goal command messages.
+// Store.Accept derives the rail mark from the kind.
+func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leapmuxv1.AgentInputKind) error {
+	_, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 		ID: id.Generate(), AgentID: agentID, Kind: kind, Text: content,
-	}); err != nil {
-		slog.Error("synthetic user input enqueue failed", "agent_id", agentID, "error", err)
-	}
+	})
+	return err
 }
 
 func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {

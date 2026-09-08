@@ -52,6 +52,8 @@ export type ACPQuestionHandling = ProviderAskUserQuestion
  */
 export interface ACPProviderOptions {
   provider: AgentProvider
+  /** True when this ACP provider has a session-goal feature. */
+  supportsSessionGoal?: boolean
   /** Explicit settings config (optionGroup / modelOnly, or an explicit permissionMode). */
   settingsConfig?: ACPSettingsPanelConfig
   /** Sugar for `settingsConfig: { kind: 'permissionMode', defaultMode }`. */
@@ -138,6 +140,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
   }
   const plugin: Provider = {
     attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
+    supportsSessionGoal: opts.supportsSessionGoal,
 
     classify: classifyACPMessage({
       ...(opts.extraHiddenSessionUpdates ? { extraHiddenSessionUpdates: opts.extraHiddenSessionUpdates } : {}),

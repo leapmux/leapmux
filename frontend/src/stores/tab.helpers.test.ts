@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabSupportsSessionGoal, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1032,6 +1032,26 @@ describe('isSteerableAgentTab', () => {
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false, agentProvider: AgentProvider.CODEX }),
     ).toBe(false)
+  })
+})
+
+describe('agentTabSupportsSessionGoal', () => {
+  const supported = 701 as AgentProvider
+  const unsupported = 702 as AgentProvider
+
+  it('reads true from the provider plugin', () => {
+    registerProvider(supported, { classify: () => ({} as never), supportsSessionGoal: true })
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: supported })).toBe(true)
+  })
+
+  it('reads false when the plugin omits support', () => {
+    registerProvider(unsupported, { classify: () => ({} as never) })
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: unsupported })).toBe(false)
+  })
+
+  it('reads false for provider skew and non-agent tabs', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: 999 as AgentProvider })).toBe(false)
+    expect(agentTabSupportsSessionGoal({ type: TabType.FILE, agentProvider: supported })).toBe(false)
   })
 })
 

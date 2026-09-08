@@ -9,6 +9,7 @@
  */
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
+  exerciseTextGoalQueue,
   expectNoRegistryRows,
   expectRowBecomesFinal,
   expectSectionPersists,
@@ -20,6 +21,14 @@ import { sendMessage } from './helpers/ui'
 gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest.describe('Goose subagent registry', () => {
+  gooseTest('queues and observes session-goal commands', async ({
+    authenticatedGooseWorkspace,
+    page,
+  }) => {
+    void authenticatedGooseWorkspace
+    await exerciseTextGoalQueue(page, 'Wait for the Goose goal route unlock.', '/goal off')
+  })
+
   gooseTest('delegate spawn creates a clickable row with a tool-request transcript', async ({
     authenticatedGooseWorkspace,
     page,

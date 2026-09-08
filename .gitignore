@@ -85,6 +85,7 @@ Thumbs.db
 mise.toml
 
 # Test artifacts
+/.tmp/
 test-results/
 frontend/test-results/
 frontend/playwright-report/

@@ -23,7 +23,7 @@ import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
 import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
 import { IconButton } from '~/components/common/IconButton'
-import { TodoList } from '~/components/todo/TodoList'
+import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
 import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
 import { setWorkspacesExpanded } from '~/components/workspace/expandedWorkspaces'
@@ -42,6 +42,13 @@ import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
+
+/** Default right-sidebar weights before the user resizes a section. */
+export const RIGHT_SIDEBAR_DEFAULT_SIZES = {
+  [SectionType.FILES]: 0.6,
+  [SectionType.TODOS]: 0.15,
+  [SectionType.BACKGROUND_TASKS]: 0.25,
+} as const
 
 /**
  * All dependencies needed to build a `SidebarSectionDef` for any section type.
@@ -95,14 +102,14 @@ export interface SectionDefContext {
   filesSectionHandle: Accessor<FilesSectionHandle | undefined>
   setFilesSectionHandle: (handle: FilesSectionHandle | undefined) => void
 
-  // Todos section
-  showTodos: boolean
+  // Goals and to-dos section
+  showGoalsAndTodos: boolean
   activeTodos: TodoItem[]
+  /** Absent when the active provider has no session-goal feature. */
+  activeGoal: GoalSurface | undefined
 
   // Background tasks section
   showBackgroundTasks: boolean
-  /** The active root's session goal, with its counters, actions and handler. */
-  activeGoal: GoalSurface
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
@@ -279,6 +286,7 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
+      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.FILES],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <FilesSectionHeaderActions
@@ -335,20 +343,30 @@ export function buildSectionDef(
       title: section.name,
       railIcon: getSectionIcon(section),
       railTitle: section.name,
-      visible: ctx.showTodos,
+      visible: ctx.showGoalsAndTodos,
       draggable: true,
+      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.TODOS],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: () => {
         const { done, total } = todoProgress(ctx.activeTodos)
         return (
-          <span class={csStyles.railBadgeText}>
-            {done}
-            /
-            {total}
-          </span>
+          <Show when={total > 0}>
+            <span class={csStyles.railBadgeText}>
+              {done}
+              /
+              {total}
+            </span>
+          </Show>
         )
       },
-      content: () => <TodoList todos={ctx.activeTodos} />,
+      content: () => (
+        <GoalsAndTodos
+          variant="sidebar"
+          goal={ctx.activeGoal}
+          todos={ctx.activeTodos}
+          announceGoal
+        />
+      ),
     }
   }
 
@@ -357,11 +375,6 @@ export function buildSectionDef(
     // -- viewing finished subagents is a first-class use case), and whenever the
     // LOAD FAILED, so a worker that cannot answer says so rather than taking the
     // section off screen.
-    //
-    // Visible ALSO whenever this agent has a goal surface: a goal to show, or
-    // the ability to be given one. The panel's empty state is the only route to
-    // a first goal, so a section hidden until a goal exists could never gain
-    // one. Hidden only when all three are absent.
     //
     // The badge counts active (pending/running) rows.
     const activeCount = countActiveBackgroundTasks(ctx.activeBackgroundTasks)
@@ -372,6 +385,7 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showBackgroundTasks,
       draggable: true,
+      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.BACKGROUND_TASKS],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: activeCount > 0
         ? () => <span class={csStyles.railBadgeText}>{activeCount}</span>
@@ -380,13 +394,8 @@ export function buildSectionDef(
         <AgentWorkPanel
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
-          goal={ctx.activeGoal}
           loadFailed={ctx.activeBackgroundTasksFailed}
           onOpenSubagent={ctx.onOpenBackgroundTask}
-          // The sidebar owns the goal's live region. The ThinkingIndicator
-          // popover renders the SAME panel, and a live region in each would
-          // announce one goal change twice.
-          announceGoal
         />
       ),
     }

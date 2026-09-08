@@ -38,8 +38,8 @@ const ACTIONS: { action: GoalAction, label: string, danger?: boolean }[] = [
  * A menu rather than a row of buttons. Pause and Resume are opposites, so at
  * most one of them applies at any moment, and neither applies to a goal that is
  * achieved, blocked or dormant -- a row therefore showed one live control
- * beside two or three dead ones, and it wrapped inside the 360px popover the
- * same panel renders in. A menu costs no width, holds each refused verb with
+ * beside two or three dead ones, and it wrapped inside the 360px Goals & To-dos
+ * popover. A menu costs no width, holds each refused verb with
  * its reason, and lets Clear read as the destructive action it is.
  *
  * Clearing asks for no confirmation. It destroys no artifact, and reopening

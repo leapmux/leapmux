@@ -494,9 +494,8 @@ export function interruptAgent(workerId: string, req: MessageInitShape<typeof In
  * the running agent does not support -- so a browser acting on a stale
  * capability list gets a refusal instead of a silent no-op.
  *
- * Nothing is written locally on success. The provider echoes every goal change
- * back as a notification, so an optimistic write would race an echo already in
- * flight and the control would visibly flip back.
+ * The browser writes no optimistic state. A side-band provider reports the
+ * change, while a text-route provider updates state after queue delivery.
  */
 export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof UpdateAgentGoalRequestSchema>): Promise<UpdateAgentGoalResponse> {
   return callWorker(workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, req)

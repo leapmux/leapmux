@@ -167,10 +167,8 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
  * line and clipped, and gives its full text on hover. Subagent rows with a
  * childAgentId are clickable buttons; shell rows are static.
  *
- * It owns no tab bar and no root box: AgentWorkPanel does, because the panel
- * also shows the session goal and one host has to decide what a tab contains.
- * Everything here exists to keep a ROW's identity stable across a broadcast,
- * which is why it stayed one component when the shell moved out.
+ * AgentWorkPanel owns the tab bar and root box. This component keeps each row's
+ * identity stable across a broadcast.
  */
 export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) => {
   const visible = createMemo(() => filterBackgroundTasksByKind(props.tasks, props.kind))

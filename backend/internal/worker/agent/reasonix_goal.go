@@ -5,6 +5,12 @@ import (
 	"log/slog"
 )
 
+// SupportedGoalActions reports no writes. Reasonix reports a goal over ACP but
+// exposes no safe client command that sets or clears it.
+func (a *ReasonixAgent) SupportedGoalActions() []GoalAction { return nil }
+
+var _ GoalCapable = (*ReasonixAgent)(nil)
+
 // Reasonix's session goal.
 //
 // Reasonix runs a goal state machine and streams its whole session status over

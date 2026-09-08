@@ -18,7 +18,7 @@ export interface GoalCardProps {
    * Whether THIS card owns the live region that announces a status change.
    *
    * Two cards can be on screen at once: the sidebar section and an open
-   * ThinkingIndicator popover render the same panel. A live region in each
+   * ThinkingIndicator popover render the same content. A live region in each
    * announces one goal change twice, so exactly one instance sets this.
    */
   announce?: boolean
@@ -127,7 +127,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
 
           ONLY when `announce` is set. Up to two cards can be on screen at once
           (the sidebar section and an open ThinkingIndicator popover render the
-          same panel), and a live region in each announces one goal change
+          same content), and a live region in each announces one goal change
           twice. The sidebar owns the announcement; the popover renders the same
           card silently. */}
       <Show when={props.announce}>

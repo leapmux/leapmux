@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -12,16 +13,10 @@ import (
 // The session goal: a standing objective the agent keeps working toward, which
 // a check at the end of every turn re-tests until the condition holds.
 //
-// Several CLIs have this feature and each spells it differently. LeapMux reads
-// four of them today -- Codex's thread/goal/updated, ZCode's session-snapshot
-// `goal`, Claude Code's active_goal stdout frame, and Reasonix's status_update.
-// This file holds the neutral shape they reduce to, so the service layer and
-// the browser learn one vocabulary instead of four.
-//
-// Copilot, Goose and Cursor also have a session goal and LeapMux reads none of
-// them: Copilot keeps one `current` autopilot objective, Goose holds a `/goal`
-// and a separate `/grind` slot, and Cursor keeps one `goalState`. Each would
-// need its own reader here; nothing else in this file changes for them.
+// Several command-line interfaces (CLIs) have this feature and use different
+// wire shapes. LeapMux reads structured reports from Codex, ZCode, Claude Code,
+// and Reasonix. It observes delivered goal commands for Claude Code, Goose,
+// and Copilot. Cursor exposes no client-write route.
 //
 // There is at most ONE goal per agent, because every one of those CLIs enforces
 // that itself: Codex keys thread_goals by thread_id, ZCode keys its target by
@@ -257,36 +252,31 @@ func GoalActionToProto(a GoalAction) leapmuxv1.AgentGoalAction {
 	}
 }
 
-// GoalController is optionally implemented by a running Agent whose provider
-// can be TOLD to change the goal. Reading a goal is separate and needs nothing
-// here -- a provider that only reports its goal implements none of this and the
-// browser disables every control.
+// GoalCapable is implemented by each provider that has a session goal.
+// SupportedGoalActions reports what the running process can do now.
+type GoalCapable interface {
+	SupportedGoalActions() []GoalAction
+}
+
+// GoalController changes a goal through a side-band provider API.
 //
-// Not every provider that reports a goal can be told to change it, and the gap
-// is not laziness:
+// Not every provider that reports a goal can change it:
 //
 //   - Codex and ZCode have a real side-band command (thread/goal/set,
-//     session/goal) that is acknowledged and starts no turn. They implement all
-//     four actions.
-//   - Claude Code has no control-protocol method at all. Its only write is
-//     sending the literal text "/goal ..." as a user turn, which costs tokens
-//     and shows in the transcript. It implements Set and Clear that way -- the
-//     transcript row is a feature, because it shows the cause of the change --
-//     and has no pause or resume to implement.
-//   - Reasonix implements none. Setting means switching to its "goal" mode and
-//     hijacking the next prompt, and CLEARING means switching back to whichever
-//     mode the session was in before -- which LeapMux never tracked, so a clear
-//     would silently drop the user out of plan mode.
+//     session/goal). A set starts a turn for both providers. ZCode pause also
+//     stops the current turn. They implement all four actions.
+//   - Claude Code, Goose, and Copilot use user-message commands. They implement
+//     GoalTextCommander instead.
+//   - Reasonix implements no write route. Setting changes its mode and takes
+//     the next prompt. Clearing must restore a mode that LeapMux did not track.
 //
 // SupportedGoalActions is what the browser reads to disable a control, so it
 // lives on the same interface as the implementations and cannot drift from
 // them. This mirrors AgentInfo.accepts_messages, which is decided the same way
 // (a type assertion on the running agent) for the same reason.
 type GoalController interface {
-	// SupportedGoalActions reports the actions THIS agent can perform, in a
-	// stable order. A provider whose support depends on the CLI version it
-	// launched answers from what that process reported, never from a table.
-	SupportedGoalActions() []GoalAction
+	GoalCapable
+
 	// SetGoal replaces the objective. The provider decides whether that starts
 	// a turn.
 	SetGoal(objective string) error
@@ -295,8 +285,50 @@ type GoalController interface {
 	ResumeGoal() error
 }
 
-// ErrGoalControlUnsupported is returned by the Manager when a running Agent
-// does not implement GoalController, or implements it without the requested
-// action. The service maps it to FailedPrecondition, so a browser acting on a
-// stale capability list gets a refusal rather than a silent no-op.
+// GoalTextCommander owns a provider's user-message command syntax. The
+// Manager asks it to build queued input and observes only delivered input.
+type GoalTextCommander interface {
+	GoalCapable
+	GoalCommandText(action GoalAction, objective string) (string, error)
+	ObserveGoalCommand(text string)
+}
+
+type goalTextIntent int
+
+const (
+	goalTextNotCommand goalTextIntent = iota
+	goalTextBareQuery
+	goalTextClear
+	goalTextSet
+)
+
+// foldGoalObjective makes a goal safe for a single-line slash command.
+func foldGoalObjective(objective string) string {
+	return strings.Join(strings.Fields(objective), " ")
+}
+
+// parseGoalCommandText classifies one delivered provider command. A clear
+// word must match the complete argument.
+func parseGoalCommandText(text, command string, clearArgs []string) (goalTextIntent, string) {
+	text = strings.TrimSpace(text)
+	if text == command {
+		return goalTextBareQuery, ""
+	}
+	if !strings.HasPrefix(text, command+" ") {
+		return goalTextNotCommand, ""
+	}
+	argument := foldGoalObjective(strings.TrimPrefix(text, command+" "))
+	if argument == "" {
+		return goalTextBareQuery, ""
+	}
+	for _, clearArg := range clearArgs {
+		if strings.EqualFold(argument, clearArg) {
+			return goalTextClear, ""
+		}
+	}
+	return goalTextSet, argument
+}
+
+// ErrGoalControlUnsupported means that the provider has no goal route or does
+// not support the requested action. The service maps it to FailedPrecondition.
 var ErrGoalControlUnsupported = errors.New("agent provider does not support this session-goal action")

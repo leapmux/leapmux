@@ -24,3 +24,33 @@ describe('pluginFor', () => {
     expect(pluginFor(999 as AgentProvider)).toBeUndefined()
   })
 })
+
+describe('supportsSessionGoal', () => {
+  const supported = [
+    AgentProvider.CLAUDE_CODE,
+    AgentProvider.CODEX,
+    AgentProvider.GOOSE,
+    AgentProvider.REASONIX,
+    AgentProvider.ZCODE,
+    AgentProvider.GITHUB_COPILOT,
+  ]
+  const unsupported = [
+    AgentProvider.CURSOR,
+    AgentProvider.KILO,
+    AgentProvider.OPENCODE,
+    AgentProvider.PI,
+  ]
+
+  it('classifies every provider', () => {
+    for (const provider of supported)
+      expect(pluginFor(provider)?.supportsSessionGoal, AgentProvider[provider]).toBe(true)
+    for (const provider of unsupported)
+      expect(pluginFor(provider)?.supportsSessionGoal, AgentProvider[provider]).toBeFalsy()
+
+    const classified = [...supported, ...unsupported].toSorted((a, b) => a - b)
+    const allProviders = Object.values(AgentProvider)
+      .filter((value): value is AgentProvider => typeof value === 'number' && value !== AgentProvider.UNSPECIFIED)
+      .toSorted((a, b) => a - b)
+    expect(classified).toEqual(allProviders)
+  })
+})

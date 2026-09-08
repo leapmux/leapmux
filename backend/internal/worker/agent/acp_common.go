@@ -116,7 +116,10 @@ const (
 // (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink               OutputSink
+	sink OutputSink
+	// availableCommands is the last command set that the ACP process
+	// advertised. Goal-capable providers read their command token from it.
+	availableCommands  map[string]struct{}
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
 	// subagentFromToolCall / subagentFromToolCallUpdate are optional
@@ -386,8 +389,8 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	// Flush any buffered thought text before handling an event that
 	// produces a visible/persisted message, so coalesced thoughts appear at
 	// their real chronological position relative to tool calls and replies.
-	// Skip the flush for thought chunks themselves and for purely
-	// informational updates (usage, history replay, command list).
+	// Skip the flush for thought chunks and updates that create no transcript
+	// entry (usage, history replay, and command capabilities).
 	switch header.SessionUpdate {
 	case acpUpdateAgentThoughtChunk,
 		acpUpdateUsageUpdate,
@@ -414,8 +417,10 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	case acpUpdateConfigOptionUpdate:
 		// Shared model channel for every ACP provider; mode handled per-provider.
 		b.handleACPConfigOptionUpdate(update)
-	case acpUpdateUserMessageChunk, acpUpdateAvailableCommandsUpdate:
-		// No-op: user_message_chunk is history replay; available_commands_update is informational.
+	case acpUpdateUserMessageChunk:
+		// No-op: user_message_chunk is history replay.
+	case acpUpdateAvailableCommandsUpdate:
+		b.observeAvailableCommands(update)
 	default:
 		if extra != nil && extra(header.SessionUpdate, update) {
 			return
@@ -424,6 +429,44 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
+}
+
+// observeAvailableCommands replaces the advertised ACP command set. A change
+// can add or remove a goal command, so it republishes goal capabilities.
+func (b *acpBase) observeAvailableCommands(update json.RawMessage) {
+	var envelope struct {
+		AvailableCommands json.RawMessage `json:"availableCommands"`
+	}
+	if err := json.Unmarshal(update, &envelope); err != nil || len(envelope.AvailableCommands) == 0 {
+		return
+	}
+	var values []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(envelope.AvailableCommands, &values); err != nil {
+		slog.Warn("acp available commands unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	commands := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value.Name != "" {
+			commands[value.Name] = struct{}{}
+		}
+	}
+	b.mu.Lock()
+	changed := !maps.Equal(b.availableCommands, commands)
+	b.availableCommands = commands
+	b.mu.Unlock()
+	if changed && b.sink != nil {
+		b.sink.PublishGoalCapabilities()
+	}
+}
+
+func (b *acpBase) hasAvailableCommand(command string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.availableCommands[command]
+	return ok
 }
 
 // ClearContext sends a session/new request on the running ACP process,

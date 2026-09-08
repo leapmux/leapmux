@@ -1,9 +1,24 @@
 import { COPILOT_E2E_SKIP_REASON, copilotTest, expect } from './copilot-fixtures'
+import { exerciseTextGoalQueue } from './helpers/subagentRegistry'
 import { applyPermissionPreset, ARITHMETIC_PROMPT, expectAssistantAnswer, openPlusMenu, openSettingsMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest.describe('Copilot Basic Chat', () => {
+  copilotTest('queues and observes session-goal commands', async ({
+    authenticatedCopilotWorkspace,
+    page,
+  }) => {
+    void authenticatedCopilotWorkspace
+    await exerciseTextGoalQueue(
+      page,
+      'Wait for the Copilot goal route unlock.',
+      '/goal off',
+      'Autopilot',
+      'Agent',
+    )
+  })
+
   copilotTest('send message and receive response', async ({ authenticatedCopilotWorkspace, page }) => {
     void authenticatedCopilotWorkspace
     await sendMessage(page, ARITHMETIC_PROMPT)

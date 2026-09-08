@@ -4,15 +4,14 @@ import { style } from '@vanilla-extract/css'
  * The goal card: a header, the objective, its status, and its counters.
  *
  * No rule of its own. A separator states that something FOLLOWS, and only the
- * host knows whether anything does -- see `goalSeparator` in
- * `./AgentWorkPanel.css.ts`.
+ * host knows whether anything does. GoalsAndTodos owns that separator.
  */
 export const card = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
   // No padding at the BOTTOM. What sits under the card is the separator, and
-  // the separator owns the space on both of its sides -- see `goalSeparator`.
+  // the separator owns the space on both sides. See GoalsAndTodos.separator.
   // Padding here would be a second contributor to one gap, which is what forced
   // the rule's own margin to be stated asymmetrically to compensate.
   padding: 'var(--space-2) var(--space-2) 0',
@@ -65,7 +64,7 @@ export const meta = style({
 })
 
 /**
- * The empty state on the Goal tab, where a goal can still be set.
+ * The empty state where a goal can still be set.
  *
  * Laid out to match the populated card exactly, because the two swap in the
  * same slot and a reader watching a goal arrive should see the rows change and

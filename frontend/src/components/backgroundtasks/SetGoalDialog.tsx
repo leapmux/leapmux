@@ -42,12 +42,9 @@ const EDITOR_MAX_HEIGHT_PX = 320
 /**
  * The editor for a session goal's objective.
  *
- * A dialog rather than an input inside the work panel, for two reasons. An
- * objective is PROSE -- Codex accepts 4000 characters -- and the panel's popover
- * variant is capped at 360px wide and 60vh tall, which is a bad box to write a
- * paragraph in. And the panel is a `DropdownMenu as="card"`, whose whole point
- * is that a click inside it does not dismiss it; a form that must close on
- * submit fights that.
+ * A dialog gives prose enough space. The Goals & To-dos popover has a 360px
+ * width cap, and a paragraph editor does not fit there. The popover also stays
+ * open on an inside click, while this form must close after submission.
  *
  * The field is the app's own markdown editor, so a goal is written with the
  * lists, links and code spans the card renders -- and with the keys the user

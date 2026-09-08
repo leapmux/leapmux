@@ -14,6 +14,7 @@
 import { expect, test } from './fixtures'
 import {
   backgroundTasksSection,
+  exerciseTextGoalQueue,
   expectNoRegistryRows,
   expectRowBecomesFinal,
   expectSectionPersists,
@@ -24,6 +25,17 @@ import {
 import { expectClipsLongText, expectClipsToOneLine, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Claude subagent background tasks', () => {
+  test('routes session-goal commands through the input queue', async ({
+    authenticatedWorkspace,
+    page,
+  }) => {
+    void authenticatedWorkspace
+    // Claude starts lazily. Its startup frame advertises /goal after this turn.
+    await sendMessage(page, 'Reply with the single word: ready')
+    await waitForAgentIdle(page)
+    await exerciseTextGoalQueue(page, 'Wait for the Claude goal route unlock.', '/goal clear')
+  })
+
   test('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
     authenticatedWorkspace,
     page,

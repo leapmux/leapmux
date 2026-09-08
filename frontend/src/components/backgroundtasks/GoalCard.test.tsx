@@ -159,8 +159,7 @@ describe('goalCard', () => {
 
   /**
    * A separator states that something FOLLOWS, and the card cannot see what is
-   * below it. `AgentWorkPanel` renders the rule between the two, on the one tab
-   * that has rows.
+   * below it. GoalsAndTodos renders the rule when a to-do list follows.
    */
   it('draws no separator of its own', () => {
     const { container } = render(() => (
@@ -216,7 +215,7 @@ describe('goalCard', () => {
 
   /**
    * Two cards can be on screen at once: the sidebar section and an open
-   * ThinkingIndicator popover render the same panel. A live region in each
+   * ThinkingIndicator popover render the same content. A live region in each
    * announces one goal change twice, so only the instance that sets `announce`
    * holds one.
    */

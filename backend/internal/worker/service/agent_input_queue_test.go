@@ -524,12 +524,122 @@ func TestControlFeedbackProducerUsesGeneratedQueueKind(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
-	svc.enqueueSyntheticUserInput("agent-1", "Use a safer command", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK)
+	require.NoError(t, svc.enqueueSyntheticUserInput(
+		"agent-1", "Use a safer command", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK))
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, snapshot.Items[0].Kind)
+}
+
+func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
+	t.Helper()
+	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+		AgentID: agentID, WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
+	require.Eventually(t, func() bool {
+		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
+	}, time.Second, 5*time.Millisecond)
+}
+
+// A text-route goal command enters the durable input queue. The local goal row
+// changes only after the queue delivers the command.
+func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	startGoalTextAgent(t, svc, "agent-1")
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+		AgentId:   "agent-1",
+		Action:    leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
+		Objective: "ship the release",
+	}, writer)
+	require.Empty(t, writer.rejections())
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, "/goal ship the release", snapshot.Items[0].Text)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.Items[0].Kind)
+	before, err := svc.Output.LoadGoal(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Nil(t, before.Goal)
+
+	_, err = svc.InputQueue.SetPaused(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		loaded, loadErr := svc.Output.LoadGoal(ctx, "agent-1")
+		return loadErr == nil && loaded.Goal.GetObjective() == "ship the release"
+	}, time.Second, 5*time.Millisecond)
+}
+
+func TestUpdateAgentGoalReturnsTheQueueFullMessage(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	startGoalTextAgent(t, svc, "agent-1")
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	for i := 0; i < inputqueue.MaxItems; i++ {
+		_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+			ID: fmt.Sprintf("input-%d", i), AgentID: "agent-1", Text: "queued",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		})
+		require.NoError(t, err)
+	}
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+		AgentId: "agent-1", Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_CLEAR,
+	}, writer)
+	rejections := writer.rejections()
+	require.Len(t, rejections, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), rejections[0].code)
+	assert.Equal(t, inputqueue.ErrQueueFull.Error(), rejections[0].message)
+}
+
+func TestUpdateAgentGoalRefusesASubagentWithoutEnqueueing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+		ID: "child-1", ParentAgentID: sql.NullString{String: "root-1", Valid: true},
+		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+		AgentId: "child-1", Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
+		Objective: "child objective",
+	}, writer)
+	rejections := writer.rejections()
+	require.Len(t, rejections, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), rejections[0].code)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "child-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
 }
 
 func TestPlanExecutionProducerPreservesItsQueueSemantics(t *testing.T) {

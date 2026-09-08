@@ -14,13 +14,12 @@
 import { codexTest, expect } from './codex-fixtures'
 import {
   countGoalTransitions,
-  expandBackgroundTasksSection,
+  expandGoalsAndTodosSection,
   expectGoalStatus,
   goalAction,
   goalCard,
   listAgents,
   openGoalMenu,
-  workPanelTab,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -39,19 +38,14 @@ codexTest.describe('Codex session goal', () => {
     await sendMessage(page, 'Reply with the single word: ready')
     await waitForAgentIdle(page)
 
-    // 2. The section is reachable with NO background tasks at all. That is the
-    //    widened visibility rule doing its job: the ThinkingIndicator's goal
-    //    chip is hidden whenever the agent is idle, which is most of this test,
-    //    so the section is the only route to the panel -- and the panel is the
-    //    only route to a first goal.
+    // 2. The section is reachable with no to-dos or background tasks. The
+    //    provider feature keeps the empty goal card visible.
     await expect.poll(async () =>
-      await page.locator('[data-testid="section-header-background_tasks"]:visible').count(),
+      await page.locator('[data-testid="section-header-todos"]:visible').count(),
     ).toBeGreaterThan(0)
-    await expandBackgroundTasksSection(page)
+    await expandGoalsAndTodosSection(page)
 
-    // 3. The Goal tab is always present, because its empty state is where a goal
-    //    gets set.
-    await workPanelTab(page, 'goal').click()
+    // 3. The empty card is the route to the first goal.
     await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
 
     // 4. Set one through the dialog. The field is the app's markdown editor, so
@@ -137,9 +131,8 @@ codexTest.describe('Codex session goal', () => {
   })
 
   /**
-   * The card is rendered by TWO hosts, and this is the second one: the
-   * ThinkingIndicator's goal popover renders the same panel inside a
-   * `DropdownMenu as="card"`.
+   * Two hosts render the card. The ThinkingIndicator to-dos popover renders
+   * the merged section inside a `DropdownMenu as="card"`.
    *
    * The card's `...` menu is therefore a `popover=auto` nested inside another
    * one. A browser that did not treat the inner popover as a descendant of the
@@ -147,31 +140,35 @@ codexTest.describe('Codex session goal', () => {
    * verb would be unreachable from this host. Only a real browser can answer
    * that, so it is answered here.
    */
-  codexTest('opens the goal actions from the thinking indicator popover', async ({
+  codexTest('opens the goal actions from the to-dos popover', async ({
     authenticatedCodexWorkspace,
     page,
   }) => {
     void authenticatedCodexWorkspace
 
-    // The chip needs a goal to report and a busy agent to sit beside, so the
-    // goal is set first from the sidebar, while the agent is idle.
+    // Set the goal from the sidebar while the agent is idle.
     await sendMessage(page, 'Reply with the single word: ready')
     await waitForAgentIdle(page)
-    await expandBackgroundTasksSection(page)
-    await workPanelTab(page, 'goal').click()
+    await expandGoalsAndTodosSection(page)
     await goalAction(page, 'set').click()
     await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill('Keep the build green.')
     await page.locator('[data-testid="set-goal-submit"]:visible').click()
     await expectGoalStatus(page, 'active')
 
-    // A prompt long enough to hold the indicator on screen -- the same device
-    // the interrupt spec uses for the same window.
-    await sendMessage(page, 'Write a very detailed essay about the history of computing, at least 5000 words across multiple chapters with subheadings.')
+    // Ask for a multi-step plan so Codex populates the to-do chip while the
+    // indicator remains visible.
+    await sendMessage(page, 'Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.')
 
-    const chip = page.locator('[data-testid="thinking-goal-chip"]:visible')
-    await expect(chip).toBeVisible()
+    const chip = page.locator('[data-testid="thinking-todos-chip"]:visible')
+    try {
+      await expect(chip).toBeVisible()
+    }
+    catch {
+      codexTest.skip(true, 'model did not produce a to-do list')
+      return
+    }
     await chip.click()
-    const popover = page.locator('[data-testid="goal-popover"]')
+    const popover = page.locator('[data-testid="todo-list-popover"]')
     await expect(popover).toBeVisible()
 
     // Rooted at the popover, through the same helpers the sidebar cases use:

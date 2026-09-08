@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -18,7 +19,8 @@ import (
 // snapshot (session/create, session/resume, session/read) and the same key
 // inside a `state.updated` patch.
 const (
-	zcodeMethodSessionGoal = "session/goal"
+	zcodeMethodSessionGoal   = "session/goal"
+	zcodeErrRevisionMismatch = -32009
 
 	// The actions LeapMux issues. `show` and the bare-objective form exist too;
 	// `show` has no use here because the state arrives unsolicited, and the bare
@@ -153,7 +155,8 @@ func (a *zcodeAgent) ResumeGoal() error { return a.sendZCodeGoal(zcodeGoalAction
 // saw. The value comes from the last runtime state LeapMux observed. Sending
 // the CURRENT known revision -- rather than omitting the field -- is what makes
 // a goal write racing an in-flight turn fail loudly instead of overwriting a
-// change the agent just made.
+// change the agent just made. A goal action can start or stop a turn and advance
+// the revision again. One conflict retries with the server's actual revision.
 func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	a.mu.Lock()
 	sessionID := a.sessionID
@@ -162,18 +165,31 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	if sessionID == "" {
 		return fmt.Errorf("zcode %s: agent has no ZCode session", zcodeMethodSessionGoal)
 	}
-	params := map[string]any{
-		"sessionId":        sessionID,
-		"expectedRevision": revision,
-		"inputId":          generateRequestID(),
-		"action":           action,
-	}
-	if objective != "" {
-		params["objective"] = objective
-	}
-	raw, err := a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout())
-	if err != nil {
-		return err
+	inputID := generateRequestID()
+	var raw json.RawMessage
+	for attempt := 0; attempt < 2; attempt++ {
+		params := map[string]any{
+			"sessionId":        sessionID,
+			"expectedRevision": revision,
+			"inputId":          inputID,
+			"action":           action,
+		}
+		if objective != "" {
+			params["objective"] = objective
+		}
+		var err error
+		raw, err = a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout())
+		if err == nil {
+			break
+		}
+		actual, ok := zcodeActualRevision(err)
+		if attempt != 0 || !ok {
+			return err
+		}
+		a.noteZCodeStateRevision(actual)
+		a.mu.Lock()
+		revision = a.stateRevision
+		a.mu.Unlock()
 	}
 	// The reply's GOAL is deliberately not applied: the app-server also emits a
 	// state.updated patch for the same change, and reading both would give the
@@ -188,4 +204,18 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 		a.noteZCodeStateRevision(snap.Runtime.StateRevision)
 	}
 	return nil
+}
+
+func zcodeActualRevision(err error) (int64, bool) {
+	var wireErr *zcodeError
+	if !errors.As(err, &wireErr) || wireErr.Code != zcodeErrRevisionMismatch {
+		return 0, false
+	}
+	var data struct {
+		ActualRevision *int64 `json:"actualRevision"`
+	}
+	if json.Unmarshal(wireErr.Data, &data) != nil || data.ActualRevision == nil {
+		return 0, false
+	}
+	return *data.ActualRevision, true
 }
