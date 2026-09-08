@@ -15,6 +15,7 @@ import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
+import type { TabView } from '~/stores/tabView'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
@@ -64,6 +65,7 @@ import { hasGoalSurface } from '~/stores/chatGoal'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
+import { createQuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
@@ -84,6 +86,7 @@ import { handleBranchChanged } from './handleBranchChanged'
 import { createMobileOverlayState, MobileLayout } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { openSubagentTab } from './openSubagentTab'
+import { QuakeTerminalPanel } from './QuakeTerminalPanel'
 import { renameTab } from './renameTab'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
@@ -155,7 +158,35 @@ export const AppShell: Component = () => {
   // globally unique across the account — so one flat store holds every
   // workspace's worker-sourced fields with no active/inactive split.
   const tabMetadata = createTabMetadataStore()
-  const tabView = createTabView({ projection, state: crdtState, metadata: tabMetadata })
+  // The quake store is built BEFORE the tab view, and the back-reference to the
+  // view is filled in after. The order is load-bearing and the reverse does not
+  // work: `createMemo` runs its body once at CREATION time to collect
+  // dependencies, so the view's detached-terminal memo calls
+  // `detachedTerminals()` inside `createTabView` -- before a store declared
+  // above it could have been assigned. It read `undefined` and the whole shell
+  // failed to mount.
+  //
+  // This direction has no such window. The store touches nothing at
+  // construction: `getAgentTab` is called only from an event -- a keyboard
+  // command, or a Control CLI request arriving on the private-event stream --
+  // and by then the assignment below has long run.
+  let tabViewRef: TabView | undefined
+  const quakeStore = createQuakeTerminalStore({
+    metadata: tabMetadata,
+    getAgentTab: agentId => tabViewRef?.getAgentTab(agentId),
+    focusComposer: () => focusEditor(),
+    // Read at fire time: the user can change the duration while a panel is
+    // retracting, and the dispose must wait out the animation the panel is
+    // actually running.
+    closeDelayMs: () => (prefersReducedMotion() ? 0 : preferences.quakeAnimationMs() + 50),
+  })
+  const tabView = createTabView({
+    projection,
+    state: crdtState,
+    metadata: tabMetadata,
+    detachedTerminals: () => quakeStore.detachedTerminals(),
+  })
+  tabViewRef = tabView
   // Which tab is selected, per workspace and per tile. Client-local and
   // deliberately unsynced; survives a workspace switch in memory and a reload
   // via useTabPersistence.
@@ -338,6 +369,7 @@ export const AppShell: Component = () => {
   useWorkerPrivateStreams({
     view: tabView,
     metadata: tabMetadata,
+    quakeStore,
   })
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
@@ -390,6 +422,7 @@ export const AppShell: Component = () => {
     controlStore,
     agentSessionStore,
     agentActivityStore,
+    quakeStore,
     settingsLoading,
     repoGitStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
@@ -769,6 +802,7 @@ export const AppShell: Component = () => {
     setNewTerminalLoading,
     setNewShellLoading,
     repoGitStore,
+    isQuakeTerminal: terminalId => quakeStore.isQuakeTerminal(terminalId),
   })
 
   // Answers "would closing this tab interrupt running work". Reads the pushed
@@ -1045,6 +1079,11 @@ export const AppShell: Component = () => {
   useMetadataSweep(() => crdtState(), tabMetadata, (retired) => {
     for (const tabId of retired)
       agentInputQueueStore.clearAgent(tabId)
+    // The same "was live, now is not" edge answers "the owner agent tab closed",
+    // which is one of the two things that ends a quake terminal. The worker
+    // already closed the shell on its own side (closeAgentTabCommon), so this
+    // only releases what the browser holds.
+    quakeStore.retireOwners(retired)
   })
   // The tile owners, not a third walk of their trees: both stores memoize
   // "which tiles does this workspace have" per tick, and the sweep asks the
@@ -1418,6 +1457,13 @@ export const AppShell: Component = () => {
     customKeybindings: preferences.customKeybindings,
     preferredExternalAppId: preferences.preferredExternalAppId,
     setPreferredExternalAppId: preferences.setPreferredExternalAppId,
+    getAgentInputQueue: agentId => agentInputQueueStore.get(agentId),
+    steerQueueItem: item => tileRenderer.queueOps.steerQueueItem(item),
+    quakePanel: {
+      open: owner => void quakeStore.open(owner),
+      close: ownerId => quakeStore.close(ownerId),
+      toggle: owner => quakeStore.toggle(owner),
+    },
   })
 
   // Sidebar element factories
@@ -1519,6 +1565,21 @@ export const AppShell: Component = () => {
   // for a non-workspace route and no route outlet — see the note on the `(app)`
   // layout, which is where such a case would have to be reintroduced.
 
+  // One declaration for both shell layers: the desktop and mobile mounts differ
+  // only in WHERE the panel hangs, never in what it is given.
+  const QuakeTerminalPanelSlot = () => (
+    <QuakeTerminalPanel
+      quakeStore={quakeStore}
+      view={tabView}
+      metadata={tabMetadata}
+      activeAgentId={() => tileRenderer.focusedAgentId() ?? null}
+      onInput={termOps.handleTerminalInput}
+      onResize={termOps.handleTerminalResize}
+      onContentReady={id => tabMetadata.patch(id, { contentReady: true })}
+      tabEditing={() => tabOps.isTabEditing()}
+    />
+  )
+
   const MobileShellLayer = () => (
     <MobileLayout
       overlay={mobileOverlay()}
@@ -1556,6 +1617,7 @@ export const AppShell: Component = () => {
         tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
         && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
       }
+      quakePanel={<QuakeTerminalPanelSlot />}
     />
   )
 
@@ -1593,6 +1655,7 @@ export const AppShell: Component = () => {
             tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
             && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
           )}
+          quakePanel={<QuakeTerminalPanelSlot />}
           floatingWindowLayer={(
             <FloatingWindowLayer
               floatingWindowStore={floatingWindowStore}

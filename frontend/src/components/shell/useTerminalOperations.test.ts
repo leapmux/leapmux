@@ -161,6 +161,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
       repoGitStore: createRepoGitStore(),
+      isQuakeTerminal: () => false,
     })
     return d
   })
@@ -214,6 +215,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
       repoGitStore: createRepoGitStore(),
+      isQuakeTerminal: () => false,
     })
     return d
   })

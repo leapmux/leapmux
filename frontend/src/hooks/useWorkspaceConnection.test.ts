@@ -24,7 +24,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
-import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -304,6 +304,7 @@ describe('background agent history trimming', () => {
     return {
       stores: {
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
@@ -1874,6 +1875,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       controlStore: createControlStore(),
+      quakeStore: createTestQuakeStore(),
       repoGitStore: createRepoGitStore(),
       tabs,
     }
@@ -2224,6 +2226,38 @@ describe('extracted handleAgentEvent branch handlers', () => {
           getActiveWorkspaceId: () => WS,
         })
         expect(tabs.view.getTerminalTab('t1')?.hasNotification).toBe(true)
+        dispose()
+      })
+    })
+
+    // A companion terminal has no tile, so `isWorkspaceActiveTerminal` used to
+    // fall to the workspace-key branch -- which can never match an id that is
+    // not a tab. An OPEN, focused quake panel therefore counted as off-screen
+    // and raised a desktop notification for output the user was watching happen.
+    it('notification leaves an on-screen quake terminal alone, although it has no tile', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        handleTerminalNotification('q1', { title: '', body: 'hi' } as never, {
+          metadata: tabs.metadata,
+          selection: tabs.selection,
+          getActiveWorkspaceId: () => WS,
+          isDetachedOnScreen: id => id === 'q1',
+        })
+        expect(tabs.metadata.get('q1')?.hasNotification ?? false).toBe(false)
+        dispose()
+      })
+    })
+
+    it('notification badges a quake terminal whose panel is closed', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        handleTerminalNotification('q1', { title: '', body: 'hi' } as never, {
+          metadata: tabs.metadata,
+          selection: tabs.selection,
+          getActiveWorkspaceId: () => WS,
+          isDetachedOnScreen: () => false,
+        })
+        expect(tabs.metadata.get('q1')?.hasNotification).toBe(true)
         dispose()
       })
     })
@@ -2721,6 +2755,7 @@ describe('useWorkspaceConnection chat history load', () => {
         metadata: tabs.metadata,
         selection: tabs.selection,
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),
@@ -2799,6 +2834,7 @@ describe('useWorkspaceConnection chat history load', () => {
         metadata: tabs.metadata,
         selection: tabs.selection,
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),

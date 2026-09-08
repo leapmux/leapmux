@@ -6,6 +6,7 @@
 // `worker_tab_payloads` row the caller owns) so a late-joining client
 // receives the full payload cache before any live events.
 
+import type { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
@@ -53,6 +54,15 @@ interface OpenStreamOpts {
    * attach.
    */
   onTabPayloadRevoked?: (evt: { tabId: string }) => void
+  /**
+   * The Control CLI asked this account's frontends to show or hide one agent
+   * tab's quake panel.
+   *
+   * A COMMAND, not a fact: it carries no state, the worker stores none, and it
+   * is excluded from the subscribe-time replay -- so nothing here has to guard
+   * against a reconnect reopening a panel the user closed.
+   */
+  onQuakePanelCommand?: (evt: { agentId: string, action: QuakePanelAction }) => void
 }
 
 /**
@@ -136,6 +146,11 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 case 'tabPayloadRevoked': {
                   const r = evt.event.value
                   opts.onTabPayloadRevoked?.({ tabId: r.tabId })
+                  break
+                }
+                case 'quakePanelCommand': {
+                  const r = evt.event.value
+                  opts.onQuakePanelCommand?.({ agentId: r.agentId, action: r.action })
                   break
                 }
               }

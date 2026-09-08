@@ -347,7 +347,7 @@ func TestCategoriesAreKnown(t *testing.T) {
 		"network": true,
 		// user scope
 		"appearance": true, "notifications": true, "shortcuts": true,
-		"desktop": true,
+		"desktop": true, "terminal": true,
 	}
 	for _, desc := range allDescriptors(t) {
 		require.True(t, known[desc.UI().Category],

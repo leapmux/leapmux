@@ -327,7 +327,10 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 		if ids, err := queries.ListAllOpenRootAgentIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
 		}
-		if ids, err := queries.ListAllOpenTerminalIDs(ctx); err == nil && len(ids) > 0 {
+		// Companion terminals are excluded for exactly the reason child agents
+		// are: they have no CRDT tab, so the hub 403s their id and the mint
+		// backoff loops to a permanent failure.
+		if ids, err := queries.ListAllOpenTabTerminalIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL), true
 		}
 		return "", 0, false

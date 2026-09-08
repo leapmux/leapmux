@@ -444,6 +444,50 @@ export const browserSettings: BrowserSettingDecl[] = [
     }),
     resetBrowser: prefs => prefs.setTerminalRenderer(null),
   },
+  // The quake rows declare no `category` and no `control`: the hub's descriptor
+  // supplies both, and dualScalar's clearOverride supplies the reset. Only what
+  // the wire cannot carry lives here.
+  {
+    id: 'terminal.quakeOrientation',
+    protoKey: 'quake_orientation',
+    label: 'Quake terminal position',
+    help: 'Edge of the centre area the quake terminal slides in from.',
+    keywords: ['quake', 'drop-down', 'dropdown', 'overlay', 'panel', 'hotkey'],
+    scope: 'dual',
+    optionLabels: { top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeOrientation),
+  },
+  {
+    id: 'terminal.quakeSizePercent',
+    protoKey: 'quake_size_percent',
+    label: 'Quake terminal size',
+    help: 'Share of the centre area the quake terminal covers.',
+    keywords: ['quake', 'height', 'width', 'overlay', 'panel'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeSizePercent),
+  },
+  {
+    id: 'terminal.quakeAnimationMs',
+    protoKey: 'quake_animation_ms',
+    label: 'Quake terminal animation',
+    help: 'How long the quake terminal takes to slide in and out. The system reduced-motion setting overrides it.',
+    keywords: ['quake', 'slide', 'motion', 'duration', 'speed'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeAnimationMs),
+  },
+  {
+    id: 'terminal.quakeBackgroundOpacity',
+    protoKey: 'quake_background_opacity',
+    label: 'Quake terminal background opacity',
+    help: 'Opacity of the quake terminal background. The text stays fully opaque.',
+    keywords: ['quake', 'transparency', 'translucent', 'alpha', 'overlay'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeBackgroundOpacity),
+  },
 
   // --- Desktop ---
   //

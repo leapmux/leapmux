@@ -121,6 +121,7 @@ function makeMockTerminalInstance(): TerminalInstance {
     // to this mock during the on-screen effect; the acquire/release wiring is
     // still exercised and spyable.
     webglAllowed: false,
+    transparentBackground: false,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
     setConfirmLink: vi.fn(),

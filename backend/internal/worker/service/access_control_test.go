@@ -320,6 +320,12 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 		ownerGatedProbe{"WatchWorkerPrivateEvents", "WatchWorkerPrivateEvents", func() proto.Message {
 			return &leapmuxv1.WatchWorkerPrivateEventsRequest{}
 		}},
+		ownerGatedProbe{"SetQuakePanel", "SetQuakePanel", func() proto.Message {
+			return &leapmuxv1.SetQuakePanelRequest{
+				AgentId: "agent-1",
+				Action:  leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
+			}
+		}},
 		ownerGatedProbe{"RegisterTabPayload", "RegisterTabPayload", func() proto.Message {
 			return &leapmuxv1.RegisterTabPayloadRequest{TabId: "tab-1", Payload: fileTabPayload("/tmp/x", "")}
 		}},

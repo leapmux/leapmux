@@ -58,6 +58,15 @@ interface TerminalViewProps {
   confirmLink: UntrustedLinkConfirm
   pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
   writeRef?: (fn: (data: string) => void) => void
+  /**
+   * Whether these terminals leave their background to the surface behind them.
+   * True for the quake panel, whose own background carries the user's opacity.
+   *
+   * It must be decided BEFORE the instance exists -- xterm reads
+   * `allowTransparency` at `open()` -- so it is a prop rather than something
+   * the theme effect can switch on later.
+   */
+  transparentBackground?: boolean
 }
 
 const instances = new Map<string, TerminalInstance>()
@@ -293,6 +302,8 @@ const TerminalContainer: Component<{
   tileFocused: boolean
   /** See TerminalViewProps.tabEditing. */
   tabEditing?: () => boolean
+  /** See TerminalViewProps.transparentBackground. */
+  transparentBackground?: boolean
   screen?: Uint8Array
   lastOffset?: number
   cols?: number
@@ -324,6 +335,7 @@ const TerminalContainer: Component<{
         cols: props.cols,
         rows: props.rows,
         theme: props.theme,
+        transparentBackground: props.transparentBackground,
       })
       instances.set(id, instance)
       notifyTerminalInstanceReady(id)
@@ -522,7 +534,10 @@ const TerminalContainer: Component<{
   return (
     <div
       class={styles.terminalWrapper}
-      classList={{ [styles.terminalWrapperHidden]: !props.active }}
+      classList={{
+        [styles.terminalWrapperHidden]: !props.active,
+        [styles.terminalWrapperTransparent]: props.transparentBackground === true,
+      }}
       data-terminal-id={props.terminalId}
       data-active={props.active ? 'true' : 'false'}
     >
@@ -609,10 +624,23 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     preferences.theme(),
     themeStore.systemMode() === 'dark',
   ))
+  // The same palette with the background dropped, for the instances whose
+  // surface owns it. Built beside the opaque one because the effect below walks
+  // the MODULE-level instance map -- every mounted view sees every terminal --
+  // so an effect that knew only one theme would repaint a quake terminal opaque
+  // whenever any tile's view re-ran. `terminalThemeFor` memoizes both, so the
+  // second resolve costs a map lookup.
+  const transparentTerminalTheme = createMemo(() => resolveTerminalTheme(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    themeStore.systemMode() === 'dark',
+    true,
+  ))
 
   let lastTheme: ITheme | undefined
   createEffect(() => {
     const theme = terminalTheme()
+    const transparentTheme = transparentTerminalTheme()
     if (theme === lastTheme)
       return
     lastTheme = theme
@@ -625,8 +653,9 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       // stored reference and `resolveTerminalTheme` yields stable constants, so
       // the compare is exact. Mirrors refreshTerminalFont's per-instance guard
       // in the font effect above.
-      if (instance.terminal.options.theme !== theme)
-        instance.terminal.options.theme = theme
+      const want = instance.transparentBackground ? transparentTheme : theme
+      if (instance.terminal.options.theme !== want)
+        instance.terminal.options.theme = want
     }
   })
 
@@ -735,7 +764,8 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     rows={terminal()?.rows}
                     fontFamily={preferences.monoFontFamily()}
                     fontSize={DEFAULT_FONT_SIZE}
-                    theme={terminalTheme()}
+                    theme={props.transparentBackground ? transparentTerminalTheme() : terminalTheme()}
+                    transparentBackground={props.transparentBackground}
                     contentReady={(terminal()?.contentReady ?? false)
                       || terminal()?.status === TerminalStatus.EXITED
                       || terminal()?.status === TerminalStatus.DISCONNECTED}

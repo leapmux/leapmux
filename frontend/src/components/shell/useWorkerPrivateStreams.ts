@@ -1,6 +1,8 @@
+import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
+import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
@@ -39,6 +41,7 @@ import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 export interface UseWorkerPrivateStreamsOpts {
   view: TabView
   metadata: TabMetadataStore
+  quakeStore: QuakeTerminalStore
 }
 
 export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void {
@@ -94,6 +97,30 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
         workerId,
         onTabRenamed: (evt) => {
           opts.metadata.patch(evt.tabId, { title: evt.title })
+        },
+        onQuakePanelCommand: (evt) => {
+          // An agent this client cannot see is not an error: the command
+          // reaches every frontend of the account, and another one may be
+          // looking at a workspace this one is not.
+          const owner = opts.view.getAgentTab(evt.agentId)
+          if (!owner)
+            return
+          switch (evt.action) {
+            case QuakePanelAction.OPEN:
+              void opts.quakeStore.open(owner)
+              break
+            case QuakePanelAction.CLOSE:
+              opts.quakeStore.close(owner.id)
+              break
+            case QuakePanelAction.TOGGLE:
+              opts.quakeStore.toggle(owner)
+              break
+            default:
+              // An action a newer CLI knows and this build does not. Doing
+              // nothing is the only honest answer -- guessing between show and
+              // hide would be worse than ignoring it.
+              break
+          }
         },
         onTabPayloadRegistered: (evt) => {
           // Mirror onto the joined tab so existing file-tab rendering (which

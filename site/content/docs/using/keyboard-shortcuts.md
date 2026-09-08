@@ -49,13 +49,14 @@ A binding's `when`-clause is a small boolean expression evaluated against the ac
 | `platform` | string | `"mac"`, `"windows"`, or `"linux"`. |
 | `dialogOpen` | boolean | A modal dialog is currently open. |
 | `sidebarVisible` | boolean | The left sidebar is expanded. |
-| `activeTabType` | string | `"agent"`, `"terminal"`, `"file"`, or empty when no tab is active. |
+| `activeTabType` | string | `"agent"`, `"terminal"`, `"file"`, `"image"`, or empty when no tab is active. |
 | `inputFocused` | boolean | Focus is in an input, textarea, select, or `contenteditable` element. |
 | `editorFocused` | boolean | Focus is inside a rich-text editor surface. |
 | `chatInputFocused` | boolean | Focus is inside a chat message input. |
+| `chatInputEmpty` | boolean | The current agent tab's composer has nothing to submit: no text, no attachment, and no permission prompt an empty submit would answer. |
 | `terminalFocused` | boolean | Focus is inside a terminal. |
 
-The `when` expression grammar supports `||` (or), `&&` (and), `!` (not), parentheses, `==`/`!=` comparisons, identifiers, quoted strings, and the literals `true`/`false`. An empty or absent `when` means "always active." Examples drawn from the defaults: `!dialogOpen`, `isDesktop`, `!dialogOpen && isDesktop`, `chatInputFocused`, and `terminalFocused && platform == "mac"`.
+The `when` expression grammar supports `||` (or), `&&` (and), `!` (not), parentheses, `==`/`!=` comparisons, identifiers, quoted strings, and the literals `true`/`false`. An empty or absent `when` means "always active." Examples drawn from the defaults: `!dialogOpen`, `isDesktop`, `!dialogOpen && isDesktop`, `activeTabType == "agent" && !dialogOpen`, and `terminalFocused && platform == "mac"`.
 
 ## Default keyboard shortcuts
 
@@ -118,11 +119,21 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
-| Send Message | `⌘J` | `Ctrl+J` | chat input focused |
+| Steer Queued Input | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
+
+`Steer Queued Input` hands the input queue's first item to the turn the agent is already running. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state. See [The input queue](/docs/using/coding-agents/#the-input-queue).
 
 {{< callout type="info" >}}
-`Send Message` (`⌘J` / `Ctrl+J`) is a *global* way to submit the focused chat input, independent of the chat editor's own Enter behavior. The Enter-to-send vs. Cmd/Ctrl+Enter-to-send choice is a separate, editor-level setting described in [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below.
+`Send Message` (command `chat.sendMessage`) submits the focused chat input from anywhere inside the chat panel. It has no default chord, because the chat editor's own Enter and Cmd/Ctrl+Enter already send — see [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below. Bind it in Preferences if you want a second way in.
 {{< /callout >}}
+
+### Terminal
+
+| Command | macOS | Windows / Linux | Active when |
+|---|---|---|---|
+| Toggle Quake Terminal | `⌘J` | `Ctrl+J` | agent tab, no dialog open |
+
+The Quake terminal is a shell that slides over the centre of the app for one agent tab; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
 
 ### Terminal (macOS only)
 
@@ -202,7 +213,7 @@ Picking a row from the dropdown opens the working directory in that application 
 | ⌥ | Option / Alt |
 | ⇧ | Shift |
 
-A few key names also render specially: `Escape` shows as `Esc`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N`). On Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
+A few key names also render specially: `Escape` shows as `Esc`, `Enter` as `⏎`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N`). On Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
 
 {{< callout >}}
 You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
@@ -274,6 +285,9 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `app.openPreferences` | Open Preferences |
 | `app.openInExternalApp` | Open in External App |
 | `chat.sendMessage` | Send Message |
+| `chat.steerQueuedInput` | Steer Queued Input |
+| `terminal.toggleQuake` | Toggle Quake Terminal |
+| `terminal.openQuake` / `terminal.closeQuake` | Open / Close Quake Terminal |
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
 | `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |
 

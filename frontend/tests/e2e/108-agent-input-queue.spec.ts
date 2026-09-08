@@ -203,6 +203,32 @@ test.describe('agent input queue', () => {
     await expect(rows.first()).toContainText('second queued')
   })
 
+  // `$mod+Enter` is bound to the queue steer, and the composer's own Cmd+Enter
+  // sends. Both live on one chord, and only the emptiness context tells them
+  // apart -- so the dangerous direction is the shortcut CLAIMING a keypress that
+  // was meant to send. Every other spec in the suite sends with this chord, so a
+  // regression there is loud; what needs its own case is the boundary.
+  test('leaves the send chord to the composer whenever there is something to send', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const { rows } = await seedTwoQueuedRows(page)
+
+    // Empty composer, no running turn: the head is not steerable, so the chord
+    // is claimed and does nothing. Nothing is sent, and nothing is queued.
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await page.keyboard.press('Meta+Enter')
+    await expect(rows).toHaveCount(2)
+
+    // The same chord with text in the composer still sends, which is the whole
+    // point of gating the steer on emptiness.
+    await editor.click()
+    await page.keyboard.type('typed then sent')
+    await page.keyboard.press('Meta+Enter')
+    await expect(editor).toHaveText('')
+    await expect(rows).toHaveCount(3)
+    await expect(rows.last()).toContainText('typed then sent')
+  })
+
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()

@@ -173,6 +173,74 @@ Each palette supplies the sixteen ANSI colors. The background, foreground, curso
 
 See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
 
+## Quake-mode terminal
+
+A Quake-mode terminal is a shell that slides over the centre of the app for one
+agent tab. It belongs to that tab rather than to a tile, so it costs the agent
+none of its space: press the shortcut, run a command, press it again, and the
+transcript is exactly where you left it.
+
+Press **`Cmd/Ctrl+J`** in an agent tab to show or hide it (command
+`terminal.toggleQuake`). The first press creates the shell; every press after
+that only shows or hides the panel. There are two more commands, unbound by
+default, for a key that only ever opens or only ever closes:
+`terminal.openQuake` and `terminal.closeQuake`.
+
+The shell is the Worker's default shell, started in the agent's working
+directory. It is a full terminal: the same scrollback, copy and paste,
+resizing, and remote control every other LeapMux terminal has.
+
+### What it belongs to
+
+One shell per agent tab, shared by every device you are signed in on. Open the
+panel on a second device and it attaches to the shell the first one started, with
+the same scrollback. Whether the panel is **showing** is per-device, exactly as
+which tab is active in a tile is per-device — so a second screen can keep the
+panel up while the first one hides it.
+
+The shell keeps running while the panel is hidden, and it survives a page
+refresh. It ends in exactly two cases:
+
+- its agent tab closes; or
+- you end it yourself, with `exit` or `Ctrl+D`.
+
+After it ends, the panel retracts and the next press starts a fresh shell. This
+differs from a terminal tab, which stays on screen after its shell exits and
+offers **Enter** to restart.
+
+### Settings
+
+Four rows under **Terminal** in Preferences. Each is an account setting you can
+override on one device.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Quake terminal position** | Top | Edge the panel slides in from: **Top**, **Bottom**, **Left**, or **Right**. |
+| **Quake terminal size** | 65% | Share of the centre area the panel covers. Height for top and bottom, width for left and right. |
+| **Quake terminal animation** | 300 ms | How long the slide takes. |
+| **Quake terminal background opacity** | 0.9 | Opacity of the panel background. The terminal text stays fully opaque. |
+
+If your system asks for reduced motion, the panel appears and disappears without
+animating, whatever the duration says.
+
+### Driving the panel from the CLI
+
+`leapmux control agent quake open`, `close`, and `toggle` do the same thing the
+shortcut does, in every browser and desktop window you have open:
+
+```bash
+leapmux control agent quake toggle --tab-id <agent-tab-id>
+```
+
+Run inside an agent's own terminal, the agent tab is the ambient one and
+`--tab-id` is unnecessary. Run inside the Quake terminal itself, the command
+resolves the panel from the shell it is running in, so `leapmux control agent
+quake close` hides the panel you typed it into.
+
+These commands carry no state. They ask the frontends to act now, which is why
+they can move a panel although the active tab and the focused tile stay
+client-local. See [Control CLI](/docs/using/control-cli/).
+
 ## Terminal status indicators
 
 A terminal moves through several states, reflected both in the terminal pane and in the tab label.
@@ -289,7 +357,7 @@ If the terminal you're closing is the **last** tab for a worktree, or the last n
 
 ## Keyboard shortcuts
 
-The terminal and tab shortcuts (opening, closing, scrollback paging, and the macOS line/word navigation keys) are all customizable. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybinding system and how to remap commands.
+The terminal and tab shortcuts (opening, closing, scrollback paging, the Quake-mode toggle, and the macOS line/word navigation keys) are all customizable. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybinding system and how to remap commands.
 
 ## See also
 

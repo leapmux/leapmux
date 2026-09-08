@@ -61,6 +61,8 @@ export interface UseTerminalOperationsProps {
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
+  /** Whether a terminal id is a quake companion rather than a tab. */
+  isQuakeTerminal: (terminalId: string) => boolean
 }
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
@@ -231,6 +233,14 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     if (tab.status === TerminalStatus.READY) {
       return terminalInputQueues.enqueue(terminalId, data, terminalInputDrain)
     }
+
+    // A COMPANION terminal has no restart contract: its shell exiting ends it,
+    // and the next open spawns a fresh one. Returning here closes a real window
+    // -- the close event lands, the panel begins its retract, xterm still holds
+    // focus, and an Enter in that moment would restart a terminal the store is
+    // about to release.
+    if (props.isQuakeTerminal(terminalId))
+      return
 
     // On an exited terminal, the only key that does something is Enter,
     // which restarts the shell. Other input is silently swallowed.

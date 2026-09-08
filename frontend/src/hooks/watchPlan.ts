@@ -104,6 +104,11 @@ export function agentWatchEntry(
  *
  * `getAgentTab` resolves a child to its root; pass `undefined` to skip the
  * root-entry logic (used by tests that do not exercise the child path).
+ *
+ * `detachedTerminals` carries the terminals that have no tab at all -- the
+ * companion shells behind the quake panels. Without them a quake terminal is in
+ * no plan, so the worker sends it nothing and the panel stays blank while its
+ * shell runs.
  */
 export function buildWatchPlans(
   tabs: readonly Tab[],
@@ -114,6 +119,7 @@ export function buildWatchPlans(
   terminalAfterOffset: (terminalId: string) => bigint | number = () => 0,
   terminalNeedsResync: (terminalId: string) => boolean = () => false,
   getAgentTab: ((agentId: string) => AgentTab | undefined) | undefined = undefined,
+  detachedTerminals: readonly DetachedTerminalWatch[] = [],
 ): Map<string, WatchPlan> {
   const plans = new Map<string, WatchPlan>()
   // Track which agent ids each worker's plan already watches, so a child-driven
@@ -173,6 +179,28 @@ export function buildWatchPlans(
       } as WatchTerminalEntry)
     }
   }
+  // Folded in AFTER the tab walk, and through the same resync/cursor rules, so
+  // a companion resubscribes on a hole exactly as a placed terminal does.
+  for (const detached of detachedTerminals) {
+    if (!detached.workerId || !detached.terminalId)
+      continue
+    let plan = plans.get(detached.workerId)
+    if (!plan) {
+      plan = { agents: [], terminals: [], terminalResync: new Set() }
+      plans.set(detached.workerId, plan)
+    }
+    if (plan.terminals.some(t => t.terminalId === detached.terminalId))
+      continue
+    const resync = terminalNeedsResync(detached.terminalId)
+    const after = resync ? 0 : terminalAfterOffset(detached.terminalId)
+    if (resync)
+      plan.terminalResync.add(detached.terminalId)
+    plan.terminals.push({
+      terminalId: detached.terminalId,
+      afterOffset: typeof after === 'bigint' ? after : BigInt(after),
+      mode: detached.mode,
+    } as WatchTerminalEntry)
+  }
   return plans
 }
 
@@ -183,6 +211,21 @@ export function buildWatchPlans(
  * flagged or unflagged, so the plan carrying afterOffset 0 actually goes out
  * (and the plan that returns to the normal cursor goes out after it).
  */
+/**
+ * A terminal that has no tab and therefore no placement: the companion shell
+ * behind an agent tab's quake panel.
+ *
+ * The MODE arrives already decided, because deciding it needs the panel's own
+ * open state and the owner tab's placement -- two things the caller holds and
+ * this module has no business learning. `buildWatchPlans` stays a function of
+ * tabs and cursors.
+ */
+export interface DetachedTerminalWatch {
+  terminalId: string
+  workerId: string
+  mode: WatchMode
+}
+
 export function watchPlanKey(plan: WatchPlan): string {
   const agents = plan.agents
     .map(a => `${a.agentId}:${a.mode}`)

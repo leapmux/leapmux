@@ -398,6 +398,15 @@ var (
 		{Value: "none"},
 		{Value: "ding-dong"},
 	}
+	// Which edge of the centre area the quake panel slides in from. The value
+	// picks the axis AND the sign of the slide, so these four are the whole
+	// vocabulary -- there is no separate "direction".
+	quakeOrientationEnumValues = []settings.EnumValue{
+		{Value: "top"},
+		{Value: "bottom"},
+		{Value: "left"},
+		{Value: "right"},
+	}
 	// The Desktop keys are the ONE family whose tokens come from
 	// contracts/desktop.json rather than from a literal here, because a THIRD
 	// language spells them: the Rust shell matches them out of the
@@ -561,6 +570,95 @@ var (
 			}},
 		})
 
+	// --- Quake terminal ---
+	//
+	// The quake panel is the shell that slides over the centre area for one
+	// agent tab. Four knobs, all account-tier with a device override, because a
+	// user who works on a laptop and an external display wants one preference
+	// and the freedom to differ on the small screen.
+	//
+	// The panel is the browser's concept and the worker never hears these
+	// values, so they need no contract file: Go validates them and the browser
+	// renders them, and no third language spells them.
+	KeyQuakeOrientation = settings.NewKey[string]("quake_orientation").
+				WithDefault("top").
+				WithValidate(validateEnum(quakeOrientationEnumValues)).
+				WithUI(settings.UIMeta{
+			Category: "terminal",
+			Title:    "Quake terminal position",
+			Summary:  "edge the quake terminal slides in from",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldEnum,
+				EnumValues: quakeOrientationEnumValues,
+			}},
+		})
+
+	// The floor keeps the panel usable: below roughly a fifth of the centre
+	// area a terminal has too few rows to read. 100 is allowed and means a
+	// panel that covers the whole centre area.
+	KeyQuakeSizePercent = settings.NewKey[int64]("quake_size_percent").
+				WithDefault(65).
+				WithValidate(func(v int64) error {
+			if v < 20 || v > 100 {
+				return fmt.Errorf("quake size must be between 20 and 100 percent (got %d)", v)
+			}
+			return nil
+		}).
+		WithUI(settings.UIMeta{
+			Category: "terminal",
+			Title:    "Quake terminal size",
+			Summary:  "share of the centre area the quake terminal covers",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldInt,
+				Min: ptrconv.Ptr[int64](20), Max: ptrconv.Ptr[int64](100), Unit: "percent",
+			}},
+		})
+
+	// 0 is allowed and means no animation at all, which is what a user who
+	// dislikes motion but has not set the system preference reaches for.
+	KeyQuakeAnimationMs = settings.NewKey[int64]("quake_animation_ms").
+				WithDefault(300).
+				WithValidate(func(v int64) error {
+			if v < 0 || v > 2000 {
+				return fmt.Errorf("quake animation must be between 0 and 2000 milliseconds (got %d)", v)
+			}
+			return nil
+		}).
+		WithUI(settings.UIMeta{
+			Category: "terminal",
+			Title:    "Quake terminal animation",
+			Summary:  "how long the quake terminal takes to slide in and out",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldInt,
+				Min: ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](2000), Unit: "ms",
+			}},
+		})
+
+	// Opacity of the panel's BACKGROUND alone; the terminal text stays fully
+	// opaque, which is why this is not the whole-element opacity a floating
+	// window carries.
+	//
+	// The floor refuses a panel that is invisible but still takes clicks. It
+	// also sits on the 0.05 step the client renders with, so every value the
+	// control can reach is a value this accepts.
+	KeyQuakeBackgroundOpacity = settings.NewKey[float64]("quake_background_opacity").
+					WithDefault(0.9).
+					WithValidate(func(v float64) error {
+			if v < 0.05 || v > 1 {
+				return fmt.Errorf("quake background opacity must be between 0.05 and 1 (got %v)", v)
+			}
+			return nil
+		}).
+		WithUI(settings.UIMeta{
+			Category: "terminal",
+			Title:    "Quake terminal background opacity",
+			Summary:  "opacity of the quake terminal's background",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldFloat,
+				MinF: ptrconv.Ptr(0.05), MaxF: ptrconv.Ptr(1.0),
+			}},
+		})
+
 	// --- Desktop ---
 	//
 	// Five settings the desktop shell applies and a browser ignores. The hub
@@ -663,6 +761,10 @@ func descriptors() []settings.Descriptor {
 		KeyDiffView,
 		KeyTurnEndSound,
 		KeyTurnEndSoundVolume,
+		KeyQuakeOrientation,
+		KeyQuakeSizePercent,
+		KeyQuakeAnimationMs,
+		KeyQuakeBackgroundOpacity,
 		KeyTrayEnabled,
 		KeyTrayOnClose,
 		KeyTrayOnMinimize,

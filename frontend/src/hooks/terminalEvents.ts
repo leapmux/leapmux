@@ -121,7 +121,14 @@ function isWorkspaceActiveTerminal(
   selection: TabSelectionStore,
   getActiveWorkspaceId: () => string | null,
   view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined },
+  isDetachedOnScreen?: (terminalId: string) => boolean,
 ): boolean {
+  // Asked FIRST, because a companion terminal has no tile and would otherwise
+  // fall to the workspace-key branch below, which can never match an id that is
+  // not a tab -- so an OPEN, focused quake panel would count as off-screen and
+  // raise a desktop notification on every OSC 9 the user is watching happen.
+  if (isDetachedOnScreen?.(terminalId))
+    return true
   const tab = view?.getTerminalTab(terminalId)
   if (tab?.tileId) {
     // Tile-placed: the shared on-screen rule (same source as tabWatchMode).
@@ -140,6 +147,11 @@ interface TerminalBadgeDeps {
   selection: TabSelectionStore
   getActiveWorkspaceId: () => string | null
   view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined }
+  /**
+   * Whether a terminal with no tab is on screen: the companion shell behind an
+   * open quake panel whose owner tab the user is looking at.
+   */
+  isDetachedOnScreen?: (terminalId: string) => boolean
 }
 
 /**
@@ -149,7 +161,7 @@ interface TerminalBadgeDeps {
  * on-screen predicate. Both the bell and notification arms share this prelude.
  */
 function badgeTerminalIfNotOnScreen(terminalId: string, deps: TerminalBadgeDeps): boolean {
-  const active = isWorkspaceActiveTerminal(terminalId, deps.selection, deps.getActiveWorkspaceId, deps.view)
+  const active = isWorkspaceActiveTerminal(terminalId, deps.selection, deps.getActiveWorkspaceId, deps.view, deps.isDetachedOnScreen)
   if (!active)
     deps.metadata.patch(terminalId, { hasNotification: true })
   return active

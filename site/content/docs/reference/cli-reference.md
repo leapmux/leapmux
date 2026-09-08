@@ -275,7 +275,7 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
 | `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
 | `worker` | `list`, `get`; subgroup `pins`: `list`, `show`, `remove` |
-| `agent` | `send`, `interrupt`, `get`, `providers`, `messages`, `set`, `send-control-response` |
+| `agent` | `send`, `interrupt`, `get`, `providers`, `messages`, `set`, `send-control-response`; subgroup `quake`: `open`, `close`, `toggle` |
 | `tile` | `list`, `split`, `close`, `make-grid`, `remove-grid`, `set-ratios`, `set-grid-ratios` |
 | `layout` | `get`, `set` |
 | `file` | `list`, `read`, `stat` |

@@ -1343,6 +1343,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
       terminalHandlers.get(tab.id)?.write(data)
     },
     FocusedAgentEditorPanel,
+    // The queue RPCs, so the shell's keyboard layer can reach the same
+    // operations the queue rows do. Built above for the composer; exposed here
+    // rather than rebuilt, so a shortcut and a button cannot take two different
+    // paths to one worker call.
+    queueOps,
     renderTile,
     handleFileDrop,
     fileDropDisabled: () => {

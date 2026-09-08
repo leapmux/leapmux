@@ -15,7 +15,7 @@ import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
-import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -115,6 +115,7 @@ function mountConnection() {
       metadata,
       selection,
       controlStore: createControlStore(),
+      quakeStore: createTestQuakeStore(),
       agentSessionStore: createAgentSessionStore(),
       agentActivityStore: createAgentActivityStore(),
       repoGitStore,

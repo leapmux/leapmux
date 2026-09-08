@@ -345,6 +345,53 @@ describe('resolveTerminalTheme', () => {
   })
 })
 
+// The quake panel paints its own translucent background, so the terminal in
+// front of it must paint none. Two things have to hold, and both fail silently:
+// xterm refuses any non-opaque colour it cannot parse with its two regexes and
+// falls back to opaque, and the theme cache would otherwise serve whichever
+// variant was built first to every caller.
+describe('a terminal whose surface owns the background', () => {
+  it('paints no background of its own', () => {
+    const theme = terminalThemeFor('default', 'dark', undefined, true)
+    expect(theme.background).toBe('#00000000')
+  })
+
+  it('states it in eight-digit hex, which is the only form xterm parses without a canvas', () => {
+    const theme = terminalThemeFor('default', 'dark', undefined, true)
+    expect(theme.background).toMatch(/^#[0-9a-f]{8}$/i)
+  })
+
+  it('keeps every other colour of its palette', () => {
+    const opaque = terminalThemeFor('nord', 'dark')
+    const transparent = terminalThemeFor('nord', 'dark', undefined, true)
+    expect(transparent.foreground).toBe(opaque.foreground)
+    expect(transparent.cursor).toBe(opaque.cursor)
+    expect(transparent.background).not.toBe(opaque.background)
+  })
+
+  // Without the flag in the cache key the first caller decides for everyone:
+  // a quake terminal opening first would hand every tile a transparent
+  // background, and a tile opening first would leave the panel opaque.
+  it('does not share a cache entry with the opaque palette', () => {
+    expect(terminalThemeFor('default', 'dark')).not.toBe(terminalThemeFor('default', 'dark', undefined, true))
+    expect(terminalThemeFor('default', 'dark', undefined, true)).toBe(terminalThemeFor('default', 'dark', undefined, true))
+  })
+
+  it('reaches the built instance, so xterm allows a non-opaque background', () => {
+    const instance = createTerminalInstance({ transparentBackground: true })
+    expect(instance.transparentBackground).toBe(true)
+    expect(instance.terminal.options.allowTransparency).toBe(true)
+    instance.dispose()
+  })
+
+  it('leaves an ordinary terminal opaque, so it pays none of the cost', () => {
+    const instance = createTerminalInstance()
+    expect(instance.transparentBackground).toBe(false)
+    expect(instance.terminal.options.allowTransparency).toBe(false)
+    instance.dispose()
+  })
+})
+
 describe('terminalThemeFor', () => {
   it('returns a STABLE reference for the same pair', () => {
     // Load-bearing, not an optimisation: TerminalView guards its palette

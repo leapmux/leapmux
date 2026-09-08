@@ -4,7 +4,12 @@
 -- row. Only the initial OpenTerminal INSERT writes it; subsequent
 -- exit/restart upserts pass whatever value (commonly empty) and the
 -- existing column survives unchanged.
-INSERT INTO terminals (id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, closed_at)
+--
+-- owner_agent_id follows the same rule for the same reason: which agent a
+-- companion terminal belongs to is fixed when the row is created. The
+-- exit/restart and title-update upserts pass an empty value, and leaving the
+-- column out of DO UPDATE is what stops them erasing the link.
+INSERT INTO terminals (id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, owner_agent_id, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
@@ -16,6 +21,7 @@ VALUES (
   sqlc.arg(rows),
   sqlc.arg(screen),
   sqlc.arg(exit_code),
+  sqlc.arg(owner_agent_id),
   -- The title-update path re-binds a DB-roundtripped closed_at; binding a
   -- SQLiteNullTime re-canonicalizes it so the rewrite cannot split the column
   -- into two layouts under the raw-string cleanup sweep. The DO UPDATE below
@@ -92,13 +98,41 @@ WHERE id = ? AND closed_at IS NULL;
 -- collect ids. Mirrors ListAllAgentIDs.
 SELECT id FROM terminals;
 
--- name: ListAllOpenTerminalIDs :many
+-- name: ListAllOpenTerminalIDsWithOwner :many
 -- Open terminals only. Mirrors ListAllOpenAgentIDs, and exists for the same
 -- reason the orphan reconciler needs it: a closed row has nothing left to
 -- converge, so comparing it against the hub's live list only re-runs a teardown
--- that already happened. Reads the id alone, so it never touches the 100KB
--- screen blob.
-SELECT id FROM terminals WHERE closed_at IS NULL;
+-- that already happened. Reads two narrow columns, so it never touches the
+-- 100KB screen blob.
+--
+-- The owner comes back with the id because the reconciler measures a COMPANION
+-- terminal's liveness by its owner agent's tab key. A companion has no CRDT tab
+-- of its own, so the hub can never list it, and keying it on its own id would
+-- reap a live shell the user is typing in.
+SELECT id, owner_agent_id FROM terminals WHERE closed_at IS NULL;
+
+-- name: ListAllOpenTabTerminalIDs :many
+-- Open terminals that are TABS, i.e. companions excluded. The mirror of
+-- ListAllOpenRootAgentIDs, and it exists for the same reason: a delegation mint
+-- must name a tab the HUB agrees this worker owns. A companion terminal has no
+-- CRDT tab, so the hub answers "tab not owned by calling worker" and the mint
+-- backoff loops to a permanent failure -- the identical trap a child agent id
+-- sets, which is why that query filters too.
+SELECT id FROM terminals WHERE closed_at IS NULL AND owner_agent_id = '';
+
+-- name: GetOpenTerminalIDByOwner :one
+-- The companion terminal of one agent, if it has a live one. The unique partial
+-- index on (owner_agent_id) over open rows is what makes ":one" honest.
+SELECT id, title FROM terminals
+WHERE owner_agent_id = ? AND closed_at IS NULL
+LIMIT 1;
+
+-- name: ListOpenTerminalsByOwners :many
+-- Companion terminals for a set of agents, for the hydration ListTerminals
+-- serves. Returns whole rows: the caller builds a TerminalInfo from each, and a
+-- client adopting a companion needs the screen to paint it.
+SELECT * FROM terminals
+WHERE owner_agent_id IN (sqlc.slice('owner_agent_ids')) AND closed_at IS NULL;
 
 -- name: ListTerminalsByIDs :many
 SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;

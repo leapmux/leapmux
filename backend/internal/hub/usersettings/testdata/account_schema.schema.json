@@ -41,6 +41,8 @@
             },
             "min": { "type": "integer" },
             "max": { "type": "integer" },
+            "minF": { "type": "number" },
+            "maxF": { "type": "number" },
             "unit": { "type": "string" }
           }
         }

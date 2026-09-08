@@ -1,9 +1,10 @@
+import type { AgentInputQueueSnapshot } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
-import { evaluateWhen } from '~/lib/shortcuts/context'
-import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
+import { evaluateWhen, getContext } from '~/lib/shortcuts/context'
+import { registerChatPanel, unregisterChatPanel } from '~/stores/focusedChatPanel.store'
 import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import { useShortcuts } from './useShortcuts'
 
@@ -106,6 +107,9 @@ function makeProps() {
     customKeybindings: () => [],
     preferredExternalAppId: (): string | undefined => undefined,
     setPreferredExternalAppId: vi.fn(),
+    getAgentInputQueue: (): AgentInputQueueSnapshot | undefined => undefined,
+    steerQueueItem: vi.fn(async () => {}),
+    quakePanel: { open: vi.fn(), close: vi.fn(), toggle: vi.fn() },
   }
 }
 
@@ -260,13 +264,13 @@ describe('useShortcuts', () => {
       document.body.appendChild(panel)
 
       const send = vi.fn()
-      registerPanelSend(panel, send)
+      registerChatPanel(panel, { send, hasPendingInput: () => true })
       input.focus()
 
       executeCommand('chat.sendMessage')
       expect(send).toHaveBeenCalledOnce()
 
-      unregisterPanelSend(panel)
+      unregisterChatPanel(panel)
     })
 
     it('is a no-op when focus is not inside a chat panel', () => {
@@ -281,7 +285,7 @@ describe('useShortcuts', () => {
       const panel = document.createElement('div')
       panel.setAttribute('data-chat-panel', '')
       document.body.appendChild(panel)
-      registerPanelSend(panel, send)
+      registerChatPanel(panel, { send, hasPendingInput: () => true })
 
       const outside = document.createElement('input')
       document.body.appendChild(outside)
@@ -290,7 +294,7 @@ describe('useShortcuts', () => {
       executeCommand('chat.sendMessage')
       expect(send).not.toHaveBeenCalled()
 
-      unregisterPanelSend(panel)
+      unregisterChatPanel(panel)
     })
 
     it('chatInputFocused is true only when focus is inside [data-chat-input]', () => {
@@ -314,6 +318,211 @@ describe('useShortcuts', () => {
 
       outside.focus()
       expect(evaluateWhen('chatInputFocused')).toBe(false)
+    })
+  })
+
+  describe('chat.steerQueuedInput', () => {
+    afterEach(() => {
+      document.body.innerHTML = ''
+    })
+
+    /** Props for an agent tab with a queue whose head reports `canSteer`. */
+    function steerProps(over: {
+      supportsSteering?: boolean
+      items?: { canSteer: boolean, id: string }[]
+      snapshot?: boolean
+      tab?: unknown
+    } = {}) {
+      const props = makeProps()
+      const items = over.items ?? [{ canSteer: true, id: 'q1' }]
+      const tab = 'tab' in over
+        ? over.tab
+        : { type: TabType.AGENT, id: 'a1', supportsSteering: over.supportsSteering ?? true }
+      return {
+        ...props,
+        resolveFocusedTab: () => tab,
+        getAgentInputQueue: () => (over.snapshot === false ? undefined : { items }),
+        steerQueueItem: vi.fn(async () => {}),
+      }
+    }
+
+    // The parameter is deliberately not called `props`: these are plain test
+    // values, and the reactivity lint reads any `props.x` as a prop access that
+    // must sit in a tracked scope.
+    function run(bag: ReturnType<typeof steerProps>) {
+      render(() => {
+        useShortcuts(bag as any)
+        return null
+      })
+      executeCommand('chat.steerQueuedInput')
+      return bag.steerQueueItem
+    }
+
+    it('steers the queue head of the focused agent tab', () => {
+      const props = steerProps()
+      const steer = run(props)
+      expect(steer).toHaveBeenCalledWith({ canSteer: true, id: 'q1' })
+    })
+
+    it('does nothing when the agent provider does not accept a steer', () => {
+      expect(run(steerProps({ supportsSteering: false }))).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when the worker refuses to steer the head', () => {
+      expect(run(steerProps({ items: [{ canSteer: false, id: 'q1' }] }))).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when the queue is empty', () => {
+      expect(run(steerProps({ items: [] }))).not.toHaveBeenCalled()
+    })
+
+    it('does nothing before the first queue snapshot arrives', () => {
+      expect(run(steerProps({ snapshot: false }))).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when no tab is focused', () => {
+      expect(run(steerProps({ tab: null }))).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when the focused tab is a terminal', () => {
+      expect(run(steerProps({ tab: { type: TabType.TERMINAL, id: 't1' } }))).not.toHaveBeenCalled()
+    })
+
+    // The worker marks `canSteer` on index 0 alone, so a scan would answer a
+    // different question than the one the worker will enforce.
+    it('steers the head alone, although a later item reports canSteer', () => {
+      const steer = run(steerProps({ items: [{ canSteer: false, id: 'q1' }, { canSteer: true, id: 'q2' }] }))
+      expect(steer).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('chatInputEmpty', () => {
+    afterEach(() => {
+      document.body.innerHTML = ''
+    })
+
+    function mountPanel(hasPendingInput: () => boolean) {
+      const panel = document.createElement('div')
+      panel.setAttribute('data-chat-panel', '')
+      document.body.appendChild(panel)
+      registerChatPanel(panel, { send: vi.fn(), hasPendingInput })
+      return panel
+    }
+
+    it('is true when the current composer has nothing to submit', () => {
+      const props = makeProps()
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      const panel = mountPanel(() => false)
+      expect(evaluateWhen('chatInputEmpty')).toBe(true)
+      unregisterChatPanel(panel)
+    })
+
+    // Text, an attachment, or a control request awaiting approval all count as
+    // something to submit -- that is what leaves the chord to the composer.
+    it('is false while the current composer has something to submit', () => {
+      const props = makeProps()
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      const panel = mountPanel(() => true)
+      expect(evaluateWhen('chatInputEmpty')).toBe(false)
+      unregisterChatPanel(panel)
+    })
+
+    // Focus is deliberately NOT consulted: the action is about the current tab,
+    // so it works from the transcript too.
+    it('answers for the current composer even when focus is elsewhere', () => {
+      const props = makeProps()
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      const panel = mountPanel(() => false)
+      const outside = document.createElement('input')
+      document.body.appendChild(outside)
+      outside.focus()
+      expect(evaluateWhen('chatInputEmpty')).toBe(true)
+      unregisterChatPanel(panel)
+    })
+
+    // `!undefined?.hasPendingInput()` is true, so without the explicit check a
+    // missing composer would read as an empty one and claim the chord where
+    // there is no chat at all.
+    it('is false when no chat panel is mounted', () => {
+      const props = makeProps()
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      expect(evaluateWhen('chatInputEmpty')).toBe(false)
+    })
+
+    it('stops answering once the hook tears down', () => {
+      const props = makeProps()
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      const panel = mountPanel(() => false)
+      cleanup()
+      expect(getContext('chatInputEmpty')).toBeUndefined()
+      unregisterChatPanel(panel)
+    })
+  })
+
+  describe('the quake terminal commands', () => {
+    function quakeProps(tab: unknown, archived = false) {
+      return {
+        ...makeProps(),
+        resolveFocusedTab: () => tab,
+        isActiveWorkspaceArchived: () => archived,
+        quakePanel: { open: vi.fn(), close: vi.fn(), toggle: vi.fn() },
+      }
+    }
+
+    function run(props: ReturnType<typeof quakeProps>, command: string) {
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+      executeCommand(command)
+      return props.quakePanel
+    }
+
+    const agentTab = { type: TabType.AGENT, id: 'a1' }
+
+    it('toggles the panel of the focused agent tab', () => {
+      const panel = run(quakeProps(agentTab), 'terminal.toggleQuake')
+      expect(panel.toggle).toHaveBeenCalledWith(agentTab)
+    })
+
+    it('opens and closes through their own commands', () => {
+      const opened = run(quakeProps(agentTab), 'terminal.openQuake')
+      expect(opened.open).toHaveBeenCalledWith(agentTab)
+      cleanup()
+      const closed = run(quakeProps(agentTab), 'terminal.closeQuake')
+      expect(closed.close).toHaveBeenCalledWith('a1')
+    })
+
+    it('does nothing when the focused tab is not an agent', () => {
+      const panel = run(quakeProps({ type: TabType.TERMINAL, id: 't1' }), 'terminal.toggleQuake')
+      expect(panel.toggle).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when no tab is focused', () => {
+      const panel = run(quakeProps(null), 'terminal.toggleQuake')
+      expect(panel.toggle).not.toHaveBeenCalled()
+    })
+
+    // The same guard the terminal-open path applies: an archived workspace
+    // opens no terminal, and the panel must not be the one surface that does.
+    it('does nothing in an archived workspace', () => {
+      const panel = run(quakeProps(agentTab, true), 'terminal.toggleQuake')
+      expect(panel.toggle).not.toHaveBeenCalled()
     })
   })
 

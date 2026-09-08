@@ -88,6 +88,8 @@ interface MobileLayoutProps {
   tabBarHidden: boolean
   tileContent: JSX.Element
   editorPanel: JSX.Element | false
+  /** See DesktopLayoutProps.quakePanel. */
+  quakePanel?: JSX.Element
   /**
    * Act on a horizontal swipe across the content region. Wired to the overlay
    * owner's `applySwipe`; see `nextOverlayForSwipe` for what each swipe means.
@@ -132,6 +134,7 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
           {props.tileContent}
         </div>
         {props.editorPanel}
+        {props.quakePanel}
 
         {/* Both panels stay mounted and slide by transform, so an E2E spec
             cannot ask whether they are "visible" — a closed drawer is, off to

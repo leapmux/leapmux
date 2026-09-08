@@ -366,6 +366,52 @@ describe('activateBindings (slots)', () => {
   })
 })
 
+// Whether a keypress reaches the page is the whole mechanism the chat chords
+// rest on: `$mod+Enter` must fall through to the editor's own Cmd+Enter
+// whenever the composer holds something to send, and it does so by the steer
+// binding's `when` evaluating false. Nothing else asserted `defaultPrevented`.
+describe('activateBindings (fall-through)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+    resetContext()
+  })
+
+  it('lets a keydown reach the page when every binding for the key is inactive', () => {
+    const handler = vi.fn()
+    const downstream = vi.fn()
+    registerCommand({ id: 'test.steer', title: 'Steer', handler })
+    setContext('ctx', false)
+    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    document.addEventListener('keydown', downstream)
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    document.body.dispatchEvent(event)
+    document.removeEventListener('keydown', downstream)
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+    expect(downstream).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops a keydown at the window once a binding claims it', () => {
+    const handler = vi.fn()
+    const downstream = vi.fn()
+    registerCommand({ id: 'test.steer', title: 'Steer', handler })
+    setContext('ctx', true)
+    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    document.addEventListener('keydown', downstream)
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    document.body.dispatchEvent(event)
+    document.removeEventListener('keydown', downstream)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
+    expect(downstream, 'the capture-phase listener stops propagation').not.toHaveBeenCalled()
+  })
+})
+
 describe('activateBindings (events from form fields)', () => {
   afterEach(() => {
     unbindAll()

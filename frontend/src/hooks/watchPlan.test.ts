@@ -134,6 +134,86 @@ describe('buildWatchPlans', () => {
     expect(plan.agents.every(a => a.mode === WatchMode.FULL)).toBe(true)
   })
 
+  // A companion terminal -- the shell behind an agent tab's quake panel -- has
+  // no tab and therefore no placement, so nothing in `tabs` can carry it. It is
+  // in no plan at all unless it is passed separately, and a terminal in no plan
+  // receives no bytes: the panel stays blank while its shell runs.
+  describe('detached terminals', () => {
+    const detached = (mode: WatchMode) => [{ terminalId: 'q1', workerId: 'w1', mode }]
+
+    it('folds a detached terminal into its worker plan', () => {
+      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
+      expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['q1'])
+      expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.FULL)
+    })
+
+    it('carries the mode the caller decided', () => {
+      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.NOTIFY))
+      expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.NOTIFY)
+    })
+
+    it('shares a worker plan with the placed tabs', () => {
+      const plans = buildWatchPlans([terminal()], 'ws-1', () => '1:t1', undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
+      expect(plans.get('w1')?.terminals.map(t => t.terminalId).toSorted()).toEqual(['q1', 't1'])
+      expect(plans.size).toBe(1)
+    })
+
+    it('subscribes cold and flags a resync when the client lost bytes', () => {
+      const plans = buildWatchPlans(
+        [],
+        'ws-1',
+        () => null,
+        undefined,
+        undefined,
+        () => 500,
+        id => id === 'q1',
+        undefined,
+        detached(WatchMode.FULL),
+      )
+      expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(0))
+      expect(plans.get('w1')?.terminalResync.has('q1')).toBe(true)
+    })
+
+    it('resumes from the cursor when there is no hole', () => {
+      const plans = buildWatchPlans(
+        [],
+        'ws-1',
+        () => null,
+        undefined,
+        undefined,
+        () => 500,
+        () => false,
+        undefined,
+        detached(WatchMode.FULL),
+      )
+      expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(500))
+    })
+
+    it('skips an entry with no worker or no terminal id', () => {
+      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, [
+        { terminalId: 'q1', workerId: '', mode: WatchMode.FULL },
+        { terminalId: '', workerId: 'w1', mode: WatchMode.FULL },
+      ])
+      expect(plans.size).toBe(0)
+    })
+
+    // The panel opening and closing is exactly a mode flip, and the plan has to
+    // go out for it -- otherwise a reopened panel keeps receiving nothing.
+    it('re-keys the plan on a mode flip and stays stable across reordering', () => {
+      const full = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
+      const notify = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.NOTIFY))
+      expect(watchPlanKey(full.get('w1')!)).not.toBe(watchPlanKey(notify.get('w1')!))
+
+      const two = [
+        { terminalId: 'q1', workerId: 'w1', mode: WatchMode.FULL },
+        { terminalId: 'q2', workerId: 'w1', mode: WatchMode.FULL },
+      ]
+      const a = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, two)
+      const b = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, two.toReversed())
+      expect(watchPlanKey(a.get('w1')!)).toBe(watchPlanKey(b.get('w1')!))
+    })
+  })
+
   it('excludes FILE tabs and tabs missing tileId or workerId', () => {
     const tabs = [
       file(),

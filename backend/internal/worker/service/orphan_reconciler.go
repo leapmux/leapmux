@@ -743,13 +743,29 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 // reconcileTerminals does the same for terminals.
 func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time) bool {
 	// OPEN rows only, for the same reasons as reconcileAgents.
-	rows, err := r.queries.ListAllOpenTerminalIDs(ctx)
+	rows, err := r.queries.ListAllOpenTerminalIDsWithOwner(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list terminals", "err", err)
 		return false
 	}
 	for _, row := range rows {
-		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row, "")
+		// A COMPANION terminal -- the shell behind an agent tab's quake panel
+		// -- is measured by its OWNER's tab key, not its own.
+		//
+		// It has no CRDT tab, so the hub can never list it, so its own key is
+		// absent from hubByKey on every single pass. Keyed on itself it would
+		// be reaped the moment the grace expired, killing a live shell the user
+		// is typing in. Its liveness IS its owner's: the owner's close already
+		// closes it (see closeAgentTabCommon), and an owner the hub has
+		// forgotten should take its companion with it. Reusing the owner's key
+		// also reuses the owner's grace window rather than inventing a second.
+		//
+		// The close still targets the TERMINAL id -- only the liveness question
+		// is asked about the agent.
+		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row.ID, "")
+		if row.OwnerAgentID != "" {
+			k = newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, row.OwnerAgentID, "")
+		}
 		if _, ok := hubByKey[k]; !ok {
 			// Same grace as reconcileAgents: a close RPC still in flight must
 			// not lose its worktree link to this pass.
@@ -766,8 +782,8 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 			// helper uses RemoveTerminal rather than StopTerminal, which also drops
 			// the manager's terminals/meta/exitDone entries -- the fallback this
 			// replaced leaked one set per reaped terminal.
-			r.closeTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row)
-			r.logger.Info("orphan reconciler: closed stale terminal", "terminal_id", row)
+			r.closeTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
+			r.logger.Info("orphan reconciler: closed stale terminal", "terminal_id", row.ID, "owner_agent_id", row.OwnerAgentID)
 		}
 	}
 	return true

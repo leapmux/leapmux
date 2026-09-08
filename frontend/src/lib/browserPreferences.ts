@@ -80,6 +80,19 @@ export interface BrowserPreferences {
   diffView?: string
   turnEndSound?: string
   turnEndSoundVolume?: number
+  /**
+   * Quake-terminal panel geometry and motion, per device.
+   *
+   * `quakeOrientation` is a bare `string` for the same reason {@link diffView}
+   * is: this is untrusted storage, and the parse in PreferencesContext is what
+   * narrows it. That matters more here than elsewhere -- all four values reach a
+   * CSS custom property, so a hand-edited entry must never survive to the style
+   * attribute.
+   */
+  quakeOrientation?: string
+  quakeSizePercent?: number
+  quakeAnimationMs?: number
+  quakeBackgroundOpacity?: number
   debugLogging?: boolean
   expandAgentThoughts?: boolean
   showHiddenMessages?: boolean

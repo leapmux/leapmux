@@ -878,6 +878,7 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
     // the terminal-theme describe block below.
     diff_view: { read: p => p.dual.diffView.account(), fallback: 'unified' },
     turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: 'ding-dong' },
+    quake_orientation: { read: p => p.dual.quakeOrientation.account(), fallback: 'top' },
     // The three Desktop enums. Their tokens come from contracts/desktop.json,
     // which the hub's catalogue also reads, so the golden file and these
     // fallbacks are two views of one source.

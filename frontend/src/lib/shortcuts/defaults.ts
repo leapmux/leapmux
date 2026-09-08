@@ -86,5 +86,21 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+Shift+e', command: 'app.openInExternalApp', when: '!dialogOpen && isDesktop' },
 
   // Chat input
-  { key: '$mod+j', command: 'chat.sendMessage', when: 'chatInputFocused' },
+  //
+  // Every conjunct earns its place. `activeTabType` scopes the action to an
+  // agent tab without demanding that focus be in the composer -- the user may be
+  // reading the transcript. `chatInputEmpty` is what LEAVES the chord to
+  // ProseMirror whenever the composer holds something: `activateBindings` calls
+  // preventDefault only for a binding that resolves, so a false `when` is the
+  // one thing that lets Send keep working. `!terminalFocused` matters because a
+  // quake terminal lives INSIDE an agent tab, and without it the chord typed
+  // into that shell would steer instead of reaching the PTY.
+  { key: '$mod+Enter', command: 'chat.steerQueuedInput', when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen' },
+
+  // Quake terminal. `chat.sendMessage` used to hold $mod+j; it keeps no default
+  // chord now, because Enter and Cmd+Enter in the composer already send. It
+  // stays a registered, rebindable command, and its handler resolves the panel
+  // through the focused element -- so an override with no `when` clause still
+  // does nothing outside a chat panel.
+  { key: '$mod+j', command: 'terminal.toggleQuake', when: 'activeTabType == "agent" && !dialogOpen' },
 ]

@@ -44,6 +44,38 @@ export interface CreateTabViewOpts {
    */
   state: () => UserCrdtState | null
   metadata: TabMetadataStore
+  /**
+   * Terminals that exist on a WORKER but not in the CRDT: the companion shells
+   * behind an agent tab's quake panel. They belong to an agent tab rather than
+   * to a tile, so the projection has nothing to render them from.
+   *
+   * They are reachable through `getTerminalTab` and NOTHING ELSE. `byKey`,
+   * `byWorkspace`, `byTile`, `all`, `mruOrder`, `get` and `getById` all derive
+   * from `placedTabs`, which derives from the projection -- so a detached
+   * terminal cannot reach the tab strip, the sidebar tree, `app.switchToTabN`,
+   * a tab drag or an MRU promotion by CONSTRUCTION, rather than because every
+   * one of those remembered to filter it out.
+   *
+   * That asymmetry is the design, not an oversight. `getTerminalTab` is the
+   * narrowed lookup the terminal data path uses -- the event router, the input
+   * drain, the resize handler, the bell and notification helpers -- and every
+   * one of them must resolve a companion or the panel receives no bytes and
+   * swallows every keystroke. `get`/`getById` are the PLACEMENT-shaped lookups
+   * that selection, tile drag and tile move read, and a companion must stay
+   * invisible to all of those. Do not "fix" the inconsistency.
+   */
+  detachedTerminals?: () => readonly DetachedTerminal[]
+}
+
+/**
+ * A worker-hosted terminal with no CRDT record. Placement fields are absent
+ * because there is no placement: the owning agent tab supplies the workspace,
+ * and nothing supplies a tile.
+ */
+export interface DetachedTerminal {
+  id: string
+  workerId: string
+  workspaceId: string
 }
 
 /**
@@ -472,6 +504,31 @@ export function createTabView(opts: CreateTabViewOpts) {
     return m
   })
 
+  /**
+   * The detached terminals, assembled and keyed by id.
+   *
+   * Built through the SAME `assemble` the placed rows use, with an empty tile
+   * and position, so a field added to `TerminalTab` cannot be served two
+   * different ways -- the `satisfies Complete<TerminalTab>` guard in the
+   * TERMINAL arm covers both kinds at once.
+   */
+  const detachedById = createMemo<Map<string, TerminalTab>>(() => {
+    const m = new Map<string, TerminalTab>()
+    for (const ref of opts.detachedTerminals?.() ?? []) {
+      const tab = assemble({
+        workspaceId: ref.workspaceId,
+        tabType: TabType.TERMINAL,
+        tabId: ref.id,
+        workerId: ref.workerId,
+        tileId: '',
+        position: '',
+      })
+      if (tab.type === TabType.TERMINAL)
+        m.set(ref.id, tab)
+    }
+    return m
+  })
+
   const byTile = createMemo<Map<string, Tab[]>>(() => {
     const m = new Map<string, Tab[]>()
     for (const list of byWorkspace().values()) {
@@ -512,9 +569,15 @@ export function createTabView(opts: CreateTabViewOpts) {
       const t = byKey().get(tabKey({ type: TabType.AGENT, id }))
       return t && t.type === TabType.AGENT ? t : undefined
     },
+    /**
+     * A terminal by id, placed or detached. See `detachedTerminals` for why
+     * this lookup resolves a companion and the placement-shaped ones do not.
+     */
     getTerminalTab(id: string): TerminalTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.TERMINAL, id }))
-      return t && t.type === TabType.TERMINAL ? t : undefined
+      if (t && t.type === TabType.TERMINAL)
+        return t
+      return detachedById().get(id)
     },
     getFileTab(id: string): FileTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.FILE, id }))

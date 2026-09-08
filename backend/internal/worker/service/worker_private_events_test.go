@@ -71,6 +71,66 @@ func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
 	}
 }
 
+// The quake panel command is the one arm of this bus that is a COMMAND rather
+// than a fact: it carries no state, and the worker stores none.
+func TestPrivateEventsBus_PublishesTheQuakePanelCommand(t *testing.T) {
+	t.Parallel()
+
+	bus := service.NewPrivateEventsBus()
+	defer bus.Stop()
+
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE)
+
+	select {
+	case evt := <-got:
+		assert.Equal(t, "agent-1", evt.GetQuakePanelCommand().GetAgentId())
+		assert.Equal(t, leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE, evt.GetQuakePanelCommand().GetAction())
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscriber did not receive the published command")
+	}
+}
+
+// It must stay OUT of the bootstrap replay. A replayed command would reopen a
+// panel on every reconnect, overwriting client-local state the user set -- the
+// replay is for the state the worker HOLDS, and this is not that.
+func TestPrivateEventsBus_DoesNotReplayTheQuakePanelCommand(t *testing.T) {
+	t.Parallel()
+
+	bus := service.NewPrivateEventsBus()
+	defer bus.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Published BEFORE anyone subscribes, which is the state a reconnecting
+	// client arrives in.
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 4)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
+
+	// The bus keeps no history at all, so nothing replays. Asserting the
+	// ABSENCE is what pins it: a snapshot function that started recording
+	// commands would fail here rather than in production, months later, as a
+	// panel that reopens itself on every reconnect.
+	select {
+	case evt := <-got:
+		t.Fatalf("a transient command must not be replayed, got %v", evt.GetEvent())
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestPrivateEventsBus_DoesNotLeakAcrossOwners(t *testing.T) {
 	t.Parallel()
 

@@ -21,6 +21,7 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
     serializeAddon: { serialize: vi.fn(() => '') } as any,
     suppressInput: false,
     webglAllowed: false,
+    transparentBackground: false,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
     setConfirmLink: vi.fn(),

@@ -995,6 +995,47 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// write must survive a client disconnect, otherwise a subsequent
 	// GetTabPayload from a sibling client would see a stale "not found".
 	// Dispatcher ctx is intentionally not threaded.
+	// SetQuakePanel relays a show/hide request for one agent tab's quake panel
+	// to every frontend the caller has open on this worker.
+	//
+	// It writes nothing. The panel's open state is client-local -- the same line
+	// the active tab in a tile is on -- so this is a remote keystroke, not a
+	// setting. The Control CLI is the only caller; a frontend toggles its own
+	// panel in-process.
+	//
+	// terminal:write, because what the request ultimately does is put a shell in
+	// front of the user. The agent is validated first so a command naming a
+	// closed or unknown agent fails here rather than reaching every frontend as
+	// an event none of them can act on.
+	registerOwnerGated(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
+			agentID := r.GetAgentId()
+			if agentID == "" {
+				sendInvalidArgument(sender, "agent_id is required")
+				return
+			}
+			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
+				sendInvalidArgument(sender, "action must be open, close or toggle")
+				return
+			}
+			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				sendNotFoundError(sender, "agent not found")
+				return
+			}
+			// A subagent transcript owns no process and no companion terminal,
+			// so it can own no panel either. Refused rather than ignored, so the
+			// CLI reports it instead of appearing to succeed.
+			if dbAgent.ParentAgentID.Valid {
+				sendFailedPrecondition(sender, "a subagent tab has no quake panel")
+				return
+			}
+			if svc.PrivateEvents != nil {
+				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, agentID, r.GetAction())
+			}
+			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
+		})
+
 	registerOwnerGated(d, "RegisterTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RegisterTabPayloadRequest, sender channel.ResponseWriter) {
 			if r.GetTabId() == "" || r.GetPayload() == nil {
@@ -3625,6 +3666,14 @@ func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEven
 			return false
 		}
 		return callerReadsTabType(caller, tabType)
+	}
+	if quake := evt.GetQuakePanelCommand(); quake != nil {
+		// Both kinds, because the event spans both: it names an AGENT tab, and
+		// acting on it shows that tab's TERMINAL. A caller that may read only
+		// one of the two would either learn an agent id it cannot see or be
+		// asked to reveal a shell it cannot read.
+		return callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_AGENT) &&
+			callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 	}
 	return true
 }

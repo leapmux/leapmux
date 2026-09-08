@@ -48,6 +48,11 @@ class SupersededAwareError extends Error {
 
 export type DiffViewPreference = 'unified' | 'split'
 export type TurnEndSoundPreference = 'none' | 'ding-dong'
+/**
+ * Which edge of the centre area the quake panel slides in from. The value picks
+ * the slide axis and its sign together, so there is no separate direction.
+ */
+export type QuakeOrientation = 'top' | 'bottom' | 'left' | 'right'
 
 /**
  * The three Desktop enums, DERIVED from the generated tokens rather than
@@ -94,6 +99,14 @@ export interface PreferencesState {
   turnEndSound: () => TurnEndSoundPreference
   /** Resolved turn end sound volume (0-100). */
   turnEndSoundVolume: () => number
+  /** Resolved edge the quake terminal slides in from. */
+  quakeOrientation: () => QuakeOrientation
+  /** Resolved share of the centre area the quake terminal covers (20-100). */
+  quakeSizePercent: () => number
+  /** Resolved quake slide duration in milliseconds (0-2000). */
+  quakeAnimationMs: () => number
+  /** Resolved quake background opacity (0.05-1). */
+  quakeBackgroundOpacity: () => number
   /** Resolved debug logging preference. */
   debugLogging: () => boolean
   /** Resolved "show a tray / menu-bar icon" preference (desktop app only). */
@@ -169,6 +182,10 @@ export interface PreferencesState {
     diffView: DualPreference<DiffViewPreference>
     turnEndSound: DualPreference<TurnEndSoundPreference>
     turnEndSoundVolume: DualPreference<number>
+    quakeOrientation: DualPreference<QuakeOrientation>
+    quakeSizePercent: DualPreference<number>
+    quakeAnimationMs: DualPreference<number>
+    quakeBackgroundOpacity: DualPreference<number>
     debugLogging: DualPreference<boolean>
     trayEnabled: DualPreference<boolean>
     trayOnClose: DualPreference<TrayOnClosePreference>
@@ -942,6 +959,36 @@ export const PreferencesProvider: ParentComponent = (props) => {
       // `Number.isFinite` is required, because `typeof NaN === 'number'`.
       parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100 ? raw : undefined),
     }),
+    // Every quake parse is at least as strict as the hub validator
+    // (usersettings/keys.go), and for a reason beyond symmetry: each value is
+    // interpolated into a CSS custom property, so a stored string like
+    // `65%; position: fixed` must not reach the style attribute. `oneOf` and the
+    // numeric range checks are what stop it. `Number.isFinite` is required
+    // because `typeof NaN === 'number'`.
+    quakeOrientation: createDualSetting<QuakeOrientation>({
+      protoKey: 'quake_orientation',
+      browserPrefKey: 'quakeOrientation',
+      fallback: 'top',
+      parse: oneOf('top', 'bottom', 'left', 'right'),
+    }),
+    quakeSizePercent: createDualSetting<number>({
+      protoKey: 'quake_size_percent',
+      browserPrefKey: 'quakeSizePercent',
+      fallback: 65,
+      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 20 && raw <= 100 ? raw : undefined),
+    }),
+    quakeAnimationMs: createDualSetting<number>({
+      protoKey: 'quake_animation_ms',
+      browserPrefKey: 'quakeAnimationMs',
+      fallback: 300,
+      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 2000 ? raw : undefined),
+    }),
+    quakeBackgroundOpacity: createDualSetting<number>({
+      protoKey: 'quake_background_opacity',
+      browserPrefKey: 'quakeBackgroundOpacity',
+      fallback: 0.9,
+      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0.05 && raw <= 1 ? raw : undefined),
+    }),
     debugLogging: createDualSetting<boolean>({
       protoKey: 'debug_logging',
       browserPrefKey: 'debugLogging',
@@ -1180,6 +1227,10 @@ export const PreferencesProvider: ParentComponent = (props) => {
       diffView: dualSettings.diffView.resolved,
       turnEndSound: dualSettings.turnEndSound.resolved,
       turnEndSoundVolume: dualSettings.turnEndSoundVolume.resolved,
+      quakeOrientation: dualSettings.quakeOrientation.resolved,
+      quakeSizePercent: dualSettings.quakeSizePercent.resolved,
+      quakeAnimationMs: dualSettings.quakeAnimationMs.resolved,
+      quakeBackgroundOpacity: dualSettings.quakeBackgroundOpacity.resolved,
       debugLogging: dualSettings.debugLogging.resolved,
       trayEnabled: dualSettings.trayEnabled.resolved,
       trayOnClose: dualSettings.trayOnClose.resolved,

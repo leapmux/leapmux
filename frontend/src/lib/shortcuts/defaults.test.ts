@@ -20,6 +20,39 @@ describe('default keybindings', () => {
     expect(escapeBindings).toEqual([])
   })
 
+  // The chord the composer's own Cmd+Enter also answers. The `when` is the whole
+  // contract: `activateBindings` calls preventDefault ONLY for a binding that
+  // resolves, so every conjunct here is what lets a keypress fall through to
+  // ProseMirror while the composer holds something to send. Pinned whole rather
+  // than by key, because dropping one conjunct would silently swallow messages.
+  it('gives the queue steer $mod+Enter only while the composer is empty', () => {
+    expect(WORKSPACE_KEYBINDINGS.filter(b => b.key === '$mod+Enter')).toEqual([
+      {
+        key: '$mod+Enter',
+        command: 'chat.steerQueuedInput',
+        when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen',
+      },
+    ])
+  })
+
+  it('gives $mod+j to the quake terminal inside agent tabs', () => {
+    expect(WORKSPACE_KEYBINDINGS.filter(b => b.key === '$mod+j')).toEqual([
+      {
+        key: '$mod+j',
+        command: 'terminal.toggleQuake',
+        when: 'activeTabType == "agent" && !dialogOpen',
+      },
+    ])
+  })
+
+  // Enter and Cmd+Enter in the composer already send, so the command keeps no
+  // default chord. It stays REGISTERED, so Preferences still lists it and a user
+  // can bind it; its handler resolves the panel through the focused element, so
+  // an override with no `when` still does nothing outside a chat panel.
+  it('leaves send message unbound, because the composer owns its own chords', () => {
+    expect(ALL_DEFAULTS.filter(b => b.command === 'chat.sendMessage')).toEqual([])
+  })
+
   it('binds no key twice in the same when-context', () => {
     const seen = new Map<string, string>()
     for (const b of ALL_DEFAULTS) {

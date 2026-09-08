@@ -6,8 +6,9 @@ import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import type { AgentTab, Tab } from '~/stores/tab.types'
+import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -16,7 +17,7 @@ import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
 import { parseTabKey } from '~/stores/tab.helpers'
@@ -38,7 +39,7 @@ import {
   markTerminalExited,
 } from './terminalEvents'
 import { useWatchEventsStreams } from './useWatchEventsStreams'
-import { buildWatchPlans } from './watchPlan'
+import { buildWatchPlans, isTabOnScreen } from './watchPlan'
 
 function warnChatHistoryLoadFailed(err: unknown): void {
   showWarnToastUnlessDisconnected('Failed to load chat history', err)
@@ -198,6 +199,7 @@ export interface WorkspaceConnectionParams {
   agentActivityStore: AgentActivityStore
   settingsLoading: ReturnType<typeof createLoadingSignal>
   repoGitStore: ReturnType<typeof createRepoGitStore>
+  quakeStore: QuakeTerminalStore
   getActiveWorkspaceId: () => string | null
   /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
   onAgentSettled?: (agentId: string, numToolUses?: number) => void
@@ -296,6 +298,25 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       // the plan on it would re-send a watch update per output chunk.
       terminalId => metadata.get(terminalId)?.needsResync === true,
       (agentId: string) => view.getAgentTab(agentId),
+      // A companion terminal is FULL only while its panel shows AND its owner
+      // tab is on screen -- the same "is the user looking at it?" question a
+      // placed terminal answers through its tile. NOTIFY otherwise, which keeps
+      // the cursor moving so a reopen catches up from the worker's ring instead
+      // of paying for a cold snapshot, and keeps the bell and the title flowing
+      // for a shell the user cannot see, which is when those matter most.
+      params.quakeStore.liveEntries().map((entry) => {
+        const onScreen = entry.open
+          && isTabOnScreen(
+            view.getAgentTab(entry.ownerId),
+            params.getActiveWorkspaceId(),
+            tileId => selection.activeKeyForTile(tileId),
+          )
+        return {
+          terminalId: entry.terminalId,
+          workerId: entry.workerId,
+          mode: onScreen ? WatchMode.FULL : WatchMode.NOTIFY,
+        }
+      }),
     ),
   )
 
@@ -455,6 +476,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
+  /**
+   * Whether a companion terminal is on screen: its panel shows AND its owner
+   * agent tab is the one the user is looking at.
+   */
+  const isQuakeTerminalOnScreen = (terminalId: string): boolean => {
+    const ownerId = params.quakeStore.ownerOf(terminalId)
+    if (ownerId === undefined)
+      return false
+    const entry = params.quakeStore.entryFor(ownerId)
+    if (!entry?.open)
+      return false
+    return isTabOnScreen(
+      view.getAgentTab(ownerId),
+      params.getActiveWorkspaceId(),
+      tileId => selection.activeKeyForTile(tileId),
+    )
+  }
+
   const handleTerminalEvent = (termEvent: TerminalEvent, streamWorkerId: string) => {
     const terminalId = termEvent.terminalId
 
@@ -493,7 +532,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'closed':
-        markTerminalExited(metadata, terminalId)
+        // A companion terminal is TERMINATED by its shell exiting, not left in
+        // an EXITED state waiting for Enter: there is no pane to leave behind,
+        // and the next open spawns a fresh shell. Routed before
+        // markTerminalExited so the panel never paints the exit notice.
+        if (params.quakeStore.isQuakeTerminal(terminalId))
+          params.quakeStore.handleShellExit(terminalId)
+        else
+          markTerminalExited(metadata, terminalId)
         // The PTY is gone; any buffered pre-mount bytes will never be written.
         dropPendingTerminalData(pendingTerminalData, terminalId)
         break
@@ -508,7 +554,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         )
         break
       case 'bell':
-        handleTerminalBell(terminalId, { metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, view })
+        handleTerminalBell(terminalId, {
+          metadata,
+          selection,
+          getActiveWorkspaceId: params.getActiveWorkspaceId,
+          view,
+          isDetachedOnScreen: isQuakeTerminalOnScreen,
+        })
         break
       case 'notification':
         handleTerminalNotification(terminalId, termEvent.event.value, {
@@ -516,6 +568,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           selection,
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           view,
+          isDetachedOnScreen: isQuakeTerminalOnScreen,
         })
         break
       case 'titleChanged':
@@ -588,7 +641,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return
     untrack(() => {
       for (const workerId of offline) {
-        const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(params.view.all(), workerId)
+        // `view.all()` holds PLACED tabs only, so a companion terminal is not
+        // in it and would stay reading READY for the whole outage. Its tab
+        // object comes from the detached family instead.
+        const detachedTabs = params.quakeStore.detachedTerminals()
+          .map(d => params.view.getTerminalTab(d.id))
+          .filter((t): t is TerminalTab => t !== undefined)
+        const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(
+          [...params.view.all(), ...detachedTabs],
+          workerId,
+        )
         batch(() => {
           if (affectedTerminals.size > 0) {
             params.metadata.patchMatching(

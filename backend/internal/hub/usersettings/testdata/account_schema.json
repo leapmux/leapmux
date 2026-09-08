@@ -118,6 +118,72 @@
     ]
   },
   {
+    "key": "quake_orientation",
+    "category": "terminal",
+    "title": "Quake terminal position",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "top"
+          },
+          {
+            "value": "bottom"
+          },
+          {
+            "value": "left"
+          },
+          {
+            "value": "right"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "quake_size_percent",
+    "category": "terminal",
+    "title": "Quake terminal size",
+    "fields": [
+      {
+        "name": "",
+        "kind": "integer",
+        "min": 20,
+        "max": 100,
+        "unit": "percent"
+      }
+    ]
+  },
+  {
+    "key": "quake_animation_ms",
+    "category": "terminal",
+    "title": "Quake terminal animation",
+    "fields": [
+      {
+        "name": "",
+        "kind": "integer",
+        "min": 0,
+        "max": 2000,
+        "unit": "ms"
+      }
+    ]
+  },
+  {
+    "key": "quake_background_opacity",
+    "category": "terminal",
+    "title": "Quake terminal background opacity",
+    "fields": [
+      {
+        "name": "",
+        "kind": "float",
+        "minF": 0.05,
+        "maxF": 1
+      }
+    ]
+  },
+  {
     "key": "tray_enabled",
     "category": "desktop",
     "title": "Tray icon",
