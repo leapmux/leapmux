@@ -961,8 +961,13 @@ func TestListChain_ReportsPermissionDeniedWithoutTheOsMessage(t *testing.T) {
 // reachable with paths that do not exist.
 func TestChainDirs(t *testing.T) {
 	t.Parallel()
-	// A prefix no test can collide with, and that no filesystem holds.
-	const base = "/leapmux-chaindirs-absent"
+	// A prefix no test can collide with, and that no filesystem holds. The
+	// spelling must be NATIVE: chainDirs derives every parent with
+	// filepath.Dir, which cleans, so a POSIX literal compares unequal to its
+	// own cleaned parent on Windows. The handler sanitizes both the path and
+	// from_root before chainDirs sees them, so a mixed spelling never reaches
+	// it outside this test.
+	base := filepath.FromSlash("/leapmux-chaindirs-absent")
 
 	t.Run("no root lists the path alone", func(t *testing.T) {
 		t.Parallel()
