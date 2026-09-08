@@ -397,7 +397,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 // The lock covers only provider resolution. A blocked provider write must not
 // block a restart or explicit steering. A restart can still start between the
 // resolution and the write, but the interval is only the provider call setup.
-// After a successful delivery, a text-route provider observes goal commands.
+// A text-route provider observes the goal command after a successful delivery.
 //
 // Never call this from a caller that already holds the lifecycle lock
 // (LockAgent, RestartAgent): the lock is not reentrant, so it deadlocks. Send
@@ -420,11 +420,21 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		p.PublishTurnActive()
 	}
 	if err == nil {
-		if commander, ok := p.(GoalTextCommander); ok {
-			commander.ObserveGoalCommand(content)
-		}
+		observeGoalCommand(p, GoalDeliverySend, content)
 	}
 	return err
+}
+
+// observeGoalCommand tells a text-route provider what LeapMux just delivered.
+//
+// Every route that reaches a provider process calls this, because the provider
+// alone knows which channel its command parser reads. A route that skipped it
+// would leave the CLI holding a goal the card never shows, for the life of the
+// session: no text-route provider reports a command-driven goal change back.
+func observeGoalCommand(p Agent, delivery GoalCommandDelivery, content string) {
+	if commander, ok := p.(GoalTextCommander); ok {
+		commander.ObserveGoalCommand(delivery, content)
+	}
 }
 
 func (m *Manager) CompactContext(agentID string) error {
@@ -439,9 +449,13 @@ func (m *Manager) CompactContext(agentID string) error {
 	return compactor.CompactContext()
 }
 
+// SteerInput interrupts the active turn with more text.
+//
+// A queued goal command is an ordinary user message, so the user can steer it.
+// The provider decides whether its steer channel reaches its command parser --
+// Claude Code steers by writing the same user message, and Goose steers through
+// a separate ACP method that LeapMux did not verify.
 func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
-	// Do not observe a goal command here. Goose and Copilot steering semantics
-	// are not verified, so claiming that steering changed a goal is unsafe.
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
 		return err
@@ -450,7 +464,11 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	if !ok {
 		return ErrSteeringUnsupported
 	}
-	return steerer.SteerInput(content, attachments)
+	err = steerer.SteerInput(content, attachments)
+	if err == nil {
+		observeGoalCommand(p, GoalDeliverySteer, content)
+	}
+	return err
 }
 
 // SupportsSteering reports whether the running agent can steer its active turn.
@@ -625,32 +643,15 @@ func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string
 	if err != nil {
 		return "", err
 	}
-	capable, ok := p.(GoalCapable)
+	writer, ok := p.(GoalWriter)
 	if !ok {
 		return "", ErrGoalControlUnsupported
 	}
-	if !slices.Contains(capable.SupportedGoalActions(), action) {
+	if !slices.Contains(writer.SupportedGoalActions(), action) {
 		return "", ErrGoalControlUnsupported
 	}
-	if commander, ok := p.(GoalTextCommander); ok {
-		return commander.GoalCommandText(action, objective)
-	}
-	controller, ok := p.(GoalController)
-	if !ok {
-		return "", ErrGoalControlUnsupported
-	}
-	switch action {
-	case GoalActionSet:
-		return "", controller.SetGoal(objective)
-	case GoalActionClear:
-		return "", controller.ClearGoal()
-	case GoalActionPause:
-		return "", controller.PauseGoal()
-	case GoalActionResume:
-		return "", controller.ResumeGoal()
-	default:
-		return "", ErrGoalControlUnsupported
-	}
+	outcome, err := writer.PerformGoalAction(action, objective)
+	return outcome.QueuedInput, err
 }
 
 // StopAgent stops the agent with the given agent ID.

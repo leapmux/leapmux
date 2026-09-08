@@ -72,11 +72,10 @@ export interface GoalProgress {
  * of the four draws a card that is wrong rather than incomplete.
  *
  * One parameter object rather than four props, because these cross several
- * component interfaces under different naming schemes. Threading four fields
- * through separate props meant
- * every hop restated all four and could drop one silently: an omitted optional
- * prop is not a type error, and the symptom is a control that never arms. One
- * field cannot be partly forwarded.
+ * component interfaces under different naming schemes. Four separate props
+ * made every hop restate all four, and a hop could drop one silently. An
+ * omitted optional prop is not a type error, and the symptom is a control that
+ * never arms. One field cannot be partly forwarded.
  */
 export interface GoalSurface {
   /** The stored goal, or undefined when the agent has none. */
@@ -97,6 +96,25 @@ export interface GoalSurface {
   actions: GoalAction[]
   /** Perform one action. Absent makes the surface read-only. */
   onAction?: (action: GoalAction) => void
+}
+
+/**
+ * Whether this agent has a goal surface at all: a goal to show, or the ability
+ * to be given one.
+ *
+ * The provider flag decides whether the FEATURE exists; this decides whether
+ * the card can hold anything. Both are needed. A surface built from the flag
+ * alone draws a card reading "No session goal." with no button, for the whole
+ * life of a Reasonix tab, of a stopped agent, of a Claude Code build older than
+ * 2.1.139, and of a Goose or Copilot process that has not yet advertised its
+ * command -- because `goalActionState` reports `set` as hidden for an empty
+ * action list, and the button is the only route to a first goal.
+ *
+ * The rule lives HERE, beside the surface it describes, because both surface
+ * builders ask it and a rule spelled twice can be spelled two ways.
+ */
+export function hasGoalSurface(surface: GoalSurface): boolean {
+  return surface.current !== undefined || surface.actions.includes('set')
 }
 
 /** Converts the wire goal to the store shape. */

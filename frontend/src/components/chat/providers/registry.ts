@@ -475,12 +475,6 @@ export interface Provider {
    * every provider but Codex.
    */
   supportsSubagentSend?: boolean
-
-  /**
-   * True when the provider has a session-goal feature. This static value only
-   * controls the section surface. Live goal actions still come from the worker.
-   */
-  supportsSessionGoal?: boolean
 }
 
 const registry = new Map<number, Provider>()

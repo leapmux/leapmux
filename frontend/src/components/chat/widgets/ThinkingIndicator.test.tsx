@@ -408,6 +408,49 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
+  /**
+   * The chip opens the Goals & To-dos popover, so EITHER half can open it.
+   *
+   * A to-do count alone left an agent with a goal and no list with no goal
+   * surface in the transcript at all -- the goal's own chip is gone, and the
+   * sidebar section can be collapsed or on another tab.
+   */
+  it('shows the chip for a goal with no to-do list, naming its status', () => {
+    const { getByTestId } = renderChips({
+      todos: [],
+      goal: { objective: 'every test passes', status: 'blocked' },
+    })
+    // The goal's status word, not "0/0 to-dos" -- a count would describe the
+    // half of the popover that has nothing in it.
+    expect(getByTestId('thinking-todos-chip').textContent).toBe('Goal: needs attention')
+  })
+
+  // A list present: the count wins, because that is what the chip counts and
+  // the goal is one card inside the popover it opens.
+  it('shows the to-do count when a list exists beside a goal', () => {
+    const todos: TodoItem[] = [
+      { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
+      { rowKey: 'b', content: 'b', status: 'pending', activeForm: '' },
+    ]
+    const { getByTestId } = renderChips({
+      todos,
+      goal: { objective: 'every test passes', status: 'active' },
+    })
+    expect(getByTestId('thinking-todos-chip').textContent).toBe('1/2 to-dos')
+  })
+
+  /**
+   * The stored GOAL decides, not the surface.
+   *
+   * A surface also carries "this agent can be given a goal", which is true of
+   * every goal-capable agent alive -- so testing the surface would put a chip
+   * on all of them with nothing to report.
+   */
+  it('hides the chip for a goal-capable agent that has no goal yet', () => {
+    const { queryByTestId } = renderChips({ todos: [], goalSupported: true, goalActions: ['set'] })
+    expect(queryByTestId('thinking-todos-chip')).toBeNull()
+  })
+
   it('renders the goal card above the list in the to-dos popover', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
     const { getByTestId, getByText } = renderChips({
@@ -423,6 +466,24 @@ describe('thinking indicator chips', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
     const { queryByTestId } = renderChips({ todos })
     expect(queryByTestId('goal-card')).toBeNull()
+  })
+
+  /**
+   * The FIRST-RUN state, and the one every other case here skips by supplying a
+   * stored goal: a goal-capable agent that has no goal yet. The host passes a
+   * surface with no `current`, and the popover has to offer the route to a
+   * first goal rather than an empty box.
+   */
+  it('offers the empty card and its Set route for a goal-capable agent with no goal', () => {
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const { getByTestId } = renderChips({
+      todos,
+      goalSupported: true,
+      goalActions: ['set'],
+      onGoalAction: vi.fn(),
+    })
+    expect(getByTestId('goal-card-empty')).not.toBeNull()
+    expect(getByTestId('goal-action-set')).not.toBeNull()
   })
 
   // The row reads "<verb>... <background tasks> · <to-dos> · <tokens>": the

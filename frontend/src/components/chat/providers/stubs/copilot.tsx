@@ -7,7 +7,6 @@ const COPILOT_MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-mode
 
 registerACPProvider({
   provider: AgentProvider.GITHUB_COPILOT,
-  supportsSessionGoal: true,
   defaultPermissionMode: COPILOT_MODE_AGENT,
   planValue: COPILOT_MODE_PLAN,
   permissionPresets: {

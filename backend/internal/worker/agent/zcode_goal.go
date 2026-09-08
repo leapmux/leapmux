@@ -19,8 +19,7 @@ import (
 // snapshot (session/create, session/resume, session/read) and the same key
 // inside a `state.updated` patch.
 const (
-	zcodeMethodSessionGoal   = "session/goal"
-	zcodeErrRevisionMismatch = -32009
+	zcodeMethodSessionGoal = "session/goal"
 
 	// The actions LeapMux issues. `show` and the bare-objective form exist too;
 	// `show` has no use here because the state arrives unsolicited, and the bare
@@ -124,7 +123,7 @@ func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 	})
 }
 
-// --- GoalController ---
+// --- GoalWriter ---
 
 // SupportedGoalActions: ZCode is the second provider with a complete
 // acknowledged API. session/goal takes pause, resume, clear and replace.
@@ -132,31 +131,52 @@ func (a *zcodeAgent) SupportedGoalActions() []GoalAction {
 	return []GoalAction{GoalActionSet, GoalActionClear, GoalActionPause, GoalActionResume}
 }
 
-// SetGoal uses `replace` rather than the bare-objective form.
+var _ GoalWriter = (*zcodeAgent)(nil)
+
+// PerformGoalAction runs one action through session/goal. Every action is a
+// side-band request that completes here, so the caller has nothing left to do.
 //
-// ZCode's own help says "Setting a new objective overwrites an existing goal;
-// replace is an explicit alias", so the two do the same thing -- and the alias
-// says which of them was meant, which matters because the bare form is
-// positional and an objective that begins with the word `pause` would otherwise
-// parse as a different action.
-func (a *zcodeAgent) SetGoal(objective string) error {
-	return a.sendZCodeGoal(zcodeGoalActionReplace, objective)
+// A SET uses `replace` rather than the bare-objective form. ZCode's own help
+// says "Setting a new objective overwrites an existing goal; replace is an
+// explicit alias", so the two do the same thing -- and the alias says which of
+// them was meant, which matters because the bare form is positional and an
+// objective that begins with the word `pause` would otherwise parse as a
+// different action.
+func (a *zcodeAgent) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	switch action {
+	case GoalActionSet:
+		return GoalOutcome{}, a.sendZCodeGoal(zcodeGoalActionReplace, objective)
+	case GoalActionClear:
+		return GoalOutcome{}, a.sendZCodeGoal(zcodeGoalActionClear, "")
+	case GoalActionPause:
+		return GoalOutcome{}, a.sendZCodeGoal(zcodeGoalActionPause, "")
+	case GoalActionResume:
+		return GoalOutcome{}, a.sendZCodeGoal(zcodeGoalActionResume, "")
+	default:
+		return GoalOutcome{}, ErrGoalControlUnsupported
+	}
 }
-
-func (a *zcodeAgent) ClearGoal() error { return a.sendZCodeGoal(zcodeGoalActionClear, "") }
-func (a *zcodeAgent) PauseGoal() error { return a.sendZCodeGoal(zcodeGoalActionPause, "") }
-
-func (a *zcodeAgent) ResumeGoal() error { return a.sendZCodeGoal(zcodeGoalActionResume, "") }
 
 // sendZCodeGoal issues one session/goal request.
 //
-// expectedRevision is ZCode's optimistic-concurrency check: the app-server
+// expectedRevision is ZCode's optimistic-concurrency check. The app-server
 // refuses the write when the session moved on since the revision the caller
-// saw. The value comes from the last runtime state LeapMux observed. Sending
-// the CURRENT known revision -- rather than omitting the field -- is what makes
-// a goal write racing an in-flight turn fail loudly instead of overwriting a
-// change the agent just made. A goal action can start or stop a turn and advance
-// the revision again. One conflict retries with the server's actual revision.
+// saw. The value comes from the last runtime state LeapMux observed. LeapMux
+// sends the CURRENT known revision rather than omitting the field. A goal write
+// that races an in-flight turn then fails loudly, instead of overwriting a
+// change the agent just made.
+//
+// A goal action can itself start or stop a turn and advance the revision again,
+// so one conflict retries. The retry sends the revision the CONFLICT REPLY
+// carried, not the cached one: noteZCodeStateRevision only raises the cache, so
+// a server revision below it would leave the retry byte-identical to the
+// request that just failed.
+//
+// The retry accepts the app-server's revision whatever advanced it, so for that
+// one round it does not refuse a change somebody else made in the window. The
+// wire says only WHAT the revision is, never WHO moved it, so no narrower rule
+// is available from the reply. One retry caps the exposure; a second conflict
+// is reported.
 func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	a.mu.Lock()
 	sessionID := a.sessionID
@@ -165,31 +185,31 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	if sessionID == "" {
 		return fmt.Errorf("zcode %s: agent has no ZCode session", zcodeMethodSessionGoal)
 	}
-	inputID := generateRequestID()
-	var raw json.RawMessage
-	for attempt := 0; attempt < 2; attempt++ {
+	// A fresh inputId per REQUEST, never per call: two requests that carry one
+	// id and different parameters are the worst input for any server-side
+	// duplicate check.
+	send := func(revision int64) (json.RawMessage, error) {
 		params := map[string]any{
 			"sessionId":        sessionID,
 			"expectedRevision": revision,
-			"inputId":          inputID,
+			"inputId":          generateRequestID(),
 			"action":           action,
 		}
 		if objective != "" {
 			params["objective"] = objective
 		}
-		var err error
-		raw, err = a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout())
-		if err == nil {
-			break
-		}
+		return a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout())
+	}
+	raw, err := send(revision)
+	if err != nil {
 		actual, ok := zcodeActualRevision(err)
-		if attempt != 0 || !ok {
+		if !ok {
 			return err
 		}
 		a.noteZCodeStateRevision(actual)
-		a.mu.Lock()
-		revision = a.stateRevision
-		a.mu.Unlock()
+		if raw, err = send(actual); err != nil {
+			return err
+		}
 	}
 	// The reply's GOAL is deliberately not applied: the app-server also emits a
 	// state.updated patch for the same change, and reading both would give the
@@ -206,9 +226,12 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	return nil
 }
 
+// zcodeActualRevision reports the revision that a revision-mismatch reply
+// carried. It answers false for every other error, and for a reply that states
+// no revision.
 func zcodeActualRevision(err error) (int64, bool) {
 	var wireErr *zcodeError
-	if !errors.As(err, &wireErr) || wireErr.Code != zcodeErrRevisionMismatch {
+	if !errors.As(err, &wireErr) || wireErr.Code != ZCodeErrRevisionMismatch {
 		return 0, false
 	}
 	var data struct {

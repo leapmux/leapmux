@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -47,9 +46,18 @@ const claudeSystemSubtypeInit = "init"
 // changes the goal exactly the way a user does, by sending the text.
 const claudeGoalCommand = "/goal"
 
-// claudeGoalClearArguments lists each complete argument that clears a goal.
-// LeapMux emits the first value and observes the complete list.
-var claudeGoalClearArguments = []string{"clear", "stop", "off", "reset", "none", "cancel"}
+// claudeGoalRoute is Claude Code's user-message goal vocabulary. Claude accepts
+// six words that clear; LeapMux emits `clear`, the one its own help text names.
+//
+// steerCarriesCommand is true because ClaudeCodeAgent.SteerInput writes the
+// same user message on the same stdin channel, with priority "next". A steered
+// `/goal ...` therefore reaches the same command parser.
+var claudeGoalRoute = goalTextRoute{
+	provider:            "claude",
+	command:             claudeGoalCommand,
+	clearArgs:           []string{"clear", "stop", "off", "reset", "none", "cancel"},
+	steerCarriesCommand: true,
+}
 
 var _ GoalTextCommander = (*ClaudeCodeAgent)(nil)
 
@@ -138,8 +146,9 @@ func (a *ClaudeCodeAgent) observeSlashCommands(content []byte) {
 	// The list carries bare names, without the leading slash.
 	has := slices.Contains(frame.SlashCommands, strings.TrimPrefix(claudeGoalCommand, "/"))
 	a.mu.Lock()
-	changed := a.hasGoalCommand != has
+	changed := a.hasGoalCommand != has || !a.goalCommandKnown
 	a.hasGoalCommand = has
+	a.goalCommandKnown = true
 	a.mu.Unlock()
 	if !changed {
 		return
@@ -174,45 +183,29 @@ func (a *ClaudeCodeAgent) SupportedGoalActions() []GoalAction {
 	return []GoalAction{GoalActionSet, GoalActionClear}
 }
 
-// GoalCommandText builds the user message that changes Claude's goal.
+// PerformGoalAction builds the user message that changes Claude's goal. The
+// queue delivers it; nothing changes until it does.
 //
-// Claude does not emit an active_goal frame when it accepts the command. The
-// observer fills that gap after delivery. A later active_goal frame can still
-// report evaluation or removal.
-func (a *ClaudeCodeAgent) GoalCommandText(action GoalAction, objective string) (string, error) {
-	switch action {
-	case GoalActionSet:
-		objective = foldGoalObjective(objective)
-		if objective == "" {
-			return "", fmt.Errorf("claude %s: an objective is required", claudeGoalCommand)
-		}
-		return claudeGoalCommand + " " + objective, nil
-	case GoalActionClear:
-		return claudeGoalCommand + " " + claudeGoalClearArguments[0], nil
-	default:
-		return "", ErrGoalControlUnsupported
-	}
+// Claude emits no active_goal frame when it accepts the command, so the
+// observer writes the row. A later frame reports the per-turn evaluation and
+// the removal, and handleActiveGoal reads it.
+func (a *ClaudeCodeAgent) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	return claudeGoalRoute.perform(action, objective)
 }
 
-// ObserveGoalCommand updates local state after the queue delivers a command.
-func (a *ClaudeCodeAgent) ObserveGoalCommand(text string) {
+// ObserveGoalCommand updates local state after a delivery.
+//
+// It refuses only when the CLI positively reported a command list WITHOUT
+// /goal. Before the init frame arrives the capability is UNKNOWN, and a refusal
+// there would drop the write for a cold-started process that the queue reached
+// before its first stdout frame. observeSlashCommands states the same rule for
+// the same reason.
+func (a *ClaudeCodeAgent) ObserveGoalCommand(delivery GoalCommandDelivery, text string) {
 	a.mu.Lock()
-	has := a.hasGoalCommand
+	known, has := a.goalCommandKnown, a.hasGoalCommand
 	a.mu.Unlock()
-	if !has {
+	if known && !has {
 		return
 	}
-	intent, objective := parseGoalCommandText(text, claudeGoalCommand, claudeGoalClearArguments)
-	switch intent {
-	case goalTextSet:
-		a.sink.UpsertGoal(GoalUpdate{
-			Objective: objective,
-			Status:    GoalStatusActive,
-			CreatedAt: time.Now().UTC(),
-		})
-	case goalTextClear:
-		a.sink.ClearGoal(false)
-	case goalTextNotCommand, goalTextBareQuery:
-		// These inputs do not change the goal.
-	}
+	claudeGoalRoute.observe(a.sink, delivery, text)
 }

@@ -2,7 +2,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentWorkPanel } from './AgentWorkPanel'
+import { BackgroundTaskPanel } from './BackgroundTaskPanel'
 
 function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
@@ -15,14 +15,14 @@ function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): Background
 }
 
 function renderPanel(tasks: BackgroundTaskItem[] = []) {
-  return render(() => <AgentWorkPanel variant="sidebar" tasks={tasks} />)
+  return render(() => <BackgroundTaskPanel variant="sidebar" tasks={tasks} />)
 }
 
 function tab(container: HTMLElement, key: string): Element {
   return container.querySelector(`[data-testid="bg-task-filter-${key}"]`)!
 }
 
-describe('agentWorkPanel', () => {
+describe('backgroundTaskPanel', () => {
   it('keeps the registry test ids', () => {
     const { container } = renderPanel()
     expect(container.querySelector('[data-testid="bg-task-list"]')).not.toBeNull()
@@ -54,7 +54,7 @@ describe('agentWorkPanel', () => {
       row({ rowKey: 'a' }),
     ])
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" tasks={tasks()} />
+      <BackgroundTaskPanel variant="sidebar" tasks={tasks()} />
     ))
     const before = tab(container, 'all')
 

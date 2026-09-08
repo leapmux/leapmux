@@ -4,6 +4,7 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { classSelector } from '~/test-support/composedClass'
 import { GoalsAndTodos } from './GoalsAndTodos'
+import * as styles from './GoalsAndTodos.css'
 import * as todoStyles from './TodoList.css'
 
 const todo: TodoItem = {
@@ -77,6 +78,38 @@ describe('goalsAndTodos', () => {
       <GoalsAndTodos variant="sidebar" goal={surface()} todos={[]} />
     ))
     expect(container.querySelector(classSelector(todoStyles.todoList))).toBeNull()
+  })
+
+  /**
+   * The rule is `goal !== undefined && todos.length > 0`, and it deliberately
+   * does NOT consult `goal.current`: the empty card is still a card, and a list
+   * still follows it. Narrowing the condition to the stored goal would leave
+   * the empty card flush against the first to-do row, and every other case here
+   * would still pass, because each of them supplies a populated goal.
+   */
+  it('draws the separator under an empty card too', () => {
+    const { getByTestId } = render(() => (
+      <GoalsAndTodos variant="sidebar" goal={surface({ current: undefined })} todos={[todo]} />
+    ))
+    expect(getByTestId('goal-card-empty')).not.toBeNull()
+    expect(getByTestId('goal-card-separator')).not.toBeNull()
+  })
+
+  /**
+   * `variant` has exactly one effect, and it is the cap that keeps a prose
+   * objective from stretching the DropdownMenu card to the viewport width.
+   * Without this case, inverting the comparison left every test green.
+   */
+  it('caps the popover variant, and only that variant', () => {
+    const popover = render(() => (
+      <GoalsAndTodos variant="popover" goal={surface()} todos={[todo]} />
+    ))
+    expect(popover.getByTestId('goals-and-todos').matches(classSelector(styles.popoverRoot))).toBe(true)
+
+    const sidebar = render(() => (
+      <GoalsAndTodos variant="sidebar" goal={surface()} todos={[todo]} />
+    ))
+    expect(sidebar.getByTestId('goals-and-todos').matches(classSelector(styles.popoverRoot))).toBe(false)
   })
 
   it('mounts one live region only when this host owns announcements', () => {

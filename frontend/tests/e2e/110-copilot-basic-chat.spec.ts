@@ -10,13 +10,14 @@ copilotTest.describe('Copilot Basic Chat', () => {
     page,
   }) => {
     void authenticatedCopilotWorkspace
-    await exerciseTextGoalQueue(
-      page,
-      'Wait for the Copilot goal route unlock.',
-      '/goal off',
-      'Autopilot',
-      'Agent',
-    )
+    await exerciseTextGoalQueue(page, {
+      objective: 'Wait for the Copilot goal route unlock.',
+      clearCommand: '/goal off',
+      // Copilot's goal IS its autopilot mode, so the composer's mode chip is a
+      // second, independent report of the same change.
+      modeAfterSet: 'Autopilot',
+      modeAfterClear: 'Agent',
+    })
   })
 
   copilotTest('send message and receive response', async ({ authenticatedCopilotWorkspace, page }) => {

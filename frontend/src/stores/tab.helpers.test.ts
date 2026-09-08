@@ -1036,22 +1036,35 @@ describe('isSteerableAgentTab', () => {
 })
 
 describe('agentTabSupportsSessionGoal', () => {
-  const supported = 701 as AgentProvider
-  const unsupported = 702 as AgentProvider
+  // Real providers, because the answer is a generated CONTRACT table and not a
+  // plugin field a test can register. Claude Code has a session goal; Pi does
+  // not. See contracts/providers.json.
+  const supported = AgentProvider.CLAUDE_CODE
+  const unsupported = AgentProvider.PI
 
-  it('reads true from the provider plugin', () => {
-    registerProvider(supported, { classify: () => ({} as never), supportsSessionGoal: true })
+  it('reads true for a provider the contract lists', () => {
     expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: supported })).toBe(true)
   })
 
-  it('reads false when the plugin omits support', () => {
-    registerProvider(unsupported, { classify: () => ({} as never) })
+  it('reads false for a provider the contract excludes', () => {
     expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: unsupported })).toBe(false)
   })
 
   it('reads false for provider skew and non-agent tabs', () => {
     expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: 999 as AgentProvider })).toBe(false)
     expect(agentTabSupportsSessionGoal({ type: TabType.FILE, agentProvider: supported })).toBe(false)
+  })
+
+  /**
+   * A subagent tab is seeded with its parent's provider, and carries NOTHING
+   * when that parent tab is not resolvable -- so an absent provider is a real,
+   * reachable state and not a type-system formality. It must read as "unknown",
+   * which the two goal surfaces answer by resolving the ROOT tab instead.
+   */
+  it('reads false for a tab with no provider at all', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT })).toBe(false)
+    expect(agentTabSupportsSessionGoal(undefined)).toBe(false)
+    expect(agentTabSupportsSessionGoal(null)).toBe(false)
   })
 })
 

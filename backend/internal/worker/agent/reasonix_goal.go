@@ -28,7 +28,7 @@ var _ GoalCapable = (*ReasonixAgent)(nil)
 // unmapped and exposes no option groups), so a clear would drop the user into
 // an arbitrary mode. A goal panel that reports honestly and offers no control
 // is better than one whose Clear button silently changes something else, so
-// ReasonixAgent implements no GoalController at all and the browser disables
+// ReasonixAgent implements no GoalWriter at all and the browser disables
 // every action.
 const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
 

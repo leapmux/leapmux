@@ -61,6 +61,7 @@ import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createTabTaskScope, shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
+import { hasGoalSurface } from '~/stores/chatGoal'
 import { shouldShowGoalsAndTodosSection } from '~/stores/chatTodos'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -1161,13 +1162,6 @@ export const AppShell: Component = () => {
     return chatStore.todos.get(rootId)
   })
 
-  const activeGoalSupported = createMemo(() => agentTabSupportsSessionGoal(activeTab()))
-  // The provider helper already requires an agent tab. A second tab-type guard
-  // would restate the same condition and could drift from it.
-  const showGoalsAndTodos = createMemo(() =>
-    shouldShowGoalsAndTodosSection(activeTodos(), activeGoalSupported()),
-  )
-
   // Background-task registry for the active agent. Keyed by the ROOT owner
   // agent id, so a child (subagent) tab resolves up to its root and the
   // section stays populated while a child is active. Visible whenever the
@@ -1189,6 +1183,14 @@ export const AppShell: Component = () => {
   const activeBackgroundTasksFailed = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
   )
+  // Read from the ROOT tab, never from the active one. A subagent tab is seeded
+  // with its parent's provider and carries NOTHING when that parent tab is not
+  // resolvable, and an absent provider reads as "no goal feature" -- which hid
+  // a goal the worker was reporting, with nothing on screen to say why.
+  const activeGoalSupported = createMemo(() => {
+    const rootId = activeRootAgentId()
+    return rootId !== null && agentTabSupportsSessionGoal(tabView.getAgentTab(rootId))
+  })
   // ONE goal-action rule, for both surfaces.
   //
   // SET is the one action that needs input, so it opens the editor and the RPC
@@ -1212,11 +1214,15 @@ export const AppShell: Component = () => {
   //
   // One surface replaces three memos and a loose handler. A consumer cannot
   // combine one agent's goal with another agent's actions or progress.
+  //
+  // Absent for a provider with no goal feature, and absent when the surface
+  // could hold nothing: a card with no goal and no way to set one is dead
+  // weight that the section then sizes space for. See hasGoalSurface.
   const activeGoalSurface = createMemo<GoalSurface | undefined>(() => {
     if (!activeGoalSupported())
       return undefined
     const rootId = activeRootAgentId()
-    return {
+    const surface: GoalSurface = {
       current: rootId ? chatStore.goal.get(rootId) : undefined,
       progress: rootId ? chatStore.goal.progress(rootId) : {},
       actions: rootId ? chatStore.goal.supportedActions(rootId) : [],
@@ -1230,7 +1236,13 @@ export const AppShell: Component = () => {
           runGoalAction(agentId, action)
       },
     }
+    return hasGoalSurface(surface) ? surface : undefined
   })
+  // The provider helper already requires an agent tab. A second tab-type guard
+  // would restate the same condition and could drift from it.
+  const showGoalsAndTodos = createMemo(() =>
+    shouldShowGoalsAndTodosSection(activeTodos(), activeGoalSurface()),
+  )
   const showBackgroundTasks = createMemo(() =>
     shouldShowBackgroundTasksSection(
       activeBackgroundTasks(),

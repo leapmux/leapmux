@@ -3,11 +3,12 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
-import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
+import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { pluralize } from '~/lib/plural'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
+import { goalStatusLabel } from '~/stores/chatGoal'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -279,8 +280,15 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const todoCount = createMemo(() => todoProgress(props.todos ?? []))
   // "2/5 to-dos". The noun agrees with the TOTAL, not the done count: a list of
   // one reads "0/1 to-do" whether or not it is finished.
+  //
+  // With no list at all the chip is open on the GOAL's account, so it names the
+  // goal's status instead. A count would read "0/0 to-dos", which describes the
+  // half of the popover that has nothing in it.
   const todoCountLabel = createMemo(() => {
     const { done, total } = todoCount()
+    const goal = props.goal?.current
+    if (total === 0 && goal !== undefined)
+      return `Goal: ${goalStatusLabel(goal.status).toLowerCase()}`
     return `${done}/${pluralize(total, 'to-do')}`
   })
 
@@ -294,7 +302,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // its successor to decide whether to draw a leading `·`.
   const showTokens = () => countTokens() !== undefined
   const showBgTasks = () => activeBgTaskCount() > 0
-  const showTodos = () => todoCount().total > 0
+  // The chip opens the Goals & To-dos popover, so EITHER half can open it. A
+  // to-do count alone left an agent with a goal and no list with no goal
+  // surface in the transcript at all, and the goal's own chip is gone.
+  //
+  // The stored GOAL decides, not the surface: the surface also carries "this
+  // agent can be given a goal", which is true of every goal-capable agent
+  // alive. Testing it would show a chip on all of them with nothing to report.
+  const showTodos = () => todoCount().total > 0 || props.goal?.current !== undefined
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -495,7 +510,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </button>
           )}
         >
-          <AgentWorkPanel
+          <BackgroundTaskPanel
             variant="popover"
             tasks={props.backgroundTasks ?? []}
             // The wrapper exists only when the host supplies a handler. The
@@ -511,8 +526,8 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       ),
     },
     {
-      // To-dos: shown when there is at least one non-deleted todo. Renders
-      // done/total; clicking opens the existing TodoList.
+      // Goals & to-dos: shown for a non-deleted to-do, or for a goal surface.
+      // Renders done/total, or the goal's status when there is no list.
       show: showTodos,
       render: () => (
         <DropdownMenu
@@ -533,14 +548,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             variant="popover"
             todos={props.todos ?? []}
             // SET opens a modal dialog on top of this popover, and `as="card"`
-            // keeps a popover open on an inside click on purpose. Without the
-            // dismiss, the panel stays open under the dialog and remains after
-            // the dialog closes. The other three actions update this panel, so
-            // they must keep it open.
+            // keeps a popover open on an inside click on purpose. If this
+            // handler does not dismiss the popover, the panel stays open under
+            // the dialog, and it remains there after the dialog closes. The
+            // other three actions update this panel, so they must keep it open.
             //
-            // The handler is wrapped only when the host supplies one. The card
-            // renders its buttons because the handler is present. The rest of
-            // the surface passes through unchanged.
+            // This component wraps the handler only when the host supplies one.
+            // The card renders its buttons because the handler is present. The
+            // rest of the surface passes through unchanged.
             goal={props.goal
               ? {
                   ...props.goal,

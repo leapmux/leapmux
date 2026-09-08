@@ -154,7 +154,7 @@ func codexGoalTime(unixSeconds int64) time.Time {
 	return time.Unix(unixSeconds, 0).UTC()
 }
 
-// --- GoalController ---
+// --- GoalWriter ---
 
 // SupportedGoalActions: Codex is the one provider with a complete, acknowledged
 // side-band API for all four. thread/goal/set carries both the objective and
@@ -163,19 +163,26 @@ func (a *CodexAgent) SupportedGoalActions() []GoalAction {
 	return []GoalAction{GoalActionSet, GoalActionClear, GoalActionPause, GoalActionResume}
 }
 
-func (a *CodexAgent) SetGoal(objective string) error {
-	return a.sendGoalSet(map[string]interface{}{"objective": objective})
+var _ GoalWriter = (*CodexAgent)(nil)
+
+// PerformGoalAction runs one action through thread/goal/*. Every action is a
+// side-band request that completes here, so the caller has nothing left to do.
+func (a *CodexAgent) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	switch action {
+	case GoalActionSet:
+		return GoalOutcome{}, a.sendGoalSet(map[string]interface{}{"objective": objective})
+	case GoalActionPause:
+		return GoalOutcome{}, a.sendGoalSet(map[string]interface{}{"status": codexGoalStatusPaused})
+	case GoalActionResume:
+		return GoalOutcome{}, a.sendGoalSet(map[string]interface{}{"status": codexGoalStatusActive})
+	case GoalActionClear:
+		return GoalOutcome{}, a.clearGoal()
+	default:
+		return GoalOutcome{}, ErrGoalControlUnsupported
+	}
 }
 
-func (a *CodexAgent) PauseGoal() error {
-	return a.sendGoalSet(map[string]interface{}{"status": codexGoalStatusPaused})
-}
-
-func (a *CodexAgent) ResumeGoal() error {
-	return a.sendGoalSet(map[string]interface{}{"status": codexGoalStatusActive})
-}
-
-func (a *CodexAgent) ClearGoal() error {
+func (a *CodexAgent) clearGoal() error {
 	threadID := a.currentThreadID()
 	if threadID == "" {
 		return fmt.Errorf("codex %s: no active thread", codexMethodGoalClear)

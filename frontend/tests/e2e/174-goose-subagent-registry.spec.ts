@@ -26,7 +26,10 @@ gooseTest.describe('Goose subagent registry', () => {
     page,
   }) => {
     void authenticatedGooseWorkspace
-    await exerciseTextGoalQueue(page, 'Wait for the Goose goal route unlock.', '/goal off')
+    await exerciseTextGoalQueue(page, {
+      objective: 'Wait for the Goose goal route unlock.',
+      clearCommand: '/goal off',
+    })
   })
 
   gooseTest('delegate spawn creates a clickable row with a tool-request transcript', async ({

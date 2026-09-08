@@ -194,8 +194,10 @@ func TestCodexGoal_ControlRefusedWithoutAThread(t *testing.T) {
 	agent := newCodexAgentWithSink(&testSink{})
 	agent.threadID = ""
 
-	assert.Error(t, agent.SetGoal("anything"))
-	assert.Error(t, agent.ClearGoal())
-	assert.Error(t, agent.PauseGoal())
-	assert.Error(t, agent.ResumeGoal())
+	// The action list is spelled here, not taken from manager_goal_test.go's
+	// allGoalActions: that file is unix-only, and this one builds everywhere.
+	for _, action := range []GoalAction{GoalActionSet, GoalActionClear, GoalActionPause, GoalActionResume} {
+		_, err := agent.PerformGoalAction(action, "anything")
+		assert.Error(t, err, action)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,11 +78,37 @@ func TestClaudeGoal_SupportsOnlySetAndClear(t *testing.T) {
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["clear","goal","compact"]}`))
 
 	assert.ElementsMatch(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
+	// One write interface for every provider; the ROUTE is what differs. Claude
+	// also implements GoalTextCommander, which is how the Manager knows to
+	// report a delivery back to it -- a side-band provider has no use for that.
 	var provider any = agent
-	_, controller := provider.(GoalController)
+	_, writer := provider.(GoalWriter)
 	_, commander := provider.(GoalTextCommander)
-	assert.False(t, controller, "Claude has no side-band goal controller")
+	assert.True(t, writer, "Claude can be told to change its goal")
 	assert.True(t, commander, "Claude owns its text command syntax")
+
+	// A text route returns the command instead of performing it, so the queue
+	// is what makes it take effect. A side-band provider returns nothing here.
+	outcome, err := agent.PerformGoalAction(GoalActionSet, "ship it")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal ship it", outcome.QueuedInput)
+}
+
+// Codex and ZCode complete the action themselves, so the caller has nothing to
+// enqueue. An outcome that carried text here would send the objective to the
+// model as a prompt on top of the side-band write that already happened.
+func TestSideBandGoal_ReturnsNoQueuedInput(t *testing.T) {
+	t.Parallel()
+
+	zagent := newZCodeTestAgent(t, &testSink{})
+	outcome, _ := zagent.PerformGoalAction(GoalActionSet, "ship it")
+	assert.Empty(t, outcome.QueuedInput, "ZCode performs the action itself")
+
+	var codex any = &CodexAgent{}
+	_, writer := codex.(GoalWriter)
+	_, commander := codex.(GoalTextCommander)
+	assert.True(t, writer, "Codex can be told to change its goal")
+	assert.False(t, commander, "Codex has no user-message command to observe")
 }
 
 // /goal shipped in Claude Code 2.1.139. Against an older build the only effect
@@ -112,9 +139,15 @@ func TestTextGoalObservationRequiresTheAdvertisedCapability(t *testing.T) {
 		observe func(*testSink)
 	}{
 		{
+			// Claude answers from its init frame, so the ABSENT case is a frame
+			// that lists other commands. See the unknown case below, which is a
+			// different answer.
 			name: "claude",
 			observe: func(sink *testSink) {
-				newTestAgent(sink).ObserveGoalCommand("/goal ship it")
+				agent := newTestAgent(sink)
+				agent.HandleOutput([]byte(
+					`{"type":"system","subtype":"init","slash_commands":["clear","compact"]}`))
+				agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 			},
 		},
 		{
@@ -122,7 +155,7 @@ func TestTextGoalObservationRequiresTheAdvertisedCapability(t *testing.T) {
 			observe: func(sink *testSink) {
 				agent := &GooseCLIAgent{}
 				agent.sink = sink
-				agent.ObserveGoalCommand("/goal ship it")
+				agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 			},
 		},
 		{
@@ -130,7 +163,7 @@ func TestTextGoalObservationRequiresTheAdvertisedCapability(t *testing.T) {
 			observe: func(sink *testSink) {
 				agent := newCopilotCLIAgent("", false)
 				agent.sink = sink
-				agent.ObserveGoalCommand("/goal ship it")
+				agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 			},
 		},
 	} {
@@ -171,18 +204,18 @@ func TestGooseGoal_UsesTheAdvertisedGoalCommand(t *testing.T) {
 	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
 	assert.Equal(t, 1, sink.GoalCapabilityPublishes())
 
-	setCommand, err := agent.GoalCommandText(GoalActionSet, "  ship\n it ")
+	setOutcome, err := agent.PerformGoalAction(GoalActionSet, "  ship\n it ")
 	require.NoError(t, err)
-	assert.Equal(t, "/goal ship it", setCommand)
-	agent.ObserveGoalCommand(setCommand)
+	assert.Equal(t, "/goal ship it", setOutcome.QueuedInput)
+	agent.ObserveGoalCommand(GoalDeliverySend, setOutcome.QueuedInput)
 	goal, ok := sink.LastGoal()
 	require.True(t, ok)
 	assert.Equal(t, "ship it", goal.Objective)
 
-	for _, clearArg := range gooseGoalClearArguments {
-		agent.ObserveGoalCommand("/goal " + clearArg)
+	for _, clearArg := range gooseGoalRoute.clearArgs {
+		agent.ObserveGoalCommand(GoalDeliverySend, "/goal "+clearArg)
 	}
-	assert.Equal(t, len(gooseGoalClearArguments), sink.GoalClears())
+	assert.Equal(t, len(gooseGoalRoute.clearArgs), sink.GoalClears())
 }
 
 func TestCopilotGoal_UsesTheAdvertisedAutopilotCommand(t *testing.T) {
@@ -193,18 +226,18 @@ func TestCopilotGoal_UsesTheAdvertisedAutopilotCommand(t *testing.T) {
 
 	advertiseACPCommands(t, &agent.acpBase, "autopilot")
 	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
-	setCommand, err := agent.GoalCommandText(GoalActionSet, "ship it")
+	setOutcome, err := agent.PerformGoalAction(GoalActionSet, "ship it")
 	require.NoError(t, err)
-	assert.Equal(t, "/goal ship it", setCommand)
-	clearCommand, err := agent.GoalCommandText(GoalActionClear, "")
+	assert.Equal(t, "/goal ship it", setOutcome.QueuedInput)
+	clearOutcome, err := agent.PerformGoalAction(GoalActionClear, "")
 	require.NoError(t, err)
-	assert.Equal(t, "/goal off", clearCommand)
+	assert.Equal(t, "/goal off", clearOutcome.QueuedInput)
 
-	agent.ObserveGoalCommand(setCommand)
+	agent.ObserveGoalCommand(GoalDeliverySend, setOutcome.QueuedInput)
 	goal, ok := sink.LastGoal()
 	require.True(t, ok)
 	assert.Equal(t, "ship it", goal.Objective)
-	agent.ObserveGoalCommand(clearCommand)
+	agent.ObserveGoalCommand(GoalDeliverySend, clearOutcome.QueuedInput)
 	assert.Equal(t, 1, sink.GoalClears())
 }
 
@@ -418,13 +451,13 @@ func TestReasonixGoal_IgnoresAnotherSession(t *testing.T) {
 
 // Reasonix is READ-ONLY: setting means switching to its goal mode and hijacking
 // the next prompt, and clearing means switching back to a mode LeapMux never
-// tracked. It must therefore implement no GoalController at all, so the browser
+// tracked. It must therefore implement no GoalWriter at all, so the browser
 // disables every action.
-func TestReasonixGoal_ImplementsNoGoalController(t *testing.T) {
+func TestReasonixGoal_ImplementsNoGoalWriter(t *testing.T) {
 	t.Parallel()
 
 	var a any = &ReasonixAgent{}
-	_, ok := a.(GoalController)
+	_, ok := a.(GoalWriter)
 	assert.False(t, ok, "Reasonix cannot honestly perform a goal action")
 	_, ok = a.(GoalCapable)
 	assert.True(t, ok, "Reasonix reports that its action list is empty")
@@ -682,7 +715,7 @@ func TestZCodeGoal_RetriesARevisionConflictOnce(t *testing.T) {
 	agent.mu.Unlock()
 
 	result := make(chan error, 1)
-	go func() { result <- agent.SetGoal("ship it") }()
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
 	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
 	firstID := zcodeSentRequestID(t, first)
 	conflict, err := json.Marshal(map[string]any{
@@ -750,7 +783,7 @@ func TestClaudeGoal_ObserveSetWritesTheGoalItself(t *testing.T) {
 	sink := &testSink{}
 	agent := newTestAgent(sink)
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-	agent.ObserveGoalCommand("/goal make the tests pass")
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal make the tests pass")
 
 	got, ok := sink.LastGoal()
 	require.True(t, ok, "the observer is the only writer here")
@@ -764,10 +797,10 @@ func TestClaudeGoal_CommandTextFoldsTheObjective(t *testing.T) {
 	t.Parallel()
 
 	agent := newTestAgent(&testSink{})
-	command, err := agent.GoalCommandText(GoalActionSet, "  every  test\n\tpasses  ")
+	outcome, err := agent.PerformGoalAction(GoalActionSet, "  every  test\n\tpasses  ")
 
 	require.NoError(t, err)
-	assert.Equal(t, "/goal every test passes", command)
+	assert.Equal(t, "/goal every test passes", outcome.QueuedInput)
 }
 
 // A fresh identity on every set, so re-setting the SAME objective reads as a
@@ -778,11 +811,11 @@ func TestClaudeGoal_ARepeatedObservationMintsAFreshIdentity(t *testing.T) {
 	sink := &testSink{}
 	agent := newTestAgent(sink)
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-	agent.ObserveGoalCommand("/goal ship it")
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 	first, ok := sink.LastGoal()
 	require.True(t, ok)
 
-	agent.ObserveGoalCommand("/goal ship it")
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 	second, ok := sink.LastGoal()
 	require.True(t, ok)
 
@@ -794,11 +827,11 @@ func TestClaudeGoal_ARepeatedObservationMintsAFreshIdentity(t *testing.T) {
 func TestClaudeGoal_ObservesEveryClearArgument(t *testing.T) {
 	t.Parallel()
 
-	for _, clearArg := range claudeGoalClearArguments {
+	for _, clearArg := range claudeGoalRoute.clearArgs {
 		sink := &testSink{}
 		agent := newTestAgent(sink)
 		agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
-		agent.ObserveGoalCommand("/goal " + clearArg)
+		agent.ObserveGoalCommand(GoalDeliverySend, "/goal "+clearArg)
 		assert.Equal(t, 1, sink.GoalClears(), clearArg)
 	}
 }
@@ -810,8 +843,8 @@ func TestClaudeGoal_CommandTextWritesNothing(t *testing.T) {
 	sink := &testSink{}
 	agent := newTestAgent(sink)
 
-	_, setErr := agent.GoalCommandText(GoalActionSet, "ship it")
-	_, clearErr := agent.GoalCommandText(GoalActionClear, "")
+	_, setErr := agent.PerformGoalAction(GoalActionSet, "ship it")
+	_, clearErr := agent.PerformGoalAction(GoalActionClear, "")
 	require.NoError(t, setErr)
 	require.NoError(t, clearErr)
 	assert.Empty(t, sink.Goals())
@@ -824,7 +857,7 @@ func TestClaudeGoal_CommandTextRefusesAnEmptyObjective(t *testing.T) {
 
 	agent := newTestAgent(&testSink{})
 
-	_, err := agent.GoalCommandText(GoalActionSet, "   ")
+	_, err := agent.PerformGoalAction(GoalActionSet, "   ")
 	assert.Error(t, err)
 }
 
@@ -834,7 +867,252 @@ func TestGoal_ZCodeWritesNothingLocally(t *testing.T) {
 
 	zsink := &testSink{}
 	zagent := newZCodeTestAgent(t, zsink)
-	_ = zagent.SetGoal("ship it")
+	_, _ = zagent.PerformGoalAction(GoalActionSet, "ship it")
 	assert.Empty(t, zsink.Goals(), "ZCode answers a session/goal with a state patch")
 	assert.Zero(t, zsink.GoalClears())
+}
+
+// The capability is UNKNOWN before the init frame, and unknown is not absent.
+// The queue can cold-start a process and deliver a command before its first
+// stdout frame; a refusal there would drop the write for good, because no text
+// route reports a command-driven goal change back.
+func TestClaudeGoal_ObservesBeforeTheInitFrameArrives(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship the release")
+
+	goal, ok := sink.LastGoal()
+	require.True(t, ok, "an unknown capability must not drop the write")
+	assert.Equal(t, "ship the release", goal.Objective)
+}
+
+// Claude steers by writing the same user message, so a steered command reaches
+// the same parser and changes the goal. The card must say so.
+func TestClaudeGoal_ObservesASteeredCommand(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	agent.ObserveGoalCommand(GoalDeliverySteer, "/goal ship the release")
+
+	goal, ok := sink.LastGoal()
+	require.True(t, ok, "Claude's steer channel carries the command")
+	assert.Equal(t, "ship the release", goal.Objective)
+}
+
+// Goose steers through a separate ACP method whose command handling LeapMux did
+// not verify, so a steered command must claim nothing.
+func TestGooseGoal_IgnoresASteeredCommand(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := &GooseCLIAgent{}
+	agent.sink = sink
+	advertiseACPCommands(t, &agent.acpBase, "goal")
+
+	agent.ObserveGoalCommand(GoalDeliverySteer, "/goal ship it")
+
+	assert.Empty(t, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
+}
+
+// A one-word objective that equals a clear word would reach the provider as a
+// clear, so every text route refuses it before it is queued. Without the
+// refusal the RPC reports success and the card then shows no goal at all.
+func TestTextGoal_RefusesAnObjectiveThatClears(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		route goalTextRoute
+	}{
+		{name: "claude", route: claudeGoalRoute},
+		{name: "goose", route: gooseGoalRoute},
+		{name: "copilot", route: copilotGoalRoute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for _, clearArg := range test.route.clearArgs {
+				// Upper case too: parseGoalCommandText folds case, so the
+				// provider reads `OFF` as a clear exactly as it reads `off`.
+				for _, objective := range []string{clearArg, strings.ToUpper(clearArg), " " + clearArg + " "} {
+					_, err := test.route.commandText(GoalActionSet, objective)
+					assert.ErrorIs(t, err, ErrGoalObjectiveIsCommand, objective)
+				}
+			}
+			// A clear word that only STARTS the objective is a real objective.
+			command, err := test.route.commandText(GoalActionSet, test.route.clearArgs[0]+" the queue")
+			require.NoError(t, err)
+			assert.Equal(t, test.route.command+" "+test.route.clearArgs[0]+" the queue", command)
+		})
+	}
+}
+
+// The refusal must reach the RPC caller, not stay inside the route.
+func TestClaudeGoal_CommandTextRefusesAClearWordObjective(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+
+	_, err := agent.PerformGoalAction(GoalActionSet, "reset")
+
+	assert.ErrorIs(t, err, ErrGoalObjectiveIsCommand)
+	assert.Empty(t, sink.Goals())
+}
+
+// A conflict reply is the app-server's own answer about its own session, so it
+// is the one source entitled to move the cached revision DOWN. Routing it
+// through the monotonic note would resend the number that just failed.
+func TestZCodeGoal_RetriesWithARevisionBelowTheCachedOne(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+	agent.mu.Lock()
+	agent.stateRevision = 9
+	agent.mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	agent.HandleOutput(zcodeConflictLine(t, zcodeSentRequestID(t, first), 4))
+
+	require.Eventually(t, func() bool { return len(stdin.Requests(t)) == 2 },
+		time.Second, 5*time.Millisecond, "a lower server revision must still retry")
+	second := stdin.Requests(t)[1]
+	assert.EqualValues(t, 4, zcodeGoalExpectedRevision(t, second),
+		"the retry sends the revision the app-server reported, not the higher cached one")
+	agent.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second),
+		json.RawMessage(`{"runtime":{"stateRevision":5}}`)))
+	require.NoError(t, <-result)
+}
+
+// The retry is one-shot. A second conflict returns the wire error rather than
+// sending a third request, or a wedged app-server would take the goal write
+// around for ever.
+func TestZCodeGoal_StopsAfterOneRetry(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+	agent.mu.Lock()
+	agent.stateRevision = 3
+	agent.mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	agent.HandleOutput(zcodeConflictLine(t, zcodeSentRequestID(t, first), 4))
+	require.Eventually(t, func() bool { return len(stdin.Requests(t)) == 2 },
+		time.Second, 5*time.Millisecond, "the first conflict retries")
+	second := stdin.Requests(t)[1]
+	agent.HandleOutput(zcodeConflictLine(t, zcodeSentRequestID(t, second), 7))
+
+	err := <-result
+	require.Error(t, err, "a second conflict is reported, never retried again")
+	assert.Len(t, stdin.Requests(t), 2, "no third request")
+}
+
+// Two requests that carry one inputId and different parameters are the worst
+// input for any server-side duplicate check, so each attempt mints its own.
+func TestZCodeGoal_MintsAFreshInputIDForTheRetry(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+	agent.mu.Lock()
+	agent.stateRevision = 3
+	agent.mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	agent.HandleOutput(zcodeConflictLine(t, zcodeSentRequestID(t, first), 4))
+	require.Eventually(t, func() bool { return len(stdin.Requests(t)) == 2 },
+		time.Second, 5*time.Millisecond, "the revision conflict must cause one retry")
+	second := stdin.Requests(t)[1]
+
+	assert.NotEqual(t, zcodeGoalInputID(t, first), zcodeGoalInputID(t, second))
+	agent.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second),
+		json.RawMessage(`{"runtime":{"stateRevision":5}}`)))
+	require.NoError(t, <-result)
+}
+
+// A non-conflict error is reported at once. A retry there would send the same
+// refused write a second time for no reason.
+func TestZCodeGoal_DoesNotRetryANonConflictError(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+
+	result := make(chan error, 1)
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	refusal, err := json.Marshal(map[string]any{
+		"id":    zcodeSentRequestID(t, first),
+		"error": map[string]any{"code": ZCodeErrSessionNotActive, "message": "no session"},
+	})
+	require.NoError(t, err)
+	agent.HandleOutput(refusal)
+
+	require.Error(t, <-result)
+	assert.Len(t, stdin.Requests(t), 1, "only a revision mismatch retries")
+}
+
+// A conflict reply that states no actual revision cannot steer a retry, so the
+// error is reported rather than retried against the same stale number.
+func TestZCodeGoal_DoesNotRetryAConflictWithNoRevision(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+
+	result := make(chan error, 1)
+	go func() { _, err := agent.PerformGoalAction(GoalActionSet, "ship it"); result <- err }()
+	first := waitZCodeRequest(t, stdin, zcodeMethodSessionGoal)
+	refusal, err := json.Marshal(map[string]any{
+		"id": zcodeSentRequestID(t, first),
+		"error": map[string]any{
+			"code": ZCodeErrRevisionMismatch, "message": "Session state revision mismatch",
+		},
+	})
+	require.NoError(t, err)
+	agent.HandleOutput(refusal)
+
+	require.Error(t, <-result)
+	assert.Len(t, stdin.Requests(t), 1)
+}
+
+// zcodeConflictLine builds a session/goal revision-mismatch reply.
+func zcodeConflictLine(t *testing.T, id, actualRevision int64) []byte {
+	t.Helper()
+	line, err := json.Marshal(map[string]any{
+		"id": id,
+		"error": map[string]any{
+			"code":    ZCodeErrRevisionMismatch,
+			"message": "Session state revision mismatch",
+			"data":    map[string]any{"actualRevision": actualRevision},
+		},
+	})
+	require.NoError(t, err)
+	return line
+}
+
+func zcodeGoalExpectedRevision(t *testing.T, req zcodeSentRequest) int64 {
+	t.Helper()
+	var params struct {
+		ExpectedRevision int64 `json:"expectedRevision"`
+	}
+	require.NoError(t, json.Unmarshal(req.Params, &params))
+	return params.ExpectedRevision
+}
+
+func zcodeGoalInputID(t *testing.T, req zcodeSentRequest) string {
+	t.Helper()
+	var params struct {
+		InputID string `json:"inputId"`
+	}
+	require.NoError(t, json.Unmarshal(req.Params, &params))
+	require.NotEmpty(t, params.InputID)
+	return params.InputID
 }

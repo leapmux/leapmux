@@ -915,6 +915,15 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					sendFailedPrecondition(sender, "this agent cannot perform that session-goal action")
 					return
 				}
+				if errors.Is(err, agent.ErrGoalObjectiveIsCommand) {
+					// A text-route provider reads its own clear word as a
+					// command, so this objective would remove the goal it asks
+					// for. Say so, rather than reporting a success the card
+					// then contradicts.
+					sendInvalidArgument(sender,
+						"this objective is a word that clears the goal; write a longer objective")
+					return
+				}
 				slog.Warn("update agent goal failed", "agent_id", agentID, "action", r.GetAction(), "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
 				return

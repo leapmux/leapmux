@@ -12,7 +12,7 @@ import (
 )
 
 // goalStub implements the Agent provider surface (via stubProvider) plus
-// GoalController, so Manager.UpdateGoal can reach it.
+// GoalWriter, so Manager.UpdateGoal can reach it.
 //
 // `supported` is settable per test, because the whole point of the Manager's
 // check is that a provider's capability list and its implemented methods are
@@ -30,19 +30,29 @@ type goalStub struct {
 
 func (g *goalStub) SupportedGoalActions() []GoalAction { return g.supported }
 
-func (g *goalStub) SetGoal(objective string) error {
-	g.setCalls = append(g.setCalls, objective)
-	return g.err
+// A side-band writer: every action completes here, so the outcome is empty and
+// the Manager has nothing to hand back to the caller.
+func (g *goalStub) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	switch action {
+	case GoalActionSet:
+		g.setCalls = append(g.setCalls, objective)
+	case GoalActionClear:
+		g.clears++
+	case GoalActionPause:
+		g.pauses++
+	case GoalActionResume:
+		g.resumes++
+	default:
+		return GoalOutcome{}, ErrGoalControlUnsupported
+	}
+	return GoalOutcome{}, g.err
 }
-func (g *goalStub) ClearGoal() error  { g.clears++; return g.err }
-func (g *goalStub) PauseGoal() error  { g.pauses++; return g.err }
-func (g *goalStub) ResumeGoal() error { g.resumes++; return g.err }
 
 // Compile-time drift guards, the same pair manager_child_test.go keeps for
 // ChildSteerer.
 var (
-	_ GoalController = (*goalStub)(nil)
-	_ Agent          = (*goalStub)(nil)
+	_ GoalWriter = (*goalStub)(nil)
+	_ Agent      = (*goalStub)(nil)
 )
 
 func allGoalActions() []GoalAction {
@@ -59,7 +69,7 @@ func TestManagerGoal_UpdateGoalOnAnAgentThatIsNotRunning(t *testing.T) {
 }
 
 // A provider that reports a goal without being able to change one implements no
-// GoalController at all, and the Manager must refuse rather than panic on the
+// GoalWriter at all, and the Manager must refuse rather than panic on the
 // type assertion.
 func TestManagerGoal_UpdateGoalOnAProviderWithNoController(t *testing.T) {
 	t.Parallel()

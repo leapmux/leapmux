@@ -1,6 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import { createMemo } from 'solid-js'
 import { rebalancePair } from '~/lib/pairDrag'
+import { distributeSectionSizes } from './sectionSizes'
 import { useWindowPointerDrag } from './windowPointerDrag'
 
 // ---------------------------------------------------------------------------
@@ -154,16 +155,32 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     })
   }
 
-  /** Reset all expanded sections to equal sizes. */
+  /**
+   * Reset all expanded sections to their default sizes.
+   *
+   * The SAME rule the visibility effect applies, through the same helper. An
+   * equal split here restored a layout that no other path produces, so a
+   * double-click and the next visibility change disagreed about what "default"
+   * means.
+   */
   const handleResetSplit = () => {
     const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
     if (expandedIds.length < 2)
       return
-    const equalSize = 1 / expandedIds.length
+    const declared = new Map<string, number>()
+    const defaults = defaultSizes?.()
+    if (defaults) {
+      for (const eid of expandedIds) {
+        const size = defaults.get(eid)
+        if (size !== undefined)
+          declared.set(eid, size)
+      }
+    }
+    const shares = distributeSectionSizes(expandedIds, declared)
     setSectionSizes((prev) => {
       const next = { ...prev }
       for (const eid of expandedIds)
-        next[eid] = equalSize
+        next[eid] = shares.get(eid) ?? 1 / expandedIds.length
       return next
     })
     notifyStateChange()

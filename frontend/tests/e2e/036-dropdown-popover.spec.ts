@@ -550,3 +550,51 @@ test.describe('menu item appearance', () => {
     await expect.poll(backgroundColor).toBe(accent['--accent'])
   })
 })
+
+/**
+ * A `popover=auto` nested inside another `popover=auto`.
+ *
+ * The browser has to treat the inner popover as a DESCENDANT of the outer one.
+ * A browser that did not would light-dismiss the outer popover the instant the
+ * inner one opened, and every control the inner popover holds would be
+ * unreachable from that host. Only a real browser answers that, so it is
+ * answered here.
+ *
+ * The `[+]` menu and its Agent-info card are the DETERMINISTIC pair: both are
+ * always present for any agent, and neither depends on model output. The
+ * session goal renders the same nesting inside the to-dos popover, and
+ * `180-codex-session-goal.spec.ts` covers that host -- but its chip appears
+ * only once the model emits a to-do list, so a run that produced prose instead
+ * used to leave the nesting untested everywhere.
+ */
+test.describe('nested popovers', () => {
+  test('an inner card survives opening inside an outer menu', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await openAgentViaUI(page)
+
+    const plusMenu = await openPlusMenu(page)
+    await expect(plusMenu).toBeVisible()
+
+    await page.getByTestId('composer-agent-info').click()
+
+    // Both, in this order. The inner card opened AND the outer menu is still
+    // there: the regression this guards dismisses the outer one, which leaves
+    // the inner card mounted for an instant and then takes both off screen.
+    const infoCard = page.getByTestId('composer-agent-info-popover')
+    await expect(infoCard).toBeVisible()
+    await expect(plusMenu).toBeVisible()
+
+    // A click INSIDE the inner card keeps both open, which is what `as="card"`
+    // promises and what a text selection inside it depends on.
+    await infoCard.click({ position: { x: 4, y: 4 } })
+    await expect(infoCard).toBeVisible()
+    await expect(plusMenu).toBeVisible()
+
+    // And a dismiss still reaches BOTH, so the nesting does not strand the
+    // outer menu open behind the inner one.
+    await page.keyboard.press('Escape')
+    await expect(infoCard).toBeHidden()
+    await page.keyboard.press('Escape')
+    await expect(plusMenu).toBeHidden()
+  })
+})

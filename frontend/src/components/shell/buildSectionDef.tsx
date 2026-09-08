@@ -21,7 +21,7 @@ import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
-import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
+import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { IconButton } from '~/components/common/IconButton'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
@@ -43,12 +43,20 @@ import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
 
-/** Default right-sidebar weights before the user resizes a section. */
-export const RIGHT_SIDEBAR_DEFAULT_SIZES = {
-  [SectionType.FILES]: 0.6,
-  [SectionType.TODOS]: 0.15,
+/**
+ * The share of its sidebar each section takes before the user resizes it.
+ *
+ * One table for both sidebars, indexed by the section type, so a copy-paste
+ * cannot pair one section with another section's weight. A section type that is
+ * absent here splits what the declared ones leave -- see
+ * `./sectionSizes`.`distributeSectionSizes`, which owns that rule.
+ */
+export const SECTION_DEFAULT_SIZES: Partial<Record<SectionType, number>> = {
+  [SectionType.FILES]: 0.55,
+  [SectionType.TODOS]: 0.2,
   [SectionType.BACKGROUND_TASKS]: 0.25,
-} as const
+  [SectionType.WORKERS]: 0.15,
+}
 
 /**
  * All dependencies needed to build a `SidebarSectionDef` for any section type.
@@ -286,7 +294,7 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.FILES],
+      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <FilesSectionHeaderActions
@@ -345,7 +353,7 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showGoalsAndTodos,
       draggable: true,
-      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.TODOS],
+      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: () => {
         const { done, total } = todoProgress(ctx.activeTodos)
@@ -385,13 +393,13 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showBackgroundTasks,
       draggable: true,
-      defaultSize: RIGHT_SIDEBAR_DEFAULT_SIZES[SectionType.BACKGROUND_TASKS],
+      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: activeCount > 0
         ? () => <span class={csStyles.railBadgeText}>{activeCount}</span>
         : undefined,
       content: () => (
-        <AgentWorkPanel
+        <BackgroundTaskPanel
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
           loadFailed={ctx.activeBackgroundTasksFailed}
@@ -410,7 +418,7 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      defaultSize: 0.15,
+      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <IconButton

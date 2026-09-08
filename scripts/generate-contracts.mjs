@@ -864,6 +864,7 @@ export function emitGoProviders(p, agentEnumValues) {
   const entries = Object.entries(p.providers)
   const display = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: jsonString(m.displayName) })))
   const aliases = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: jsonString(m.cliAlias) })))
+  const sessionGoal = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: String(m.supportsSessionGoal) })))
   const reverse = goMapBlock([...providerAliasTable(p)]
     .sort(byFirstString)
     .map(([alias, name]) => ({ key: `${jsonString(alias)}:`, value: goEnum(name) })))
@@ -880,6 +881,15 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 // ProviderDisplayName is enum -> user-facing label.
 var ProviderDisplayName = map[leapmuxv1.AgentProvider]string{
 ${display}
+}
+
+// ProviderSupportsSessionGoal is enum -> whether the provider's CLI has a
+// session goal. It decides only whether the browser offers a goal card. The
+// LIVE action list the worker broadcasts still governs every control, and
+// TestProviderSessionGoalContractMatchesGoalWriters asserts this table against
+// the agents that implement GoalWriter.
+var ProviderSupportsSessionGoal = map[leapmuxv1.AgentProvider]bool{
+${sessionGoal}
 }
 
 // ProviderCLIAlias is enum -> the \`leapmux control\` identifier.
@@ -904,6 +914,9 @@ export function emitTsProviders(p, agentEnumValues) {
   const display = Object.entries(p.providers)
     .map(([name, m]) => `  [${AgentProviderKey(name)}]: ${jsonString(m.displayName)},`)
     .join('\n')
+  const sessionGoalTs = Object.entries(p.providers)
+    .map(([name, m]) => `  [${AgentProviderKey(name)}]: ${m.supportsSessionGoal},`)
+    .join('\n')
   // Proto order, matching the Go twin's AllProviders, so the pre-probe
   // fallback list the browser renders cannot drift from the CLI's list.
   const all = agentEnumValues
@@ -920,6 +933,17 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 /** enum -> user-facing label (the agentProviderLabel source). UNSPECIFIED is absent: callers fall back. */
 export const PROVIDER_DISPLAY_NAME: Readonly<Partial<Record<AgentProvider, string>>> = {
 ${display}
+}
+
+/**
+ * enum -> whether the provider's CLI has a session goal.
+ *
+ * It decides only whether the Goals & To-dos section offers a goal card. The
+ * LIVE action list the worker broadcasts still governs every control, so a
+ * provider listed here whose running process reports no action draws no button.
+ */
+export const PROVIDER_SUPPORTS_SESSION_GOAL: Readonly<Partial<Record<AgentProvider, boolean>>> = {
+${sessionGoalTs}
 }
 
 /** Every non-UNSPECIFIED provider in proto order (the Go twin is contracts.AllProviders). */

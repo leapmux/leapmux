@@ -22,7 +22,6 @@ function classifyGooseToolCallUpdate(parent: Record<string, unknown>): MessageCa
 
 registerACPProvider({
   provider: AgentProvider.GOOSE,
-  supportsSessionGoal: true,
   defaultPermissionMode: GOOSE_DEFAULT_MODE,
   permissionPresets: {
     smart: { sets: { permissionMode: GOOSE_MODE.SmartApprove } },

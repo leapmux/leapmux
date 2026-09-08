@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { Show } from 'solid-js'
-import { GoalCard } from '~/components/backgroundtasks/GoalCard'
+import { GoalCard } from '~/components/goal/GoalCard'
 import * as styles from './GoalsAndTodos.css'
 import { TodoList } from './TodoList'
 

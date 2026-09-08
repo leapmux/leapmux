@@ -159,17 +159,27 @@ codexTest.describe('Codex session goal', () => {
     // indicator remains visible.
     await sendMessage(page, 'Create and execute a multi-step plan to inspect this repository, list three checks, and report their purpose.')
 
+    // The chip is the only route to this popover, and it appears only once the
+    // model emits a plan. Nothing in the app can seed a to-do list, so the
+    // precondition is model-dependent and a run that produces prose instead
+    // skips. Only the PRECONDITION sits inside the catch: a chip that appears
+    // and then behaves incorrectly fails, and never skips.
+    //
+    // What a skipped run does not check: nothing else covers a `popover=auto`
+    // nested inside a `DropdownMenu as="card"`.
     const chip = page.locator('[data-testid="thinking-todos-chip"]:visible')
     try {
       await expect(chip).toBeVisible()
     }
     catch {
-      codexTest.skip(true, 'model did not produce a to-do list')
+      codexTest.skip(true, 'the model produced no to-do list, so the nested-popover case did not run')
       return
     }
     await chip.click()
     const popover = page.locator('[data-testid="todo-list-popover"]')
     await expect(popover).toBeVisible()
+    // The goal rides this popover now, so its presence is part of the contract.
+    await expect(goalCard(popover)).toBeVisible()
 
     // Rooted at the popover, through the same helpers the sidebar cases use:
     // the sidebar card is on screen too, so every one of these test ids matches

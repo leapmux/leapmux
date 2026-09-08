@@ -1,51 +1,47 @@
 package agent
 
-import (
-	"fmt"
-	"time"
-)
-
 // Copilot registers /goal as an alias of /autopilot. Setting an objective also
 // changes the ACP session mode to #autopilot. Clearing changes it to #agent.
 const copilotGoalCommand = "/goal"
 
-var copilotGoalClearArguments = []string{"off"}
+// copilotGoalAdvertisedCommand is the name Copilot lists in its ACP command
+// set. It differs from the command LeapMux emits: Copilot advertises
+// `autopilot` and accepts `/goal` as an undocumented alias, so the capability
+// check reads one token and the emitted text carries the other. Deriving the
+// emitted token from the advertised set would send `/autopilot <objective>`,
+// which queries the state instead of setting it.
+const copilotGoalAdvertisedCommand = "autopilot"
+
+// copilotGoalRoute is Copilot's user-message goal vocabulary.
+//
+// steerCarriesCommand is false, and CopilotCLIAgent implements no InputSteerer
+// at all, so Manager.SteerInput refuses a Copilot steer before any delivery.
+var copilotGoalRoute = goalTextRoute{
+	provider:  "copilot",
+	command:   copilotGoalCommand,
+	clearArgs: []string{"off"},
+}
 
 var _ GoalTextCommander = (*CopilotCLIAgent)(nil)
 
 func (a *CopilotCLIAgent) SupportedGoalActions() []GoalAction {
-	if !a.hasAvailableCommand("autopilot") {
+	if !a.hasGoalCommand() {
 		return nil
 	}
 	return []GoalAction{GoalActionSet, GoalActionClear}
 }
 
-func (a *CopilotCLIAgent) GoalCommandText(action GoalAction, objective string) (string, error) {
-	switch action {
-	case GoalActionSet:
-		objective = foldGoalObjective(objective)
-		if objective == "" {
-			return "", fmt.Errorf("copilot %s: an objective is required", copilotGoalCommand)
-		}
-		return copilotGoalCommand + " " + objective, nil
-	case GoalActionClear:
-		return copilotGoalCommand + " " + copilotGoalClearArguments[0], nil
-	default:
-		return "", ErrGoalControlUnsupported
-	}
+func (a *CopilotCLIAgent) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	return copilotGoalRoute.perform(action, objective)
 }
 
-func (a *CopilotCLIAgent) ObserveGoalCommand(text string) {
-	if !a.hasAvailableCommand("autopilot") {
+func (a *CopilotCLIAgent) ObserveGoalCommand(delivery GoalCommandDelivery, text string) {
+	if !a.hasGoalCommand() {
 		return
 	}
-	intent, objective := parseGoalCommandText(text, copilotGoalCommand, copilotGoalClearArguments)
-	switch intent {
-	case goalTextSet:
-		a.sink.UpsertGoal(GoalUpdate{Objective: objective, Status: GoalStatusActive, CreatedAt: time.Now().UTC()})
-	case goalTextClear:
-		a.sink.ClearGoal(false)
-	case goalTextNotCommand, goalTextBareQuery:
-		// These inputs do not change the goal.
-	}
+	copilotGoalRoute.observe(a.sink, delivery, text)
+}
+
+func (a *CopilotCLIAgent) hasGoalCommand() bool {
+	return a.hasAvailableCommand(copilotGoalAdvertisedCommand)
 }

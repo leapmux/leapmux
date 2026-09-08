@@ -889,3 +889,31 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, healthy.StartsTurn)
 }
+
+// A one-word objective that equals a clear word would reach the CLI as a clear.
+// The RPC refuses it, and queues nothing: a success here would close the dialog
+// and then show an empty card, with no error anywhere to explain it.
+func TestUpdateAgentGoalRefusesAnObjectiveThatClears(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	startGoalTextAgent(t, svc, "agent-1")
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+		AgentId:   "agent-1",
+		Action:    leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
+		Objective: "reset",
+	}, writer)
+
+	rejections := writer.rejections()
+	require.Len(t, rejections, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), rejections[0].code)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items, "a refused objective queues nothing")
+}

@@ -6,7 +6,7 @@ import { StatusDot } from '~/components/common/StatusDot'
 import { markdownToPlainText } from '~/lib/markdownPlainText'
 import { goalActionState, goalStatusLabel } from '~/stores/chatGoal'
 import { srOnly } from '~/styles/shared.css'
-import * as taskStyles from './BackgroundTaskList.css'
+import * as statusDotStyles from '~/styles/statusDot.css'
 import { GoalActionsMenu } from './GoalActionsMenu'
 import * as styles from './GoalCard.css'
 import { GoalObjective } from './GoalObjective'
@@ -29,18 +29,18 @@ function statusDotClass(goal: SessionGoal): string {
     // statusDotActive carries the pulse keyframe, which is what marks a goal
     // still being worked on.
     case 'active':
-      return taskStyles.statusDotActive
+      return statusDotStyles.statusDotActive
     case 'paused':
-      return taskStyles.statusDotPending
+      return statusDotStyles.statusDotPending
     case 'done':
-      return taskStyles.statusDotSuccess
+      return statusDotStyles.statusDotSuccess
     case 'blocked':
-      return taskStyles.statusDotDanger
+      return statusDotStyles.statusDotDanger
     // A dormant goal is WAITING, not failing: no live process pursues it, so
     // the muted dot says "nothing is happening here" without the alarm a
     // danger dot raises.
     case 'dormant':
-      return taskStyles.statusDotMuted
+      return statusDotStyles.statusDotMuted
   }
 }
 

@@ -108,8 +108,8 @@ test.describe('workspace archive', () => {
 
     await openContextMenu(workspaceItem)
 
-    // Files and Goals & To-dos are sections, but a workspace cannot live in them.
-    // no item of this menu may name them.
+    // Files and Goals & To-dos are sections, but a workspace cannot live in
+    // them. No item of this menu lists them.
     //
     // This does NOT exercise the Move-to submenu, and its old name claimed it
     // did. The submenu mounts its items only while it is open (see `SubMenu`),

@@ -248,7 +248,6 @@ function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsag
 }
 
 const zcodePlugin: Provider = {
-  supportsSessionGoal: true,
   spanRole: zcodeSpanRole,
   contextUsageFromMessage: zcodeContextUsageFromMessage,
 

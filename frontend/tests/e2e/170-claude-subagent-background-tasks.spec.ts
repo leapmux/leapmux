@@ -33,7 +33,10 @@ test.describe('Claude subagent background tasks', () => {
     // Claude starts lazily. Its startup frame advertises /goal after this turn.
     await sendMessage(page, 'Reply with the single word: ready')
     await waitForAgentIdle(page)
-    await exerciseTextGoalQueue(page, 'Wait for the Claude goal route unlock.', '/goal clear')
+    await exerciseTextGoalQueue(page, {
+      objective: 'Wait for the Claude goal route unlock.',
+      clearCommand: '/goal clear',
+    })
   })
 
   test('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({

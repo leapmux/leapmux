@@ -13,7 +13,6 @@ const settingsConfig: ACPSettingsPanelConfig = {
 
 registerACPProvider({
   provider: AgentProvider.REASONIX,
-  supportsSessionGoal: true,
   settingsConfig,
   attachments: { text: true, image: false, pdf: false, binary: false },
 })

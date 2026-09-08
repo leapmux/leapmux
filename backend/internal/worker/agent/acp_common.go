@@ -119,6 +119,15 @@ type acpBase struct {
 	sink OutputSink
 	// availableCommands is the last command set that the ACP process
 	// advertised. Goal-capable providers read their command token from it.
+	//
+	// PROCESS-scoped, not session-scoped, which is why ClearContext leaves it
+	// alone while it clears every other per-session field. Goose and Copilot
+	// advertise once, inside the FIRST session/prompt, and never in a
+	// session/new reply -- so clearing it on a context clear would disarm a
+	// working control until the user's next message, and a stale update from a
+	// replaced session can only restate what the same binary already offers.
+	// Claude's hasGoalCommand is the same kind of answer for the same reason:
+	// it describes the BUILD, not the session.
 	availableCommands  map[string]struct{}
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler

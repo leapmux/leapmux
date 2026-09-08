@@ -1,7 +1,8 @@
 import { style } from '@vanilla-extract/css'
+import { popoverPanelClamp } from '~/styles/popover.css'
 
 /**
- * The work panel's shell: the tab bar, and the scrolling region it swaps.
+ * The panel's shell: the tab bar, and the scrolling region it swaps.
  *
  * The row styles live beside the component that renders them, in
  * `./BackgroundTaskList.css.ts`; this file holds only what the panel itself
@@ -28,20 +29,13 @@ export const sidebarRoot = style({
 /**
  * Popover variant (the ThinkingIndicator's bg-tasks popover).
  *
- * The DropdownMenu card sizes to its content, so capping the list is what caps
- * the card. Both axes need a cap, for different reasons: a long registry
- * overflows the card vertically, and a row holds each of its two lines on one
- * line, so a long shell command asks for the full width of the command.
- *
- * Neither cap restates the VIEWPORT clamp: `popoverCard` in
- * `~/styles/popover.css.ts` already holds the card inside the viewport on both
- * axes, and Oat's global `box-sizing: border-box` means its own padding comes
- * out of that. These two are the tighter, content-shaped limits on top.
+ * Both axes need a cap, for different reasons: a long registry overflows the
+ * card vertically, and a row holds each of its two lines on one line, so a long
+ * shell command asks for the full width of the command. `popoverPanelClamp` in
+ * `~/styles/popover.css.ts` owns both numbers, so this panel and the Goals &
+ * To-dos panel beside it cannot reach different sizes.
  */
-export const popoverRoot = style({
-  maxHeight: '60vh',
-  maxWidth: '360px',
-})
+export const popoverRoot = popoverPanelClamp
 
 /**
  * The scrolling region the kind tabs swap.

@@ -347,7 +347,6 @@ const CODEX_METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']>
 }
 
 const codexPlugin: Provider = {
-  supportsSessionGoal: true,
   permissionPresets: { bypass: CODEX_BYPASS_SETTINGS },
   // Seed a new Codex agent with its default collaboration mode.
   defaultProviderOptions: { [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },

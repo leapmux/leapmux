@@ -89,49 +89,85 @@ export async function openGoalMenu(page: Page | Locator): Promise<void> {
   await page.locator('[data-testid="goal-actions-trigger"]:visible').click()
 }
 
+/** What one provider's queued goal route looks like on the wire. */
+export interface TextGoalQueueCase {
+  /** The objective to type into the goal editor. */
+  objective: string
+  /** The exact command text a Clear must enqueue, such as `/goal off`. */
+  clearCommand: string
+  /** The composer mode a Set switches the session into, when it switches one. */
+  modeAfterSet?: string
+  /** The composer mode a Clear restores, when it restores one. */
+  modeAfterClear?: string
+}
+
 /**
- * Verify one provider's queued text route with its real command-line interface.
- * The paused queue makes the before-delivery state deterministic.
+ * Verify one provider's queued text route against its real command-line
+ * interface. The paused queue makes the state before delivery deterministic.
+ *
+ * One options object rather than four strings. The four are all strings, and
+ * the two optional ones are adjacent and describe the same kind of value, so a
+ * positional call that transposed them compiled and failed later as an opaque
+ * timeout inside this helper instead of at the call site.
  */
-export async function exerciseTextGoalQueue(
-  page: Page,
-  objective: string,
-  clearCommand: string,
-  modeAfterSet?: string,
-  modeAfterClear?: string,
-): Promise<void> {
+export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase): Promise<void> {
+  const queue = page.locator('[data-testid="agent-input-queue"]:visible')
+  const pauseButton = page.locator('[data-testid="queue-pause-button"]:visible')
+  const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')
+
   await expect(page.locator('[data-testid="composer-editor"]:visible .ProseMirror')).toBeVisible()
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)
   await expect(goalAction(page, 'set')).toBeVisible()
 
-  await page.getByTestId('queue-pause-button').click()
+  await pauseButton.click()
   await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
+  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(test.objective)
   await page.locator('[data-testid="set-goal-submit"]:visible').click()
-  await expect(page.getByTestId('agent-input-queue')).toContainText(`/goal ${objective}`)
+  await expect(queue).toContainText(`/goal ${test.objective}`)
+  // The card must still be EMPTY: the command sits in the queue, and the goal
+  // row changes only once the provider takes it. This is the whole point of the
+  // durable route, so it is asserted rather than assumed.
   await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
 
-  await page.getByTestId('queue-pause-button').click()
-  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
-  if (modeAfterSet)
-    await expect(page.getByTestId('composer-mode-trigger')).toContainText(modeAfterSet)
+  await pauseButton.click()
+  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(test.objective)
+  if (test.modeAfterSet)
+    await expect(modeTrigger).toContainText(test.modeAfterSet)
 
-  // Pause again so the clear command remains visible while the goal turn
-  // changes state quickly.
-  await page.getByTestId('queue-pause-button').click()
+  // Pause again so the clear command stays visible in the queue while the goal
+  // turn changes state.
+  await pauseButton.click()
   await openGoalMenu(page)
   await goalAction(page, 'clear').click()
-  await expect(page.getByTestId('agent-input-queue')).toContainText(clearCommand)
+  await expect(queue).toContainText(test.clearCommand)
 
-  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
-  if (await interrupt.count() > 0)
-    await interrupt.click()
-  await page.getByTestId('queue-pause-button').click()
-  await expect(page.getByTestId('agent-input-queue')).toHaveCount(0)
+  // The set started a turn, and the clear cannot dispatch behind it. End the
+  // turn deterministically rather than reading a one-shot count of the
+  // interrupt button: that count answered differently on every run, so a real
+  // failure to drain the clear was indistinguishable from a run where the turn
+  // had already ended -- and a turn that ended between the count and the click
+  // failed the click on a detached element.
+  await endActiveTurn(page)
+  await pauseButton.click()
+  await expect(queue).toHaveCount(0)
   await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-  if (modeAfterClear)
-    await expect(page.getByTestId('composer-mode-trigger')).toContainText(modeAfterClear)
+  if (test.modeAfterClear)
+    await expect(modeTrigger).toContainText(test.modeAfterClear)
+}
+
+/**
+ * End the active turn, whether or not one is running.
+ *
+ * `click()` on a control that is not there fails, and a `count()` first is the
+ * race this exists to avoid, so the click is attempted and its failure
+ * discarded. The assertion that follows is what proves the turn ended: the
+ * interrupt button is present exactly while one runs.
+ */
+async function endActiveTurn(page: Page): Promise<void> {
+  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  await interrupt.click().catch(() => {})
+  await expect(interrupt).toHaveCount(0)
 }
 
 /**
