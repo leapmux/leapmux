@@ -337,12 +337,13 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 
 	d := channel.NewDispatcher()
 	// RegisterAll binds svc.Cleanup itself, so tracked handlers dispatched
-	// here gate Shutdown exactly the way they do in production.
+	// here make Shutdown wait exactly the way they do in production.
 	RegisterAll(d, svc)
 
-	// No case may arm a real 500 ms settle window: it would fire after the case
-	// ended, read a closed database and broadcast to a torn-down watcher. A case
-	// that DRIVES the window calls holdSettles again for the handle.
+	// No case may arm a real settle window. Such a window waits out settleDelay.
+	// It would fire after the case ended, read a closed database and broadcast to
+	// a torn-down watcher. A case that DRIVES the window calls holdSettles again
+	// for the handle.
 	holdSettles(t, svc.Output)
 	return svc, d, newTestWriter()
 }

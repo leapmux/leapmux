@@ -767,7 +767,6 @@ export const AppShell: Component = () => {
   })
 
   const busyProbe = createTabBusyProbe({
-    activity: agentActivityStore,
     tasksFor: taskScope.tasksForTab,
   })
 

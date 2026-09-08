@@ -54,6 +54,7 @@ function agentInfo(id: string, over: Record<string, unknown> = {}) {
     startupMessage: '',
     gitStatus: undefined,
     activityState: AgentActivityState.IDLE,
+    publishedActivityState: AgentActivityState.IDLE,
     activeBackgroundTasks: 0,
     ...over,
   }
@@ -163,12 +164,18 @@ describe('useTabHydrators', () => {
     // The hydration path of the activity state. It is the ONLY path that
     // reaches a tab watching in NOTIFY mode, which gets no catch-up replay at
     // all -- without it a background tab shows no spinner until its agent's
-    // next transition, and the close guard lets a working agent go unwarned.
+    // next transition.
     it('seeds the worker-derived busy state from the reply', async () => {
       mockListAgents.mockResolvedValue({
         agents: [
-          agentInfo('a1', { activityState: AgentActivityState.WORKING }),
-          agentInfo('a2', { activityState: AgentActivityState.IDLE }),
+          agentInfo('a1', {
+            activityState: AgentActivityState.WORKING,
+            publishedActivityState: AgentActivityState.WORKING,
+          }),
+          agentInfo('a2', {
+            activityState: AgentActivityState.IDLE,
+            publishedActivityState: AgentActivityState.IDLE,
+          }),
         ],
         verdicts: [],
       })
@@ -189,6 +196,39 @@ describe('useTabHydrators', () => {
 
       expect(s.agentActivityStore.isBusy('a1')).toBe(true)
       expect(s.agentActivityStore.isBusy('a2')).toBe(false)
+      d()
+    })
+
+    // The DISPLAY reads what the Worker last broadcast, not what is exactly
+    // true. The two differ for as long as a settle waits out its debounce
+    // window, and seeding the exact value there drops the spinner early.
+    // If the work then resumes, the Worker derives a state equal to what
+    // it already published and broadcasts nothing, so the tab shows no
+    // spinner for the rest of the turn. The exact value belongs to the close guard.
+    it('seeds the published state, not the exact one', async () => {
+      mockListAgents.mockResolvedValue({
+        agents: [agentInfo('a1', {
+          // A settle is waiting: the derivation says idle, the client was told
+          // working, and the client must keep holding working.
+          activityState: AgentActivityState.IDLE,
+          publishedActivityState: AgentActivityState.WORKING,
+        })],
+        verdicts: [],
+      })
+      const s = setup()
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(s.agentActivityStore.isBusy('a1'), 'the spinner matches the live event stream').toBe(true)
+      expect(
+        s.agentActivityStore.apply('a1', AgentActivityState.IDLE),
+        'and the settle the Worker still holds still rings when it lands',
+      ).toBe(true)
       d()
     })
 

@@ -8,7 +8,7 @@ import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleActivityLevel, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -1106,10 +1106,10 @@ describe('buildAgentStatusTabUpdate', () => {
 })
 
 /**
- * The statusChange arm for an agent the user is NOT looking at.
+ * The statusChange branch for an agent the user is NOT looking at.
  *
  * The sidebar renders every workspace, so a background row must be as correct
- * as a foreground one. This arm used to hand-roll a subset of the foreground
+ * as a foreground one. This branch used to hand-roll a subset of the foreground
  * patch, which is how the pending-message drain and four metadata fields fell
  * out of it. The drain is the one with a permanent consequence: it fires on the
  * single STARTING -> ACTIVE/STARTUP_FAILED edge, and that edge is never
@@ -1861,7 +1861,7 @@ describe('reconcileLaggingTails', () => {
 // Direct coverage for the per-case handlers extracted from handleAgentEvent's
 // dispatcher. The dispatcher closure itself is only driven by gRPC streams, so these
 // exercise the real production handlers (not a re-implementation) against live stores.
-describe('extracted handleAgentEvent arm handlers', () => {
+describe('extracted handleAgentEvent branch handlers', () => {
   const enc = (s: string) => new TextEncoder().encode(s)
   const argStores = () => {
     const tabs = makeTabStores()
@@ -2055,51 +2055,10 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: string[] = []
         const stores = activityStores(tabs, activity, id => ended.push(id))
 
-        handleActivityLevel('a1', AgentActivityState.WORKING, activity)
+        activity.seedPublished('a1', AgentActivityState.WORKING)
         handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
 
         expect(ended).toEqual(['a1'])
-        dispose()
-      })
-    })
-  })
-
-  describe('handleActivityLevel', () => {
-    it('seeds the store without ringing, so a reconnect greets nobody', () => {
-      createRoot((dispose) => {
-        // The catch-up BASELINE. An agent that settled while this client was
-        // away is not news the user asked for, and ringing for each one on
-        // every reconnect is the failure this split prevents.
-        const tabs = makeTabStores()
-        tabs.addAgent('a1')
-        const activity = createAgentActivityStore()
-        const ended: string[] = []
-        const stores = {
-          metadata: tabs.metadata,
-          selection: tabs.selection,
-          getActiveWorkspaceId: () => WS,
-          view: tabs.view,
-          agentActivityStore: activity,
-          onAgentSettled: (id: string) => ended.push(id),
-        }
-
-        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
-        handleActivityLevel('a1', AgentActivityState.IDLE, activity)
-
-        expect(ended, 'a level is not a transition').toEqual([])
-        expect(activity.isBusy('a1'), 'the state still seeds').toBe(false)
-        dispose()
-      })
-    })
-
-    it('keeps what it holds when the worker sends no opinion', () => {
-      createRoot((dispose) => {
-        const activity = createAgentActivityStore()
-        activity.apply('a1', AgentActivityState.WORKING)
-
-        handleActivityLevel('a1', AgentActivityState.UNSPECIFIED, activity)
-
-        expect(activity.isBusy('a1'), 'UNSPECIFIED must not overwrite a real answer').toBe(true)
         dispose()
       })
     })
@@ -2598,7 +2557,7 @@ describe('shouldClearThinkingTokensForMessage', () => {
  * `streamingText` throws away deltas that are never resent while flipping it
  * INACTIVE hides a thinking indicator for a turn that is still running.
  *
- * The agent arm was missing that filter. Before every workspace became live it
+ * The agent branch was missing that filter. Before every workspace became live it
  * was a one-workspace bug; the widening made it account-wide.
  */
 describe('collectWorkerOfflineTargets', () => {
@@ -2646,7 +2605,7 @@ describe('collectWorkerOfflineTargets', () => {
     ], 'w1')
 
     expect(agents).toEqual([])
-    expect(terminals.size, 'a FILE tab is neither arm').toBe(0)
+    expect(terminals.size, 'a FILE tab is neither branch').toBe(0)
   })
 
   it('returns nothing for a worker that hosts none of these tabs', () => {

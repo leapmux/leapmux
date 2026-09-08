@@ -832,6 +832,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					sendNotFoundError(sender, "agent not found or not running")
 					return
 				}
+				svc.Output.NoteAgentInterrupted(agentID, row.OwnerAgentID)
 				if err := svc.Agents.InterruptChild(row.OwnerAgentID, row.RowKey); err != nil {
 					if errors.Is(err, agent.ErrChildSteeringUnsupported) {
 						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
@@ -850,6 +851,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 				return
 			}
+			svc.Output.NoteAgentInterrupted(agentID, agentID)
 			if err := svc.Agents.Interrupt(agentID); err != nil {
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
@@ -1240,13 +1242,17 @@ func (svc *Service) replayAgentCatchUp(
 	// final authority reflects any message created mid-replay.
 	//
 	// The derived activity rides the same frame, which puts it ahead of the
-	// message burst: the tab renders the replayed rows as they arrive, and an
+	// message burst. The tab renders the replayed rows as they arrive, and an
 	// activity frame behind them leaves the burst painting with no thinking
 	// indicator on an agent that works. It travels HERE and not as an
-	// AgentActivityChanged because it is a LEVEL. That message means a
-	// transition, and the client rings on one; sending the baseline as a
-	// transition forced the client to suppress the alert for the whole catch-up
-	// window, which discarded each genuine settle that raced the replay.
+	// AgentActivityChanged because it is a LEVEL. That message means a transition,
+	// and the client rings on one.
+	// Sending the baseline as a
+	// transition forced the client to
+	// suppress the alert for the whole
+	// catch-up window, which discarded
+	// each genuine settle that raced
+	// the replay.
 	replayStartTail := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up start")
 	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
@@ -1255,7 +1261,24 @@ func (svc *Service) replayAgentCatchUp(
 				LatestSeq: replayStartTail,
 				// Under this agent's OWN id, not the root's: a child tab's answer is
 				// its own registry row, which differs from its root's.
-				ActivityState: svc.Output.AgentActivitySnapshot(agentID, rootID).State,
+				//
+				// The PUBLISHED value, not the exact one. A settle waiting out its
+				// window makes the two differ. Seeding a tab with the exact IDLE
+				// there costs it the completion sound: the window's own transition
+				// then lands on a client that already holds IDLE, so it sees no
+				// edge. See AgentActivityPublished.
+				//
+				// One residual, stated because it is not free to close. This value
+				// is read microseconds before the frame reaches the send lock, so a
+				// live transition can overtake it and the client's seed then holds a
+				// value older than what it already applied. The spinner is then
+				// wrong until the next transition. Closing it needs a derivation ticket on
+				// the wire AND a process epoch beside it.
+				// activitySeq restarts at zero in a new
+				// worker, so a bare ticket would freeze a
+				// reconnecting client's display for good. The window is microseconds
+				// and the cost is cosmetic, so it stays open on purpose.
+				ActivityState: svc.Output.AgentActivityPublished(agentID, rootID),
 			},
 		},
 	})
@@ -1549,6 +1572,11 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 	// naming work its own count said was not there.
 	activity := svc.Output.AgentActivitySnapshot(a.ID, info.RootAgentId)
 	info.ActivityState, info.ActiveBackgroundTasks = activity.State, activity.ActiveTasks
+	// Both, because they answer different questions. A close guard wants the
+	// exact state above; a client that CACHES the pushed state seeds its display
+	// from this one, or its cache and the next broadcast disagree. See
+	// AgentInfo.published_activity_state.
+	info.PublishedActivityState = svc.Output.AgentActivityPublished(a.ID, info.RootAgentId)
 
 	if a.ClosedAt.Valid {
 		info.ClosedAt = timefmt.Format(a.ClosedAt.Time)
@@ -3371,6 +3399,10 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 // routing them through one helper keeps the four-level envelope from being
 // re-spelled (and the AgentId mis-filled) per event.
 func broadcastReplayAgentEvent(sink *replaySink, event *leapmuxv1.AgentEvent) {
+	// The one place a replayed frame is marked. A client registers its live
+	// watch before this burst runs and both write the same stream, so arrival
+	// order cannot tell a live frame from a replayed one. See AgentEvent.replay.
+	event.Replay = true
 	sink.send(&leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
 	})

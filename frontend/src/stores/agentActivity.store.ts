@@ -14,14 +14,14 @@ import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
  *
  * Three writers, matching how background tasks are already fed:
  *
- * - hydration, from `AgentInfo.busy` on a list read. The only path that reaches a
+ * - hydration, from `AgentInfo.activity_state` on a list read. The only path that reaches a
  *   tab watching in NOTIFY mode, which gets no catch-up replay at all.
  * - catch-up replay, on the transition into FULL, so a tab renders the right
  *   spinner BEFORE the message burst rather than after it.
  * - the live `AgentActivityChanged` event.
  *
  * NOT persisted, because there is nothing worth persisting. Every load asks the
- * Worker (`AgentInfo.busy`), and every process boundary resets the answer: an
+ * Worker (`AgentInfo.activity_state`), and every process boundary resets the answer: an
  * agent whose process was terminated owns no turn, and the Worker says so the
  * moment a new one takes over. A value written to disk could therefore only be
  * stale -- right by luck, or a spinner shown for the gap before the first
@@ -31,15 +31,46 @@ import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
  */
 interface AgentActivityStoreState {
   stateByAgent: Record<string, AgentActivityState>
+  /**
+   * The last state the WORKER pushed as a transition, which is the baseline the
+   * settle edge is measured against.
+   *
+   * Separate from `stateByAgent` because a LEVEL also writes that one, and a
+   * level must not consume an edge. The Worker debounces a settle for three
+   * seconds. A level read in between, such as a
+   * list hydration, can therefore carry the
+   * settled value while the transition
+   * announcing it is still on its way. Measured against the display state, that transition then moves
+   * nothing and the completion sound never rings.
+   */
+  pushedByAgent: Record<string, AgentActivityState>
 }
 
 /** An agent nothing has reported on yet. */
 const UNKNOWN = AgentActivityState.IDLE
 
+/**
+ * Whether closing a tab in this state would stop something.
+ *
+ * It differs from "busy" for an agent blocked on a permission prompt: its turn
+ * is still in flight, and the close kills it along with every background task
+ * under it. The Worker spells the same rule as AgentActivity.InterruptsWork.
+ *
+ * A free function, not a store method, because the close guard must NOT read
+ * this store. The Worker debounces a settle for three seconds, so the pushed
+ * state says "busy" for that long after the work finished, and a guard reading
+ * it would refuse a close the CLI already allows. The guard fetches the exact
+ * state and applies this rule to it -- see createTabBusyProbe.
+ */
+export function activityInterruptsWork(state: AgentActivityState): boolean {
+  return state === AgentActivityState.WORKING || state === AgentActivityState.WAITING_FOR_USER
+}
+
 export function createAgentActivityStore() {
-  const [state, setState] = createStore<AgentActivityStoreState>({ stateByAgent: {} })
+  const [state, setState] = createStore<AgentActivityStoreState>({ stateByAgent: {}, pushedByAgent: {} })
 
   const stateOf = (agentId: string): AgentActivityState => state.stateByAgent[agentId] ?? UNKNOWN
+  const pushedFor = (agentId: string): AgentActivityState => state.pushedByAgent[agentId] ?? UNKNOWN
 
   return {
     /**
@@ -50,20 +81,11 @@ export function createAgentActivityStore() {
      *
      * WAITING_FOR_USER answers false here on purpose. The user is looking
      * straight at the permission prompt, so spinning an indicator at them says
-     * nothing -- but see interruptsWork, which the close guard reads instead.
+     * nothing -- but see activityInterruptsWork, which the close guard applies
+     * to the exact state it fetches instead of to this debounced one.
      */
     isBusy(agentId: string): boolean {
       return stateOf(agentId) === AgentActivityState.WORKING
-    },
-
-    /**
-     * Whether closing this tab would stop something. Differs from isBusy for an
-     * agent blocked on a permission prompt: its turn is still in flight, and the
-     * close kills it along with every background task under it.
-     */
-    interruptsWork(agentId: string): boolean {
-      const current = stateOf(agentId)
-      return current === AgentActivityState.WORKING || current === AgentActivityState.WAITING_FOR_USER
     },
 
     /**
@@ -78,15 +100,80 @@ export function createAgentActivityStore() {
      * NOTIFY-mode tab that subscribed mid-turn). Ringing on either announces a
      * settle the user never saw start, or announces one settle twice.
      *
+     * The edge is measured against `pushedByAgent`, the last TRANSITION, and not
+     * against what is on screen. A level can move the screen without moving that
+     * baseline -- see seed.
+     *
      * A move into WAITING_FOR_USER is a settle: the turn stops making progress
      * and the user is the one who must act, which is the alert that used to ride
      * on busy -> false.
      */
     apply(agentId: string, next: AgentActivityState): boolean {
-      const settled = stateOf(agentId) === AgentActivityState.WORKING && next !== AgentActivityState.WORKING
+      const settled = pushedFor(agentId) === AgentActivityState.WORKING && next !== AgentActivityState.WORKING
       if (state.stateByAgent[agentId] !== next)
         setState('stateByAgent', agentId, next)
+      if (state.pushedByAgent[agentId] !== next)
+        setState('pushedByAgent', agentId, next)
       return settled
+    },
+
+    /**
+     * Seed from the level the Worker PUBLISHED -- the catch-up baseline on
+     * CatchUpStart -- and raise nothing.
+     *
+     * A level says what the agent is doing right now. It is not news the user
+     * asked for. An agent that
+     * settled while this client
+     * was away did not finish
+     * in front of them, and
+     * ringing for each one on
+     * every reconnect is the
+     * burst this split
+     * prevents. So this returns nothing, rather than an edge each
+     * caller has to remember to discard.
+     *
+     * It writes the edge baseline too, because this value IS that baseline. The
+     * Worker sends what it last broadcast, so a settle still waiting out its
+     * window reads WORKING here and the transition announcing it still rings.
+     *
+     * Writing it also CLEARS a baseline this client can no longer stand behind:
+     * a WORKING left over from a link that dropped with no offline sweep. The
+     * next transition is then measured against the Worker's own answer, and not
+     * against a value from a session that ended.
+     *
+     * UNSPECIFIED is "no opinion", not a state: a worker that sends one must not
+     * overwrite an answer this client already holds.
+     */
+    seedPublished(agentId: string, next: AgentActivityState): void {
+      if (next === AgentActivityState.UNSPECIFIED)
+        return
+      if (state.stateByAgent[agentId] !== next)
+        setState('stateByAgent', agentId, next)
+      if (state.pushedByAgent[agentId] !== next)
+        setState('pushedByAgent', agentId, next)
+    },
+
+    /**
+     * Seed from the EXACT derivation -- AgentInfo on a list read -- and raise
+     * nothing.
+     *
+     * It may ARM the settle edge and may never SPEND it, which is what tells it
+     * apart from seedPublished. This value ignores the Worker's debounce window,
+     * so a read taken inside that window already carries the settled state while
+     * the transition announcing it is still on its way. Writing that to the
+     * baseline would make the transition compare equal, and the settle would ring
+     * for nobody. A level that says WORKING is safe to write, and arms the edge
+     * for a settle that lands moments later.
+     *
+     * UNSPECIFIED is "no opinion", not a state.
+     */
+    seedSnapshot(agentId: string, next: AgentActivityState): void {
+      if (next === AgentActivityState.UNSPECIFIED)
+        return
+      if (state.stateByAgent[agentId] !== next)
+        setState('stateByAgent', agentId, next)
+      if (next === AgentActivityState.WORKING && state.pushedByAgent[agentId] !== next)
+        setState('pushedByAgent', agentId, next)
     },
 
     /**
@@ -96,6 +183,7 @@ export function createAgentActivityStore() {
     forget(agentId: string) {
       setState(produce((s) => {
         delete s.stateByAgent[agentId]
+        delete s.pushedByAgent[agentId]
       }))
     },
 

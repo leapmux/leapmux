@@ -221,6 +221,12 @@ type OutputHandler struct {
 	// derivation's own rules should depend on.
 	processRunning func(rootAgentID string) bool
 
+	// treeChildren indexes the activity map by ROOT, so a tree refresh asks for
+	// one tree rather than walking every agent this worker ever published for.
+	// Derived from the rootAgentID that activityFor already records, written by
+	// the same call, and pruned by ForgetActivity. See indexTreeChild.
+	treeChildren sync.Map // rootAgentID -> *sync.Map[childAgentID]struct{}
+
 	// rootSinks tracks the root agentOutputSink per root agent id so CleanupAgent
 	// can prune a closed child from its parent's childSinks cache (which would
 	// otherwise retain the child's SpanTracker + OutputHandler ref for the

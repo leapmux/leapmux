@@ -586,7 +586,14 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	}
 	// Unconditional, unlike the broadcast above: the process died, so every
 	// descendant is idle now whether or not the DISPLAY list moved.
-	h.refreshActivityTree(rootAgentID, settleHeld)
+	//
+	// settleImmediate, because a dead process resumes nothing -- the case
+	// settleImmediate exists for. Holding here parked the idle publish for a
+	// whole settleDelay, and on the tab-close path (see rootTeardown) nothing
+	// later delivers it: no process-exit reset follows, and the cleanup that
+	// does follow retires the entry. A watcher of a descendant transcript kept a
+	// spinner and an armed Interrupt button on work whose process was gone.
+	h.refreshActivityTree(rootAgentID, settleImmediate)
 	h.WriteSubagentEndDividers(endedChildIDs, status)
 }
 

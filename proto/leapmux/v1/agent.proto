@@ -279,7 +279,22 @@ message AgentInfo {
   // AgentActivityChanged pushes on change: a tab watching in NOTIFY mode gets
   // no catch-up replay, so the list read is where it learns the current value.
   // See AgentActivityState for the rule.
+  //
+  // The EXACT derivation, which ignores the Worker's settle debounce. Both close
+  // guards read it, so neither refuses a close for work that already finished.
   AgentActivityState activity_state = 21;
+
+  // What the Worker last BROADCAST for this agent, which is what a client that
+  // caches the pushed state already holds.
+  //
+  // It differs from activity_state for as long as a settle waits out its
+  // debounce window. A browser seeds its display from THIS one. Seeded with the
+  // exact value instead, a tab that hydrates inside the window
+  // drops its spinner early. If the work then resumes, the
+  // Worker derives a state equal to what it already published
+  // and broadcasts nothing, so that tab shows no spinner for
+  // the rest of the turn. See the Worker's AgentActivityPublished.
+  AgentActivityState published_activity_state = 23;
 
   // Rows in pending/running state in this tab's background-task registry. For a
   // root that is every descendant's work; for a subagent tab it is that

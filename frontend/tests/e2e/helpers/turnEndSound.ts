@@ -14,8 +14,14 @@ const DOORBELL_SRC = 'benkirb-electronic-doorbell'
  * settle is unavoidable here -- but it is the ONLY place these specs sleep.
  * Every wait for a ding that IS expected polls instead (see
  * {@link expectDoorbellCount}), because there the arrival is observable.
+ *
+ * It MUST exceed the Worker's settle debounce (`settleDelay`, three seconds),
+ * with margin. The Worker holds a WORKING -> not-WORKING publish for that long.
+ * A window shorter than it closes before an unwanted ding could physically
+ * arrive, so the assertion passes without proving anything. The extra ding then
+ * lands in a later step, or after the spec ends.
  */
-const QUIET_SETTLE_MS = 1000
+const QUIET_SETTLE_MS = 5000
 
 /**
  * Record every `HTMLAudioElement.play()` call, pin the browser-level turn-end
@@ -50,14 +56,13 @@ export async function doorbellCount(page: Page): Promise<number> {
 /**
  * Wait until the doorbell has played exactly `count` times.
  *
- * Polls rather than sleeping after the turn appears to end, because "the turn
- * ended" and "the ding fired" are driven by DIFFERENT events: the interrupt
- * button hides when `agentWorking` goes false (or a control request opens),
- * while the sound fires from the result divider in `handleResultDivider`. The
- * gap between them is whatever the event stream and the render loop cost,
- * which a loaded machine widens without bound -- so the fixed 200-500ms sleeps
- * these specs used to take were a bet on that gap, and lost it under the full
- * suite's concurrency.
+ * Polls rather than sleeping after the turn appears to end. Both signals come
+ * from the same `AgentActivityChanged` frame: the button hides on the state, and
+ * the sound fires from the settle edge `AgentActivityStore.apply` reports. But
+ * the Worker DEBOUNCES that frame by `settleDelay`, and the render loop adds
+ * whatever a loaded machine costs on top. So the fixed 200-500ms sleeps these
+ * specs used to take were a bet on that gap, and lost it under the full suite's
+ * concurrency.
  */
 export async function expectDoorbellCount(page: Page, count: number) {
   await expect.poll(() => doorbellCount(page)).toBe(count)
