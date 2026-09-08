@@ -5,6 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -139,11 +140,29 @@ function questionRequestPayload(): Record<string, unknown> {
   }
 }
 
+/** The mutable permission-mode catalog that Claude reports. */
+function claudePermissionModeGroup(currentValue: string = CLAUDE_MODE.Default): AgentInfo['optionGroups'][number] {
+  return {
+    id: 'permissionMode',
+    label: 'Approval',
+    order: 30,
+    mutable: true,
+    defaultValue: CLAUDE_MODE.Default,
+    currentValue,
+    options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
+  } as unknown as AgentInfo['optionGroups'][number]
+}
+
 function addControlRequest(
   controlStore: ReturnType<typeof createControlStore>,
   request: Omit<ControlRequest, 'agentId'>,
 ) {
   controlStore.addRequest('a1', { agentId: 'a1', ...request })
+}
+
+/** Waits until the saved answer for the active request is ready. */
+async function waitForControlActionsReady() {
+  await waitFor(() => expect(screen.getByTestId('control-actions')).not.toBeDisabled())
 }
 
 // The crash this suite's sibling reproduces (`ControlRequestBanner.test.tsx`)
@@ -202,6 +221,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     renderPanel({ controlStore })
 
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
+    await waitForControlActionsReady()
     fireEvent.click(clearContext())
     expect(clearContext()).toBeChecked()
 
@@ -230,6 +250,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     renderPanel({ controlStore, onControlResponse })
 
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
+    await waitForControlActionsReady()
     fireEvent.click(clearContext())
     expect(clearContext()).toBeChecked()
 
@@ -238,6 +259,7 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     expect(clearContext()).not.toBeChecked()
 
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     const [request, content] = onControlResponse.mock.calls[0]
@@ -261,6 +283,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     })
     renderPanel({ controlStore, onControlResponse })
 
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
@@ -282,6 +305,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     renderPanel({ controlStore, onControlResponse })
 
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
@@ -298,7 +322,13 @@ describe('agentEditorPanel control request lifecycle', () => {
     saveDraft('a1-ctrl-plan-1', 'no handler', 0)
     renderPanel({ controlStore })
 
-    expect(() => fireEvent.click(screen.getByTestId('plan-approve-btn'))).not.toThrow()
+    await waitForControlActionsReady()
+    const feedback = await waitFor(() => {
+      const button = screen.getByTestId('plan-reject-btn')
+      expect(button).toHaveTextContent('Send feedback')
+      return button
+    })
+    expect(() => fireEvent.click(feedback)).not.toThrow()
 
     expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
   })
@@ -322,6 +352,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     localStorageStore(`${PREFIX_CONTROL_STATE}a1:bash-1`, { selections: { 0: ['MySQL'] } })
     renderPanel({ controlStore, onControlResponse })
 
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
@@ -343,11 +374,13 @@ describe('agentEditorPanel control request lifecycle', () => {
     saveDraft('a1-ctrl-ask-1-q-0', 'note for the first question', 0)
     saveDraft('a1-ctrl-ask-1-q-1', 'note for the second question', 0)
     saveDraft('a1-ctrl-bash-1', 'queued sibling reason', 0)
+    expect(await localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1`, {
+      selections: { 0: ['Postgres'], 1: ['Bun'] },
+      currentPage: 1,
+    }).durable).toBe(true)
     renderPanel({ controlStore, onControlResponse })
 
-    // One click per question: a single-select answer advances the page itself.
-    fireEvent.click(screen.getByTestId('question-option-Postgres'))
-    fireEvent.click(screen.getByTestId('question-option-Bun'))
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('control-submit-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
@@ -368,16 +401,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   it('draws the permission pills only while the catalog carries the preset axes', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
-    const modeGroup = {
-      id: 'permissionMode',
-      label: 'Approval',
-      order: 30,
-      mutable: true,
-      defaultValue: CLAUDE_MODE.Default,
-      currentValue: CLAUDE_MODE.Default,
-      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
-    } as unknown as AgentInfo['optionGroups'][number]
-    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Permissions' })).toBeInTheDocument())
 
     // The catalog drops the permissionMode group: no preset the banner could
@@ -388,21 +412,22 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitFor(() => expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument())
   })
 
+  it('draws plan permission choices without a settings change handler', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+
+    renderPanel({ controlStore, optionGroups: [claudePermissionModeGroup()] })
+
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Permissions' })).toBeInTheDocument())
+    expect(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Smart' })).toBeChecked()
+  })
+
   // The panel is the only scope that holds BOTH halves the opening choice needs
   // -- the live catalog and the confirmed values -- so it is the only place the
   // wiring from `activePermissionPreset` to the drawn pill can be checked.
   it('opens an ordinary request on the preset the session already has on', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash'), claimToken: 'claim-1' })
-    const modeGroup = (currentValue: string) => ({
-      id: 'permissionMode',
-      label: 'Approval',
-      order: 30,
-      mutable: true,
-      defaultValue: CLAUDE_MODE.Default,
-      currentValue,
-      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
-    } as unknown as AgentInfo['optionGroups'][number])
     const pill = () => within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 
     // The session runs on Claude's bypass mode, so the group opens there and an
@@ -410,7 +435,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     const running = renderPanel({
       controlStore,
       onSettingChange: vi.fn(),
-      optionGroups: [modeGroup(CLAUDE_MODE.BypassPermissions)],
+      optionGroups: [claudePermissionModeGroup(CLAUDE_MODE.BypassPermissions)],
     })
     await waitFor(() => expect(pill().getByRole('radio', { name: 'Bypass' })).toBeChecked())
 
@@ -421,37 +446,62 @@ describe('agentEditorPanel control request lifecycle', () => {
     renderPanel({
       controlStore,
       onSettingChange: vi.fn(),
-      optionGroups: [modeGroup(CLAUDE_MODE.Default)],
+      optionGroups: [claudePermissionModeGroup()],
     })
     await waitFor(() => expect(pill().getByRole('radio', { name: 'Unchanged' })).toBeChecked())
     expect(pill().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
   // The pill choice belongs to the request INSTANCE like a switch: a rebuild of
-  // the control component must not reset it to Default.
+  // the control component must not reset it to Unchanged.
   it('restores the permission pill choice of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
-    const modeGroup = {
-      id: 'permissionMode',
-      label: 'Approval',
-      order: 30,
-      mutable: true,
-      defaultValue: CLAUDE_MODE.Default,
-      currentValue: CLAUDE_MODE.Default,
-      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
-    } as unknown as AgentInfo['optionGroups'][number]
     const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })
-    const first = renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+    const first = renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
 
+    await waitForControlActionsReady()
     fireEvent.click(bypassRadio())
     expect(bypassRadio()).toBeChecked()
 
     first.unmount()
-    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
 
     // Polled: the saved record is read after the remount, not during it.
     await waitFor(() => expect(bypassRadio()).toBeChecked())
+  })
+
+  it('blocks plan approval until the saved permission choice restores', async () => {
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
+    expect(await localStorageStore(key, {
+      choices: { 'control-permissions-pill': 'bypass' },
+    }).durable).toBe(true)
+
+    renderPanel({
+      controlStore,
+      onControlResponse,
+      onSettingChange: vi.fn(),
+      optionGroups: [claudePermissionModeGroup()],
+    })
+
+    const approve = screen.getByTestId('plan-approve-btn')
+    expect(approve).toBeDisabled()
+    fireEvent.click(approve)
+    expect(onControlResponse).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })).toBeChecked())
+    expect(approve).not.toBeDisabled()
+    fireEvent.click(approve)
+
+    await waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
+    const [, content] = onControlResponse.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toHaveProperty(
+      'permissionMode',
+      CLAUDE_MODE.BypassPermissions,
+    )
   })
 
   it('restores the plan switches of the rendered request instance after a remount', async () => {
@@ -460,6 +510,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
     const first = renderPanel({ controlStore })
 
+    await waitForControlActionsReady()
     fireEvent.click(clearContext())
     expect(clearContext()).toBeChecked()
 
@@ -483,6 +534,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     const remember = () => screen.getByTestId('control-remember-checkbox').querySelector('input[type="checkbox"]')!
     const first = renderPanel({ controlStore, agentProvider: AgentProvider.CODEX })
 
+    await waitForControlActionsReady()
     fireEvent.click(remember())
     expect(remember()).toBeChecked()
 
@@ -504,6 +556,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     renderPanel({ controlStore, onControlResponse })
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
 
+    await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!)
     await waitFor(async () => {
       expect((await localStorageLoad<{ switches?: Record<string, boolean> }>(key))?.switches)
@@ -647,14 +700,14 @@ describe('agent editor panel', () => {
     expect(screen.getByTestId('queue-pause-button').querySelector('svg')).not.toBeNull()
   })
 
-  it('sizes every composer action with the shared small class', () => {
+  it('sizes every composer action with the shared compact style', () => {
     // The footer slot's own rule states no size, so a button that omits this
-    // class falls back to Oat's full-size metrics and breaks the row it shares
-    // with the `[+]` button, whose height is derived from `.small`.
+    // style falls back to the full-size metrics and breaks the row it shares
+    // with the `[+]` button, whose height uses the same compact metrics.
     renderPanel()
 
-    expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', 'small')
-    expect(screen.getByTestId('send-button')).toHaveClass('small')
+    expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('send-button')).toHaveClass(compactControl)
     expect(screen.getByTestId('send-button')).not.toHaveClass('outline')
   })
 

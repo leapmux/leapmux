@@ -1,6 +1,7 @@
 import type { PermissionPresetController } from '../../providerSettings'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { allowScopePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
 import { ACPControlActions, sendACPPermissionResponse } from './ACPControlRequest'
@@ -130,15 +131,14 @@ describe('acpControlActions', () => {
     expect(screen.queryByTestId('control-decision-reject_always')).not.toBeInTheDocument()
   })
 
-  it('sizes the decisions with the shared small class', () => {
+  it('sizes the decisions with the shared compact style', () => {
     // This row builds its own decisions rather than going through
     // `ControlDecisionFooter`, so it carries the class on its own. The footer
-    // slot states no size, and a button that omits it falls back to Oat's
-    // full-size metrics.
+    // slot states no size, so each action uses the shared compact style.
     renderGooseActions()
 
-    expect(screen.getByTestId('control-deny-btn')).toHaveClass('outline', 'small')
-    expect(screen.getByTestId('control-allow-btn')).toHaveClass('small')
+    expect(screen.getByTestId('control-deny-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-allow-btn')).toHaveClass(compactControl)
     expect(screen.getByTestId('control-allow-btn')).not.toHaveClass('outline')
   })
 

@@ -1,13 +1,47 @@
 import type { Accessor } from 'solid-js'
+import type { PermissionPresetController, ProviderPermissionPresets } from '../providerSettings'
 import type { ControlRequestSwitch } from './ControlDecisionFooter'
-import type { ControlPermissionPill } from './permissionPresets'
+import type { ControlPermissionPill, PermissionPresetChoice } from './permissionPresets'
 import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createMemo } from 'solid-js'
+import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
-import { buildPermissionPill, createPermissionPresetChoice, PLAN_APPROVAL_PERMISSION_CHOICE, planApprovalPresets, presetPermissionMode } from './permissionPresets'
+import { PERMISSION_PRESET_SPECS } from '../providerSettings'
+import { buildPermissionPill, createPermissionPresetChoice } from './permissionPresets'
 import { createControlSwitch } from './types'
+
+/** The permission choice a plan approval opens on. */
+export const PLAN_APPROVAL_PERMISSION_CHOICE: PermissionPresetChoice = 'smart'
+
+/** Returns the mode that the selected plan preset carries. */
+export function presetPermissionMode(
+  presets: ProviderPermissionPresets | undefined,
+  choice: PermissionPresetChoice,
+): PermissionMode | undefined {
+  return choice === 'unspecified' ? undefined : presets?.[choice]?.sets[OPTION_ID_PERMISSION_MODE]
+}
+
+/**
+ * Returns the presets that a plan-approval response can apply.
+ *
+ * A plan approval carries the permission mode in its response. The worker then
+ * expands a provider mode, such as Codex Bypass, into its complete settings.
+ */
+export function planApprovalPresets(
+  presets: PermissionPresetController | undefined,
+): ProviderPermissionPresets | undefined {
+  if (!presets)
+    return undefined
+  const available: ProviderPermissionPresets = {}
+  for (const { kind } of PERMISSION_PRESET_SPECS) {
+    const preset = presets[kind]
+    if (preset?.sets[OPTION_ID_PERMISSION_MODE] !== undefined)
+      available[kind] = preset
+  }
+  return Object.keys(available).length > 0 ? available : undefined
+}
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>

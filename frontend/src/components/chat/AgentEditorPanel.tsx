@@ -368,7 +368,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     // opens on it, and only this scope holds both halves it needs -- the live
     // catalog and the confirmed values.
     const active = activePermissionPreset(usable, props.agent?.optionGroups, currentOptionValues())
-    return (usable.smart || usable.bypass) && props.onSettingChange
+    return Object.keys(usable).length > 0
       ? { ...usable, apply: props.onSettingChange, active }
       : undefined
   })

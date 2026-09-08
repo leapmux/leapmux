@@ -170,7 +170,7 @@ describe('exitPlanModeActions', () => {
   })
 
   it('carries no mode when the catalog offers no smart preset', () => {
-    // The opening choice clamps to Default, so an untouched group leaves the
+    // The opening choice clamps to Unchanged, so an untouched group leaves the
     // agent's permission mode where it is.
     const onRespond = vi.fn().mockResolvedValue(undefined)
 

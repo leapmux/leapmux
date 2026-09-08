@@ -3,9 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { activePermissionPreset, permissionPresetActive } from './providerSettings'
 
 /**
- * A mutable option group fixture. `permissionPresetActive` compares against
- * `resolvedCurrent`, which reads the optimistic value first and the catalog's
- * `currentValue` second.
+ * A mutable option group fixture. `permissionPresetActive` reads the optimistic
+ * value first and the catalog's confirmed `currentValue` second.
  */
 function group(id: string, optionIds: string[], currentValue: string): AvailableOptionGroup {
   return {
@@ -61,6 +60,15 @@ describe('permissionPresetActive', () => {
     expect(permissionPresetActive(undefined, groups, {})).toBe(false)
     expect(permissionPresetActive({ sets: {} }, groups, {})).toBe(false)
   })
+
+  it.each([
+    ['missing', ''],
+    ['off-list', 'unknown'],
+  ])('does not treat a %s current value as the default preset', (_, currentValue) => {
+    const unresolvedCurrent = [group('permissionMode', ['smart', 'bypass'], currentValue)]
+
+    expect(permissionPresetActive({ sets: { permissionMode: 'smart' } }, unresolvedCurrent, {})).toBe(false)
+  })
 })
 
 describe('activePermissionPreset', () => {
@@ -69,18 +77,20 @@ describe('activePermissionPreset', () => {
     bypass: { sets: { permissionMode: 'bypassPermissions' } },
   }
 
-  it('names the preset the session has on', () => {
+  it('reports the preset the session has on', () => {
     expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'auto')], {})).toBe('smart')
     expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'bypassPermissions')], {})).toBe('bypass')
   })
 
-  it('names nothing when neither preset is on', () => {
+  it('reports nothing when neither preset is on', () => {
     expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'default')], {})).toBeUndefined()
     expect(activePermissionPreset({}, [group('permissionMode', MODES, 'auto')], {})).toBeUndefined()
   })
 
-  it('prefers smart when both report active', () => {
-    // Copilot's two presets switch DIFFERENT axes, so both can be on at once.
+  it('prefers bypass when both presets report active', () => {
+    // Copilot can keep both axes on, but Allow All supplies the effective
+    // permission behavior. An untouched request must preserve that stronger
+    // state rather than reapply Assisted Approval and clear Allow All.
     const copilot = {
       smart: { sets: { copilot_assisted_approval: 'on' } },
       bypass: { sets: { allow_all: 'on' } },
@@ -90,10 +100,10 @@ describe('activePermissionPreset', () => {
       group('allow_all', ['off', 'on'], 'on'),
     ]
 
-    expect(activePermissionPreset(copilot, groups, {})).toBe('smart')
+    expect(activePermissionPreset(copilot, groups, {})).toBe('bypass')
   })
 
-  it('names nothing without a catalog', () => {
+  it('reports nothing without a catalog', () => {
     expect(activePermissionPreset(presets, undefined, undefined)).toBeUndefined()
   })
 })

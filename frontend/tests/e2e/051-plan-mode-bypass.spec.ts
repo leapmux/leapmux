@@ -2,7 +2,7 @@ import { expect, test } from './fixtures'
 import { ENTER_PLAN_PROMPT, enterAndExitPlanMode, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
 import { expectSettingsChip, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from './helpers/ui'
 
-test.describe('Plan Mode - Bypass Permissions', () => {
+test.describe('plan mode - bypass permissions', () => {
   test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -20,7 +20,7 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     const banner = await waitForControlBanner(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    // Verify the switch and the permission pills are visible, Default selected.
+    // Verify the switch and the permission pills are visible, with Smart selected.
     const clearContextSwitch = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
     await expect(clearContextSwitch).toBeVisible()
     await expect(clearContextSwitch).not.toBeChecked()

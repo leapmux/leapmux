@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { Show } from 'solid-js'
+import { compactControl } from '~/components/common/CompactControl.css'
 import * as styles from '../ControlRequestBanner.css'
 
 /**
@@ -33,7 +34,9 @@ export interface ControlActionRowProps {
    * action. Today only the multi-question pagination uses it.
    */
   centre?: JSX.Element
-  /** The right-end actions: the decision on the request. */
+  /** Controls that qualify the decision, before the decision buttons. */
+  leading?: JSX.Element
+  /** The right-end decision buttons. */
   primary: JSX.Element
 }
 
@@ -42,19 +45,13 @@ export interface ControlActionRowProps {
  * control-request decisions here, and the composer's own Pause, Interrupt and
  * Send.
  *
- * Oat's `.small` supplies the metrics (`--text-8`, and
- * `var(--space-1) var(--space-3)` of padding), which the `CompactSwitch` beside
- * them and the `PillGroup` `small` variant match. It is the ONE source for that
- * size: `--editor-btn-h` is derived from it so the `[+]` button matches, and the
- * slot's own rule in `~/components/chat/markdownEditor/MarkdownEditor.css.ts`
- * deliberately states no size, because an unlayered rule there would outrank
- * this class and could never lose to it.
+ * The shared compact-control style supplies the metrics. `CompactSwitch`, the
+ * `PillGroup` small variant, and the editor height use the same source.
  *
- * One function rather than a literal at each button, so a button added to the
- * slot later cannot fall back to Oat's full-size metrics by omission.
+ * One function keeps the current call sites on the same class string.
  */
 export function actionButtonClass(outline?: boolean): string {
-  return outline === true ? 'outline small' : 'small'
+  return outline === true ? `${compactControl} outline` : compactControl
 }
 
 export const ControlActionRow: Component<ControlActionRowProps> = props => (
@@ -65,6 +62,9 @@ export const ControlActionRow: Component<ControlActionRowProps> = props => (
     <Show when={props.centre}>
       <div class={styles.controlFooterCentre}>{props.centre}</div>
     </Show>
-    <div class={styles.controlFooterRight}>{props.primary}</div>
+    <div class={styles.controlFooterRight}>
+      <Show when={props.leading}>{props.leading}</Show>
+      {props.primary}
+    </div>
   </div>
 )

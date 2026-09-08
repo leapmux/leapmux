@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { compactControlProperties } from './CompactControl.css'
 
 /** One content-sized control with one outer border. */
 export const pillGroup = style({
@@ -43,18 +44,8 @@ const pillOptionLayout = style({
   overflowWrap: 'anywhere',
 })
 
-/**
- * Oat's `.small` button metrics, so a group reads as one control with the small
- * action buttons beside it. An option keeps `border: 0` while the group keeps
- * its own 1px border, so the group stays exactly as tall as such a button.
- *
- * Both the real radios and their copies take this class. A size on one row
- * alone desyncs the copies from the buttons they cover.
- */
-export const pillOptionSmall = style({
-  padding: 'var(--space-1) var(--space-3)',
-  fontSize: 'var(--text-8)',
-})
+/** Compact metrics for both the real radios and their visual copies. */
+export const pillOptionSmall = style(compactControlProperties)
 
 /** Shape and behavior for each real radio. */
 export const pillOption = style([pillOptionLayout, {

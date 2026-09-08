@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { compactControlHeight } from '~/components/common/CompactControl.css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
 import { popoverBase } from '~/styles/popover.css'
 import { paginationContainer } from '../ControlRequestBanner.css'
@@ -13,19 +14,11 @@ export const container = style({
   borderRadius: 'var(--radius-medium)',
   backgroundColor: 'var(--background)',
   overflow: 'hidden',
-  // The composer button height: the natural height of an Oat `.small` button,
-  // which is what every action button in the footer slot is. One line of text
-  // (font-size × line-height), its top/bottom padding (space-1 × 2), and its
-  // top/bottom border (1px × 2, which Oat gives every button and which the
-  // `[+]` button below has no equivalent of -- it is sized to this value
-  // instead). Referenced by the `[+]` button, the editor wrapper min-height,
-  // the separator position, and the ProseMirror paddings.
-  //
-  // The action buttons do NOT read it. They reach this height by carrying
-  // `.small`, so the class is the one source for how they are sized and this
-  // value follows it. Change `.small` and this calc together.
+  // The composer button height comes from the same compact-control source as
+  // each action button and small pill. The `[+]` button, the editor wrapper,
+  // the separator, and the ProseMirror padding use this value.
   vars: {
-    '--editor-btn-h': 'calc(var(--text-8) * var(--leading-normal) + var(--space-1) * 2 + 2px)',
+    '--editor-btn-h': compactControlHeight,
     // Collapsed-mode left padding of the text area: the `[+]` button's left
     // offset + its width + a gap. Declared here so the stylesheet below and
     // the expand/collapse measurement in MarkdownEditor.tsx read one value
@@ -69,8 +62,7 @@ export const editorRow = style({
   'flex': 1,
   // Center the editor wrapper vertically so the text/placeholder sits between
   // the top edge and the bottom-anchored buttons, with equal gaps above and below.
-  // Min-height fits the button height (text-7 * leading-normal + space-1 * 2)
-  // plus a space-1 gap above and below.
+  // Min-height fits the compact button height plus a space-1 gap above and below.
   'alignItems': 'center',
   'minHeight': 'calc(var(--editor-btn-h) + var(--space-1) * 2)',
   // The expanded state reserves the button row here (see below). Animating it
@@ -150,13 +142,9 @@ globalStyle(`${footerSlot} > *`, {
 // The chrome the footer slot's ACTION buttons share (Pause, Interrupt, Send and
 // the control-request actions).
 //
-// SIZE is not here. Each of those buttons carries Oat's `.small` class, which
-// states its padding and font size, and `--editor-btn-h` above is derived from
-// that class so the `[+]` button matches. A size stated here would win over the
-// class and could never lose: this rule is unlayered while Oat's `.small` sits
-// in `@layer base`, so no specificity the class could reach would beat it. That
-// is what made the class inert, and what made the pill radios below disagree
-// with their own overlay.
+// SIZE is not here. Each action reads the shared compact-control style, and
+// `--editor-btn-h` comes from the same source. A size here would reach the real
+// pill radios but not their overlay copies, which would split their geometry.
 //
 // Two things in the slot are NOT action buttons, and each is excluded.
 //
@@ -254,7 +242,7 @@ export const linkPopoverInput = style({
   'color': 'var(--foreground)',
   // The field absorbs the row's slack and yields first when the box is narrow,
   // so the two buttons stay reachable at any width. `all: unset` resets
-  // `min-width` to `auto`, which would otherwise floor an input at its default
+  // `min-width` to `auto`, which would otherwise give an input its default
   // size and reintroduce the overflow.
   'flex': '1 1 14rem',
   'minWidth': 0,
@@ -269,7 +257,7 @@ export const linkPopoverInput = style({
 export const codeLangPopoverContent = style([popoverBase, {
   // popoverBase supplies the UA-reset (position:fixed; margin:0 -- so calcPopoverPosition's
   // top/left place the popover at the trigger instead of margin:auto re-centering it) and
-  // the `:popover-open`-gated `display: flex`. This adds the picker's own box.
+  // the `display: flex` that `:popover-open` controls. This adds the picker's box.
   flexDirection: 'column',
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',

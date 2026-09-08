@@ -173,6 +173,7 @@ export function useControlResponseHandling(
     activeControlRequest,
     (request) => {
       answerOwner = request
+      answerState.setReady(!request || !props.agentId)
       // RESET FIRST, then fill in from storage if there is anything to fill in.
       // The read is asynchronous (saved answers are an unbounded family on the
       // unmirrored storage tier), and leaving the previous request's answers on
@@ -206,18 +207,22 @@ export function useControlResponseHandling(
         if (token !== restoreToken)
           return
         restoringFor = null
-        if (!saved)
+        // The user can answer while the read is in flight. Their in-memory
+        // value is newer, so the saved copy loses. Otherwise, install every
+        // saved field before the actions become available.
+        if (saved && isBlankAnswer(currentAnswer())) {
+          answerState.setSelections(saved.selections ?? {})
+          answerState.setCustomTexts(saved.customTexts ?? {})
+          answerState.setCurrentPage(saved.currentPage ?? 0)
+          answerState.setSwitches(saved.switches ?? {})
+          answerState.setChoices(saved.choices ?? {})
+        }
+        answerState.setReady(true)
+      }).catch(() => {
+        if (token !== restoreToken)
           return
-        // The user answered something while the read was in flight. What they
-        // just did is newer than what was on disk, so the saved copy loses --
-        // and the persist effect has already stored theirs.
-        if (!isBlankAnswer(currentAnswer()))
-          return
-        answerState.setSelections(saved.selections ?? {})
-        answerState.setCustomTexts(saved.customTexts ?? {})
-        answerState.setCurrentPage(saved.currentPage ?? 0)
-        answerState.setSwitches(saved.switches ?? {})
-        answerState.setChoices(saved.choices ?? {})
+        restoringFor = null
+        answerState.setReady(true)
       })
     },
   ))
@@ -309,6 +314,8 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return
+    if (!answerState.ready())
+      return false
     const respond = respondTo(req)
     // Resolve the agent's own provider plugin -- no Claude fallback. A live agent
     // always carries a real provider, so a missing plugin means an UNSPECIFIED or

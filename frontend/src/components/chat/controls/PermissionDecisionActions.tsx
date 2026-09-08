@@ -17,7 +17,7 @@ import {
   permissionOptionLabel,
   resolvePermissionOption,
 } from './permissionOptions'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice, sessionPermissionChoice } from './permissionPresets'
+import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
 import { createControlChoice } from './types'
 
 /** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
@@ -32,7 +32,7 @@ export type PermissionOptionsGetter = (payload: Record<string, unknown>) => Wire
 
 /**
  * The shared decision row for a wire-options permission request: scope pills
- * (Once / Always / Session / Project), the permission pill group (Default /
+ * (Once / Always / Session / Project), the permission pill group (Unchanged /
  * Smart / Bypass), Deny / Allow, and one extra button per option no slot or
  * group consumed. The ACP and OpenCode families differ only in their payload
  * extraction and sender, so each provider passes its `options` getter and `send`
@@ -43,7 +43,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   send: SendPermissionOption
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options(props.request.payload)))
-  const permissionChoice = createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
+  const permissionChoice = createSessionPermissionPresetChoice(props)
   const scopeChoice = createControlChoice(() => props.answerState, ALLOW_SCOPE_CHOICE_ID)
 
   // The scope pills a payload with always options draws (Once / Always, or
@@ -62,7 +62,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       ? scopeChoice.choice()
       : scope[0].optionId
   }
-  const permissionPill = createMemo(() => buildPermissionPill(props.presets, permissionChoice))
+  const permissionPill = createMemo(() => buildSessionPermissionPill(props.presets, permissionChoice))
 
   // The option's response is AWAITED before a permission preset is applied: the
   // worker dispatches the two concurrently, and a mode change the provider cannot
@@ -73,9 +73,15 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   const handleOption = async (option: WirePermissionOption | undefined) => {
     if (!option)
       return
+    if (isAllowPermissionKind(option.kind)) {
+      await respondThenApplyPermissionPreset(
+        props.send(props.onRespond, props.request.requestId, option.optionId),
+        props.presets,
+        permissionChoice.choice(),
+      )
+      return
+    }
     await props.send(props.onRespond, props.request.requestId, option.optionId)
-    if (isAllowPermissionKind(option.kind))
-      await applyPermissionPreset(props.presets, permissionChoice.choice())
   }
 
   const handleDecision = (polarity: 'allow' | 'reject') =>
@@ -88,24 +94,26 @@ export const PermissionDecisionActions: Component<ActionsProps & {
 
   return (
     <ControlActionRow
+      leading={(
+        <Show when={pillCluster()}>
+          <div class={styles.controlRequestSwitches}>
+            <Show when={scopeOptions()}>
+              {options => (
+                <ControlAllowScopePillGroup
+                  options={options()}
+                  selected={selectedScope() ?? options()[0].key}
+                  onSelect={scopeChoice.setChoice}
+                />
+              )}
+            </Show>
+            <Show when={permissionPill()}>
+              {pill => <ControlPermissionPillGroup pill={pill()} />}
+            </Show>
+          </div>
+        </Show>
+      )}
       primary={(
         <>
-          <Show when={pillCluster()}>
-            <div class={styles.controlRequestSwitches}>
-              <Show when={scopeOptions()}>
-                {options => (
-                  <ControlAllowScopePillGroup
-                    options={options()}
-                    selected={selectedScope() ?? options()[0].key}
-                    onSelect={scopeChoice.setChoice}
-                  />
-                )}
-              </Show>
-              <Show when={permissionPill()}>
-                {pill => <ControlPermissionPillGroup pill={pill()} />}
-              </Show>
-            </div>
-          </Show>
           <ButtonGroup>
             <Show when={layout().negative}>
               <button

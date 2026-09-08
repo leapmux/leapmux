@@ -43,28 +43,30 @@ export const ControlDecisionFooter: Component<{
 
   return (
     <ControlActionRow
+      leading={(
+        <Show when={!props.hasEditorContent && leadingOptions()}>
+          <div class={styles.controlRequestSwitches}>
+            <Index each={switches()}>
+              {item => (
+                <CompactSwitch
+                  checked={item().checked}
+                  onChange={item().onChange}
+                  data-testid={item().id}
+                  fontSize="var(--text-8)"
+                >
+                  {item().label}
+                  {item().suffix}
+                </CompactSwitch>
+              )}
+            </Index>
+            <Show when={props.permissionPill?.()}>
+              {pill => <ControlPermissionPillGroup pill={pill()} />}
+            </Show>
+          </div>
+        </Show>
+      )}
       primary={(
         <>
-          <Show when={!props.hasEditorContent && leadingOptions()}>
-            <div class={styles.controlRequestSwitches}>
-              <Index each={switches()}>
-                {item => (
-                  <CompactSwitch
-                    checked={item().checked}
-                    onChange={item().onChange}
-                    data-testid={item().id}
-                    fontSize="var(--text-8)"
-                  >
-                    {item().label}
-                    {item().suffix}
-                  </CompactSwitch>
-                )}
-              </Index>
-              <Show when={props.permissionPill?.()}>
-                {pill => <ControlPermissionPillGroup pill={pill()} />}
-              </Show>
-            </div>
-          </Show>
           <button
             class={actionButtonClass(true)}
             onMouseDown={keepFocusOnPress}

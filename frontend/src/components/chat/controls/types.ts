@@ -46,6 +46,9 @@ export interface ControlAnswerState {
   setSwitches: Setter<Record<string, boolean>>
   choices: Accessor<Record<string, string>>
   setChoices: Setter<Record<string, string>>
+  /** Whether the active request's persisted answer is ready to use. */
+  ready: Accessor<boolean>
+  setReady: Setter<boolean>
 }
 
 /** The saved shape of a {@link ControlAnswerState}, as it is stored and restored. */
@@ -69,6 +72,7 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
   const [currentPage, setCurrentPage] = createSignal(seed.currentPage ?? 0)
   const [switches, setSwitches] = createSignal(seed.switches ?? {})
   const [choices, setChoices] = createSignal(seed.choices ?? {})
+  const [ready, setReady] = createSignal(true)
   return {
     selections,
     setSelections,
@@ -80,6 +84,8 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
     setSwitches,
     choices,
     setChoices,
+    ready,
+    setReady,
   }
 }
 
@@ -110,11 +116,9 @@ export function createControlSwitch(state: () => ControlAnswerState, id: string)
 
 /**
  * The one-of-N sibling of {@link createControlSwitch}: binds ONE pill group of a
- * control to the shared answer record, by the group's own id. The optional
- * fallback is the caller's to pass, and only for a group whose "no choice" state
- * is a meaningful key (the permission pill's `'default'`): a group with no
- * meaningful unset key (the allow-scope pill) reads `undefined` until a
- * selection lands, instead of a sentinel string every reader must know about.
+ * control to the shared answer record, by the group's own id. A caller can
+ * supply a fallback when its domain has a meaningful unset key. Without one,
+ * the choice stays `undefined` until a selection lands.
  */
 export function createControlChoice(state: () => ControlAnswerState, id: string, fallback?: string) {
   const answer = state()

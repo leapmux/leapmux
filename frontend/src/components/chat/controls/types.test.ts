@@ -24,13 +24,14 @@ describe('toRpcId', () => {
 })
 
 describe('createControlAnswerState', () => {
-  it('starts every field empty with no seed', () => {
+  it('starts each saved field empty and marks the state ready', () => {
     const state = createControlAnswerState()
     expect(state.selections()).toEqual({})
     expect(state.customTexts()).toEqual({})
     expect(state.currentPage()).toBe(0)
     expect(state.switches()).toEqual({})
     expect(state.choices()).toEqual({})
+    expect(state.ready()).toBe(true)
   })
 
   // A partial seed is the shape that comes back from storage: an older record

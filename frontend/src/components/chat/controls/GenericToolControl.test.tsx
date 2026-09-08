@@ -2,7 +2,6 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
-import { hoverForTooltip } from '~/test-support/clipStub'
 import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
 
@@ -90,7 +89,7 @@ describe('genericToolActions', () => {
     expect(decoded.response.request_id).toBe('req-10')
     expect(decoded.response.response.behavior).toBe('allow')
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
-    // Default applies nothing -- the answer is the whole decision.
+    // Unchanged applies nothing -- the answer is the whole decision.
     expect(apply).not.toHaveBeenCalled()
   })
 
@@ -268,9 +267,7 @@ describe('genericToolActions', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Permissions' })).not.toBeInTheDocument()
   })
 
-  // The group carries the one explanation of its consequence: a selected preset
-  // applies when the request is allowed, so the hover text must stay attached.
-  it('explains through a tooltip that the selected preset applies on allow', () => {
+  it('describes that the selected preset applies on allow', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
@@ -282,7 +279,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    const tooltip = hoverForTooltip(screen.getByTestId('control-permissions-pill-group'))
-    expect(tooltip?.textContent).toContain('selected preset applies')
+    expect(screen.getByRole('radiogroup', { name: 'Permissions' }))
+      .toHaveAccessibleDescription('The selected preset applies when you allow or approve this request')
   })
 })

@@ -7,18 +7,16 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyPermissionPreset,
   buildPermissionPill,
+  buildSessionPermissionPill,
   createPermissionPresetChoice,
   permissionPillOptions,
-  planApprovalPresets,
-  presetPermissionMode,
+  respondThenApplyPermissionPreset,
   sessionPermissionChoice,
 } from './permissionPresets'
 import { createControlAnswerState } from './types'
 
 const SMART = { sets: { permissionMode: 'auto' } }
 const BYPASS = { sets: { permissionMode: 'bypassPermissions' } }
-const COPILOT_SMART = { sets: { copilot_assisted_approval: 'on' } }
-const COPILOT_BYPASS = { sets: { allow_all: 'on' } }
 
 function controller(partial: Partial<PermissionPresetController> = {}): PermissionPresetController {
   return { smart: SMART, bypass: BYPASS, apply: vi.fn(), ...partial }
@@ -41,7 +39,7 @@ describe('permissionPillOptions', () => {
   })
 
   it('omits a preset the controller does not carry', () => {
-    // ZCode and Codex ship no smart preset; their group is Default + Bypass.
+    // ZCode and Codex ship no smart preset; their group is Unchanged + Bypass.
     expect(permissionPillOptions(controller({ smart: undefined }))).toEqual([
       { key: 'unspecified', label: 'Unchanged', icon: Minus },
       { key: 'bypass', label: 'Bypass' },
@@ -51,6 +49,13 @@ describe('permissionPillOptions', () => {
   it('offers no group without presets', () => {
     expect(permissionPillOptions(undefined)).toBeUndefined()
     expect(permissionPillOptions(controller({ smart: undefined, bypass: undefined }))).toBeUndefined()
+  })
+})
+
+describe('buildSessionPermissionPill', () => {
+  it('requires a handler that can apply the selected preset', () => {
+    expect(buildSessionPermissionPill(controller(), openingChoice('smart'))).toBeDefined()
+    expect(buildSessionPermissionPill(controller({ apply: undefined }), openingChoice('smart'))).toBeUndefined()
   })
 })
 
@@ -118,9 +123,10 @@ describe('applyPermissionPreset', () => {
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
   })
 
-  it('applies nothing for Unchanged, a missing controller, or a withdrawn preset', async () => {
+  it('applies nothing for Unchanged, a missing handler, a missing controller, or a withdrawn preset', async () => {
     const apply = vi.fn()
     await applyPermissionPreset(controller({ apply }), 'unspecified')
+    await applyPermissionPreset(controller({ apply: undefined }), 'bypass')
     await applyPermissionPreset(undefined, 'bypass')
     // The catalog stopped offering smart while the stored choice still says it.
     await applyPermissionPreset(controller({ apply, smart: undefined }), 'smart')
@@ -128,38 +134,33 @@ describe('applyPermissionPreset', () => {
   })
 })
 
-describe('presetPermissionMode', () => {
-  it('reads the mode off the chosen preset and nothing off Unchanged', () => {
-    expect(presetPermissionMode(controller(), 'bypass')).toBe('bypassPermissions')
-    expect(presetPermissionMode(controller(), 'smart')).toBe('auto')
-    expect(presetPermissionMode(controller(), 'unspecified')).toBeUndefined()
+describe('respondThenApplyPermissionPreset', () => {
+  it('waits for the response before it applies the preset', async () => {
+    let finishResponse: () => void = () => {}
+    const respond = vi.fn(() => new Promise<void>((resolve) => {
+      finishResponse = resolve
+    }))
+    const apply = vi.fn()
+
+    const result = respondThenApplyPermissionPreset(respond(), controller({ apply }), 'bypass')
+    expect(respond).toHaveBeenCalledOnce()
+    expect(apply).not.toHaveBeenCalled()
+
+    finishResponse()
+    await result
+    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
   })
 
-  it('attaches nothing for a preset that switches some other axis', () => {
-    // Copilot's presets are not permission modes at all.
-    expect(presetPermissionMode(controller({ smart: COPILOT_SMART, bypass: COPILOT_BYPASS }), 'bypass')).toBeUndefined()
-  })
-})
+  it('does not apply the preset when the response fails', async () => {
+    const responseError = new Error('response failed')
+    const apply = vi.fn()
 
-describe('planApprovalPresets', () => {
-  it('keeps only the presets a plan approval response can act on', () => {
-    const filtered = planApprovalPresets(controller())!
-    expect(filtered.smart).toBe(SMART)
-    expect(filtered.bypass).toBe(BYPASS)
-    // No `apply` travels with the plan view: the mode rides inside the
-    // response, and the narrower type keeps a settings change out of it.
-    expect('apply' in filtered).toBe(false)
-  })
-
-  it('drops a preset with no permission mode, keeping the other', () => {
-    const filtered = planApprovalPresets(controller({ smart: COPILOT_SMART }))!
-    expect(filtered.smart).toBeUndefined()
-    expect(filtered.bypass).toBe(BYPASS)
-  })
-
-  it('offers nothing when no preset carries a mode', () => {
-    expect(planApprovalPresets(controller({ smart: COPILOT_SMART, bypass: COPILOT_BYPASS }))).toBeUndefined()
-    expect(planApprovalPresets(undefined)).toBeUndefined()
+    await expect(respondThenApplyPermissionPreset(
+      Promise.reject(responseError),
+      controller({ apply }),
+      'bypass',
+    )).rejects.toBe(responseError)
+    expect(apply).not.toHaveBeenCalled()
   })
 })
 

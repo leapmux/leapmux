@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { BannerActionsProps, BannerContentProps } from './controls/types'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
-import { createMemo, Show } from 'solid-js'
+import { createMemo, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -64,22 +64,39 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   return (
     <Show when={props.request}>
       {request => (
-        <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
-          {question => (
-            <AskUserQuestionActions
-              {...props}
-              request={request()}
-              questions={question().questions}
-              onSubmitAnswers={() => question().capability.sendAnswer(
-                request(),
-                props.onRespond,
-                question().questions,
-                props.answerState,
-              )}
-              onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
-            />
-          )}
-        </Show>
+        <fieldset
+          data-testid="control-actions"
+          disabled={!props.answerState.ready()}
+          aria-busy={!props.answerState.ready() ? 'true' : undefined}
+          style={{ display: 'contents' }}
+          ref={(element) => {
+            const blockUntilReady = (event: MouseEvent) => {
+              if (props.answerState.ready())
+                return
+              event.preventDefault()
+              event.stopPropagation()
+            }
+            element.addEventListener('click', blockUntilReady, true)
+            onCleanup(() => element.removeEventListener('click', blockUntilReady, true))
+          }}
+        >
+          <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
+            {question => (
+              <AskUserQuestionActions
+                {...props}
+                request={request()}
+                questions={question().questions}
+                onSubmitAnswers={() => question().capability.sendAnswer(
+                  request(),
+                  props.onRespond,
+                  question().questions,
+                  props.answerState,
+                )}
+                onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
+              />
+            )}
+          </Show>
+        </fieldset>
       )}
     </Show>
   )

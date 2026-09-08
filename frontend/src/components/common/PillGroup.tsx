@@ -1,9 +1,11 @@
 import type { LucideIcon } from 'lucide-solid'
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import type { Component } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'solid-js'
 import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { nextRovingValue } from '~/lib/rovingFocus'
 import { sameValueZero, shallowEqualMapKeyArrays } from '~/lib/shallowEqual'
+import { srOnly } from '~/styles/shared.css'
 import { Icon } from './Icon'
 import * as styles from './PillGroup.css'
 import { Tooltip } from './Tooltip'
@@ -57,6 +59,13 @@ interface SelectionMetrics {
   left: number
   right: number
 }
+
+/** The content shared by a radio and its selection-overlay copy. */
+const PillOptionContent: Component<Pick<PillOptionSpec<unknown>, 'label' | 'icon'>> = props => (
+  <Show when={props.icon} fallback={props.label}>
+    {icon => <Icon icon={icon()} size={OPTION_ICON_SIZE} />}
+  </Show>
+)
 
 /** One radio in the group. */
 function PillOption(props: {
@@ -115,9 +124,7 @@ function PillOption(props: {
       onClick={props.onClick}
       onFocus={props.onFocus}
     >
-      <Show when={props.icon} fallback={props.label}>
-        {icon => <Icon icon={icon()} size={OPTION_ICON_SIZE} />}
-      </Show>
+      <PillOptionContent label={props.label} icon={props.icon} />
     </button>
   )
 
@@ -150,9 +157,12 @@ export function PillGroup<K>(props: {
   onSelect: (key: K) => void
   /** Show the current selection and refuse all changes. */
   disabled?: boolean
-  /** Draw the group at Oat's `.small` button metrics. */
+  /** Draw the group at the shared compact-control metrics. */
   small?: boolean
+  /** Explanation that assistive technology associates with the radio group. */
+  description?: string
 }) {
+  const descriptionId = createUniqueId()
   const optionsByKey = createMemo(() => optionMap(props.label, props.options))
   const optionKeys = createMemo(
     () => [...optionsByKey().keys()],
@@ -374,6 +384,7 @@ export function PillGroup<K>(props: {
       classList={{ [styles.pillGroupDisabled]: props.disabled === true }}
       role="radiogroup"
       aria-label={props.label}
+      aria-describedby={props.description ? descriptionId : undefined}
       onKeyDown={onKeyDown}
       onFocusOut={onFocusOut}
     >
@@ -413,9 +424,7 @@ export function PillGroup<K>(props: {
                         }}
                         data-label={option().label}
                       >
-                        <Show when={option().icon} fallback={option().label}>
-                          {icon => <Icon icon={icon()} size={OPTION_ICON_SIZE} />}
-                        </Show>
+                        <PillOptionContent label={option().label} icon={option().icon} />
                       </span>
                     )}
                   </Show>
@@ -452,6 +461,9 @@ export function PillGroup<K>(props: {
           </Show>
         )}
       </For>
+      <Show when={props.description}>
+        {description => <span id={descriptionId} class={srOnly}>{description()}</span>}
+      </Show>
     </div>
   )
 }

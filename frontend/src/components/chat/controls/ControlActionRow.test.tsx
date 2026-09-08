@@ -1,17 +1,16 @@
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
 
 describe('actionButtonClass', () => {
   it('sizes a filled action', () => {
-    expect(actionButtonClass()).toBe('small')
-    expect(actionButtonClass(false)).toBe('small')
+    expect(actionButtonClass()).toBe(compactControl)
+    expect(actionButtonClass(false)).toBe(compactControl)
   })
 
   it('keeps the outline variant beside the size', () => {
-    // Oat reads the two as independent classes, so an outline action must
-    // carry both. Dropping either one restores the full-size metrics.
-    expect(actionButtonClass(true)).toBe('outline small')
+    expect(actionButtonClass(true)).toBe(`${compactControl} outline`)
   })
 })
 
@@ -46,6 +45,20 @@ describe('controlActionRow', () => {
     const text = screen.getByTestId('control-footer').textContent ?? ''
     expect(text.indexOf('Reject')).toBeLessThan(text.indexOf('1 2 3'))
     expect(text.indexOf('1 2 3')).toBeLessThan(text.indexOf('Submit'))
+  })
+
+  it('puts leading controls before decisions in the right-hand zone', () => {
+    render(() => (
+      <ControlActionRow
+        leading={<span data-testid="choice">Choice</span>}
+        primary={<button data-testid="allow">Allow</button>}
+      />
+    ))
+
+    const choice = screen.getByTestId('choice')
+    const allow = screen.getByTestId('allow')
+    expect(choice.parentElement).toBe(allow.parentElement)
+    expect(choice.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('marks every row with one test id, whatever zones it fills', () => {

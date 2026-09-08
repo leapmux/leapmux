@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ProviderPermissionPreset, ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
+import type { PermissionPresetKind, ProviderPermissionPreset, ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -9,7 +9,7 @@ import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
-import { PERMISSION_PRESET_LABELS, permissionPresetActive, permissionPresetAvailable, usablePresets } from '~/components/chat/providerSettings'
+import { PERMISSION_PRESET_SPECS, permissionPresetActive, permissionPresetAvailable, usablePresets } from '~/components/chat/providerSettings'
 import { hasOptions } from '~/components/chat/settingsGroups'
 import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
@@ -153,19 +153,12 @@ function hasMenuRows(s: MenuStructure): boolean {
   return s.groupIds.length > 0 || !!s.branchName || !!s.agentInfo || s.permissionActions.length > 0
 }
 
-type PermissionActionKind = 'smart' | 'bypass'
-
 interface PermissionAction {
-  kind: PermissionActionKind
+  kind: PermissionPresetKind
   label: string
   testId: string
   preset: ProviderPermissionPreset
 }
-
-const PERMISSION_ACTIONS: ReadonlyArray<Omit<PermissionAction, 'preset'>> = [
-  { kind: 'smart', label: PERMISSION_PRESET_LABELS.smart.full, testId: 'composer-smart-permissions' },
-  { kind: 'bypass', label: PERMISSION_PRESET_LABELS.bypass.full, testId: 'composer-bypass-permissions' },
-]
 
 function permissionActionsFor(
   provider: AgentProvider | undefined,
@@ -175,10 +168,10 @@ function permissionActionsFor(
   // menu and a banner's pills cannot offer different preset sets.
   const usable = usablePresets(pluginFor(provider)?.permissionPresets, groups)
   const actions: PermissionAction[] = []
-  for (const action of PERMISSION_ACTIONS) {
-    const preset = usable[action.kind]
+  for (const spec of PERMISSION_PRESET_SPECS) {
+    const preset = usable[spec.kind]
     if (preset)
-      actions.push({ ...action, preset })
+      actions.push({ kind: spec.kind, label: spec.fullLabel, testId: `composer-${spec.kind}-permissions`, preset })
   }
   return actions
 }

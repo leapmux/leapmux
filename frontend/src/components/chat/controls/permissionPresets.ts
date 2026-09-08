@@ -1,13 +1,11 @@
 import type { Accessor } from 'solid-js'
-import type { PermissionPresetController, ProviderPermissionPresets } from '../providerSettings'
+import type { PermissionPresetController, PermissionPresetKind, ProviderPermissionPresets } from '../providerSettings'
 import type { ActionsProps } from './types'
 import type { PillOptions, PillOptionSpec } from '~/components/common/PillGroup'
-import type { PermissionMode } from '~/utils/controlResponse'
 
 import { Minus } from 'lucide-solid'
-import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { isPillOptions } from '~/components/common/PillGroup'
-import { PERMISSION_PRESET_LABELS } from '../providerSettings'
+import { PERMISSION_PRESET_SPECS } from '../providerSettings'
 import { createControlChoice } from './types'
 
 /**
@@ -18,21 +16,10 @@ import { createControlChoice } from './types'
  */
 export type PermissionPresetChoice
   = | 'unspecified'
-    | 'smart'
-    | 'bypass'
+    | PermissionPresetKind
 
 /** The answer-state key the permission pill group's choice is stored under. */
 const CONTROL_PERMISSION_CHOICE_ID = 'control-permissions-pill'
-
-/**
- * The choice a PLAN APPROVAL opens on.
- *
- * Approving a plan is the moment the user hands the agent the work, so the
- * banner offers Smart rather than asking for it again on the first tool call.
- * A provider whose catalog offers no smart preset draws no smart pill, and
- * `buildPermissionPill` clamps this to `unspecified` there.
- */
-export const PLAN_APPROVAL_PERMISSION_CHOICE: PermissionPresetChoice = 'smart'
 
 /**
  * The choice an ORDINARY permission request opens on: whichever preset the
@@ -76,6 +63,13 @@ export function createPermissionPresetChoice(
   }
 }
 
+/** Creates the permission choice for an ordinary request. */
+export function createSessionPermissionPresetChoice(
+  props: Pick<ActionsProps, 'answerState' | 'presets'>,
+): PermissionPresetChoiceState {
+  return createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
+}
+
 /**
  * The pill group's options: `Unchanged` first (the do-nothing state), then each
  * preset the live catalog offers. A preset the catalog does not
@@ -88,12 +82,12 @@ export function permissionPillOptions(presets: ProviderPermissionPresets | undef
     return undefined
   // An icon, not the word. This group shares one composer footer row with the
   // decision buttons, and the do-nothing option is the one that can give up its
-  // text: the other two name a preset the user is choosing. `Minus` reads as
+  // text: the other options identify a preset. `Minus` reads as
   // "no change"; the label stays as the accessible name and the tooltip.
   const options: PillOptionSpec<PermissionPresetChoice>[] = [{ key: 'unspecified', label: 'Unchanged', icon: Minus }]
-  for (const kind of ['smart', 'bypass'] as const) {
-    if (presets[kind])
-      options.push({ key: kind, label: PERMISSION_PRESET_LABELS[kind].short })
+  for (const spec of PERMISSION_PRESET_SPECS) {
+    if (presets[spec.kind])
+      options.push({ key: spec.kind, label: spec.shortLabel })
   }
   // A lone Unchanged pill is no choice at all: presets the catalog stopped
   // offering draw no group, same as no presets at all.
@@ -125,6 +119,14 @@ export function buildPermissionPill(
   return { options, selected, onSelect: choiceState.setChoice }
 }
 
+/** Builds the pill for an ordinary request that can apply a settings change. */
+export function buildSessionPermissionPill(
+  presets: PermissionPresetController | undefined,
+  choiceState: PermissionPresetChoiceState,
+): ControlPermissionPill | undefined {
+  return presets?.apply ? buildPermissionPill(presets, choiceState) : undefined
+}
+
 /**
  * Applies the chosen preset after a control request's positive answer — the same
  * `onSettingChange({ sets })` call the composer `[+]` menu's permission items make,
@@ -133,52 +135,30 @@ export function buildPermissionPill(
  * The CALLER must await the answer before calling this. The worker dispatches the
  * response and the settings change concurrently, and applying a permission mode the
  * provider cannot take live relaunches the agent -- a relaunch that won the race
- * killed the session before the answer reached it. `Unchanged`, a missing controller
- * or a preset the catalog stopped offering applies nothing.
+ * killed the session before the answer reached it. `Unchanged`, a missing
+ * apply handler, or a preset the catalog stopped offering applies nothing.
  */
 export function applyPermissionPreset(
   presets: PermissionPresetController | undefined,
   choice: PermissionPresetChoice,
 ): Promise<void> {
   const preset = choice === 'unspecified' ? undefined : presets?.[choice]
-  if (!presets || !preset)
+  if (!presets?.apply || !preset)
     return Promise.resolve()
   return Promise.resolve(presets.apply({ sets: { ...preset.sets } }))
 }
 
 /**
- * The permission mode a PLAN APPROVAL attaches to its allow envelope: the chosen
- * preset's own mode axis, or nothing for `Unchanged`.
+ * Sends the permission response before it applies the chosen preset.
  *
- * Plan approvals switch the mode INSIDE the control response rather than through a
- * separate settings change: the worker applies it atomically with the approval, and
- * a context-clearing approval restarts the agent targeted at exactly this mode -- a
- * follow-up settings RPC would race that restart. A preset that switches no
- * permission mode (Copilot's approval axes) attaches nothing here, and no provider
- * that offers a plan-approval banner has such a preset today.
+ * Some providers relaunch for a permission change. The response must reach the
+ * old session before that relaunch starts.
  */
-export function presetPermissionMode(
-  presets: ProviderPermissionPresets | undefined,
+export async function respondThenApplyPermissionPreset(
+  response: Promise<void>,
+  presets: PermissionPresetController | undefined,
   choice: PermissionPresetChoice,
-): PermissionMode | undefined {
-  return choice === 'unspecified' ? undefined : presets?.[choice]?.sets[OPTION_ID_PERMISSION_MODE]
-}
-
-/**
- * The presets a PLAN APPROVAL banner may offer: only those that switch the
- * permission mode, the one axis its single response can carry. The result carries
- * no `apply` handler — a plan approval switches the mode inside its response and
- * never fires a settings change, and the narrower type keeps that true at compile
- * time. A preset that switches some other axis (Copilot's `allow_all`) cannot act
- * there at all, so its pill is not drawn -- drawn and silently doing nothing is the
- * trap the plan banner's old bypass switch was narrowed to avoid. No provider with
- * a plan-approval banner ships such a preset today; this keeps the rule true if one
- * ever does.
- */
-export function planApprovalPresets(presets: PermissionPresetController | undefined): ProviderPermissionPresets | undefined {
-  if (!presets)
-    return undefined
-  const smart = presets.smart?.sets[OPTION_ID_PERMISSION_MODE] !== undefined ? presets.smart : undefined
-  const bypass = presets.bypass?.sets[OPTION_ID_PERMISSION_MODE] !== undefined ? presets.bypass : undefined
-  return smart || bypass ? { smart, bypass } : undefined
+): Promise<void> {
+  await response
+  await applyPermissionPreset(presets, choice)
 }
