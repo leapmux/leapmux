@@ -1,7 +1,9 @@
 import type { Terminal } from '@xterm/xterm'
 import type { CopyTextOptions } from './clipboard'
+import type { UntrustedLinkConfirmRequest } from './untrustedLinks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveVariant, themeById } from '~/styles/themes'
+import { flush } from '~/test-support/async'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
 import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, getTerminalThemePreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer, terminalThemeFor } from './terminal'
@@ -10,6 +12,15 @@ import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, ge
 // reaches it is copy-on-select, and its contract is the ARGUMENTS it passes.
 const copyTextToClipboard = vi.hoisted(() => vi.fn(async (_text: string, _options?: CopyTextOptions) => true))
 vi.mock('./clipboard', () => ({ copyTextToClipboard }))
+
+// The link handler ends at the platform gateway, and its contract is the URL
+// it hands over. Everything else in the bridge stays real, because
+// `createTerminalInstance` pulls in preferences and themes through it.
+const openExternalUrl = vi.hoisted(() => vi.fn(async (_url: string) => {}))
+vi.mock('~/api/platformBridge', async importOriginal => ({
+  ...await importOriginal<typeof import('~/api/platformBridge')>(),
+  openExternalUrl,
+}))
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -748,5 +759,87 @@ describe('terminal copy-on-select', () => {
     finally {
       dispose()
     }
+  })
+})
+
+describe('createTerminalInstance link handling', () => {
+  /** The range xterm reports for a link: 1-based, and `end.x` is inclusive. */
+  const linkRange = (startColumn: number, endColumn: number) => ({
+    start: { x: startColumn, y: 1 },
+    end: { x: endColumn, y: 1 },
+  })
+
+  /** An instance whose buffer already holds `text` on its first row. */
+  async function instanceShowing(text: string, confirmLink?: (request: UntrustedLinkConfirmRequest) => Promise<boolean>) {
+    const instance = createTerminalInstance()
+    if (confirmLink)
+      instance.setConfirmLink(confirmLink)
+    await new Promise<void>(resolve => instance.terminal.write(text, resolve))
+    return instance
+  }
+
+  beforeEach(() => {
+    openExternalUrl.mockClear()
+  })
+
+  it('installs a handler, so xterm never reaches its own confirm-and-open default', async () => {
+    const instance = await instanceShowing('')
+
+    expect(instance.terminal.options.linkHandler).toBeTruthy()
+    // Unset, so xterm's OscLinkProvider keeps refusing every scheme but
+    // http(s) before a link is ever registered.
+    expect(instance.terminal.options.linkHandler?.allowNonHttpProtocols).toBeFalsy()
+  })
+
+  it('opens a link whose text spells its own address, with no prompt', async () => {
+    const confirmLink = vi.fn(async () => true)
+    const instance = await instanceShowing('https://example.test/x', confirmLink)
+
+    instance.terminal.options.linkHandler?.activate(new MouseEvent('click'), 'https://example.test/x', linkRange(1, 22))
+    await flush()
+
+    expect(confirmLink).not.toHaveBeenCalled()
+    expect(openExternalUrl).toHaveBeenCalledWith('https://example.test/x')
+  })
+
+  it('asks first, and reports the text the terminal actually shows', async () => {
+    const confirmLink = vi.fn(async () => true)
+    const instance = await instanceShowing('Click here', confirmLink)
+
+    instance.terminal.options.linkHandler?.activate(new MouseEvent('click'), 'https://evil.example/', linkRange(1, 10))
+    await flush()
+
+    expect(confirmLink).toHaveBeenCalledWith({
+      uri: 'https://evil.example/',
+      label: 'Click here',
+      insecure: false,
+      labelMismatch: true,
+      misleadingLabel: null,
+    })
+    expect(openExternalUrl).toHaveBeenCalledWith('https://evil.example/')
+  })
+
+  it('sends a link to the prompt installed LAST, not the one it was built with', async () => {
+    // The instance is cached per terminal id and outlives the view that made
+    // it, so a stale prompt would belong to a shell that renders nothing.
+    const stale = vi.fn(async () => true)
+    const live = vi.fn(async () => true)
+    const instance = await instanceShowing('Click here', stale)
+    instance.setConfirmLink(live)
+
+    instance.terminal.options.linkHandler?.activate(new MouseEvent('click'), 'https://evil.example/', linkRange(1, 10))
+    await flush()
+
+    expect(stale).not.toHaveBeenCalled()
+    expect(live).toHaveBeenCalled()
+  })
+
+  it('refuses the link when no prompt is wired, rather than opening it unannounced', async () => {
+    const instance = await instanceShowing('Click here')
+
+    instance.terminal.options.linkHandler?.activate(new MouseEvent('click'), 'https://evil.example/', linkRange(1, 10))
+    await flush()
+
+    expect(openExternalUrl).not.toHaveBeenCalled()
   })
 })

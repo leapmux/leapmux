@@ -1,6 +1,7 @@
 import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
+import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
 import type { TerminalTab } from '~/stores/tab.types'
 import { createEffect, createMemo, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
@@ -47,6 +48,14 @@ interface TerminalViewProps {
   onResize: (id: string, cols: number, rows: number) => void
   /** Called once the terminal has painted any non-whitespace content. */
   onContentReady: (id: string) => void
+  /**
+   * Asks the user before a hyperlink in the terminal opens.
+   *
+   * Threaded from the shell rather than built here, because the prompt it
+   * raises is an app-shell dialog. Each mount hands the current one to the
+   * xterm instance, which is cached and outlives this component.
+   */
+  confirmLink: UntrustedLinkConfirm
   pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
   writeRef?: (fn: (data: string) => void) => void
 }
@@ -222,6 +231,38 @@ if (typeof window !== 'undefined') {
     instance.sendInput(utf8Encoder.encode(text))
     return true
   }
+  // E2E hook: where on screen a piece of the active terminal's text sits, as
+  // viewport coordinates a real mouse click can use.
+  //
+  // A spec that clicks an OSC 8 hyperlink has no other way to find it. The
+  // WebGL renderer paints to a canvas and leaves `.xterm-rows` empty, so there
+  // is no element to target, and the link layer draws no element of its own
+  // either. Returning the POINT keeps xterm's own hit testing in the test --
+  // the click still goes through the mouse.
+  ;(window as any).__activeTerminalPointAt = (text: string) => {
+    const instance = getActiveInstance()
+    const screen = instance?.terminal.element?.querySelector('.xterm-screen')
+    if (!instance || !screen)
+      return null
+    const terminal = instance.terminal
+    const buffer = terminal.buffer.active
+    for (let row = 0; row < terminal.rows; row++) {
+      const line = buffer.getLine(buffer.viewportY + row)
+      const column = line?.translateToString(true).indexOf(text) ?? -1
+      if (column < 0)
+        continue
+      const rect = screen.getBoundingClientRect()
+      const rowHeight = rect.height / terminal.rows
+      return {
+        x: rect.left + ((column + text.length / 2) * rect.width) / terminal.cols,
+        y: rect.top + (row + 0.5) * rowHeight,
+        // A cell on another row, for a caller that has to make xterm ask for
+        // the link again. See `clickTerminalText`.
+        awayY: rect.top + (row === 0 ? 1.5 : 0.5) * rowHeight,
+      }
+    }
+    return null
+  }
   // E2E hooks for the WebGL context pool: assert that the number of live
   // contexts stays bounded and that hidden tabs hold none.
   ;(window as any).__webglTerminalCount = () => webglPool.size()
@@ -264,6 +305,7 @@ const TerminalContainer: Component<{
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onContentReady: (id: string) => void
+  confirmLink: UntrustedLinkConfirm
 }> = (props) => {
   let ref: HTMLDivElement | undefined
 
@@ -286,6 +328,12 @@ const TerminalContainer: Component<{
       instances.set(id, instance)
       notifyTerminalInstanceReady(id)
     }
+    // On every mount, and for a cached instance too: the prompt belongs to the
+    // app shell, and this component is the newest thing that can reach a live
+    // one. Tracked, so a shell that hands down a different prompt replaces the
+    // one the cached instance holds. See `TerminalInstance.setConfirmLink`.
+    const mounted = instance
+    createEffect(() => mounted.setConfirmLink(props.confirmLink))
 
     // xterm's `Terminal.open()` is idempotent in a way that breaks
     // re-mount: on the second call it sees `this.element` already set and
@@ -695,6 +743,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     onInput={props.onInput}
                     onResize={props.onResize}
                     onContentReady={props.onContentReady}
+                    confirmLink={props.confirmLink}
                   />
                 )}
               >

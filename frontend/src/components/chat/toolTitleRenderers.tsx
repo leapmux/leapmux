@@ -4,6 +4,7 @@ import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
+import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import {
   toolInputCode,
   toolInputPath,
@@ -111,7 +112,13 @@ export function renderUrlTitle(url?: string): JSX.Element | null {
   if (!url)
     return null
   return url.startsWith('https://')
-    ? <span class={toolInputText}><a href={url} target="_blank" rel="noopener noreferrer nofollow">{url}</a></span>
+    ? (
+        <span class={toolInputText}>
+          {/* Agent-authored, so the click takes the same prompt a terminal
+              hyperlink takes -- see `interceptUntrustedLinkClicks`. */}
+          <a href={url} target="_blank" rel="noopener noreferrer nofollow" {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}>{url}</a>
+        </span>
+      )
     : <span class={toolInputText}>{url}</span>
 }
 

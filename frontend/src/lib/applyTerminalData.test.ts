@@ -23,6 +23,7 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
     webglAllowed: false,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
+    setConfirmLink: vi.fn(),
     dispose: vi.fn(),
     _log: log,
   }

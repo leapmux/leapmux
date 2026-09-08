@@ -11,6 +11,7 @@ import { createMarkdownParser } from './markdownParse'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { dualThemeTokenOptions } from './shikiThemes'
+import { UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 /**
  * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
@@ -112,6 +113,12 @@ function rehypeExternalLinks() {
         // `rel` is a space-separated token list, which hast models as an array;
         // hast-util-to-html joins it back into `rel="noopener noreferrer nofollow"`.
         node.properties.rel = ['noopener', 'noreferrer', 'nofollow']
+        // An agent wrote both the text and the address, so the two may
+        // disagree on purpose. The mark is what routes the click through the
+        // same prompt a terminal hyperlink takes. Set HERE, on the one pass
+        // every markdown render path already ends with, so a future path
+        // cannot forget it -- the same argument `withHardeningTail` makes.
+        node.properties[UNTRUSTED_LINK_ATTRIBUTE] = ''
       }
       else if (parent && typeof index === 'number') {
         // Non-http(s) link — unwrap: replace <a> with its children

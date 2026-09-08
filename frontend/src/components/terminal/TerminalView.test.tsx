@@ -13,6 +13,11 @@ import { webglPool } from '~/lib/webglTerminalPool'
 import { compositionPreview } from '~/test-support/compositionPreview'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
+// Every render below needs the prop, and none of these suites exercise the
+// link flow -- the prompt and the policy have their own tests. Refusing is
+// the fail-closed default the production fallback uses too.
+const stubConfirmLink = async () => false
+
 const mockCreateTerminalInstance = vi.fn()
 // Overridable only where a test needs to drive the disposal-capture guard; the
 // default delegates to the real implementation so every other suite is
@@ -118,6 +123,7 @@ function makeMockTerminalInstance(): TerminalInstance {
     webglAllowed: false,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
+    setConfirmLink: vi.fn(),
     dispose: vi.fn(),
   }
 }
@@ -142,6 +148,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[
             { id: 'vis-A', ...baseTab },
             { id: 'hid-B', ...baseTab },
@@ -193,6 +200,7 @@ describe('terminalView', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={terminals()}
           activeTerminalId="term-1"
           visible
@@ -218,6 +226,50 @@ describe('terminalView', () => {
     expect(mockCreateTerminalInstance.mock.calls.length, 'and no xterm was re-created').toBe(createCalls)
   })
 
+  it('hands the link prompt to a cached instance on every mount', async () => {
+    // The instance outlives the view, and the prompt it must reach belongs to
+    // the app shell -- which an error boundary can replace under it. A prompt
+    // installed at construction alone would then leave a click waiting on a
+    // dialog that nothing renders.
+    const instance = makeMockTerminalInstance()
+    const setConfirmLink = instance.setConfirmLink as ReturnType<typeof vi.fn>
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const tab = (): TerminalTab => ({
+      id: 'term-cached',
+      type: TabType.TERMINAL,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    } as TerminalTab)
+    const view = (confirmLink: () => Promise<boolean>) => (
+      <PreferencesProvider>
+        <TerminalView
+          confirmLink={confirmLink}
+          terminals={[tab()]}
+          activeTerminalId="term-cached"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    )
+
+    const first = render(() => view(stubConfirmLink))
+    await waitFor(() => expect(setConfirmLink).toHaveBeenCalled())
+    first.unmount()
+
+    const second = vi.fn(async () => true)
+    setConfirmLink.mockClear()
+    render(() => view(second))
+    await waitFor(() => expect(setConfirmLink).toHaveBeenCalled())
+
+    // The remount installed a prompt, and it routes to the CURRENT props.
+    const installed = setConfirmLink.mock.calls.at(-1)?.[0] as (r: unknown) => Promise<boolean>
+    await installed({})
+    expect(second).toHaveBeenCalled()
+  })
+
   // Bell during snapshot replay is owned by the worker-side test suite
   // (service/terminal_test.go); TerminalView no longer wires xterm onBell.
 
@@ -233,6 +285,7 @@ describe('terminalView', () => {
     const { findByTestId, findByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
@@ -262,6 +315,7 @@ describe('terminalView', () => {
     const { findByTestId, findByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
@@ -290,6 +344,7 @@ describe('terminalView', () => {
     const { queryByTestId, queryByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{
             id: 'term-exited-empty',
             type: TabType.TERMINAL,
@@ -338,6 +393,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={terminals()}
           activeTerminalId="dispose-test-A"
           visible
@@ -386,6 +442,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[
             { id: 'switch-A', ...baseTab },
             { id: 'switch-B', ...baseTab },
@@ -440,6 +497,7 @@ describe('terminalView', () => {
       render(() => (
         <PreferencesProvider>
           <TerminalView
+            confirmLink={stubConfirmLink}
             terminals={[{ id: 'theme-A', ...baseTab }]}
             activeTerminalId="theme-A"
             visible
@@ -520,6 +578,7 @@ describe('terminalView', () => {
       render(() => (
         <PreferencesProvider>
           <TerminalView
+            confirmLink={stubConfirmLink}
             terminals={[{ id: 'themed-A', ...baseTab }]}
             activeTerminalId="themed-A"
             visible
@@ -529,6 +588,7 @@ describe('terminalView', () => {
             onContentReady={vi.fn()}
           />
           <TerminalView
+            confirmLink={stubConfirmLink}
             terminals={[{ id: 'themed-B', ...baseTab }]}
             activeTerminalId="themed-B"
             visible
@@ -582,6 +642,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{
             id: 'term-1',
             type: TabType.TERMINAL,
@@ -633,6 +694,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={terminals}
           activeTerminalId="term-late-screen"
           visible
@@ -681,6 +743,7 @@ describe('terminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={terminals}
           activeTerminalId="term-no-double-write"
           visible
@@ -742,6 +805,7 @@ describe('disposeTerminalInstance scrollback capture', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
           activeTerminalId={id}
           visible
@@ -838,6 +902,7 @@ describe('terminalView IME wiring', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
           activeTerminalId={id}
           visible
@@ -1022,6 +1087,7 @@ describe('terminalView focus while a tab is being renamed', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{ id: 'focus-guard', ...baseTab }]}
           activeTerminalId="focus-guard"
           visible
@@ -1058,6 +1124,7 @@ describe('terminalView focus while a tab is being renamed', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          confirmLink={stubConfirmLink}
           terminals={[{ id: 'no-tabbar', ...baseTab }]}
           activeTerminalId="no-tabbar"
           visible

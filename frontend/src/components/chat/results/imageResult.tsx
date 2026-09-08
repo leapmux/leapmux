@@ -4,6 +4,7 @@ import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
+import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
 
 /**
@@ -180,6 +181,7 @@ function ImageResultPlaceholder(props: {
               target="_blank"
               rel="noopener noreferrer nofollow"
               referrerpolicy="no-referrer"
+              {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}
             >
               open ↗
             </a>

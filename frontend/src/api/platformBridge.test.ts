@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -12,6 +12,11 @@ vi.mock('~/lib/shortcuts/platform', () => ({
   isMac: isMacMock,
   getPlatform: () => (isMacMock() ? 'mac' : 'linux'),
 }))
+
+// Only `openExternalUrl` reaches a toast from this module, and its contract is
+// the MESSAGE it reports -- not oat's DOM, which jsdom has no host for.
+const showWarnToastWithLoggedCause = vi.hoisted(() => vi.fn())
+vi.mock('~/components/common/Toast', () => ({ showWarnToastWithLoggedCause }))
 
 describe('desktopFetch', () => {
   beforeEach(() => {
@@ -897,5 +902,95 @@ describe('parseRelayClosePayload', () => {
 
   it('does not treat a truthy-but-non-true wasClean as clean', () => {
     expect(parseRelayClosePayload({ wasClean: 1 }).wasClean).toBe(false)
+  })
+})
+
+describe('openExternalUrl', () => {
+  let openSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    showWarnToastWithLoggedCause.mockClear()
+    // jsdom's window.open is a stub that logs "not implemented"; replace it so
+    // the browser branch is observable and quiet.
+    openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+  })
+
+  afterEach(() => {
+    openSpy.mockRestore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('opens a new tab with no opener in the browser build', async () => {
+    await openExternalUrl('https://example.test/path')
+
+    expect(openSpy).toHaveBeenCalledWith('https://example.test/path', '_blank', 'noopener,noreferrer')
+  })
+
+  it('routes to the opener plugin under the desktop shell', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: { cmd: string, args: unknown }[] = []
+    mockIPC((cmd, args) => {
+      invoked.push({ cmd, args })
+      return null
+    })
+
+    await openExternalUrl('https://example.test/path')
+
+    // The same command the opener plugin's own click listener runs for an
+    // `<a target="_blank">`, which is the whole reason no capability changes.
+    expect(invoked.map(i => i.cmd)).toContain('plugin:opener|open_url')
+    // And never the browser branch: window.open returns null in the webview.
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+
+  it('reports a refused open instead of rejecting', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('opener.open_url not allowed. Command not found')
+    })
+
+    // Must not reject: the caller fires this from an event handler with no
+    // error sink, and a rejection there becomes "Something went wrong".
+    await expect(openExternalUrl('https://example.test/')).resolves.toBeUndefined()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledWith('Could not open the link', expect.any(Error))
+  })
+
+  it.each([
+    ['mailto:someone@example.test'],
+    ['tel:+15550100'],
+  ])('hands %s to the opener too, matching the plugin scope', async (url) => {
+    // This gateway mirrors `allow-default-urls`, which is wider than the
+    // TERMINAL policy: `classifyUntrustedLink` refuses both of these before a
+    // click ever reaches here, and a first-party `mailto:` link must still work.
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: string[] = []
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return null
+    })
+
+    await openExternalUrl(url)
+
+    expect(invoked).toContain('plugin:opener|open_url')
+  })
+
+  it.each([
+    ['file:///etc/passwd'],
+    ['javascript:alert(1)'],
+    ['vscode://file/etc/passwd'],
+    ['not a url at all'],
+  ])('refuses %s without reaching either backend', async (url) => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: string[] = []
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return null
+    })
+
+    await openExternalUrl(url)
+
+    expect(invoked).toEqual([])
+    expect(openSpy).not.toHaveBeenCalled()
   })
 })

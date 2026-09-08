@@ -91,3 +91,58 @@ export async function sendActiveTerminalInput(page: Page, text: string): Promise
     return typeof fn === 'function' ? fn(s) === true : false
   }, text)
 }
+
+/**
+ * Click a piece of the active terminal's text with a real mouse.
+ *
+ * The coordinates come from the app's own buffer-to-screen hook, because the
+ * WebGL renderer paints to a canvas: there is no element for a Playwright
+ * locator to find, and an OSC 8 hyperlink adds none of its own. Retried,
+ * because the shell's output reaches the buffer after the command returns.
+ */
+export async function clickTerminalText(page: Page, text: string): Promise<void> {
+  interface Point { x: number, y: number, awayY: number }
+  let point: Point | null = null
+  await expect(async () => {
+    point = await page.evaluate(
+      t => ((window as any).__activeTerminalPointAt?.(t) ?? null) as Point | null,
+      text,
+    )
+    expect(point, `no terminal cell shows ${text}`).not.toBeNull()
+  }).toPass()
+
+  // Hover ANOTHER cell first. xterm activates a link on mouseup, and only for
+  // the link its last hover resolved -- so a modal that opened over the
+  // terminal, and took a `mouseleave` with it, leaves that link cleared. A
+  // second click at the same coordinates then re-asks for nothing, because
+  // xterm skips the lookup while the buffer cell under the mouse is unchanged.
+  await page.mouse.move(point!.x, point!.awayY)
+  await page.mouse.click(point!.x, point!.y)
+}
+
+/**
+ * Split a string by an empty quote pair, so the SHELL reassembles it.
+ *
+ * The typed command line is echoed into the same buffer the assertions read,
+ * so a caller that searched for the whole string would find the echo first --
+ * on a row that holds no link and that a click therefore does nothing to.
+ * Split, the command line never contains the string and only the output does.
+ * `'a''b'` is one word to every POSIX shell, and `printf` receives `ab`.
+ */
+function reassembledByShell(text: string): string {
+  const half = Math.ceil(text.length / 2)
+  return `${text.slice(0, half)}''${text.slice(half)}`
+}
+
+/**
+ * Print an OSC 8 hyperlink into the active terminal: `label` over `uri`.
+ *
+ * Written with `printf` and octal escapes so the sequence survives the shell
+ * unchanged -- `echo -e` is not portable across the shells a worker may run,
+ * and `\\e` is not portable inside `printf` either.
+ */
+export async function printTerminalHyperlink(page: Page, uri: string, label: string): Promise<void> {
+  const target = reassembledByShell(uri)
+  const shown = reassembledByShell(label)
+  await typeInTerminal(page, `printf '\\033]8;;${target}\\033\\\\${shown}\\033]8;;\\033\\\\\\n'`)
+}

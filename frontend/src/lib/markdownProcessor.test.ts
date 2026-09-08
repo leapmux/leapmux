@@ -6,6 +6,7 @@ import { collectShikiStyles } from '~/lib/shikiStyleClass'
 import { syntaxThemePair } from '~/lib/shikiThemes'
 import { loadSyntaxTheme, syntaxPairFor } from '~/lib/syntaxThemes'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
+import { UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 type Processor = Parameters<typeof renderWithPlainFallback>[0]
 
@@ -368,6 +369,19 @@ describe('link hardening in both processors', () => {
       // rather than shipping a rel browsers parse as one unknown token.
       expect(html, name).toContain('rel="noopener noreferrer nofollow"')
       expect(html, name).not.toContain('noopener,')
+    }
+  })
+
+  it('marks every surviving link untrusted, so a click reaches the prompt', async () => {
+    for (const [name, render] of await processors()) {
+      // An agent wrote both halves, so the text may state one address over a
+      // link that opens another. The mark is what routes the click through
+      // `interceptUntrustedLinkClicks`. Pinned on the pass EVERY markdown path
+      // ends with, so a new render path cannot ship without it.
+      expect(render('[https://good.example](https://evil.example)'), name)
+        .toContain(`${UNTRUSTED_LINK_ATTRIBUTE}=""`)
+      // A non-http(s) link is unwrapped, so there is no anchor left to mark.
+      expect(render('[x](javascript:alert(1))'), name).not.toContain('<a ')
     }
   })
 

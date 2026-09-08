@@ -1,5 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
@@ -26,6 +27,15 @@ describe('webSearchResultsBody', () => {
   it('puts each link on the shared tool meta row', () => {
     const { container } = renderResults()
     expect(container.querySelector(classSelector(toolMetaRow))).toBeTruthy()
+  })
+
+  // A search-result title and its address are two different strangers' words,
+  // so the click has to reach the same prompt a terminal hyperlink takes.
+  // `src/test-support/untrustedAnchorsAreMarked.test.ts` guards the whole set
+  // from the source; this pins what actually reaches the DOM.
+  it('marks the link untrusted', () => {
+    const { container } = renderResults()
+    expect(container.querySelector(`a[${UNTRUSTED_LINK_ATTRIBUTE}]`)).toBeTruthy()
   })
 
   it('renders the link title and its domain', () => {

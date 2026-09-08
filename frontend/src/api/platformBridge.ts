@@ -1,5 +1,6 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
+import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import {
   LAUNCH_VISIBILITY_HIDDEN,
   LAUNCH_VISIBILITY_MINIMIZED,
@@ -791,6 +792,62 @@ export async function revealInFileManager(path: string): Promise<void> {
 }
 
 /**
+ * The schemes `openExternalUrl` will hand to the operating system.
+ *
+ * The same four the opener plugin's own `allow-default-urls` scope permits, so
+ * this gateway refuses in the webview what the Rust side would refuse anyway --
+ * with a log line that names the URL, instead of a rejected command.
+ */
+const EXTERNAL_URL_PROTOCOLS: readonly string[] = ['http:', 'https:', 'mailto:', 'tel:']
+
+/**
+ * Open a URL outside the app: the OS default browser under the desktop shell,
+ * a new tab in the browser build.
+ *
+ * The desktop branch invokes the opener plugin, which is the same
+ * `plugin:opener|open_url` command that plugin's injected click listener runs
+ * for an `<a target="_blank">`. That listener is why a link in the chat
+ * transcript reaches the browser, and it keys on a real anchor element in the
+ * click's composed path -- so a caller that HAS no anchor (xterm draws a link
+ * in its own link layer and dispatches from JavaScript) can only take this
+ * route.
+ *
+ * It reports rather than rejects. A caller fires this from an event handler
+ * with no error sink, and a rejection there reaches the global sink as
+ * "Something went wrong", which tells the user nothing.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  }
+  catch {
+    log.warn('refused to open a URL that does not parse', { url })
+    return
+  }
+  if (!EXTERNAL_URL_PROTOCOLS.includes(parsed.protocol)) {
+    log.warn('refused to open a URL outside the allowed schemes', { url })
+    return
+  }
+
+  if (!isTauriApp()) {
+    // `noopener` also makes the opened tab's `window.opener` null, so the
+    // destination cannot navigate this page. It is why the return value is
+    // ignored: `window.open` returns null WHENEVER `noopener` is set, so null
+    // says nothing about whether the tab opened and cannot report a refusal.
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  try {
+    const { openUrl } = await loadTauriOpener()
+    await openUrl(url)
+  }
+  catch (err) {
+    showWarnToastWithLoggedCause('Could not open the link', err)
+  }
+}
+
+/**
  * Push the resolved Desktop preferences into the shell.
  *
  * It REJECTS rather than swallowing, unlike `tauriFireAndForget`, because two
@@ -879,6 +936,7 @@ export const platformBridge = {
   fileSaveCommit,
   fileSaveAbort,
   revealInFileManager,
+  openExternalUrl,
   async connectSolo(): Promise<void> {
     await tauriInvoke('connect_solo')
     await refreshRuntimeState()
