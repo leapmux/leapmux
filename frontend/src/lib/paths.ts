@@ -34,6 +34,15 @@ function parseUncHead(p: string): { volume: string, rest: string } | null {
   return { volume: `\\\\${server}\\${p.slice(shareStart, i)}`, rest: p.slice(i) }
 }
 
+// The win32 volume of `p` (`C:` or `\\server\share`), WITHOUT a trailing
+// separator, or '' when the path has none. Private on purpose: a volume alone
+// is not a directory, and `filesystemRoot` is the answer callers want.
+function extractVolume(p: string): string {
+  if (DRIVE_LETTER_RE.test(p))
+    return p.slice(0, 2)
+  return parseUncHead(p)?.volume ?? ''
+}
+
 export function detectFlavor(p: string): PathFlavor {
   if (!p)
     return 'posix'
@@ -81,6 +90,34 @@ export function isAbsolute(p: string, flavor?: PathFlavor): boolean {
   if (f === 'win32')
     return p.startsWith('\\') || p.startsWith('/') || DRIVE_LETTER_RE.test(p)
   return p.startsWith('/')
+}
+
+/**
+ * The filesystem root `p` lives under, or undefined when `p` is not absolute.
+ *
+ *   filesystemRoot('/etc/hosts', 'posix')        -> '/'
+ *   filesystemRoot('C:/Users/a', 'win32')        -> 'C:\\'
+ *   filesystemRoot('\\\\srv\\share\\x', 'win32') -> '\\\\srv\\share\\'
+ *   filesystemRoot('proj/src', 'posix')          -> undefined
+ *   filesystemRoot('\\rooted', 'win32')          -> undefined
+ *
+ * The answer always ENDS IN the flavor's separator, because that is what a
+ * worker's ListDirectory needs. `C:` alone names the current directory on
+ * drive C, not the drive's root, which is also why `isAbsolute('C:')` is
+ * correctly false.
+ *
+ * A win32 path that is rooted but volume-less (`\foo`, `/foo`) answers
+ * undefined: which drive it lands on is the worker's current directory, and
+ * the browser cannot know it. Callers fall back.
+ */
+export function filesystemRoot(p: string, flavor?: PathFlavor): string | undefined {
+  if (!p)
+    return undefined
+  const f = flavorOf(p, flavor)
+  if (f === 'posix')
+    return p.startsWith('/') ? '/' : undefined
+  const volume = extractVolume(p)
+  return volume ? `${volume}${sep(f)}` : undefined
 }
 
 // Split a path into non-empty components. On Win32 the volume (`C:` or
@@ -212,12 +249,19 @@ function pathEq(a: string, b: string, flavor: PathFlavor): boolean {
 }
 
 // Returns '' when abs === base, the slice after `base + sep` when abs is
-// strictly under base, or null otherwise. `base` must have no trailing sep;
-// both inputs must already use the flavor's separator.
+// strictly under base, or null otherwise. Both inputs must already use the
+// flavor's separator.
+//
+// A TRAILING SEPARATOR on `base` is tolerated and stripped, because a
+// filesystem root is nothing but one (`/`, `C:\`, `\\srv\share\`). Without
+// that, every path under a root answered null -- so a tree rooted at `/` found
+// none of its own descendants.
 export function relativeUnder(abs: string, base: string, flavor: PathFlavor): string | null {
-  if (pathEq(abs, base, flavor))
+  const s = sep(flavor)
+  const trimmed = base.endsWith(s) ? base.slice(0, -1) : base
+  if (pathEq(abs, base, flavor) || pathEq(abs, trimmed, flavor))
     return ''
-  const prefix = `${base}${sep(flavor)}`
+  const prefix = `${trimmed}${s}`
   if (pathEq(abs.slice(0, prefix.length), prefix, flavor))
     return abs.slice(prefix.length)
   return null
@@ -273,10 +317,18 @@ export function relativizePath(
   const absNorm = f === 'win32' ? normalizeSeparators(absPath, f) : absPath
   const wdNorm = f === 'win32' ? normalizeSeparators(wdTrimmed, f) : wdTrimmed
 
+  // A FILESYSTEM ROOT is a base in name only. Every absolute path is under it,
+  // so the direct-relative answer below is just the path with its root sliced
+  // off -- one character shorter and no more readable. The directory picker's
+  // tree is rooted at `/` (or `C:\`), so without this "Copy relative path" on
+  // `~/proj/a.ts` answers `home/alice/proj/a.ts`. Let the `..` and tilde
+  // candidates compete instead.
+  const baseIsRoot = filesystemRoot(workingDir, f) === normalizeSeparators(workingDir, f)
+
   const rem = relativeUnder(absNorm, wdNorm, f)
   if (rem === '')
     return '.'
-  if (rem !== null)
+  if (rem !== null && !baseIsRoot)
     return rem
 
   let best = absNorm
@@ -297,16 +349,13 @@ export function relativizePath(
   return best
 }
 
+// Whether two paths hang off the SAME root: the same drive or UNC share on
+// win32, and both-absolute-or-both-relative on posix. Built on
+// `filesystemRoot` so "what root does this path have" is stated once.
 function rootsMatch(a: string, b: string, flavor: PathFlavor): boolean {
-  if (flavor === 'posix')
-    return a.startsWith('/') === b.startsWith('/')
-  const volA = extractVolume(a)
-  const volB = extractVolume(b)
-  return volA.toLowerCase() === volB.toLowerCase()
-}
-
-function extractVolume(p: string): string {
-  if (DRIVE_LETTER_RE.test(p))
-    return p.slice(0, 2)
-  return parseUncHead(p)?.volume ?? ''
+  const rootA = filesystemRoot(a, flavor)
+  const rootB = filesystemRoot(b, flavor)
+  if (rootA === undefined || rootB === undefined)
+    return rootA === rootB
+  return pathEq(rootA, rootB, flavor)
 }

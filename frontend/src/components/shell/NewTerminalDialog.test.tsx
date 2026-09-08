@@ -33,7 +33,7 @@ vi.mock('~/api/workerRpc', () => ({
   getWorkerSystemInfo: vi.fn(async () => ({})),
   listAvailableShells: vi.fn(async () => ({ shells: ['bash', 'zsh'], defaultShell: 'bash' })),
   statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({ entries: [] })),
+  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
   openTerminal: vi.fn(async () => ({ terminalId: 'tid-1', title: 'Terminal 1' })),
 }))
 

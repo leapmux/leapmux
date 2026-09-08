@@ -42,11 +42,15 @@ const { DirectoryTree } = await import('./DirectoryTree')
 
 function setupTree() {
   listDirectoryImpl.mockResolvedValue({
-    entries: [
-      { path: '/repo/src', name: 'src', isDir: true, hidden: false, size: 0n, modTime: '2026-05-01T10:00:00Z' },
-      { path: '/repo/archive.zip', name: 'archive.zip', isDir: false, hidden: false, size: 1024n, modTime: '2026-05-01T10:00:00Z' },
-    ],
-    truncated: false,
+    listings: [{
+      path: '/repo',
+      entries: [
+        { path: '/repo/src', name: 'src', isDir: true, hidden: false, size: 0n, modTime: '2026-05-01T10:00:00Z' },
+        { path: '/repo/archive.zip', name: 'archive.zip', isDir: false, hidden: false, size: 1024n, modTime: '2026-05-01T10:00:00Z' },
+      ],
+      truncated: false,
+      totalEntries: 2,
+    }],
   })
 
   render(() => (

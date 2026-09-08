@@ -3,6 +3,8 @@ import { globalStyle, style } from '@vanilla-extract/css'
 export const pathInput = style({
   display: 'flex',
   alignItems: 'center',
+  // Separates the leading slot (the Windows drive selector) from the input.
+  gap: 'var(--space-1)',
   padding: 'var(--space-1)',
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
@@ -14,6 +16,11 @@ export const pathInput = style({
 // of the input (provided by pathInput's padding).
 globalStyle(`${pathInput} input`, {
   marginBlockStart: 0,
+  // The row can hold a leading control, so the input takes the rest of it.
+  // `minWidth: 0` is what lets the input shrink rather than push that control
+  // off the row -- a flex item's default `min-width: auto` refuses to.
+  flex: 1,
+  minWidth: 0,
 })
 
 export const pathHint = style({

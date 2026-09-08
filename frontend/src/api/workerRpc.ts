@@ -36,6 +36,7 @@ import type {
 import type { EncryptionMode, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import type {
   ListDirectoryResponse,
+  ListFilesystemRootsResponse,
   ReadFileResponse,
   StatFileResponse,
 } from '~/generated/proto/leapmux/v1/file_pb'
@@ -137,6 +138,8 @@ import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
 import {
   ListDirectoryRequestSchema,
   ListDirectoryResponseSchema,
+  ListFilesystemRootsRequestSchema,
+  ListFilesystemRootsResponseSchema,
   ReadFileRequestSchema,
   ReadFileResponseSchema,
   StatFileRequestSchema,
@@ -582,6 +585,20 @@ export function listAvailableShells(workerId: string, req: MessageInitShape<type
 
 export function listDirectory(workerId: string, req: MessageInitShape<typeof ListDirectoryRequestSchema>): Promise<ListDirectoryResponse> {
   return callWorker(workerId, 'ListDirectory', ListDirectoryRequestSchema, ListDirectoryResponseSchema, req)
+}
+
+/**
+ * The roots of the worker's own filesystem: `["/"]` on POSIX, the drive roots
+ * that carry a volume (`"C:\\"`, `"D:\\"`) on Windows.
+ *
+ * Lets the tree pick a top node and a drive menu fill itself, instead of the
+ * browser guessing either from the shape of a path.
+ *
+ * Takes no request, like `getWorkerSystemInfo`: it asks about the machine, and
+ * the channel already identifies it.
+ */
+export function listFilesystemRoots(workerId: string): Promise<ListFilesystemRootsResponse> {
+  return callWorker(workerId, 'ListFilesystemRoots', ListFilesystemRootsRequestSchema, ListFilesystemRootsResponseSchema, {})
 }
 
 export function readFile(workerId: string, req: MessageInitShape<typeof ReadFileRequestSchema>): Promise<ReadFileResponse> {

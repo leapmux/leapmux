@@ -3,7 +3,7 @@ import type { FileSortOrder } from '~/lib/fileSort'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { PREFIX_DIRECTORY_TREE, sessionStorageSet } from '~/lib/browserStorage'
+import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { DIRECTORY_TREE_STATE_VERSION, DirectoryTree } from './DirectoryTree'
 
@@ -31,6 +31,28 @@ function entry(root: string, name: string, overrides: EntryOverrides = {}) {
     hidden: overrides.hidden ?? false,
     size: overrides.size ?? 0n,
     modTime: overrides.modTime ?? '2026-01-01T00:00:00Z',
+  }
+}
+
+/**
+ * One directory's reply, in the shape ListDirectory answers with.
+ *
+ * `path` is left empty because nothing reads it on this path: a per-node load
+ * keys the cache by the NODE's path, and the tree re-keys a chain's first
+ * listing to the root it asked for. A chain test that needs real paths builds
+ * its own reply.
+ */
+function oneListing(
+  entries: ReturnType<typeof entry>[],
+  opts: { truncated?: boolean, totalEntries?: number } = {},
+) {
+  return {
+    listings: [{
+      path: '',
+      entries,
+      truncated: opts.truncated ?? false,
+      totalEntries: opts.totalEntries ?? 0,
+    }],
   }
 }
 
@@ -69,10 +91,7 @@ describe('directoryTree', () => {
    */
   it('keeps an unchanged row mounted when a refresh adds a sibling', async () => {
     const root = '/repo-reconcile'
-    listDirectory.mockResolvedValue({
-      entries: [entry(root, 'a.txt'), entry(root, 'b.txt')],
-      truncated: false,
-    })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt')]))
 
     let handle!: DirectoryTreeHandle
     render(() => (
@@ -89,10 +108,7 @@ describe('directoryTree', () => {
     await waitFor(() => expect(rowFor('a.txt')).toBeTruthy())
     const before = rowFor('a.txt')!
 
-    listDirectory.mockResolvedValue({
-      entries: [entry(root, 'a.txt'), entry(root, 'b.txt'), entry(root, 'c.txt')],
-      truncated: false,
-    })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt'), entry(root, 'c.txt')]))
     handle.refresh()
     await waitFor(() => expect(rowFor('c.txt')).toBeTruthy())
 
@@ -102,10 +118,7 @@ describe('directoryTree', () => {
 
   it('marks the selected row with data-active, the one marker the coarse-pointer kebab reveal keys on', async () => {
     const root = '/repo-active'
-    listDirectory.mockResolvedValue({
-      entries: [entry(root, 'a.txt'), entry(root, 'b.txt')],
-      truncated: false,
-    })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt')]))
 
     render(() => (
       <DirectoryTree
@@ -163,7 +176,7 @@ describe('directoryTree sorting', () => {
   }
 
   beforeEach(() => {
-    listDirectory.mockResolvedValue({ entries, truncated: false })
+    listDirectory.mockResolvedValue(oneListing(entries))
   })
 
   it('defaults to directories first, then name ascending', async () => {
@@ -224,7 +237,7 @@ describe('directoryTree sorting', () => {
    * The whole payload is discarded and re-fetched instead.
    */
   it('discards an unversioned payload entirely', async () => {
-    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}${root}:files`, JSON.stringify({
+    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, JSON.stringify({
       expandedPaths: { [root]: true },
       childrenCache: {
         [root]: [{ path: `${root}/stale.txt`, displayName: 'stale.txt', isDir: false, hidden: false }],
@@ -244,7 +257,7 @@ describe('directoryTree sorting', () => {
    * build is discarded too -- forward and backward are the same question.
    */
   it('discards a payload stamped with a different version', async () => {
-    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}${root}:files`, JSON.stringify({
+    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, JSON.stringify({
       v: DIRECTORY_TREE_STATE_VERSION + 1,
       expandedPaths: { [root]: true },
       childrenCache: {
@@ -260,7 +273,7 @@ describe('directoryTree sorting', () => {
   })
 
   it('restores a payload at the current version without re-fetching', async () => {
-    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}${root}:files`, JSON.stringify({
+    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, JSON.stringify({
       v: DIRECTORY_TREE_STATE_VERSION,
       expandedPaths: { [root]: true },
       childrenCache: {
@@ -280,7 +293,7 @@ describe('directoryTree sorting', () => {
    * -- a hand edit, or a truncated write. That directory alone is dropped.
    */
   it('drops a malformed directory inside an otherwise current payload', async () => {
-    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}${root}:files`, JSON.stringify({
+    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, JSON.stringify({
       v: DIRECTORY_TREE_STATE_VERSION,
       expandedPaths: { [root]: true },
       childrenCache: {
@@ -301,7 +314,7 @@ describe('directoryTree sorting', () => {
    * the size of what is hidden rather than only that something is.
    */
   it('names how many entries the directory really held', async () => {
-    listDirectory.mockResolvedValue({ entries, truncated: true, totalEntries: 12043 })
+    listDirectory.mockResolvedValue(oneListing(entries, { truncated: true, totalEntries: 12043 }))
     const { container } = renderSorted({ key: 'name', direction: 'asc' })
     await waitFor(() => expect(container.textContent).toContain('listing truncated'))
     expect(container.textContent).toContain('5 of 12043 entries')
@@ -313,7 +326,7 @@ describe('directoryTree sorting', () => {
    * must still APPEAR, which a truthiness test on the count would have broken.
    */
   it('falls back to the open-ended count when the worker sends no total', async () => {
-    listDirectory.mockResolvedValue({ entries, truncated: true })
+    listDirectory.mockResolvedValue(oneListing(entries, { truncated: true }))
     const { container } = renderSorted({ key: 'name', direction: 'asc' })
     await waitFor(() => expect(container.textContent).toContain('listing truncated'))
     expect(container.textContent).toContain('5+ entries')
@@ -321,7 +334,7 @@ describe('directoryTree sorting', () => {
   })
 
   it('says the listing was truncated by name when sorting by something else', async () => {
-    listDirectory.mockResolvedValue({ entries, truncated: true })
+    listDirectory.mockResolvedValue(oneListing(entries, { truncated: true }))
     const { container, setSortOrder } = renderSorted({ key: 'name', direction: 'asc' })
     await waitFor(() => expect(container.textContent).toContain('listing truncated'))
 
@@ -360,7 +373,7 @@ describe('directoryTree root row info', () => {
   }
 
   it('stats the root once and shows its modified time', async () => {
-    listDirectory.mockResolvedValue({ entries: [entry(root, 'a.txt')], truncated: false })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
     statFile.mockResolvedValue({ info: { modTime: '2026-04-01T09:00:00Z' } })
 
     render(() => (
@@ -380,7 +393,7 @@ describe('directoryTree root row info', () => {
   })
 
   it('waits for enabled before stat-ing, then stats once it flips', async () => {
-    listDirectory.mockResolvedValue({ entries: [entry(root, 'a.txt')], truncated: false })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
     statFile.mockResolvedValue({ info: { modTime: '2026-04-01T09:00:00Z' } })
     const [enabled, setEnabled] = createSignal(false)
 
@@ -400,7 +413,7 @@ describe('directoryTree root row info', () => {
    * to a change of worker or root.
    */
   it('keeps the root modified time on screen across a refresh', async () => {
-    listDirectory.mockResolvedValue({ entries: [entry(root, 'a.txt')], truncated: false })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
     statFile.mockResolvedValueOnce({ info: { modTime: '2026-04-01T09:00:00Z' } })
 
     let handle!: DirectoryTreeHandle
@@ -427,7 +440,7 @@ describe('directoryTree root row info', () => {
   })
 
   it('omits the block when the root cannot be stat-ed', async () => {
-    listDirectory.mockResolvedValue({ entries: [entry(root, 'a.txt')], truncated: false })
+    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
     statFile.mockRejectedValue(new Error('permission denied'))
 
     render(() => (
@@ -457,7 +470,7 @@ describe('directoryTree filtering', () => {
   ]
 
   beforeEach(() => {
-    listDirectory.mockResolvedValue({ entries, truncated: false })
+    listDirectory.mockResolvedValue(oneListing(entries))
   })
 
   function renderFiltered(props: { showHiddenFiles?: boolean, isVisible?: (path: string) => boolean }) {
@@ -520,5 +533,460 @@ describe('directoryTree filtering', () => {
     renderFiltered({ isVisible: () => false })
     await waitFor(() => expect(listDirectory).toHaveBeenCalled())
     expect(renderedNames()).not.toContain('visible.ts')
+  })
+})
+
+/**
+ * A worker that answers a chain request, honouring `fromRoot`.
+ *
+ * `dirs` maps a directory path to its entries. A request with `fromRoot`
+ * answers with every directory on the root-to-target chain that `dirs` knows
+ * about, outermost first, exactly as the worker does.
+ */
+function mockChain(dirs: Record<string, ReturnType<typeof entry>[]>, separator = '/') {
+  listDirectory.mockImplementation(async (_workerId: string, req: { path: string, fromRoot?: string }) => {
+    const chain: string[] = []
+    if (req.fromRoot) {
+      let cur = req.fromRoot
+      chain.push(cur)
+      const rest = req.path.slice(req.fromRoot.length).split(/[\\/]+/).filter(Boolean)
+      for (const part of rest) {
+        cur = cur.endsWith(separator) ? `${cur}${part}` : `${cur}${separator}${part}`
+        chain.push(cur)
+      }
+    }
+    else {
+      chain.push(req.path)
+    }
+    return {
+      listings: chain
+        .filter(path => dirs[path] !== undefined)
+        .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+    }
+  })
+}
+
+function dirEntry(parent: string, name: string, separator = '/') {
+  return {
+    name,
+    path: parent.endsWith(separator) ? `${parent}${name}` : `${parent}${separator}${name}`,
+    isDir: true,
+    hidden: false,
+    size: 0n,
+    modTime: '2026-01-01T00:00:00Z',
+  }
+}
+
+function renderTree(props: Partial<Parameters<typeof DirectoryTree>[0]> & { rootPath: string }) {
+  return render(() => (
+    <DirectoryTree
+      workerId="w1"
+      gitStatusStore={gitStatusStore}
+      selectedPath=""
+      onSelect={() => {}}
+      {...props}
+    />
+  ))
+}
+
+describe('directoryTree reveal', () => {
+  const root = '/'
+
+  it('expands toward revealPath when nothing is selected', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home'), dirEntry('/', 'opt')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [dirEntry('/home/alice', 'proj')],
+    })
+
+    renderTree({ rootPath: root, revealPath: '/home/alice' })
+
+    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+    expect(rowFor('home')).toBeTruthy()
+    expect(rowFor('alice')).toBeTruthy()
+  })
+
+  // The whole point of a separate prop: a revealed node is OPEN, never
+  // selected. Seeding the selection instead would arm the New workspace
+  // dialog's Create button with a directory the user never chose.
+  it('does not mark the revealed node selected', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [],
+    })
+
+    renderTree({ rootPath: root, revealPath: '/home/alice' })
+
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    expect(document.querySelectorAll('[data-active="true"]')).toHaveLength(0)
+    expect(document.querySelector('[data-testid="tree-root-node"]')?.getAttribute('data-active')).toBe('false')
+  })
+
+  it('ignores revealPath once a path is selected', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [dirEntry('/home/alice', 'proj')],
+    })
+
+    renderTree({ rootPath: root, selectedPath: '/home', revealPath: '/home/alice' })
+
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+    expect(rowFor('home')?.getAttribute('data-active')).toBe('true')
+    // `/home` is expanded because it holds the selection, but nothing walked
+    // on to `/home/alice`'s own children.
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    expect(rowFor('proj')).toBeUndefined()
+  })
+
+  it('ignores an empty revealPath', async () => {
+    mockChain({ '/': [dirEntry('/', 'home')] })
+
+    renderTree({ rootPath: root, revealPath: '' })
+
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/' })
+    expect(listDirectory.mock.calls[0][1].fromRoot).toBeUndefined()
+  })
+})
+
+describe('directoryTree chain loading', () => {
+  it('fetches the whole root-to-reveal chain in one request', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [dirEntry('/home/alice', 'proj')],
+      '/home/alice/proj': [],
+    })
+
+    renderTree({ rootPath: '/', revealPath: '/home/alice/proj' })
+
+    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/home/alice/proj', fromRoot: '/' })
+  })
+
+  it('does not re-request when every chain directory is cached', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [],
+    })
+
+    const { unmount } = renderTree({ rootPath: '/', revealPath: '/home/alice' })
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    const afterFirst = listDirectory.mock.calls.length
+    unmount()
+
+    // A second mount restores from sessionStorage, so the chain is already
+    // known and nothing is fetched again.
+    renderTree({ rootPath: '/', revealPath: '/home/alice' })
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    expect(listDirectory.mock.calls.length).toBe(afterFirst)
+  })
+
+  it('re-reveals in one round trip when the target moves to another branch', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home'), dirEntry('/', 'opt')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [],
+      '/opt': [dirEntry('/opt', 'tools')],
+      '/opt/tools': [],
+    })
+
+    const [selected, setSelected] = createSignal('/home/alice')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    const afterFirst = listDirectory.mock.calls.length
+
+    setSelected('/opt/tools')
+    await waitFor(() => expect(rowFor('tools')).toBeTruthy())
+    expect(listDirectory.mock.calls.length).toBe(afterFirst + 1)
+    expect(listDirectory.mock.calls.at(-1)?.[1]).toMatchObject({ path: '/opt/tools', fromRoot: '/' })
+  })
+
+  // A chain failure with the root on screen is not a tree failure: the
+  // per-node cascade still walks the user there one level at a time.
+  it('keeps the tree on screen when a chain request fails', async () => {
+    const dirs: Record<string, ReturnType<typeof entry>[]> = {
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [],
+    }
+    listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
+      if (req.fromRoot)
+        throw new Error('chain boom')
+      const entries = dirs[req.path] ?? []
+      return { listings: [{ path: req.path, entries, truncated: false, totalEntries: entries.length }] }
+    })
+
+    const [selected, setSelected] = createSignal('')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+
+    setSelected('/home/alice')
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    expect(rowFor('home')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('Failed to load directory')
+  })
+
+  it('does not blank the tree to Loading when the selection changes', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [],
+    })
+
+    const [selected, setSelected] = createSignal('')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+
+    setSelected('/home/alice')
+    // The tree-level loading state REPLACES every row, so its absence is what
+    // "the tree did not blank" means. A node's own inline spinner is a
+    // different element and is correct while its children arrive.
+    expect(document.querySelector('[data-testid="tree-root-node"]')).toBeTruthy()
+    expect(rowFor('home')).toBeTruthy()
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+  })
+
+  /**
+   * The worker canonicalizes what it lists, so a symlinked root answers under
+   * a different path. The root row's cache is keyed by `rootPath`, so the
+   * first listing is re-keyed to what was asked for -- and the effect must not
+   * then re-fetch forever because its own guard never matches.
+   */
+  it('re-keys the first listing when the worker canonicalizes the root', async () => {
+    listDirectory.mockResolvedValue({
+      listings: [{
+        path: '/private/tmp/ws',
+        entries: [dirEntry('/private/tmp/ws', 'src')],
+        truncated: false,
+        totalEntries: 1,
+      }],
+    })
+
+    renderTree({ rootPath: '/tmp/ws' })
+
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    // Settles instead of looping: the guard stops a repeat of the same
+    // (worker, root, target) request.
+    await waitFor(() => expect(listDirectory).toHaveBeenCalled())
+    expect(listDirectory.mock.calls.length).toBeLessThanOrEqual(2)
+  })
+
+  it('drops a file target from the chain', async () => {
+    mockChain({
+      '/': [dirEntry('/', 'home')],
+      '/home': [
+        dirEntry('/home', 'alice'),
+        { name: 'notes.txt', path: '/home/notes.txt', isDir: false, hidden: false, size: 4n, modTime: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    const [selected, setSelected] = createSignal('')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        showFiles
+        rootPath="/"
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+
+    setSelected('/home/notes.txt')
+    await waitFor(() => expect(rowFor('notes.txt')).toBeTruthy())
+    const afterFirst = listDirectory.mock.calls.length
+
+    // Selecting the same file again asks for nothing: the tree knows it is a
+    // file, so the chain ends at its parent, which is already cached.
+    setSelected('')
+    setSelected('/home/notes.txt')
+    await waitFor(() => expect(rowFor('notes.txt')).toBeTruthy())
+    expect(listDirectory.mock.calls.length).toBe(afterFirst)
+  })
+})
+
+describe('directoryTree request de-duplication', () => {
+  /**
+   * The chain loader and the per-node cascade both react to the same reveal
+   * target, so on a selection change they ask for the same directories in the
+   * same tick. Without one in-flight registry between them, revealing a path
+   * costs one request per level again -- the exact cost the chain removes.
+   */
+  it('issues one request per directory when the chain and a node ask together', async () => {
+    const asked: string[] = []
+    listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
+      asked.push(req.path)
+      const dirs: Record<string, ReturnType<typeof entry>[]> = {
+        '/': [dirEntry('/', 'home')],
+        '/home': [dirEntry('/home', 'alice')],
+        '/home/alice': [],
+      }
+      const chain = req.fromRoot ? ['/', '/home', '/home/alice'] : [req.path]
+      return {
+        listings: chain
+          .filter(path => dirs[path] !== undefined)
+          .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+      }
+    })
+
+    const [selected, setSelected] = createSignal('')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+
+    // `/home` is on screen and unexpanded, so its node reacts to the same
+    // change the chain loader does.
+    setSelected('/home/alice')
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+
+    expect(asked.filter(p => p === '/home')).toHaveLength(0)
+    expect(asked.filter(p => p === '/home/alice')).toHaveLength(1)
+  })
+
+  /**
+   * The worker may answer with FEWER listings than the chain implies: both the
+   * listing cap and the payload budget drop levels from the deep end. The
+   * per-node cascade must then fetch what is missing, so a short chain costs
+   * the user nothing but a second round trip.
+   */
+  it('lets the cascade fetch a tail the worker truncated away', async () => {
+    const dirs: Record<string, ReturnType<typeof entry>[]> = {
+      '/': [dirEntry('/', 'home')],
+      '/home': [dirEntry('/home', 'alice')],
+      '/home/alice': [dirEntry('/home/alice', 'proj')],
+    }
+    listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
+      // The chain answer stops two levels short of the target.
+      const chain = req.fromRoot ? ['/', '/home'] : [req.path]
+      return {
+        listings: chain
+          .filter(path => dirs[path] !== undefined)
+          .map(path => ({ path, entries: dirs[path], truncated: false, totalEntries: dirs[path].length })),
+      }
+    })
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath=""
+        revealPath="/home/alice/proj"
+        onSelect={() => {}}
+      />
+    ))
+
+    // `/home/alice` was not in the truncated chain, so its node fetched it.
+    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+  })
+})
+
+describe('directoryTree at a filesystem root', () => {
+  it('labels a posix root row with the root itself', async () => {
+    mockChain({ '/': [dirEntry('/', 'home')] })
+
+    renderTree({ rootPath: '/', flavor: 'posix' })
+
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+    const rootRow = document.querySelector('[data-testid="tree-root-node"]')
+    expect(rootRow?.querySelector('[data-testid="tree-row-name"]')?.textContent).toBe('/')
+  })
+
+  // `basename('C:\\', 'win32')` is 'C:' -- the drive WITHOUT the separator
+  // that makes it a root, and not what the drive selector beside it reads.
+  it('labels a windows drive root with the trailing separator', async () => {
+    mockChain({ 'C:\\': [dirEntry('C:\\', 'Users', '\\')] }, '\\')
+
+    renderTree({ rootPath: 'C:\\', flavor: 'win32' })
+
+    await waitFor(() => expect(rowFor('Users')).toBeTruthy())
+    const rootRow = document.querySelector('[data-testid="tree-root-node"]')
+    expect(rootRow?.querySelector('[data-testid="tree-row-name"]')?.textContent).toBe('C:\\')
+  })
+
+  it('expands toward a windows revealPath', async () => {
+    mockChain({
+      'C:\\': [dirEntry('C:\\', 'Users', '\\')],
+      'C:\\Users': [dirEntry('C:\\Users', 'alice', '\\')],
+      'C:\\Users\\alice': [dirEntry('C:\\Users\\alice', 'proj', '\\')],
+    }, '\\')
+
+    renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:\\Users\\alice' })
+
+    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: 'C:\\Users\\alice', fromRoot: 'C:\\' })
+  })
+
+  it('keys sessionStorage on the worker as well as the root path', async () => {
+    mockChain({ 'C:\\': [dirEntry('C:\\', 'Users', '\\')] }, '\\')
+
+    renderTree({ rootPath: 'C:\\', flavor: 'win32' })
+
+    await waitFor(() => expect(rowFor('Users')).toBeTruthy())
+    expect(sessionStorageGet(`${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`)).toBeTruthy()
+  })
+
+  /**
+   * Two workers routinely share a root path -- every POSIX worker roots the
+   * picker at `/`. Without the worker in the key, the second one restores the
+   * first one's listing and then skips its own fetch.
+   */
+  it('does not serve one worker cached listing to another', async () => {
+    mockChain({ '/': [dirEntry('/', 'from-w1')] })
+    const { unmount } = renderTree({ rootPath: '/' })
+    await waitFor(() => expect(rowFor('from-w1')).toBeTruthy())
+    unmount()
+
+    mockChain({ '/': [dirEntry('/', 'from-w2')] })
+    render(() => (
+      <DirectoryTree
+        workerId="w2"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath=""
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('from-w2')).toBeTruthy())
+    expect(rowFor('from-w1')).toBeUndefined()
   })
 })

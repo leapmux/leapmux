@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -30,18 +32,16 @@ const maxDirEntries = 256
 // that need more raise limit explicitly up to maxReadLimit.
 const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
-// maxReadLimit caps what a ReadFile request may ask for, whatever it
-// asks for.
+// payloadBudget is the largest response body this sender accepts: the tighter
+// of the worker's configured max_message_size and the channel's negotiated
+// payload budget (min(hub, worker)) when the writer is channel-backed.
 //
-// It is the same producer ceiling the agent stdout scanners bound
-// themselves by, for the same reason: a response above it is one the
-// receiver refuses, and on the unary path that refusal surfaces as
-// ResourceExhausted. Without the clamp the limit field also picks the
-// worker's allocation size, so a single request could ask it to reserve
-// gigabytes. Uses the tighter of the worker's configured max_message_size
-// and the channel's negotiated payload budget (min(hub, worker)) when the
-// writer is channel-backed.
-func (svc *Service) maxReadLimit(sender channel.ResponseWriter) int64 {
+// A response above it is one the receiver refuses, and on the unary path that
+// refusal surfaces as ResourceExhausted. Two handlers here spend it, for
+// different reasons: ReadFile clamps what a caller may ASK for
+// (see maxReadLimit), and ListDirectory stops adding listings to a chain
+// before the reply outgrows it.
+func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 	configured := channelwire.ResolveMaxMessageSize(svc.MaxMessageSize)
 	if sender != nil {
 		if n := sender.MaxPayloadBudget(); n > 0 && n < configured {
@@ -51,8 +51,33 @@ func (svc *Service) maxReadLimit(sender channel.ResponseWriter) int64 {
 	return int64(configured)
 }
 
+// maxReadLimit caps what a ReadFile request may ask for, whatever it
+// asks for.
+//
+// It is the same producer ceiling the agent stdout scanners bound
+// themselves by. Without the clamp the limit field also picks the worker's
+// allocation size, so a single request could ask it to reserve gigabytes.
+func (svc *Service) maxReadLimit(sender channel.ResponseWriter) int64 {
+	return svc.payloadBudget(sender)
+}
+
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
+	d.Register("ListFilesystemRoots", leapmuxv1.Scope_SCOPE_FILE_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		var r leapmuxv1.ListFilesystemRootsRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		// No path to sanitize and no directory to read, so there is nothing
+		// here that can fail: the roots are a property of the host, and both
+		// seams guarantee at least one.
+		sendProtoResponse(sender, &leapmuxv1.ListFilesystemRootsResponse{
+			Roots: pathutil.FilesystemRoots(),
+		})
+	})
+
 	d.Register("ListDirectory", leapmuxv1.Scope_SCOPE_FILE_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -69,19 +94,53 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// Resolve symlinks so paths are consistent (e.g. /var → /private/var on macOS).
 		dirPath = pathutil.Canonicalize(dirPath)
 
-		entries, truncated, totalEntries, err := listDirectory(dirPath, dirPath, r.GetMaxDepth(), 0, r.GetDirsOnly())
+		dirs, err := chainDirs(dirPath, r.GetFromRoot(), svc.HomeDir)
 		if err != nil {
-			slog.Error("failed to list directory", "path", dirPath, "error", err)
-			sendInternalError(sender, "failed to list directory")
+			sendInvalidArgument(sender, err.Error())
 			return
 		}
 
-		sendProtoResponse(sender, &leapmuxv1.ListDirectoryResponse{
-			Path:         dirPath,
-			Entries:      entries,
-			Truncated:    truncated,
-			TotalEntries: int32(totalEntries),
-		})
+		budget := svc.payloadBudget(sender)
+		listings := make([]*leapmuxv1.DirectoryListing, 0, len(dirs))
+		var used int64
+		for _, dir := range dirs {
+			entries, truncated, totalEntries, err := listDirectory(dir, dir, r.GetMaxDepth(), 0, r.GetDirsOnly())
+			if err != nil {
+				// The FIRST directory is the one the caller asked about, so
+				// its failure is the request's failure. A deeper one failing
+				// only shortens the chain, which the response already allows:
+				// a directory the caller cannot read is one it would have
+				// discovered on its own next request.
+				if len(listings) == 0 {
+					slog.Error("failed to list directory", "path", dir, "error", err)
+					sendInternalError(sender, "failed to list directory")
+					return
+				}
+				break
+			}
+
+			listing := &leapmuxv1.DirectoryListing{
+				Path:         dir,
+				Entries:      entries,
+				Truncated:    truncated,
+				TotalEntries: int32(totalEntries),
+			}
+			// Stop before the response outgrows what the channel accepts,
+			// rather than after. A chain of deep directories listed with
+			// dirs_only=false carries up to maxDirEntries FileInfos per level,
+			// and a response above the negotiated budget comes back to the
+			// caller as ResourceExhausted -- losing the levels it could have
+			// had. The first listing is always kept, because a response with
+			// no listing at all is not an answer.
+			size := int64(proto.Size(listing))
+			if len(listings) > 0 && used+size > budget {
+				break
+			}
+			used += size
+			listings = append(listings, listing)
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.ListDirectoryResponse{Listings: listings})
 	})
 
 	d.Register("ReadFile", leapmuxv1.Scope_SCOPE_FILE_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
@@ -235,6 +294,87 @@ const modTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // formatModTime renders a modification time in modTimeLayout, in UTC.
 func formatModTime(t time.Time) string {
 	return t.UTC().Format(modTimeLayout)
+}
+
+// maxChainListings caps how many directories one ListDirectory request walks.
+//
+// A cheap O(1) guard against a pathological path, sitting in front of the
+// payload budget that does the real limiting. 64 levels is already past any
+// usable directory depth, so a chain that hits this is a bug or an attack, not
+// a user.
+const maxChainListings = 64
+
+// chainDirs returns the directories one ListDirectory request must list,
+// outermost first.
+//
+// With no fromRoot that is dirPath alone, which is the whole request. With one
+// it is every directory from fromRoot down to dirPath, so a tree rooted at "/"
+// can reveal a deep selection in one round trip instead of one per level.
+//
+// dirPath must already be sanitized and canonicalized. fromRoot is
+// canonicalized here, so a symlinked ancestor -- /tmp on macOS, which resolves
+// to /private/tmp -- passes the containment test that a textual comparison
+// would fail.
+//
+// A dirPath that is not a directory ends the chain at its parent, so revealing
+// a FILE costs one request too. That rule applies only to the chain form: with
+// no fromRoot the caller asked to list a file, and listDirectory reports that
+// as the error it is.
+func chainDirs(dirPath, fromRoot, homeDir string) ([]string, error) {
+	if fromRoot == "" {
+		return []string{dirPath}, nil
+	}
+
+	root, err := validate.SanitizePath(fromRoot, homeDir)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from_root: %w", err)
+	}
+	root = pathutil.Canonicalize(root)
+
+	if !pathutil.HasPathPrefix(dirPath, root) {
+		return nil, fmt.Errorf("from_root %q is not an ancestor of %q", root, dirPath)
+	}
+
+	// Drop a trailing non-directory, so the chain ends at the deepest
+	// directory the caller named. os.Stat, not the dir entry: dirPath may be a
+	// symlink to a directory, and that is a directory to every other part of
+	// this file.
+	tail := dirPath
+	if info, err := os.Stat(tail); err == nil && !info.IsDir() {
+		tail = filepath.Dir(tail)
+		// The parent can fall outside the root only when dirPath WAS the
+		// root and the root is not a directory. Nothing to list then.
+		if !pathutil.HasPathPrefix(tail, root) {
+			return nil, fmt.Errorf("from_root %q is not a directory", root)
+		}
+	}
+
+	// Walk up from the tail, then reverse: filepath.Dir is the one operation
+	// that is correct for every root spelling ("/", "C:\\", "\\\\srv\\share\\"),
+	// because it stops at the volume rather than one segment past it.
+	//
+	// The walk itself is unbounded because it costs only string operations and
+	// the OS already limits how many components a path can hold. The cap below
+	// limits what is expensive: one directory read per surviving entry.
+	dirs := []string{tail}
+	for cur := tail; !pathutil.SamePath(cur, root); {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break // At a root already; Dir is idempotent there.
+		}
+		dirs = append(dirs, parent)
+		cur = parent
+	}
+	slices.Reverse(dirs)
+
+	// Truncate AFTER the reverse, so the cap drops the deepest levels and
+	// keeps the outermost. A caller renders its tree from the root down, and a
+	// chain missing its root renders nothing at all; a chain missing its tail
+	// just leaves the caller the levels it already knows how to fetch.
+	if len(dirs) > maxChainListings {
+		dirs = dirs[:maxChainListings]
+	}
+	return dirs, nil
 }
 
 // fileInfoToProto converts an os.FileInfo into a protobuf FileInfo.

@@ -145,3 +145,63 @@ describe('pathInput submission', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 })
+
+describe('pathInput leading slot', () => {
+  const base = { selectedPath: '/home/alice', homeDir: '/home/alice', flavor: 'posix' as const }
+
+  function renderWithSlot(leading?: unknown) {
+    return render(() => (
+      <PathInput
+        selectedPath={base.selectedPath}
+        homeDir={base.homeDir}
+        flavor={base.flavor}
+        onSubmit={() => {}}
+        leading={leading as never}
+      />
+    ))
+  }
+
+  it('renders the slot immediately before the input inside the row', () => {
+    renderWithSlot(<span data-testid="slot">C:\\</span>)
+
+    const input = screen.getByPlaceholderText('Enter path...')
+    const slot = screen.getByTestId('slot')
+    // A DOM reorder that put the drive to the RIGHT of the input would still
+    // look correct in a screenshot of a short path, so pin the order.
+    expect(slot.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(slot.parentElement).toBe(input.closest('div'))
+  })
+
+  it('renders no leading box when the slot is omitted', () => {
+    renderWithSlot(undefined)
+
+    expect(screen.queryByTestId('slot')).toBeNull()
+    expect(screen.getByPlaceholderText('Enter path...')).toBeInTheDocument()
+  })
+
+  /**
+   * The reason the slot lives inside this component rather than in a wrapper
+   * the caller builds: the hint belongs UNDER the whole row. A caller that
+   * wrapped the drive control and this input in a row of its own would trap
+   * the hint inside that row, beside the input.
+   */
+  it('keeps the flavor hint below the row, not inside it', async () => {
+    const view = render(() => (
+      <PathInput
+        selectedPath="/home/alice"
+        homeDir="/home/alice"
+        flavor="win32"
+        onSubmit={() => {}}
+        leading={<span data-testid="slot">C:\\</span>}
+      />
+    ))
+
+    const input = screen.getByPlaceholderText('Enter path...')
+    fireEvent.input(input, { target: { value: '/etc/hosts' } })
+
+    const hint = await screen.findByTestId('path-flavor-hint')
+    const row = screen.getByTestId('slot').parentElement!
+    expect(row.contains(hint)).toBe(false)
+    view.unmount()
+  })
+})

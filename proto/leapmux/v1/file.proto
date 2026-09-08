@@ -6,9 +6,34 @@ message ListDirectoryRequest {
   string path = 2;
   int32 max_depth = 3; // When > 0, merge single-child directories server-side up to this depth
   bool dirs_only = 4; // When true, exclude non-directory entries before applying the entry limit
+  // When set, the response carries one listing per directory from from_root
+  // down to path, outermost first, instead of path alone. Lets a tree reveal a
+  // deep selection in one round trip instead of one per level.
+  //
+  // Must be path itself or an ancestor of it; anything else is
+  // InvalidArgument. Both are canonicalized before that test, so a symlinked
+  // ancestor is accepted. When path is not a directory the chain ends at its
+  // parent, so revealing a FILE costs one request too.
+  //
+  // Empty lists path alone, and a non-directory path is then an error.
+  string from_root = 5;
 }
 
 message ListDirectoryResponse {
+  // One per listed directory, outermost first. Exactly one when the request
+  // set no from_root.
+  //
+  // The worker may return FEWER than the request implies: the chain is capped
+  // by a listing count and by the channel's payload budget, and both drop the
+  // deepest levels. A short chain is a valid answer, never an error -- the
+  // caller already knows how to list the remaining levels one at a time.
+  repeated DirectoryListing listings = 1;
+}
+
+// One directory's listing. The single-directory answer is a chain of length
+// one, so there is no second shape for it and the fields below have one
+// spelling that cannot drift.
+message DirectoryListing {
   string path = 1;
   repeated FileInfo entries = 2;
   bool truncated = 3;
@@ -51,6 +76,32 @@ message StatFileRequest {
 
 message StatFileResponse {
   FileInfo info = 1;
+}
+
+// ListFilesystemRoots enumerates the roots of the worker's own filesystem, so
+// a browser can pick a starting node without guessing what "the top" is on
+// that host. POSIX answers ["/"]; Windows answers the drive roots that
+// currently carry a volume, e.g. ["C:\\", "D:\\"].
+//
+// It takes no arguments for the reason GetWorkerSystemInfoRequest does: it
+// asks about the MACHINE, not about a path, and the channel already identifies
+// the worker.
+message ListFilesystemRootsRequest {}
+
+message ListFilesystemRootsResponse {
+  // Absolute, in the spelling the worker's own filepath accepts as a
+  // directory: with a trailing separator ("/", "C:\\"), never a bare "C:",
+  // which filepath.IsAbs rejects and Clean reads as drive-relative.
+  //
+  // Ascending by drive letter, so an unchanged machine answers the same list
+  // twice and a drive menu built from it does not reshuffle.
+  //
+  // Plain strings, and deliberately no label and no drive type. A volume LABEL
+  // costs GetVolumeInformationW, which does I/O against the volume and is the
+  // documented way to block for the SMB timeout on a disconnected mapped
+  // drive. That would turn a bitmask read into an unbounded wait, for a string
+  // no caller needs.
+  repeated string roots = 1;
 }
 
 message FileInfo {

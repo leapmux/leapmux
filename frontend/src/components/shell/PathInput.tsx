@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js'
+import type { Component, JSX } from 'solid-js'
 import type { PathFlavor } from '~/lib/paths'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -14,6 +14,18 @@ export interface PathInputProps {
   flavor: PathFlavor
   /** Called with an expanded, worker-flavored path on Enter or on blur. */
   onSubmit: (path: string) => void
+  /**
+   * A control at the LEFT end of the path row, sharing its box: the picker's
+   * Windows drive selector.
+   *
+   * A SLOT, not the control. This component's job is one input, and a drive
+   * list needs a worker id, an RPC and the picker's own setter, none of which
+   * belongs here. The row's CHROME does belong here -- the padding, the bottom
+   * border, and the flavor hint below the row rather than beside the input --
+   * which is why the slot sits inside the box instead of the caller wrapping
+   * both in a row of its own.
+   */
+  leading?: JSX.Element
 }
 
 /**
@@ -76,6 +88,7 @@ export const PathInput: Component<PathInputProps> = (props) => {
   return (
     <>
       <div class={styles.pathInput}>
+        {props.leading}
         <Tooltip text={props.selectedPath} showWhen="clipped">
           <input
             type="text"

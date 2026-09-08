@@ -36,8 +36,10 @@ func RunFileList(rawCtx any, args []string) error {
 	f := bindPathCmd(cmd, false, "path to list (required)")
 	var maxDepth int
 	var dirsOnly bool
+	var fromRoot string
 	f.FS.IntVar(&maxDepth, "max-depth", 0, "merge single-child directories up to depth")
 	f.FS.BoolVar(&dirsOnly, "dirs-only", false, "directories only")
+	f.FS.StringVar(&fromRoot, "from-root", "", "also list every directory from this ancestor down to --path")
 	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -55,14 +57,36 @@ func RunFileList(rawCtx any, args []string) error {
 			Path:     f.Path,
 			MaxDepth: int32(maxDepth),
 			DirsOnly: dirsOnly,
+			FromRoot: fromRoot,
 		}, &resp,
-		func() any {
-			return map[string]any{
-				"path":      resp.GetPath(),
-				"truncated": resp.GetTruncated(),
-				"entries":   resp.GetEntries(),
-			}
-		})
+		// A list, even without --from-root, where it holds one entry. One
+		// output shape means a script does not branch on which flags it
+		// passed.
+		func() any { return map[string]any{"listings": resp.GetListings()} })
+}
+
+// RunFileRoots prints the worker's filesystem roots: ["/"] on POSIX, the drive
+// roots on Windows.
+//
+// It cannot use bindPathCmd, which requires --path. This command asks about
+// the machine, not about a path.
+func RunFileRoots(rawCtx any, args []string) error {
+	cmd := asCtx(rawCtx)
+	var hub string
+	var in resolve.Inputs
+	fs := flagSet(cmd, &hub)
+	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
+	if err := parseFlags(fs, args, cmd.Description()); err != nil {
+		return err
+	}
+	c, workerID, err := resolveWorker(hub, in)
+	if err != nil {
+		return err
+	}
+	var resp leapmuxv1.ListFilesystemRootsResponse
+	return workerUnaryEmitOn(c, workerID, "ListFilesystemRoots",
+		&leapmuxv1.ListFilesystemRootsRequest{}, &resp,
+		func() any { return map[string]any{"roots": resp.GetRoots()} })
 }
 
 func RunFileRead(rawCtx any, args []string) error {

@@ -9,7 +9,7 @@ import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
 import { FilesSection, FilesSectionHeaderActions } from './FilesSection'
 
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: vi.fn(async () => ({ entries: [], truncated: false })),
+  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
   statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
   channelManager: { subscribe: () => () => {} },
 }))

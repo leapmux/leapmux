@@ -272,6 +272,7 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 	}
 	for _, method := range []string{
 		"worker.ListDirectory",
+		"worker.ListFilesystemRoots",
 		"worker.ReadFile",
 		"worker.StatFile",
 		"worker.GitStatus",

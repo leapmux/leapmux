@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 func TestListDirectory_Truncation(t *testing.T) {
@@ -747,5 +748,407 @@ func requireSymlinkSupport(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListFilesystemRoots
+// ---------------------------------------------------------------------------
+
+// The dispatcher-level test for the file family's newest handler: it drives
+// the real registration, the real scope gate and the real owner gate, none of
+// which the listDirectory tests above reach.
+func TestListFilesystemRoots(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+
+	dispatch(d, "ListFilesystemRoots", &leapmuxv1.ListFilesystemRootsRequest{}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var resp leapmuxv1.ListFilesystemRootsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	require.NotEmpty(t, resp.GetRoots())
+	assert.Equal(t, pathutil.FilesystemRoots(), resp.GetRoots(),
+		"the handler must pass the seam's answer through unreshaped")
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, []string{"/"}, resp.GetRoots())
+	}
+}
+
+// The end-to-end contract between the two RPCs: a root this worker reports is
+// a path the same worker's ListDirectory accepts.
+//
+// It asserts "not refused", not "no error". A machine with an empty optical
+// drive legitimately answers Internal from os.ReadDir, and that is a valid
+// outcome for a listable-but-empty device. What must never happen is
+// PermissionDenied (SanitizePath refused the spelling) or InvalidArgument.
+func TestListFilesystemRoots_RootsAreListable(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+
+	dispatch(d, "ListFilesystemRoots", &leapmuxv1.ListFilesystemRootsRequest{}, w)
+	require.Len(t, w.responses, 1)
+	var roots leapmuxv1.ListFilesystemRootsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &roots))
+
+	for _, root := range roots.GetRoots() {
+		lw := &testResponseWriter{channelID: testChannelID}
+		dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: root, DirsOnly: true}, lw)
+		for _, e := range lw.errors {
+			assert.NotEqual(t, codePermissionDenied, e.code, "root %q was refused: %s", root, e.message)
+			assert.NotEqual(t, codeInvalidArgument, e.code, "root %q was rejected: %s", root, e.message)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListDirectory: the ancestor chain
+// ---------------------------------------------------------------------------
+
+// listingPaths reads a ListDirectory reply and returns the path of each
+// listing, in the order the worker sent them.
+func listingPaths(t *testing.T, w *testResponseWriter) []string {
+	t.Helper()
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListDirectoryResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	paths := make([]string, 0, len(resp.GetListings()))
+	for _, l := range resp.GetListings() {
+		paths = append(paths, l.GetPath())
+	}
+	return paths
+}
+
+func TestListDirectory_SingleListingWithoutFromRoot(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "a", "b"), 0o755))
+
+	root := pathutil.Canonicalize(svc.HomeDir)
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path: filepath.Join(root, "a"),
+	}, w)
+
+	assert.Equal(t, []string{filepath.Join(root, "a")}, listingPaths(t, w))
+}
+
+func TestListDirectory_ChainIsOutermostFirst(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "a", "b", "c"), 0o755))
+
+	root := pathutil.Canonicalize(svc.HomeDir)
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(root, "a", "b", "c"),
+		FromRoot: root,
+	}, w)
+
+	assert.Equal(t, []string{
+		root,
+		filepath.Join(root, "a"),
+		filepath.Join(root, "a", "b"),
+		filepath.Join(root, "a", "b", "c"),
+	}, listingPaths(t, w))
+}
+
+func TestListDirectory_ChainOfOneWhenFromRootEqualsPath(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	root := pathutil.Canonicalize(svc.HomeDir)
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: root, FromRoot: root}, w)
+
+	assert.Equal(t, []string{root}, listingPaths(t, w))
+}
+
+func TestListDirectory_ChainRejectsAFromRootThatIsNotAnAncestor(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "a"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "b"), 0o755))
+	root := pathutil.Canonicalize(svc.HomeDir)
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(root, "a"),
+		FromRoot: filepath.Join(root, "b"),
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+	assert.Empty(t, w.responses)
+}
+
+// A sibling whose name merely starts with the root's is NOT under it. This is
+// the check HasPathPrefix exists for, and a plain strings.HasPrefix would pass
+// it wrongly.
+func TestListDirectory_ChainRejectsASiblingWithASharedNamePrefix(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "foo"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "foobar"), 0o755))
+	root := pathutil.Canonicalize(svc.HomeDir)
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(root, "foobar"),
+		FromRoot: filepath.Join(root, "foo"),
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+}
+
+// The worker canonicalizes `path`, so `from_root` must be canonicalized too
+// before the containment test. Without that, a symlinked ancestor -- /tmp on
+// macOS, which resolves to /private/tmp -- fails a check it should pass.
+func TestListDirectory_ChainAcceptsASymlinkedFromRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs elevation on Windows")
+	}
+	svc, d, w := setupTestService(t)
+	real := filepath.Join(svc.HomeDir, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "a"), 0o755))
+	link := filepath.Join(svc.HomeDir, "link")
+	require.NoError(t, os.Symlink(real, link))
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(link, "a"),
+		FromRoot: link,
+	}, w)
+
+	canonical := pathutil.Canonicalize(real)
+	assert.Equal(t, []string{canonical, filepath.Join(canonical, "a")}, listingPaths(t, w))
+}
+
+// Revealing a FILE costs one request too: the chain ends at the deepest
+// directory the caller named. Without this a tree that selects a file has to
+// walk the chain itself, one level at a time.
+func TestListDirectory_ChainEndsAtTheParentOfANonDirectory(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	dir := filepath.Join(svc.HomeDir, "a", "b")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644))
+	root := pathutil.Canonicalize(svc.HomeDir)
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(root, "a", "b", "f.txt"),
+		FromRoot: root,
+	}, w)
+
+	assert.Equal(t, []string{
+		root,
+		filepath.Join(root, "a"),
+		filepath.Join(root, "a", "b"),
+	}, listingPaths(t, w))
+}
+
+// The chain form tolerates a file; the plain form still reports one as the
+// error it is. A caller that asked to list a file without a from_root asked
+// for something impossible.
+func TestListDirectory_WithoutFromRootAFileIsStillAnError(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	path := filepath.Join(svc.HomeDir, "f.txt")
+	require.NoError(t, os.WriteFile(path, []byte("x"), 0o644))
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: path}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Empty(t, w.responses)
+}
+
+// maxChainListings is the O(1) guard in front of the payload budget. It drops
+// the DEEPEST levels, so the caller always receives the chain from its root
+// down and can list the rest itself.
+func TestListDirectory_ChainStopsAtTheListingCap(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+
+	root := pathutil.Canonicalize(svc.HomeDir)
+	deep := root
+	for i := 0; i < maxChainListings+10; i++ {
+		deep = filepath.Join(deep, fmt.Sprintf("d%d", i))
+	}
+	require.NoError(t, os.MkdirAll(deep, 0o755))
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
+
+	paths := listingPaths(t, w)
+	assert.Len(t, paths, maxChainListings)
+	assert.Equal(t, root, paths[0], "the cap must drop the deepest levels, not the outermost")
+	assert.Equal(t, filepath.Join(root, "d0"), paths[1])
+}
+
+// The budget stops the chain BEFORE the response outgrows what the channel
+// accepts. The first listing is always kept: a reply with no listing is not an
+// answer, and the caller asked about that directory.
+func TestListDirectory_ChainStopsAtThePayloadBudget(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t, withMaxMessageSize(4096))
+
+	root := pathutil.Canonicalize(svc.HomeDir)
+	deep := root
+	for i := 0; i < 8; i++ {
+		deep = filepath.Join(deep, fmt.Sprintf("dir-%d", i))
+		require.NoError(t, os.MkdirAll(deep, 0o755))
+		// Enough siblings at every level that a few listings exhaust the
+		// budget, so the cut is the budget's and not the depth cap's.
+		for j := 0; j < 40; j++ {
+			require.NoError(t, os.MkdirAll(filepath.Join(deep, fmt.Sprintf("sibling-with-a-long-name-%d", j)), 0o755))
+		}
+	}
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
+
+	paths := listingPaths(t, w)
+	require.NotEmpty(t, paths)
+	assert.Less(t, len(paths), 9, "the budget must cut the chain short")
+	assert.Equal(t, root, paths[0], "the budget must drop the deepest levels, not the outermost")
+}
+
+// The chain that the directory picker actually issues: rooted at the host's
+// own filesystem root, revealing a path under the home directory.
+//
+// The temp-directory roots above cannot catch a prefix test that mishandles a
+// ROOT, because a temp directory is never one. This is the case that broke:
+// HasPathPrefix appended a boundary separator unconditionally, so a root
+// prefix became "//" and every descendant answered "not an ancestor".
+func TestListDirectory_ChainFromTheFilesystemRoot(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	target := pathutil.Canonicalize(svc.HomeDir)
+
+	roots := pathutil.FilesystemRoots()
+	require.NotEmpty(t, roots)
+	root := roots[0]
+	if runtime.GOOS == "windows" {
+		// The temp directory need not live on the first drive.
+		root = filepath.VolumeName(target) + `\`
+	}
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     target,
+		FromRoot: root,
+		DirsOnly: true,
+	}, w)
+
+	paths := listingPaths(t, w)
+	require.NotEmpty(t, paths)
+	assert.Equal(t, root, paths[0], "the chain must start at the filesystem root")
+	assert.Equal(t, target, paths[len(paths)-1], "and end at the requested path")
+}
+
+func TestListDirectory_ChainRejectsAnUnsanitizableFromRoot(t *testing.T) {
+	t.Parallel()
+	svc, d, _ := setupTestService(t)
+	target := pathutil.Canonicalize(svc.HomeDir)
+
+	// Each of these fails SanitizePath for its own reason, and every one must
+	// be reported as a bad ARGUMENT rather than as a listing failure: the
+	// caller can fix all three.
+	for name, fromRoot := range map[string]string{
+		"relative":  "not/absolute",
+		"traversal": "/tmp/../etc",
+		"empty-ish": "   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := &testResponseWriter{channelID: testChannelID}
+			dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+				Path:     target,
+				FromRoot: fromRoot,
+			}, w)
+
+			require.Len(t, w.errors, 1)
+			assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+			assert.Empty(t, w.responses)
+		})
+	}
+}
+
+// A directory the caller cannot read only SHORTENS the chain. It is one the
+// caller would have discovered on its own next request, and failing the whole
+// reply would cost it the levels that did list.
+func TestListDirectory_ChainStopsAtAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions do not govern reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	svc, d, w := setupTestService(t)
+	root := pathutil.Canonicalize(svc.HomeDir)
+	blocked := filepath.Join(root, "blocked")
+	require.NoError(t, os.MkdirAll(filepath.Join(blocked, "inner"), 0o755))
+	require.NoError(t, os.Chmod(blocked, 0o000))
+	// Restored so t.TempDir's own cleanup can remove the tree.
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(blocked, "inner"),
+		FromRoot: root,
+	}, w)
+
+	assert.Equal(t, []string{root}, listingPaths(t, w),
+		"the readable levels must survive an unreadable one below them")
+}
+
+// The FIRST directory is the one the caller asked about, so its failure is the
+// request's failure -- the counterpart to the rule above.
+func TestListDirectory_ChainFailsWhenTheRootIsUnreadable(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions do not govern reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	svc, d, w := setupTestService(t)
+	root := filepath.Join(pathutil.Canonicalize(svc.HomeDir), "blocked")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "inner"), 0o755))
+	require.NoError(t, os.Chmod(root, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(root, "inner"),
+		FromRoot: root,
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Empty(t, w.responses)
+}
+
+// Every listing in a chain is shaped like the single-listing answer. Without
+// this, a chain could quietly ignore dirs_only and hand a directory picker the
+// files it asked not to receive.
+func TestListDirectory_ChainAppliesDirsOnlyToEveryListing(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	root := pathutil.Canonicalize(svc.HomeDir)
+	mid := filepath.Join(root, "mid")
+	require.NoError(t, os.MkdirAll(filepath.Join(mid, "leaf"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "root-file.txt"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(mid, "mid-file.txt"), []byte("x"), 0o644))
+
+	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+		Path:     filepath.Join(mid, "leaf"),
+		FromRoot: root,
+		DirsOnly: true,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListDirectoryResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetListings(), 3)
+
+	for _, listing := range resp.GetListings() {
+		for _, e := range listing.GetEntries() {
+			assert.True(t, e.GetIsDir(), "listing %q returned a file: %s", listing.GetPath(), e.GetName())
+		}
 	}
 }

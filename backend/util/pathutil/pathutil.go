@@ -12,27 +12,41 @@ import (
 // POSIX. Callers that need symlink resolution should filepath.EvalSymlinks
 // both inputs first.
 func SamePath(a, b string) bool {
-	ca, cb := filepath.Clean(a), filepath.Clean(b)
+	return equalCleaned(filepath.Clean(a), filepath.Clean(b))
+}
+
+// equalCleaned compares two ALREADY-cleaned paths under the host's filesystem
+// case rules: case-insensitive on Windows, byte-exact on POSIX.
+func equalCleaned(a, b string) bool {
 	if runtime.GOOS == "windows" {
-		return strings.EqualFold(ca, cb)
+		return strings.EqualFold(a, b)
 	}
-	return ca == cb
+	return a == b
 }
 
 // HasPathPrefix reports whether path is equal to or nested inside prefix,
 // matching the host's filesystem case rules (case-insensitive on Windows,
-// byte-exact on POSIX). Both inputs are cleaned; a trailing separator is
-// appended to prefix so `/foo` does not match `/foobar`.
+// byte-exact on POSIX). Both inputs are cleaned, and the comparison respects
+// the component boundary, so `/foo` does not match `/foobar`.
 func HasPathPrefix(path, prefix string) bool {
-	cp := filepath.Clean(path) + string(filepath.Separator)
-	pp := filepath.Clean(prefix) + string(filepath.Separator)
+	cp := filepath.Clean(path)
+	pp := filepath.Clean(prefix)
+	if equalCleaned(cp, pp) {
+		return true
+	}
+	// The boundary separator is appended only when the prefix does not already
+	// end in one. A filesystem ROOT is nothing but that separator -- "/" and
+	// `C:\` clean to themselves -- so appending unconditionally built "//" and
+	// `C:\\`, which no real path starts with. Every path under a root then
+	// answered false, and a directory tree rooted at "/" could not prove that
+	// any of its own entries were under it.
+	if !strings.HasSuffix(pp, string(filepath.Separator)) {
+		pp += string(filepath.Separator)
+	}
 	if len(cp) < len(pp) {
 		return false
 	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(cp[:len(pp)], pp)
-	}
-	return cp[:len(pp)] == pp
+	return equalCleaned(cp[:len(pp)], pp)
 }
 
 // Canonicalize returns filepath.EvalSymlinks(p) if it succeeds, otherwise
