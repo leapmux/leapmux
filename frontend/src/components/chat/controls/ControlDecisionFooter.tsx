@@ -1,4 +1,5 @@
 import type { Accessor, Component } from 'solid-js'
+import type { ControlAllowChoicePill } from './ControlPillGroups'
 import type { ControlPermissionPill } from './permissionPresets'
 
 import { For, Index, Show } from 'solid-js'
@@ -6,7 +7,7 @@ import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import * as styles from '../ControlRequestBanner.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
-import { ControlPermissionPillGroup } from './ControlPillGroups'
+import { ControlAllowChoicePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
 
 export interface ControlRequestSwitch {
   id: string
@@ -30,16 +31,17 @@ export const ControlDecisionFooter: Component<{
   negativeAction: ControlDecisionAction
   positiveAction: ControlDecisionAction
   switches?: Accessor<ControlRequestSwitch[]>
+  /** The provider-derived choices for how the positive action grants access. */
+  allowChoicePill?: Accessor<ControlAllowChoicePill | undefined>
   /** The permission pill group, or omit it when no preset is available. */
   permissionPill?: Accessor<ControlPermissionPill | undefined>
   additionalActions?: Accessor<ControlDecisionAction[]>
 }> = (props) => {
   const switches = () => props.switches?.() ?? []
   const additionalActions = () => props.additionalActions?.() ?? []
-  // One leading cluster -- [switches][permission pill] -- so the row reads as
-  // options followed by decisions: a pill is button-high, so it shares the row
-  // with the switches instead of stacking above them.
-  const leadingOptions = () => switches().length > 0 || !!props.permissionPill?.()
+  // One leading cluster keeps the options before the decisions. Each pill is
+  // button-high, so the pills share the row with the switches.
+  const leadingOptions = () => switches().length > 0 || !!props.allowChoicePill?.() || !!props.permissionPill?.()
 
   return (
     <ControlActionRow
@@ -59,6 +61,9 @@ export const ControlDecisionFooter: Component<{
                 </CompactSwitch>
               )}
             </Index>
+            <Show when={props.allowChoicePill?.()}>
+              {pill => <ControlAllowChoicePillGroup pill={pill()} />}
+            </Show>
             <Show when={props.permissionPill?.()}>
               {pill => <ControlPermissionPillGroup pill={pill()} />}
             </Show>

@@ -23,6 +23,28 @@ import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/work
  * removing the workspace from the sidebar after the server processes it.
  */
 test.describe('Workspace Context Menu', () => {
+  test('sidebar row actions use 24px buttons with 14px icons', async ({ page, authenticatedWorkspace }) => {
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    await expect(workspaceItem).toBeVisible()
+    await workspaceItem.hover()
+
+    const menuButton = workspaceItem.getByTestId('workspace-row-menu-trigger')
+    await expect(menuButton).toHaveCSS('width', '24px')
+    await expect(menuButton).toHaveCSS('height', '24px')
+    await expect(menuButton.locator('svg')).toHaveAttribute('width', '14')
+    await expect(menuButton.locator('svg')).toHaveAttribute('height', '14')
+
+    const tabRow = page.locator('[data-testid="tab-tree-leaf"]:visible').first()
+    await expect(tabRow).toBeVisible()
+    await tabRow.hover()
+
+    const closeButton = tabRow.getByTestId('workspace-tab-close')
+    await expect(closeButton).toHaveCSS('width', '24px')
+    await expect(closeButton).toHaveCSS('height', '24px')
+    await expect(closeButton.locator('svg')).toHaveAttribute('width', '14')
+    await expect(closeButton.locator('svg')).toHaveAttribute('height', '14')
+  })
+
   test('rename via context menu and delete via two-step confirm round-trip the backend', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
     await expect(workspaceItem).toBeVisible()

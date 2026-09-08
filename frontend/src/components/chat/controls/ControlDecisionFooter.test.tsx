@@ -16,20 +16,20 @@ describe('controlDecisionFooter', () => {
         negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
         positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
         switches={() => [{
-          id: 'remember',
-          label: 'Remember',
+          id: 'clear-context',
+          label: 'Clear Context',
           checked: checked(),
           onChange: setChecked,
         }]}
       />
     ))
 
-    const input = screen.getByTestId('remember').querySelector('input')!
+    const input = screen.getByTestId('clear-context').querySelector('input')!
     input.focus()
     fireEvent.click(input)
 
     expect(input.checked).toBe(true)
-    expect(screen.getByTestId('remember').querySelector('input')).toBe(input)
+    expect(screen.getByTestId('clear-context').querySelector('input')).toBe(input)
     expect(document.activeElement).toBe(input)
   })
 
@@ -96,5 +96,29 @@ describe('controlDecisionFooter', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renders provider allow choices in the leading controls', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
+        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        allowChoicePill={() => ({
+          label: 'Allow as',
+          options: [
+            { key: 'once', label: 'Once' },
+            { key: 'session', label: 'Session' },
+          ],
+          selected: 'once',
+          onSelect,
+        })}
+      />
+    ))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Session' }))
+    expect(onSelect).toHaveBeenCalledWith('session')
   })
 })

@@ -184,14 +184,20 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   }
 
   /**
-   * Whether this key's row can be dragged, resolved through the LIVE lookup.
+   * Whether this key's row can be dragged, resolved through the LIVE queue.
    *
    * Read through `byKey()` and never from an item the row captured at mount.
    * The row keeps its identity now, so a captured item would freeze this at the
    * state the row started with, and a row that becomes DISPATCHING would keep a
    * live grip and live drag activators.
+   *
+   * A queue with one input has no legal destination. Withholding the same
+   * activators also removes the cursor and the visible touch grip, so the row
+   * does not offer an operation that cannot change its position.
    */
   const canDragKey = (key: string) => {
+    if (items().length < 2)
+      return false
     const item = byKey().get(key)
     return !!item && item.state !== AgentInputState.DISPATCHING
   }

@@ -2,6 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { createControlAnswerState } from './controls/types'
@@ -130,6 +131,9 @@ describe('controlRequestBanner reactive request removal', () => {
     }).not.toThrow()
 
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
-    expect(screen.getByTestId('control-submit-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-stop-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-yolo-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-submit-btn')).toHaveClass(compactControl)
+    expect(screen.getByTestId('control-submit-btn')).not.toHaveClass('outline')
   })
 })

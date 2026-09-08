@@ -4,12 +4,14 @@
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
 import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
+import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 const gooseConfig: ACPFixtureConfig = {
   agentProvider: AgentProvider.GOOSE,
   cliBinary: 'goose',
   skipMessage: 'Goose E2E requires a goose CLI on PATH',
   workspacePrefix: 'goose-e2e',
+  ...REAL_AGENT_E2E_SETTINGS.goose,
 }
 
 export const GOOSE_E2E_SKIP_REASON = detectACPSkipReason(gooseConfig)

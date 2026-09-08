@@ -1,13 +1,14 @@
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
 import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
+import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 const cursorConfig: ACPFixtureConfig = {
   agentProvider: AgentProvider.CURSOR,
   cliBinary: 'agent',
   skipMessage: 'Cursor E2E requires an agent CLI on PATH',
   workspacePrefix: 'cursor-e2e',
-  model: 'auto',
+  ...REAL_AGENT_E2E_SETTINGS.cursor,
 }
 
 export const CURSOR_E2E_SKIP_REASON = detectACPSkipReason(cursorConfig)

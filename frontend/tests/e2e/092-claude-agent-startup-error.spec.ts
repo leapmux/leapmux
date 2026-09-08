@@ -15,14 +15,15 @@ import {
 } from './helpers/api'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 function startServerWithFailingClaude(): Promise<DevServerHandle> {
   return startDevServer({
     dataDirPrefix: 'leapmux-startup-err',
     env: {
       LEAPMUX_WORKER_NAME: 'Local',
-      LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
-      LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
+      LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model,
+      LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort,
       LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS: '5',
       // /usr/bin/false ignores all args and exits 1 — the shell
       // "exec claude ..." never runs.

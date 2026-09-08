@@ -29,6 +29,7 @@ import { findFreePort, getGlobalState, hubDataDir, hubSpawnEnv, waitForServer } 
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 export interface ServerInfo {
   hubUrl: string
@@ -118,7 +119,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local' }),
+      env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model, LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort, LEAPMUX_CODEX_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.codex.model, LEAPMUX_CODEX_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.codex.effort, LEAPMUX_COPILOT_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.copilot.model, LEAPMUX_WORKER_NAME: 'Local' }),
     })
 
     // Consume server output (also prevents backpressure), keeping a tail for

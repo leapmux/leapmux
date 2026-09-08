@@ -81,6 +81,8 @@ interface RenderPanelOptions {
   controlStore?: ReturnType<typeof createControlStore>
   onControlResponse?: AgentEditorPanelProps['onControlResponse']
   onSettingChange?: AgentEditorPanelProps['onSettingChange']
+  onInterrupt?: AgentEditorPanelProps['onInterrupt']
+  agentWorking?: boolean
   optionGroups?: AgentInfo['optionGroups']
 }
 
@@ -109,6 +111,8 @@ function renderPanel(options: RenderPanelOptions = {}) {
         controlRequests={options.controlStore?.getRequests('a1')}
         onControlResponse={options.onControlResponse}
         onSettingChange={options.onSettingChange}
+        onInterrupt={options.onInterrupt}
+        agentWorking={options.agentWorking}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -521,32 +525,31 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitFor(() => expect(clearContext()).toBeChecked())
   })
 
-  // The same record covers every control's switches, not the plan pair alone.
-  // A Codex permission prompt draws Remember from it, so one mechanism serves
-  // both and a new switch needs no further work.
-  it('restores a Codex permission prompt switch after a remount', async () => {
+  // The same record covers the pill groups that a control request draws.
+  // A Codex permission prompt stores its Allow-as selection in that record.
+  it('restores a Codex permission prompt allow choice after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'perm-1',
       claimToken: 'claim-1',
       payload: { method: 'item/permissions/requestApproval', params: { permissions: { read: ['/repo'] } } },
     })
-    const remember = () => screen.getByTestId('control-remember-checkbox').querySelector('input[type="checkbox"]')!
     const first = renderPanel({ controlStore, agentProvider: AgentProvider.CODEX })
 
     await waitForControlActionsReady()
-    fireEvent.click(remember())
-    expect(remember()).toBeChecked()
+    const sessionChoice = screen.getByRole('radio', { name: 'Session' })
+    fireEvent.click(sessionChoice)
+    expect(sessionChoice).toBeChecked()
 
     first.unmount()
     renderPanel({ controlStore, agentProvider: AgentProvider.CODEX })
 
     // Polled: the saved record is read after the remount, not during it.
-    await waitFor(() => expect(remember()).toBeChecked())
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Session' })).toBeChecked())
   })
 
   // The record is written for EVERY control request now, not only a question,
-  // because a permission prompt and a plan approval carry switches. Answering
+  // because permission prompts and plan approvals carry saved choices. Answering
   // must therefore discard it: a record that outlived its request would be
   // storage that nothing can ever read again.
   it('discards the persisted switches of the answered request', async () => {
@@ -704,9 +707,10 @@ describe('agent editor panel', () => {
     // The footer slot's own rule states no size, so a button that omits this
     // style falls back to the full-size metrics and breaks the row it shares
     // with the `[+]` button, whose height uses the same compact metrics.
-    renderPanel()
+    renderPanel({ agentWorking: true, onInterrupt: vi.fn() })
 
     expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('interrupt-button')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('send-button')).toHaveClass(compactControl)
     expect(screen.getByTestId('send-button')).not.toHaveClass('outline')
   })

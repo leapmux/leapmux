@@ -15,9 +15,6 @@ const KIND_REJECT_ALWAYS = 'reject_always'
 
 const CANONICAL_KINDS = [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
 
-/** The answer-state key the allow-scope pill group's selection is stored under. */
-export const ALLOW_SCOPE_CHOICE_ID = 'control-allow-scope-pill'
-
 export function isRejectPermissionKind(kind: string): boolean {
   return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
 }

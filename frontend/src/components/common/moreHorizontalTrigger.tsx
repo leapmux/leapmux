@@ -19,20 +19,19 @@ export interface MoreHorizontalTriggerOptions {
   'title'?: string
 }
 
-// Builds the DropdownMenu `trigger` render-prop for the standard
-// "three-dot" affordance: a small IconButton that swallows the row's
-// click/pointerdown so the popover opens without selecting the row.
-// The pointerdown/click toggle dance (capturing wasOpenOnPointerDown
-// before light-dismiss) lives in DropdownMenu's internal handlers —
-// see handleTriggerPointerDown / handleTriggerClick there — so this
-// helper just spreads the triggerProps it receives.
+// Creates the standard three-dot trigger for a DropdownMenu.
+// The trigger uses a 24px IconButton and keeps the default 14px icon.
+// It stops row events so the popover opens without selecting the row.
+// DropdownMenu owns the pointer-down and click state changes.
+// Its handlers capture the open state before light dismiss changes it.
+// This helper forwards the trigger properties to those handlers.
 export function moreHorizontalTrigger(
   opts: MoreHorizontalTriggerOptions = {},
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {
   return triggerProps => (
     <IconButton
       icon={MoreHorizontal}
-      size="sm"
+      size="md"
       class={opts.class}
       title={opts.title}
       ref={triggerProps.ref}
@@ -50,16 +49,15 @@ export function moreHorizontalTrigger(
   )
 }
 
-// rowContextMenuTrigger is the standard "three-dot, styled with the
-// sidebar's row-menu CSS class" trigger used by every per-row context
-// menu (BranchContextMenu, WorkspaceContextMenu, WorkerContextMenu,
-// TunnelContextMenu). Bakes in `class: menuTrigger` so each call site
-// reduces to `<DropdownMenu trigger={rowContextMenuTrigger()}>` — when
-// the visual changes (kebab icon, different size, renamed CSS class),
-// every row menu picks it up uniformly instead of one of four
-// hand-written sites drifting. Callers that need a non-row trigger
-// (titlebar, dialog headers) still use `moreHorizontalTrigger` with
-// their own class.
+// Creates the standard three-dot trigger for each row context menu.
+// It supplies the sidebar's `menuTrigger` class to every row menu.
+// Thus, one visual change updates all row menus.
+// A trigger outside a row uses `moreHorizontalTrigger` with its own class.
+// These components use this trigger:
+// - BranchContextMenu
+// - WorkspaceContextMenu
+// - WorkerContextMenu
+// - TunnelContextMenu
 export function rowContextMenuTrigger(
   opts: { 'data-testid'?: string } = {},
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {

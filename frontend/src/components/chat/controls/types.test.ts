@@ -71,14 +71,14 @@ describe('createControlSwitch', () => {
   // apart. A write must leave its siblings alone rather than replace the map.
   it('keeps two switches of one record apart by id', () => {
     const state = createControlAnswerState()
-    const remember = createControlSwitch(() => state, 'control-remember-checkbox')
+    const preview = createControlSwitch(() => state, 'control-preview-checkbox')
     const clear = createControlSwitch(() => state, 'plan-clear-context-checkbox')
 
-    remember.set(true)
+    preview.set(true)
     clear.set(true)
-    remember.set(false)
+    preview.set(false)
 
-    expect(remember.checked()).toBe(false)
+    expect(preview.checked()).toBe(false)
     expect(clear.checked()).toBe(true)
   })
 
@@ -123,18 +123,18 @@ describe('createControlChoice', () => {
     expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
   })
 
-  // The permission pill's choice and a switch share one RECORD but not one map,
+  // The permission pill's choice and a switch share one record but not one map,
   // so a choice write must leave the switches untouched and vice versa.
   it('keeps the choices map apart from the switches map', () => {
     const state = createControlAnswerState()
     const pill = createControlChoice(() => state, 'control-permissions-pill', 'default')
-    const remember = createControlSwitch(() => state, 'control-remember-checkbox')
+    const clear = createControlSwitch(() => state, 'plan-clear-context-checkbox')
 
     pill.setChoice('bypass')
-    remember.set(true)
+    clear.set(true)
 
     expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
-    expect(state.switches()).toEqual({ 'control-remember-checkbox': true })
+    expect(state.switches()).toEqual({ 'plan-clear-context-checkbox': true })
   })
 
   // The record is captured ONCE, at creation, for the same reason as a switch:

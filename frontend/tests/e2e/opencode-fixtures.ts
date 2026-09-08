@@ -4,12 +4,14 @@
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
 import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
+import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 const opencodeConfig: ACPFixtureConfig = {
   agentProvider: AgentProvider.OPENCODE,
   cliBinary: 'opencode',
   skipMessage: 'OpenCode E2E requires opencode CLI on PATH',
   workspacePrefix: 'opencode-e2e',
+  ...REAL_AGENT_E2E_SETTINGS.opencode,
 }
 
 export const OPENCODE_E2E_SKIP_REASON = detectACPSkipReason(opencodeConfig)

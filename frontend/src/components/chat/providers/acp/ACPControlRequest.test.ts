@@ -2,7 +2,7 @@ import type { PermissionPresetController } from '../../providerSettings'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
-import { allowScopePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
+import { allowChoicePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
 import { ACPControlActions, sendACPPermissionResponse } from './ACPControlRequest'
 
@@ -118,7 +118,7 @@ describe('acpControlActions', () => {
     expect(allow.textContent).toBe('Allow')
     expect(deny.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    const scope = allowScopePillGroup()
+    const scope = allowChoicePillGroup()
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Always' })).not.toBeChecked()
     const pill = permissionPillGroup()
@@ -155,7 +155,7 @@ describe('acpControlActions', () => {
   it('sends the always options once a scope beyond Once is selected', async () => {
     const { onRespond } = renderGooseActions()
 
-    fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
+    fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('allow_always')
 
@@ -167,7 +167,7 @@ describe('acpControlActions', () => {
   it('keeps the reject-once option under a remembering scope when the agent offers no reject_always', async () => {
     const { onRespond } = renderOpenCodeShapeActions()
 
-    fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
+    fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('reject')
 
@@ -282,7 +282,7 @@ describe('acpControlActions', () => {
     }))
 
     // The scope group replaces the extra button the project option used to be.
-    const scope = allowScopePillGroup()
+    const scope = allowChoicePillGroup()
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
     expect(scope.getByRole('radio', { name: 'Project' })).toBeInTheDocument()

@@ -54,12 +54,12 @@ test.describe('Settings and /clear after Worker restart', () => {
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
       await waitForSettingsIdle()
 
-      // Step 4: Change effort (Low → Medium, default overridden via LEAPMUX_CLAUDE_DEFAULT_EFFORT in e2e)
+      // Step 4: Change effort (Medium → High; the e2e catalog sets Medium).
       // Must happen before switching to Haiku, which hides the effort section.
       await openSettingsMenu(page, 'effort')
-      await page.locator('[data-testid="effort-medium"]').click()
+      await page.locator('[data-testid="effort-high"]').click()
 
-      await waitForNotification('Effort (Low \u2192 Medium)')
+      await waitForNotification('Effort (Medium \u2192 High)')
       await waitForSettingsIdle()
 
       // Step 5: Change model (Sonnet → Haiku)

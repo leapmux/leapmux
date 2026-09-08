@@ -2,8 +2,8 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
-import { permissionPillGroup } from '~/test-support/controlRequests'
-import { createControlAnswerState } from '../../controls/types'
+import { allowChoicePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
+import { CONTROL_ALLOW_CHOICE_ID, createControlAnswerState } from '../../controls/types'
 import { CodexControlActions } from './CodexControlRequest'
 
 function makeRequest(params: Record<string, unknown> = {}): ControlRequest {
@@ -22,13 +22,17 @@ function makePlanRequest(): ControlRequest {
   }
 }
 
-function renderActions(request: ControlRequest, hasEditorContent = false) {
+function renderActions(
+  request: ControlRequest,
+  hasEditorContent = false,
+  answerState = createControlAnswerState(),
+) {
   const onRespond = vi.fn().mockResolvedValue(undefined)
   const onSettingChange = vi.fn()
   render(() => (
     <CodexControlActions
       request={request}
-      answerState={createControlAnswerState()}
+      answerState={answerState}
       onRespond={onRespond}
       hasEditorContent={hasEditorContent}
       onTriggerSend={vi.fn()}
@@ -39,41 +43,108 @@ function renderActions(request: ControlRequest, hasEditorContent = false) {
 }
 
 describe('codex control request actions', () => {
-  it('renders Deny and Allow with the Remember switch and the permission pills', () => {
+  it('renders Deny and Allow with allow-choice and permission pills', () => {
     renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
-    expect(screen.getByTestId('control-remember-checkbox')).toHaveTextContent('Remember')
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' })).not.toBeChecked()
     // No preset is on, so the group opens on the pill that changes nothing.
     expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).toBeChecked()
     expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
-  it('uses the remembered Codex decision only when Remember is checked', async () => {
+  it('uses the Codex decision that the allow-choice pills select', async () => {
     const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
 
-    fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
+    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } })
   })
 
-  it('appends decisions that the fixed controls do not cover', () => {
+  it('sends an allowed host-policy amendment from the Host rule pill', async () => {
+    const hostDecision = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }
+    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', hostDecision] }))
+
+    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Host rule' }))
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(hostDecision)
+  })
+
+  it('restores the old Remember selection as its native Codex rule choice', async () => {
+    const commandRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }
+    const { onRespond } = renderActions(
+      makeRequest({ availableDecisions: ['accept', 'acceptForSession', commandRule, 'decline'] }),
+      false,
+      createControlAnswerState({ switches: { 'control-remember-checkbox': true } }),
+    )
+
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' })).toBeChecked()
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(commandRule)
+  })
+
+  it('groups each supported allow decision and appends other decisions', () => {
     renderActions(makeRequest({ availableDecisions: ['accept', 'decline', 'cancel', 'acceptForSession', { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }] }))
 
-    expect(screen.getByTestId('control-remember-checkbox')).toBeInTheDocument()
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
+    expect(allowChoices.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
+    expect(allowChoices.getByRole('radio', { name: 'Host rule' })).toBeInTheDocument()
     expect(screen.getByTestId('control-decision-cancel')).toHaveTextContent('Cancel')
-    expect(screen.getByTestId('control-decision-acceptForSession')).toHaveTextContent('Allow for Session')
+    expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-accept')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-decline')).not.toBeInTheDocument()
+  })
+
+  it('keeps allow decisions beyond the four-pill limit as buttons', async () => {
+    const overflowHostRule = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'overflow.example.com', action: 'allow' } } }
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        'acceptForSession',
+        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
+        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } },
+        overflowHostRule,
+        'decline',
+      ],
+    }))
+
+    expect(allowChoicePillGroup('Allow as').getAllByRole('radio')).toHaveLength(4)
+    const overflow = screen.getByTestId('control-decision-applyNetworkPolicyAmendment')
+    expect(overflow).toHaveTextContent('Allow Host & Remember')
+    await fireEvent.click(overflow)
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(overflowHostRule)
+  })
+
+  it('clamps an obsolete saved allow choice to Once', async () => {
+    const { onRespond } = renderActions(
+      makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }),
+      false,
+      createControlAnswerState({ choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' } }),
+    )
+
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('accept')
   })
 
   it('uses only the negative decision that Codex offers', async () => {
     const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'cancel'] }))
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
+    expect(screen.queryByRole('radiogroup', { name: 'Allow as' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
@@ -93,6 +164,7 @@ describe('codex control request actions', () => {
     }
     const { onRespond } = renderActions(request)
 
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
@@ -114,11 +186,44 @@ describe('codex control request actions', () => {
     }
     const { onRespond } = renderActions(request)
 
-    fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
+    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
+  })
+
+  it('restores the old Remember selection as Session for an in-flight permission request', () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }
+
+    renderActions(request, false, createControlAnswerState({
+      switches: { 'control-remember-checkbox': true },
+    }))
+
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' })).toBeChecked()
+  })
+
+  it('lets a new Once choice override a restored Remember selection', async () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }
+    const answerState = createControlAnswerState({
+      switches: { 'control-remember-checkbox': true },
+    })
+    const { onRespond } = renderActions(request, false, answerState)
+
+    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' }))
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('turn')
+    expect(answerState.choices()).toEqual({ [CONTROL_ALLOW_CHOICE_ID]: 'turn' })
   })
 
   it('denies a permission request with an empty grant', async () => {
@@ -135,7 +240,7 @@ describe('codex control request actions', () => {
     expect(JSON.parse(new TextDecoder().decode(bytes)).result).toEqual({ permissions: {}, scope: 'turn' })
   })
 
-  it('appends a second persistent allow decision that Remember does not select', () => {
+  it('groups session and command-rule decisions together', () => {
     renderActions(makeRequest({
       availableDecisions: [
         'accept',
@@ -145,8 +250,11 @@ describe('codex control request actions', () => {
       ],
     }))
 
-    expect(screen.getByTestId('control-remember-checkbox')).toBeInTheDocument()
-    expect(screen.getByTestId('control-decision-acceptForSession')).toHaveTextContent('Allow for Session')
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
+    expect(allowChoices.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
+    expect(allowChoices.getByRole('radio', { name: 'Command rule' })).toBeInTheDocument()
+    expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
   })
 
   it('ignores malformed available decisions', () => {
@@ -180,7 +288,7 @@ describe('codex control request actions', () => {
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')
     expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('control-remember-checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'Allow as' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-cancel')).not.toBeInTheDocument()
   })

@@ -124,6 +124,31 @@ describe('agentInputQueue', () => {
     expect(screen.getByTestId('queued-input-one').className).not.toContain('itemDragging')
   })
 
+  it('removes all drag wiring when the queue shrinks to one input', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await flush()
+    const row = screen.getByTestId('queued-input-one')
+    const grip = screen.getByTestId('queue-drag-handle-one')
+
+    expect(row.className).toContain('itemDraggable')
+    expect(grip.className).not.toContain('dragHandleInert')
+
+    handlers.push([item('one')])
+    await flush()
+
+    expect(row.className).not.toContain('itemDraggable')
+    expect(grip.className).toContain('dragHandleInert')
+
+    grip.dispatchEvent(pointerEvent('pointerdown', { x: 10, y: 10, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 90, pointerType: 'touch' }))
+    await flush()
+    const dragStarted = row.className.includes('itemDragging')
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 90, pointerType: 'touch' }))
+
+    expect(dragStarted).toBe(false)
+    expect(handlers.onMove).not.toHaveBeenCalled()
+  })
+
   it('turns a drop into onMove, which is the wiring the arithmetic tests cannot reach', async () => {
     const handlers = renderQueue({ items: [item('one'), item('two')] })
     await flush()

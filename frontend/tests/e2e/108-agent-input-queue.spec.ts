@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { loginViaToken, openWorkspace, sendMessage, waitForEditorDraft } from './helpers/ui'
+import { ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -38,6 +38,10 @@ async function seedTwoQueuedRows(page: Page) {
 test.describe('agent input queue', () => {
   test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker }) => {
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    // Establish a real provider session before the Worker restart. A fresh
+    // Claude process reports an id before it stores a resumable conversation.
+    await sendMessage(page, ARITHMETIC_PROMPT)
+    await waitForAgentIdle(page)
     await page.getByTestId('queue-pause-button').click()
     await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
 
@@ -185,6 +189,18 @@ test.describe('agent input queue', () => {
     })
   })
 
+  test('shows no drag affordance when the queue contains one input', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await page.getByTestId('queue-pause-button').click()
+    await sendMessage(page, 'only queued input')
+
+    const row = page.getByTestId(/^queued-input-/)
+    await expect(row).toHaveCount(1)
+    await expect(row).not.toHaveClass(/itemDraggable/)
+    await expect(row.getByTestId(/^queue-drag-handle-/)).toHaveClass(/dragHandleInert/)
+  })
+
   test('reorders a queued input by dragging its row', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     // A mouse is a FINE pointer, so the grip is hidden and the row body is what
@@ -195,11 +211,17 @@ test.describe('agent input queue', () => {
     const to = (await target.boundingBox())!
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
     await page.mouse.down()
-    // Past the sensor's 10px activation distance, then onto the target's centre
-    // in a second step so the collision detector sees the move.
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 20)
-    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
-    await page.mouse.up()
+    try {
+      // Past the sensor's 10px activation distance, then onto the target's
+      // centre in a second step so the collision detector sees the move.
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 20)
+      await expect(source).toHaveClass(/itemDragging/)
+      await expect(page.getByTestId('agent-input-queue')).toHaveCSS('overflow-x', 'hidden')
+      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
+    }
+    finally {
+      await page.mouse.up()
+    }
 
     // The Worker owns the order, so the reorder is real only once it comes back.
     await expect(rows.first()).toContainText('second queued')
@@ -222,7 +244,7 @@ test.describe('agent input queue', () => {
 
     // Empty composer, no running turn: the head is not steerable, so the chord
     // is claimed and does nothing. Nothing is sent, and nothing is queued.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.press(`${MOD}+Enter`)
     await expect(rows).toHaveCount(2)

@@ -12,6 +12,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { realAgentOpenOptions } from './realAgentSettings'
 
 export { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 
@@ -23,8 +24,10 @@ export interface ACPFixtureConfig {
   skipMessage?: string
   /** Prefix for workspace names (e.g. 'copilot-e2e', 'cursor-e2e', 'opencode-e2e'). */
   workspacePrefix: string
-  /** Optional explicit model to use when opening the agent. */
-  model?: string
+  /** The explicit model to use when opening the real agent. */
+  model: string
+  /** The explicit effort, when the model supports an effort level. */
+  effort?: string
 }
 
 export interface WorkspaceFixture {
@@ -60,7 +63,7 @@ export async function createACPWorkspace(
   const workingDir = mkdtempSync(join(tmpdir(), `${config.workspacePrefix}-wd-`))
   await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, workingDir, {
     agentProvider: config.agentProvider,
-    model: config.model,
+    ...realAgentOpenOptions(config),
   })
   await use({ workspaceId })
 

@@ -6,6 +6,11 @@ export const root = style({
   flexDirection: 'column',
   gap: 'var(--space-1)',
   maxHeight: 'min(40vh, 20rem)',
+  // A vertical `auto` value changes the initial horizontal `visible` value to
+  // `auto`. A dragged row then extends the scrollable area with its transform
+  // and makes a horizontal scrollbar appear. Keep vertical scrolling, but
+  // hide that temporary horizontal overflow.
+  overflowX: 'hidden',
   overflowY: 'auto',
   overscrollBehavior: 'contain',
   // `inputArea` owns the gap to the neighbours. See the `inputArea` comment in

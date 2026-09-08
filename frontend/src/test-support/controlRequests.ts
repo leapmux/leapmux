@@ -6,7 +6,7 @@ import { screen, within } from '@solidjs/testing-library'
  *
  * Both groups are written by
  * `~/components/chat/controls/ControlPillGroups`, which owns their accessible
- * names ("Permissions", "Allow scope"). The locator is spelled once here, so a
+ * labels ("Permissions", "Allow scope", "Allow as"). The locator is specified once here, so a
  * rename cannot be applied to some suites and missed in others.
  */
 
@@ -15,7 +15,7 @@ export function permissionPillGroup() {
   return within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 }
 
-/** The allow-scope group (Once / Always, or Once / Session / Project). */
-export function allowScopePillGroup() {
-  return within(screen.getByRole('radiogroup', { name: 'Allow scope' }))
+/** An allow-choice group, identified by its provider-facing label. */
+export function allowChoicePillGroup(label: 'Allow scope' | 'Allow as' = 'Allow scope') {
+  return within(screen.getByRole('radiogroup', { name: label }))
 }

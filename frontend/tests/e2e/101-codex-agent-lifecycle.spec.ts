@@ -1,8 +1,8 @@
 import { codexTest, expect } from './codex-fixtures'
 import { isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 
-codexTest.describe('Codex Agent Lifecycle', () => {
-  codexTest('Codex agent tab is visible after creation', async ({ authenticatedCodexWorkspace, page }) => {
+codexTest.describe('codex agent lifecycle', () => {
+  codexTest('codex agent tab is visible after creation', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
     const tabs = page.locator('[data-testid="tab"]')
     await expect(tabs.first()).toBeVisible()
@@ -31,7 +31,7 @@ codexTest.describe('Codex Agent Lifecycle', () => {
     expect(tabsBefore).toBeGreaterThan(0)
 
     // Close the first agent tab via the close button — must be visible.
-    const closeBtn = page.locator('[data-testid="tab"] [data-testid="close-tab"]').first()
+    const closeBtn = page.locator('[data-testid="tab"] [data-testid="tab-close"]').first()
     await expect(closeBtn).toBeVisible()
     await closeBtn.click()
     // A confirmation dialog may appear — confirm if it does.

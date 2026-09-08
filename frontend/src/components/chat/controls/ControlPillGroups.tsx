@@ -24,23 +24,27 @@ export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill
   </div>
 )
 
-/**
- * The allow-scope pill group a permission request offers when one allow-once
- * faces one or more allow-always scopes (Once / Always, or Once / Session /
- * Project): the scope control for HOW LONG an allow lasts, keys being optionIds
- * so a selection maps straight onto the wire reply.
- */
-export const ControlAllowScopePillGroup: Component<{
+/** One provider-derived choice for how the positive action grants access. */
+export interface ControlAllowChoicePill {
+  label: string
+  description?: string
   options: PillOptions<string>
   selected: string
-  onSelect: (optionId: string) => void
-}> = props => (
-  <div class={styles.controlRequestPill} data-testid="control-allow-scope-pill-group">
+  onSelect: (key: string) => void
+}
+
+/**
+ * The allow-choice pill group for a control request. ACP supplies duration
+ * scopes. Codex supplies its native turn, session, and policy choices.
+ */
+export const ControlAllowChoicePillGroup: Component<{ pill: ControlAllowChoicePill }> = props => (
+  <div class={styles.controlRequestPill} data-testid="control-allow-choice-pill-group">
     <PillGroup
-      label="Allow scope"
-      options={props.options}
-      selectedKey={props.selected}
-      onSelect={props.onSelect}
+      label={props.pill.label}
+      description={props.pill.description}
+      options={props.pill.options}
+      selectedKey={props.pill.selected}
+      onSelect={props.pill.onSelect}
       small
     />
   </div>

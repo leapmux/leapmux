@@ -1,8 +1,11 @@
 import type { Component } from 'solid-js'
+import type { ControlAllowChoicePill } from '../../controls/ControlPillGroups'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
-
 import type { CodexDecision } from './controlResponse'
+import type { PillOptions } from '~/components/common/PillGroup'
+
 import { createMemo, Match, Show, Switch } from 'solid-js'
+import { isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
@@ -10,7 +13,7 @@ import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
-import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
+import { CONTROL_ALLOW_CHOICE_ID, createControlChoice, sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
 
 /** Extract Codex approval params from the control request payload. */
@@ -117,10 +120,58 @@ function remembersAllow(decision: CodexDecision): boolean {
   return decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'allow'
 }
 
+interface CodexAllowChoice {
+  key: string
+  label: string
+  decision: CodexDecision
+}
+
+function codexAllowChoiceLabel(decision: CodexDecision): string {
+  if (decision === 'accept')
+    return 'Once'
+  if (decision === 'acceptForSession')
+    return 'Session'
+  if (typeof decision === 'object' && 'acceptWithExecpolicyAmendment' in decision)
+    return 'Command rule'
+  return 'Host rule'
+}
+
+function codexAllowChoicePriority(decision: CodexDecision): number {
+  if (decision === 'accept')
+    return 0
+  if (decision === 'acceptForSession')
+    return 1
+  if (typeof decision === 'object' && 'acceptWithExecpolicyAmendment' in decision)
+    return 2
+  return 3
+}
+
+/**
+ * Builds the choices that qualify the shared Allow button. A group requires
+ * Codex's one-turn `accept` decision, so its first and default pill is Once.
+ */
+function codexAllowChoices(decisions: CodexDecision[]): CodexAllowChoice[] | undefined {
+  const candidates = decisions
+    .map((decision, sourceIndex) => ({ decision, sourceIndex }))
+    .filter(candidate => !isNegativeDecision(candidate.decision))
+    .sort((a, b) => codexAllowChoicePriority(a.decision) - codexAllowChoicePriority(b.decision))
+
+  if (candidates.length < 2 || candidates[0]?.decision !== 'accept')
+    return undefined
+
+  return candidates.slice(0, PILL_OPTION_LIMIT).map(({ decision, sourceIndex }) => ({
+    key: `codex-allow-${sourceIndex}`,
+    label: codexAllowChoiceLabel(decision),
+    decision,
+  }))
+}
+
 export interface ResolvedCodexDecisions {
   negative: CodexDecision
   positive: CodexDecision
+  /** Supports saved in-flight requests that used the former Remember switch. */
   remembered?: CodexDecision
+  allowChoices?: CodexAllowChoice[]
   additional: CodexDecision[]
 }
 
@@ -137,8 +188,11 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
     ? decisions.find(decision => typeof decision === 'object' && remembersAllow(decision))
     ?? decisions.find(decision => decision === 'acceptForSession')
     : undefined
-  const additional = decisions.filter(decision => decision !== negative && decision !== positive && decision !== remembered)
-  return { negative, positive, remembered, additional }
+  const allowChoices = codexAllowChoices(decisions)
+  const consumed = new Set<CodexDecision>(allowChoices?.map(choice => choice.decision) ?? [positive])
+  consumed.add(negative)
+  const additional = decisions.filter(decision => !consumed.has(decision))
+  return { negative, positive, remembered, allowChoices, additional }
 }
 
 export function codexRequestedPermissions(payload: Record<string, unknown>): Record<string, unknown> {
@@ -204,14 +258,26 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 }
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
-  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
+  const selectedScope = (): 'turn' | 'session' => {
+    const choice = allowChoice.choice()
+    if (choice === 'turn' || choice === 'session')
+      return choice
+    // Preserve a selection that an in-flight request saved before the switch
+    // changed to pills. A new request has neither value and defaults to Once.
+    return props.answerState.switches()['control-remember-checkbox'] ? 'session' : 'turn'
+  }
+  const scopeOptions = [
+    { key: 'turn', label: 'Once' },
+    { key: 'session', label: 'Session' },
+  ] as const satisfies PillOptions<string>
   const handleAllow = () => respondThenApplyPermissionPreset(
     sendCodexPermissionsResponse(
       props.onRespond,
       props.request.requestId,
       codexRequestedPermissions(props.request.payload),
-      rememberSwitch.checked() ? 'session' : 'turn',
+      selectedScope(),
     ),
     props.presets,
     permissionChoice.choice(),
@@ -226,9 +292,12 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
         onSelect: () => sendCodexPermissionsResponse(props.onRespond, props.request.requestId, {}, 'turn'),
       }}
       positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
-      switches={() => [
-        { id: 'control-remember-checkbox', label: 'Remember', checked: rememberSwitch.checked(), onChange: rememberSwitch.set },
-      ]}
+      allowChoicePill={() => ({
+        label: 'Allow as',
+        options: scopeOptions,
+        selected: selectedScope(),
+        onSelect: allowChoice.setChoice,
+      })}
       permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
     />
   )
@@ -268,8 +337,38 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const method = () => props.request.payload.method as string | undefined
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
-  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
+
+  const selectedAllowChoice = () => {
+    const choices = decisions().allowChoices
+    if (!choices)
+      return undefined
+    const selected = choices.find(choice => choice.key === allowChoice.choice())
+    if (selected)
+      return selected
+    if (props.answerState.switches()['control-remember-checkbox']) {
+      const migrated = choices.find(choice => choice.decision === decisions().remembered)
+      if (migrated)
+        return migrated
+    }
+    return choices[0]
+  }
+
+  const allowChoicePill = createMemo<ControlAllowChoicePill | undefined>(() => {
+    const choices = decisions().allowChoices
+    if (!choices)
+      return undefined
+    const options = choices.map(choice => ({ key: choice.key, label: choice.label }))
+    if (!isPillOptions(options))
+      return undefined
+    return {
+      label: 'Allow as',
+      options,
+      selected: selectedAllowChoice()?.key ?? options[0].key,
+      onSelect: allowChoice.setChoice,
+    }
+  })
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
     props.onRespond,
@@ -278,7 +377,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   )
 
   const handleAllow = () => respondThenApplyPermissionPreset(
-    handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive),
+    handleDecision(selectedAllowChoice()?.decision ?? decisions().positive),
     props.presets,
     permissionChoice.choice(),
   )
@@ -291,16 +390,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
           onSendFeedback={props.onTriggerSend}
           negativeAction={{ label: codexDecisionLabel(decisions().negative), testId: 'control-deny-btn', onSelect: () => handleDecision(decisions().negative) }}
           positiveAction={{ label: codexDecisionLabel(decisions().positive), testId: 'control-allow-btn', onSelect: handleAllow }}
-          switches={() => [
-            ...(decisions().remembered
-              ? [{
-                  id: 'control-remember-checkbox',
-                  label: 'Remember',
-                  checked: rememberSwitch.checked(),
-                  onChange: rememberSwitch.set,
-                }]
-              : []),
-          ]}
+          allowChoicePill={allowChoicePill}
           permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
           additionalActions={() => decisions().additional.map(decision => ({
             label: codexDecisionLabel(decision),

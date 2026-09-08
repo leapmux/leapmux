@@ -1,7 +1,7 @@
 import { codexTest, expect } from './codex-fixtures'
-import { isMaybeVisible, messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
+import { messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
-codexTest.describe('Codex requestUserInput', () => {
+codexTest.describe('codex approval UI', () => {
   codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
 
@@ -23,18 +23,28 @@ codexTest.describe('Codex requestUserInput', () => {
     const banner = page.locator('[data-testid="control-banner"]')
     await expect(banner).toBeVisible()
 
-    // Click the Allow button (Codex uses decision-based buttons).
-    const decisionAllowBtn = page.locator('[data-testid="control-decision-accept"]')
-    const legacyAllowBtn = page.locator('[data-testid="control-allow-btn"]')
-    const allowBtn = await isMaybeVisible(decisionAllowBtn) ? decisionAllowBtn : legacyAllowBtn
+    // The allow-choice pills expose Codex's native one-turn and command-rule
+    // decisions without the former Remember switch.
+    const allowChoices = page.getByRole('radiogroup', { name: 'Allow as' })
+    const once = allowChoices.getByRole('radio', { name: 'Once' })
+    await expect(once).toBeChecked()
+    const commandRule = allowChoices.getByRole('radio', { name: 'Command rule' })
+    await expect(commandRule).toBeVisible()
+    await commandRule.click()
+    await expect(commandRule).toBeChecked()
+    // Return to the one-turn decision before approval. A browser test must not
+    // persist a real Codex command rule in the developer's account state.
+    await once.click()
+    await expect(once).toBeChecked()
+
+    const allowBtn = page.locator('[data-testid="control-allow-btn"]')
     await expect(allowBtn).toBeVisible()
     await allowBtn.click()
 
     // Wait for the agent to finish and verify the command ran.
     await waitForAgentIdle(page, 120_000)
     const chatArea = messageContents(page)
-    const allText = await chatArea.allTextContents()
-    const joined = allText.join(' ')
-    expect(joined).toContain('codex-approval-test-dir-nonexistent')
+    await expect.poll(async () => (await chatArea.allTextContents()).join(' '))
+      .toContain('codex-approval-test-dir-nonexistent')
   })
 })

@@ -217,7 +217,7 @@ const TabLeaf: Component<{
           <IconButton
             icon={X}
             iconSize="sm"
-            size="sm"
+            size="md"
             class={menuTrigger}
             state={props.isClosing ? IconButtonState.Loading : IconButtonState.Enabled}
             data-testid="workspace-tab-close"
