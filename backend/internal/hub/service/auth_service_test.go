@@ -1764,7 +1764,7 @@ func TestLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "gateduser",
 		Password:    "password123",
-		DisplayName: "Gated",
+		DisplayName: "Guarded",
 		Email:       "gated@example.com",
 	}))
 	require.NoError(t, err)

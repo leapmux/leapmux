@@ -83,6 +83,10 @@ The central service (`leapmux hub`) that authenticates users, stores accounts, w
 
 ## I
 
+### Input queue
+
+The Worker-owned queue every input to an agent passes through — messages, attachments, slash commands, plan executions, and answers to permission prompts. It survives page refreshes, reconnects and Worker restarts, and every device sees the same one. Items can be reordered, edited, deleted, retried, paused and **steered**. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+
 ### Installation name
 
 The per-machine label of one **app credential** — for example *trustin's MacBook*. An app holds one credential per machine it runs on; the installation name tells two rows of the same app apart. See [Connected Apps](/docs/using/connected-apps/).
@@ -131,6 +135,12 @@ A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join
 
 `leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
 
+## Q
+
+### Quake-mode terminal
+
+A shell that slides over the centre of the app for one agent tab, toggled with `Ctrl` and the key under `Esc`. It belongs to the agent tab rather than to a tile, so it costs the agent no space. One shell per agent tab, shared by every device; whether the panel is visible is per-device. It ends when its agent tab closes or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
+
 ## S
 
 ### Session (agent session)
@@ -140,6 +150,10 @@ The persistent state of a running coding agent — its conversation history and 
 ### Solo mode
 
 The single-user mode (`leapmux solo`) that runs a Hub and a Worker in one process. Its account, `solo`, starts without a password. Local IPC uses the account without a credential. TCP exposes only first-password setup until one caller claims the account. After setup, every TCP address requires sign-in. Binding a passwordless solo hub to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+
+### Steering
+
+Handing the **input queue**'s first item to the turn an agent already runs, instead of letting it wait for the turn to end. It is how you correct an agent mid-thought. Offered by the queue row's **Steer** button and by `Cmd/Ctrl+Enter` on an empty composer, and only while the provider accepts one during a running ordinary turn. See [Steering](/docs/using/coding-agents/#steering).
 
 ### Step-up
 

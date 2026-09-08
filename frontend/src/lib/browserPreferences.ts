@@ -80,6 +80,19 @@ export interface BrowserPreferences {
   diffView?: string
   turnEndSound?: string
   turnEndSoundVolume?: number
+  /**
+   * Quake-terminal panel geometry and motion, per device.
+   *
+   * `quakeOrientation` is a bare `string` for the same reason {@link diffView}
+   * is: this is untrusted storage, and the parse in PreferencesContext is what
+   * narrows it. That matters more here than elsewhere -- all four values reach a
+   * CSS custom property, so a hand-edited entry must never survive to the style
+   * attribute.
+   */
+  quakeOrientation?: string
+  quakeSizePercent?: number
+  quakeAnimationMs?: number
+  quakeBackgroundOpacity?: number
   debugLogging?: boolean
   expandAgentThoughts?: boolean
   showHiddenMessages?: boolean
@@ -187,9 +200,9 @@ export function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserP
  * Run `body` with every browser-preference write applied to ONE document,
  * stored once at the end.
  *
- * "Reset all browser overrides" clears seventeen fields, and each one is
+ * "Reset all browser overrides" clears every browser override, and each one is
  * otherwise a full read, parse, serialize and write of the whole document. One
- * write is also one `storage` event for the other tabs rather than seventeen.
+ * write is also one `storage` event for the other tabs rather than one per field.
  *
  * Both guards are required. The `finally` closes the batch even when a write
  * inside `body` throws; without it every later write in the page would

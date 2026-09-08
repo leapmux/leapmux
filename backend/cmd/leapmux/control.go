@@ -95,6 +95,17 @@ var controlTree = cmdGroup{
 				{Name: "set", Summary: "Update agent settings (model/effort/permission-mode/extras)", Run: controlRun(cmdcontrol.RunAgentSet)},
 				{Name: "send-control-response", Summary: "Forward a raw control_response payload (Claude-Code-style)", Run: controlRun(cmdcontrol.RunAgentSendControlResponse)},
 			},
+			Subgroups: []cmdGroup{
+				{
+					Name:    "quake",
+					Summary: "Show or hide an agent tab's quake terminal panel in your open frontends",
+					Commands: []cmdLeaf{
+						{Name: "open", Summary: "Show the quake panel", Run: controlRun(cmdcontrol.RunAgentQuakeOpen)},
+						{Name: "close", Summary: "Hide the quake panel", Run: controlRun(cmdcontrol.RunAgentQuakeClose)},
+						{Name: "toggle", Summary: "Flip the quake panel between shown and hidden", Run: controlRun(cmdcontrol.RunAgentQuakeToggle)},
+					},
+				},
+			},
 		},
 		{
 			Name:    "tile",

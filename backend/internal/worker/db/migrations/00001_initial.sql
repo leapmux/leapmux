@@ -298,10 +298,26 @@ CREATE TABLE terminals (
     exit_code     INTEGER NOT NULL DEFAULT 0,
     startup_error TEXT NOT NULL DEFAULT '',
     workspace_archived INTEGER NOT NULL DEFAULT 0,
+    -- Empty for an ordinary terminal tab. Set to the owning agent's id for a
+    -- COMPANION terminal -- the shell behind an agent tab's quake panel.
+    --
+    -- Deliberately no REFERENCES agents(id): closing an agent leaves its row in
+    -- place as a tombstone, and the orphan reconciler's grace window needs this
+    -- row to outlive a transient absence of its owner rather than cascade with
+    -- it.
+    owner_agent_id TEXT NOT NULL DEFAULT '',
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
+-- UNIQUE, and that is the whole guarantee that every device shares one shell:
+-- an agent can have at most one OPEN companion, so two devices racing to open
+-- the panel cannot end up on two PTYs. The loser of the insert re-reads the row
+-- and attaches to the winner's terminal.
+--
+-- Scoped to open rows, so a companion can follow a shell the user exited.
+CREATE UNIQUE INDEX idx_terminals_owner_agent_id ON terminals(owner_agent_id)
+  WHERE owner_agent_id <> '' AND closed_at IS NULL;
 
 -- Junction: which tabs use which LeapMux-created worktree.
 --

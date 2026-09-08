@@ -38,6 +38,12 @@ export const center = style({
   flexDirection: 'column',
   height: '100%',
   overflow: 'hidden',
+  // The quake panel's clip anchors to THIS box, so the panel spans the centre
+  // area and stops at the sidebars. `position: relative` establishes a
+  // containing block for ABSOLUTE descendants only, so it does not disturb the
+  // `position: fixed` popovers the centre holds -- that hazard belongs to
+  // `transform`, which is why the panel settles its open state on `none`.
+  position: 'relative',
 })
 
 export const rightPanel = style({

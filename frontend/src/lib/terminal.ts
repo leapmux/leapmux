@@ -77,6 +77,18 @@ export interface TerminalInstance {
    */
   webglAllowed: boolean
   /**
+   * Whether this terminal paints NO background of its own, leaving the colour
+   * to the surface behind it. Fixed at construction, because xterm reads
+   * `allowTransparency` at `open()` and ignores a later write.
+   *
+   * Recorded on the instance rather than inferred by the caller, because
+   * `instances` in `~/components/terminal/TerminalView` is MODULE-level: every
+   * mounted view's theme effect walks every terminal in the app, so a view that
+   * knows nothing about quake panels would otherwise repaint a transparent
+   * terminal opaque on the next theme tick.
+   */
+  transparentBackground: boolean
+  /**
    * Resolves once every (weight, style) variant of the current font family
    * has loaded. The WebGL renderer is only ever attached after this settles,
    * so its glyph atlas is always rasterized with the real font -- never a
@@ -215,13 +227,37 @@ export function resolveTerminalThemeMode(
  */
 const terminalThemeCache = new Map<string, ITheme>()
 
-export function terminalThemeFor(name: string, mode: ResolvedThemeMode, variant?: string): ITheme {
+/**
+ * The background an xterm paints when the SURFACE BEHIND IT owns the colour.
+ *
+ * Eight-digit hex, and it has to be: xterm parses `#rrggbbaa` and a
+ * COMMA-separated `rgba()` directly, and falls through to a canvas probe for
+ * anything else -- a probe that THROWS on a non-opaque colour and is swallowed,
+ * leaving an opaque default with nothing logged. `transparent`,
+ * `rgb(0 0 0 / 0)` and `color-mix(...)` all take that path.
+ */
+const TRANSPARENT_TERMINAL_BACKGROUND = '#00000000'
+
+export function terminalThemeFor(
+  name: string,
+  mode: ResolvedThemeMode,
+  variant?: string,
+  transparentBackground = false,
+): ITheme {
   const theme = themeById(name)
   const resolved = resolveVariant(theme, variant, mode)
   // Keyed on the RESOLVED VARIANT id, which is already globally unique and
   // already carries the polarity. Two unknown names both fall back to Default
   // and share one entry rather than growing the cache, exactly as before.
-  const cached = terminalThemeCache.get(resolved.id)
+  //
+  // The transparency flag is part of the key because it changes the built
+  // theme. Without it the first caller would decide the entry for everyone: a
+  // quake terminal opening first would hand every tile terminal a transparent
+  // background, and a tile terminal opening first would leave the quake panel
+  // opaque. Both are silent, because the reference guard in TerminalView then
+  // reports the stale object as unchanged.
+  const cacheKey = transparentBackground ? `${resolved.id}:transparent` : resolved.id
+  const cached = terminalThemeCache.get(cacheKey)
   if (cached)
     return cached
   // Normalized to hex on the way out of CSS. xterm parses a hex literal or a
@@ -231,12 +267,14 @@ export function terminalThemeFor(name: string, mode: ResolvedThemeMode, variant?
   // and painted black on white instead of the theme, with nothing logged.
   const built: ITheme = {
     ...resolved.terminal,
-    background: paletteColorToHex(resolved.palette['--background']!),
+    background: transparentBackground
+      ? TRANSPARENT_TERMINAL_BACKGROUND
+      : paletteColorToHex(resolved.palette['--background']!),
     foreground: paletteColorToHex(resolved.palette['--foreground']!),
     cursor: paletteColorToHex(resolved.palette['--primary']!),
     selectionBackground: paletteColorToHex(resolved.palette['--accent']!),
   }
-  terminalThemeCache.set(resolved.id, built)
+  terminalThemeCache.set(cacheKey, built)
   return built
 }
 
@@ -268,6 +306,7 @@ export function resolveTerminalTheme(
   pref: TerminalThemeValue,
   ui: ThemeValue,
   prefersDark: boolean,
+  transparentBackground = false,
 ): ITheme {
   const mode = resolveTerminalThemeMode(pref.mode, ui.mode, prefersDark)
   // The variant follows whichever preference supplied the palette: a row on the
@@ -275,7 +314,7 @@ export function resolveTerminalTheme(
   // app's variant under a detached palette would name a variant of the wrong
   // theme, which `resolveVariant` would then discard for the theme's default.
   const { theme, chosen } = resolveThemeSelection(pref, ui)
-  return terminalThemeFor(theme.id, mode, chosen?.[mode])
+  return terminalThemeFor(theme.id, mode, chosen?.[mode], transparentBackground)
 }
 
 /**
@@ -373,14 +412,18 @@ const refuseLinkWithoutPrompt: UntrustedLinkConfirm = async () => {
   return false
 }
 
-export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
+export function createTerminalInstance(
+  opts?: TerminalFontOptions & { theme?: ITheme, transparentBackground?: boolean },
+): TerminalInstance {
   const prefs = loadBrowserPrefs()
+  const transparentBackground = opts?.transparentBackground ?? false
   const theme = opts?.theme ?? resolveTerminalTheme(
     getTerminalThemePreference(prefs),
     parseThemeValue(prefs.theme) ?? DEFAULT_THEME_VALUE,
     typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-color-scheme: dark)').matches,
+    transparentBackground,
   )
   const fontFamily = opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY
   const fontSize = opts?.fontSize || DEFAULT_FONT_SIZE
@@ -391,6 +434,15 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     fontSize,
     fontFamily,
     theme,
+    // Set HERE and never afterwards: xterm reads it at `open()` and ignores a
+    // later write, so this cannot become a live preference on an existing
+    // terminal. Only a terminal whose surface owns the background asks for it,
+    // because it carries a documented cost -- the WebGL glyph atlas gives up
+    // three optimisations and rasterizes with an alpha context.
+    //
+    // Without it the WebGL renderer paints an OPAQUE background behind every
+    // glyph, so a translucent panel reads as opaque wherever there is text.
+    allowTransparency: transparentBackground,
     ...(opts?.cols ? { cols: opts.cols } : {}),
     ...(opts?.rows ? { rows: opts.rows } : {}),
     // Supplying this is what keeps xterm's own `defaultActivate` unreachable,
@@ -470,6 +522,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     serializeAddon,
     suppressInput: false,
     webglAllowed,
+    transparentBackground,
     fontsReady,
     webglAddon: undefined,
     setConfirmLink(confirm) {

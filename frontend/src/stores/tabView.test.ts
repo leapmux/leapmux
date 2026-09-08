@@ -14,6 +14,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ctxFromBridge, getCRDTBridge, hlcIsZero, newBatch, setNodeKind, setNodeParentId, setNodePosition, setTabTileId, setTabWorkerId, tombstoneNode, tombstoneTab } from '~/lib/crdt'
 import { installTestBridge, seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores, projectionMemo } from '~/test-support/tabStores'
+import { tabKey } from './tab.helpers'
 import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
 import { emitAddTab } from './tabOps'
 import { createTabView } from './tabView'
@@ -38,6 +39,116 @@ function mountView() {
   const view = createTabView({ projection, state, metadata })
   return { view, metadata }
 }
+
+// The companion shells behind the quake panels. They exist on a worker but not
+// in the CRDT, so they must be reachable by the terminal DATA path and by
+// nothing else -- every placement-shaped lookup has to keep refusing them, or
+// one turns up in the tab strip.
+describe('tabView detached terminals', () => {
+  function mountWithDetached(detachedId = 'q1') {
+    const metadata = createTabMetadataStore()
+    const { state, projection } = projectionMemo()
+    const view = createTabView({
+      projection,
+      state,
+      metadata,
+      detachedTerminals: () => [{ id: detachedId, workerId: 'w1', workspaceId: 'ws-1' }],
+    })
+    return { view, metadata }
+  }
+
+  it('resolves a detached terminal through the narrowed terminal lookup', () => {
+    withTestBridge(() => {
+      createRoot((dispose) => {
+        const { view, metadata } = mountWithDetached()
+        metadata.patch('q1', { title: 'Quake' })
+
+        const tab = view.getTerminalTab('q1')
+        expect(tab?.id).toBe('q1')
+        expect(tab?.workerId).toBe('w1')
+        expect(tab?.title).toBe('Quake')
+        expect(tab?.tileId, 'a companion has no placement').toBeFalsy()
+        dispose()
+      })
+    })
+  })
+
+  it('keeps a detached terminal out of every placement-shaped lookup', () => {
+    withTestBridge((harness) => {
+      createRoot((dispose) => {
+        const { view } = mountWithDetached()
+
+        expect(view.all().map(t => t.id)).not.toContain('q1')
+        expect(view.forWorkspace(harness.workspaceId).map(t => t.id)).not.toContain('q1')
+        expect(view.forTile(harness.rootTileId).map(t => t.id)).not.toContain('q1')
+        expect(view.mruOrder(harness.workspaceId).map(t => t.id)).not.toContain('q1')
+        expect(view.getById(TabType.TERMINAL, 'q1')).toBeUndefined()
+        expect(view.get(tabKey({ type: TabType.TERMINAL, id: 'q1' }))).toBeUndefined()
+        dispose()
+      })
+    })
+  })
+
+  // `createMemo` runs its body once at CREATION time to collect dependencies,
+  // so this accessor is called from inside `createTabView` -- before the line
+  // after it runs. A store built AFTER the view therefore reads `undefined`
+  // here and the whole shell fails to mount, which is exactly what happened.
+  //
+  // Pinned as a property of the view rather than left to the call site to
+  // remember: the next thing to feed this input has to be constructed first.
+  it('asks for its detached terminals while it is being created', () => {
+    withTestBridge(() => {
+      createRoot((dispose) => {
+        let askedDuringConstruction = false
+        let constructed = false
+        createTabView({
+          projection: projectionMemo().projection,
+          state: projectionMemo().state,
+          metadata: createTabMetadataStore(),
+          detachedTerminals: () => {
+            if (!constructed)
+              askedDuringConstruction = true
+            return []
+          },
+        })
+        constructed = true
+        expect(askedDuringConstruction).toBe(true)
+        dispose()
+      })
+    })
+  })
+
+  // The SAME id in both families, which is the only shape that tests a
+  // precedence: with two different ids the assertion holds however the two
+  // branches are ordered.
+  it('finds a placed terminal before a detached one', () => {
+    withTestBridge((harness) => {
+      createRoot((dispose) => {
+        const { view } = mountWithDetached('t1')
+        emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'a' })
+
+        const tab = view.getTerminalTab('t1')
+        expect(tab?.tileId).toBe(harness.rootTileId)
+        expect(tab?.workerId, 'the placed row wins on every field, not only the tile').not.toBe('w1')
+        dispose()
+      })
+    })
+  })
+
+  it('exposes every companion as a list, for the sweeps that need one', () => {
+    withTestBridge(() => {
+      createRoot((dispose) => {
+        const { view, metadata } = mountWithDetached()
+        metadata.patch('q1', { title: 'Quake' })
+
+        expect(view.detachedTerminalTabs().map(t => t.id)).toEqual(['q1'])
+        expect(view.detachedTerminalTabs()[0]?.title).toBe('Quake')
+        expect(view.all().map(t => t.id), 'and never through the placed list').not.toContain('q1')
+        dispose()
+      })
+    })
+  })
+})
 
 describe('tabView', () => {
   it('renders tabs for a workspace that is not the active one', () => {

@@ -14,7 +14,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
-import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -96,6 +96,7 @@ function mountConnection() {
       agentSessionStore: createAgentSessionStore(),
       agentActivityStore: activity,
       repoGitStore: createRepoGitStore(),
+      quakeStore: createTestQuakeStore(),
       settingsLoading: createLoadingSignal(),
       getActiveWorkspaceId: () => WS,
       onAgentSettled: (id: string) => settled.push(id),

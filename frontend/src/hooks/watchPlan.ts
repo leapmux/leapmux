@@ -91,6 +91,21 @@ export function agentWatchEntry(
 }
 
 /**
+ * A terminal that has no tab and therefore no placement: the companion shell
+ * behind an agent tab's quake panel.
+ *
+ * The MODE arrives already decided, because that decision needs the panel's own
+ * open state and the owner tab's placement -- two things the caller holds and
+ * this module has no business learning. `buildWatchPlans` stays a function of
+ * tabs and cursors.
+ */
+export interface DetachedTerminalWatch {
+  terminalId: string
+  workerId: string
+  mode: WatchMode
+}
+
+/**
  * One plan per worker that hosts any placed tab. Excludes FILE tabs.
  *
  * A child agent tab (a subagent transcript with `parentAgentId` set) also
@@ -102,19 +117,43 @@ export function agentWatchEntry(
  * the backend "last mode wins" dedup demoting a real on-screen root tab's FULL
  * entry.
  *
- * `getAgentTab` resolves a child to its root; pass `undefined` to skip the
- * root-entry logic (used by tests that do not exercise the child path).
+ * The optional inputs arrive as `opts`. They were positional, and six of the
+ * nine parameters had defaults -- so a caller that wanted the last one wrote
+ * five `undefined`s to reach it, and the two cursor callbacks, which share the
+ * identical type `(agentId: string) => bigint`, could be transposed silently.
  */
+export interface BuildWatchPlansOpts {
+  agentResumeSeq?: (agentId: string) => bigint
+  agentWindowTailSeq?: (agentId: string) => bigint
+  terminalAfterOffset?: (terminalId: string) => bigint | number
+  terminalNeedsResync?: (terminalId: string) => boolean
+  /**
+   * Resolves a child agent to its root. Absent skips the root-entry logic,
+   * which is what a test that does not exercise the child path wants.
+   */
+  getAgentTab?: (agentId: string) => AgentTab | undefined
+  /**
+   * The terminals that have no tab at all -- the companion shells behind the
+   * quake panels. Without them a quake terminal is in no plan, so the worker
+   * sends it nothing and the panel stays blank while its shell runs.
+   */
+  detachedTerminals?: readonly DetachedTerminalWatch[]
+}
+
 export function buildWatchPlans(
   tabs: readonly Tab[],
   activeWorkspaceId: string | null,
   activeKeyForTile: (tileId: string) => string | null,
-  agentResumeSeq: (agentId: string) => bigint = () => 0n,
-  agentWindowTailSeq: (agentId: string) => bigint = () => 0n,
-  terminalAfterOffset: (terminalId: string) => bigint | number = () => 0,
-  terminalNeedsResync: (terminalId: string) => boolean = () => false,
-  getAgentTab: ((agentId: string) => AgentTab | undefined) | undefined = undefined,
+  opts: BuildWatchPlansOpts = {},
 ): Map<string, WatchPlan> {
+  const {
+    agentResumeSeq = () => 0n,
+    agentWindowTailSeq = () => 0n,
+    terminalAfterOffset = () => 0,
+    terminalNeedsResync = () => false,
+    getAgentTab,
+    detachedTerminals = [],
+  } = opts
   const plans = new Map<string, WatchPlan>()
   // Track which agent ids each worker's plan already watches, so a child-driven
   // root entry is not duplicated when the root tab is itself placed (or when two
@@ -159,27 +198,53 @@ export function buildWatchPlans(
       }
     }
     else if (tab.type === TabType.TERMINAL) {
-      // A flagged terminal subscribes cold (afterOffset 0), which the worker
-      // answers with a full snapshot — the only thing that can rebuild a
-      // screen with a hole in it.
-      const resync = terminalNeedsResync(tab.id)
-      const after = resync ? 0 : terminalAfterOffset(tab.id)
-      if (resync)
-        plan.terminalResync.add(tab.id)
-      plan.terminals.push({
-        terminalId: tab.id,
-        afterOffset: typeof after === 'bigint' ? after : BigInt(after),
-        mode,
-      } as WatchTerminalEntry)
+      pushTerminal(plan, tab.id, mode)
     }
   }
+  // Folded in AFTER the tab walk, and through the same push, so a companion
+  // resubscribes on a hole exactly as a placed terminal does.
+  for (const detached of detachedTerminals) {
+    if (!detached.workerId || !detached.terminalId)
+      continue
+    let plan = plans.get(detached.workerId)
+    if (!plan) {
+      plan = { agents: [], terminals: [], terminalResync: new Set() }
+      plans.set(detached.workerId, plan)
+    }
+    // A companion CAN already be in the plan: the caller's detached list and
+    // the tab walk are independent inputs.
+    if (plan.terminals.some(t => t.terminalId === detached.terminalId))
+      continue
+    pushTerminal(plan, detached.terminalId, detached.mode)
+  }
   return plans
+
+  /**
+   * Add one terminal to a plan, under the resync and cursor rules.
+   *
+   * ONE body for both loops. A flagged terminal subscribes cold (afterOffset
+   * 0), which the worker answers with a full snapshot -- the only thing that
+   * can rebuild a screen with a hole in it. Two copies of that rule would let a
+   * companion and a placed terminal recover from a hole differently, which is
+   * exactly what the detached loop's comment promises they do not.
+   */
+  function pushTerminal(plan: WatchPlan, terminalId: string, mode: WatchMode): void {
+    const resync = terminalNeedsResync(terminalId)
+    const after = resync ? 0 : terminalAfterOffset(terminalId)
+    if (resync)
+      plan.terminalResync.add(terminalId)
+    plan.terminals.push({
+      terminalId,
+      afterOffset: typeof after === 'bigint' ? after : BigInt(after),
+      mode,
+    } as WatchTerminalEntry)
+  }
 }
 
 /**
  * Change key for one plan: ids, modes, and forced-resync state — deliberately
  * NOT cursors. Cursors move on every message, and keying on them would re-send
- * an update per chat frame. The resync arm re-keys only when a terminal is
+ * an update per chat frame. The resync branch re-keys only when a terminal is
  * flagged or unflagged, so the plan carrying afterOffset 0 actually goes out
  * (and the plan that returns to the normal cursor goes out after it).
  */

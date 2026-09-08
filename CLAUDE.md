@@ -33,6 +33,14 @@ before building).
   cross-program HTTP headers (both elevation headers,
   credential-rejected). `retry.json` — the events-rejection retry policy.
   `chat-history.json` — the message page limit and browser catch-up gap limit.
+  `user-settings.json` — the account-setting vocabulary: the proto key of every
+  setting, plus the default, the enum tokens and the numeric limits of the ones
+  whose value is a closed set or a range. The hub validates against these
+  (`usersettings/keys.go`) and the browser parses against them
+  (`PreferencesContext.tsx`), so a bound that differed stored a value the other
+  side then discarded for its fallback. The three Desktop enums state only
+  their default here: a THIRD language spells their tokens, so those stay in
+  `desktop.json`, and the generator cross-checks the two.
   `worker-vocab.json` — notification-type tokens, the notification-thread
   discriminator, the Codex rate-limit token, and the model sentinels.
   `goose-protocol.json` — Goose permission modes. `copilot-permissions.json` —

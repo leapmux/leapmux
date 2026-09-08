@@ -137,7 +137,7 @@ var adminProcedureElevation = map[string]struct {
 // It checks the RECORD, not the handler. The other half is behavioral --
 // TestAdminIdPService_WritesNeedAnElevatedSession,
 // TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession,
-// TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor and
+// TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor and
 // TestAdminSettingsService_WriteGate drive the protected verbs through a real
 // un-elevated caller. Add a procedure to one and to the other.
 func TestEveryAdminProcedureIsElevationClassified(t *testing.T) {

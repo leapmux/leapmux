@@ -2,17 +2,19 @@
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
-import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 
 interface OpenedStream {
   workerId: string
   onTabRenamed: (evt: { tabId: string, title: string }) => void
   onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
+  onQuakePanelCommand: (evt: { agentId: string, action: QuakePanelAction }) => void
   closed: boolean
 }
 
@@ -22,6 +24,7 @@ const mockOpen = vi.fn((o: Record<string, unknown>) => {
     workerId: o.workerId as string,
     onTabRenamed: o.onTabRenamed as OpenedStream['onTabRenamed'],
     onTabPayloadRegistered: o.onTabPayloadRegistered as OpenedStream['onTabPayloadRegistered'],
+    onQuakePanelCommand: o.onQuakePanelCommand as OpenedStream['onQuakePanelCommand'],
     closed: false,
   }
   opened.push(rec)
@@ -56,10 +59,12 @@ describe('useWorkerPrivateStreams', () => {
   function mount() {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
+    const quakeStore = createTestQuakeStore(stores.view)
     return {
       harness,
       ...stores,
-      run: () => useWorkerPrivateStreams({ view: stores.view, metadata: stores.metadata }),
+      quakeStore,
+      run: () => useWorkerPrivateStreams({ view: stores.view, metadata: stores.metadata, quakeStore }),
     }
   }
 
@@ -288,6 +293,70 @@ describe('useWorkerPrivateStreams', () => {
 
       expect(opened).toHaveLength(0)
       dispose()
+    })
+  })
+
+  // The Control CLI's only route into the UI. It stores nothing, so a client
+  // that does not run simply never hears it -- which is the right outcome for
+  // what is effectively a remote keystroke.
+  describe('the quake panel command', () => {
+    async function withCommand(fn: (s: ReturnType<typeof mount>) => void) {
+      await createRoot(async (dispose) => {
+        const s = mount()
+        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+        s.run()
+        await flush()
+        fn(s)
+        dispose()
+      })
+    }
+
+    it('opens the panel of the agent it gives', async () => {
+      await withCommand((s) => {
+        const open = vi.spyOn(s.quakeStore, 'open')
+        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.OPEN })
+        expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
+      })
+    })
+
+    it('closes the panel of the agent it gives', async () => {
+      await withCommand((s) => {
+        const close = vi.spyOn(s.quakeStore, 'close')
+        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.CLOSE })
+        expect(close).toHaveBeenCalledWith('a1')
+      })
+    })
+
+    it('toggles the panel of the agent it gives', async () => {
+      await withCommand((s) => {
+        const toggle = vi.spyOn(s.quakeStore, 'toggle')
+        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.TOGGLE })
+        expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
+      })
+    })
+
+    // The command reaches every frontend of the account, and another one may be
+    // looking at a workspace this client is not.
+    it('ignores an agent this client cannot see', async () => {
+      await withCommand((s) => {
+        const toggle = vi.spyOn(s.quakeStore, 'toggle')
+        opened[0].onQuakePanelCommand({ agentId: 'somewhere-else', action: QuakePanelAction.TOGGLE })
+        expect(toggle).not.toHaveBeenCalled()
+      })
+    })
+
+    // An action a newer CLI knows and this build does not. Guessing between
+    // show and hide would be worse than doing nothing.
+    it('ignores an action it does not recognise', async () => {
+      await withCommand((s) => {
+        const toggle = vi.spyOn(s.quakeStore, 'toggle')
+        const open = vi.spyOn(s.quakeStore, 'open')
+        const close = vi.spyOn(s.quakeStore, 'close')
+        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.UNSPECIFIED })
+        expect(toggle).not.toHaveBeenCalled()
+        expect(open).not.toHaveBeenCalled()
+        expect(close).not.toHaveBeenCalled()
+      })
     })
   })
 

@@ -39,7 +39,7 @@ import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
-import { TerminalView } from '~/components/terminal/TerminalView'
+import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -276,8 +276,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const mruAgentContext = createMemo(() => getMruAgentContext(), undefined, {
     equals: (a, b) => a.workingDir === b.workingDir && a.homeDir === b.homeDir,
   })
-
-  const terminalHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void, write: (data: string) => void }>()
 
   const getActiveTabForTile = (tileId: string): Tab | null =>
     selection.activeTabForTile(tileId) ?? null
@@ -706,26 +704,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     visible: boolean
     tileFocused: boolean
   }> = (props) => {
-    let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
-    let terminalWrite: ((data: string) => void) | undefined
-    let registeredTerminalId: string | null = null
-    const syncTerminalHandler = () => {
-      const activeTerminalId = props.activeTerminalId
-      if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
-        terminalHandlers.delete(registeredTerminalId)
-      registeredTerminalId = activeTerminalId
-      if (activeTerminalId && terminalPageScroll && terminalWrite) {
-        terminalHandlers.set(activeTerminalId, {
-          pageScroll: terminalPageScroll,
-          write: terminalWrite,
-        })
-      }
-    }
-    createEffect(syncTerminalHandler)
-    onCleanup(() => {
-      if (registeredTerminalId)
-        terminalHandlers.delete(registeredTerminalId)
-    })
     return (
       <div
         class={styles.tilePane}
@@ -742,14 +720,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onResize={termOps.handleTerminalResize}
           onContentReady={id => metadata.patch(id, { contentReady: true })}
           confirmLink={confirmLink}
-          pageScrollRef={(fn) => {
-            terminalPageScroll = fn
-            syncTerminalHandler()
-          }}
-          writeRef={(fn) => {
-            terminalWrite = fn
-            syncTerminalHandler()
-          }}
         />
       </div>
     )
@@ -1325,24 +1295,28 @@ export function createTileRenderer(opts: TileRendererOpts) {
       if (tileId)
         splitTile(tileId, direction)
     },
+    /**
+     * Page-scroll whatever holds the caret.
+     *
+     * A focused TERMINAL answers first, and from the DOM: `pageScrollFocusedTerminal`
+     * reaches every mounted terminal, including a quake companion, which has no
+     * tab for the tile-shaped lookup below to walk. Only when no terminal holds
+     * focus does this fall through to the focused tile's tab, which is what a
+     * chat transcript needs -- it has no terminal of its own.
+     */
     scrollFocusedTabPage(direction: -1 | 1) {
-      const tab = resolveFocusedTab()
-      if (!tab)
+      if (pageScrollFocusedTerminal(direction))
         return
-      if (tab.type === TabType.AGENT) {
+      const tab = resolveFocusedTab()
+      if (tab?.type === TabType.AGENT)
         chatHandlers.get(tab.id)?.pageScroll(direction)
-      }
-      else if (tab.type === TabType.TERMINAL) {
-        terminalHandlers.get(tab.id)?.pageScroll(direction)
-      }
-    },
-    writeToFocusedTerminal(data: string) {
-      const tab = resolveFocusedTab()
-      if (tab?.type !== TabType.TERMINAL)
-        return
-      terminalHandlers.get(tab.id)?.write(data)
     },
     FocusedAgentEditorPanel,
+    // The queue RPCs, so the shell's keyboard layer can reach the same
+    // operations the queue rows do. Built above for the composer; exposed here
+    // rather than rebuilt, so a shortcut and a button cannot take two different
+    // paths to one worker call.
+    queueOps,
     renderTile,
     handleFileDrop,
     fileDropDisabled: () => {

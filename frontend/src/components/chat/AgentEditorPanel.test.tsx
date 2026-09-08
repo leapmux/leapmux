@@ -11,6 +11,8 @@ import { AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSche
 import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
+import { getEditorRef } from '~/stores/editorRef.store'
+import { getActiveChatPanel } from '~/stores/focusedChatPanel.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -513,6 +515,77 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('control-question-group')).toHaveTextContent('Which runtime?'))
+  })
+})
+
+// What the keyboard layer asks the panel before it claims $mod+Enter. Getting
+// this wrong loses messages, so each case pins one input that must count as
+// "something to submit".
+describe('agent editor panel composer emptiness', () => {
+  /**
+   * The handle the panel registered. Read through `getActiveChatPanel`, which
+   * is the lookup the emptiness context uses -- it consults no focus, because
+   * the steer action is about the current TAB and works from the transcript.
+   *
+   * Awaited because registration rides the editor's imperative refs, which land
+   * after the first render.
+   */
+  async function registeredHandle() {
+    await waitFor(() => expect(getActiveChatPanel()).toBeDefined())
+    return getActiveChatPanel()!
+  }
+
+  it('reports nothing to submit for an untouched composer', async () => {
+    renderPanel()
+    expect((await registeredHandle()).hasPendingInput()).toBe(false)
+  })
+
+  it('reports something to submit once the composer holds text', async () => {
+    renderPanel()
+    const handle = await registeredHandle()
+    getEditorRef('a1')?.set('hello')
+    expect(handle.hasPendingInput()).toBe(true)
+  })
+
+  /**
+   * The regression guard for the whole design.
+   *
+   * `hasContent` is fed by a listener debounced 200 ms, and the fake timers here
+   * are never advanced -- so a `hasPendingInput` built on that signal would
+   * still read empty and the steer shortcut would swallow the keypress that was
+   * meant to send this text. `insert` dispatches a real ProseMirror transaction
+   * WITHOUT calling `onContentChange`, which is exactly the window the user
+   * types into.
+   *
+   * The Send button assertion is what stops the case passing by accident: it
+   * proves the two sources genuinely disagree at this instant.
+   */
+  it('counts a character typed inside the debounce window, because the send path reads the same live document', async () => {
+    const { getByRole } = renderPanel()
+    const handle = await registeredHandle()
+    getEditorRef('a1')?.insert('h')
+
+    expect(handle.hasPendingInput()).toBe(true)
+    expect(
+      (getByRole('button', { name: /send/i }) as HTMLButtonElement).disabled,
+      'the debounced signal has not caught up yet, which is the point',
+    ).toBe(true)
+  })
+
+  it('reports something to submit while a control request waits for approval', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'r1', payload: toolRequestPayload('Bash') })
+    renderPanel({ controlStore })
+    expect((await registeredHandle()).hasPendingInput()).toBe(true)
+  })
+
+  // An empty submit ANSWERS a permission prompt, but it answers an ask-user
+  // question with nothing -- so that one is not something to submit.
+  it('reports nothing to submit while an ask-user question waits', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'r1', payload: questionRequestPayload() })
+    renderPanel({ controlStore })
+    expect((await registeredHandle()).hasPendingInput()).toBe(false)
   })
 })
 

@@ -31,7 +31,7 @@ import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { requestInstanceId } from '~/stores/control.store'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
-import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
+import { registerChatPanel, unregisterChatPanel } from '~/stores/focusedChatPanel.store'
 import { repoGitView } from '~/stores/repoGit'
 import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { workerInfoStore } from '~/stores/workerInfo.store'
@@ -333,7 +333,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         registeredAgentId = null
       }
       if (panelRef)
-        unregisterPanelSend(panelRef)
+        unregisterChatPanel(panelRef)
     })
   })
   createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
@@ -423,6 +423,34 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       }
     },
   )
+
+  /**
+   * Whether an EMPTY composer still submits something.
+   *
+   * One definition, read by the editor's own Enter handling and by the keyboard
+   * layer's emptiness context. Two copies would eventually disagree, and the
+   * disagreement has a name: `$mod+Enter` would steer the input queue at the
+   * exact moment a control request waits for an approval this submits.
+   */
+  const allowEmptySend = () =>
+    (!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0
+
+  /**
+   * Whether submitting right now would send anything.
+   *
+   * Reads the LIVE ProseMirror document through `editorContentRef.get()`, not
+   * the `hasContent` signal beside it. That signal is fed by Milkdown's
+   * `markdownUpdated` listener, which is debounced 200 ms (see
+   * `markdownEditor/editorSetup.ts`), so for a fifth of a second after every
+   * keystroke it still reads empty -- and `handleSend` re-serializes the
+   * document for exactly this reason. A context built on the signal would let
+   * the steer shortcut claim `$mod+Enter` from a user who just typed, and
+   * `preventDefault` would stop the message ever reaching the editor.
+   *
+   * `hasContent` is deliberately left alone: the Send button, the height reset
+   * and the ask-user-question clearing all tolerate the lag.
+   */
+  const hasPendingInput = () => (editorContentRef?.get() ?? '') !== '' || allowEmptySend()
 
   // Clear interrupt loading when the button hides.
   createEffect(on(ctrl.showInterrupt, (show) => {
@@ -648,7 +676,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               triggerSend = fn
               props.triggerSendRef?.(fn)
               if (panelRef)
-                registerPanelSend(panelRef, fn)
+                registerChatPanel(panelRef, { send: fn, hasPendingInput })
             },
             focusRef: (fn) => {
               editorFocusFn = fn
@@ -679,7 +707,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               }
             : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
-          allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
+          allowEmptySend={allowEmptySend()}
           // The keyed owner is what reacts in this slot. `createComponent`
           // untracks the element that this prop getter builds, so the editor's
           // inserting effect never observes the request. The `<Show>` alone

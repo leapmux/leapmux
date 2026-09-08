@@ -117,7 +117,7 @@ type gatedListener struct {
 	releaseOnce sync.Once
 }
 
-func newGatedListener(inner net.Listener) *gatedListener {
+func newGuardedListener(inner net.Listener) *gatedListener {
 	return &gatedListener{
 		Listener: inner,
 		stalled:  make(chan struct{}, 1),
@@ -474,7 +474,7 @@ func newParkWindowEnv(t *testing.T) *parkWindowEnv {
 		WithTokenValidator(bearer.tv).
 		WithForcedKeepaliveProbesForTest(ticks, 10*time.Second))
 	srv := httptest.NewUnstartedServer(handler)
-	gate := newGatedListener(srv.Listener)
+	gate := newGuardedListener(srv.Listener)
 	srv.Listener = gate
 	srv.Start()
 	t.Cleanup(srv.Close)

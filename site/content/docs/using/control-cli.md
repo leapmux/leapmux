@@ -492,6 +492,28 @@ Notes:
 - `agent get`/`agent list` report every provider setting as one unified `option_groups` array (each entry `{id, label, current_value, options:[...], ...}`); `model`/`effort`/`permission_mode` stay as top-level convenience keys. There is no separate `extra_settings`/`available_models`/`available_option_groups` field -- read a provider option from `option_groups`, e.g. `leapmux control agent get --tab-id "$T" | jq '.data.option_groups[] | select(.id=="sandbox_policy") | .current_value'`.
 - `agent send-control-response` forwards a raw `control_response` JSON payload for Claude-Code-style agents — the scripting equivalent of clicking an approval button in the UI.
 
+### Quake terminal commands
+
+The `agent quake` subgroup shows and hides an agent tab's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every frontend you have open.
+
+| Command | Key flags | Output |
+| --- | --- | --- |
+| `agent quake open` | `--tab-id` | `{agent_id, action:"open"}` |
+| `agent quake close` | `--tab-id` | `{agent_id, action:"close"}` |
+| `agent quake toggle` | `--tab-id` | `{agent_id, action:"toggle"}` |
+
+```bash
+# From inside the agent's own terminal, the tab is ambient
+leapmux control agent quake toggle
+```
+
+Notes:
+
+- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that does not run never hears the request; there is no state waiting for it when it starts.
+- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is visible is per-device.
+- `--tab-id` takes an agent tab. You rarely pass it: inside an agent's own terminal, and inside its Quake terminal, the ambient tab is already that agent — a Quake shell reports the agent tab it belongs to, because it has no tab of its own. So `leapmux control agent quake close`, run inside the panel, hides the panel you typed it into.
+- Opening a panel that has no shell yet creates one. Hiding it never ends the shell — only closing the agent tab, or exiting the shell, does.
+
 ## Terminal commands
 
 The `terminal` group is the type-specific surface for terminal tabs; use `tab open`/`close`/`rename` for lifecycle.

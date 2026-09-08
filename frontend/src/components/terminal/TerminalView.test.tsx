@@ -35,8 +35,17 @@ vi.mock('~/lib/terminal', async () => {
   }
 })
 
-const { TerminalView, getTerminalInstance, disposeTerminalInstance, setTerminalScreenSink }
-  = await import('~/components/terminal/TerminalView')
+const {
+  TerminalView,
+  focusedTerminalId,
+  getTerminalInstance,
+  disposeTerminalInstance,
+  setTerminalScreenSink,
+  writeToTerminalInstance,
+  writeToFocusedTerminal,
+  pageScrollTerminalInstance,
+  pageScrollFocusedTerminal,
+} = await import('~/components/terminal/TerminalView')
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -121,6 +130,7 @@ function makeMockTerminalInstance(): TerminalInstance {
     // to this mock during the on-screen effect; the acquire/release wiring is
     // still exercised and spyable.
     webglAllowed: false,
+    transparentBackground: false,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
     setConfirmLink: vi.fn(),
@@ -634,12 +644,14 @@ describe('terminalView', () => {
     }
   })
 
-  it('scrolls the active terminal by one page', async () => {
+  // Reached by id, and by the DOM-focus door onto it -- the two entry points
+  // that replaced the `pageScrollRef` a tile used to register. The focus form
+  // is what makes a quake companion, which has no tab, scrollable at all.
+  it('scrolls a terminal by one page, by id and by focus', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
-    let pageScroll!: (direction: -1 | 1) => void
 
-    render(() => (
+    const { container } = render(() => (
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
@@ -655,7 +667,6 @@ describe('terminalView', () => {
           onInput={vi.fn()}
           onResize={vi.fn()}
           onContentReady={vi.fn()}
-          pageScrollRef={(fn) => { pageScroll = fn }}
         />
       </PreferencesProvider>
     ))
@@ -664,8 +675,20 @@ describe('terminalView', () => {
       expect(instance.terminal.open).toHaveBeenCalled()
     })
 
-    pageScroll(-1)
+    pageScrollTerminalInstance('term-1', -1)
     expect(instance.terminal.scrollPages).toHaveBeenCalledWith(-1)
+
+    // Nothing holds focus yet, so the focus form reaches nothing and says so.
+    // That `false` is what lets the caller fall through to a chat transcript.
+    expect(pageScrollFocusedTerminal(1)).toBe(false)
+
+    const wrapper = container.querySelector('[data-terminal-id="term-1"]')
+    const focusable = document.createElement('textarea')
+    wrapper!.appendChild(focusable)
+    focusable.focus()
+
+    expect(pageScrollFocusedTerminal(1)).toBe(true)
+    expect(instance.terminal.scrollPages).toHaveBeenCalledWith(1)
   })
 
   // Regression: the saved screen snapshot can arrive *after* the
@@ -1136,5 +1159,85 @@ describe('terminalView focus while a tab is being renamed', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(instance.terminal.focus).toHaveBeenCalled())
+  })
+})
+
+/**
+ * The by-id entry points the shell needs for a terminal that has NO TAB: the
+ * quake panel's companion shell.
+ *
+ * Every tab-shaped lookup answers "which tab holds focus", and from inside an
+ * open panel that is the AGENT tab. These two answer from the DOM and from the
+ * instance registry instead, which is what lets the macOS motion bindings reach
+ * a companion's PTY.
+ */
+describe('the focused terminal, by id', () => {
+  beforeEach(resetTerminalViewMocks)
+
+  /** Mount one TerminalView and hand back its instance and input spy. */
+  async function mount(id: string) {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const onInput = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', status: TerminalStatus.READY, screen: new Uint8Array() } as TerminalTab]}
+          activeTerminalId={id}
+          visible
+          tileFocused={false}
+          onInput={onInput}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+          confirmLink={stubConfirmLink}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getTerminalInstance(id)).toBe(instance))
+    return { instance, onInput }
+  }
+
+  it('answers undefined when focus is outside every terminal', async () => {
+    await mount('t-1')
+    expect(focusedTerminalId()).toBeUndefined()
+  })
+
+  it('gives the terminal whose wrapper contains the focused element', async () => {
+    const { instance } = await mount('t-1')
+    instance.terminal.textarea!.focus()
+
+    expect(focusedTerminalId()).toBe('t-1')
+  })
+
+  // The ONE resolver a `terminalFocused` chord goes through. It replaced a
+  // tile-shaped lookup that read the focused TILE's active tab, which could
+  // name a different terminal from the one holding the caret -- a tile takes
+  // focus on CLICK, so tabbing into another tile's xterm moved DOM focus
+  // without moving the focused tile, and the chord typed into the tile the
+  // user had left.
+  it('writes to the terminal that holds focus, and to nothing when none does', async () => {
+    const { instance, onInput } = await mount('t-1')
+
+    writeToFocusedTerminal('\x01')
+    expect(onInput).not.toHaveBeenCalled()
+
+    instance.terminal.textarea!.focus()
+    writeToFocusedTerminal('\x01')
+
+    expect(onInput).toHaveBeenCalledWith('t-1', new TextEncoder().encode('\x01'))
+  })
+
+  // The same `sendInput` a keystroke takes, so a synthesized control sequence
+  // goes through the identical gate and RPC rather than a second path.
+  it('sends text to one terminal through its own input gate', async () => {
+    const { onInput } = await mount('t-1')
+
+    writeToTerminalInstance('t-1', '\x01')
+
+    expect(onInput).toHaveBeenCalledWith('t-1', new TextEncoder().encode('\x01'))
+  })
+
+  it('drops a write for a terminal that is not mounted', () => {
+    expect(() => writeToTerminalInstance('gone', '\x05')).not.toThrow()
   })
 })

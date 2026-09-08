@@ -115,6 +115,54 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 // contract for terminal spawns: every terminal Acquires the user's
 // delegation slot on construction and Releases it on cleanup. Mirrors the
 // agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
+// envValue reads one LEAPMUX_CONTROL_* value out of a spawn's env slice.
+func envValue(t *testing.T, envs []string, key string) string {
+	t.Helper()
+	for _, kv := range envs {
+		if name, value, ok := strings.Cut(kv, "="); ok && name == key {
+			return value
+		}
+	}
+	return ""
+}
+
+// A COMPANION terminal advertises its OWNER AGENT as the ambient tab, and an
+// ordinary terminal advertises itself.
+//
+// This is the whole reason `leapmux control` works inside a Quake panel.
+// LEAPMUX_CONTROL_TAB_ID exists to be resolved through the hub's LocateTab, and
+// a companion has NO CRDT tab -- so a companion that advertised its own id made
+// the hub answer `not_found` and every command typed into the panel failed
+// before it reached its own body.
+func TestFactory_CompanionTerminalAdvertisesItsOwnerAgentTab(t *testing.T) {
+	withTempSocketRoot(t)
+	f := &controlipc.Factory{WorkerID: "worker-A"}
+
+	companionEnvs, companionCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:       userid.MustNew("user-1"),
+		WorkerID:     "worker-A",
+		TabID:        "quake-1",
+		OwnerAgentID: "agent-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(companionCleanup)
+	assert.Equal(t, "agent-1", envValue(t, companionEnvs, "LEAPMUX_CONTROL_TAB_ID"),
+		"a companion must advertise the agent tab it belongs to, not its own id")
+	assert.Equal(t, "agent", envValue(t, companionEnvs, "LEAPMUX_CONTROL_TAB_TYPE"),
+		"the type must match the id, or the agent commands' env default never fires")
+
+	tabEnvs, tabCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(tabCleanup)
+	assert.Equal(t, "term-1", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TAB_ID"),
+		"a terminal TAB is its own ambient tab and must be unaffected")
+	assert.Equal(t, "terminal", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TAB_TYPE"))
+}
+
 func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}

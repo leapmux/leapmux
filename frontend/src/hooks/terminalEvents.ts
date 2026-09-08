@@ -121,7 +121,14 @@ function isWorkspaceActiveTerminal(
   selection: TabSelectionStore,
   getActiveWorkspaceId: () => string | null,
   view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined },
+  isDetachedOnScreen?: (terminalId: string) => boolean,
 ): boolean {
+  // Asked FIRST, because a companion terminal has no tile and would otherwise
+  // fall to the workspace-key branch below, which can never match an id that is
+  // not a tab -- so an OPEN, focused quake panel would count as off-screen and
+  // raise a desktop notification on every OSC 9 the user watches happen.
+  if (isDetachedOnScreen?.(terminalId))
+    return true
   const tab = view?.getTerminalTab(terminalId)
   if (tab?.tileId) {
     // Tile-placed: the shared on-screen rule (same source as tabWatchMode).
@@ -140,6 +147,23 @@ interface TerminalBadgeDeps {
   selection: TabSelectionStore
   getActiveWorkspaceId: () => string | null
   view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined }
+  /**
+   * Whether a terminal with no tab is on screen: the companion shell behind an
+   * open quake panel whose owner tab the user looks at.
+   */
+  isDetachedOnScreen?: (terminalId: string) => boolean
+  /**
+   * The AGENT tab a terminal with no tab belongs to, if it has one.
+   *
+   * The badge is written on the row a surface RENDERS, and no surface renders a
+   * companion: the tab strip and the sidebar tree both derive from the placed
+   * tabs, so a `hasNotification` on a companion's own row shows nothing. Worse,
+   * nothing clears it -- the one clear site runs from tab selection, and a
+   * companion is never selected -- so the flag would sit on an invisible row
+   * until the shell exits. The owner agent tab IS rendered, and it is where the
+   * user goes to reach the panel, so the badge belongs there.
+   */
+  detachedOwnerOf?: (terminalId: string) => string | undefined
 }
 
 /**
@@ -149,9 +173,13 @@ interface TerminalBadgeDeps {
  * on-screen predicate. Both the bell and notification arms share this prelude.
  */
 function badgeTerminalIfNotOnScreen(terminalId: string, deps: TerminalBadgeDeps): boolean {
-  const active = isWorkspaceActiveTerminal(terminalId, deps.selection, deps.getActiveWorkspaceId, deps.view)
-  if (!active)
-    deps.metadata.patch(terminalId, { hasNotification: true })
+  const active = isWorkspaceActiveTerminal(terminalId, deps.selection, deps.getActiveWorkspaceId, deps.view, deps.isDetachedOnScreen)
+  if (!active) {
+    // The owner agent tab for a companion, the terminal itself otherwise. See
+    // `detachedOwnerOf` for why a companion's own row is the wrong target.
+    const badgeTabId = deps.detachedOwnerOf?.(terminalId) ?? terminalId
+    deps.metadata.patch(badgeTabId, { hasNotification: true })
+  }
   return active
 }
 

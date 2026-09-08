@@ -119,7 +119,7 @@ ZCode accepts an image only on a model that declares image input — of the mode
 
 ### Message persistence and offline behavior
 
-Your messages appear immediately (optimistically) and are reconciled when the server echoes them back. If you send while the agent subprocess is still starting, the message is queued and delivered once the agent is ready. Optimistic messages survive a page refresh; if delivery fails, you can retry or delete the message.
+Your messages appear immediately (optimistically) and are reconciled when the server echoes them back. If you send while the agent subprocess is still starting, the message is queued and delivered once the agent is ready. Optimistic messages survive a page refresh; if delivery fails, you can retry or delete the message. Everything you send passes through [the input queue](#the-input-queue), which is what makes that durable.
 
 ### Interrupting a turn
 
@@ -128,6 +128,59 @@ While the agent is actively working — and there is no pending permission promp
 {{< callout type="info" >}}
 The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
 {{< /callout >}}
+
+## The input queue
+
+Everything you send an agent goes into its input queue first: a message, an
+attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
+queue lives on the Worker, so it survives a page refresh, a reconnect, and a
+Worker restart, and every device you are signed in on sees the same one.
+
+An item leaves the queue when the agent takes it. While the agent works,
+anything you send waits its turn, and the queue appears above the composer with
+one row per waiting item. Each row shows a preview, what kind of input it is,
+and its delivery state.
+
+### Working with queued items
+
+| Control | What it does |
+| --- | --- |
+| **Move up** / **Move down** | Reorder a waiting item. Drag a row by its grip for the same effect. |
+| **Edit** | Load the item back into the composer to change it. Another device editing it shows **Take Over** instead. |
+| **Delete** | Drop the item. Click twice to confirm. |
+| **Retry** | Send an item again after a delivery failure. |
+| **Steer** | Hand the first item to the turn already running, instead of waiting for it to finish. |
+| **Pause Queue** | Stop delivering. The Send button reads **Queue** while paused. |
+
+An item already on its way to the agent cannot be moved, reordered around, or deleted.
+
+### Pausing
+
+The queue pauses itself when something goes wrong — a delivery fails, delivery
+is uncertain, or the agent stopped — and a banner above the composer says which.
+Pause it yourself with **Pause Queue** to stack up several messages before
+letting the agent have them. **Resume** starts delivery again.
+
+### Steering
+
+Steering hands the queue's **first** item to the turn the agent is already
+running, rather than letting it wait. It is how you correct an agent
+mid-thought: queue "use the existing helper instead", steer it, and the agent
+takes it into the work in progress.
+
+Press **`Cmd/Ctrl+Enter`** while the composer is empty, or click **Steer** on the
+first row. The shortcut and the button offer the same thing under the same
+conditions, and nothing happens when any of them is unmet:
+
+- the agent's provider has to accept a steer while it runs;
+- a turn has to be in progress, and it has to be an ordinary turn rather than a
+  `/clear` or a `/compact`;
+- the first item has to be waiting — not on its way to the agent, and not open for edit.
+
+The shortcut acts only on an **empty** composer, because `Cmd/Ctrl+Enter` sends
+whatever the composer holds. Text, an attachment, or a permission prompt waiting
+for approval all count as something to send, so in each of those cases the chord
+sends as usual.
 
 ## How tool calls and results render
 

@@ -173,14 +173,103 @@ Each palette supplies the sixteen ANSI colors. The background, foreground, curso
 
 See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
 
+## Quake-mode terminal
+
+A Quake-mode terminal is a shell that slides over the centre of the app for one
+agent tab. It belongs to that tab rather than to a tile, so it costs the agent
+none of its space: press the shortcut, run a command, press it again, and the
+transcript is exactly where you left it.
+
+Press **`Ctrl`** and the key under `Esc` in an agent tab to show or hide it
+(command `terminal.toggleQuake`). The first press creates the shell; every
+press after that only shows or hides the panel.
+
+The panel opens from the keyboard or the Control CLI, and from nowhere else:
+there is no button or menu item for it. On a phone you can therefore hide a
+panel that the CLI opened, using the control in its corner, but you cannot open
+one. A tablet with an external keyboard uses the shortcut like any other device.
+
+`Ctrl` on every platform, and not `Cmd` on macOS: macOS reserves `Cmd` and that
+key for "switch between the windows of the app you're using", so the shortcut
+would never reach LeapMux. The binding follows the key's POSITION rather than
+the character on it, so it is the same key on a US, German, French or Spanish
+layout even though that key prints `` ` ``, `^`, `²` or `º`. A Japanese (JIS)
+keyboard is the exception: there the same position is the 半角/全角 key, which
+the input method takes, so rebind the command in Preferences. There are two more commands, unbound by
+default, for a key that only ever opens or only ever closes:
+`terminal.openQuake` and `terminal.closeQuake`.
+
+The shell is the Worker's default shell, started in the agent's working
+directory. It is a full terminal: the same scrollback, copy and paste, and
+resizing every other LeapMux terminal has.
+
+One thing differs. The Quake terminal is not a tab, so the Control CLI treats
+the shell inside it as part of the AGENT tab that owns it: inside the panel,
+`LEAPMUX_CONTROL_TAB_ID` gives that agent. `leapmux control agent ...` commands
+therefore act on the agent whose panel you typed them into, and
+`leapmux control terminal ...` commands refuse the ambient tab, because it is
+an agent rather than a terminal. Give `--tab-id` for a terminal tab to reach
+one of those.
+
+### What it belongs to
+
+One shell per agent tab, shared by every device you are signed in on. Open the
+panel on a second device and it attaches to the shell the first one started, with
+the same scrollback. Whether the panel is **showing** is per-device, exactly as
+which tab is active in a tile is per-device — so a second screen can keep the
+panel up while the first one hides it.
+
+The shell keeps running while the panel is hidden, and it survives a page
+refresh. It ends in exactly two cases:
+
+- its agent tab closes; or
+- you end it yourself, with `exit` or `Ctrl+D`.
+
+After it ends, the panel retracts and the next press starts a fresh shell. This
+differs from a terminal tab, which stays on screen after its shell exits and
+offers **Enter** to restart.
+
+### Settings
+
+Four rows under **Terminal** in Preferences. Each is an account setting you can
+override on one device.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Quake terminal position** | Top | Edge the panel slides in from: **Top**, **Bottom**, **Left**, or **Right**. |
+| **Quake terminal size** | 65% | Share of the centre area the panel covers. Height for top and bottom, width for left and right. |
+| **Quake terminal animation** | 300 ms | How long the slide takes. |
+| **Quake terminal background opacity** | 0.9 | Opacity of the panel background. The terminal text stays fully opaque. |
+
+If your system asks for reduced motion, the panel appears and disappears without
+animating, whatever the duration says.
+
+### Driving the panel from the CLI
+
+`leapmux control agent quake open`, `close`, and `toggle` do the same thing the
+shortcut does, in every browser and desktop window you have open:
+
+```bash
+leapmux control agent quake toggle --tab-id <agent-tab-id>
+```
+
+Run inside an agent's own terminal, the agent tab is the ambient one and
+`--tab-id` is unnecessary. The same holds inside the Quake terminal, because
+the shell there reports the agent tab that owns it — so
+`leapmux control agent quake close` hides the panel you typed it into.
+
+These commands carry no state. They ask the frontends to act now, which is why
+they can move a panel although the active tab and the focused tile stay
+client-local. See [Control CLI](/docs/using/control-cli/).
+
 ## Terminal status indicators
 
 A terminal moves through several states, reflected both in the terminal pane and in the tab label.
 
 | Status | Meaning |
 | --- | --- |
-| Starting | The PTY is being spawned. |
-| Ready | The PTY has spawned and the view can mount. |
+| Starting | The Worker spawns the PTY. |
+| Ready | The PTY is up and the view can mount. |
 | Startup failed | The shell could not be spawned. |
 | Disconnected | The connection to the terminal's Worker was lost. |
 | Exited | The shell process exited. |
@@ -289,13 +378,13 @@ If the terminal you're closing is the **last** tab for a worktree, or the last n
 
 ## Keyboard shortcuts
 
-The terminal and tab shortcuts (opening, closing, scrollback paging, and the macOS line/word navigation keys) are all customizable. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybinding system and how to remap commands.
+The terminal and tab shortcuts (opening, closing, scrollback paging, the Quake-mode toggle, and the macOS line/word navigation keys) are all customizable. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybinding system and how to remap commands.
 
 ## See also
 
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
-- [Settings & Preferences](/docs/using/settings/) — terminal theme and fonts.
+- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal`, `tab`, and `agent quake` command surface.
+- [Settings & Preferences](/docs/using/settings/) — terminal theme, fonts, and the four Quake-mode terminal settings.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

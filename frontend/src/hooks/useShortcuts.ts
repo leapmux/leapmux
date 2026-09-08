@@ -4,10 +4,11 @@ import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
+import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
-import type { Tab } from '~/stores/tab.types'
+import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
@@ -23,7 +24,7 @@ import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { isTypingContext } from '~/lib/textInputBehavior'
-import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
+import { getActiveChatPanel, getFocusedChatPanel } from '~/stores/focusedChatPanel.store'
 import { canCloseTab, tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
@@ -70,6 +71,21 @@ interface UseShortcutsProps {
    * showing the old pin for the life of the page.
    */
   setPreferredExternalAppId: (id: string | undefined) => void
+  /**
+   * One agent's input-queue snapshot, or undefined before the first arrives.
+   * Narrow on purpose: the steer command needs the head item and nothing else,
+   * and handing this hook the whole queue store would make the keyboard layer a
+   * second place that knows how a queue is shaped.
+   */
+  getAgentInputQueue: (agentId: string) => AgentInputQueueSnapshot | undefined
+  /** Hand the queue head to the running turn. Rejects like every queue RPC. */
+  steerQueueItem: (item: QueuedAgentInput) => Promise<void>
+  /** Show, hide, or flip the current agent tab's quake terminal panel. */
+  quakePanel: {
+    open: (owner: AgentTab) => void
+    close: (ownerId: string) => void
+    toggle: (owner: AgentTab) => void
+  }
 }
 
 /**
@@ -239,8 +255,66 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
   cmd('chat.sendMessage', 'Send Message', () => {
-    void getFocusedChatSend()?.()
+    void getFocusedChatPanel()?.send()
   }, 'Chat')
+
+  cmd('chat.steerQueuedInput', 'Steer Queued Input', () => {
+    const tab = resolveFocusedTab()
+    // The capability checks live HERE and not in the `when` clause.
+    // `supportsSteering` and `canSteer` are per-agent, per-snapshot facts that
+    // move in the middle of a turn, and `canSteer` is computed by the WORKER
+    // precisely so the browser never re-derives the precondition. A context
+    // would have to poll them from the keybinding layer and could still be a
+    // tick stale at dispatch.
+    if (tab?.type !== TabType.AGENT || !tab.supportsSteering)
+      return
+    // Index 0 and never a scan: the worker marks `canSteer` on the head alone,
+    // so a search for a steerable item answers a different question from the
+    // one the worker enforces.
+    const head = props.getAgentInputQueue(tab.id)?.items[0]
+    if (!head?.canSteer)
+      return
+    // RETURNED, not discarded: `executeCommand` attaches a catch to a returned
+    // promise, and `runQueueRpc` rethrows after it toasts.
+    return props.steerQueueItem(head)
+  }, 'Chat')
+
+  /**
+   * The agent tab a quake command acts on, or null if there is not one.
+   *
+   * The archived-workspace refusal is deliberately NOT here. It belongs to the
+   * OPENING direction alone and lives in the store, which is the one
+   * implementation the keyboard and the Control CLI share -- see
+   * `isWorkspaceMutatable` there. A refusal at this level also refused the
+   * CLOSE half of the toggle, stranding a user whose workspace was archived
+   * while the panel was up.
+   */
+  function focusedAgentTabForQuake(): AgentTab | null {
+    const tab = resolveFocusedTab()
+    if (tab?.type !== TabType.AGENT)
+      return null
+    // A subagent transcript owns no process, so it owns no companion shell
+    // either: the worker refuses `SetQuakePanel` for one, and the keyboard must
+    // not be the one route around that. A companion owned by a child agent also
+    // outlives its tab, because only a ROOT close tears one down.
+    if (tab.parentAgentId)
+      return null
+    return tab
+  }
+
+  /** Run one quake action on the focused agent tab, or nothing when there is not one. */
+  function withQuakeTab(act: (tab: AgentTab) => void): void {
+    const tab = focusedAgentTabForQuake()
+    if (tab)
+      act(tab)
+  }
+
+  cmd('terminal.toggleQuake', 'Toggle Quake Terminal', () => withQuakeTab(tab => props.quakePanel.toggle(tab)), 'Terminal')
+  // Registered without a default chord, so Preferences lists them with proper
+  // titles and a user can bind either one. A caller that wants a key that only
+  // ever opens -- or only ever closes -- should not have to write a toggle.
+  cmd('terminal.openQuake', 'Open Quake Terminal', () => withQuakeTab(tab => props.quakePanel.open(tab)), 'Terminal')
+  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTab(tab => props.quakePanel.close(tab.id)), 'Terminal')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')
@@ -258,6 +332,21 @@ export function useShortcuts(props: UseShortcutsProps): void {
   registerLazyContext('chatInputFocused', () => {
     const el = document.activeElement
     return !!el?.closest('[data-chat-input]')
+  })
+
+  // "The current agent tab's composer has nothing to submit."
+  //
+  // Deliberately does NOT consult focus: the steer action is about the current
+  // TAB, so it works from the transcript and from the composer alike. The active
+  // panel is the current agent tab's composer -- see the registry's header for
+  // why exactly one can be mounted.
+  //
+  // The explicit `undefined` check is required. `!undefined?.hasPendingInput()`
+  // evaluates TRUE, so a missing composer would read as an empty one and the
+  // chord would be claimed where there is no chat at all.
+  registerLazyContext('chatInputEmpty', () => {
+    const panel = getActiveChatPanel()
+    return panel !== undefined && !panel.hasPendingInput()
   })
 
   registerLazyContext('terminalFocused', () => {
@@ -300,6 +389,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     unregisterLazyContext('inputFocused')
     unregisterLazyContext('editorFocused')
     unregisterLazyContext('chatInputFocused')
+    unregisterLazyContext('chatInputEmpty')
     unregisterLazyContext('terminalFocused')
   })
 }

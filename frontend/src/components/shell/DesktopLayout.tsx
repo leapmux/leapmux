@@ -148,6 +148,12 @@ interface DesktopLayoutProps {
   createLeftSidebar: (opts: SidebarFactoryOpts) => JSX.Element
   createRightSidebar: (opts: SidebarFactoryOpts) => JSX.Element
   editorPanel: JSX.Element | false
+  /**
+   * The quake terminal panel, mounted inside the centre area so it spans every
+   * tile and stops at the sidebars. A sibling of the tiling layout rather than
+   * a child, because it belongs to an agent TAB and not to a tile.
+   */
+  quakePanel?: JSX.Element
   floatingWindowLayer?: JSX.Element
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
@@ -466,6 +472,10 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
               {props.editorPanel}
             </ChatDropZone>
           </Show>
+          {/* Outside the centre-ready gate: the panel belongs to an agent tab
+              that already exists, and the fallback is the no-workspace empty
+              state, which has no tab to own a panel. */}
+          {props.quakePanel}
         </div>
 
         {/* Right resize handle */}

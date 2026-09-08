@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
@@ -68,6 +69,103 @@ func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
 		assert.Equal(t, "new title", evt.GetTabRenamed().GetTitle())
 	case <-time.After(10 * time.Second):
 		t.Fatal("subscriber did not receive the published event")
+	}
+}
+
+// The quake panel command is the one case of this bus that is a COMMAND rather
+// than a fact: it carries no state, and the worker stores none.
+func TestPrivateEventsBus_PublishesTheQuakePanelCommand(t *testing.T) {
+	t.Parallel()
+
+	bus := service.NewPrivateEventsBus()
+	defer bus.Stop()
+
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE)
+
+	select {
+	case evt := <-got:
+		assert.Equal(t, "agent-1", evt.GetQuakePanelCommand().GetAgentId())
+		assert.Equal(t, leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE, evt.GetQuakePanelCommand().GetAction())
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscriber did not receive the published command")
+	}
+}
+
+// It must stay OUT of the bootstrap replay. A replayed command would reopen a
+// panel on every reconnect, overwriting client-local state the user set -- the
+// replay is for the state the worker HOLDS, and this is not that.
+//
+// Driven through the PRODUCTION snapshot, `TabPayloadStore.SnapshotForOwner`,
+// which is what the worker actually passes to SnapshotAndSubscribe. A test that
+// supplied its own snapshot function returning nil asserted nothing: the "no
+// replay" claim held for every event kind, and a snapshot that started emitting
+// commands would leave it green.
+func TestTabPayloadStore_SnapshotReplaysFactsAndNoCommands(t *testing.T) {
+	t.Parallel()
+
+	store, bus, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+	owner := userid.MustNew("user-1")
+
+	// One real fact for the snapshot to carry, so an empty result cannot pass
+	// this test by accident.
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID:  owner.String(),
+		TabID:   "file-1",
+		Payload: filePayload(testutil.NativeAbsPath("/repo/README.md")),
+	}))
+	// A command published before the snapshot is taken, which is the state a
+	// reconnecting client arrives in.
+	bus.PublishQuakePanelCommand(owner, "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+
+	snapshot, err := store.SnapshotForOwner(ctx, owner)
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot, "the snapshot must carry the facts the worker holds")
+	for _, evt := range snapshot {
+		assert.Nil(t, evt.GetQuakePanelCommand(),
+			"the bootstrap replay is for facts; a command in it reopens a panel on every reconnect")
+		assert.NotNil(t, evt.GetTabPayloadRegistered(),
+			"every snapshot event is a stored tab payload")
+	}
+}
+
+// The live stream is the only route a command takes: a subscriber that joins
+// AFTER one was published must not receive it.
+func TestPrivateEventsBus_DoesNotReplayTheQuakePanelCommand(t *testing.T) {
+	t.Parallel()
+
+	bus := service.NewPrivateEventsBus()
+	defer bus.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Published BEFORE anyone subscribes, which is the state a reconnecting
+	// client arrives in.
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 4)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
+
+	// The bus keeps no history at all, so nothing replays. Asserting the
+	// ABSENCE is what pins it: a snapshot function that started recording
+	// commands would fail here rather than in production, months later, as a
+	// panel that reopens itself on every reconnect.
+	select {
+	case evt := <-got:
+		t.Fatalf("a transient command must not be replayed, got %v", evt.GetEvent())
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

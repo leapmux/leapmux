@@ -1,12 +1,14 @@
 import type { Projection } from '~/lib/crdt'
+import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
-import type { TabView } from '~/stores/tabView'
+import type { DetachedTerminal, TabView } from '~/stores/tabView'
 import { createMemo } from 'solid-js'
 import { useFocusInvariant } from '~/components/shell/useFocusInvariant'
 import { createProjectionMemo, getCRDTBridge } from '~/lib/crdt'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore } from '~/stores/layout.store'
+import { createQuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
@@ -52,10 +54,18 @@ export function projectionMemo() {
   return { state, projection: createProjectionMemo(state) }
 }
 
-export function createTestTabStores(workspaceId: string): TestTabStores {
+export function createTestTabStores(
+  workspaceId: string,
+  /**
+   * The companion shells behind the quake panels, for a test that must drive
+   * one. They exist on a worker but not in the CRDT, so no `emitAddTab` can
+   * produce one and a caller supplies them directly.
+   */
+  detachedTerminals?: () => readonly DetachedTerminal[],
+): TestTabStores {
   const { state, projection } = projectionMemo()
   const metadata = createTabMetadataStore()
-  const view = createTabView({ projection, state, metadata })
+  const view = createTabView({ projection, state, metadata, detachedTerminals })
   const selection = createTabSelectionStore(view, metadata)
   const layoutStore = createLayoutStore({ getWorkspaceId: () => workspaceId, projection })
   const floatingWindowStore = createFloatingWindowStore({ getWorkspaceId: () => workspaceId, projection })
@@ -96,5 +106,22 @@ export function createTestFloatingWindowStore(workspaceId?: string) {
   return createFloatingWindowStore({
     getWorkspaceId: () => workspaceId ?? bridge?.workspaceId() ?? null,
     projection,
+  })
+}
+
+/**
+ * A real quake-terminal store with inert dependencies, for the hooks that now
+ * take one.
+ *
+ * The REAL store rather than a fake: it is a plain reactive container with no
+ * I/O of its own until something opens a panel, so a double would only be a
+ * second implementation to keep in step.
+ */
+export function createTestQuakeStore(view?: TabView): QuakeTerminalStore {
+  return createQuakeTerminalStore({
+    metadata: createTabMetadataStore(),
+    getAgentTab: agentId => view?.getAgentTab(agentId),
+    closeDelayMs: () => 0,
+    isWorkspaceMutatable: () => true,
   })
 }

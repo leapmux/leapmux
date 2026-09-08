@@ -5,7 +5,7 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { getAllCommands } from '~/lib/shortcuts/commands'
 import { CORE_KEYBINDINGS, WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { formatShortcut } from '~/lib/shortcuts/display'
-import { mergeKeybindings } from '~/lib/shortcuts/keybindings'
+import { mergeKeybindings, physicalKeyAliasFor } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { errorText } from '~/styles/shared.css'
 
@@ -101,7 +101,11 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
     key = e.key.toLowerCase()
   }
   else if (e.code !== '') {
-    key = e.code
+    // The INTENT where one physical key has several codes -- `grave` rather
+    // than whichever of `Backquote` / `IntlBackslash` this engine and layout
+    // reported. A chord captured in the browser must fire in the desktop app
+    // on the same machine, and those two disagree on a macOS ISO keyboard.
+    key = physicalKeyAliasFor(e.code) ?? e.code
   }
   else if (e.key.length > 1) {
     key = e.key

@@ -1081,7 +1081,7 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 //
 // The empty-but-present map below is MANUFACTURED -- no production path
 // leaves one, because setWatches, unwatchAll and retire all prune on
-// empty. That is exactly the point. Ungated, the cleanup read as "delete
+// empty. That is exactly the point. Unguarded, the cleanup read as "delete
 // whenever the map happens to be empty", which was correct only by
 // agreement among three call sites and visible at none of them; gated on
 // having dropped something, retire cleans up after itself and nothing

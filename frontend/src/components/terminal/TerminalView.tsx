@@ -56,8 +56,15 @@ interface TerminalViewProps {
    * xterm instance, which is cached and outlives this component.
    */
   confirmLink: UntrustedLinkConfirm
-  pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
-  writeRef?: (fn: (data: string) => void) => void
+  /**
+   * Whether these terminals leave their background to the surface behind them.
+   * True for the quake panel, whose own background carries the user's opacity.
+   *
+   * It must be decided BEFORE the instance exists -- xterm reads
+   * `allowTransparency` at `open()` -- so it is a prop rather than something
+   * the theme effect can switch on later.
+   */
+  transparentBackground?: boolean
 }
 
 const instances = new Map<string, TerminalInstance>()
@@ -162,6 +169,68 @@ export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boo
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
+}
+
+/**
+ * The id of the terminal that holds keyboard focus, from the DOM.
+ *
+ * Answers for EVERY mounted terminal, placed in a tile or not, because
+ * `data-terminal-id` is on the wrapper this module renders. That is what a
+ * caller needs for the quake panel's companion shell: it has no tab, so the
+ * tab-shaped "which tab is focused?" lookups cannot reach it, yet the keybinding
+ * layer's `terminalFocused` context is true whenever it holds focus.
+ */
+export function focusedTerminalId(): string | undefined {
+  const el = document.activeElement?.closest<HTMLElement>('[data-terminal-id]')
+  return el?.dataset.terminalId || undefined
+}
+
+/**
+ * Send text to one terminal's PTY, by id.
+ *
+ * The same `sendInput` an `onData` keystroke takes, so a synthesized control
+ * sequence goes through the identical gate, input log and RPC. A terminal that
+ * that is not mounted is silently skipped -- the caller resolved the id from
+ * the focused element, so a missing instance means a dispose in between.
+ */
+export function writeToTerminalInstance(id: string, data: string): void {
+  const instance = instances.get(id)
+  instance?.sendInput?.(utf8Encoder.encode(data))
+}
+
+/** Scroll one terminal's buffer by a page, by id. Sibling of `writeToTerminalInstance`. */
+export function pageScrollTerminalInstance(id: string, direction: -1 | 1): void {
+  instances.get(id)?.terminal.scrollPages(direction)
+}
+
+/**
+ * Send text to the terminal that holds keyboard focus.
+ *
+ * The ONE resolver for "which terminal does a chord act on". It answers from
+ * the DOM, so it reaches every mounted terminal -- one placed in a tile, and
+ * the companion shell behind a quake panel, which has no tab and no tile for a
+ * tab-shaped lookup to walk.
+ *
+ * This replaced a second, tile-shaped resolver that read the focused tile's
+ * active tab out of a handler map. The two could disagree: a tile takes focus
+ * on CLICK, so tabbing into another tile's xterm moved DOM focus without moving
+ * the focused tile, and the chord then typed into the tile the user had left.
+ * Every `terminal.*` binding is `when: 'terminalFocused'`, which is itself a
+ * DOM question, so this resolver is the one that matches the guard.
+ */
+export function writeToFocusedTerminal(data: string): void {
+  const id = focusedTerminalId()
+  if (id !== undefined)
+    writeToTerminalInstance(id, data)
+}
+
+/** Scroll the terminal that holds keyboard focus. Sibling of `writeToFocusedTerminal`. */
+export function pageScrollFocusedTerminal(direction: -1 | 1): boolean {
+  const id = focusedTerminalId()
+  if (id === undefined)
+    return false
+  pageScrollTerminalInstance(id, direction)
+  return true
 }
 
 /** Called when a terminal instance enters the map — used to flush buffered watch data. */
@@ -293,6 +362,8 @@ const TerminalContainer: Component<{
   tileFocused: boolean
   /** See TerminalViewProps.tabEditing. */
   tabEditing?: () => boolean
+  /** See TerminalViewProps.transparentBackground. */
+  transparentBackground?: boolean
   screen?: Uint8Array
   lastOffset?: number
   cols?: number
@@ -324,6 +395,7 @@ const TerminalContainer: Component<{
         cols: props.cols,
         rows: props.rows,
         theme: props.theme,
+        transparentBackground: props.transparentBackground,
       })
       instances.set(id, instance)
       notifyTerminalInstanceReady(id)
@@ -522,7 +594,10 @@ const TerminalContainer: Component<{
   return (
     <div
       class={styles.terminalWrapper}
-      classList={{ [styles.terminalWrapperHidden]: !props.active }}
+      classList={{
+        [styles.terminalWrapperHidden]: !props.active,
+        [styles.terminalWrapperTransparent]: props.transparentBackground === true,
+      }}
       data-terminal-id={props.terminalId}
       data-active={props.active ? 'true' : 'false'}
     >
@@ -538,20 +613,6 @@ const TerminalContainer: Component<{
 
 export const TerminalView: Component<TerminalViewProps> = (props) => {
   const preferences = usePreferences()
-
-  const pageScroll = (direction: -1 | 1) => {
-    if (!props.activeTerminalId)
-      return
-    instances.get(props.activeTerminalId)?.terminal.scrollPages(direction)
-  }
-
-  const write = (data: string) => {
-    if (!props.activeTerminalId)
-      return
-    const instance = instances.get(props.activeTerminalId)
-    if (instance?.sendInput)
-      instance.sendInput(utf8Encoder.encode(data))
-  }
 
   // React to font preference changes and update existing terminal instances.
   // refreshTerminalFont re-arms each instance's `fontsReady` for the new
@@ -609,10 +670,23 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     preferences.theme(),
     themeStore.systemMode() === 'dark',
   ))
+  // The same palette with the background dropped, for the instances whose
+  // surface owns it. Built beside the opaque one because the effect below walks
+  // the MODULE-level instance map -- every mounted view sees every terminal --
+  // so an effect that knew only one theme would repaint a quake terminal opaque
+  // whenever any tile's view re-ran. `terminalThemeFor` memoizes both, so the
+  // second resolve costs a map lookup.
+  const transparentTerminalTheme = createMemo(() => resolveTerminalTheme(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    themeStore.systemMode() === 'dark',
+    true,
+  ))
 
   let lastTheme: ITheme | undefined
   createEffect(() => {
     const theme = terminalTheme()
+    const transparentTheme = transparentTerminalTheme()
     if (theme === lastTheme)
       return
     lastTheme = theme
@@ -625,15 +699,14 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       // stored reference and `resolveTerminalTheme` yields stable constants, so
       // the compare is exact. Mirrors refreshTerminalFont's per-instance guard
       // in the font effect above.
-      if (instance.terminal.options.theme !== theme)
-        instance.terminal.options.theme = theme
+      const want = instance.transparentBackground ? transparentTheme : theme
+      if (instance.terminal.options.theme !== want)
+        instance.terminal.options.theme = want
     }
   })
 
   createEffect(() => {
     lastActiveTerminalId = props.activeTerminalId
-    props.pageScrollRef?.(pageScroll)
-    props.writeRef?.(write)
   })
 
   // Per-view ownership of terminal ids. The `instances` map is module-
@@ -735,7 +808,8 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     rows={terminal()?.rows}
                     fontFamily={preferences.monoFontFamily()}
                     fontSize={DEFAULT_FONT_SIZE}
-                    theme={terminalTheme()}
+                    theme={props.transparentBackground ? transparentTerminalTheme() : terminalTheme()}
+                    transparentBackground={props.transparentBackground}
                     contentReady={(terminal()?.contentReady ?? false)
                       || terminal()?.status === TerminalStatus.EXITED
                       || terminal()?.status === TerminalStatus.DISCONNECTED}

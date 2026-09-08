@@ -14,7 +14,7 @@ import (
 // it cannot fail for any reason other than the session being unusable, which is
 // exactly what it is asked to prove. Recorded as gateNone (ungated by design).
 func registerPingHandler(r registrar, _ *Service) {
-	registerUngated(r, contracts.PingMethod, leapmuxv1.Scope_SCOPE_WORKER_READ, func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerUnguarded(r, contracts.PingMethod, leapmuxv1.Scope_SCOPE_WORKER_READ, func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
 }

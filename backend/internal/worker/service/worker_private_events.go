@@ -146,6 +146,28 @@ func (b *PrivateEventsBus) PublishTabPayloadRevoked(owner userid.UserID, tabID s
 	})
 }
 
+// PublishQuakePanelCommand broadcasts a QuakePanelCommand to owner's
+// subscribers.
+//
+// The only publisher is the Control CLI's SetQuakePanel. A frontend toggles its
+// own panel in-process and never round-trips, so there is no echo to suppress
+// and the event carries no origin client id.
+//
+// Nothing is stored, and that is deliberate rather than an omission: the panel's
+// open state is per-client, like which tab is active in a tile. This event is
+// therefore excluded from the bootstrap replay in SnapshotAndSubscribe -- see
+// the comment there.
+func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, agentID string, action leapmuxv1.QuakePanelAction) {
+	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_QuakePanelCommand{
+			QuakePanelCommand: &leapmuxv1.QuakePanelCommand{
+				AgentId: agentID,
+				Action:  action,
+			},
+		},
+	})
+}
+
 // SnapshotAndSubscribe registers the subscriber under the bus mutex, takes the
 // snapshot after releasing it, then streams that snapshot before any live event.
 // This is the bootstrap-replay pattern the CRDT plan requires for
@@ -158,6 +180,12 @@ func (b *PrivateEventsBus) PublishTabPayloadRevoked(owner userid.UserID, tabID s
 // window cannot drop one. The cost is that an event can appear in both the
 // snapshot and the live stream, which is harmless because the client's applies
 // are keyed by tab id and idempotent.
+//
+// QuakePanelCommand is deliberately NOT part of any snapshot. It is a transient
+// command rather than state the worker holds, so replaying it would reopen a
+// panel on every reconnect -- overwriting client-local state the user set. The
+// bootstrap replay is for facts, and this bus carries one case that is not a
+// fact.
 //
 // snapshotFn receives the owner and returns the events that should be
 // sent before the live stream. It runs with the bus mutex RELEASED -- the

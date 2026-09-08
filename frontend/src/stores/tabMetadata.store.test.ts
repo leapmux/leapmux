@@ -425,6 +425,41 @@ describe('tabMetadata', () => {
       })
     })
 
+    /**
+     * A quake terminal's companion shell has NO CRDT record: it belongs to an
+     * agent tab, not to a tile, so the live set can never contain its id.
+     *
+     * Its metadata row -- the status, the dimensions, the 100 KB screen -- must
+     * therefore survive every live-set change, because "was live, now is not"
+     * is never true for it. The sweep gets that right by construction, since an
+     * id enters `seen` only by being reported live, and this is the case that
+     * locks it in: the alternative rule ("retire whatever is not live") would
+     * take the row of a shell that the user types in.
+     */
+    it('leaves a row that no CRDT record backs, across a live-set change', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: { a1: {} } })
+        const retired: string[] = []
+        useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
+        await flush()
+
+        m.patch('quake-1', { title: 'zsh', screen: new Uint8Array(64) })
+        setState({ tabs: { a1: {}, a2: {} } })
+        await flush()
+        expect(m.get('quake-1')?.title, 'a companion survives a tab arriving').toBe('zsh')
+
+        // And the edge the companion's OWNER leaves on, which is the one that
+        // does end it -- through `onRetire`, which gives the owner agent tab.
+        setState({ tabs: { a2: {} } })
+        await flush()
+        expect(retired).toEqual(['a1'])
+        expect(m.get('quake-1')?.title, 'the sweep never touches the companion row itself').toBe('zsh')
+
+        dispose()
+      })
+    })
+
     // A tab that leaves and comes back (`emitReviveTab`) must be sweepable
     // again, which it is only if the revive puts it back among the seen ids.
     it('retires a revived tab a second time', async () => {

@@ -20,9 +20,53 @@ describe('default keybindings', () => {
     expect(escapeBindings).toEqual([])
   })
 
+  // The chord the composer's own Cmd+Enter also answers. The `when` is the whole
+  // contract: `activateBindings` calls preventDefault ONLY for a binding that
+  // resolves, so every conjunct here is what lets a keypress fall through to
+  // ProseMirror while the composer holds something to send. Pinned whole rather
+  // than by key, because dropping one conjunct would silently swallow messages.
+  it('gives the queue steer $mod+Enter only while the composer is empty', () => {
+    expect(WORKSPACE_KEYBINDINGS.filter(b => b.key === '$mod+Enter')).toEqual([
+      {
+        key: '$mod+Enter',
+        command: 'chat.steerQueuedInput',
+        when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen',
+      },
+    ])
+  })
+
+  // `Control` and not `$mod`: macOS reserves Command+` for its window cycler,
+  // so the chord would never reach the page there.
+  it('gives Control+grave to the quake terminal inside agent tabs', () => {
+    expect(WORKSPACE_KEYBINDINGS.filter(b => b.command === 'terminal.toggleQuake')).toEqual([
+      {
+        key: 'Control+grave',
+        command: 'terminal.toggleQuake',
+        when: 'activeTabType == "agent" && !dialogOpen',
+      },
+    ])
+  })
+
+  // Enter and Cmd+Enter in the composer already send, so the command keeps no
+  // default CHORD -- but it keeps its ENTRY, and the empty key is what says so.
+  //
+  // The entry is load-bearing. `mergeKeybindings` gives a user override
+  // `when: o.when ?? def.when`, so a command absent from this table hands every
+  // rebinding of it a clause of `undefined`: the chord would then resolve
+  // everywhere, and `activateBindings` calls preventDefault for any binding
+  // that resolves. A user who bound Send Message to `$mod+k` would find `$mod+k`
+  // swallowed in the terminal and in every other surface.
+  it('leaves send message with no chord but keeps the clause a rebinding inherits', () => {
+    expect(ALL_DEFAULTS.filter(b => b.command === 'chat.sendMessage')).toEqual([
+      { key: '', command: 'chat.sendMessage', when: 'chatInputFocused' },
+    ])
+  })
+
   it('binds no key twice in the same when-context', () => {
     const seen = new Map<string, string>()
-    for (const b of ALL_DEFAULTS) {
+    // An empty key is "no chord by default", not a chord, so several commands
+    // may carry one without colliding.
+    for (const b of ALL_DEFAULTS.filter(b => b.key !== '')) {
       const slot = JSON.stringify([b.key, b.when ?? ''])
       const holder = seen.get(slot)
       expect(holder, `${b.key} is bound to both ${holder} and ${b.command}`).toBeUndefined()

@@ -28,15 +28,15 @@ import (
 type methodGate int
 
 const (
-	gateOwnerOnly methodGate = iota // only the worker's registrant may call
-	gateNone                        // liveness probe that does no work, ungated by design
+	guardOwnerOnly methodGate = iota // only the worker's registrant may call
+	gateNone                         // liveness probe that does no work, ungated by design
 )
 
 // The SCOPE a method requires is the second axis of every registration, and it
 // is an ARGUMENT rather than a wrap inside the owner gate.
 //
 // The distinction is load-bearing. `gateNone` exists (Ping), so a check that
-// lived inside the owner gate would be skippable by choosing registerUngated --
+// lived inside the owner gate would be skippable by choosing registerUnguarded --
 // which is precisely how a method ends up unenforced by accident. Passing the
 // scope to register() means every registration states one, including an
 // unguarded one, and a value nobody stated is the proto zero, which panics at boot.
@@ -201,11 +201,11 @@ type terminalScopedRequest[T any] interface {
 	GetTerminalId() string
 }
 
-// registerOwnerGated registers an owner-guarded handler for a decoded request.
+// registerOwnerGuarded registers an owner-guarded handler for a decoded request.
 // Wrapper: owner gate → unmarshal → INVALID_ARGUMENT "invalid request" → fn
 // with the decoded request. The gate is a property of WHERE the handler is
 // registered.
-func registerOwnerGated[T any, PT decodedRequest[T]](
+func registerOwnerGuarded[T any, PT decodedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
@@ -260,11 +260,11 @@ func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, a
 	}
 }
 
-// agentGatedHandler builds the unmarshal → requireAgent → fn wrapper used by
-// registerAgentGated. Explicit type args sidestep constraint-inference edge
+// agentGuardedHandler builds the unmarshal → requireAgent → fn wrapper used by
+// registerAgentGuarded. Explicit type args sidestep constraint-inference edge
 // cases in nested generic calls (mirroring Dispatcher / ownerOnlyRegistrar
 // style).
-func agentGatedHandler[T any, PT agentScopedRequest[T]](
+func agentGuardedHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
@@ -281,23 +281,23 @@ func agentGatedHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGated registers a handler for a request that carries an agent id. fn
+// registerAgentGuarded registers a handler for a request that carries an agent id. fn
 // receives the loaded row so the body never double-fetches.
-func registerAgentGated[T any, PT agentScopedRequest[T]](
+func registerAgentGuarded[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, agentGatedHandler[T, PT](r.svc, scope, fn))
+	r.ownerOnly().Register(method, scope, agentGuardedHandler[T, PT](r.svc, scope, fn))
 }
 
-// agentGatedByIDHandler builds the unmarshal → requireAgentID → fn wrapper
-// shared by registerAgentGatedByID and registerAgentGatedByIDTracked. The
+// agentGuardedByIDHandler builds the unmarshal → requireAgentID → fn wrapper
+// shared by registerAgentGuardedByID and registerAgentGuardedByIDTracked. The
 // existence probe reads only the id column, so these are for handlers that
-// never read the row; ones that do use registerAgentGated instead and receive
+// never read the row; ones that do use registerAgentGuarded instead and receive
 // the loaded row.
-func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
+func agentGuardedByIDHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
@@ -314,22 +314,22 @@ func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGatedByID registers a handler for a request that carries an agent id,
+// registerAgentGuardedByID registers a handler for a request that carries an agent id,
 // resolved through an id-only existence probe — no full-row load for a handler
 // that only needs "does this agent exist?".
-func registerAgentGatedByID[T any, PT agentScopedRequest[T]](
+func registerAgentGuardedByID[T any, PT agentScopedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, agentGatedByIDHandler[T, PT](r.svc, scope, fn))
+	r.ownerOnly().RegisterMode(method, scope, mode, agentGuardedByIDHandler[T, PT](r.svc, scope, fn))
 }
 
-// terminalGatedHandler builds the unmarshal → requireTerminal → fn wrapper
-// used by registerTerminalGated.
-func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
+// terminalGuardedHandler builds the unmarshal → requireTerminal → fn wrapper
+// used by registerTerminalGuarded.
+func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
@@ -346,22 +346,22 @@ func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
 	})
 }
 
-// registerTerminalGated registers a handler for a request naming a terminal.
+// registerTerminalGuarded registers a handler for a request naming a terminal.
 // fn receives the loaded row so the body never double-fetches.
-func registerTerminalGated[T any, PT terminalScopedRequest[T]](
+func registerTerminalGuarded[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, terminalGatedHandler[T, PT](r.svc, scope, fn))
+	r.ownerOnly().Register(method, scope, terminalGuardedHandler[T, PT](r.svc, scope, fn))
 }
 
-// terminalGatedByIDHandler builds the unmarshal → requireTerminalID → fn
-// wrapper shared by registerTerminalGatedByID and its Tracked variant. Mirror
-// of agentGatedByIDHandler: id-only existence probe (no screen BLOB) for
+// terminalGuardedByIDHandler builds the unmarshal → requireTerminalID → fn
+// wrapper shared by registerTerminalGuardedByID and its Tracked variant. Mirror
+// of agentGuardedByIDHandler: id-only existence probe (no screen BLOB) for
 // handlers that never read the row.
-func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
+func terminalGuardedByIDHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
@@ -378,30 +378,30 @@ func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
 	})
 }
 
-// registerTerminalGatedByID registers a handler for a request naming a
+// registerTerminalGuardedByID registers a handler for a request naming a
 // terminal, resolved through an id-only existence probe — no screen-BLOB load
 // for a handler that only needs "does this terminal exist?" (SendInput and
 // ResizeTerminal fire per keystroke / per resize).
-func registerTerminalGatedByID[T any, PT terminalScopedRequest[T]](
+func registerTerminalGuardedByID[T any, PT terminalScopedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, terminalGatedByIDHandler[T, PT](r.svc, scope, fn))
+	r.ownerOnly().RegisterMode(method, scope, mode, terminalGuardedByIDHandler[T, PT](r.svc, scope, fn))
 }
 
-// registerTerminalForRestartGated is the sole user of
+// registerTerminalForRestartGuarded is the sole user of
 // db.GetTerminalForRestartRow: unmarshal → requireTerminalForRestart → fn with
 // the narrow row (metadata + length(screen), no screen BLOB).
-func registerTerminalForRestartGated(
+func registerTerminalForRestartGuarded(
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
 ) {
-	registerOwnerGated(r, method, scope, dispatchPlain, func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
+	registerOwnerGuarded(r, method, scope, dispatchPlain, func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
 		row, ok := r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
 		if !ok {
 			return
@@ -413,7 +413,7 @@ func registerTerminalForRestartGated(
 	})
 }
 
-// registerOwnerGatedStream is registerOwnerGated for a method that answers
+// registerOwnerGuardedStream is registerOwnerGuarded for a method that answers
 // with stream frames.
 //
 // It differs in both halves that decide reply shape, because both matter and
@@ -429,7 +429,7 @@ func registerTerminalForRestartGated(
 // shapes per method; and a unary NON-error payload on a stream id genuinely is
 // dropped, so the two halves must agree or the shape depends on which failure
 // occurred.
-func registerOwnerGatedStream[T any, PT decodedRequest[T]](
+func registerOwnerGuardedStream[T any, PT decodedRequest[T]](
 	r registrar,
 	method string,
 	scope leapmuxv1.Scope,
@@ -446,14 +446,14 @@ func registerOwnerGatedStream[T any, PT decodedRequest[T]](
 	})
 }
 
-// registerOwnerGatedStreamRaw is registerOwnerGatedStream for a handler that
+// registerOwnerGuardedStreamRaw is registerOwnerGuardedStream for a handler that
 // owns its own unmarshal (WatchEvents decodes a request whose per-entity
 // rejections it reports in-band).
-func registerOwnerGatedStreamRaw(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
+func registerOwnerGuardedStreamRaw(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
 	r.ownerOnly().RegisterStream(method, scope, handler)
 }
 
-// registerOwnerOnly records gateOwnerOnly and restricts the handler to the
+// registerOwnerOnly records guardOwnerOnly and restricts the handler to the
 // worker's registered owner, reusing ownerOnlyRegistrar's gate. It exists
 // for methods that own their own unmarshal (the capability probes
 // ListAvailableShells / ListAvailableProviders) rather than being registered
@@ -469,9 +469,9 @@ func (r registrar) ownerOnly() ownerOnlyRegistrar {
 	return ownerOnlyRegistrar{r: r}
 }
 
-// registerUngated records gateNone and registers without wrapping. Reserved
+// registerUnguarded records gateNone and registers without wrapping. Reserved
 // for a probe that does no work and discloses nothing (Ping's liveness check);
 // anything that reads or enumerates machine state must use registerOwnerOnly.
-func registerUngated(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
+func registerUnguarded(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
 	r.register(method, gateNone, scope, dispatchPlain, handler)
 }

@@ -1,9 +1,19 @@
 import type { JSX } from 'solid-js'
+import type { GoldenKey } from '~/test-support/accountSchema'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
+import {
+  SETTING_DIFF_VIEW_DEFAULT,
+  SETTING_QUAKE_ANIMATION_MS_DEFAULT,
+  SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT,
+  SETTING_QUAKE_ORIENTATION_DEFAULT,
+  SETTING_QUAKE_SIZE_PERCENT_DEFAULT,
+  SETTING_TURN_END_SOUND_DEFAULT,
+  SETTING_TURN_END_SOUND_VOLUME_DEFAULT,
+} from '~/generated/contracts/user-settings'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
 import { accountStorageKey, deliverStorageChangeForTests, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet, localStorageRemove, localStorageSet, mirrorEntryForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
@@ -876,8 +886,9 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
     // `terminal_theme` is absent for the same reason `theme` is: it is an
     // object key with a custom editor, not an enum. Its parse is covered by
     // the terminal-theme describe block below.
-    diff_view: { read: p => p.dual.diffView.account(), fallback: 'unified' },
-    turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: 'ding-dong' },
+    diff_view: { read: p => p.dual.diffView.account(), fallback: SETTING_DIFF_VIEW_DEFAULT },
+    turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: SETTING_TURN_END_SOUND_DEFAULT },
+    quake_orientation: { read: p => p.dual.quakeOrientation.account(), fallback: SETTING_QUAKE_ORIENTATION_DEFAULT },
     // The three Desktop enums. Their tokens come from contracts/desktop.json,
     // which the hub's catalogue also reads, so the golden file and these
     // fallbacks are two views of one source.
@@ -893,6 +904,81 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
   it('drives every enum key the hub declares', () => {
     expect(enumKeys.length).toBeGreaterThan(0)
     expect(enumKeys.map(k => k.key).sort()).toEqual(Object.keys(enumReaders).sort())
+  })
+
+  /**
+   * How to read one numeric key's account signal, and the default it keeps
+   * when a value is refused.
+   *
+   * Both come from contracts/user-settings.json, which is also where the hub's
+   * validator and the browser's parse read their limits -- so this table
+   * cannot drift from either side. Before the contract, the limits were
+   * written once in usersettings/keys.go and again in PreferencesContext, and
+   * nothing compared them: a hub that accepted 20..100 while the browser
+   * accepted 25..100 stored a 22 the browser then discarded for its fallback,
+   * and the user saw the default beside a Customized badge with no way out but
+   * Reset.
+   */
+  const numericReaders: Record<string, { read: (p: Prefs) => unknown, fallback: number }> = {
+    turn_end_sound_volume: { read: p => p.dual.turnEndSoundVolume.account(), fallback: SETTING_TURN_END_SOUND_VOLUME_DEFAULT },
+    quake_size_percent: { read: p => p.dual.quakeSizePercent.account(), fallback: SETTING_QUAKE_SIZE_PERCENT_DEFAULT },
+    quake_animation_ms: { read: p => p.dual.quakeAnimationMs.account(), fallback: SETTING_QUAKE_ANIMATION_MS_DEFAULT },
+    quake_background_opacity: { read: p => p.dual.quakeBackgroundOpacity.account(), fallback: SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT },
+  }
+
+  /** The golden's limits for one numeric key, whichever pair its kind uses. */
+  const boundsOf = (key: GoldenKey) => {
+    const field = key.fields[0]
+    return { min: field.min ?? field.minF!, max: field.max ?? field.maxF! }
+  }
+
+  const numericKeys = golden.filter(k =>
+    k.fields.some(f => f.min !== undefined || f.minF !== undefined))
+
+  // The sibling of the enum case above: a numeric key the hub adds later gets
+  // no parse coverage, and nothing says so.
+  it('drives every numeric key the hub declares', () => {
+    expect(numericKeys.length).toBeGreaterThan(0)
+    expect(numericKeys.map(k => k.key).sort()).toEqual(Object.keys(numericReaders).sort())
+  })
+
+  it('accepts both limits the hub declares, and refuses just outside them', async () => {
+    for (const key of numericKeys) {
+      const reader = numericReaders[key.key]
+      const { min, max } = boundsOf(key)
+      // A step that is small enough to land outside a 0.05-wide float limit
+      // and large enough to be a different integer.
+      const step = Number.isInteger(min) && Number.isInteger(max) ? 1 : 0.01
+      const accepted: number[] = [min, max]
+      const refused: number[] = [min - step, max + step]
+
+      for (const value of accepted) {
+        localStorageClearForTests()
+        listUserSettings.mockResolvedValue({
+          descriptors: [],
+          values: [settingValue(key.key, JSON.stringify(value), true)],
+        })
+        const ctx = captureContext()
+        await waitFor(() => expect(reader.read(ctx.get()), `${key.key} = ${value}`).toBe(value))
+      }
+
+      for (const value of refused) {
+        localStorageClearForTests()
+        listUserSettings.mockResolvedValue({
+          descriptors: [],
+          values: [
+            settingValue(key.key, JSON.stringify(value), true),
+            settingValue('debug_logging', 'true', true),
+          ],
+        })
+        const ctx = captureContext()
+        await waitFor(() => expect(ctx.get().dual.debugLogging.account()).toBe(true))
+        expect(reader.read(ctx.get()), `${key.key} refused ${value}`).toBe(reader.fallback)
+        // A refused value is not customized either, for the reason the enum
+        // case gives: the badge and the Reset would sit over nothing.
+        expect(ctx.get().accountCustomized()[key.key]).toBeUndefined()
+      }
+    }
   })
 
   it('accepts every enum value the hub declares', async () => {

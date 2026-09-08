@@ -27,6 +27,19 @@ export const terminalWrapper = style({
 })
 
 /**
+ * For a terminal whose SURFACE owns the background -- the quake panel, which
+ * paints the user's opacity on itself.
+ *
+ * The wrapper is the last opaque layer between that surface and the user: xterm
+ * itself paints nothing once its theme background is transparent (see
+ * `transparentBackground` in `~/lib/terminal`), and the rule below already
+ * neutralizes the one background xterm.css hardcodes.
+ */
+export const terminalWrapperTransparent = style({
+  backgroundColor: 'transparent',
+})
+
+/**
  * Applied to inactive terminal wrappers. `visibility: hidden` keeps the
  * element in layout (so its dimensions stay valid for xterm.js / FitAddon)
  * while hiding it visually and suppressing pointer events.
@@ -88,7 +101,14 @@ globalStyle(`${terminalWrapper} .xterm`, {
   padding: 'var(--space-1)',
 })
 
-// Override xterm.css default background (#000) so the themed wrapper background shows through.
+// Override xterm.css default background (#000) so the themed wrapper background
+// shows through.
+//
+// This is NOT the theme colour: xterm writes that inline onto
+// `.xterm-scrollable-element` (Viewport.ts), which no rule here can or should
+// reach. This rule exists only for the opaque `#000` xterm.css declares on the
+// viewport itself, which would otherwise sit above the wrapper's palette
+// background -- and, for a transparent terminal, above the panel's.
 globalStyle(`${terminalWrapper} .xterm .xterm-viewport`, {
   backgroundColor: 'transparent',
 })

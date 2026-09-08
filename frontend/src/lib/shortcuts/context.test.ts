@@ -235,6 +235,33 @@ describe('evaluateWhen', () => {
       expect(evaluateWhen('editorFocused && !dialogOpen')).toBe(false)
     })
 
+    // The literal clause that ships on $mod+Enter. Parsed here so a change to
+    // the grammar cannot quietly stop the steer binding from ever matching --
+    // or, worse, stop it ever falling through to the composer's own Cmd+Enter.
+    it('activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen', () => {
+      const clause = 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen'
+      setContext('activeTabType', 'agent')
+      setContext('chatInputEmpty', true)
+      setContext('terminalFocused', false)
+      setContext('dialogOpen', false)
+      expect(evaluateWhen(clause)).toBe(true)
+
+      setContext('chatInputEmpty', false)
+      expect(evaluateWhen(clause)).toBe(false)
+
+      setContext('chatInputEmpty', true)
+      setContext('terminalFocused', true)
+      expect(evaluateWhen(clause), 'a quake terminal is inside an agent tab').toBe(false)
+
+      setContext('terminalFocused', false)
+      setContext('dialogOpen', true)
+      expect(evaluateWhen(clause)).toBe(false)
+
+      setContext('dialogOpen', false)
+      setContext('activeTabType', 'terminal')
+      expect(evaluateWhen(clause)).toBe(false)
+    })
+
     it('isDesktop && (platform == "mac" || platform == "linux")', () => {
       setContext('isDesktop', true)
       setContext('platform', 'mac')

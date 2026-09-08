@@ -24,7 +24,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
-import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -304,6 +304,7 @@ describe('background agent history trimming', () => {
     return {
       stores: {
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
@@ -1874,6 +1875,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       controlStore: createControlStore(),
+      quakeStore: createTestQuakeStore(),
       repoGitStore: createRepoGitStore(),
       tabs,
     }
@@ -2227,6 +2229,10 @@ describe('extracted handleAgentEvent branch handlers', () => {
         dispose()
       })
     })
+
+    // The detached (quake) predicate is covered where the module it belongs to
+    // is: `./terminalEvents.test.ts`, which can assert the OS notification
+    // itself rather than only the badge that stands in for it.
 
     it('progress patches metadata fields', () => {
       createRoot((dispose) => {
@@ -2608,6 +2614,22 @@ describe('collectWorkerOfflineTargets', () => {
     expect(terminals.size, 'a FILE tab is neither branch').toBe(0)
   })
 
+  /**
+   * A companion terminal -- the shell behind a quake panel -- has no tile and
+   * no placement, and it is not in `view.all()` at all: the hook composes it in
+   * from the detached family precisely so this sweep can reach it.
+   *
+   * Without that composition an outage left every quake terminal reading READY
+   * for its whole duration, with a live-looking panel that swallowed input.
+   */
+  it('marks a terminal that has no tile, which is the quake panel\'s shape', () => {
+    const { terminals } = collectWorkerOfflineTargets([
+      tab({ type: TabType.TERMINAL, id: 'companion', tileId: undefined, status: TerminalStatus.READY }),
+    ], 'w1')
+
+    expect([...terminals]).toEqual(['companion'])
+  })
+
   it('returns nothing for a worker that hosts none of these tabs', () => {
     const { terminals, agents } = collectWorkerOfflineTargets([tab({ workerId: 'w1' })], 'w-unknown')
     expect(agents).toEqual([])
@@ -2721,6 +2743,7 @@ describe('useWorkspaceConnection chat history load', () => {
         metadata: tabs.metadata,
         selection: tabs.selection,
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),
@@ -2799,6 +2822,7 @@ describe('useWorkspaceConnection chat history load', () => {
         metadata: tabs.metadata,
         selection: tabs.selection,
         controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),

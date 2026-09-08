@@ -69,8 +69,18 @@ type AgentSpawnInfo struct {
 // TerminalSpawnInfo identifies a spawning terminal.
 type TerminalSpawnInfo struct {
 	// UserID is already minted -- see AgentSpawnInfo.UserID.
-	UserID     userid.UserID
-	WorkerID   string
-	TabID      string // The spawned terminal's id (becomes LEAPMUX_CONTROL_TAB_ID).
-	WorkingDir string
+	UserID   userid.UserID
+	WorkerID string
+	TabID    string // The spawned terminal's id.
+	// OwnerAgentID is set for a COMPANION terminal -- the shell behind an agent
+	// tab's quake panel -- and empty for a terminal TAB.
+	//
+	// It decides the ambient tab the spawn advertises. A companion has no CRDT
+	// tab, so the hub answers NotFound for its id, while every `leapmux control`
+	// command resolves LEAPMUX_CONTROL_TAB_ID through the hub. A companion that
+	// advertised itself would therefore make every command typed into the quake
+	// panel fail. The tab it belongs to is its OWNER, and that is what the spawn
+	// advertises.
+	OwnerAgentID string
+	WorkingDir   string
 }

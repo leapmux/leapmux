@@ -1053,7 +1053,7 @@ func TestBuildStartupFlagSettings_FilteredModelHonorsLaunchVerdict(t *testing.T)
 // session presents no model/effort UI (AvailableModels returns nil) and must not be
 // pushed any effort/ultracode flags at startup -- even when its stored model+effort
 // would otherwise resolve to the ultracode combo -- since its user can neither see nor
-// control effort. Gated on the same hidesModelEffortUI predicate AvailableModels uses.
+// control effort. It reads the same hidesModelEffortUI predicate AvailableModels uses.
 func TestBuildStartupFlagSettings_ThirdPartyEmitsNoEffort(t *testing.T) {
 	dynamic := convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},

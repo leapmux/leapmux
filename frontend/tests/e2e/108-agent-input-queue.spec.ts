@@ -5,6 +5,8 @@ import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { loginViaToken, openWorkspace, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
+const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+
 /**
  * Pause the queue, park two inputs in it, and hand back the locators that both
  * drag tests need.
@@ -201,6 +203,38 @@ test.describe('agent input queue', () => {
 
     // The Worker owns the order, so the reorder is real only once it comes back.
     await expect(rows.first()).toContainText('second queued')
+  })
+
+  // `$mod+Enter` is bound to the queue steer, and the composer's own Cmd+Enter
+  // sends. Both live on one chord, and only the emptiness context tells them
+  // apart -- so the dangerous direction is the shortcut CLAIMING a keypress that
+  // was meant to send. Every other spec in the suite sends with this chord, so a
+  // regression there is loud; what needs its own case is the boundary.
+  // `MOD` and not a literal `Meta`: tinykeys resolves `$mod` to Meta on an
+  // Apple platform and to Control everywhere else, so a hardcoded Meta misses
+  // the keybinding layer entirely on Linux and Windows and lands only on the
+  // composer's own send plugin -- which accepts either modifier. Both
+  // assertions below would then pass for the wrong reason, and the claim this
+  // test exists to catch would go unexercised.
+  test('leaves the send chord to the composer whenever there is something to send', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const { rows } = await seedTwoQueuedRows(page)
+
+    // Empty composer, no running turn: the head is not steerable, so the chord
+    // is claimed and does nothing. Nothing is sent, and nothing is queued.
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await page.keyboard.press(`${MOD}+Enter`)
+    await expect(rows).toHaveCount(2)
+
+    // The same chord with text in the composer still sends, which is the whole
+    // point of requiring an empty composer for the steer.
+    await editor.click()
+    await page.keyboard.type('typed then sent')
+    await page.keyboard.press(`${MOD}+Enter`)
+    await expect(editor).toHaveText('')
+    await expect(rows).toHaveCount(3)
+    await expect(rows.last()).toContainText('typed then sent')
   })
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {

@@ -12,6 +12,14 @@ export interface GoldenField {
   min?: number
   max?: number
   /**
+   * A FLOAT field's limits. A separate pair from `min`/`max`, because the Go
+   * side declares them as separate fields (`MinF`/`MaxF`) and writes the
+   * golden with `omitempty` -- an integer field carries `min`/`max`, a float
+   * field carries these, and neither carries both.
+   */
+  minF?: number
+  maxF?: number
+  /**
    * "percent" turns an integer field into a slider; see `controlForField`.
    * Absent for every field the hub declares without one, because the Go
    * side writes the golden with `json:"unit,omitempty"`.

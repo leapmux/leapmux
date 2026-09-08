@@ -349,6 +349,7 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:       ScopeNotHubServed,
 	leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure:            ScopeNotHubServed,
 	leapmuxv1connect.WorkerPrivateServiceRevokeTabPayloadProcedure:         ScopeNotHubServed,
+	leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure:            ScopeNotHubServed,
 }
 
 // ScopeRequirementFor returns what a procedure demands of a scoped credential.

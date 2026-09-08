@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -66,12 +68,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// close guard can state the reason before it tears the tab down. Batched:
 	// closing a tile asks about every terminal it holds at once.
 	//
-	// registerOwnerGated rather than registerTerminalGatedByID: the request
+	// registerOwnerGuarded rather than registerTerminalGuardedByID: the request
 	// carries a LIST, and a gate keyed to one id cannot answer for a list. The
 	// owner gate is the whole access decision here -- a Worker's terminals all
 	// belong to its one owner -- and an id that names no live PTY simply drops
 	// out of the response, which is the same answer an idle terminal gets.
-	registerOwnerGated(d, "InspectTerminalProcesses", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain,
+	registerOwnerGuarded(d, "InspectTerminalProcesses", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.InspectTerminalProcessesRequest, sender channel.ResponseWriter) {
 			ctx, cancel := context.WithTimeout(ctx, terminalProcessScanTimeout)
 			defer cancel()
@@ -106,7 +108,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// OpenTerminal starts a new PTY terminal session.
-	registerOwnerGated(d, "OpenTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerOwnerGuarded(d, "OpenTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
@@ -144,6 +146,29 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				return
 			}
 
+			// A COMPANION terminal belongs to an agent, so the owner is
+			// checked HERE, at the only write point of owner_agent_id.
+			// Every later consumer -- the reconciler's liveness key, the
+			// mint exclusion, closeAgentTabCommon's teardown -- reads the
+			// column and assumes it gives a live ROOT agent. A subagent
+			// owner is the worse case of the two: closeAgentTabCommon
+			// returns at its child branch BEFORE rootTeardown, so nothing
+			// would ever close that companion.
+			ownerAgentID := r.GetOwnerAgentId()
+			if ownerAgentID != "" && !svc.requireCompanionOwner(sender, ownerAgentID) {
+				return
+			}
+
+			// A COMPANION terminal is at most one per agent, so a second
+			// OpenTerminal that gives the same owner hands back the first
+			// one. This is what lets two devices -- or one device toggling
+			// the panel twice -- share a single shell instead of racing to
+			// spawn two. Answered before the id is minted, so the duplicate
+			// call creates no row, no startup entry and no goroutine.
+			if svc.adoptExistingCompanion(sender, ownerAgentID) {
+				return
+			}
+
 			terminalID := id.Generate()
 
 			outputFn := svc.makeTerminalOutputFn(terminalID)
@@ -178,7 +203,23 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Cols:          int64(cols),
 				Rows:          int64(rows),
 				Screen:        []byte{},
+				OwnerAgentID:  ownerAgentID,
 			}); upsertErr != nil {
+				// Losing the companion race lands here: the check above found
+				// no companion, another client inserted one in the window, and
+				// the unique partial index refused this row. Re-read and answer
+				// with the winner's terminal, so both callers attach to one
+				// PTY. The index is what makes this decidable at all -- without
+				// it both inserts would succeed and the two clients would type
+				// into different shells.
+				//
+				// A lookup that still finds nothing means the failure was not
+				// the race, so report it. Deliberately not keyed on a SQLite
+				// error code: the question "does a companion exist now?" is the
+				// one that decides what to do, and it answers itself.
+				if svc.adoptExistingCompanion(sender, ownerAgentID) {
+					return
+				}
 				slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
 				sendInternalError(sender, "failed to persist terminal")
 				return
@@ -214,10 +255,11 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// unusually slow factory doesn't stretch the synchronous RPC
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
-				UserID:     caller.UserID,
-				WorkerID:   svc.WorkerID,
-				TabID:      terminalID,
-				WorkingDir: plan.PlannedWorkingDir,
+				UserID:       caller.UserID,
+				WorkerID:     svc.WorkerID,
+				TabID:        terminalID,
+				OwnerAgentID: ownerAgentID,
+				WorkingDir:   plan.PlannedWorkingDir,
 			}
 			go svc.runTerminalStartup(startupCtx, terminal.Options{
 				ID:            terminalID,
@@ -235,11 +277,23 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
-	registerTerminalForRestartGated(d, "RestartTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+	registerTerminalForRestartGuarded(d, "RestartTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			if svc.refuseIfShuttingDown(sender) {
+				return
+			}
+			// A COMPANION has no restart contract: its shell exiting ends it,
+			// and the next open of the panel spawns a fresh one. Refused here
+			// rather than only in the browser, so the rule holds for the
+			// Control CLI and for a second device too. Asked BEFORE the
+			// liveness checks, because "does this terminal restart at all?" is
+			// prior to "is it running right now". Without it a respawn
+			// resurrects a row the exit path already closed, and the unique
+			// index then refuses every replacement.
+			if dbTerm.OwnerAgentID != "" {
+				sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
 				return
 			}
 			// Reject overlapping restarts: a previous startup hasn't broadcast
@@ -307,6 +361,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if dbTerm.ScreenLength.Valid {
 				fallbackOffset = dbTerm.ScreenLength.Int64
 			}
+			// No OwnerAgentID: the refusal above means only a terminal TAB
+			// reaches this line, and a tab is its own ambient tab.
 			spawnInfo := TerminalSpawnInfo{
 				UserID:     caller.UserID,
 				WorkerID:   svc.WorkerID,
@@ -324,7 +380,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// CloseTerminal stops and removes a terminal session.
-	registerTerminalGatedByID(d, "CloseTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchTracked,
+	registerTerminalGuardedByID(d, "CloseTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchTracked,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -340,7 +396,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// SendInput sends input data to a terminal.
-	registerTerminalGatedByID(d, "SendInput", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerTerminalGuardedByID(d, "SendInput", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -358,7 +414,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	registerTerminalGatedByID(d, "ResizeTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerTerminalGuardedByID(d, "ResizeTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -409,7 +465,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// The worker never persists a PTY-driven OSC title. It broadcasts that
 	// title as a live overlay instead -- see the SignalTitle case in this
 	// file for the reason.
-	registerTerminalGated(d, "UpdateTerminalTitle", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+	registerTerminalGuarded(d, "UpdateTerminalTitle", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -472,11 +528,101 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerOwnerGated(d, "ListTerminals", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
-		tabIDs := r.GetTabIds()
+	registerOwnerGuarded(d, "ListTerminals", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
+		// Verdicts answer for the ids the caller NAMED, so the requested set is
+		// captured before the companion lookup widens it. An owner with no
+		// companion is an absence, not a failed hydration -- the client asks
+		// precisely to find out whether one exists -- so it gets no verdict.
+		requestedTabIDs := r.GetTabIds()
+		tabIDs := requestedTabIDs
+
+		// owner_agent_id is AGENT data on a terminal reply, so it takes
+		// agent:read on top of the terminal:read this handler is registered
+		// with. privateEventVisible applies the identical rule to the same
+		// datum on the event side -- a QuakePanelCommand needs both kinds --
+		// and the two gates would otherwise disagree: an app granted
+		// `worker:read terminal:read` could read the agent that owns each
+		// companion here, and probe by agent id through owner_agent_ids,
+		// while the event stream refuses it exactly that.
+		mayReadAgents := caller.Allows(leapmuxv1.Scope_SCOPE_AGENT_READ)
+
+		// An EMPTY owner id is dropped rather than passed through. Ordinary
+		// terminal rows store owner_agent_id = '' (the partial unique index
+		// covers only non-empty owners), so an unresolved id in this list
+		// would match every open terminal on the worker and the caller would
+		// read each one as the companion of an agent that does not exist.
+		var ownerAgentIDs []string
+		if mayReadAgents {
+			for _, ownerAgentID := range r.GetOwnerAgentIds() {
+				if ownerAgentID != "" {
+					ownerAgentIDs = append(ownerAgentIDs, ownerAgentID)
+				}
+			}
+		}
+		if len(tabIDs) == 0 && len(ownerAgentIDs) == 0 {
+			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
+			return
+		}
+
+		// Resolve companions to their terminal ids and fold them into the same
+		// id set the rest of this handler already walks. Widening the ids
+		// rather than building a second result list is what keeps companions on
+		// the live path: the manager pass below owns the in-memory ring, and a
+		// companion resolved straight from its DB row would hand the client a
+		// stale screen for a shell that is still running.
+		if len(ownerAgentIDs) > 0 {
+			ownerRows, ownerErr := svc.Queries.ListOpenTerminalsByOwners(ctx, ownerAgentIDs)
+			if ownerErr != nil {
+				slog.Error("failed to list companion terminals from DB", "owner_agent_ids", ownerAgentIDs, "error", ownerErr)
+				sendInternalError(sender, "failed to list terminals")
+				return
+			}
+			widened := slices.Clone(tabIDs)
+			known := make(map[string]struct{}, len(widened))
+			for _, tabID := range widened {
+				known[tabID] = struct{}{}
+			}
+			for _, row := range ownerRows {
+				if _, dup := known[row.ID]; dup {
+					continue
+				}
+				known[row.ID] = struct{}{}
+				widened = append(widened, row.ID)
+			}
+			tabIDs = widened
+		}
 		if len(tabIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
 			return
+		}
+
+		// The DB pass is the ONE source of every terminal's owner, and it runs
+		// first so both passes below can read from it. The manager holds the
+		// live ring but nothing about ownership, so an owner map built beside
+		// it needed a third loop afterwards to stamp the entries it had
+		// already produced -- three writers for one derived fact.
+		//
+		// A DB read failure has to fail the WHOLE call. Falling through to
+		// the verdict pass would leave `seen` holding only the ids the
+		// in-memory manager happens to hold, so every other requested id
+		// gets stamped ABSENT -- which the client reads as "no such record,
+		// stop asking" (retryableFrom drops ABSENT ids) and retires the tab
+		// from hydration for the life of the page. Surfacing the error
+		// instead rejects the client's promise and keeps its backoff
+		// running, matching ListAgents on the same failure.
+		dbTerminals, err := svc.Queries.ListTerminalsByIDs(ctx, tabIDs)
+		if err != nil {
+			slog.Error("failed to list terminals from DB", "tab_ids", tabIDs, "error", err)
+			sendInternalError(sender, "failed to list terminals")
+			return
+		}
+		ownerByTerminalID := make(map[string]string, len(dbTerminals))
+		if mayReadAgents {
+			for _, ts := range dbTerminals {
+				if ts.OwnerAgentID != "" {
+					ownerByTerminalID[ts.ID] = ts.OwnerAgentID
+				}
+			}
 		}
 
 		// Collect from the in-memory manager and DB-only rows, recording
@@ -499,6 +645,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
 				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+				OwnerAgentId:    ownerByTerminalID[e.ID],
 			}
 			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
@@ -509,20 +656,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
-		// A DB read failure has to fail the WHOLE call. Falling through to
-		// the verdict pass would leave `seen` holding only the ids the
-		// in-memory manager happens to hold, so every other requested id
-		// gets stamped ABSENT -- which the client reads as "no such record,
-		// stop asking" (retryableFrom drops ABSENT ids) and retires the tab
-		// from hydration for the life of the page. Surfacing the error
-		// instead rejects the client's promise and keeps its backoff
-		// running, matching ListAgents on the same failure.
-		dbTerminals, err := svc.Queries.ListTerminalsByIDs(ctx, tabIDs)
-		if err != nil {
-			slog.Error("failed to list terminals from DB", "tab_ids", tabIDs, "error", err)
-			sendInternalError(sender, "failed to list terminals")
-			return
-		}
 		for _, ts := range dbTerminals {
 			if seen[ts.ID] {
 				continue
@@ -548,11 +681,11 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
+				OwnerAgentId:    ownerByTerminalID[ts.ID],
 			}
 			terminals = append(terminals, ti)
 			gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
 		}
-
 		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
 		for i, gs := range gitStatuses {
 			if gs != nil {
@@ -562,7 +695,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 		sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{
 			Terminals: terminals,
-			Verdicts:  tabHydrationVerdicts(tabIDs, seen),
+			Verdicts:  tabHydrationVerdicts(requestedTabIDs, seen),
 		})
 	})
 
@@ -1150,6 +1283,140 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 				},
 			},
 		})
+		svc.closeCompanionOnShellExit(tid)
+	}
+}
+
+// closeCompanionOnShellExit ends a COMPANION terminal whose shell exited.
+//
+// A terminal TAB survives its shell: the row stays open, the exit notice sits in
+// the screen, and Enter respawns it. A companion has no such contract -- there
+// is no pane to leave behind, and the panel retracts -- so its exit IS its end.
+//
+// Without this the row would stay open with a dead PTY, and the unique index
+// over live companions would then refuse a new one: the next toggle would adopt
+// the corpse instead of starting a shell. It also stops the reconciler having to
+// reap a row nothing will ever use.
+//
+// On its own goroutine, because the caller is the terminal's own reader: the
+// shared teardown calls RemoveTerminal, which stops the terminal this handler is
+// running inside.
+//
+// The read is NARROW for the reason GetTerminalExitCode gives: GetTerminal
+// answers the same question and reads the 100KB screen blob, and this runs on
+// every terminal exit rather than on a companion's alone.
+func (svc *Service) closeCompanionOnShellExit(terminalID string) {
+	row, err := svc.Queries.GetTerminalOwnerAndClosed(bgCtx(), terminalID)
+	if err != nil {
+		// A failure here is NOT "this is not a companion". It leaves the row
+		// open with a dead PTY, which the unique index then reads as a live
+		// companion and which no later pass reclaims while the owner tab
+		// lives -- so it must be visible rather than silent. The worker boot
+		// sweep is the backstop that eventually closes it.
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("failed to read terminal owner on shell exit", "terminal_id", terminalID, "error", err)
+		}
+		return
+	}
+	if row.OwnerAgentID == "" || row.ClosedAt.Valid {
+		return
+	}
+	go svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
+}
+
+// requireCompanionOwner answers the caller when owner_agent_id does not give a
+// live ROOT agent, and reports whether the id is usable.
+func (svc *Service) requireCompanionOwner(sender channel.ResponseWriter, ownerAgentID string) bool {
+	owner, err := svc.Queries.GetAgentByID(bgCtx(), ownerAgentID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendNotFoundError(sender, "owner agent not found")
+		} else {
+			slog.Error("failed to read companion owner agent", "agent_id", ownerAgentID, "error", err)
+			sendInternalError(sender, "failed to read the owner agent")
+		}
+		return false
+	}
+	if owner.ClosedAt.Valid {
+		sendFailedPrecondition(sender, "the owner agent tab is closed")
+		return false
+	}
+	if owner.ParentAgentID.Valid {
+		sendFailedPrecondition(sender, "a subagent tab has no quake panel")
+		return false
+	}
+	return true
+}
+
+// companionShellIsLive answers whether a COMPANION row still has a shell that
+// this process hosts.
+//
+// A companion row is valid only while its PTY lives here, and three states
+// break that link with the row left open. The worker restarted and lost every
+// PTY. The shell exited and the close is still on its goroutine. The spawn
+// failed, which persists a startup error and never stamps closed_at. A row in
+// any of them is dead, and handing one back gives the user a panel that paints
+// nothing and swallows every keystroke: a companion refuses the Enter that
+// restarts a terminal TAB, so there is no way out but to close the agent tab.
+func (svc *Service) companionShellIsLive(terminalID string) bool {
+	if svc.Terminals.IsRunning(terminalID) {
+		return true
+	}
+	status, _, _, inFlight := svc.TerminalStartup.status(terminalID)
+	return inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED
+}
+
+// adoptExistingCompanion answers the caller with the agent's existing companion
+// when that companion still has a live shell, and reports whether it answered.
+//
+// Shared by OpenTerminal's pre-mint check and its lost-race retry, so the two
+// cannot answer with different fields.
+//
+// A row whose shell is gone is CLOSED here rather than handed back. The unique
+// partial index counts it as the agent's one live companion, so leaving it in
+// place refuses every replacement for the life of the agent tab.
+func (svc *Service) adoptExistingCompanion(sender channel.ResponseWriter, ownerAgentID string) bool {
+	if ownerAgentID == "" {
+		return false
+	}
+	existing, err := svc.Queries.GetOpenTerminalIDByOwner(bgCtx(), ownerAgentID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("failed to look up the existing companion terminal", "agent_id", ownerAgentID, "error", err)
+		}
+		return false
+	}
+	if !svc.companionShellIsLive(existing.ID) {
+		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", existing.ID)
+		return false
+	}
+	sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+		TerminalId: existing.ID,
+		Title:      existing.Title,
+	})
+	return true
+}
+
+// CloseOrphanedCompanionTerminals closes every open COMPANION row whose shell
+// this process does not host. The worker runs it once at boot.
+//
+// A companion is valid only while this process hosts its PTY, and a restart
+// breaks that link with the row still open. No other pass reclaims one: the
+// orphan reconciler measures a companion by its OWNER's tab key, so a live
+// owner agent keeps the dead row open for as long as its tab exists. The next
+// open would then adopt a terminal with no PTY.
+func (svc *Service) CloseOrphanedCompanionTerminals(ctx context.Context) {
+	ids, err := svc.Queries.ListOpenCompanionTerminalIDs(ctx)
+	if err != nil {
+		slog.Warn("failed to list companion terminals at startup", "error", err)
+		return
+	}
+	for _, terminalID := range ids {
+		if svc.companionShellIsLive(terminalID) {
+			continue
+		}
+		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
+		slog.Info("closed a quake terminal that did not survive the restart", "terminal_id", terminalID)
 	}
 }
 

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "user-settings.schema.json",
+  "title": "user-settings cross-language contract",
+  "description": "The proto key of every account setting, plus the constraint vocabulary for the settings whose value is a closed set or a numeric range. The hub validates against these and the browser parses against them, so a disagreement stores a value the other side then discards. The semantic rules -- min below max, the default inside the range or among the values, and a desktopSetting that exists in desktop.json -- are checked by the generator, which is the only place that can see both contracts at once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "settings"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "settings": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z][A-Za-z0-9]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["protoKey", "kind"],
+        "properties": {
+          "protoKey": {
+            "description": "The wire key. snake_case, because that is the spelling the proto and the store use.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "kind": { "enum": ["opaque", "enum", "int", "float", "bool", "desktopEnum"] }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "enum" } }, "required": ["kind"] },
+            "then": {
+              "required": ["default", "values"],
+              "properties": {
+                "default": { "type": "string", "minLength": 1 },
+                "values": {
+                  "type": "array",
+                  "minItems": 2,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "int" } }, "required": ["kind"] },
+            "then": {
+              "required": ["default", "min", "max"],
+              "properties": {
+                "default": { "type": "integer" },
+                "min": { "type": "integer" },
+                "max": { "type": "integer" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "float" } }, "required": ["kind"] },
+            "then": {
+              "required": ["default", "min", "max"],
+              "properties": {
+                "default": { "type": "number" },
+                "min": { "type": "number" },
+                "max": { "type": "number" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "bool" } }, "required": ["kind"] },
+            "then": {
+              "required": ["default"],
+              "properties": { "default": { "type": "boolean" } }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "desktopEnum" } }, "required": ["kind"] },
+            "then": {
+              "required": ["default", "desktopSetting"],
+              "properties": {
+                "default": { "type": "string", "minLength": 1 },
+                "desktopSetting": {
+                  "description": "The windowBehavior block in desktop.json that holds this setting's tokens.",
+                  "type": "string",
+                  "pattern": "^[a-z][A-Za-z0-9]*$"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

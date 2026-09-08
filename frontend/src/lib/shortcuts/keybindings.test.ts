@@ -366,6 +366,52 @@ describe('activateBindings (slots)', () => {
   })
 })
 
+// Whether a keypress reaches the page is the whole mechanism the chat chords
+// rest on: `$mod+Enter` must fall through to the editor's own Cmd+Enter
+// whenever the composer holds something to send, and it does so by the steer
+// binding's `when` evaluating false. Nothing else asserted `defaultPrevented`.
+describe('activateBindings (fall-through)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+    resetContext()
+  })
+
+  it('lets a keydown reach the page when every binding for the key is inactive', () => {
+    const handler = vi.fn()
+    const downstream = vi.fn()
+    registerCommand({ id: 'test.steer', title: 'Steer', handler })
+    setContext('ctx', false)
+    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    document.addEventListener('keydown', downstream)
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    document.body.dispatchEvent(event)
+    document.removeEventListener('keydown', downstream)
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+    expect(downstream).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops a keydown at the window once a binding claims it', () => {
+    const handler = vi.fn()
+    const downstream = vi.fn()
+    registerCommand({ id: 'test.steer', title: 'Steer', handler })
+    setContext('ctx', true)
+    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    document.addEventListener('keydown', downstream)
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    document.body.dispatchEvent(event)
+    document.removeEventListener('keydown', downstream)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
+    expect(downstream, 'the capture-phase listener stops propagation').not.toHaveBeenCalled()
+  })
+})
+
 describe('activateBindings (events from form fields)', () => {
   afterEach(() => {
     unbindAll()
@@ -418,6 +464,64 @@ describe('activateBindings (events from form fields)', () => {
   })
 })
 
+// One physical key, several `event.code` values. The key under Esc reports
+// `Backquote` in Chrome and Firefox on every layout, and `IntlBackslash` in
+// WebKit on a macOS ISO keyboard -- so a binding that accepted only the first
+// was dead in the desktop app on every European Mac.
+describe('activateBindings (a physical key with several codes)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+  })
+
+  function pressGrave(code: string, key: string) {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, code, ctrlKey: true }))
+  }
+
+  it('fires for the code Chrome and Firefox report', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.grave', title: 'Test', handler })
+    activateBindings([{ key: '$mod+grave', command: 'test.grave' }], 'workspace')
+
+    pressGrave('Backquote', '`')
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires for the code WebKit reports on a macOS ISO keyboard', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.graveIso', title: 'Test', handler })
+    activateBindings([{ key: '$mod+grave', command: 'test.graveIso' }], 'workspace')
+
+    pressGrave('IntlBackslash', '§')
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  // The German `^` is a DEAD key: `event.key` is `Dead`, and no character
+  // reaches the page. Only the code can carry the binding.
+  it('fires when the key produces no character at all', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.graveDead', title: 'Test', handler })
+    activateBindings([{ key: '$mod+grave', command: 'test.graveDead' }], 'workspace')
+
+    pressGrave('Backquote', 'Dead')
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires for no other key', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.graveOther', title: 'Test', handler })
+    activateBindings([{ key: '$mod+grave', command: 'test.graveOther' }], 'workspace')
+
+    pressGrave('Backslash', '\\')
+    pressGrave('KeyG', 'g')
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+})
+
 describe('activateBindings (IME composition)', () => {
   afterEach(() => {
     unbindAll()
@@ -458,5 +562,31 @@ describe('activateBindings (IME composition)', () => {
     }))
 
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  // An empty default key declares a `when` clause for a command that has NO
+  // default chord, and it must not become a binding of its own.
+  //
+  // Without the entry, `mergeKeybindings` falls to its "not in defaults" tail
+  // and gives the override `when: undefined`, which resolves everywhere -- and
+  // `activateBindings` calls preventDefault for any binding that resolves, so
+  // the user's chosen chord is swallowed in the terminal and in every other
+  // surface while its handler finds nothing to do.
+  it('emits no binding for a default with an empty key', () => {
+    const merged = mergeKeybindings(
+      [{ key: '', command: 'chat.sendMessage', when: 'chatInputFocused' }],
+      [],
+    )
+    expect(merged).toEqual([])
+  })
+
+  it('hands a rebinding the clause the keyless default declares', () => {
+    const merged = mergeKeybindings(
+      [{ key: '', command: 'chat.sendMessage', when: 'chatInputFocused' }],
+      [{ key: '$mod+k', command: 'chat.sendMessage' }],
+    )
+    expect(merged).toEqual([
+      { key: '$mod+k', command: 'chat.sendMessage', when: 'chatInputFocused', args: undefined },
+    ])
   })
 })

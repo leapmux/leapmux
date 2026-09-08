@@ -65,6 +65,8 @@ type goldenField struct {
 	EnumValues []goldenOption `json:"enumValues,omitempty"`
 	Min        *int64         `json:"min,omitempty"`
 	Max        *int64         `json:"max,omitempty"`
+	MinF       *float64       `json:"minF,omitempty"`
+	MaxF       *float64       `json:"maxF,omitempty"`
 	Unit       string         `json:"unit,omitempty"`
 	CustomID   string         `json:"customId,omitempty"`
 }
@@ -91,6 +93,8 @@ func toGoldenField(f settings.Field) goldenField {
 		Kind:     f.Kind.String(),
 		Min:      f.Min,
 		Max:      f.Max,
+		MinF:     f.MinF,
+		MaxF:     f.MaxF,
 		Unit:     f.Unit,
 		CustomID: f.CustomID,
 	}
@@ -187,9 +191,6 @@ var omittedByPolicy = map[string]string{
 // record the member in the golden struct and delete the entry here — NOT
 // to widen this table.
 var omittedWhileUnused = map[string]string{
-	"Field.MinF": "no account key declares a float bound. The one numeric account field, " +
-		"turn_end_sound_volume, is an integer percentage",
-	"Field.MaxF": "no account key declares a float bound, for the reason Field.MinF states",
 	"Field.Secret": "the account scope stores ONE plaintext JSON blob in users.prefs, so registerDescriptor " +
 		"panics on a key that declares secret fields. A Secret flag here is a defect, not a fact to record",
 	"Field.Placeholder": "no account key declares a free-text string field, which is the only kind a " +

@@ -149,12 +149,23 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 }
 
 // TerminalSpawning satisfies service.ControlIPCFactory.
+//
+// A COMPANION terminal advertises its OWNER AGENT as the ambient tab, not
+// itself. LEAPMUX_CONTROL_TAB_ID exists to be resolved through the hub's
+// LocateTab, and a companion has no CRDT tab for the hub to find -- so its own
+// id resolves to `not_found` and every `leapmux control` command typed into the
+// quake panel fails before it reaches its own body. The owner agent tab is the
+// tab this shell belongs to, and it is the one the user means.
 func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, func(), error) {
-	return f.spawn(SocketKindTerminal, "terminal_id", spawnCommon{
+	tabID, tabType, spawnKey := info.TabID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "terminal_id"
+	if info.OwnerAgentID != "" {
+		tabID, tabType, spawnKey = info.OwnerAgentID, leapmuxv1.TabType_TAB_TYPE_AGENT, "owner_agent_id"
+	}
+	return f.spawn(SocketKindTerminal, spawnKey, spawnCommon{
 		UserID:     info.UserID,
 		WorkerID:   info.WorkerID,
-		TabID:      info.TabID,
-		TabType:    leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		TabID:      tabID,
+		TabType:    tabType,
 		WorkingDir: info.WorkingDir,
 	})
 }

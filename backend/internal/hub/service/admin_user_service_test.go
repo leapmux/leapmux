@@ -1347,7 +1347,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 	}
 }
 
-// TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor covers the other
+// TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor covers the other
 // half of the gate on this service: the verbs that demand a recently proven
 // factor from the ACTING CREDENTIAL, and admit an elevated command-line
 // credential rather than refusing it.
@@ -1359,7 +1359,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 // over any account by the longer route while its sibling ResetPassword was
 // restricted. The classification record in admin_procedures_internal_test.go
 // states the decision; this observes the handler.
-func TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor(t *testing.T) {
+func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) {
 	ctx := context.Background()
 
 	// The verbs that take requireElevatedActor: an elevated bearer passes.

@@ -43,6 +43,35 @@ describe('buildCommandRows', () => {
     expect(prev?.title).toBe('app.previousTab')
     expect(prev?.keys).toContain('$mod+BracketLeft')
   })
+
+  /**
+   * A row carries its default `when`, and an override the user records inherits
+   * it. That matters most for the steer chord: rebound with no clause, `$mod+
+   * Enter` would resolve everywhere -- and because `activateBindings` calls
+   * preventDefault on a command that resolves, it would swallow the composer's
+   * own send rather than fall through to it.
+   */
+  it('carries the steer binding\'s when-clause onto its row', () => {
+    const rows = buildCommandRows(WORKSPACE_KEYBINDINGS, [], [
+      { id: 'chat.steerQueuedInput', title: 'Steer Queued Input', category: 'Chat' },
+    ])
+    const steer = rows.find(r => r.command === 'chat.steerQueuedInput')
+    expect(steer?.keys).toContain('$mod+Enter')
+    expect(steer?.when).toBe('activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen')
+  })
+
+  // `chat.sendMessage` gave up $mod+j and kept no default chord, but it stays
+  // registered and rebindable -- so Preferences must still list it, with its
+  // real title and an empty binding for the user to fill in.
+  it('lists a registered command that has no default binding at all', () => {
+    const rows = buildCommandRows(WORKSPACE_KEYBINDINGS, [], [
+      { id: 'chat.sendMessage', title: 'Send Message', category: 'Chat' },
+    ])
+    const send = rows.find(r => r.command === 'chat.sendMessage')
+    expect(send?.title).toBe('Send Message')
+    expect(send?.keys).toEqual([])
+    expect(send?.customized).toBe(false)
+  })
 })
 
 describe('chordFromEvent', () => {
@@ -52,6 +81,24 @@ describe('chordFromEvent', () => {
     expect(chordFromEvent(new KeyboardEvent('keydown', { key: 'F9' }))).toBe('F9')
     // Bare modifier presses are still composing, not a chord.
     expect(chordFromEvent(new KeyboardEvent('keydown', { key: 'Meta' }))).toBeNull()
+  })
+
+  // One physical key, several codes. A chord captured in the browser must fire
+  // in the desktop app on the same machine, and the two report the key under
+  // Esc differently on a macOS ISO keyboard -- so the capture records the
+  // INTENT (`grave`) rather than whichever code arrived.
+  it('records the intent for a key whose code differs by engine and layout', () => {
+    const mac = getPlatform() === 'mac'
+    const mod = mac ? 'Control' : '$mod'
+    const press = (key: string, code: string) =>
+      chordFromEvent(new KeyboardEvent('keydown', { key, code, ctrlKey: true }))
+
+    expect(press('`', 'Backquote')).toBe(`${mod}+grave`)
+    expect(press('§', 'IntlBackslash')).toBe(`${mod}+grave`)
+    // A dead key produces no character at all, and still records the same.
+    expect(press('Dead', 'Backquote')).toBe(`${mod}+grave`)
+    // Every other punctuation key keeps its own code.
+    expect(press(',', 'Comma')).toBe(`${mod}+Comma`)
   })
 
   it('uses $mod for the platform modifier and event.code for punctuation', () => {

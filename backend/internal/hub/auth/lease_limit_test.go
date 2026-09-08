@@ -296,7 +296,7 @@ func TestLeaseOutcomeLabelsAreValidCloseReasons(t *testing.T) {
 // The refusal's log line is the operator's only view of how close a user is to
 // the cap, so the count it reports has to be the one that actually gated the
 // decision -- not a second observation taken afterwards.
-func TestRegisterAuthenticatedLeaseLogsTheCountThatGatedTheRefusal(t *testing.T) {
+func TestRegisterAuthenticatedLeaseLogsTheCountThatGuardedTheRefusal(t *testing.T) {
 	buf := testutil.CaptureDefaultLogger(t)
 
 	c := &AuthContextRegistry{state: &authState{}}

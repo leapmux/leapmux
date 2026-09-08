@@ -86,5 +86,39 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+Shift+e', command: 'app.openInExternalApp', when: '!dialogOpen && isDesktop' },
 
   // Chat input
-  { key: '$mod+j', command: 'chat.sendMessage', when: 'chatInputFocused' },
+  //
+  // Every conjunct earns its place. `activeTabType` scopes the action to an
+  // agent tab without demanding that focus be in the composer -- the user may be
+  // reading the transcript. `chatInputEmpty` is what LEAVES the chord to
+  // ProseMirror whenever the composer holds something: `activateBindings` calls
+  // preventDefault only for a binding that resolves, so a false `when` is the
+  // one thing that lets Send keep working. `!terminalFocused` matters because a
+  // quake terminal lives INSIDE an agent tab, and without it the chord typed
+  // into that shell would steer instead of reaching the PTY.
+  { key: '$mod+Enter', command: 'chat.steerQueuedInput', when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen' },
+
+  // `chat.sendMessage` gives up its chord, because Enter and Cmd+Enter in the
+  // composer already send. It keeps its ENTRY, with an empty key, and that
+  // entry is load-bearing: `mergeKeybindings` gives a user override
+  // `when: o.when ?? def.when`, so a command absent from this table hands every
+  // rebinding of it a clause of `undefined`. The chord would then resolve
+  // EVERYWHERE, and `activateBindings` calls preventDefault for any binding
+  // that resolves -- so a user who bound Send Message to $mod+k would find
+  // $mod+k swallowed in the terminal and in every other surface, running a
+  // handler that finds no chat panel and does nothing. An empty key emits no
+  // binding of its own; see the branch in `mergeKeybindings`.
+  { key: '', command: 'chat.sendMessage', when: 'chatInputFocused' },
+
+  // Quake terminal. `Ctrl` and not `$mod`, on every platform, and that is the
+  // one place in this table where the difference is deliberate: macOS reserves
+  // Command+` for "switch between the windows of the app you're using", so the
+  // chord never reaches the page there. VS Code binds its own terminal to
+  // Ctrl+` for the same reason. On Windows and Linux `$mod` IS Ctrl, so this
+  // is the chord a quake console has everywhere.
+  //
+  // `grave` is the key under Esc, spelled by INTENT rather than by character:
+  // that keycap is `^` on a German layout, `²` on French and `º` on Spanish,
+  // and the browsers disagree about its `event.code` on a macOS ISO keyboard.
+  // See PHYSICAL_KEY_ALIASES in `./keybindings` for what it expands to.
+  { key: 'Control+grave', command: 'terminal.toggleQuake', when: 'activeTabType == "agent" && !dialogOpen' },
 ]

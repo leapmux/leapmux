@@ -89,6 +89,17 @@ interface MobileLayoutProps {
   tileContent: JSX.Element
   editorPanel: JSX.Element | false
   /**
+   * See DesktopLayoutProps.quakePanel.
+   *
+   * Mounted here although nothing on a touch device OPENS a panel: the three
+   * routes into the store are the keyboard commands and the Control CLI relay,
+   * and a phone has no chord. The mount serves the two cases that DO reach a
+   * small viewport -- a tablet with an external keyboard, and a panel another
+   * device opened through `leapmux control agent quake open`. The panel carries
+   * its own hide control, so a touch user can always dismiss one.
+   */
+  quakePanel?: JSX.Element
+  /**
    * Act on a horizontal swipe across the content region. Wired to the overlay
    * owner's `applySwipe`; see `nextOverlayForSwipe` for what each swipe means.
    */
@@ -132,6 +143,7 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
           {props.tileContent}
         </div>
         {props.editorPanel}
+        {props.quakePanel}
 
         {/* Both panels stay mounted and slide by transform, so an E2E spec
             cannot ask whether they are "visible" — a closed drawer is, off to

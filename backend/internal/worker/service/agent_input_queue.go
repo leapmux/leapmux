@@ -347,7 +347,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 }
 
 func registerAgentInputQueueHandlers(d registrar, svc *Service) {
-	registerAgentGatedByID(d, "EnqueueAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "EnqueueAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Text: r.GetText(),
@@ -360,7 +360,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "ListAgentInputQueue", leapmuxv1.Scope_SCOPE_AGENT_READ, dispatchPlain,
+	registerAgentGuardedByID(d, "ListAgentInputQueue", leapmuxv1.Scope_SCOPE_AGENT_READ, dispatchPlain,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentInputQueueRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Snapshot(ctx, r.GetAgentId())
 			if sendQueueError(sender, err) {
@@ -369,7 +369,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "BeginQueuedAgentInputEdit", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "BeginQueuedAgentInputEdit", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.BeginQueuedAgentInputEditRequest, sender channel.ResponseWriter) {
 			snapshot, fullText, attachments, err := svc.InputQueue.BeginEdit(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetTakeover())
 			if sendQueueError(sender, err) {
@@ -380,7 +380,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			})
 		})
 
-	registerAgentGatedByID(d, "UpdateQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "UpdateQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Update(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId(), r.GetExpectedVersion(), r.GetText(), queueAttachments(r.GetAttachments()))
 			if sendQueueError(sender, err) {
@@ -389,7 +389,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.UpdateQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "CancelQueuedAgentInputEdit", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "CancelQueuedAgentInputEdit", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.CancelQueuedAgentInputEditRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.CancelEdit(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetClientId())
 			if sendQueueError(sender, err) {
@@ -398,7 +398,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.CancelQueuedAgentInputEditResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "DeleteQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "DeleteQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.DeleteQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Delete(bgCtx(), r.GetAgentId(), r.GetInputId())
 			if sendQueueError(sender, err) {
@@ -407,7 +407,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.DeleteQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "MoveQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "MoveQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.MoveQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Move(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetBeforeInputId())
 			if sendQueueError(sender, err) {
@@ -416,7 +416,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.MoveQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "SetAgentInputQueuePaused", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "SetAgentInputQueuePaused", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SetAgentInputQueuePausedRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.SetPaused(bgCtx(), r.GetAgentId(), r.GetPaused())
 			if sendQueueError(sender, err) {
@@ -425,7 +425,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.SetAgentInputQueuePausedResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "SteerQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "SteerQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SteerQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Steer(bgCtx(), r.GetAgentId(), r.GetInputId())
 			if sendQueueError(sender, err) {
@@ -434,7 +434,7 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
-	registerAgentGatedByID(d, "RetryQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "RetryQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Retry(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetConfirmDeliveryUncertain())
 			if sendQueueError(sender, err) {

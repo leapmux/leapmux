@@ -111,6 +111,7 @@ var scopeRequirementRationale = map[string]string{
 	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:       "dispatched by method name inside a Noise channel, not a Hub procedure",
 	leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure:            "dispatched by method name inside a Noise channel, not a Hub procedure",
 	leapmuxv1connect.WorkerPrivateServiceRevokeTabPayloadProcedure:         "dispatched by method name inside a Noise channel, not a Hub procedure",
+	leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure:            "dispatched by method name inside a Noise channel, not a Hub procedure",
 }
 
 // TestNonScopeClassificationsAreRationaleClassified is the bidirectional

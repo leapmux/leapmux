@@ -575,30 +575,30 @@ func checkRegistryMethodKinds(t *testing.T, root string) map[string]bool {
 		kind, classified := registryMethodKinds[name]
 		if !classified {
 			assert.Fail(t, "unclassified worker registry method",
-				"%s: %s reaches the live-worker registry but is missing from registryMethodKinds -- classify it, and if it is registryUngatedByID classify its call sites in workerReachSites too",
+				"%s: %s reaches the live-worker registry but is missing from registryMethodKinds -- classify it, and if it is registryUnguardedByID classify its call sites in workerReachSites too",
 				d.where, name)
 			continue
 		}
 		// The kind has to be a claim the source supports, or picking one
 		// is a comment with a type.
 		switch kind {
-		case registryUngatedByID:
+		case registryUnguardedByID:
 			assert.False(t, m.callsAuthorizer,
-				"%s: %s is classified registryUngatedByID but runs the ReachAuthorizer -- it is registryGated", d.where, name)
+				"%s: %s is classified registryUnguardedByID but runs the ReachAuthorizer -- it is registryGuarded", d.where, name)
 			assert.True(t, m.takesWorkerID,
-				"%s: %s is classified registryUngatedByID but takes no worker id", d.where, name)
+				"%s: %s is classified registryUnguardedByID but takes no worker id", d.where, name)
 			assert.False(t, m.takesConn,
-				"%s: %s is classified registryUngatedByID but takes a *Conn, so a bare id cannot reach it -- it is registryConnScoped", d.where, name)
+				"%s: %s is classified registryUnguardedByID but takes a *Conn, so a bare id cannot reach it -- it is registryConnScoped", d.where, name)
 			ungated[name] = true
-		case registryGated:
+		case registryGuarded:
 			assert.True(t, m.callsAuthorizer,
-				"%s: %s is classified registryGated but never runs the ReachAuthorizer -- it is registryUngatedByID", d.where, name)
+				"%s: %s is classified registryGuarded but never runs the ReachAuthorizer -- it is registryUnguardedByID", d.where, name)
 		case registryConnScoped:
 			assert.True(t, m.takesConn,
-				"%s: %s is classified registryConnScoped but takes no *Conn, so a bare worker id reaches it -- it is registryUngatedByID", d.where, name)
+				"%s: %s is classified registryConnScoped but takes no *Conn, so a bare worker id reaches it -- it is registryUnguardedByID", d.where, name)
 		case registryBroadcast:
 			assert.False(t, m.takesWorkerID,
-				"%s: %s is classified registryBroadcast but takes a worker id, so it discloses that worker's state -- it is registryUngatedByID", d.where, name)
+				"%s: %s is classified registryBroadcast but takes a worker id, so it discloses that worker's state -- it is registryUnguardedByID", d.where, name)
 		}
 	}
 

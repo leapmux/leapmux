@@ -24,7 +24,7 @@ SELECT id, workspace_archived FROM agents WHERE id = ?;
 -- stored title, and the response has to report THAT title rather than the
 -- empty string it refused to store. GetAgentByID would answer the same
 -- question with a SELECT * that deserializes the options / option_groups JSON
--- blobs -- the cost registerAgentGatedByID exists to avoid on this handler.
+-- blobs -- the cost registerAgentGuardedByID exists to avoid on this handler.
 -- name: GetAgentTitle :one
 SELECT title FROM agents WHERE id = ?;
 

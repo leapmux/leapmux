@@ -9,6 +9,12 @@ import {
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
 import { SUPPORTED_EXTERNAL_APP_IDS } from '~/generated/contracts/external-apps'
+import {
+  SETTING_KEY_QUAKE_ANIMATION_MS,
+  SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
+  SETTING_KEY_QUAKE_ORIENTATION,
+  SETTING_KEY_QUAKE_SIZE_PERCENT,
+} from '~/generated/contracts/user-settings'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
@@ -443,6 +449,50 @@ export const browserSettings: BrowserSettingDecl[] = [
       set: v => prefs.setTerminalRenderer(v as 'auto' | 'webgl' | 'canvas'),
     }),
     resetBrowser: prefs => prefs.setTerminalRenderer(null),
+  },
+  // The quake rows declare no `category` and no `control`: the hub's descriptor
+  // supplies both, and dualScalar's clearOverride supplies the reset. Only what
+  // the wire cannot carry lives here.
+  {
+    id: 'terminal.quakeOrientation',
+    protoKey: SETTING_KEY_QUAKE_ORIENTATION,
+    label: 'Quake terminal position',
+    help: 'Edge of the centre area the quake terminal slides in from.',
+    keywords: ['quake', 'drop-down', 'dropdown', 'overlay', 'panel', 'hotkey'],
+    scope: 'dual',
+    optionLabels: { top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeOrientation),
+  },
+  {
+    id: 'terminal.quakeSizePercent',
+    protoKey: SETTING_KEY_QUAKE_SIZE_PERCENT,
+    label: 'Quake terminal size',
+    help: 'Share of the centre area the quake terminal covers.',
+    keywords: ['quake', 'height', 'width', 'overlay', 'panel'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeSizePercent),
+  },
+  {
+    id: 'terminal.quakeAnimationMs',
+    protoKey: SETTING_KEY_QUAKE_ANIMATION_MS,
+    label: 'Quake terminal animation',
+    help: 'How long the quake terminal takes to slide in and out. The system reduced-motion setting overrides it.',
+    keywords: ['quake', 'slide', 'motion', 'duration', 'speed'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeAnimationMs),
+  },
+  {
+    id: 'terminal.quakeBackgroundOpacity',
+    protoKey: SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
+    label: 'Quake terminal background opacity',
+    help: 'Opacity of the quake terminal background. The text stays fully opaque.',
+    keywords: ['quake', 'transparency', 'translucent', 'alpha', 'overlay'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.quakeBackgroundOpacity),
   },
 
   // --- Desktop ---

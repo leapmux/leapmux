@@ -42,7 +42,7 @@ The user categories, in navigation order:
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
-| **Terminal** | Terminal renderer. |
+| **Terminal** | Terminal renderer, and the Quake terminal's position, size, animation and background opacity. |
 | **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
 | **Files & Applications** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
@@ -163,6 +163,12 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 | Setting | Default | What it does |
 |---|---|---|
 | **Terminal renderer** | Auto | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
+| **Quake terminal position** | Top | Edge of the centre area the Quake terminal slides in from: **Top**, **Bottom**, **Left** or **Right**. A dual-tier setting. |
+| **Quake terminal size** | 65% | Share of the centre area the Quake terminal covers — height for top and bottom, width for left and right. A dual-tier setting. |
+| **Quake terminal animation** | 300 ms | How long the Quake terminal takes to slide in and out. The system reduced-motion setting overrides it. A dual-tier setting. |
+| **Quake terminal background opacity** | 0.9 | Opacity of the Quake terminal's background. The terminal text stays fully opaque. A dual-tier setting. |
+
+See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) for what the panel is and how to open it.
 
 ## Desktop
 
@@ -330,6 +336,10 @@ Device override (if set)  →  Account default  →  built-in default
 | Diff view | Unified |
 | Turn-end sound | Ding dong |
 | Turn-end volume | 100% |
+| Quake terminal position | Top |
+| Quake terminal size | 65% |
+| Quake terminal animation | 300 ms |
+| Quake terminal background opacity | 0.9 |
 | Debug logging | Off |
 | Tray / menu bar icon | Off |
 | When you close the window | Hide to the tray |

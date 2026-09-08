@@ -43,6 +43,15 @@ service WorkerPrivateService {
   // and the worker drives the same closeTabCommon path so worktree
   // removal stays consistent across tab types.
   rpc RevokeTabPayload(RevokeTabPayloadRequest) returns (RevokeTabPayloadResponse);
+
+  // SetQuakePanel asks every one of the caller's frontends to show or hide the
+  // quake panel of one agent tab. It stores nothing: the panel's open state is
+  // per-client, like which tab is active in a tile, and this RPC is a remote
+  // keystroke rather than a write. Emits QuakePanelCommand.
+  //
+  // The Control CLI is the only caller. A frontend toggles its own panel
+  // locally and never round-trips, so there is no echo to suppress.
+  rpc SetQuakePanel(SetQuakePanelRequest) returns (SetQuakePanelResponse);
 }
 
 // WatchWorkerPrivateEventsRequest is deliberately empty: the worker the
@@ -55,7 +64,33 @@ message WorkerPrivateEvent {
     TabRenamed           tab_renamed            = 1;
     TabPayloadRegistered tab_payload_registered = 2;
     TabPayloadRevoked    tab_payload_revoked    = 3;
+    QuakePanelCommand    quake_panel_command    = 4;
   }
+}
+
+// What a QuakePanelCommand asks the frontends to do.
+enum QuakePanelAction {
+  QUAKE_PANEL_ACTION_UNSPECIFIED = 0;
+  QUAKE_PANEL_ACTION_OPEN = 1;
+  QUAKE_PANEL_ACTION_CLOSE = 2;
+  QUAKE_PANEL_ACTION_TOGGLE = 3;
+}
+
+// QuakePanelCommand is a TRANSIENT COMMAND, not a fact, and it is the only case
+// of WorkerPrivateEvent that is. The other three describe state the worker
+// holds, so the bootstrap reply replays them; this one describes an instant.
+// It must therefore stay OUT of the subscribe-time replay -- a replayed command
+// would reopen a panel on every reconnect, and the panel's open state is
+// client-local state that no reconnect should overwrite.
+//
+// A TOGGLE reaching two frontends in different states leaves them in different
+// states. That is correct rather than unfortunate: the open state is per-client
+// by design, exactly as the active tab in a tile is.
+message QuakePanelCommand {
+  // The agent tab whose panel this is about. A quake terminal belongs to one
+  // agent tab, so the agent id is the whole address.
+  string agent_id = 1;
+  QuakePanelAction action = 2;
 }
 
 message TabRenamed {
@@ -171,3 +206,10 @@ message RevokeTabPayloadRequest {
 message RevokeTabPayloadResponse {
   CloseTabResult result = 1;
 }
+
+message SetQuakePanelRequest {
+  string agent_id = 1;
+  QuakePanelAction action = 2;
+}
+
+message SetQuakePanelResponse {}

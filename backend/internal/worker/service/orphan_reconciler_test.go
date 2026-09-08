@@ -341,6 +341,65 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 	assert.Empty(t, teardown.agents, "live agent must NOT receive a stop signal")
 }
 
+// A COMPANION terminal -- the shell behind an agent tab's quake panel -- has no
+// CRDT tab, so the hub can never list it. Keyed on its own id it would look
+// absent on every single pass and be reaped the moment the grace expired,
+// which kills a live shell that the user types in. Its liveness is its OWNER's.
+//
+// This is the regression test for that: it is the whole reason the agent->
+// terminal link lives on the worker rather than in the browser.
+func TestOrphanReconciler_CompanionTerminal_OwnerPresentOnHub_Survives(t *testing.T) {
+	t.Parallel()
+
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "companion", Screen: []byte{}, OwnerAgentID: "live-agent",
+	}))
+	// The hub lists the OWNER and knows nothing of the companion, which is the
+	// steady state for every quake panel the user ever opened.
+	setFake("user-1", []*leapmuxv1.WorkerTabState{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
+	}, nil)
+
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
+
+	term, err := q.GetTerminal(ctx, "companion")
+	require.NoError(t, err)
+	assert.False(t, term.ClosedAt.Valid, "a companion whose owner is live must survive")
+	assert.Empty(t, teardown.terminals, "a live companion must NOT be handed to the teardown")
+}
+
+// The opposite case: an owner the hub no longer lists takes its companion
+// with it.
+func TestOrphanReconciler_CompanionTerminal_OwnerMissingOnHub_Closed(t *testing.T) {
+	t.Parallel()
+
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "ghost-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "companion", Screen: []byte{}, OwnerAgentID: "ghost-agent",
+	}))
+	setFake("user-1", nil, nil)
+
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
+
+	term, err := q.GetTerminal(ctx, "companion")
+	require.NoError(t, err)
+	assert.True(t, term.ClosedAt.Valid, "a companion whose owner is gone must be closed")
+	// The close targets the TERMINAL id; only the liveness question was asked
+	// about the agent.
+	assert.Contains(t, teardown.terminals, "companion")
+}
+
 func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 	t.Parallel()
 
