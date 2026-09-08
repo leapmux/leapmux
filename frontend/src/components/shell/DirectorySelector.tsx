@@ -3,6 +3,7 @@ import type { DirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
+import House from 'lucide-solid/icons/house'
 import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { treeContainer, treeContainerFill } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
@@ -116,6 +117,23 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
     void drives.refresh()
   }
 
+  /**
+   * Select the home directory and open it.
+   *
+   * Two steps, in this order. The selection alone only reveals the directory,
+   * because the tree opens the ancestors of its reveal target and stops there.
+   * And the selection can re-root the tree -- a home directory on another
+   * Windows drive does exactly that -- which replaces the expansion state, so
+   * an expand written first would not survive.
+   */
+  const goHome = () => {
+    const home = homeDir()
+    if (!home)
+      return
+    props.state.setWorkingDir(home)
+    props.tree.expandTreePath(home)
+  }
+
   createEffect(() => {
     const unregister = registerDialogFileTreeOps({
       refresh: refreshAll,
@@ -138,6 +156,15 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
             state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}
             onClick={() => setShowHiddenFiles(prev => !prev)}
             data-testid="directory-selector-show-hidden-toggle"
+          />
+          <IconButton
+            icon={House}
+            iconSize="sm"
+            size="sm"
+            title="Go to home directory"
+            state={homeDir() ? IconButtonState.Enabled : IconButtonState.Disabled}
+            onClick={goHome}
+            data-testid="directory-selector-home"
           />
           <RefreshButton
             onClick={refreshAll}

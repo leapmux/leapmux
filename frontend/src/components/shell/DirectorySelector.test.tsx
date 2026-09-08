@@ -65,6 +65,7 @@ afterEach(() => {
 
 function makeState() {
   const refreshTree = vi.fn()
+  const expandTreePath = vi.fn()
   return {
     state: {
       workerId: () => 'worker-1',
@@ -79,8 +80,10 @@ function makeState() {
       treeKey: () => 0,
       setTreeRef: vi.fn(),
       refreshTree,
+      expandTreePath,
     },
     refreshTree,
+    expandTreePath,
   }
 }
 
@@ -91,13 +94,13 @@ function makeState() {
  * it to watch the tree re-root. Omit it to keep `makeState`'s own `/repo`.
  */
 function renderSelector(workingDir?: string | (() => string)) {
-  const { state, tree, refreshTree } = makeState()
+  const { state, tree, refreshTree, expandTreePath } = makeState()
   if (workingDir !== undefined)
     state.workingDir = typeof workingDir === 'function' ? workingDir : () => workingDir
   const view = render(withPreferences(() => (
     <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
   )))
-  return { ...view, state, tree, refreshTree }
+  return { ...view, state, tree, refreshTree, expandTreePath }
 }
 
 describe('directorySelector', () => {
@@ -333,5 +336,63 @@ describe('directorySelector drive menu', () => {
 
     expect(refreshTree).toHaveBeenCalledOnce()
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('directorySelector home button', () => {
+  it('selects the home directory and opens it', () => {
+    const { state, expandTreePath } = renderSelector()
+
+    fireEvent.click(screen.getByTestId('directory-selector-home'))
+
+    expect(state.setWorkingDir).toHaveBeenCalledWith('/home/alice')
+    expect(expandTreePath).toHaveBeenCalledWith('/home/alice')
+  })
+
+  // The selection must land FIRST. It can re-root the tree, and a new root
+  // replaces the whole expansion state, so the reverse order loses the
+  // expansion this button exists to produce.
+  it('selects before it expands', () => {
+    const calls: string[] = []
+    const { state, expandTreePath } = renderSelector()
+    vi.mocked(state.setWorkingDir).mockImplementation(() => {
+      calls.push('select')
+    })
+    expandTreePath.mockImplementation(() => {
+      calls.push('expand')
+    })
+
+    fireEvent.click(screen.getByTestId('directory-selector-home'))
+
+    expect(calls).toEqual(['select', 'expand'])
+  })
+
+  // A worker that has not reported yet has no home directory to go to, and
+  // selecting '' would clear the working directory instead.
+  it('is disabled, and does nothing, while the home directory is unknown', () => {
+    workerHome.mockReturnValue('')
+    const { state, expandTreePath } = renderSelector()
+
+    const button = screen.getByTestId('directory-selector-home')
+    expect(button).toBeDisabled()
+
+    fireEvent.click(button)
+
+    expect(state.setWorkingDir).not.toHaveBeenCalled()
+    expect(expandTreePath).not.toHaveBeenCalled()
+  })
+
+  it('sits between the hidden-files toggle and the refresh button', () => {
+    renderSelector()
+
+    const ids = screen.getAllByRole('button')
+      .map(b => b.getAttribute('data-testid'))
+      .filter((id): id is string => id !== null && id.startsWith('directory-selector-'))
+
+    expect(ids).toEqual([
+      'directory-selector-show-hidden-toggle',
+      'directory-selector-home',
+      'directory-selector-refresh',
+    ])
   })
 })

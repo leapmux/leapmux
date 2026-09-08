@@ -69,4 +69,26 @@ test.describe('Directory picker root', () => {
     await expect(homeRow).toBeVisible()
     await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(0)
   })
+
+  test('the home button selects the home directory', async ({ page }) => {
+    await loginViaUI(page)
+    await openNewWorkspaceDialog(page)
+
+    await expect(page.locator('[data-testid="tree-root-node"]:visible')).toBeVisible()
+    // The dialog opens unarmed -- the test above states why.
+    await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(0)
+
+    await page.locator('[data-testid="directory-selector-home"]:visible').click()
+
+    // The button SELECTS, unlike the reveal that opened the dialog. The path
+    // box tildifies a path under the home directory, and the home directory
+    // itself is the shortest such path.
+    await expect(page.getByPlaceholder('Enter path...')).toHaveValue(/^(~|\/(home|Users|root)\/)/)
+    await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(1)
+
+    // That the button also OPENS the directory is asserted in
+    // `DirectoryTree.test.tsx`, against the tree's expansion state. Here it
+    // would need the Worker's home directory to hold a child, which no CI host
+    // guarantees.
+  })
 })

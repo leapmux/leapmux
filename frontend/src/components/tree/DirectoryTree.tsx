@@ -40,6 +40,19 @@ import { menuTrigger, sidebarActions } from './sidebarActions.css'
 export interface DirectoryTreeHandle {
   collapseAll: () => void
   refresh: () => void
+  /**
+   * Open the node at `path` itself.
+   *
+   * The reveal effect opens every ANCESTOR of the reveal target and stops
+   * there: its `isDescendantPath` test is strict, so the target's own node
+   * never expands. A caller that means "go to this directory and show what is
+   * inside it" takes this second step.
+   *
+   * Call it AFTER the write that selects `path`. That write can re-root the
+   * tree, a new root replaces the whole expansion state, and the reverse order
+   * therefore loses the expansion.
+   */
+  expandPath: (path: string) => void
 }
 
 export interface DirectoryTreeProps {
@@ -634,22 +647,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [refreshVersion, setRefreshVersion] = createSignal(0)
   const triggerRefresh = () => setRefreshVersion(v => v + 1)
 
-  // Expose imperative handle via ref callback.
-  createEffect(() => {
-    props.ref?.({
-      collapseAll: () => {
-        setState(produce((s) => {
-          const rp = props.rootPath
-          for (const key of Object.keys(s.expandedPaths)) {
-            if (key !== rp)
-              delete s.expandedPaths[key]
-          }
-        }))
-      },
-      refresh: triggerRefresh,
-    })
-  })
-
   // The workerId is part of the key because two workers routinely share a root
   // path -- every POSIX worker roots the picker at `/`. Without it the restore
   // below hydrates worker A's listing for worker B, and the load effect then
@@ -700,6 +697,28 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       }
     }))
   }
+
+  // Expose imperative handle via ref callback.
+  createEffect(() => {
+    props.ref?.({
+      collapseAll: () => {
+        setState(produce((s) => {
+          const rp = props.rootPath
+          for (const key of Object.keys(s.expandedPaths)) {
+            if (key !== rp)
+              delete s.expandedPaths[key]
+          }
+        }))
+      },
+      refresh: triggerRefresh,
+      // An empty path names no node. Writing one would persist a key that
+      // matches nothing and that no chevron can ever collapse again.
+      expandPath: (path: string) => {
+        if (path)
+          setNodeExpanded(path, true)
+      },
+    })
+  })
 
   const getChildren = (path: string): TreeNodeData[] | undefined => state.childrenCache[path]
   // PRESENCE means truncated, not truthiness: the stored value is a count, and

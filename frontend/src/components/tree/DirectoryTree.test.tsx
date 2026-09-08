@@ -1363,3 +1363,73 @@ describe('directoryTree win32 separators', () => {
     await waitFor(() => expect(rowFor('Alice')).toBeTruthy())
   })
 })
+
+describe('directoryTree expandPath', () => {
+  const root = '/expand-handle'
+  const storeKey = `${PREFIX_DIRECTORY_TREE}w1:${root}:dirs`
+
+  /**
+   * The paths the tree holds open, sorted.
+   *
+   * Read from the persisted state, NOT from the rendered rows: a collapsed
+   * directory still renders its children into the DOM and hides them with a
+   * class, so `rowFor` finds a row that no user can see.
+   */
+  function expandedPaths(): string[] {
+    const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(storeKey)
+    return Object.keys(stored?.expandedPaths ?? {}).sort()
+  }
+
+  function mockTwoLevels() {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string, fromRoot?: string }) => {
+      if (req.fromRoot) {
+        return {
+          listings: [
+            { path: root, entries: [dirEntry(root, 'home')], truncated: false, totalEntries: 1 },
+            { path: `${root}/home`, entries: [dirEntry(`${root}/home`, 'alice')], truncated: false, totalEntries: 1 },
+          ],
+        }
+      }
+      if (req.path === `${root}/home`)
+        return oneListing([dirEntry(`${root}/home`, 'alice')])
+      return oneListing([dirEntry(root, 'home')])
+    })
+  }
+
+  // The reveal effect opens every ANCESTOR of its target and stops there, so a
+  // selection alone never opens the directory it selected.
+  it('opens the node that the reveal leaves closed', async () => {
+    mockTwoLevels()
+    let handle!: DirectoryTreeHandle
+    const captureHandle = (h: DirectoryTreeHandle) => {
+      handle = h
+    }
+    renderTree({ rootPath: root, selectedPath: `${root}/home`, ref: captureHandle })
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+    await settle()
+    expect(expandedPaths()).toEqual([root])
+
+    handle.expandPath(`${root}/home`)
+    await settle()
+
+    expect(expandedPaths()).toEqual([root, `${root}/home`])
+  })
+
+  // An empty path names no node. The key would persist, and no chevron could
+  // ever collapse it again.
+  it('ignores an empty path instead of persisting a key for it', async () => {
+    mockTwoLevels()
+    let handle!: DirectoryTreeHandle
+    const captureHandle = (h: DirectoryTreeHandle) => {
+      handle = h
+    }
+    renderTree({ rootPath: root, ref: captureHandle })
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+    await settle()
+
+    handle.expandPath('')
+    await settle()
+
+    expect(expandedPaths()).toEqual([root])
+  })
+})
