@@ -14,6 +14,12 @@ import { motion } from '~/styles/tokens'
  *
  * Same shape as the mobile tab sheet's clip in `./TabBar.css.ts`, which is the
  * established slide-out in this codebase.
+ *
+ * ONE `zIndex` serves both mounts. On desktop it clears the tile resize handles
+ * at 5, which are the clip's siblings. On mobile it stays under the drawers at
+ * 100 and the sheet scrim at 101 -- those are siblings too, because
+ * `mobileCenter` in `./AppShell.css.ts` is itself a stacking context, so a
+ * drawer covers the panel exactly as it covers the workspace.
  */
 export const quakeClip = style({
   position: 'absolute',
