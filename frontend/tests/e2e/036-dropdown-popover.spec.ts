@@ -103,7 +103,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message so the agent session starts and context info appears
@@ -167,7 +167,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // The editor should retain focus after the popover closes.
     const editorHasFocus = await page.evaluate(() => {
-      const proseMirror = document.querySelector('[data-testid="chat-editor"] .ProseMirror')
+      const proseMirror = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
       if (!proseMirror)
         return false
       return proseMirror.contains(document.activeElement) || proseMirror === document.activeElement
@@ -187,7 +187,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message so the agent session starts and context info appears

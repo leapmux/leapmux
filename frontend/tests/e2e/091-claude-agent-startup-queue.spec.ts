@@ -8,7 +8,7 @@ test.describe('Claude Code agent startup queue', () => {
   test('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace }) => {
     // Editor is reachable while the agent is still STARTING — the new
     // OpenAgent flow returns immediately and renders the loader overlay.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // The startup overlay must be visible at the start (or transition

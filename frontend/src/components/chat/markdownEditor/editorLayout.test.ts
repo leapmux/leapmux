@@ -1,6 +1,6 @@
 import { createRoot } from 'solid-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createComposerLayout } from './composerLayout'
+import { createEditorLayout } from './editorLayout'
 
 /**
  * jsdom lays nothing out, so every measurement reads 0. These stubs give the
@@ -53,7 +53,7 @@ function stubbedActionSlot(width: number): HTMLElement {
 /** Build a layout over stubbed DOM and run `fn` with it inside a reactive root. */
 function withLayout(
   opts: { rowWidth?: number, actionSlotWidth?: number, observe?: boolean },
-  fn: (layout: ReturnType<typeof createComposerLayout>) => void,
+  fn: (layout: ReturnType<typeof createEditorLayout>) => void,
 ) {
   document.body.replaceChildren()
   const root = stubbedRoot()
@@ -66,7 +66,7 @@ function withLayout(
     document.body.appendChild(actionSlot)
 
   createRoot((dispose) => {
-    const layout = createComposerLayout({
+    const layout = createEditorLayout({
       editorRoot: () => root,
       row: () => row,
       actionSlot: () => actionSlot,
@@ -81,7 +81,7 @@ function withLayout(
   })
 }
 
-describe('createComposerLayout', () => {
+describe('createEditorLayout', () => {
   it('expands for multi-line content whatever its width', () => {
     withLayout({ rowWidth: 1000 }, (layout) => {
       expect(layout.contentExpanded()).toBe(false)
@@ -100,7 +100,7 @@ describe('createComposerLayout', () => {
   })
 
   it('keeps an EMPTY composer collapsed however little width the action row leaves', () => {
-    // `footerSlot` caps its own width at the row minus `--composer-left-pad`
+    // `footerSlot` caps its own width at the row minus `--editor-left-pad`
     // and one `space-1`, and an action row AT that cap drives the available
     // width to zero. The expand test subtracts a 16px margin, so a text width
     // of 0 satisfied `0 > 0 - 16` and the composer opened in the tall layout
@@ -171,7 +171,7 @@ describe('createComposerLayout', () => {
     block.append(document.createTextNode('x'.repeat(100)))
 
     createRoot((dispose) => {
-      const layout = createComposerLayout({
+      const layout = createEditorLayout({
         editorRoot: () => root,
         row: () => row,
         actionSlot: () => undefined,
@@ -201,7 +201,7 @@ describe('createComposerLayout', () => {
     document.body.append(root, row)
 
     const dispose = createRoot((d) => {
-      const layout = createComposerLayout({
+      const layout = createEditorLayout({
         editorRoot: () => root,
         row: () => row,
         actionSlot: () => undefined,

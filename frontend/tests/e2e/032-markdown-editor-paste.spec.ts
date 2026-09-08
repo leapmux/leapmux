@@ -2,7 +2,7 @@ import { expect, test } from './fixtures'
 
 test.describe('Markdown Paste', () => {
   test('pasting markdown list text creates a bullet list', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -26,7 +26,7 @@ test.describe('Markdown Paste', () => {
 
 test.describe('Clipboard Copy/Paste', () => {
   test('copy and paste preserves markdown structure', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -80,7 +80,7 @@ test.describe('Clipboard Copy/Paste', () => {
 
 test.describe('Paste Into Code Context', () => {
   test('paste fenced code block into code_block strips delimiters', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -109,7 +109,7 @@ test.describe('Paste Into Code Context', () => {
   })
 
   test('paste inline code into code_block strips backticks', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -136,7 +136,7 @@ test.describe('Paste Into Code Context', () => {
   })
 
   test('paste plain text into code_block is unchanged', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 

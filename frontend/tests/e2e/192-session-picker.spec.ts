@@ -63,7 +63,7 @@ test.describe('Session picker in the New Agent dialog', () => {
       .filter({ hasText: 'Subject' })
       .first()
       .click()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     // A turn, so the worker records a resume handle: an agent that never spoke
     // has no session to offer.

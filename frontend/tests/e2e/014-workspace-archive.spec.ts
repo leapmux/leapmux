@@ -177,7 +177,7 @@ test.describe('workspace archive', () => {
       const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
       return agents.find(agent => agent.id === agentId)?.status
     }).toBe(AgentStatus.ACTIVE)
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type(ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
@@ -399,7 +399,7 @@ processTest.describe('workspace archive reconciliation', () => {
         const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
         return agents.find(agent => agent.id === agentId)?.status
       }).toBe(AgentStatus.ACTIVE)
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await editor.click()
       await page.keyboard.type(ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')

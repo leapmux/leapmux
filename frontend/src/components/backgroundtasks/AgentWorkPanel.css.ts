@@ -61,3 +61,31 @@ export const rows = style({
   overflowX: 'hidden',
   minHeight: 0,
 })
+
+/**
+ * The rule between the session goal and the task rows.
+ *
+ * The PANEL owns it, not the card, because a separator states that something
+ * FOLLOWS and only the panel knows whether anything does. The card shows on two
+ * tabs: above the rows on All, where the rule separates them, and alone on
+ * Goal, where it is the last thing in the box and a rule underlines nothing.
+ *
+ * A real `<hr>` between the two, rather than a border on the card. A border
+ * belongs to the box that draws it, so the card would have to take a class to
+ * say what sits under it, and the space below the rule would have to be a
+ * margin -- padding sits INSIDE the border box and only pushes the line further
+ * from the card's own content. An element takes the gap on both sides by
+ * itself.
+ */
+export const goalSeparator = style({
+  // Oat's base `hr` already draws the line (`border: none` plus
+  // `border-top: 1px solid var(--border)`); only its `var(--space-8)` margin is
+  // wrong at this size.
+  //
+  // The rule owns the whole gap on BOTH sides, so the two are one value and
+  // cannot drift apart. That is why `GoalCard` spends no padding at its bottom
+  // edge: two contributors to one gap is what forced this margin to be stated
+  // asymmetrically before, and it made the answer depend on which of the two
+  // you edited. `rows` adds its own 2px gap to each side alike.
+  margin: 'var(--space-3) 0',
+})

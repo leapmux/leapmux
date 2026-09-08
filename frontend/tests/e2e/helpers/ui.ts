@@ -116,7 +116,7 @@ export async function expectClipsLongText(label: Locator) {
  * mention/slash triggers) keep their local, deliberately paced typing.
  */
 export async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   await editor.click()
   await page.keyboard.type(text)
@@ -776,7 +776,7 @@ export async function openAgentViaUI(page: Page) {
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
   // Wait for the new tab to become selected and its editor to be ready
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]')).toBeVisible()
-  await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 }
 
 /**

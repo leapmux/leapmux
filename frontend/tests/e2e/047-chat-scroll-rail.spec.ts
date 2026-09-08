@@ -36,7 +36,7 @@ test.describe('chat scroll rail', () => {
     // A short viewport so a couple of tall user bubbles overflow and the rail appears.
     await page.setViewportSize({ width: 720, height: 380 })
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     // Let the agent finish starting so the send takes the fast path (see 010).
     await expect(page.getByText(/^Starting /)).not.toBeVisible()

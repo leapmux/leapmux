@@ -15,7 +15,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Step 1: Send a message and wait for a response
@@ -238,7 +238,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a long message to start an agent turn

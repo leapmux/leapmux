@@ -240,12 +240,23 @@ export type GoalActionState
     | { kind: 'enabled' }
     | { kind: 'disabled', reason: string }
 
+/**
+ * Whether one verb is hidden, live, or refused for a goal surface.
+ *
+ * It takes the SURFACE, not a goal and an action list side by side. The two
+ * fields travel together for a reason -- they describe one agent -- and two
+ * parameters let a caller pair one agent's goal with another agent's verbs,
+ * which is exactly the split `GoalSurface` exists to remove. `Pick` rather than
+ * the whole surface, because the answer never depends on the counters or the
+ * handler, and a test that had to build a `progress` field this never reads
+ * would say otherwise.
+ */
 export function goalActionState(
-  goal: SessionGoal | undefined,
-  supportedActions: GoalAction[],
+  surface: Pick<GoalSurface, 'current' | 'actions'>,
   action: GoalAction,
 ): GoalActionState {
-  if (!supportedActions.includes(action))
+  const goal = surface.current
+  if (!surface.actions.includes(action))
     return { kind: 'hidden' }
   // Setting a goal is the one action that does not need one to exist -- it is
   // how the first one arrives.

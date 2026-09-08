@@ -113,7 +113,7 @@ test.describe('Agent Settings', () => {
       await waitForSettingsIdle(page)
 
       // Verify agent restarted successfully by sending a message
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
       await editor.click()
       await page.keyboard.type('What is 3+4? Reply with just the number, nothing else.')
@@ -227,7 +227,7 @@ test.describe('Agent Settings', () => {
     await chooseSettingsOption(page, 'effort-ultracode')
     await waitForSettingsIdle(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     // Use a distinctive sentinel word as the answer, not a number. A numeric
@@ -314,7 +314,7 @@ test.describe('Agent Settings', () => {
 
   test('permission mode persistence across refresh', async ({ authenticatedWorkspace, page }) => {
     // Wait for the editor to be ready (agent is started)
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)
@@ -358,7 +358,7 @@ test.describe('Agent Settings', () => {
 
   test('focus returns to editor after mode change', async ({ authenticatedWorkspace, page }) => {
     // Wait for the editor to be ready (agent is started)
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)
@@ -387,7 +387,7 @@ test.describe('Agent Settings', () => {
     test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
 
     test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       const trigger = settingsBar(page)
@@ -434,7 +434,7 @@ test.describe('Agent Settings', () => {
   })
 
   test('interrupt via control request', async ({ authenticatedWorkspace, page }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a quick message to ensure the agent is fully started
@@ -538,7 +538,7 @@ test.describe('Agent Settings', () => {
   })
 
   test('no thinking indicator when switching settings', async ({ authenticatedWorkspace, page }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)

@@ -82,7 +82,7 @@ test.describe('Claude Code agent open timing', () => {
     await loginViaToken(page, srv.adminToken)
     await openWorkspace(page, workspaceId)
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     await installRpcListeners(page)
 
@@ -109,7 +109,7 @@ test.describe('Claude Code agent open timing', () => {
         w.__editorAppearedAt = null
         w.__startupOverlayGoneAt = null
         w.__tabBaseline = document.querySelectorAll('[data-testid="tab"][data-tab-type="agent"]').length
-        const priorEditor = document.querySelector('[data-testid="chat-editor"] .ProseMirror')
+        const priorEditor = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
         w.__tabObserver?.disconnect()
         w.__tabObserver = new MutationObserver(() => {
           if (w.__tabAppearedAt == null) {
@@ -118,7 +118,7 @@ test.describe('Claude Code agent open timing', () => {
               w.__tabAppearedAt = performance.now()
           }
           if (w.__editorAppearedAt == null) {
-            const ed = document.querySelector('[data-testid="chat-editor"] .ProseMirror')
+            const ed = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
             // A fresh .ProseMirror for the new tab (DOM node differs from
             // the pre-click instance).
             if (ed && ed !== priorEditor)
@@ -145,7 +145,7 @@ test.describe('Claude Code agent open timing', () => {
       await page.locator('[data-testid^="new-agent-button"]').first().click()
 
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-      await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+      await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
       // Since OpenAgent now returns immediately (status=STARTING), we
       // need to actively wait for this specific iteration's subprocess
       // startup to finish. Identify the new agent_id from the first

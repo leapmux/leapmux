@@ -808,7 +808,7 @@ describe('agent editor panel', () => {
     expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA])
 
     setAgentId('a2')
-    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b'))
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft b'))
     finishEnqueue?.()
     // Wait on the draft that the send clears, not on the composer re-opening:
     // the attachment paths open one microtask before the editor clears its
@@ -816,7 +816,7 @@ describe('agent editor panel', () => {
     await waitFor(async () => expect((await loadDraft('a1')).content).toBe(''))
 
     expect(screen.getByTestId('file-input')).not.toBeDisabled()
-    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b')
+    expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('draft b')
     expect((await loadDraft('a2')).content).toBe('draft b')
     expect(getAttachments('a1')).toEqual([])
     expect(getAttachments('a2')).toEqual([attachmentB])
@@ -863,17 +863,17 @@ describe('agent editor panel', () => {
         />
       </PreferencesProvider>
     ))
-    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
     send?.()
     expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [])
 
     setAgentId('a2')
-    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2'))
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2'))
     finishSave?.()
     await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
 
     expect(onBeginQueueEdit.mock.calls.filter(([item]) => item.agentId === 'a2')).toHaveLength(1)
-    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2')
+    expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2')
     expect(screen.getByRole('button', { name: 'Cancel Edit' })).toBeInTheDocument()
   })
 

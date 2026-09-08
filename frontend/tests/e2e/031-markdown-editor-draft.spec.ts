@@ -9,7 +9,7 @@ import { expect, test } from './fixtures'
  */
 test.describe('Draft Persistence', () => {
   test('draft survives page reload', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await editor.click()
@@ -19,7 +19,7 @@ test.describe('Draft Persistence', () => {
     await page.waitForTimeout(700)
 
     await page.reload()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toContainText('draft text to preserve')
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toContainText('draft text to preserve')
   })
 })

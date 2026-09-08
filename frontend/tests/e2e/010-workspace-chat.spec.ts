@@ -25,7 +25,7 @@ test.describe('Workspace Chat', () => {
   test('should create workspace, open agent, and receive response from Claude', async ({ page, authenticatedWorkspace }) => {
     // An agent tab is auto-created when a workspace is created.
     // Wait for the Milkdown editor to be ready.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // OpenAgent now returns immediately (status=STARTING); wait for the

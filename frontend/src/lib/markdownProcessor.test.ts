@@ -317,8 +317,29 @@ describe('remote-image blocking in both processors', () => {
     ]
     for (const [name, render] of await processors()) {
       for (const vector of vectors) {
-        expect(render(vector), `${name}: ${vector}`).not.toContain('evil.example')
+        const html = render(vector)
+        // The URL survives as ESCAPED TEXT -- `remarkHtmlAsText` keeps the
+        // characters the author wrote, so a goal that says `Replace <old-token>`
+        // still reads. What must never appear is an ELEMENT that fetches it, so
+        // assert on the markup rather than on the substring.
+        // No ELEMENT, which is the whole invariant: every one of these tags
+        // fetches a URL, and none of them reaches the `img` branch that
+        // rehypeBlockRemoteImages guards.
+        expect(html, `${name}: ${vector}`).not.toMatch(/<(?:img|video|source|audio|iframe|svg|image|embed|object|input|picture)\b/i)
+        // The author's opening angle bracket is escaped, which is what proves
+        // the run reached the stringifier as text rather than as markup. `src=`
+        // and the host still appear INSIDE that text, and are inert there.
+        expect(html, `${name}: ${vector}`).toContain('&#x3C;')
       }
+    }
+  })
+
+  // The other half of the rule above: dropping the run silently was the bug.
+  it('keeps a bare angle-bracket run as readable text', async () => {
+    for (const [name, render] of await processors()) {
+      expect(render('Replace <old-token> with the new one'), name)
+        .toContain('Replace &#x3C;old-token> with the new one')
+      expect(render('Support a<b and c>d'), name).toContain('Support a&#x3C;b and c>d')
     }
   })
 

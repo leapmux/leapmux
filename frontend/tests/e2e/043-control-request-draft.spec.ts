@@ -9,7 +9,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Type a rejection reason in the editor.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('draft rejection reason', { delay: 100 })
 
@@ -24,7 +24,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(bannerAfterReload).toBeVisible()
 
     // Verify the editor still contains the rejection reason.
-    const restoredEditor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const restoredEditor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(restoredEditor).toContainText('draft rejection reason')
   })
 
@@ -39,7 +39,7 @@ test.describe('Control Request Draft Persistence', () => {
     await waitForControlBanner(page)
 
     // Type custom text in the editor.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('my custom color answer', { delay: 100 })
 
@@ -54,13 +54,13 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(bannerAfterReload).toBeVisible()
 
     // Verify the editor still contains the custom text.
-    const restoredEditor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const restoredEditor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(restoredEditor).toContainText('my custom color answer')
   })
 
   test('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Type a conversation draft first.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('conversation draft text', { delay: 100 })
@@ -81,10 +81,10 @@ test.describe('Control Request Draft Persistence', () => {
 
     // Editor should be empty (control request has its own draft key). The
     // web-first assertion retries, so it needs no settling sleep.
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toHaveText('')
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toHaveText('')
 
     // Type control request draft text.
-    const editorForCtrl = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editorForCtrl = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editorForCtrl.click()
     await page.keyboard.type('control request draft text', { delay: 100 })
 
@@ -99,7 +99,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(bannerAfterReload).toBeVisible()
 
     // Verify editor contains the control request draft (not the conversation draft).
-    const restoredEditor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const restoredEditor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(restoredEditor).toContainText('control request draft text')
     await expect(restoredEditor).not.toContainText('conversation draft text')
   })

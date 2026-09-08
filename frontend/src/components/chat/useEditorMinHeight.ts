@@ -136,7 +136,7 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
     // Use the current visual height of the editor wrapper as the drag starting
     // point so the drag feels anchored to the handle's visual position.
     const panel = opts.panelRef()
-    const editorWrapperEl = panel?.querySelector('[data-testid="chat-editor"]') as HTMLElement | null
+    const editorWrapperEl = panel?.querySelector('[data-testid="composer-editor"]') as HTMLElement | null
     const startHeight = editorWrapperEl?.getBoundingClientRect().height
       ?? editorMinHeightSignal()
       ?? EDITOR_MIN_HEIGHT

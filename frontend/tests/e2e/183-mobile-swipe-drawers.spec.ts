@@ -38,7 +38,7 @@ function drawers(page: Page): Drawers {
  * Both halves matter, and the first is the subtle one. The drawer test ids
  * exist ONLY in the mobile layout, so resolving them is what waits for that
  * layout to mount -- and the shell picks its layout from a media query, so the
- * desktop one can paint first and be swapped out. `tab-bar` and `chat-editor`
+ * desktop one can paint first and be swapped out. `tab-bar` and `composer-editor`
  * are in BOTH layouts, so a spec that measures against them and then swipes
  * reads as ready while nothing has armed the gesture yet, and the swipe is lost.
  */
@@ -59,7 +59,7 @@ async function expectMobileShellIdle(page: Page) {
  */
 async function transcriptY(page: Page): Promise<number> {
   const bar = (await page.getByTestId('tab-bar').boundingBox())!
-  const editor = (await page.getByTestId('chat-editor').boundingBox())!
+  const editor = (await page.getByTestId('composer-editor').boundingBox())!
   return (bar.y + bar.height + editor.y) / 2
 }
 
@@ -109,7 +109,7 @@ async function swipeBand(page: Page, direction: 'left' | 'right') {
   // that rather than as "the drawer never opened".
   const landing = await elementUnder(page, fromX, y)
   const where = `the swipe start at (${Math.round(fromX)}, ${Math.round(y)})`
-  expect(landing, where).not.toMatch(/chat-editor|tab-bar|nothing/)
+  expect(landing, where).not.toMatch(/composer-editor|tab-bar|nothing/)
   await touchSwipe(page, { from: { x: fromX, y }, to: { x: fromX + travel, y } })
 }
 
@@ -180,7 +180,7 @@ test.describe('mobile drawer swipes (phone)', () => {
   // A finger sweeping the composer is placing a caret or extending a selection.
   // The recognizer declines every press inside an editing host for that reason.
   test('a swipe across the composer opens no drawer', async ({ page, authenticatedWorkspace }) => {
-    const editorBox = (await page.locator('[data-testid="chat-editor"] .ProseMirror').boundingBox())!
+    const editorBox = (await page.locator('[data-testid="composer-editor"] .ProseMirror').boundingBox())!
     const y = editorBox.y + editorBox.height / 2
     await touchSwipe(page, {
       from: { x: editorBox.x + editorBox.width * 0.25, y },

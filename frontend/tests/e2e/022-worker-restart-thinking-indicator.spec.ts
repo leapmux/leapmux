@@ -13,7 +13,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a message to start an agent turn
@@ -53,7 +53,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a message and wait for a response

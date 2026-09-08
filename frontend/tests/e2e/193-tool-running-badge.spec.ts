@@ -34,7 +34,7 @@ test.describe('Tool Running Badge', () => {
     const dir = await mkdtemp(join(tmpdir(), 'leapmux-badge-'))
     const flag = join(dir, 'release')
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await expect(page.getByText(/^Starting /)).not.toBeVisible()
 

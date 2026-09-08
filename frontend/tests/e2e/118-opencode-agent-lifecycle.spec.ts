@@ -7,7 +7,7 @@ opencodeTest.describe('OpenCode Agent Lifecycle', () => {
   opencodeTest('agent starts and shows ready state', async ({ authenticatedOpencodeWorkspace, page }) => {
     void authenticatedOpencodeWorkspace // fixture trigger
 
-    // The editor renders regardless of agent state — a chat-editor visibility
+    // The editor renders regardless of agent state — a composer-editor visibility
     // check alone passes even when the agent backend is broken. Send a
     // trivial prompt and assert a response comes back so the test catches
     // a regression where the agent fails to start.

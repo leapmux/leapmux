@@ -78,45 +78,47 @@ describe('goalCard', () => {
     }
   })
 
-  it('runs the action a verb button names', () => {
+  /**
+   * The card offers the verbs behind one `...` trigger, so a menu is what a
+   * goal with a handler shows. Which verbs it holds, and which of them are
+   * refused, is `GoalActionsMenu`'s decision and is tested there.
+   */
+  it('offers the actions menu for a goal it can act on', () => {
+    const { getByTestId } = render(() => (
+      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL, onAction: vi.fn() }} />
+    ))
+    expect(getByTestId('goal-actions-trigger')).not.toBeNull()
+  })
+
+  /**
+   * The card hands the menu the WHOLE surface, so the verb a reader picks
+   * reaches the handler that surface carries.
+   *
+   * Tested here rather than only in `./GoalActionsMenu.test.tsx`, because that
+   * suite renders the menu alone: it cannot see the card dropping the handler
+   * or forwarding the wrong action, and the only other coverage of this path
+   * sits in another component's test file.
+   */
+  it('runs a menu verb against the handler its surface carries', () => {
     const onAction = vi.fn()
     const { getByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: ALL, onAction }} />
     ))
-    fireEvent.click(getByTestId('goal-action-clear'))
-    expect(onAction).toHaveBeenCalledWith('clear')
+
+    fireEvent.click(getByTestId('goal-actions-trigger'))
+    fireEvent.click(getByTestId('goal-action-pause'))
+
+    expect(onAction).toHaveBeenCalledWith('pause')
   })
 
-  /**
-   * Claude Code's gap, and the one a user meets most: it has no pause and no
-   * resume at all. That gap is PERMANENT, so the buttons are absent -- a control
-   * that can never light up says less than no control.
-   */
-  it('omits an action the provider does not support at all', () => {
+  // A read-only surface: the panel renders the goal, and nothing can change it.
+  it('offers no actions menu when the surface has no handler', () => {
     const { queryByTestId, getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ['set', 'clear'], onAction: vi.fn() }} />
+      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
     ))
-    expect(queryByTestId('goal-action-pause')).toBeNull()
-    expect(queryByTestId('goal-action-resume')).toBeNull()
-    expect(getByTestId('goal-action-clear')).not.toBeNull()
-  })
-
-  /**
-   * The other half of the same rule. A SUPPORTED action that the current goal
-   * state refuses keeps its place, disabled with the reason, because it comes
-   * back the moment the state changes.
-   */
-  it('keeps a supported action the goal state refuses, disabled with its reason', () => {
-    const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'paused' }), progress: {}, actions: ALL, onAction: vi.fn() }} />
-    ))
-    const pause = getByTestId('goal-action-pause') as HTMLButtonElement
-    expect(pause.disabled).toBe(true)
-    // The accessible name stays the verb. An ariaLabel carrying the reason
-    // would announce a sentence where "Pause" belongs and break every
-    // by-role lookup.
-    expect(pause.textContent).toBe('Pause')
-    expect((getByTestId('goal-action-resume') as HTMLButtonElement).disabled).toBe(false)
+    expect(queryByTestId('goal-actions-trigger')).toBeNull()
+    // The goal itself is still on screen; only the verbs are absent.
+    expect(getByTestId('goal-objective').textContent).toContain('every test passes')
   })
 
   // A read-only provider (Reasonix reports a goal but can change none) shows the
@@ -125,8 +127,21 @@ describe('goalCard', () => {
     const { queryByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: [], onAction: vi.fn() }} />
     ))
+    expect(queryByTestId('goal-actions-trigger')).toBeNull()
     for (const action of ALL)
       expect(queryByTestId(`goal-action-${action}`)).toBeNull()
+  })
+
+  /**
+   * No menu in the empty state. `set` is the only verb that applies with no
+   * goal, and the empty state offers it as its own call to action -- a first
+   * goal must not be one click deeper than the concept it introduces.
+   */
+  it('offers no actions menu in the empty state', () => {
+    const { queryByTestId } = render(() => (
+      <GoalCard goal={{ progress: {}, actions: ['set'], onAction: vi.fn() }} />
+    ))
+    expect(queryByTestId('goal-actions-trigger')).toBeNull()
   })
 
   // Setting is how the FIRST goal arrives, so the empty state has to offer it --
@@ -140,6 +155,18 @@ describe('goalCard', () => {
     expect(button.disabled).toBe(false)
     fireEvent.click(button)
     expect(onAction).toHaveBeenCalledWith('set')
+  })
+
+  /**
+   * A separator states that something FOLLOWS, and the card cannot see what is
+   * below it. `AgentWorkPanel` renders the rule between the two, on the one tab
+   * that has rows.
+   */
+  it('draws no separator of its own', () => {
+    const { container } = render(() => (
+      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
+    ))
+    expect(container.querySelectorAll('hr')).toHaveLength(0)
   })
 
   it('omits Set a goal for an agent that cannot set one', () => {
@@ -161,6 +188,30 @@ describe('goalCard', () => {
     expect(live.length).toBe(1)
     expect(live[0].textContent).toContain('every test passes')
     expect(live[0].textContent).toContain('notSatisfied')
+  })
+
+  /**
+   * The objective is markdown SOURCE, and the card renders it. A screen reader
+   * handed the source reads the syntax -- "ship the asterisk asterisk auth
+   * refactor asterisk asterisk" -- so the live region announces the words the
+   * card actually shows. `GoalObjective` refuses to hand the source to
+   * `Tooltip`'s `text` for the same reason.
+   */
+  it('announces the objective as words, not as markdown syntax', () => {
+    const { container } = render(() => (
+      <GoalCard
+        goal={{
+          current: goal({ objective: 'ship the **auth refactor**, see `task test`' }),
+          progress: {},
+          actions: [],
+        }}
+        announce
+      />
+    ))
+    const live = container.querySelector('[role="status"][aria-live="polite"]')!
+    expect(live.textContent).toContain('ship the auth refactor, see task test')
+    expect(live.textContent).not.toContain('**')
+    expect(live.textContent).not.toContain('`')
   })
 
   /**
@@ -191,16 +242,5 @@ describe('goalCard', () => {
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('dormant')
     expect(getByTestId('goal-card').textContent).toContain('Not running')
     expect(getByTestId('goal-card').textContent).not.toContain('Needs attention')
-  })
-
-  // Neither verb applies to a dormant goal, and each says which state it needs
-  // rather than going silent.
-  it('disables pause and resume for a dormant goal, and keeps clear', () => {
-    const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'dormant' }), progress: {}, actions: ALL, onAction: () => {} }} />
-    ))
-    expect(getByTestId('goal-action-pause').hasAttribute('disabled')).toBe(true)
-    expect(getByTestId('goal-action-resume').hasAttribute('disabled')).toBe(true)
-    expect(getByTestId('goal-action-clear').hasAttribute('disabled')).toBe(false)
   })
 })

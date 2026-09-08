@@ -261,7 +261,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
     const bar = page.getByTestId('tab-bar')
     await expect(bar).toBeVisible()
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await expect(editor).toBeFocused()
 
@@ -292,7 +292,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
   // the first half is the phone-with-a-hardware-keyboard case, where dropping
   // the caret would reclaim nothing.
   test('a send releases focus only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     const size = page.viewportSize()!
 
     await editor.click()
@@ -327,7 +327,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
   // composer that overlays its centre. Hit-testing is the browser's job; what
   // is ours is what the handler makes of the gesture.
   test('a tap on the transcript releases the composer only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     const transcript = page.locator('[data-chat-scroll-container="true"]')
     const size = page.viewportSize()!
 

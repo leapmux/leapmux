@@ -15,7 +15,7 @@ test.describe('TabBar Improvements', () => {
   test('new agent tab focuses editor and surfaces session ID after first turn', async ({ page, authenticatedWorkspace }) => {
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await expect(editor).toBeFocused()
 

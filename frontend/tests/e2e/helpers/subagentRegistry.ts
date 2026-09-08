@@ -1,5 +1,6 @@
 /**
- * Shared helpers for the subagent / background-task E2E specs (170-177).
+ * Shared helpers for the E2E specs that drive an agent's work panel: the
+ * subagent and background-task registry, and the session goal.
  *
  * These wrap the common registry assertions so each per-provider spec stays
  * small. A locator that must MATCH an element is `:visible`-scoped, because the
@@ -41,7 +42,7 @@ export async function expandBackgroundTasksSection(page: Page): Promise<void> {
  * `:visible`-scoped for the reason every locator in this file is: the sidebar is
  * mounted twice, so the bare test id matches two elements.
  */
-export function goalCard(page: Page): Locator {
+export function goalCard(page: Page | Locator): Locator {
   return page.locator('[data-testid="goal-card"]:visible')
 }
 
@@ -50,9 +51,33 @@ export function workPanelTab(page: Page, key: string): Locator {
   return page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
 }
 
-/** A verb button on the goal card, by action (`set`, `clear`, `pause`, `resume`). */
-export function goalAction(page: Page, action: string): Locator {
+/**
+ * A verb on the goal card, by action (`set`, `clear`, `pause`, `resume`).
+ *
+ * Every verb but the empty state's own `set` lives inside the card's `...`
+ * menu, so a caller opens that menu first -- see `openGoalMenu`.
+ *
+ * `page` takes a `Locator` as well, and a caller that can see TWO goal cards
+ * must pass one. The sidebar card and the ThinkingIndicator popover's card are
+ * both on screen while that popover is open, so `:visible` alone resolves two
+ * elements and Playwright's strict mode fails the call. Rooting the search at
+ * the popover is the only thing that separates them.
+ */
+export function goalAction(page: Page | Locator, action: string): Locator {
   return page.locator(`[data-testid="goal-action-${action}"]:visible`)
+}
+
+/**
+ * Open the goal card's `...` menu, which holds every verb for a goal that
+ * already exists.
+ *
+ * The empty state is the exception: `set` is the only verb that applies with no
+ * goal, and the card offers it there as its own button.
+ *
+ * Takes the same root as `goalAction`, and for the same reason.
+ */
+export async function openGoalMenu(page: Page | Locator): Promise<void> {
+  await page.locator('[data-testid="goal-actions-trigger"]:visible').click()
 }
 
 /**

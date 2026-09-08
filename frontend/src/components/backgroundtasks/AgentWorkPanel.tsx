@@ -60,6 +60,19 @@ function listTabFor(tab: AgentWorkTabKey): BackgroundTaskKindFilter | undefined 
   return tab === GOAL_TAB.key ? undefined : tab
 }
 
+/**
+ * The two tab lists, built ONCE at module scope.
+ *
+ * `FilterTabBar` renders them through `<For>`, which reconciles by reference, so
+ * a list rebuilt per render replaces every tab button and drops the focus that
+ * was inside the tablist. Two frozen arrays make that impossible; the panel
+ * selects between them.
+ */
+const LIST_TABS: readonly FilterTab<AgentWorkTabKey>[] = (
+  Object.keys(LIST_TABS_META) as BackgroundTaskKindFilter[]
+).map(key => ({ key, label: LIST_TABS_META[key].label }))
+const TABS_WITH_GOAL: readonly FilterTab<AgentWorkTabKey>[] = [...LIST_TABS, GOAL_TAB]
+
 export interface AgentWorkPanelProps {
   tasks: BackgroundTaskItem[]
   /** The goal, its counters, the live actions and their handler. */
@@ -119,18 +132,23 @@ export const AgentWorkPanel: Component<AgentWorkPanelProps> = (props) => {
   // at all, through the same helper, so the two answers cannot disagree.
   const hasGoal = () => hasGoalSurface(props.goal)
 
-  const tabs = createMemo<readonly FilterTab<AgentWorkTabKey>[]>(() => {
-    const listTabs = (Object.keys(LIST_TABS_META) as BackgroundTaskKindFilter[])
-      .map(key => ({ key, label: LIST_TABS_META[key].label }))
-    return hasGoal() ? [...listTabs, GOAL_TAB] : listTabs
-  })
+  // SELECT between two stable arrays; never build them here. `FilterTabBar`
+  // renders `<For each={props.tabs}>`, which reconciles by REFERENCE, so a
+  // `.map` inside this memo minted a fresh object per tab on every recompute
+  // and tore down and rebuilt every tab button. The memo recomputes on each
+  // goal broadcast -- a Codex agent reports after every tool call -- so a
+  // keyboard user's focus left the tablist for `<body>` every couple of
+  // seconds, exactly while the agent worked. `GoalActionsMenu` records the same
+  // rule for the same reason.
+  const tabs = createMemo<readonly FilterTab<AgentWorkTabKey>[]>(() =>
+    hasGoal() ? TABS_WITH_GOAL : LIST_TABS)
 
   // The ACTIVE tab is derived, never stored, so a selection the tab list no
   // longer offers is unrepresentable rather than repaired afterwards.
   //
   // The Goal tab can disappear -- an agent's process exits and its capability
   // list empties. A `createEffect` that wrote 'all' back would leave one
-  // committed render where `tab()` names a key `tabs()` does not contain, and
+  // committed render where `tab()` holds a key `tabs()` does not contain, and
   // FilterTabBar gives every tab `tabIndex={-1}` and `aria-selected={false}` in
   // that state: a tablist with no selected tab. Deriving skips that state.
   //
@@ -139,6 +157,16 @@ export const AgentWorkPanel: Component<AgentWorkPanelProps> = (props) => {
   const activeTab = () => (tabs().some(t => t.key === tab()) ? tab() : 'all')
 
   const showsGoal = () => hasGoal() && (activeTab() === GOAL_TAB.key || activeTab() === 'all')
+
+  // The rule under the goal, on the one tab where something follows it. The
+  // card draws no separator of its own, because it cannot see what is below.
+  //
+  // It asks the SAME question the list region below asks -- `listTabFor` -- so
+  // the rule and the thing it separates the goal from cannot disagree. Naming
+  // the tab instead put the answer in two places, and the next tab that shows
+  // the goal would repeat the bug this rule exists to avoid: a line that
+  // underlines nothing.
+  const showsGoalSeparator = () => showsGoal() && listTabFor(activeTab()) !== undefined
 
   return (
     <div
@@ -170,6 +198,9 @@ export const AgentWorkPanel: Component<AgentWorkPanelProps> = (props) => {
             goal={props.goal}
             announce={props.announceGoal}
           />
+        </Show>
+        <Show when={showsGoalSeparator()}>
+          <hr class={styles.goalSeparator} data-testid="goal-card-separator" />
         </Show>
         <Show when={listTabFor(activeTab())}>
           {kind => (

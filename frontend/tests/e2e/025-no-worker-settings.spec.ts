@@ -14,7 +14,7 @@ test.describe('Settings and /clear after Worker restart', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Step 1: Send a message and wait for a response (agent starts)

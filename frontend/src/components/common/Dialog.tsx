@@ -97,7 +97,17 @@ export const Dialog: Component<DialogProps> = (props) => {
       const active = document.activeElement
       if (active instanceof HTMLTextAreaElement || active instanceof HTMLButtonElement || active instanceof HTMLAnchorElement)
         return
-      const submitBtn = dialogRef.querySelector('button[type="submit"]') as HTMLButtonElement | null
+      // The first submit button that is NOT inside a popover. A popover mounts
+      // its children whether it is open or shut, so a dialog that hosts one --
+      // any dialog with a MarkdownEditor, whose LinkPopover holds a
+      // `type="submit"` Save button -- otherwise answers a bare Enter by
+      // clicking a form the user cannot see.
+      //
+      // A scan rather than one `:not([popover] *)` selector: `:not()` with a
+      // descendant argument needs Selectors 4 support, which the jsdom matcher
+      // the unit tests run on does not have.
+      const submitBtn = [...dialogRef.querySelectorAll('button[type="submit"]')]
+        .find(el => !el.closest('[popover]')) as HTMLButtonElement | undefined
       if (submitBtn && !submitBtn.disabled) {
         e.preventDefault()
         submitBtn.click()

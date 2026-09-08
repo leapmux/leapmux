@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import { createSignal, For, Show } from 'solid-js'
-import * as styles from '../ControlRequestBanner.css'
+import { CollapsibleToggle } from '~/components/common/CollapsibleToggle'
 
 interface CollapsibleListProps<T> {
   items: T[]
@@ -27,15 +27,16 @@ export function CollapsibleList<T>(props: CollapsibleListProps<T>): JSX.Element 
       <For each={visibleItems()}>
         {item => props.renderItem(item)}
       </For>
+      {/* No `controls`: the items are siblings with no wrapper to point at.
+          `aria-expanded` still states the open state, which is the half that
+          matters most here. */}
       <Show when={shouldCollapse()}>
-        <button
-          class={styles.collapsibleToggle}
-          onClick={() => setExpanded(prev => !prev)}
-        >
-          {expanded()
-            ? (props.lessLabel ?? 'Show less')
-            : (props.moreLabel?.(hiddenCount()) ?? `Show ${hiddenCount()} more\u2026`)}
-        </button>
+        <CollapsibleToggle
+          expanded={expanded()}
+          onToggle={() => setExpanded(prev => !prev)}
+          moreLabel={props.moreLabel?.(hiddenCount()) ?? `Show ${hiddenCount()} more\u2026`}
+          lessLabel={props.lessLabel}
+        />
       </Show>
     </>
   )

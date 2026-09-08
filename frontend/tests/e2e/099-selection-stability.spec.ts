@@ -33,7 +33,7 @@ test.describe('chat text selection stability', () => {
     page.evaluate(() => (window.getSelection()?.toString() ?? '').trim().length)
 
   test('a drag-selection survives the mouse release', async ({ page, authenticatedWorkspace }) => {
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
     await waitForAgentIdle(page)
 
@@ -58,7 +58,7 @@ test.describe('chat text selection stability', () => {
   })
 
   test('selecting text while scrolled up does not move the viewport', async ({ page, authenticatedWorkspace }) => {
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     // Enough turns to make the transcript scrollable, so "scrolled up" is a real state.
     for (const n of [1, 2, 3, 4]) {
       await sendMessage(page, `Say exactly: line ${n} -- the quick brown fox jumps over the lazy dog`)

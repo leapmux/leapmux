@@ -15,7 +15,7 @@ test.describe('Agent Session Resume', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a message and wait for response
@@ -63,7 +63,7 @@ test.describe('Agent Session Resume', () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // One exchange is what gets the CLI to report a session id, which is the
@@ -105,7 +105,7 @@ test.describe('Agent Session Resume', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a message and wait for response (establishes session)
@@ -145,7 +145,7 @@ test.describe('Agent Session Resume', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Send a message and wait for response (establishes session)

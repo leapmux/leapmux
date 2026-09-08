@@ -13,7 +13,7 @@ import { CHAT_SCROLL_CONTAINER } from './helpers/ui'
  * the transcript the user just uncovered.
  */
 test.describe('composer send focus', () => {
-  const EDITOR = '[data-testid="chat-editor"] .ProseMirror'
+  const EDITOR = '[data-testid="composer-editor"] .ProseMirror'
 
   test('a press on Send keeps the caret in the editor', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator(EDITOR)

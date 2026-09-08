@@ -1,6 +1,7 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
+import { fadeMaskBottom } from '~/styles/fadeMask'
 import { clippedText, controlReset } from '~/styles/shared.css'
 import { codeSurface } from './shikiTokenColors.css'
 import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
@@ -122,8 +123,7 @@ codeSurface(toolResultContentAnsi, 'page', [
 export const toolResultCollapsed = style({
   maxHeight: '3.6rem',
   overflow: 'hidden',
-  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
-  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+  ...fadeMaskBottom(),
 })
 
 // Cap heading font sizes inside collapsed markdown previews
@@ -156,10 +156,7 @@ export const commandInputCollapsed = style({
   overflow: 'hidden',
 })
 
-export const commandInputCollapsedFade = style({
-  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
-  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
-})
+export const commandInputCollapsedFade = style(fadeMaskBottom())
 
 // Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
 globalStyle(`${toolInputSummary} pre.shiki`, {
