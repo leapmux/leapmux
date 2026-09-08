@@ -121,6 +121,11 @@ type ClaudeCodeAgent struct {
 	// read from the process rather than assumed -- see observeSlashCommands.
 	// Guarded by a.mu.
 	hasGoalCommand bool
+	// goalCommandKnown records whether the init frame arrived at all. Absent is
+	// not the same answer as false: before the frame the capability is UNKNOWN,
+	// and ObserveGoalCommand must not drop a delivered command for a process
+	// that has the feature but has not said so yet. Guarded by a.mu.
+	goalCommandKnown bool
 
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult

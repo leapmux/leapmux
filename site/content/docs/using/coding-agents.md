@@ -26,7 +26,7 @@ LeapMux integrates ten coding-agent providers:
 | Reasonix | `reasonix` |
 | ZCode | `zcode`, or the desktop application (see [below](#zcode-is-found-through-its-desktop-application)) |
 
-All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The Goals & To-dos sidebar appears for an agent that has a to-do list, and for an agent whose CLI has a session goal. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
@@ -213,9 +213,15 @@ Not every image renders inline:
 
 Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each Agent Client Protocol (ACP) provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
 
-### The todo / plan sidebar
+### The Goals & To-dos sidebar
 
-When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's and ZCode's todo tracking, Claude Code's task tools, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
+This section holds two things an agent works toward: its session goal, and its to-do list.
+
+The **session goal** is a standing objective. The agent re-tests it at the end of every turn and keeps working while the condition does not hold. Claude Code, Codex, ZCode, GitHub Copilot, Goose, and Reasonix each have one, and the card shows the objective, its status, and the counters the CLI reports. Set a goal from the card, and change or clear it from the card's menu. Reasonix reports its goal and accepts no change, so its card is read-only. Codex and ZCode take the change through a side-band command; Claude Code, Goose, and GitHub Copilot take it as a message, which enters the agent's input queue and costs a turn.
+
+The **to-do list** shows each item's status (pending, in progress, completed). Codex turn plans, Claude Code's and ZCode's todo tracking, Claude Code's task tools, and other providers' plan updates all feed it. The list is server-authoritative, so it stays correct across reconnects.
+
+A chip on the thinking indicator shows the to-do count and opens the same section as a popover.
 
 ### Subagents and the Background tasks sidebar
 

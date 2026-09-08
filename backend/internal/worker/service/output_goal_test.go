@@ -629,6 +629,25 @@ func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
 	require.True(t, svc.Agents.AgentAlive(agentID))
 }
 
+// A delivered text command reaches the same durable sink as a provider goal
+// report. The command observer must not stop at in-memory manager state.
+func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, _ := setupGoalTest(t)
+	startGoalAgentProcess(t, svc, agentID)
+	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
+	require.Eventually(t, func() bool {
+		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
+	}, time.Second, 5*time.Millisecond)
+
+	require.NoError(t, svc.Agents.SendInput(agentID, "/goal ship the release", nil))
+	stored, err := svc.Output.LoadGoal(t.Context(), agentID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.Goal)
+	assert.Equal(t, "ship the release", stored.Goal.GetObjective())
+}
+
 // DORMANT is derived, never stored. No process pursues a goal that outlived its
 // process, and reporting the last live status would draw a card with an armed
 // dot and working Pause and Clear buttons for a process that is gone.

@@ -617,7 +617,9 @@ func New(cfg Config) *Service {
 	// An auto-continue injection is not a human-typed input, so it stays
 	// UNSPECIFIED (no scroll-rail jump dot).
 	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE)
+		if err := svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE); err != nil {
+			slog.Error("auto-continue input enqueue failed", "agent_id", agentID, "error", err)
+		}
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).

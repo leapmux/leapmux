@@ -12,7 +12,7 @@ import (
 )
 
 // goalStub implements the Agent provider surface (via stubProvider) plus
-// GoalController, so Manager.UpdateGoal can reach it.
+// GoalWriter, so Manager.UpdateGoal can reach it.
 //
 // `supported` is settable per test, because the whole point of the Manager's
 // check is that a provider's capability list and its implemented methods are
@@ -30,19 +30,29 @@ type goalStub struct {
 
 func (g *goalStub) SupportedGoalActions() []GoalAction { return g.supported }
 
-func (g *goalStub) SetGoal(objective string) error {
-	g.setCalls = append(g.setCalls, objective)
-	return g.err
+// A side-band writer: every action completes here, so the outcome is empty and
+// the Manager has nothing to hand back to the caller.
+func (g *goalStub) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	switch action {
+	case GoalActionSet:
+		g.setCalls = append(g.setCalls, objective)
+	case GoalActionClear:
+		g.clears++
+	case GoalActionPause:
+		g.pauses++
+	case GoalActionResume:
+		g.resumes++
+	default:
+		return GoalOutcome{}, ErrGoalControlUnsupported
+	}
+	return GoalOutcome{}, g.err
 }
-func (g *goalStub) ClearGoal() error  { g.clears++; return g.err }
-func (g *goalStub) PauseGoal() error  { g.pauses++; return g.err }
-func (g *goalStub) ResumeGoal() error { g.resumes++; return g.err }
 
 // Compile-time drift guards, the same pair manager_child_test.go keeps for
 // ChildSteerer.
 var (
-	_ GoalController = (*goalStub)(nil)
-	_ Agent          = (*goalStub)(nil)
+	_ GoalWriter = (*goalStub)(nil)
+	_ Agent      = (*goalStub)(nil)
 )
 
 func allGoalActions() []GoalAction {
@@ -53,13 +63,13 @@ func TestManagerGoal_UpdateGoalOnAnAgentThatIsNotRunning(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil)
 
-	err := m.UpdateGoal("nope", GoalActionPause, "")
+	_, err := m.UpdateGoal("nope", GoalActionPause, "")
 
 	assert.ErrorIs(t, err, ErrAgentNotFound)
 }
 
 // A provider that reports a goal without being able to change one implements no
-// GoalController at all, and the Manager must refuse rather than panic on the
+// GoalWriter at all, and the Manager must refuse rather than panic on the
 // type assertion.
 func TestManagerGoal_UpdateGoalOnAProviderWithNoController(t *testing.T) {
 	t.Parallel()
@@ -68,7 +78,7 @@ func TestManagerGoal_UpdateGoalOnAProviderWithNoController(t *testing.T) {
 	m.agents["root"] = &stubProvider{}
 	m.mu.Unlock()
 
-	err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", GoalActionPause, "")
 
 	assert.ErrorIs(t, err, ErrGoalControlUnsupported)
 }
@@ -84,7 +94,7 @@ func TestManagerGoal_RefusesAnActionTheAgentDoesNotList(t *testing.T) {
 	m.agents["root"] = st
 	m.mu.Unlock()
 
-	err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", GoalActionPause, "")
 
 	assert.ErrorIs(t, err, ErrGoalControlUnsupported)
 	assert.Zero(t, st.pauses, "the provider's method must not run for an unlisted action")
@@ -98,10 +108,19 @@ func TestManagerGoal_DispatchesEachActionToItsOwnMethod(t *testing.T) {
 	m.agents["root"] = st
 	m.mu.Unlock()
 
-	require.NoError(t, m.UpdateGoal("root", GoalActionSet, "ship it"))
-	require.NoError(t, m.UpdateGoal("root", GoalActionPause, ""))
-	require.NoError(t, m.UpdateGoal("root", GoalActionResume, ""))
-	require.NoError(t, m.UpdateGoal("root", GoalActionClear, ""))
+	for _, call := range []struct {
+		action    GoalAction
+		objective string
+	}{
+		{GoalActionSet, "ship it"},
+		{GoalActionPause, ""},
+		{GoalActionResume, ""},
+		{GoalActionClear, ""},
+	} {
+		command, err := m.UpdateGoal("root", call.action, call.objective)
+		require.NoError(t, err)
+		assert.Empty(t, command, "a side-band controller returns no queued command")
+	}
 
 	assert.Equal(t, []string{"ship it"}, st.setCalls, "only SET carries the objective")
 	assert.Equal(t, 1, st.pauses)
@@ -119,7 +138,7 @@ func TestManagerGoal_ReturnsTheProvidersError(t *testing.T) {
 	m.agents["root"] = st
 	m.mu.Unlock()
 
-	err := m.UpdateGoal("root", GoalActionPause, "")
+	_, err := m.UpdateGoal("root", GoalActionPause, "")
 
 	assert.ErrorIs(t, err, assert.AnError)
 	assert.NotErrorIs(t, err, ErrGoalControlUnsupported,
@@ -157,4 +176,59 @@ func TestManagerGoal_SupportedGoalActionsReadsTheRunningAgent(t *testing.T) {
 	// which is exactly what Claude Code does when its init frame arrives.
 	st.supported = allGoalActions()
 	assert.Equal(t, allGoalActions(), m.SupportedGoalActions("root"))
+}
+
+// A goal command that enters through the normal input queue must update the
+// local goal row after the provider accepts it. The provider cannot observe
+// delivery before Manager.SendInput returns successfully.
+func TestManagerGoal_SendInputObservesADeliveredClaudeGoalCommand(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	provider := newClaudeGoalAgent(t, sink)
+	provider.HandleOutput([]byte(
+		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	m := NewManager(nil)
+	m.mu.Lock()
+	m.agents["root"] = provider
+	m.mu.Unlock()
+
+	require.NoError(t, m.SendInput("root", "/goal ship the release", nil))
+
+	goal, ok := sink.LastGoal()
+	require.True(t, ok, "delivery must update the local goal row")
+	assert.Equal(t, "ship the release", goal.Objective)
+}
+
+func TestManagerGoal_SendInputDoesNotObserveARefusedCommand(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	provider := newClaudeGoalAgent(t, sink)
+	provider.HandleOutput([]byte(
+		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	provider.mu.Lock()
+	provider.stopped = true
+	provider.mu.Unlock()
+	m := NewManager(nil)
+	m.mu.Lock()
+	m.agents["root"] = provider
+	m.mu.Unlock()
+
+	assert.Error(t, m.SendInput("root", "/goal ship the release", nil))
+	assert.Empty(t, sink.Goals())
+}
+
+func TestManagerGoal_UpdateGoalReturnsTextRouteCommand(t *testing.T) {
+	t.Parallel()
+	provider := newClaudeGoalAgent(t, &testSink{})
+	provider.HandleOutput([]byte(
+		`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	m := NewManager(nil)
+	m.mu.Lock()
+	m.agents["root"] = provider
+	m.mu.Unlock()
+
+	command, err := m.UpdateGoal("root", GoalActionSet, "  ship\n the release ")
+
+	require.NoError(t, err)
+	assert.Equal(t, "/goal ship the release", command)
 }

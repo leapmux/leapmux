@@ -397,6 +397,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 // The lock covers only provider resolution. A blocked provider write must not
 // block a restart or explicit steering. A restart can still start between the
 // resolution and the write, but the interval is only the provider call setup.
+// A text-route provider observes the goal command after a successful delivery.
 //
 // Never call this from a caller that already holds the lifecycle lock
 // (LockAgent, RestartAgent): the lock is not reentrant, so it deadlocks. Send
@@ -418,7 +419,22 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		// activity comes from its background-task registry row.
 		p.PublishTurnActive()
 	}
+	if err == nil {
+		observeGoalCommand(p, GoalDeliverySend, content)
+	}
 	return err
+}
+
+// observeGoalCommand tells a text-route provider what LeapMux just delivered.
+//
+// Every route that reaches a provider process calls this, because the provider
+// alone knows which channel its command parser reads. A route that skipped it
+// would leave the CLI holding a goal the card never shows, for the life of the
+// session: no text-route provider reports a command-driven goal change back.
+func observeGoalCommand(p Agent, delivery GoalCommandDelivery, content string) {
+	if commander, ok := p.(GoalTextCommander); ok {
+		commander.ObserveGoalCommand(delivery, content)
+	}
 }
 
 func (m *Manager) CompactContext(agentID string) error {
@@ -433,6 +449,12 @@ func (m *Manager) CompactContext(agentID string) error {
 	return compactor.CompactContext()
 }
 
+// SteerInput interrupts the active turn with more text.
+//
+// A queued goal command is an ordinary user message, so the user can steer it.
+// The provider decides whether its steer channel reaches its command parser --
+// Claude Code steers by writing the same user message, and Goose steers through
+// a separate ACP method that LeapMux did not verify.
 func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
@@ -442,7 +464,11 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	if !ok {
 		return ErrSteeringUnsupported
 	}
-	return steerer.SteerInput(content, attachments)
+	err = steerer.SteerInput(content, attachments)
+	if err == nil {
+		observeGoalCommand(p, GoalDeliverySteer, content)
+	}
+	return err
 }
 
 // SupportsSteering reports whether the running agent can steer its active turn.
@@ -556,7 +582,7 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 }
 
 // SupportedGoalActions reports the session-goal actions the RUNNING agent can
-// perform, by type-asserting it to GoalController.
+// perform, by type-asserting it to GoalCapable.
 //
 // An agent that is not running answers with nothing, and so does a provider
 // that reports its goal without being able to change it (Reasonix). The browser
@@ -588,14 +614,15 @@ func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 	if !ok || exiting {
 		return nil
 	}
-	controller, ok := p.(GoalController)
+	capable, ok := p.(GoalCapable)
 	if !ok {
 		return nil
 	}
-	return controller.SupportedGoalActions()
+	return capable.SupportedGoalActions()
 }
 
-// UpdateGoal performs one session-goal action on the running agent.
+// UpdateGoal performs one session-goal action on the running agent. A non-empty
+// result is user-message text that the caller must enqueue before it takes effect.
 //
 // It refuses an action the agent does not list in SupportedGoalActions, so a
 // browser acting on a stale capability list gets a refusal instead of a call
@@ -603,7 +630,7 @@ func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 // rather than in the service: the two answers must come from the same agent
 // instance, and a service-side check would read the capability through a second
 // lookup that could resolve a different process.
-func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) error {
+func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) (string, error) {
 	// providerAfterLifecycle, like every other command dispatch here: the map
 	// read must happen AFTER a restart finishes, or it hands back the process
 	// that restart is destroying. A bare read can also miss the window between
@@ -614,27 +641,17 @@ func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string
 	// their comment: both run from callers that already hold it.
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	controller, ok := p.(GoalController)
+	writer, ok := p.(GoalWriter)
 	if !ok {
-		return ErrGoalControlUnsupported
+		return "", ErrGoalControlUnsupported
 	}
-	if !slices.Contains(controller.SupportedGoalActions(), action) {
-		return ErrGoalControlUnsupported
+	if !slices.Contains(writer.SupportedGoalActions(), action) {
+		return "", ErrGoalControlUnsupported
 	}
-	switch action {
-	case GoalActionSet:
-		return controller.SetGoal(objective)
-	case GoalActionClear:
-		return controller.ClearGoal()
-	case GoalActionPause:
-		return controller.PauseGoal()
-	case GoalActionResume:
-		return controller.ResumeGoal()
-	default:
-		return ErrGoalControlUnsupported
-	}
+	outcome, err := writer.PerformGoalAction(action, objective)
+	return outcome.QueuedInput, err
 }
 
 // StopAgent stops the agent with the given agent ID.

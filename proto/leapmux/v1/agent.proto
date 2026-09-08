@@ -900,10 +900,10 @@ message AgentGoalChanged {
   AgentGoal goal = 2;
   // What the RUNNING agent can do, decided by the worker from the live process
   // -- never a static per-provider table. Goal support is version-dependent
-  // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2) and Reasonix
-  // advertises it in its initialize reply, so a hardcoded table would offer a
-  // button that does nothing against an older CLI. Empty when the agent is not
-  // running, or when its provider can report a goal but not change one.
+  // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2). Goose and Copilot
+  // also advertise their commands at runtime. A hardcoded table would offer a
+  // button that does nothing against an older CLI. Empty when the agent does
+  // not run, or when its provider can report a goal but cannot change it.
   //
   // It sits HERE rather than on AgentGoal because it must exist when a goal
   // does NOT: "this agent can set a goal" is exactly what the empty state needs

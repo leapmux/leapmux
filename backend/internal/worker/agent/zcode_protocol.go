@@ -243,6 +243,10 @@ const (
 	// server request at all. It is never used for a DENIAL: a denial is a decision
 	// the user made, and it travels as a result.
 	ZCodeErrInternal = -32603
+	// ZCodeErrRevisionMismatch is returned for a write whose expectedRevision
+	// differs from the session's. Its `data.actualRevision` carries the
+	// revision the app-server holds -- see zcodeActualRevision.
+	ZCodeErrRevisionMismatch = -32009
 )
 
 // ZCodeOfficialAuthUnavailable is the status LeapMux reports for ZCode's hosted MCP

@@ -405,10 +405,10 @@ type OutputSink interface {
 	// status-active broadcast a provider makes during its own handshake) can run
 	// before that, and each would report an agent that can do nothing.
 	//
-	// Getting this wrong is not a cosmetic loss: the work panel is the only
-	// route to a FIRST goal, and it is hidden for an agent that reports no goal
-	// capability -- so an answer that is merely early leaves the feature
-	// unreachable for the life of the session.
+	// Getting this wrong is not a cosmetic loss: the goal card in the Goals &
+	// To-dos section is the only route to a FIRST goal, and the card is hidden
+	// for an agent that reports no goal capability -- so an answer that is
+	// merely early leaves the feature unreachable for the life of the session.
 	PublishGoalCapabilities()
 	ScheduleAutoContinue(schedule AutoContinueSchedule)
 	CancelAutoContinue(reason AutoContinueReason)

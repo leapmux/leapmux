@@ -1,6 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import { createEffect, createMemo, on } from 'solid-js'
+import { distributeSectionSizes } from './sectionSizes'
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -100,32 +101,37 @@ export function useSectionToggle(options: UseSectionToggleOptions): UseSectionTo
           return changed ? next : prev
         })
 
-        // Redistribute sizes so new sections get a fair share.
-        // Sections with a defaultSize get that fraction; the remaining
-        // space is split equally among the rest.
+        // Give a newly visible section a fair share, and leave every other
+        // section alone.
+        //
+        // Sizing only the sections that carry no size is what protects a split
+        // the user dragged. This effect runs on every visibility change, and a
+        // section's visibility now flips whenever the active tab changes to a
+        // provider that has the feature -- so rewriting every size here
+        // discarded a manual resize on the next tab switch, and discarded the
+        // PERSISTED split on the first run after the section list loaded.
+        // `expandedSizes` normalizes whatever this leaves, so sizing one
+        // section still fills the sidebar exactly.
         const expanded = expandableSectionIds().filter(sid => isOpen(sid))
         if (expanded.length >= 2) {
           const byId = sectionById()
-          let reservedTotal = 0
-          let unreservedCount = 0
+          const declared = new Map<string, number>()
           for (const eid of expanded) {
-            const ds = byId.get(eid)?.defaultSize
-            if (ds !== undefined) {
-              reservedTotal += ds
-            }
-            else {
-              unreservedCount++
-            }
+            const size = byId.get(eid)?.defaultSize
+            if (size !== undefined)
+              declared.set(eid, size)
           }
-          const unreservedSize = unreservedCount > 0
-            ? (1 - reservedTotal) / unreservedCount
-            : 1 / expanded.length
+          const shares = distributeSectionSizes(expanded, declared)
           setSectionSizes((prev) => {
             const next = { ...prev }
+            let assigned = false
             for (const eid of expanded) {
-              next[eid] = byId.get(eid)?.defaultSize ?? unreservedSize
+              if (next[eid] !== undefined)
+                continue
+              next[eid] = shares.get(eid) ?? 0
+              assigned = true
             }
-            return next
+            return assigned ? next : prev
           })
         }
 

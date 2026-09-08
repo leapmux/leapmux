@@ -37,7 +37,7 @@ var defaults = [...]defaultSection{
 	{"Archived", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED, leapmuxv1.Sidebar_SIDEBAR_LEFT},
 	{"Workers", leapmuxv1.SectionType_SECTION_TYPE_WORKERS, leapmuxv1.Sidebar_SIDEBAR_LEFT},
 	{"Files", leapmuxv1.SectionType_SECTION_TYPE_FILES, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
-	{"To-dos", leapmuxv1.SectionType_SECTION_TYPE_TODOS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
+	{"Goals & To-dos", leapmuxv1.SectionType_SECTION_TYPE_TODOS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
 	{"Background tasks", leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
 }
 

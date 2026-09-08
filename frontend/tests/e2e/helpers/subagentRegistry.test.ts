@@ -25,8 +25,19 @@ const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'u
 // which would have made these assertions vacuous.
 const LOCATOR = /page\.locator\(\s*(['"`])((?:(?!\1).)*)\1/g
 
+// `getByTestId` is the SECOND way this file names an element, and the rule
+// covers it too. A helper written entirely in that form escaped the scan
+// completely, while `locators.length > 5` still passed on the older calls --
+// so the guard reported green over a locator family nobody checked. The
+// captured id is normalized to the selector spelling, so one predicate below
+// judges both forms.
+const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
+
 function selectorsIn(text: string): string[] {
-  return [...text.matchAll(LOCATOR)].map(match => match[2])
+  return [
+    ...[...text.matchAll(LOCATOR)].map(match => match[2]),
+    ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2]}"]`),
+  ]
 }
 
 /** The source of one exported helper, from its signature to its closing brace. */
@@ -73,7 +84,7 @@ describe('registry locators', () => {
     const locators = selectorsIn(
       ABSENCE_HELPERS.reduce((rest, name) => rest.replace(bodyOf(name), ''), source),
     )
-    // The regex has to find something, or a rewrite of the helper -- or a
+    // The scan has to find something, or a rewrite of the helper -- or a
     // pattern that silently stops matching -- would make this pass by finding
     // nothing to check.
     expect(locators.length).toBeGreaterThan(5)
@@ -82,6 +93,28 @@ describe('registry locators', () => {
       DUPLICATED.some(id => selector.includes(`data-testid="${id}`)) && !selector.includes(':visible'),
     )
     expect(offenders).toEqual([])
+  })
+
+  /**
+   * The scan reads BOTH ways this file can name an element.
+   *
+   * The rule is about the element a locator resolves to, not about the call
+   * that builds it, so a helper written in `getByTestId` form must not escape
+   * it. It did: the scan matched `page.locator` alone, and the count assertion
+   * above stayed healthy on the older calls while a whole locator family went
+   * unchecked. Asserted here against a FIXTURE rather than against the source,
+   * because the helper is free to use one form only -- and it does today, so a
+   * source-based liveness check would fail for the right code.
+   */
+  it('reads a getByTestId locator, not only a page.locator one', () => {
+    const sample = `
+      page.locator('[data-testid="goal-card"]:visible')
+      page.getByTestId('agent-input-queue')
+    `
+    expect(selectorsIn(sample)).toEqual([
+      '[data-testid="goal-card"]:visible',
+      '[data-testid="agent-input-queue"]',
+    ])
   })
 
   it('leaves an absence assertion unscoped, so a collapsed section cannot pass it', () => {

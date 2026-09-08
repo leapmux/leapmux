@@ -48,9 +48,10 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
+import { hasGoalSurface } from '~/stores/chatGoal'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
+import { agentTabSupportsSessionGoal, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
@@ -850,6 +851,32 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // in a subagent transcript could not resolve a sibling or the parent.
             // Memoized because bgRootFor walks the parent chain on every call.
             const rootTasks = createMemo(() => bgTasksFor(agentId))
+            /**
+             * The ROOT's goal surface, or nothing.
+             *
+             * Memoized for the reason its two neighbours are: `agentLifecycle`
+             * below is one reactive unit, so every read re-ran all four store
+             * lookups and three parent-chain walks and minted a fresh object.
+             * `ThinkingIndicator` reads this prop three times in one expression.
+             *
+             * The provider comes from the ROOT tab, never from this one. A
+             * subagent tab is seeded with its parent's provider and carries
+             * NOTHING when that parent tab is not resolvable, and an absent
+             * provider reads as "no goal feature" -- which hid a goal the worker
+             * was reporting, with nothing on screen to say why.
+             */
+            const goalSurface = createMemo<GoalSurface | undefined>(() => {
+              const rootId = bgRootFor(agentId)
+              if (!agentTabSupportsSessionGoal(view.getAgentTab(rootId)))
+                return undefined
+              const surface: GoalSurface = {
+                current: goalFor(agentId),
+                progress: goalProgressFor(agentId),
+                actions: goalActionsFor(agentId),
+                onAction: onGoalAction ? action => onGoalAction(rootId, action) : undefined,
+              }
+              return hasGoalSurface(surface) ? surface : undefined
+            })
 
             // A named const with GETTERS, not an inline object literal in the
             // JSX. Solid compiles a literal passed as a prop into ONE getter for
@@ -868,17 +895,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
-              // A getter, for the reason the comment above gives: a plain value
-              // here compiles, renders once, and never updates. The whole goal
-              // surface is one field, so no hop below can forward part of it.
-              get goal(): GoalSurface {
-                return {
-                  current: goalFor(agentId),
-                  progress: goalProgressFor(agentId),
-                  actions: goalActionsFor(agentId),
-                  onAction: onGoalAction ? action => onGoalAction(bgRootFor(agentId), action) : undefined,
-                }
-              },
+              // A getter keeps the goal reactive. Absence means that the
+              // provider has no session-goal feature, or that the card could
+              // hold nothing -- the same rule the sidebar applies, through the
+              // same helper. See goalSurface above for why it is a memo.
+              get goal() { return goalSurface() },
               onOpenSubagent: onOpenBackgroundTask,
               // The WORKER travels with the agent, from the tab that owns this
               // transcript. Reading it from the focused tile instead would take

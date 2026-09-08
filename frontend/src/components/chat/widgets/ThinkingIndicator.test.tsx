@@ -163,6 +163,7 @@ describe('thinking indicator chips', () => {
     goalProgress?: GoalProgress
     goalActions?: GoalAction[]
     onGoalAction?: (action: GoalAction) => void
+    goalSupported?: boolean
   }) {
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
@@ -171,12 +172,14 @@ describe('thinking indicator chips', () => {
           visible={true}
           paused={true}
           {...props}
-          goal={{
-            current: props.goal,
-            progress: props.goalProgress ?? {},
-            actions: props.goalActions ?? [],
-            onAction: props.onGoalAction,
-          }}
+          goal={props.goalSupported === true || props.goal !== undefined
+            ? {
+                current: props.goal,
+                progress: props.goalProgress ?? {},
+                actions: props.goalActions ?? [],
+                onAction: props.onGoalAction,
+              }
+            : undefined}
         />
       ))
     }
@@ -301,14 +304,15 @@ describe('thinking indicator chips', () => {
   // popover open on an inside click on purpose -- so without the dismiss the
   // panel stays open underneath the dialog and is still there when the dialog
   // closes.
-  it('closes the goal popover when the user starts to set a goal', async () => {
+  it('closes the to-dos popover when the user starts to set a goal', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
+      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
       onGoalAction,
     })
-    const popover = getByTestId('goal-popover')
+    const popover = getByTestId('todo-list-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
     // Through the `...` menu, which is where every verb of an EXISTING goal
@@ -324,14 +328,15 @@ describe('thinking indicator chips', () => {
 
   // The other three act IN PLACE and their result shows in this panel, so
   // dismissing on them would hide the change the user asked for.
-  it('keeps the goal popover open for an action that acts in place', async () => {
+  it('keeps the to-dos popover open for an action that acts in place', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
+      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
       onGoalAction,
     })
-    const popover = getByTestId('goal-popover')
+    const popover = getByTestId('todo-list-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
     await fireEvent.click(getByTestId('goal-actions-trigger'))
@@ -347,6 +352,7 @@ describe('thinking indicator chips', () => {
   // neither reads as a bug in the wrapper that caused it.
   it('passes the rest of the goal surface through to the card', () => {
     const { getByTestId } = renderChips({
+      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
       goal: { objective: 'Keep the suite green', status: 'active' },
       goalProgress: { tokensUsed: 1200 },
       goalActions: ['set', 'clear', 'pause'],
@@ -364,6 +370,7 @@ describe('thinking indicator chips', () => {
   // host that supplies no way to act on them.
   it('offers no goal controls when the host supplies no handler', () => {
     const { queryByTestId } = renderChips({
+      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
     })
@@ -401,39 +408,92 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
+  /**
+   * The chip opens the Goals & To-dos popover, so EITHER half can open it.
+   *
+   * A to-do count alone left an agent with a goal and no list with no goal
+   * surface in the transcript at all -- the goal's own chip is gone, and the
+   * sidebar section can be collapsed or on another tab.
+   */
+  it('shows the chip for a goal with no to-do list, naming its status', () => {
+    const { getByTestId } = renderChips({
+      todos: [],
+      goal: { objective: 'every test passes', status: 'blocked' },
+    })
+    // The goal's status word, not "0/0 to-dos" -- a count would describe the
+    // half of the popover that has nothing in it.
+    expect(getByTestId('thinking-todos-chip').textContent).toBe('Goal: needs attention')
+  })
+
+  // A list present: the count wins, because that is what the chip counts and
+  // the goal is one card inside the popover it opens.
+  it('shows the to-do count when a list exists beside a goal', () => {
+    const todos: TodoItem[] = [
+      { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
+      { rowKey: 'b', content: 'b', status: 'pending', activeForm: '' },
+    ]
+    const { getByTestId } = renderChips({
+      todos,
+      goal: { objective: 'every test passes', status: 'active' },
+    })
+    expect(getByTestId('thinking-todos-chip').textContent).toBe('1/2 to-dos')
+  })
+
+  /**
+   * The stored GOAL decides, not the surface.
+   *
+   * A surface also carries "this agent can be given a goal", which is true of
+   * every goal-capable agent alive -- so testing the surface would put a chip
+   * on all of them with nothing to report.
+   */
+  it('hides the chip for a goal-capable agent that has no goal yet', () => {
+    const { queryByTestId } = renderChips({ todos: [], goalSupported: true, goalActions: ['set'] })
+    expect(queryByTestId('thinking-todos-chip')).toBeNull()
+  })
+
+  it('renders the goal card above the list in the to-dos popover', () => {
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const { getByTestId, getByText } = renderChips({
+      todos,
+      goal: { objective: 'Ship it', status: 'active' },
+    })
+    const card = getByTestId('goal-card')
+    const listItem = getByText('Run tests')
+    expect(card.compareDocumentPosition(listItem) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('renders no goal card when the host passes no surface', () => {
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const { queryByTestId } = renderChips({ todos })
+    expect(queryByTestId('goal-card')).toBeNull()
+  })
+
+  /**
+   * The FIRST-RUN state, and the one every other case here skips by supplying a
+   * stored goal: a goal-capable agent that has no goal yet. The host passes a
+   * surface with no `current`, and the popover has to offer the route to a
+   * first goal rather than an empty box.
+   */
+  it('offers the empty card and its Set route for a goal-capable agent with no goal', () => {
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const { getByTestId } = renderChips({
+      todos,
+      goalSupported: true,
+      goalActions: ['set'],
+      onGoalAction: vi.fn(),
+    })
+    expect(getByTestId('goal-card-empty')).not.toBeNull()
+    expect(getByTestId('goal-action-set')).not.toBeNull()
+  })
+
   // The row reads "<verb>... <background tasks> · <to-dos> · <tokens>": the
   // rotating verb leads, and the counters trail it, middot-separated. The verb
   // is outside the separator chain, so leading it adds no middot of its own.
-  /**
-   * The goal chip, which leads the counters.
-   *
-   * It is a CONVENIENCE, not the way a goal is reached: this whole indicator is
-   * hidden unless the agent is ACTIVE and no permission prompt is pending, which
-   * is exactly the paused / blocked / achieved states a goal needs acting on.
-   * The sidebar section is the reachable surface -- see
-   * shouldShowBackgroundTasksSection.
-   */
-  it('shows a goal chip naming the status, and hides it without a goal', () => {
-    const goal: SessionGoal = { objective: 'every test passes', status: 'blocked' }
-    const { getByTestId } = renderChips({ goal })
-    expect(getByTestId('thinking-goal-chip').textContent).toBe('Goal: needs attention')
-    expect(renderChips({}).queryByTestId('thinking-goal-chip')).toBeNull()
-  })
-
-  // A goal is not a background task, so it must not resurrect the chip that
-  // counts them -- the two answer different questions.
-  it('does not show the background-tasks chip for a goal alone', () => {
-    const goal: SessionGoal = { objective: 'x', status: 'active' }
-    const { queryByTestId } = renderChips({ goal })
-    expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
-  })
-
-  it('draws three separators when all four counters show', () => {
+  it('draws two separators when all three counters show', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
-    const goal: SessionGoal = { objective: 'x', status: 'active' }
-    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos, goal })
+    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('\u00B7').length - 1
-    expect(dots).toBe(3)
+    expect(dots).toBe(2)
   })
 
   it('orders the verb before the counters, separated by middots', () => {

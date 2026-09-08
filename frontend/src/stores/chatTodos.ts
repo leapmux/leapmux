@@ -1,4 +1,5 @@
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { GoalSurface } from '~/stores/chatGoal'
 import { TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 
 // ---------------------------------------------------------------------------
@@ -172,4 +173,24 @@ export function todoProgress(todos: TodoItem[]): { done: number, total: number }
       done++
   }
   return { done, total }
+}
+
+/**
+ * Whether the Goals & To-dos section belongs on screen.
+ *
+ * A to-do keeps the section visible. This is the complete rule for a provider
+ * without a session goal. A goal surface keeps the section visible even when
+ * the list and the current goal are empty. The empty card is the route to a
+ * first goal.
+ *
+ * It takes the SURFACE the section will render, never a boolean about the
+ * provider. A visible section can then never hold nothing: the surface is
+ * absent exactly when the card could show no goal and offer no way to set one
+ * (see `~/stores/chatGoal`.`hasGoalSurface`).
+ */
+export function shouldShowGoalsAndTodosSection(
+  todos: TodoItem[],
+  goal: GoalSurface | undefined,
+): boolean {
+  return todos.length > 0 || goal !== undefined
 }

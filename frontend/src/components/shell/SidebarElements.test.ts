@@ -120,8 +120,8 @@ function trackedOpts() {
       reads.push('isActiveWorkspaceArchived')
       return false
     },
-    get showTodos() {
-      reads.push('showTodos')
+    get showGoalsAndTodos() {
+      reads.push('showGoalsAndTodos')
       return false
     },
     get activeTodos() {

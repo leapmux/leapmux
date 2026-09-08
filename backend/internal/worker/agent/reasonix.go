@@ -75,7 +75,7 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.subagentFromToolCall = reasonixSubagentFromToolCall
 			// Reasonix streams its goal state on its own notification, outside
 			// the standard ACP session updates. Read-only: see reasonix_goal.go
-			// for why no GoalController is implemented.
+			// for why no GoalWriter is implemented.
 			a.extraMethod = a.handleExtraMethod
 		},
 	})

@@ -14,7 +14,7 @@ import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/a
 // that itself -- so this is a single value, not a list.
 //
 // A leaf module: it imports only the generated proto types, so the chat store,
-// the work panel and the indicator chip share one shape without routing
+// the Goals & To-dos surfaces share one shape without routing
 // conversions through the window store.
 // ---------------------------------------------------------------------------
 
@@ -71,12 +71,11 @@ export interface GoalProgress {
  * the handler is what makes them do anything -- so a component that holds three
  * of the four draws a card that is wrong rather than incomplete.
  *
- * One parameter object rather than four props, because these crossed seven
- * component interfaces under three naming schemes (`goal*`, `activeGoal*`, and
- * GoalCard's bare `progress`). Threading four fields through seven hops meant
- * every hop restated all four and could drop one silently: an omitted optional
- * prop is not a type error, and the symptom is a control that never arms. One
- * field cannot be partly forwarded.
+ * One parameter object rather than four props, because these cross several
+ * component interfaces under different naming schemes. Four separate props
+ * made every hop restate all four, and a hop could drop one silently. An
+ * omitted optional prop is not a type error, and the symptom is a control that
+ * never arms. One field cannot be partly forwarded.
  */
 export interface GoalSurface {
   /** The stored goal, or undefined when the agent has none. */
@@ -99,8 +98,24 @@ export interface GoalSurface {
   onAction?: (action: GoalAction) => void
 }
 
-/** The surface for an agent with no goal, no counters and no live process. */
-export const EMPTY_GOAL_SURFACE: GoalSurface = { progress: {}, actions: [] }
+/**
+ * Whether this agent has a goal surface at all: a goal to show, or the ability
+ * to be given one.
+ *
+ * The provider flag decides whether the FEATURE exists; this decides whether
+ * the card can hold anything. Both are needed. A surface built from the flag
+ * alone draws a card reading "No session goal." with no button, for the whole
+ * life of a Reasonix tab, of a stopped agent, of a Claude Code build older than
+ * 2.1.139, and of a Goose or Copilot process that has not yet advertised its
+ * command -- because `goalActionState` reports `set` as hidden for an empty
+ * action list, and the button is the only route to a first goal.
+ *
+ * The rule lives HERE, beside the surface it describes, because both surface
+ * builders ask it and a rule spelled twice can be spelled two ways.
+ */
+export function hasGoalSurface(surface: GoalSurface): boolean {
+  return surface.current !== undefined || surface.actions.includes('set')
+}
 
 /** Converts the wire goal to the store shape. */
 export function protoGoalToStore(g: ProtoAgentGoal): SessionGoal {
@@ -272,18 +287,4 @@ export function goalActionState(
   if (action === 'resume' && goal.status !== 'paused')
     return { kind: 'disabled', reason: 'Only a paused goal can be resumed' }
   return { kind: 'enabled' }
-}
-
-/**
- * Whether this agent has a goal surface at all: a goal to show, or the ability
- * to be given one.
- *
- * The rule lives HERE rather than at its call sites because three of them ask
- * it -- the sidebar section's visibility, the work panel's tab list, and the
- * panel's empty state -- and a rule spelled three times can be spelled three
- * ways. A surface that appears in the sidebar but has no Goal tab, or a Goal
- * tab that can never hold anything, are both what that drift looks like.
- */
-export function hasGoalSurface(surface: GoalSurface): boolean {
-  return surface.current !== undefined || surface.actions.includes('set')
 }

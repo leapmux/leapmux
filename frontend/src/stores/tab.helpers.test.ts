@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabSupportsSessionGoal, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1032,6 +1032,39 @@ describe('isSteerableAgentTab', () => {
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false, agentProvider: AgentProvider.CODEX }),
     ).toBe(false)
+  })
+})
+
+describe('agentTabSupportsSessionGoal', () => {
+  // Real providers, because the answer is a generated CONTRACT table and not a
+  // plugin field a test can register. Claude Code has a session goal; Pi does
+  // not. See contracts/providers.json.
+  const supported = AgentProvider.CLAUDE_CODE
+  const unsupported = AgentProvider.PI
+
+  it('reads true for a provider the contract lists', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: supported })).toBe(true)
+  })
+
+  it('reads false for a provider the contract excludes', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: unsupported })).toBe(false)
+  })
+
+  it('reads false for provider skew and non-agent tabs', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT, agentProvider: 999 as AgentProvider })).toBe(false)
+    expect(agentTabSupportsSessionGoal({ type: TabType.FILE, agentProvider: supported })).toBe(false)
+  })
+
+  /**
+   * A subagent tab is seeded with its parent's provider, and carries NOTHING
+   * when that parent tab is not resolvable -- so an absent provider is a real,
+   * reachable state and not a type-system formality. It must read as "unknown",
+   * which the two goal surfaces answer by resolving the ROOT tab instead.
+   */
+  it('reads false for a tab with no provider at all', () => {
+    expect(agentTabSupportsSessionGoal({ type: TabType.AGENT })).toBe(false)
+    expect(agentTabSupportsSessionGoal(undefined)).toBe(false)
+    expect(agentTabSupportsSessionGoal(null)).toBe(false)
   })
 })
 

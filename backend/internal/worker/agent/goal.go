@@ -2,6 +2,8 @@ package agent
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -12,16 +14,10 @@ import (
 // The session goal: a standing objective the agent keeps working toward, which
 // a check at the end of every turn re-tests until the condition holds.
 //
-// Several CLIs have this feature and each spells it differently. LeapMux reads
-// four of them today -- Codex's thread/goal/updated, ZCode's session-snapshot
-// `goal`, Claude Code's active_goal stdout frame, and Reasonix's status_update.
-// This file holds the neutral shape they reduce to, so the service layer and
-// the browser learn one vocabulary instead of four.
-//
-// Copilot, Goose and Cursor also have a session goal and LeapMux reads none of
-// them: Copilot keeps one `current` autopilot objective, Goose holds a `/goal`
-// and a separate `/grind` slot, and Cursor keeps one `goalState`. Each would
-// need its own reader here; nothing else in this file changes for them.
+// Several command-line interfaces (CLIs) have this feature and use different
+// wire shapes. LeapMux reads structured reports from Codex, ZCode, Claude Code,
+// and Reasonix. It observes delivered goal commands for Claude Code, Goose,
+// and Copilot. Cursor exposes no client-write route.
 //
 // There is at most ONE goal per agent, because every one of those CLIs enforces
 // that itself: Codex keys thread_goals by thread_id, ZCode keys its target by
@@ -257,46 +253,217 @@ func GoalActionToProto(a GoalAction) leapmuxv1.AgentGoalAction {
 	}
 }
 
-// GoalController is optionally implemented by a running Agent whose provider
-// can be TOLD to change the goal. Reading a goal is separate and needs nothing
-// here -- a provider that only reports its goal implements none of this and the
-// browser disables every control.
+// GoalCapable marks a provider that has a session goal.
+// SupportedGoalActions reports what the running process can do now.
+type GoalCapable interface {
+	SupportedGoalActions() []GoalAction
+}
+
+// GoalOutcome is what one goal action left for the caller to do.
 //
-// Not every provider that reports a goal can be told to change it, and the gap
-// is not laziness:
+// A side-band provider performed the action, and returns the zero value. A
+// text-route provider built a user message that changes nothing until the
+// durable input queue delivers it, and returns it in QueuedInput.
+type GoalOutcome struct {
+	// QueuedInput is user-message text the caller MUST enqueue. Empty means the
+	// action already took effect.
+	QueuedInput string
+}
+
+// GoalWriter is implemented by each provider that can be TOLD to change its
+// goal. One interface, whichever route the provider uses, so no caller chooses
+// between two and no provider can implement both and lose one silently.
+//
+// Not every provider that reports a goal can change it:
 //
 //   - Codex and ZCode have a real side-band command (thread/goal/set,
-//     session/goal) that is acknowledged and starts no turn. They implement all
-//     four actions.
-//   - Claude Code has no control-protocol method at all. Its only write is
-//     sending the literal text "/goal ..." as a user turn, which costs tokens
-//     and shows in the transcript. It implements Set and Clear that way -- the
-//     transcript row is a feature, because it shows the cause of the change --
-//     and has no pause or resume to implement.
-//   - Reasonix implements none. Setting means switching to its "goal" mode and
-//     hijacking the next prompt, and CLEARING means switching back to whichever
-//     mode the session was in before -- which LeapMux never tracked, so a clear
-//     would silently drop the user out of plan mode.
+//     session/goal). A set starts a turn for both providers. ZCode pause also
+//     stops the current turn. They perform all four actions at once.
+//   - Claude Code, Goose, and Copilot have only a user-message command. They
+//     return it as QueuedInput, and observe it after the queue delivers it.
+//     GoalTextCommander is how they build and observe that text.
+//   - Reasonix implements none of this. Setting changes its mode and takes the
+//     next prompt. Clearing must restore a mode that LeapMux did not track.
 //
 // SupportedGoalActions is what the browser reads to disable a control, so it
 // lives on the same interface as the implementations and cannot drift from
 // them. This mirrors AgentInfo.accepts_messages, which is decided the same way
 // (a type assertion on the running agent) for the same reason.
-type GoalController interface {
-	// SupportedGoalActions reports the actions THIS agent can perform, in a
-	// stable order. A provider whose support depends on the CLI version it
-	// launched answers from what that process reported, never from a table.
-	SupportedGoalActions() []GoalAction
-	// SetGoal replaces the objective. The provider decides whether that starts
-	// a turn.
-	SetGoal(objective string) error
-	ClearGoal() error
-	PauseGoal() error
-	ResumeGoal() error
+type GoalWriter interface {
+	GoalCapable
+
+	// PerformGoalAction runs one action. The provider decides whether that
+	// starts a turn, and whether the caller has anything left to do.
+	PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error)
 }
 
-// ErrGoalControlUnsupported is returned by the Manager when a running Agent
-// does not implement GoalController, or implements it without the requested
-// action. The service maps it to FailedPrecondition, so a browser acting on a
-// stale capability list gets a refusal rather than a silent no-op.
+// GoalCommandDelivery names the channel that carried a goal command to the
+// provider process. A provider reads its own command parser on one channel and
+// not always on the other, so the observer must know which one delivered.
+type GoalCommandDelivery int
+
+const (
+	// GoalDeliverySend is the provider's ordinary user-message channel.
+	GoalDeliverySend GoalCommandDelivery = iota
+	// GoalDeliverySteer interrupts the active turn with more text.
+	GoalDeliverySteer
+)
+
+// GoalTextCommander owns a provider's user-message command syntax.
+//
+// It is NOT a second write route beside GoalWriter: a text-route provider
+// implements both, and its PerformGoalAction returns the text this builds. The
+// Manager asserts this one only to report a DELIVERY back, which a side-band
+// provider has no use for.
+type GoalTextCommander interface {
+	GoalWriter
+	// ObserveGoalCommand updates local goal state after a delivery. The
+	// provider decides which channels reach its command parser.
+	ObserveGoalCommand(delivery GoalCommandDelivery, text string)
+}
+
+type goalTextIntent int
+
+const (
+	goalTextNotCommand goalTextIntent = iota
+	goalTextBareQuery
+	goalTextClear
+	goalTextSet
+)
+
+// goalTextRoute is one provider's user-message goal vocabulary.
+//
+// The three text-route providers differ in five values and in nothing else, so
+// the algorithm lives here and each provider declares one of these. The rule
+// that provider-specific logic stays in the provider still holds: the command,
+// the clear words and the capability check remain in the provider's own file.
+// Only the format-and-observe algorithm is shared, exactly as
+// parseGoalCommandText already is.
+type goalTextRoute struct {
+	// provider names the provider in an error message.
+	provider string
+	// command is the slash command that LeapMux emits.
+	command string
+	// clearArgs lists each complete argument that clears the goal. LeapMux
+	// emits the first one and observes them all.
+	clearArgs []string
+	// steerCarriesCommand is true when the provider's steer channel reaches the
+	// same command parser as its send channel. Claude Code steers by sending
+	// the identical user message, so a steered command changes its goal. Goose
+	// steers through a separate ACP method whose command handling LeapMux did
+	// not verify, and Copilot refuses steering, so both leave this false.
+	steerCarriesCommand bool
+}
+
+// ErrGoalObjectiveIsCommand means that the objective is one of the words that
+// clears the goal, so the provider would read a set as a clear. The service
+// maps it to InvalidArgument.
+var ErrGoalObjectiveIsCommand = errors.New("this objective is a word that clears the goal")
+
+// perform builds the user message for one action. It changes nothing itself:
+// a text route takes effect only once the queue delivers what it returns.
+func (r goalTextRoute) perform(action GoalAction, objective string) (GoalOutcome, error) {
+	text, err := r.commandText(action, objective)
+	if err != nil {
+		return GoalOutcome{}, err
+	}
+	return GoalOutcome{QueuedInput: text}, nil
+}
+
+// commandText builds the user message for one action, or refuses it.
+func (r goalTextRoute) commandText(action GoalAction, objective string) (string, error) {
+	switch action {
+	case GoalActionSet:
+		objective = foldGoalObjective(objective)
+		if objective == "" {
+			return "", fmt.Errorf("%s %s: an objective is required", r.provider, r.command)
+		}
+		// The command is positional, so a one-word objective that equals a
+		// clear word reaches the provider as a clear. The provider then removes
+		// the goal, and parseGoalCommandText below reads the same text the same
+		// way, so nothing reports the difference. Refuse instead, and let the
+		// user see why. ZCode escapes the same hazard with its `replace` alias;
+		// a text route has no alias to reach for.
+		if r.matchesClearArgument(objective) {
+			return "", fmt.Errorf("%w: %s %s reads %q as a clear",
+				ErrGoalObjectiveIsCommand, r.provider, r.command, objective)
+		}
+		return r.command + " " + objective, nil
+	case GoalActionClear:
+		return r.command + " " + r.clearArgs[0], nil
+	default:
+		return "", ErrGoalControlUnsupported
+	}
+}
+
+// observe writes the goal that a delivered command installed.
+func (r goalTextRoute) observe(sink OutputSink, delivery GoalCommandDelivery, text string) {
+	if delivery == GoalDeliverySteer && !r.steerCarriesCommand {
+		return
+	}
+	intent, objective := parseGoalCommandText(text, r.command, r.clearArgs)
+	switch intent {
+	case goalTextSet:
+		// A fresh CreatedAt on every set, so re-setting the SAME objective
+		// reads as a restart rather than as no change. Codex earns that
+		// identity from its own wire; here the observer is the only source.
+		sink.UpsertGoal(GoalUpdate{
+			Objective: objective,
+			Status:    GoalStatusActive,
+			CreatedAt: time.Now().UTC(),
+		})
+	case goalTextClear:
+		// Not a snapshot: the user just did this, so it is a real transition.
+		sink.ClearGoal(false)
+	case goalTextNotCommand, goalTextBareQuery:
+		// These inputs do not change the goal.
+	}
+}
+
+func (r goalTextRoute) matchesClearArgument(argument string) bool {
+	for _, clearArg := range r.clearArgs {
+		if strings.EqualFold(argument, clearArg) {
+			return true
+		}
+	}
+	return false
+}
+
+// foldGoalObjective makes a goal safe for a single-line slash command. A
+// newline ends the command, and the provider sends the rest as a second line.
+func foldGoalObjective(objective string) string {
+	return strings.Join(strings.Fields(objective), " ")
+}
+
+// parseGoalCommandText classifies one delivered provider command. A clear
+// word must match the complete argument.
+//
+// It reads the FIRST LINE only. A provider takes the remainder of the command
+// line as the objective, so a later line of the same message belongs to no
+// command. Folding the whole message would store an objective longer than the
+// one the provider installed, and no text route reports the goal back to
+// correct it.
+func parseGoalCommandText(text, command string, clearArgs []string) (goalTextIntent, string) {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	line = strings.TrimSpace(line)
+	if line == command {
+		return goalTextBareQuery, ""
+	}
+	if !strings.HasPrefix(line, command+" ") {
+		return goalTextNotCommand, ""
+	}
+	argument := foldGoalObjective(strings.TrimPrefix(line, command+" "))
+	if argument == "" {
+		return goalTextBareQuery, ""
+	}
+	for _, clearArg := range clearArgs {
+		if strings.EqualFold(argument, clearArg) {
+			return goalTextClear, ""
+		}
+	}
+	return goalTextSet, argument
+}
+
+// ErrGoalControlUnsupported means that the provider has no goal route or does
+// not support the requested action. The service maps it to FailedPrecondition.
 var ErrGoalControlUnsupported = errors.New("agent provider does not support this session-goal action")

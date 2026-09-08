@@ -3,12 +3,12 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
-import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
+import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
-import { TodoList } from '~/components/todo/TodoList'
+import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { pluralize } from '~/lib/plural'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
-import { EMPTY_GOAL_SURFACE, goalStatusLabel } from '~/stores/chatGoal'
+import { goalStatusLabel } from '~/stores/chatGoal'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -68,15 +68,8 @@ export interface ThinkingIndicatorProps {
    */
   todos?: TodoItem[]
   /**
-   * The session goal -- the standing objective the agent works toward. Powers
-   * its own chip and the Goal tab of the popover.
-   *
-   * The chip is a CONVENIENCE, not the way a goal is reached. This whole
-   * indicator is hidden unless the agent is ACTIVE and no permission prompt is
-   * pending (see shouldShowThinkingIndicator), which is exactly the set of
-   * states -- paused, blocked, achieved -- a user most needs to act on. The
-   * sidebar section is the reachable surface, and it stays visible for a goal
-   * with no running work.
+   * The session goal for the to-dos popover. It is absent when the provider
+   * has no session-goal feature.
    */
   goal?: GoalSurface
 }
@@ -235,9 +228,9 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // not an activation), which makes this the only thing that closes it on a
   // row click.
   let bgTasksPopoverEl: HTMLElement | undefined
-  // The goal popover's element, for the same reason its sibling has one: a row
-  // click that opens a subagent must dismiss whichever popover it came from.
-  let goalPopoverEl: HTMLElement | undefined
+  // The to-dos popover element lets the Set action dismiss the card before it
+  // opens the modal goal editor.
+  let todosPopoverEl: HTMLElement | undefined
   let expandRafId = 0
   let tickRafId = 0
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
@@ -287,8 +280,15 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const todoCount = createMemo(() => todoProgress(props.todos ?? []))
   // "2/5 to-dos". The noun agrees with the TOTAL, not the done count: a list of
   // one reads "0/1 to-do" whether or not it is finished.
+  //
+  // With no list at all the chip is open on the GOAL's account, so it names the
+  // goal's status instead. A count would read "0/0 to-dos", which describes the
+  // half of the popover that has nothing in it.
   const todoCountLabel = createMemo(() => {
     const { done, total } = todoCount()
+    const goal = props.goal?.current
+    if (total === 0 && goal !== undefined)
+      return `Goal: ${goalStatusLabel(goal.status).toLowerCase()}`
     return `${done}/${pluralize(total, 'to-do')}`
   })
 
@@ -302,11 +302,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // its successor to decide whether to draw a leading `·`.
   const showTokens = () => countTokens() !== undefined
   const showBgTasks = () => activeBgTaskCount() > 0
-  const showTodos = () => todoCount().total > 0
-  // The stored GOAL decides, not the surface: the surface exists for every
-  // agent, because it also carries "this agent can be given a goal". Testing it
-  // would show a chip reading "Goal: active" on every agent alive.
-  const showGoal = () => props.goal?.current !== undefined
+  // The chip opens the Goals & To-dos popover, so EITHER half can open it. A
+  // to-do count alone left an agent with a goal and no list with no goal
+  // surface in the transcript at all, and the goal's own chip is gone.
+  //
+  // The stored GOAL decides, not the surface: the surface also carries "this
+  // agent can be given a goal", which is true of every goal-capable agent
+  // alive. Testing it would show a chip on all of them with nothing to report.
+  const showTodos = () => todoCount().total > 0 || props.goal?.current !== undefined
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -480,86 +483,10 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   )
 
   /**
-   * The popover body, shared by the goal chip and the background-task chip.
-   *
-   * Both open the SAME panel, so a user who opened either can reach the other
-   * without hunting for a second chip. `hostPopover` is a getter rather than the
-   * element, because the two refs are assigned when their own chip first
-   * renders and one of them is still undefined when this is built.
-   */
-  const renderWorkPanel = (hostPopover: () => HTMLElement | undefined): JSX.Element => (
-    <AgentWorkPanel
-      variant="popover"
-      tasks={props.backgroundTasks ?? []}
-      // SET opens a modal dialog on top of this popover, and `as="card"` keeps
-      // a popover open on an inside click on purpose -- so without the dismiss
-      // the panel stays open underneath the dialog and is still there when the
-      // dialog closes. The other three act IN PLACE and their result shows in
-      // this panel, so they must keep it open.
-      //
-      // The handler is wrapped only when the host supplies one, for the reason
-      // onOpenSubagent is: the card renders its buttons on the strength of it
-      // being present. The rest of the surface passes through unchanged.
-      goal={{
-        ...(props.goal ?? EMPTY_GOAL_SURFACE),
-        onAction: props.goal?.onAction
-          ? (action: GoalAction) => {
-              if (action === 'set')
-                hostPopover()?.hidePopover()
-              props.goal?.onAction?.(action)
-            }
-          : undefined,
-      }}
-      // Wrapped only when the host actually supplies a handler. The list
-      // renders a subagent row as a BUTTON on the strength of this prop being
-      // present, so an always-defined wrapper would give a host that passes
-      // nothing a row that looks clickable, dismisses the popover, and does
-      // nothing.
-      onOpenSubagent={props.onOpenSubagent
-        ? (item) => {
-            // The subagent's tab takes over from here, so leaving the popover
-            // open would cover the transcript the click opened.
-            hostPopover()?.hidePopover()
-            props.onOpenSubagent?.(item)
-          }
-        : undefined}
-    />
-  )
-
-  /**
    * One entry per trailing counter, in render order. Constant for the life of
    * the component -- see the <For> below for why that matters.
    */
   const counters: Array<{ show: () => boolean, render: () => JSX.Element }> = [
-    {
-      // The session goal: shown whenever one exists. Its own chip rather than a
-      // widened background-task chip, because a goal is not a background task
-      // and "Goal + 2 background tasks" is a label that is neither. The
-      // position-derived separator rule below is what makes adding one cheap.
-      show: showGoal,
-      render: () => (
-        <DropdownMenu
-          as="card"
-          data-testid="goal-popover"
-          popoverRef={(el) => { goalPopoverEl = el }}
-          trigger={triggerProps => (
-            <button
-              class={styles.countChip}
-              data-testid="thinking-goal-chip"
-              {...triggerProps}
-            >
-              {/* The status word only. No elapsed time: this row is the one
-                  place already de-tuned twice for render cost, and a live
-                  duration here re-renders it every second for the life of the
-                  goal. */}
-              {`Goal: ${goalStatusLabel(props.goal?.current?.status ?? 'active').toLowerCase()}`}
-            </button>
-          )}
-        >
-          {renderWorkPanel(() => goalPopoverEl)}
-        </DropdownMenu>
-      ),
-    },
     {
       // Background tasks: shown while there are active subagents/shells.
       // Clicking opens a popover with the full registry.
@@ -583,18 +510,30 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </button>
           )}
         >
-          {renderWorkPanel(() => bgTasksPopoverEl)}
+          <BackgroundTaskPanel
+            variant="popover"
+            tasks={props.backgroundTasks ?? []}
+            // The wrapper exists only when the host supplies a handler. The
+            // list uses its presence to decide whether a row is a button.
+            onOpenSubagent={props.onOpenSubagent
+              ? (item) => {
+                  bgTasksPopoverEl?.hidePopover()
+                  props.onOpenSubagent?.(item)
+                }
+              : undefined}
+          />
         </DropdownMenu>
       ),
     },
     {
-      // To-dos: shown when there is at least one non-deleted todo. Renders
-      // done/total; clicking opens the existing TodoList.
+      // Goals & to-dos: shown for a non-deleted to-do, or for a goal surface.
+      // Renders done/total, or the goal's status when there is no list.
       show: showTodos,
       render: () => (
         <DropdownMenu
           as="card"
           data-testid="todo-list-popover"
+          popoverRef={(el) => { todosPopoverEl = el }}
           trigger={triggerProps => (
             <button
               class={styles.countChip}
@@ -605,7 +544,31 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </button>
           )}
         >
-          <TodoList todos={props.todos ?? []} />
+          <GoalsAndTodos
+            variant="popover"
+            todos={props.todos ?? []}
+            // SET opens a modal dialog on top of this popover, and `as="card"`
+            // keeps a popover open on an inside click on purpose. If this
+            // handler does not dismiss the popover, the panel stays open under
+            // the dialog, and it remains there after the dialog closes. The
+            // other three actions update this panel, so they must keep it open.
+            //
+            // This component wraps the handler only when the host supplies one.
+            // The card renders its buttons because the handler is present. The
+            // rest of the surface passes through unchanged.
+            goal={props.goal
+              ? {
+                  ...props.goal,
+                  onAction: props.goal.onAction
+                    ? (action: GoalAction) => {
+                        if (action === 'set')
+                          todosPopoverEl?.hidePopover()
+                        props.goal?.onAction?.(action)
+                      }
+                    : undefined,
+                }
+              : undefined}
+          />
         </DropdownMenu>
       ),
     },
@@ -715,7 +678,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
                 The separator rule lives here, once, derived from position: draw
                 a leading middot when any EARLIER counter is showing. Spelling it
                 per counter meant each one had to name every predecessor
-                (`showBgTasks() || showTodos()` ...), so a fourth counter would
+                (`showBgTasks() || showTodos()` ...), so another counter would
                 have to be added to every later condition -- and forgetting one
                 leaves a dangling `·` or drops one. The verb stays outside the
                 chain: the row's own gap divides it from the first counter. */}

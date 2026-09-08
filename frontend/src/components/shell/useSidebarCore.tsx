@@ -74,13 +74,14 @@ export interface SidebarCommonProps {
   gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab?: boolean
-  showTodos: boolean
+  showGoalsAndTodos: boolean
   activeTodos: TodoItem[]
+  /** Absent when the active provider has no session-goal feature. */
+  activeGoal: GoalSurface | undefined
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
-  activeGoal: GoalSurface
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
@@ -250,15 +251,14 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get activeTabReady() { return props.activeTabReady },
     filesSectionHandle,
     setFilesSectionHandle,
-    get showTodos() { return props.showTodos },
+    get showGoalsAndTodos() { return props.showGoalsAndTodos },
     get activeTodos() { return props.activeTodos },
+    // Getters, never plain values: an eager read freezes the card at the
+    // value from sidebar construction.
+    get activeGoal() { return props.activeGoal },
     get showBackgroundTasks() { return props.showBackgroundTasks },
     get activeBackgroundTasks() { return props.activeBackgroundTasks },
     get activeBackgroundTasksFailed() { return props.activeBackgroundTasksFailed },
-    // Getters, never plain values: a bare read here would subscribe once at
-    // build time and never update, which compiles and renders a card frozen at
-    // whatever the goal was when the sidebar was created.
-    get activeGoal() { return props.activeGoal },
     get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
     get workers() { return props.workers },
     get localSolo() { return props.localSolo },

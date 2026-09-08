@@ -62,6 +62,7 @@ import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createTabTaskScope, shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { hasGoalSurface } from '~/stores/chatGoal'
+import { shouldShowGoalsAndTodosSection } from '~/stores/chatTodos'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
@@ -69,7 +70,7 @@ import { createQuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
+import { agentTabSupportsSessionGoal, agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
@@ -1149,7 +1150,7 @@ export const AppShell: Component = () => {
     focusTile,
   })
 
-  // Active agent todos (for right sidebar To-dos pane). "Active" is
+  // Active agent to-dos for the right sidebar section. "Active" is
   // derived from the active tab — if the user is looking at an AGENT
   // tab, that's the active agent. Todos are owned by the root agent, so a
   // child (subagent) tab resolves up to its root (mirrors background tasks).
@@ -1160,8 +1161,6 @@ export const AppShell: Component = () => {
     const rootId = rootAgentIdFor((id: string) => tabView.getAgentTab(id), tab.id)
     return chatStore.todos.get(rootId)
   })
-
-  const showTodos = createMemo(() => activeTabType() === TabType.AGENT && activeTodos().length > 0)
 
   // Background-task registry for the active agent. Keyed by the ROOT owner
   // agent id, so a child (subagent) tab resolves up to its root and the
@@ -1184,6 +1183,14 @@ export const AppShell: Component = () => {
   const activeBackgroundTasksFailed = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
   )
+  // Read from the ROOT tab, never from the active one. A subagent tab is seeded
+  // with its parent's provider and carries NOTHING when that parent tab is not
+  // resolvable, and an absent provider reads as "no goal feature" -- which hid
+  // a goal the worker was reporting, with nothing on screen to say why.
+  const activeGoalSupported = createMemo(() => {
+    const rootId = activeRootAgentId()
+    return rootId !== null && agentTabSupportsSessionGoal(tabView.getAgentTab(rootId))
+  })
   // ONE goal-action rule, for both surfaces.
   //
   // SET is the one action that needs input, so it opens the editor and the RPC
@@ -1205,12 +1212,17 @@ export const AppShell: Component = () => {
   // do with it. Read from the ROOT for the reason the registry is -- a child tab
   // shows its root's goal, because a subagent has none of its own.
   //
-  // ONE surface rather than three memos and a loose handler, so the sidebar and
-  // the section-visibility test below read the same object and cannot disagree
-  // about which goal they describe.
-  const activeGoalSurface = createMemo<GoalSurface>(() => {
+  // One surface replaces three memos and a loose handler. A consumer cannot
+  // combine one agent's goal with another agent's actions or progress.
+  //
+  // Absent for a provider with no goal feature, and absent when the surface
+  // could hold nothing: a card with no goal and no way to set one is dead
+  // weight that the section then sizes space for. See hasGoalSurface.
+  const activeGoalSurface = createMemo<GoalSurface | undefined>(() => {
+    if (!activeGoalSupported())
+      return undefined
     const rootId = activeRootAgentId()
-    return {
+    const surface: GoalSurface = {
       current: rootId ? chatStore.goal.get(rootId) : undefined,
       progress: rootId ? chatStore.goal.progress(rootId) : {},
       actions: rootId ? chatStore.goal.supportedActions(rootId) : [],
@@ -1224,16 +1236,17 @@ export const AppShell: Component = () => {
           runGoalAction(agentId, action)
       },
     }
+    return hasGoalSurface(surface) ? surface : undefined
   })
+  // The provider helper already requires an agent tab. A second tab-type guard
+  // would restate the same condition and could drift from it.
+  const showGoalsAndTodos = createMemo(() =>
+    shouldShowGoalsAndTodosSection(activeTodos(), activeGoalSurface()),
+  )
   const showBackgroundTasks = createMemo(() =>
     shouldShowBackgroundTasksSection(
       activeBackgroundTasks(),
       activeBackgroundTasksFailed(),
-      // "There is a goal, OR one can be set here." The second half is what makes
-      // the first goal reachable at all. The work panel asks the SAME helper to
-      // decide whether to offer a Goal tab, so a visible section always has a
-      // tab that can hold something.
-      hasGoalSurface(activeGoalSurface()),
     ),
   )
   // Open a subagent tab from a Background tasks row. Built once here and shared
@@ -1521,7 +1534,7 @@ export const AppShell: Component = () => {
     onFileSelect: setFileTreePath,
     onFileOpen: tabOps.handleFileOpen,
     get isActiveWorkspaceArchived() { return isActiveWorkspaceArchived() },
-    get showTodos() { return showTodos() },
+    get showGoalsAndTodos() { return showGoalsAndTodos() },
     get activeTodos() { return activeTodos() },
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },

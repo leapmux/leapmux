@@ -74,9 +74,8 @@ const SURFACE_MARKERS: Record<MarkdownEditorSurface, {
  * mode.
  *
  * The prefixes must stay distinct from any id the rest of the app writes. The
- * work panel's rule above its task rows is `goal-card-separator` for exactly
- * that reason -- it and the goal editor are on screen together while the dialog
- * is open.
+ * GoalsAndTodos uses `goal-card-separator` for this reason. It can remain on
+ * screen while the goal editor is open.
  */
 function testIds(prefix: string) {
   return {

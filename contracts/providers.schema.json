@@ -19,7 +19,7 @@
     "provider": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["displayName", "cliAlias", "parseAliases"],
+      "required": ["displayName", "cliAlias", "parseAliases", "supportsSessionGoal"],
       "properties": {
         "displayName": { "type": "string", "minLength": 1 },
         "cliAlias": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
@@ -27,6 +27,10 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
+        },
+        "supportsSessionGoal": {
+          "type": "boolean",
+          "description": "Whether this provider's CLI has a session goal at all. It decides only whether the Goals & To-dos section offers a goal card; the live supported_actions list the worker broadcasts still governs every control."
         }
       }
     }

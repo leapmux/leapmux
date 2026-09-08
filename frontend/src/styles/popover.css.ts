@@ -214,3 +214,22 @@ export const floatingCardSurface = style(['card', popoverCardPadding, {
  * Exported as one string so that no call site can apply half of it.
  */
 export const popoverCard = `card ${popoverColumnClamp} ${popoverCardPadding}`
+
+/**
+ * The content-shaped cap for a panel inside a `DropdownMenu as="card"`.
+ *
+ * `popoverCard` above already holds the card inside the VIEWPORT on both axes.
+ * These two are the tighter limits on top, and they belong to the panel rather
+ * than to the card, because the DropdownMenu card sizes to whatever it holds:
+ * capping the panel is what caps the card.
+ *
+ * One declaration, because two panels ride that card -- the background-task
+ * registry and Goals & To-dos -- and two popovers of different widths beside
+ * the same chip row read as a bug. The height matters as much: a long to-do
+ * list under a prose objective otherwise runs to the full viewport height,
+ * where the sibling registry stops at 60vh.
+ */
+export const popoverPanelClamp = style({
+  maxHeight: '60vh',
+  maxWidth: '360px',
+})

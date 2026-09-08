@@ -16,6 +16,7 @@ import {
   opensSubagentTranscript,
   sortBackgroundTasks,
 } from '~/stores/chatBackgroundTasks'
+import * as statusDotStyles from '~/styles/statusDot.css'
 import * as styles from './BackgroundTaskList.css'
 
 interface BackgroundTaskListProps {
@@ -140,22 +141,22 @@ function secondaryTooltip(item: BackgroundTaskItem): string | undefined {
 function statusDotClass(status: BackgroundTaskItem['status']): string {
   switch (status) {
     case 'completed':
-      return styles.statusDotSuccess
+      return statusDotStyles.statusDotSuccess
     // A crash cut the task off mid-flight, so it did not succeed. A user's
     // explicit stop is not a failure and stays muted.
     case 'failed':
     case 'interrupted':
-      return styles.statusDotDanger
+      return statusDotStyles.statusDotDanger
     case 'stopped':
-      return styles.statusDotMuted
+      return statusDotStyles.statusDotMuted
     // A queued task is drawn as a hollow ring, not a filled dot. Running is the
     // only state that pulses, and the pulse is suppressed under reduced motion --
     // so sharing one filled dot made a queued task and a running one identical
     // for exactly the readers who cannot use the animation.
     case 'pending':
-      return styles.statusDotPending
+      return statusDotStyles.statusDotPending
     default:
-      return styles.statusDotActive
+      return statusDotStyles.statusDotActive
   }
 }
 
@@ -167,10 +168,8 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
  * line and clipped, and gives its full text on hover. Subagent rows with a
  * childAgentId are clickable buttons; shell rows are static.
  *
- * It owns no tab bar and no root box: AgentWorkPanel does, because the panel
- * also shows the session goal and one host has to decide what a tab contains.
- * Everything here exists to keep a ROW's identity stable across a broadcast,
- * which is why it stayed one component when the shell moved out.
+ * BackgroundTaskPanel owns the tab bar and the root box. This component keeps
+ * each row's identity stable across a broadcast.
  */
 export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) => {
   const visible = createMemo(() => filterBackgroundTasksByKind(props.tasks, props.kind))

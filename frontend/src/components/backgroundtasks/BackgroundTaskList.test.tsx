@@ -3,11 +3,12 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createStore } from 'solid-js/store'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
+import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 import { clippedText } from '~/styles/shared.css'
+import * as statusDotStyles from '~/styles/statusDot.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
 
@@ -57,10 +58,9 @@ function renderList(props: {
   loadFailed?: boolean
 }) {
   return render(() => (
-    <AgentWorkPanel
+    <BackgroundTaskPanel
       variant="sidebar"
       tasks={props.tasks}
-      goal={{ progress: {}, actions: [] }}
       loadFailed={props.loadFailed}
       onOpenSubagent={props.onOpenSubagent}
     />
@@ -68,17 +68,10 @@ function renderList(props: {
 }
 
 /**
- * The TASK region alone: no tab-bar labels, and no goal card.
- *
- * The goal card shares the tabpanel on the All and Goal tabs, so reading the
- * whole region would fold the session goal into every assertion about task
- * rows. Removing it by test id keeps these cases about the registry, which is
- * what they are for -- the card has its own file.
+ * The task region alone, without the tab labels.
  */
 function rowsText(container: HTMLElement): string {
-  const panel = container.querySelector('[role="tabpanel"]')!.cloneNode(true) as HTMLElement
-  panel.querySelector('[data-testid="goal-card"]')?.remove()
-  return panel.textContent ?? ''
+  return container.querySelector('[role="tabpanel"]')?.textContent ?? ''
 }
 
 /** The class tokens on the element, so a test asserts membership, not a substring. */
@@ -604,7 +597,7 @@ describe('backgroundTaskList clipping', () => {
 describe('backgroundTaskList load failure', () => {
   function renderFailed(tasks: BackgroundTaskItem[]) {
     return render(() => (
-      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} loadFailed />
+      <BackgroundTaskPanel variant="sidebar" tasks={tasks} loadFailed />
     ))
   }
 
@@ -679,7 +672,7 @@ describe('backgroundTaskList in-place updates', () => {
   /** A store-backed list, which is the shape the sidebar actually renders. */
   function renderLiveList(initial: BackgroundTaskItem[]) {
     const [tasks, setTasks] = createStore<BackgroundTaskItem[]>(initial)
-    const result = render(() => <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} />)
+    const result = render(() => <BackgroundTaskPanel variant="sidebar" tasks={tasks} />)
     return { ...result, setTasks }
   }
 
@@ -728,7 +721,7 @@ describe('backgroundTaskList in-place updates', () => {
     expect(rowBefore.dataset.status).toBe('completed')
     expect(classes(rowBefore)).toContain(styles.taskStruck)
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dotBefore)
-    expect(classes(dotBefore)).toContain(styles.statusDotSuccess)
+    expect(classes(dotBefore)).toContain(statusDotStyles.statusDotSuccess)
   })
 
   // The row becomes clickable only once the worker reports the child agent id,
@@ -743,7 +736,7 @@ describe('backgroundTaskList in-place updates', () => {
     ])
     const onOpenSubagent = vi.fn()
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={onOpenSubagent} />
+      <BackgroundTaskPanel variant="sidebar" tasks={tasks} onOpenSubagent={onOpenSubagent} />
     ))
     const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
@@ -778,7 +771,7 @@ describe('backgroundTaskList in-place updates', () => {
         row({ rowKey: 't1', title: long, status: 'running' }),
       ])
       const { container } = render(() => (
-        <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={() => {}} />
+        <BackgroundTaskPanel variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
       ))
       const el = container.querySelector<HTMLButtonElement>('[data-testid="bg-task-row"]')!
       expect(el.getAttribute('aria-disabled')).toBe('true')
@@ -800,7 +793,7 @@ describe('backgroundTaskList in-place updates', () => {
       row({ rowKey: 't1', title: 'npm test', kind: 'shell', status: 'running' }),
     ])
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={() => {}} />
+      <BackgroundTaskPanel variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
     ))
     expect(container.querySelector('[data-testid="bg-task-row"]')!.tagName).toBe('DIV')
   })
@@ -873,7 +866,7 @@ describe('backgroundTaskList in-place updates', () => {
       const long = 'A title far wider than the row that holds it'
       store.replace('a1', [protoTask('t1', long, 'reading')])
       const { container } = render(() => (
-        <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={store.get('a1')} />
+        <BackgroundTaskPanel variant="sidebar" tasks={store.get('a1')} />
       ))
 
       const title = titles(container)[0]!
@@ -898,7 +891,7 @@ describe('backgroundTaskList in-place updates', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [protoTask('t1', 'Review the diff', 'reading')])
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={store.get('a1')} />
+      <BackgroundTaskPanel variant="sidebar" tasks={store.get('a1')} />
     ))
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
 

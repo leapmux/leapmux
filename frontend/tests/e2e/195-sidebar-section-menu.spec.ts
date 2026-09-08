@@ -239,7 +239,7 @@ test.describe('sidebar section menu', () => {
     // `isMoveTargetSection` keeps a workspace out of a section it cannot live
     // in, which is what 014 claimed to cover and could not.
     await expect(moveTo.getByRole('menuitem', { name: 'Files', exact: true })).toHaveCount(0)
-    await expect(moveTo.getByRole('menuitem', { name: 'To-dos', exact: true })).toHaveCount(0)
+    await expect(moveTo.getByRole('menuitem', { name: 'Goals & To-dos', exact: true })).toHaveCount(0)
 
     await moveTo.getByRole('menuitem', { name: 'Code review', exact: true }).click()
     await expect(custom.locator('..').locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`))

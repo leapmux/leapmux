@@ -15,6 +15,7 @@ func TestGoalStatusWire_RoundTripsEveryStatus(t *testing.T) {
 	t.Parallel()
 	for _, status := range []GoalStatus{
 		GoalStatusNone, GoalStatusActive, GoalStatusPaused, GoalStatusBlocked, GoalStatusDone,
+		GoalStatusDormant,
 	} {
 		assert.Equal(t, status, GoalStatusFromWire(GoalStatusWire(status)))
 	}
@@ -31,6 +32,7 @@ func TestGoalStatusWire_UsesTheTokensTheColumnAccepts(t *testing.T) {
 	assert.Equal(t, "paused", GoalStatusWire(GoalStatusPaused))
 	assert.Equal(t, "blocked", GoalStatusWire(GoalStatusBlocked))
 	assert.Equal(t, "done", GoalStatusWire(GoalStatusDone))
+	assert.Equal(t, "dormant", GoalStatusWire(GoalStatusDormant))
 }
 
 // A token this build cannot interpret must never read as active: the card would
@@ -128,5 +130,52 @@ func TestGoalActionFromProto_RejectsTheUnspecifiedAction(t *testing.T) {
 		back, ok := GoalActionFromProto(GoalActionToProto(action))
 		assert.True(t, ok)
 		assert.Equal(t, action, back)
+	}
+}
+
+func TestFoldGoalObjective_CollapsesWhitespace(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "ship the release", foldGoalObjective("  ship\n\tthe  release  "))
+}
+
+func TestParseGoalCommandText_ClassifiesTheCompleteCommand(t *testing.T) {
+	t.Parallel()
+	clearArgs := []string{"clear", "off"}
+	for _, test := range []struct {
+		name      string
+		text      string
+		intent    goalTextIntent
+		objective string
+	}{
+		{name: "other text", text: "please /goal ship", intent: goalTextNotCommand},
+		{name: "bare query", text: "/goal", intent: goalTextBareQuery},
+		{name: "empty argument", text: "/goal   ", intent: goalTextBareQuery},
+		{name: "clear", text: "/goal CLEAR", intent: goalTextClear},
+		{name: "set clear prefix", text: "/goal clear the queue", intent: goalTextSet, objective: "clear the queue"},
+		{name: "set folded", text: "/goal ship\tthe release", intent: goalTextSet, objective: "ship the release"},
+		{name: "literal space delimiter", text: "/goal\tship", intent: goalTextNotCommand},
+		// A provider reads the remainder of the LINE, so a second line belongs
+		// to no command and must not enter the objective. Storing it would
+		// state a goal longer than the one the provider installed, and no text
+		// route reports the goal back to correct the difference.
+		{
+			name: "second line excluded", text: "/goal keep the build green\nand update the changelog",
+			intent: goalTextSet, objective: "keep the build green",
+		},
+		// The same rule for a clear: the first line is the whole command.
+		{name: "clear with a second line", text: "/goal off\nthen rest", intent: goalTextClear},
+		// A leading blank line still leaves the command on the first line that
+		// TrimSpace exposes.
+		{name: "leading blank line", text: "\n\n/goal ship it", intent: goalTextSet, objective: "ship it"},
+		// The command must not match a line further down the message: a user
+		// who quotes a command in a paragraph is not issuing it.
+		{name: "command on a later line", text: "look at this:\n/goal ship it", intent: goalTextNotCommand},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			intent, objective := parseGoalCommandText(test.text, "/goal", clearArgs)
+			assert.Equal(t, test.intent, intent)
+			assert.Equal(t, test.objective, objective)
+		})
 	}
 }

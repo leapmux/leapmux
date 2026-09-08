@@ -108,7 +108,7 @@ func TestSectionService_ListSections_ReturnsSeededDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	// CreateUser seeded all six: In progress, Archived, Workers (left), Files,
-	// To-dos, Background tasks (right).
+	// Goals & To-dos, Background tasks (right).
 	sections := resp.Msg.GetSections()
 	require.Len(t, sections, 6)
 
@@ -133,7 +133,7 @@ func TestSectionService_ListSections_ReturnsSeededDefaults(t *testing.T) {
 			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
 		case leapmuxv1.SectionType_SECTION_TYPE_TODOS:
 			hasTodos = true
-			assert.Equal(t, "To-dos", s.GetName())
+			assert.Equal(t, "Goals & To-dos", s.GetName())
 			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
 		default:
 			// UNSPECIFIED and WORKSPACES_CUSTOM are not seeded defaults, so the

@@ -5,6 +5,12 @@ import (
 	"log/slog"
 )
 
+// SupportedGoalActions reports no writes. Reasonix reports a goal over ACP but
+// exposes no safe client command that sets or clears it.
+func (a *ReasonixAgent) SupportedGoalActions() []GoalAction { return nil }
+
+var _ GoalCapable = (*ReasonixAgent)(nil)
+
 // Reasonix's session goal.
 //
 // Reasonix runs a goal state machine and streams its whole session status over
@@ -22,7 +28,7 @@ import (
 // unmapped and exposes no option groups), so a clear would drop the user into
 // an arbitrary mode. A goal panel that reports honestly and offers no control
 // is better than one whose Clear button silently changes something else, so
-// ReasonixAgent implements no GoalController at all and the browser disables
+// ReasonixAgent implements no GoalWriter at all and the browser disables
 // every action.
 const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
 

@@ -1,8 +1,9 @@
+import type { GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, shouldShowGoalsAndTodosSection, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -138,6 +139,34 @@ describe('chatTodos', () => {
         { rowKey: 'b', content: 'b', status: 'completed' as const, activeForm: '' },
       ]
       expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
+    })
+  })
+
+  describe('shouldShowGoalsAndTodosSection', () => {
+    const oneTodo: TodoItem = { rowKey: '1', content: 'Ship', status: 'pending', activeForm: '' }
+    const settable: GoalSurface = { progress: {}, actions: ['set'] }
+
+    it('shows the section for a to-do', () => {
+      expect(shouldShowGoalsAndTodosSection([oneTodo], undefined)).toBe(true)
+    })
+
+    it('shows the section for a goal surface without any to-dos', () => {
+      expect(shouldShowGoalsAndTodosSection([], settable)).toBe(true)
+    })
+
+    it('hides the section when both parts are absent', () => {
+      expect(shouldShowGoalsAndTodosSection([], undefined)).toBe(false)
+    })
+
+    // The surface is what the section renders, so a surface it can show keeps
+    // the section visible whatever the goal's own state is.
+    it('shows the section for a goal that exists but cannot be changed', () => {
+      const readOnly: GoalSurface = {
+        current: { objective: 'Ship the release', status: 'active' },
+        progress: {},
+        actions: [],
+      }
+      expect(shouldShowGoalsAndTodosSection([], readOnly)).toBe(true)
     })
   })
 })
