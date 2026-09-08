@@ -344,7 +344,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 // A COMPANION terminal -- the shell behind an agent tab's quake panel -- has no
 // CRDT tab, so the hub can never list it. Keyed on its own id it would look
 // absent on every single pass and be reaped the moment the grace expired,
-// killing a live shell the user is typing in. Its liveness is its OWNER's.
+// which kills a live shell that the user types in. Its liveness is its OWNER's.
 //
 // This is the regression test for that: it is the whole reason the agent->
 // terminal link lives on the worker rather than in the browser.
@@ -361,7 +361,7 @@ func TestOrphanReconciler_CompanionTerminal_OwnerPresentOnHub_Survives(t *testin
 		ID: "companion", Screen: []byte{}, OwnerAgentID: "live-agent",
 	}))
 	// The hub lists the OWNER and knows nothing of the companion, which is the
-	// steady state for every quake panel that has ever been opened.
+	// steady state for every quake panel the user ever opened.
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
 	}, nil)
@@ -374,7 +374,8 @@ func TestOrphanReconciler_CompanionTerminal_OwnerPresentOnHub_Survives(t *testin
 	assert.Empty(t, teardown.terminals, "a live companion must NOT be handed to the teardown")
 }
 
-// The mirror: an owner the hub has forgotten takes its companion with it.
+// The opposite case: an owner the hub no longer lists takes its companion
+// with it.
 func TestOrphanReconciler_CompanionTerminal_OwnerMissingOnHub_Closed(t *testing.T) {
 	t.Parallel()
 

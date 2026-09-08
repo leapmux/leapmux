@@ -112,7 +112,7 @@ func protoProcedurePaths(t *testing.T, file protoreflect.FileDescriptor) []strin
 //
 // It checks the RECORD, not the handler, and it cannot check the handler
 // from here: the classification is a decision, and only a request can show
-// what a handler does with one. TestGatedRPCs_TellASessionToElevate is the
+// what a handler does with one. TestGuardedRPCs_TellASessionToElevate is the
 // other half -- it drives every procedure classified as protected through a
 // real un-elevated session and asserts the refusal and its marker. Add a
 // procedure to one and to the other.

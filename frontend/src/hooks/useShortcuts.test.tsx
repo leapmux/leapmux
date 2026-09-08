@@ -532,10 +532,8 @@ describe('useShortcuts', () => {
     // The archived-workspace refusal is NOT here. It belongs to the opening
     // direction alone and lives in the store, which the Control CLI reaches
     // too -- a refusal at this level also refused the CLOSE half of the toggle.
-    it('leaves the archived-workspace refusal to the store', () => {
-      const panel = run(quakeProps(agentTab), 'terminal.toggleQuake')
-      expect(panel.toggle).toHaveBeenCalledWith(agentTab)
-    })
+    // `quakeTerminal.store.test.ts` drives that refusal against a real store;
+    // a copy here could only re-assert this same fake's `toggle` call.
   })
 
   describe('app.openInExternalApp', () => {

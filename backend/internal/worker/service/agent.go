@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -64,7 +65,7 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentInputQueueHandlers(d, svc)
-	registerOwnerGated(d, "OpenAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerOwnerGuarded(d, "OpenAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
@@ -286,7 +287,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// disconnect from the client that initiated the close. The dispatcher
 	// ctx is intentionally not threaded — using it would cancel the
 	// cleanup partway through if the user clicked away.
-	registerAgentGatedByID(d, "CloseAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchTracked,
+	registerAgentGuardedByID(d, "CloseAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchTracked,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.CloseAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -308,7 +309,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// interrupt frames etc.) to the agent subprocess. The forward + any
 	// synthetic-message persistence must complete past a client
 	// disconnect; dispatcher ctx is intentionally not threaded.
-	registerAgentGated(d, "SendAgentRawMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
+	registerAgentGuarded(d, "SendAgentRawMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			// A child agent has no process and no raw-control surface; reject.
@@ -340,7 +341,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// through the DB and git probes. A mid-call client disconnect cancels
 	// the remaining work instead of wasting subprocess forks against
 	// BatchGetGitStatus.
-	registerOwnerGated(d, "ListAgents", leapmuxv1.Scope_SCOPE_AGENT_READ, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentsRequest, sender channel.ResponseWriter) {
+	registerOwnerGuarded(d, "ListAgents", leapmuxv1.Scope_SCOPE_AGENT_READ, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentsRequest, sender channel.ResponseWriter) {
 		tabIDs := r.GetTabIds()
 		if len(tabIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{})
@@ -389,7 +390,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// response shape is the only side effect, so the inbound dispatcher
 	// ctx is threaded through every DB read. A mid-call client disconnect
 	// cancels the remaining page query instead of wasting DB load.
-	registerAgentGated(d, "ListAgentMessages", leapmuxv1.Scope_SCOPE_AGENT_READ,
+	registerAgentGuarded(d, "ListAgentMessages", leapmuxv1.Scope_SCOPE_AGENT_READ,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentMessagesRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -523,7 +524,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				BackgroundTasksLoaded: bgTasksLoaded,
 				Goal:                  goalSnapshot.Goal,
 				GoalLoaded:            goalLoaded,
-				// Gated with the rest of the goal answer. The client applies
+				// Guarded with the rest of the goal answer. The client applies
 				// these fields only when goal_loaded is true, so computing the
 				// capability for a scroll page asks the Manager a question
 				// nobody reads.
@@ -538,7 +539,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// verifies the caller is the worker's registered owner, and the query is
 	// scoped to agent_id, so an authorized caller can only read a message
 	// belonging to that agent -- never another agent's.
-	registerAgentGated(d, "GetAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_READ,
+	registerAgentGuarded(d, "GetAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_READ,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.GetAgentMessageRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -571,7 +572,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
 	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
 	// content decompression -- because mark_type is set at write time.
-	registerAgentGated(d, "ListMessageMarks", leapmuxv1.Scope_SCOPE_AGENT_READ,
+	registerAgentGuarded(d, "ListMessageMarks", leapmuxv1.Scope_SCOPE_AGENT_READ,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListMessageMarksRequest, agentRow db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -634,7 +635,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// to the owner's other clients. The DB write + broadcast
 	// must complete past a client disconnect (otherwise sibling clients
 	// would miss the rename); dispatcher ctx is intentionally not threaded.
-	// registerAgentGatedByID, not registerAgentGated: the handler needs no
+	// registerAgentGuardedByID, not registerAgentGuarded: the handler needs no
 	// agent field on the path that stores a title. The full-row gate runs
 	// `SELECT *`, which copies the agent's `options` and `option_groups` JSON
 	// columns out of SQLite -- for an agent with a large option-group catalog
@@ -642,7 +643,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// the package's own note on requireAgentID describes. The one field the
 	// handler ever reads is the title, only on the empty-title path, through
 	// the single-column GetAgentTitle.
-	registerAgentGatedByID(d, "RenameAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "RenameAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RenameAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -707,7 +708,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// a client disconnect, otherwise the agent ends up in a half-applied
 	// state mismatched with the persisted row. Dispatcher ctx is
 	// intentionally not threaded.
-	registerAgentGated(d, "UpdateAgentSettings", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
+	registerAgentGuarded(d, "UpdateAgentSettings", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -779,7 +780,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// request to the agent subprocess. The forward must reach the agent
 	// even if the originating client window closed (the agent process is
 	// blocked waiting for it); dispatcher ctx is intentionally not threaded.
-	registerAgentGated(d, "SendControlResponse", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
+	registerAgentGuarded(d, "SendControlResponse", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
@@ -802,7 +803,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// InterruptAgent sends a signal to the agent subprocess; the signal
 	// delivery must happen even if the requesting client disconnects mid-
 	// RPC. Dispatcher ctx is intentionally not threaded.
-	registerAgentGatedByID(d, "InterruptAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "InterruptAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			// The interrupt must run even when the pause write fails. A stop
@@ -871,7 +872,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// A child agent has no goal of its own (see OutputSink.UpsertGoal), so it is
 	// refused rather than redirected to its root -- silently acting on a
 	// different agent than the one addressed is worse than saying no.
-	registerAgentGatedByID(d, "UpdateAgentGoal", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+	registerAgentGuardedByID(d, "UpdateAgentGoal", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentGoalRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 			action, ok := agent.GoalActionFromProto(r.GetAction())
@@ -927,8 +928,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		})
 
 	// WatchWorkerPrivateEvents streams this worker's private tab events
-	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked) over the
-	// existing E2EE channel. The bootstrap-replay sends one
+	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
+	// over the existing E2EE channel. The bootstrap-replay sends one
 	// TabPayloadRegistered per worker_tab_payloads row the caller owns before
 	// any live events.
 	//
@@ -943,7 +944,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// streamListeners only, so a unary reply -- an owner-gate rejection, or
 	// a panic -- is dropped on arrival and the subscription hangs with no
 	// error to retry from.
-	registerOwnerGatedStream(d, "WatchWorkerPrivateEvents", leapmuxv1.Scope_SCOPE_FILE_READ,
+	registerOwnerGuardedStream(d, "WatchWorkerPrivateEvents", leapmuxv1.Scope_SCOPE_FILE_READ,
 		func(_ context.Context, caller channel.Caller, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
 			ctx, cancel := context.WithCancel(bgCtx())
 			ctrl := &privateEventsController{cancel: cancel}
@@ -991,10 +992,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			)
 		})
 
-	// RegisterTabPayload writes the (tab_id -> payload) registry row. The
-	// write must survive a client disconnect, otherwise a subsequent
-	// GetTabPayload from a sibling client would see a stale "not found".
-	// Dispatcher ctx is intentionally not threaded.
 	// SetQuakePanel relays a show/hide request for one agent tab's quake panel
 	// to every frontend the caller has open on this worker.
 	//
@@ -1004,39 +1001,45 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// panel in-process.
 	//
 	// terminal:write, because what the request ultimately does is put a shell in
-	// front of the user. The agent is validated first so a command naming a
-	// closed or unknown agent fails here rather than reaching every frontend as
-	// an event none of them can act on.
-	registerOwnerGated(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
-			agentID := r.GetAgentId()
-			if agentID == "" {
-				sendInvalidArgument(sender, "agent_id is required")
-				return
-			}
+	// front of the user. It also takes agent:read, because the request NAMES an
+	// agent tab and the reply distinguishes an unknown id from a known one:
+	// privateEventVisible refuses the matching event to a caller that reads only
+	// one of the two kinds, and a handler that answered "agent not found" to
+	// that same caller would be the agent-id oracle the event gate exists to
+	// deny.
+	//
+	// registerAgentGuarded is what loads the row: it maps sql.ErrNoRows to
+	// NOT_FOUND and every other failure to INTERNAL, so a locked database no
+	// longer reports a live agent as missing, and it applies the
+	// archived-workspace refusal that every other terminal:write handler gets.
+	registerAgentGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, row db.Agent, sender channel.ResponseWriter) {
 			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
 				sendInvalidArgument(sender, "action must be open, close or toggle")
 				return
 			}
-			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-			if err != nil {
-				sendNotFoundError(sender, "agent not found")
+			if !callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_AGENT) {
+				sendPermissionDenied(sender, authscope.NotGrantedDenial(leapmuxv1.Scope_SCOPE_AGENT_READ))
 				return
 			}
 			// A subagent transcript owns no process and no companion terminal,
 			// so it can own no panel either. Refused rather than ignored, so the
 			// CLI reports it instead of appearing to succeed.
-			if dbAgent.ParentAgentID.Valid {
+			if row.ParentAgentID.Valid {
 				sendFailedPrecondition(sender, "a subagent tab has no quake panel")
 				return
 			}
 			if svc.PrivateEvents != nil {
-				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, agentID, r.GetAction())
+				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, row.ID, r.GetAction())
 			}
 			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
 		})
 
-	registerOwnerGated(d, "RegisterTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain,
+	// RegisterTabPayload writes the (tab_id -> payload) registry row. The
+	// write must survive a client disconnect, otherwise a subsequent
+	// GetTabPayload from a sibling client would see a stale "not found".
+	// Dispatcher ctx is intentionally not threaded.
+	registerOwnerGuarded(d, "RegisterTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RegisterTabPayloadRequest, sender channel.ResponseWriter) {
 			if r.GetTabId() == "" || r.GetPayload() == nil {
 				sendInvalidArgument(sender, "tab_id, payload are required")
@@ -1096,7 +1099,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// GetTabPayload is a synchronous read-only handler: the response is
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the store lookup to fail-fast on disconnect.
-	registerOwnerGated(d, "GetTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetTabPayloadRequest, sender channel.ResponseWriter) {
+	registerOwnerGuarded(d, "GetTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetTabPayloadRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
 			return
@@ -1134,7 +1137,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// same reason as the register handler -- otherwise a stale row would
 	// survive past the user's intended revocation. Dispatcher ctx is
 	// intentionally not threaded.
-	registerOwnerGated(d, "RevokeTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.RevokeTabPayloadRequest, sender channel.ResponseWriter) {
+	registerOwnerGuarded(d, "RevokeTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.RevokeTabPayloadRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
 			return
@@ -1220,7 +1223,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		})
 	})
 
-	registerOwnerGatedStreamRaw(d, "WatchEvents", leapmuxv1.Scope_SCOPE_WORKER_READ, handleWatchEvents(svc))
+	registerOwnerGuardedStreamRaw(d, "WatchEvents", leapmuxv1.Scope_SCOPE_WORKER_READ, handleWatchEvents(svc))
 }
 
 // resolveChildRegistryRow looks up the registry row for a child agent id and
@@ -3668,7 +3671,7 @@ func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEven
 		return callerReadsTabType(caller, tabType)
 	}
 	if quake := evt.GetQuakePanelCommand(); quake != nil {
-		// Both kinds, because the event spans both: it names an AGENT tab, and
+		// Both kinds, because the event spans both: it gives an AGENT tab, and
 		// acting on it shows that tab's TERMINAL. A caller that may read only
 		// one of the two would either learn an agent id it cannot see or be
 		// asked to reveal a shell it cannot read.

@@ -8,7 +8,7 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
+import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -281,42 +281,53 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     })
   }
 
+  /**
+   * Whether one quake panel is on screen: it is open AND its owner agent tab is
+   * the tab the user looks at.
+   *
+   * Declared above the watch-plan memo on purpose. `createMemo` runs its body
+   * once at creation to collect dependencies, so a `const` declared below it
+   * would be in its temporal dead zone and throw.
+   */
+  const isQuakeEntryOnScreen = (entry: { ownerId: string, open: boolean }): boolean =>
+    entry.open
+    && isTabOnScreen(
+      view.getAgentTab(entry.ownerId),
+      params.getActiveWorkspaceId(),
+      tileId => selection.activeKeyForTile(tileId),
+    )
+
   const watchPlans = createMemo(() =>
     buildWatchPlans(
       params.view.all(),
       params.getActiveWorkspaceId(),
       tileId => selection.activeKeyForTile(tileId),
-      agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
-      // Untracked like the resume seq: the loaded tail moves with every message,
-      // and the plan must not re-send a watch update per arrival. The worker
-      // reads it only for the capped-replay skip decision.
-      agentId => untrack(() => chatStore.getLastSeq(agentId)),
-      terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
-      // Tracked on purpose: the plan must go out the moment a terminal is
-      // flagged, and back out when the snapshot lands. Only this field is
-      // tracked — lastOffset above moves at PTY-read frequency, and keying
-      // the plan on it would re-send a watch update per output chunk.
-      terminalId => metadata.get(terminalId)?.needsResync === true,
-      (agentId: string) => view.getAgentTab(agentId),
-      // A companion terminal is FULL only while its panel shows AND its owner
-      // tab is on screen -- the same "is the user looking at it?" question a
-      // placed terminal answers through its tile. NOTIFY otherwise, which keeps
-      // the cursor moving so a reopen catches up from the worker's ring instead
-      // of paying for a cold snapshot, and keeps the bell and the title flowing
-      // for a shell the user cannot see, which is when those matter most.
-      params.quakeStore.liveEntries().map((entry) => {
-        const onScreen = entry.open
-          && isTabOnScreen(
-            view.getAgentTab(entry.ownerId),
-            params.getActiveWorkspaceId(),
-            tileId => selection.activeKeyForTile(tileId),
-          )
-        return {
+      {
+        agentResumeSeq: agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
+        // Untracked like the resume seq: the loaded tail moves with every
+        // message, and the plan must not re-send a watch update per arrival.
+        // The worker reads it only for the capped-replay skip decision.
+        agentWindowTailSeq: agentId => untrack(() => chatStore.getLastSeq(agentId)),
+        terminalAfterOffset: terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
+        // Tracked on purpose: the plan must go out the moment a terminal is
+        // flagged, and back out when the snapshot lands. Only this field is
+        // tracked — lastOffset above moves at PTY-read frequency, and keying
+        // the plan on it would re-send a watch update per output chunk.
+        terminalNeedsResync: terminalId => metadata.get(terminalId)?.needsResync === true,
+        getAgentTab: (agentId: string) => view.getAgentTab(agentId),
+        // A companion terminal is FULL only while its panel is open AND its
+        // owner tab is on screen -- the same "does the user look at it?"
+        // question a placed terminal answers through its tile. NOTIFY
+        // otherwise, which keeps the cursor moving so a reopen catches up from
+        // the worker's ring instead of paying for a cold snapshot, and keeps
+        // the bell and the title flowing for a shell the user cannot see,
+        // which is when those matter most.
+        detachedTerminals: params.quakeStore.liveEntries().map(entry => ({
           terminalId: entry.terminalId,
           workerId: entry.workerId,
-          mode: onScreen ? WatchMode.FULL : WatchMode.NOTIFY,
-        }
-      }),
+          mode: isQuakeEntryOnScreen(entry) ? WatchMode.FULL : WatchMode.NOTIFY,
+        })),
+      },
     ),
   )
 
@@ -477,21 +488,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
-   * Whether a companion terminal is on screen: its panel shows AND its owner
-   * agent tab is the one the user is looking at.
+   * Whether a companion terminal is on screen, by terminal id.
+   *
+   * The bell and notification helpers hold an id and nothing else, so this is
+   * the id-keyed door onto the ONE rule above. Two copies of the rule would let
+   * the FULL/NOTIFY watch decision and the "should this raise a desktop
+   * notification?" decision disagree about the same shell.
    */
   const isQuakeTerminalOnScreen = (terminalId: string): boolean => {
     const ownerId = params.quakeStore.ownerOf(terminalId)
     if (ownerId === undefined)
       return false
     const entry = params.quakeStore.entryFor(ownerId)
-    if (!entry?.open)
-      return false
-    return isTabOnScreen(
-      view.getAgentTab(ownerId),
-      params.getActiveWorkspaceId(),
-      tileId => selection.activeKeyForTile(tileId),
-    )
+    return entry !== undefined && isQuakeEntryOnScreen(entry)
   }
 
   const handleTerminalEvent = (termEvent: TerminalEvent, streamWorkerId: string) => {
@@ -533,7 +542,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'closed':
         // A companion terminal is TERMINATED by its shell exiting, not left in
-        // an EXITED state waiting for Enter: there is no pane to leave behind,
+        // an EXITED state that waits for Enter: there is no pane to leave behind,
         // and the next open spawns a fresh shell. Routed before
         // markTerminalExited so the panel never paints the exit notice.
         if (params.quakeStore.isQuakeTerminal(terminalId))
@@ -560,6 +569,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           view,
           isDetachedOnScreen: isQuakeTerminalOnScreen,
+          detachedOwnerOf: params.quakeStore.ownerOf,
         })
         break
       case 'notification':
@@ -569,6 +579,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           view,
           isDetachedOnScreen: isQuakeTerminalOnScreen,
+          detachedOwnerOf: params.quakeStore.ownerOf,
         })
         break
       case 'titleChanged':
@@ -640,17 +651,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (offline.size === 0)
       return
     untrack(() => {
+      // `view.all()` holds PLACED tabs only, so a companion terminal is not in
+      // it and would stay reading READY for the whole outage. Its tab object
+      // comes from the detached family instead.
+      //
+      // Built ONCE, above the loop: neither list depends on the worker, and a
+      // hub restart puts several workers in this set at the same tick.
+      const searchable = [...params.view.all(), ...params.view.detachedTerminalTabs()]
       for (const workerId of offline) {
-        // `view.all()` holds PLACED tabs only, so a companion terminal is not
-        // in it and would stay reading READY for the whole outage. Its tab
-        // object comes from the detached family instead.
-        const detachedTabs = params.quakeStore.detachedTerminals()
-          .map(d => params.view.getTerminalTab(d.id))
-          .filter((t): t is TerminalTab => t !== undefined)
-        const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(
-          [...params.view.all(), ...detachedTabs],
-          workerId,
-        )
+        const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(searchable, workerId)
         batch(() => {
           if (affectedTerminals.size > 0) {
             params.metadata.patchMatching(

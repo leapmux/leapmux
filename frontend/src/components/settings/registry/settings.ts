@@ -9,6 +9,12 @@ import {
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
 import { SUPPORTED_EXTERNAL_APP_IDS } from '~/generated/contracts/external-apps'
+import {
+  SETTING_KEY_QUAKE_ANIMATION_MS,
+  SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
+  SETTING_KEY_QUAKE_ORIENTATION,
+  SETTING_KEY_QUAKE_SIZE_PERCENT,
+} from '~/generated/contracts/user-settings'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
@@ -449,7 +455,7 @@ export const browserSettings: BrowserSettingDecl[] = [
   // the wire cannot carry lives here.
   {
     id: 'terminal.quakeOrientation',
-    protoKey: 'quake_orientation',
+    protoKey: SETTING_KEY_QUAKE_ORIENTATION,
     label: 'Quake terminal position',
     help: 'Edge of the centre area the quake terminal slides in from.',
     keywords: ['quake', 'drop-down', 'dropdown', 'overlay', 'panel', 'hotkey'],
@@ -460,7 +466,7 @@ export const browserSettings: BrowserSettingDecl[] = [
   },
   {
     id: 'terminal.quakeSizePercent',
-    protoKey: 'quake_size_percent',
+    protoKey: SETTING_KEY_QUAKE_SIZE_PERCENT,
     label: 'Quake terminal size',
     help: 'Share of the centre area the quake terminal covers.',
     keywords: ['quake', 'height', 'width', 'overlay', 'panel'],
@@ -470,7 +476,7 @@ export const browserSettings: BrowserSettingDecl[] = [
   },
   {
     id: 'terminal.quakeAnimationMs',
-    protoKey: 'quake_animation_ms',
+    protoKey: SETTING_KEY_QUAKE_ANIMATION_MS,
     label: 'Quake terminal animation',
     help: 'How long the quake terminal takes to slide in and out. The system reduced-motion setting overrides it.',
     keywords: ['quake', 'slide', 'motion', 'duration', 'speed'],
@@ -480,7 +486,7 @@ export const browserSettings: BrowserSettingDecl[] = [
   },
   {
     id: 'terminal.quakeBackgroundOpacity',
-    protoKey: 'quake_background_opacity',
+    protoKey: SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
     label: 'Quake terminal background opacity',
     help: 'Opacity of the quake terminal background. The text stays fully opaque.',
     keywords: ['quake', 'transparency', 'translucent', 'alpha', 'overlay'],

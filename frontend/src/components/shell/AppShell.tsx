@@ -24,7 +24,7 @@ import { setExpectedUserId } from '~/api/workerRpc'
 import { BootSplash } from '~/components/common/BootSplash'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { focusedTerminalId, setTerminalScreenSink, writeToTerminalInstance } from '~/components/terminal/TerminalView'
+import { focusedTerminalId, setTerminalScreenSink, writeToFocusedTerminal } from '~/components/terminal/TerminalView'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
@@ -163,23 +163,28 @@ export const AppShell: Component = () => {
   // work: `createMemo` runs its body once at CREATION time to collect
   // dependencies, so the view's detached-terminal memo calls
   // `detachedTerminals()` inside `createTabView` -- before a store declared
-  // above it could have been assigned. It read `undefined` and the whole shell
-  // failed to mount.
+  // above it. It read `undefined`, and the whole shell failed to mount.
   //
   // This direction has no such window. The store touches nothing at
   // construction: `getAgentTab` is called only from an event -- a keyboard
   // command, or a Control CLI request arriving on the private-event stream --
-  // and by then the assignment below has long run.
+  // and by then the assignment below already ran.
   let tabViewRef: TabView | undefined
   const quakeStore = createQuakeTerminalStore({
     metadata: tabMetadata,
     getAgentTab: agentId => tabViewRef?.getAgentTab(agentId),
-    // Only when focus is still INSIDE the panel. A close from the transcript,
-    // from another agent tab, or from another device through the Control CLI
-    // must not yank the caret out of wherever the user is working. The store
-    // asks before the panel retracts, so `inert` has not blurred anything yet.
-    focusComposer: () => {
-      if (document.activeElement?.closest('[data-quake-panel]'))
+    // Only when focus is inside THIS entry's own shell. A close from the
+    // transcript, from another agent tab, or from another device through the
+    // Control CLI must not move the caret out of the place where the user
+    // works. The store asks before the panel retracts, so `inert` blurred
+    // nothing yet.
+    //
+    // Compared by TERMINAL id, not by "is focus inside the panel?": one panel
+    // element holds every companion's xterm, so the DOM question is true
+    // whenever ANY of them has the caret. A background owner's close would
+    // then pull focus out of the foreground shell the user types in.
+    focusComposer: (_ownerId, terminalId) => {
+      if (terminalId !== undefined && focusedTerminalId() === terminalId)
         focusEditor()
     },
     // Read at fire time: the user can change the duration while a panel is
@@ -187,7 +192,7 @@ export const AppShell: Component = () => {
     // actually running.
     closeDelayMs: () => (prefersReducedMotion() ? 0 : preferences.quakeAnimationMs() + 50),
     // A cold open refuses an archived workspace, the same rule every other
-    // "open a terminal" path applies. Named here rather than at each keyboard
+    // "open a terminal" path applies. Declared here rather than at each keyboard
     // command, so the Control CLI cannot answer differently.
     isWorkspaceMutatable: isWorkspaceMutatableById,
   })
@@ -1467,21 +1472,13 @@ export const AppShell: Component = () => {
     resolveFocusedTab: tileRenderer.resolveFocusedTab,
     isActiveWorkspaceArchived,
     splitFocusedTile: tileRenderer.splitFocusedTile,
+    // Both resolve the terminal from the DOM, which is the same question the
+    // `terminalFocused` guard on these bindings asks -- and the only one that
+    // reaches a quake companion, which has no tab for a tile-shaped lookup to
+    // walk. `scrollFocusedTabPage` falls back to the focused tile's tab for a
+    // chat transcript, which has no terminal of its own.
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
-    writeToFocusedTerminal: (data: string) => {
-      // A companion terminal is not a tab, so the tile renderer's tab-shaped
-      // lookup cannot reach it -- from inside an open panel it resolves the
-      // AGENT tab and returns. The motion bindings resolve on `terminalFocused`,
-      // which an open panel satisfies, so without this arm `activateBindings`
-      // would call preventDefault and then nothing would happen: the chord
-      // would neither move the cursor nor reach the PTY.
-      const focusedId = focusedTerminalId()
-      if (focusedId !== undefined && quakeStore.isQuakeTerminal(focusedId)) {
-        writeToTerminalInstance(focusedId, data)
-        return
-      }
-      tileRenderer.writeToFocusedTerminal(data)
-    },
+    writeToFocusedTerminal,
     getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
     preferredExternalAppId: preferences.preferredExternalAppId,
@@ -1602,10 +1599,12 @@ export const AppShell: Component = () => {
       view={tabView}
       metadata={tabMetadata}
       activeAgentId={() => tileRenderer.focusedAgentId() ?? null}
+      onClose={ownerId => quakeStore.close(ownerId)}
       onInput={termOps.handleTerminalInput}
       onResize={termOps.handleTerminalResize}
       onContentReady={id => tabMetadata.patch(id, { contentReady: true })}
       tabEditing={() => tabOps.isTabEditing()}
+      confirmLink={confirmLink}
     />
   )
 

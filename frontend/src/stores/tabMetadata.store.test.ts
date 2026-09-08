@@ -434,7 +434,7 @@ describe('tabMetadata', () => {
      * is never true for it. The sweep gets that right by construction, since an
      * id enters `seen` only by being reported live, and this is the case that
      * locks it in: the alternative rule ("retire whatever is not live") would
-     * take the row of a shell the user is typing in.
+     * take the row of a shell that the user types in.
      */
     it('leaves a row that no CRDT record backs, across a live-set change', async () => {
       await createRoot(async (dispose) => {
@@ -450,7 +450,7 @@ describe('tabMetadata', () => {
         expect(m.get('quake-1')?.title, 'a companion survives a tab arriving').toBe('zsh')
 
         // And the edge the companion's OWNER leaves on, which is the one that
-        // does end it -- through `onRetire`, naming the owner agent tab.
+        // does end it -- through `onRetire`, which gives the owner agent tab.
         setState({ tabs: { a2: {} } })
         await flush()
         expect(retired).toEqual(['a1'])

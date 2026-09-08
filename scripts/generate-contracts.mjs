@@ -320,6 +320,139 @@ export function checkRetry(r) {
 }
 
 // ---------------------------------------------------------------------------
+// user-settings: the account-setting vocabulary the hub and the browser share
+// ---------------------------------------------------------------------------
+
+/** The Go identifier for one setting name: quakeSizePercent -> QuakeSizePercent. */
+const settingPascal = name => name[0].toUpperCase() + name.slice(1)
+
+/** The TS identifier for one setting name: quakeSizePercent -> QUAKE_SIZE_PERCENT. */
+const settingScreaming = name => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()
+
+/**
+ * The semantic rules the JSON Schema cannot state, because each one needs a
+ * sibling value or the sibling contract.
+ *
+ * A `desktopEnum` is checked against desktop.json rather than against a list
+ * here, and that asymmetry is the point: a THIRD language spells those tokens
+ * (the Rust shell matches them out of the set_desktop_behavior payload), so
+ * they live in desktop.json and this file states only which block a setting
+ * draws from. A copy here would be the second source this contract removes.
+ */
+export function checkUserSettings(u, desktop) {
+  const protoKeys = new Set()
+  for (const [name, s] of Object.entries(u.settings)) {
+    const where = `settings.${name}`
+    mustBe(!protoKeys.has(s.protoKey), 'user-settings.json', `${where}: two settings share the proto key ${s.protoKey}`)
+    protoKeys.add(s.protoKey)
+    if (s.kind === 'enum') {
+      mustBe(s.values.includes(s.default), 'user-settings.json', `${where}: the default ${jsonString(s.default)} is not one of its values`)
+    }
+    else if (s.kind === 'int' || s.kind === 'float') {
+      mustBe(s.min < s.max, 'user-settings.json', `${where}: min must be below max`)
+      mustBe(s.default >= s.min && s.default <= s.max, 'user-settings.json', `${where}: the default ${s.default} is outside its limits`)
+      if (s.kind === 'int') {
+        for (const [field, value] of [['default', s.default], ['min', s.min], ['max', s.max]])
+          mustBe(Number.isSafeInteger(value), 'user-settings.json', `${where}: ${field} must be a safe integer`)
+      }
+    }
+    else if (s.kind === 'desktopEnum') {
+      const block = desktop.windowBehavior[s.desktopSetting]
+      mustBe(block !== undefined, 'user-settings.json', `${where}: desktop.json windowBehavior has no ${s.desktopSetting} block`)
+      mustBe(Object.values(block).includes(s.default), 'user-settings.json', `${where}: the default ${jsonString(s.default)} is not a windowBehavior token`)
+    }
+  }
+  return {}
+}
+
+/** The settings of one or more kinds, in file order, for the emitters to walk. */
+function settingsOfKind(u, ...kinds) {
+  return Object.entries(u.settings).filter(([, s]) => kinds.includes(s.kind))
+}
+
+/** Every setting that carries a scalar default, with the literal Go writes for it. */
+function settingDefaults(u) {
+  return Object.entries(u.settings)
+    .filter(([, s]) => s.kind !== 'opaque')
+    .map(([name, s]) => ({
+      name: `Setting${settingPascal(name)}Default`,
+      value: typeof s.default === 'string' ? jsonString(s.default) : String(s.default),
+    }))
+}
+
+export function emitGoUserSettings(u) {
+  const keyDecls = Object.entries(u.settings)
+    .map(([name, s]) => ({ name: `SettingKey${settingPascal(name)}`, value: jsonString(s.protoKey) }))
+  const bounds = settingsOfKind(u, 'int', 'float').flatMap(([name, s]) => [
+    { name: `Setting${settingPascal(name)}Min`, value: String(s.min) },
+    { name: `Setting${settingPascal(name)}Max`, value: String(s.max) },
+  ])
+  const enums = settingsOfKind(u, 'enum')
+    .map(([name, s]) => `// Setting${settingPascal(name)}Values is the whole vocabulary of ${s.protoKey}.\nvar Setting${settingPascal(name)}Values = []string{${s.values.map(jsonString).join(', ')}}`)
+    .join('\n\n')
+  return `${GO_HEADER('user-settings.json')}package contracts
+
+// The proto key of every account setting. The hub names its descriptor with one
+// of these, and the browser addresses that descriptor by the same string, so a
+// rename reaches both sides at once.
+const (
+${goConstBlock(keyDecls)}
+)
+
+// The DEFAULT of every setting whose value is a scalar. The hub answers an
+// unset key with it, and the browser falls back to it when no value arrives at
+// all -- so a disagreement makes one client show a setting the others do not.
+// UNTYPED, so each caller binds it to the type its own key declares.
+const (
+${goConstBlock(settingDefaults(u))}
+)
+
+// The inclusive limits of every numeric setting. The hub refuses a value
+// outside them, and the browser discards one.
+const (
+${goConstBlock(bounds)}
+)
+
+${enums}
+`
+}
+
+export function emitTsUserSettings(u) {
+  const keys = Object.entries(u.settings)
+    .map(([name, s]) => `export const SETTING_KEY_${settingScreaming(name)} = ${jsonString(s.protoKey)} as const`)
+    .join('\n')
+  const rest = Object.entries(u.settings).flatMap(([name, s]) => {
+    if (s.kind === 'opaque')
+      return []
+    const id = settingScreaming(name)
+    const lines = []
+    if (s.kind === 'enum') {
+      lines.push(`export const SETTING_${id}_VALUES = [${s.values.map(jsonString).join(', ')}] as const`)
+      lines.push(`export type Setting${settingPascal(name)} = typeof SETTING_${id}_VALUES[number]`)
+      lines.push(`export const SETTING_${id}_DEFAULT: Setting${settingPascal(name)} = ${jsonString(s.default)}`)
+    }
+    else if (s.kind === 'int' || s.kind === 'float') {
+      lines.push(`export const SETTING_${id}_DEFAULT = ${s.default} as const`)
+      lines.push(`export const SETTING_${id}_MIN = ${s.min} as const`)
+      lines.push(`export const SETTING_${id}_MAX = ${s.max} as const`)
+    }
+    else {
+      lines.push(`export const SETTING_${id}_DEFAULT = ${typeof s.default === 'string' ? jsonString(s.default) : s.default} as const`)
+    }
+    return [lines.join('\n')]
+  }).join('\n\n')
+  return `${TS_HEADER('user-settings.json')}
+/**
+ * The proto key of every account setting. The browser addresses a descriptor by
+ * the same string the hub names it with.
+ */
+${keys}
+
+${rest}
+`
+}
+
+// ---------------------------------------------------------------------------
 // chat-history: cross-language page and catch-up limits
 // ---------------------------------------------------------------------------
 
@@ -2639,6 +2772,19 @@ const DOMAINS = [
     },
   },
   {
+    name: 'user-settings',
+    reads: ['desktop'],
+    emit(out, read) {
+      const u = read('user-settings')
+      // desktop.json is read here too: three settings draw their tokens
+      // from its windowBehavior blocks, and this is the only place that
+      // sees both contracts at once.
+      checkUserSettings(u, read('desktop'))
+      out['backend/generated/contracts/user-settings.go'] = emitGoUserSettings(u)
+      out['frontend/src/generated/contracts/user-settings.ts'] = emitTsUserSettings(u)
+    },
+  },
+  {
     name: 'chat-history',
     emit(out, read) {
       const v = read('chat-history')
@@ -2793,6 +2939,12 @@ export function generate(contractsDir, descriptorSet = null) {
   const out = {}
   for (const domain of DOMAINS) {
     mustBe(has(domain.name), `${domain.name}.json`, 'is missing -- every registered domain ships its contract; retire a domain by removing its DOMAINS entry in the same change that deletes the file')
+    // A domain that cross-checks against a SIBLING contract declares it in
+    // `reads`, so the missing-file report stays this loop's rather than an
+    // ENOENT out of the emitter -- which names a temp path and no domain.
+    for (const dep of domain.reads ?? []) {
+      mustBe(has(dep), `${dep}.json`, `is missing -- the ${domain.name} domain cross-checks against it`)
+    }
     if (domain.requiresDescriptor) {
       mustBe(descriptorSet != null, `${domain.name}.json`, 'requires a buf descriptor (run via task generate-contracts)')
     }

@@ -41,6 +41,10 @@ const KEY_DISPLAY_NAMES: Record<string, string> = {
   'Backslash': '\\',
   'BracketLeft': '[',
   'BracketRight': ']',
+  // The author-facing name for the key under Esc. It is spelled by intent
+  // rather than by character, because the character on that keycap differs by
+  // layout -- see PHYSICAL_KEY_ALIASES in `./keybindings`.
+  'grave': '`',
   'NumpadAdd': 'Num+',
   'NumpadSubtract': 'Num-',
   'Numpad0': 'Num0',

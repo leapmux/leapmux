@@ -836,7 +836,7 @@ func (tc *tunnelConn) writeData(ctx context.Context, seq uint64, data []byte, cl
 	// carries a tracker, so its lingering upload direction stays alive while it
 	// progresses and is reaped only when it goes truly idle.
 	//
-	// Gated on !closeWrite: a close_write frame ends the upload direction, so
+	// Guarded on !closeWrite: a close_write frame ends the upload direction, so
 	// there is nothing left to keep alive -- let the reaper's clock keep running
 	// so the conn is reclaimed promptly rather than parked for a full idle window.
 	if !closeWrite {

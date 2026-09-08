@@ -509,9 +509,9 @@ leapmux control agent quake toggle
 
 Notes:
 
-- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that is not running never hears the request; there is no state waiting for it when it starts.
-- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is showing is per-device.
-- `--tab-id` accepts an agent tab, or the Quake terminal's own id. The second form is what lets `leapmux control agent quake close`, run inside the panel, hide the panel you typed it into: the Worker already records which agent that shell belongs to.
+- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that does not run never hears the request; there is no state waiting for it when it starts.
+- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is visible is per-device.
+- `--tab-id` takes an agent tab. You rarely pass it: inside an agent's own terminal, and inside its Quake terminal, the ambient tab is already that agent — a Quake shell reports the agent tab it belongs to, because it has no tab of its own. So `leapmux control agent quake close`, run inside the panel, hides the panel you typed it into.
 - Opening a panel that has no shell yet creates one. Hiding it never ends the shell — only closing the agent tab, or exiting the shell, does.
 
 ## Terminal commands

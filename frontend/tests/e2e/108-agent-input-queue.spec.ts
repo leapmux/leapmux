@@ -5,6 +5,8 @@ import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { loginViaToken, openWorkspace, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
+const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+
 /**
  * Pause the queue, park two inputs in it, and hand back the locators that both
  * drag tests need.
@@ -208,6 +210,12 @@ test.describe('agent input queue', () => {
   // apart -- so the dangerous direction is the shortcut CLAIMING a keypress that
   // was meant to send. Every other spec in the suite sends with this chord, so a
   // regression there is loud; what needs its own case is the boundary.
+  // `MOD` and not a literal `Meta`: tinykeys resolves `$mod` to Meta on an
+  // Apple platform and to Control everywhere else, so a hardcoded Meta misses
+  // the keybinding layer entirely on Linux and Windows and lands only on the
+  // composer's own send plugin -- which accepts either modifier. Both
+  // assertions below would then pass for the wrong reason, and the claim this
+  // test exists to catch would go unexercised.
   test('leaves the send chord to the composer whenever there is something to send', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     const { rows } = await seedTwoQueuedRows(page)
@@ -216,14 +224,14 @@ test.describe('agent input queue', () => {
     // is claimed and does nothing. Nothing is sent, and nothing is queued.
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await editor.click()
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${MOD}+Enter`)
     await expect(rows).toHaveCount(2)
 
     // The same chord with text in the composer still sends, which is the whole
-    // point of gating the steer on emptiness.
+    // point of requiring an empty composer for the steer.
     await editor.click()
     await page.keyboard.type('typed then sent')
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${MOD}+Enter`)
     await expect(editor).toHaveText('')
     await expect(rows).toHaveCount(3)
     await expect(rows.last()).toContainText('typed then sent')

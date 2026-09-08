@@ -15,7 +15,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
+func TestRegisterAgentGuarded_PassesLoadedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -24,7 +24,7 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID, gotDir string
-	registerAgentGated(r, "ProbeAgent", leapmuxv1.Scope_SCOPE_WORKER_READ,
+	registerAgentGuarded(r, "ProbeAgent", leapmuxv1.Scope_SCOPE_WORKER_READ,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
@@ -43,7 +43,7 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 	assert.NotEmpty(t, gotDir, "the loaded row is passed through, not just its id")
 }
 
-func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
+func TestRegisterAgentGuardedByID_PassesDecodedRequest(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -52,7 +52,7 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID string
-	registerAgentGatedByID(r, "ProbeAgentID", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
+	registerAgentGuardedByID(r, "ProbeAgentID", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			gotID = req.GetAgentId()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
@@ -69,7 +69,7 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	assert.Equal(t, "agent-1", gotID)
 }
 
-func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
+func TestRegisterTerminalGuarded_PassesLoadedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -78,7 +78,7 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID, gotDir string
-	registerTerminalGated(r, "ProbeTerm", leapmuxv1.Scope_SCOPE_WORKER_READ,
+	registerTerminalGuarded(r, "ProbeTerm", leapmuxv1.Scope_SCOPE_WORKER_READ,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
@@ -97,7 +97,7 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 	assert.NotEmpty(t, gotDir, "the loaded row is passed through, not just its id")
 }
 
-func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
+func TestRegisterTerminalForRestartGuarded_PassesRow(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -106,7 +106,7 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotDir string
-	registerTerminalForRestartGated(r, "ProbeRestart", leapmuxv1.Scope_SCOPE_WORKER_READ,
+	registerTerminalForRestartGuarded(r, "ProbeRestart", leapmuxv1.Scope_SCOPE_WORKER_READ,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
@@ -123,12 +123,12 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	assert.NotEmpty(t, gotDir, "the narrow restart row is passed through")
 }
 
-// TestGatedTrackedHelpersTrackInFlightDispatches pins that every *Tracked
+// TestGuardedTrackedHelpersTrackInFlightDispatches pins that every *Tracked
 // registration helper actually routes through Dispatcher.RegisterTracked: a
 // dispatch in flight must hold the BindCleanup WaitGroup open until the
 // handler returns. A helper that silently registered untracked would let
 // Shutdown tear down the DB pool under a running close flow.
-func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
+func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -138,10 +138,10 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 		req      proto.Message
 	}{
 		{
-			name: "registerAgentGatedByID+dispatchTracked",
+			name: "registerAgentGuardedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1") },
 			register: func(r registrar, method string, block func()) {
-				registerAgentGatedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+				registerAgentGuardedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -149,10 +149,10 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			req: &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"},
 		},
 		{
-			name: "registerTerminalGatedByID+dispatchTracked",
+			name: "registerTerminalGuardedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1") },
 			register: func(r registrar, method string, block func()) {
-				registerTerminalGatedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+				registerTerminalGuardedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -160,10 +160,10 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			req: &leapmuxv1.CloseTerminalRequest{TerminalId: "term-1"},
 		},
 		{
-			name: "registerOwnerGated+dispatchTracked",
+			name: "registerOwnerGuarded+dispatchTracked",
 			seed: func(*testing.T, *Service) {},
 			register: func(r registrar, method string, block func()) {
-				registerOwnerGated(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+				registerOwnerGuarded(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.RevokeTabPayloadRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -219,9 +219,9 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	registerUngated(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+	registerUnguarded(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	assert.Panics(t, func() {
-		registerUngated(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+		registerUnguarded(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	})
 }
 
@@ -245,13 +245,13 @@ func TestRegistrarPanicsOnAnUngrantableScope(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			r := newRegistrar(channel.NewDispatcher(), svc)
 			assert.Panics(t, func() {
-				registerUngated(r, "Whatever", scope, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+				registerUnguarded(r, "Whatever", scope, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 			})
 		})
 	}
 }
 
-// TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument restores coverage
+// TestRegisterOwnerGuarded_InvalidPayloadAnswersInvalidArgument restores coverage
 // deleted with the workspace gate.
 //
 // `decodeInto` still implements the rule for every owner-gated method -- a
@@ -263,7 +263,7 @@ func TestRegistrarPanicsOnAnUngrantableScope(t *testing.T) {
 // ZERO-VALUED message. That is not always harmless: ListAgents / ListTerminals /
 // CleanupWorkspace have no empty-field guard of their own and would answer a
 // SUCCESSFUL empty response, so the caller sees "no agents" rather than an error.
-func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
+func TestRegisterOwnerGuarded_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -271,7 +271,7 @@ func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	called := false
-	registerOwnerGated(r, "ProbeInvalid", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
+	registerOwnerGuarded(r, "ProbeInvalid", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.ListAgentsRequest, _ channel.ResponseWriter) {
 			called = true
 		})
@@ -288,14 +288,14 @@ func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
 	assert.Empty(t, w.responses, "and no response may be sent")
 }
 
-// TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError is the streaming
+// TestRegisterOwnerGuardedStream_InvalidPayloadAnswersStreamError is the streaming
 // half, and the shape matters as much as the code: a streaming method's failures
 // must arrive as stream frames so the receiver has an End to terminate on.
 //
 // Asserts `w.errors` is EMPTY rather than going through `rejections()`, which
 // folds both shapes together and would pass either way -- the fold is exactly
 // what let this distinction go unchecked.
-func TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError(t *testing.T) {
+func TestRegisterOwnerGuardedStream_InvalidPayloadAnswersStreamError(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -303,7 +303,7 @@ func TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError(t *testing.T)
 	r := newRegistrar(d, svc)
 
 	called := false
-	registerOwnerGatedStream(r, "ProbeInvalidStream", leapmuxv1.Scope_SCOPE_WORKER_READ,
+	registerOwnerGuardedStream(r, "ProbeInvalidStream", leapmuxv1.Scope_SCOPE_WORKER_READ,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.WatchEventsRequest, _ channel.ResponseWriter) {
 			called = true
 		})

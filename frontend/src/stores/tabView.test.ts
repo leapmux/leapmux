@@ -45,14 +45,14 @@ function mountView() {
 // nothing else -- every placement-shaped lookup has to keep refusing them, or
 // one turns up in the tab strip.
 describe('tabView detached terminals', () => {
-  function mountWithDetached() {
+  function mountWithDetached(detachedId = 'q1') {
     const metadata = createTabMetadataStore()
     const { state, projection } = projectionMemo()
     const view = createTabView({
       projection,
       state,
       metadata,
-      detachedTerminals: () => [{ id: 'q1', workerId: 'w1', workspaceId: 'ws-1' }],
+      detachedTerminals: () => [{ id: detachedId, workerId: 'w1', workspaceId: 'ws-1' }],
     })
     return { view, metadata }
   }
@@ -91,7 +91,7 @@ describe('tabView detached terminals', () => {
 
   // `createMemo` runs its body once at CREATION time to collect dependencies,
   // so this accessor is called from inside `createTabView` -- before the line
-  // after it has run. A store built AFTER the view therefore reads `undefined`
+  // after it runs. A store built AFTER the view therefore reads `undefined`
   // here and the whole shell fails to mount, which is exactly what happened.
   //
   // Pinned as a property of the view rather than left to the call site to
@@ -118,13 +118,32 @@ describe('tabView detached terminals', () => {
     })
   })
 
+  // The SAME id in both families, which is the only shape that tests a
+  // precedence: with two different ids the assertion holds however the two
+  // branches are ordered.
   it('finds a placed terminal before a detached one', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
-        const { view } = mountWithDetached()
+        const { view } = mountWithDetached('t1')
         emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'a' })
 
-        expect(view.getTerminalTab('t1')?.tileId).toBe(harness.rootTileId)
+        const tab = view.getTerminalTab('t1')
+        expect(tab?.tileId).toBe(harness.rootTileId)
+        expect(tab?.workerId, 'the placed row wins on every field, not only the tile').not.toBe('w1')
+        dispose()
+      })
+    })
+  })
+
+  it('exposes every companion as a list, for the sweeps that need one', () => {
+    withTestBridge(() => {
+      createRoot((dispose) => {
+        const { view, metadata } = mountWithDetached()
+        metadata.patch('q1', { title: 'Quake' })
+
+        expect(view.detachedTerminalTabs().map(t => t.id)).toEqual(['q1'])
+        expect(view.detachedTerminalTabs()[0]?.title).toBe('Quake')
+        expect(view.all().map(t => t.id), 'and never through the placed list').not.toContain('q1')
         dispose()
       })
     })

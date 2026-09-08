@@ -49,20 +49,24 @@ export interface CreateTabViewOpts {
    * behind an agent tab's quake panel. They belong to an agent tab rather than
    * to a tile, so the projection has nothing to render them from.
    *
-   * They are reachable through `getTerminalTab` and NOTHING ELSE. `byKey`,
-   * `byWorkspace`, `byTile`, `all`, `mruOrder`, `get` and `getById` all derive
-   * from `placedTabs`, which derives from the projection -- so a detached
-   * terminal cannot reach the tab strip, the sidebar tree, `app.switchToTabN`,
-   * a tab drag or an MRU promotion by CONSTRUCTION, rather than because every
-   * one of those remembered to filter it out.
+   * They are reachable through `getTerminalTab` and `detachedTerminalTabs`, and
+   * NOTHING ELSE. `byKey`, `byWorkspace`, `byTile`, `all`, `mruOrder`, `get`
+   * and `getById` all derive from `placedTabs`, which derives from the
+   * projection -- so a detached terminal cannot reach the tab strip, the
+   * sidebar tree, `app.switchToTabN`, a tab drag or an MRU promotion by
+   * CONSTRUCTION, rather than because every one of those remembered to filter
+   * it out.
    *
    * That asymmetry is the design, not an oversight. `getTerminalTab` is the
    * narrowed lookup the terminal data path uses -- the event router, the input
    * drain, the resize handler, the bell and notification helpers -- and every
    * one of them must resolve a companion or the panel receives no bytes and
-   * swallows every keystroke. `get`/`getById` are the PLACEMENT-shaped lookups
-   * that selection, tile drag and tile move read, and a companion must stay
-   * invisible to all of those. Do not "fix" the inconsistency.
+   * swallows every keystroke. `detachedTerminalTabs` is the same family as a
+   * LIST, for the callers that must sweep it: the hydrators, whose retry keeps
+   * a companion's status moving, and the worker-offline sweep. `get`/`getById`
+   * are the PLACEMENT-shaped lookups that selection, tile drag and tile move
+   * read, and a companion must stay invisible to all of those. Do not "fix"
+   * the inconsistency by widening one of THOSE.
    */
   detachedTerminals?: () => readonly DetachedTerminal[]
 }
@@ -510,24 +514,47 @@ export function createTabView(opts: CreateTabViewOpts) {
    * Built through the SAME `assemble` the placed rows use, with an empty tile
    * and position, so a field added to `TerminalTab` cannot be served two
    * different ways -- the `satisfies Complete<TerminalTab>` guard in the
-   * TERMINAL arm covers both kinds at once.
+   * TERMINAL branch covers both kinds at once.
+   *
+   * Also through the SAME `mapArray` + per-item `createMemo` + `equals:
+   * shallowEqual` shape as `assembled`, and for the reasons that memo's own
+   * note gives. One computation over the whole family would re-assemble every
+   * companion whenever any ONE of them took a metadata patch -- an OSC title,
+   * an OSC 9;4 progress frame, a status change -- and it would hand out a fresh
+   * `TerminalTab` on each run, which falsifies for a companion the identity
+   * stability `TerminalView` relies on to stop propagating.
    */
-  const detachedById = createMemo<Map<string, TerminalTab>>(() => {
-    const m = new Map<string, TerminalTab>()
-    for (const ref of opts.detachedTerminals?.() ?? []) {
-      const tab = assemble({
+  const detachedAssembled = createMemo(mapArray(
+    () => opts.detachedTerminals?.() ?? [],
+    ref => createMemo(
+      () => assemble({
         workspaceId: ref.workspaceId,
         tabType: TabType.TERMINAL,
         tabId: ref.id,
         workerId: ref.workerId,
         tileId: '',
         position: '',
-      })
+      }),
+      undefined,
+      { equals: shallowEqual },
+    ),
+  ))
+
+  const detachedById = createMemo<Map<string, TerminalTab>>(() => {
+    const m = new Map<string, TerminalTab>()
+    for (const tabMemo of detachedAssembled()) {
+      const tab = tabMemo()
       if (tab.type === TabType.TERMINAL)
-        m.set(ref.id, tab)
+        m.set(tab.id, tab)
     }
     return m
   })
+
+  /**
+   * The detached terminals as a LIST, memoized so the consumers that sweep them
+   * do not each rebuild it by mapping ids back through `getTerminalTab`.
+   */
+  const detachedList = createMemo<TerminalTab[]>(() => [...detachedById().values()])
 
   const byTile = createMemo<Map<string, Tab[]>>(() => {
     const m = new Map<string, Tab[]>()
@@ -578,6 +605,13 @@ export function createTabView(opts: CreateTabViewOpts) {
       if (t && t.type === TabType.TERMINAL)
         return t
       return detachedById().get(id)
+    },
+    /**
+     * Every companion terminal, assembled. See `detachedTerminals` for why this
+     * family is reachable here and not through the placement-shaped lookups.
+     */
+    detachedTerminalTabs(): TerminalTab[] {
+      return detachedList()
     },
     getFileTab(id: string): FileTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.FILE, id }))

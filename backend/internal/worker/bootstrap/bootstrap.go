@@ -328,8 +328,8 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
 		}
 		// Companion terminals are excluded for exactly the reason child agents
-		// are: they have no CRDT tab, so the hub 403s their id and the mint
-		// backoff loops to a permanent failure.
+		// are: they have no CRDT tab, so the hub refuses their id with a 403
+		// and the mint backoff loops to a permanent failure.
 		if ids, err := queries.ListAllOpenTabTerminalIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL), true
 		}
@@ -355,6 +355,21 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		}
 		return sync
 	}
+
+	// Close the COMPANION terminals the previous worker process left behind.
+	//
+	// A companion is the shell behind an agent tab's quake panel, and it is
+	// valid only while this process hosts its PTY. A restart breaks that link
+	// with the row still open, and no other pass reclaims one: the orphan
+	// reconciler measures a companion by its OWNER's tab key, so a live agent
+	// tab keeps the dead row open for as long as it exists. The next panel open
+	// would then adopt a terminal with no PTY, and a companion refuses the Enter
+	// that restarts a terminal TAB -- so the panel would stay dead for the life
+	// of the agent tab, across reloads.
+	//
+	// Before the resumer and the reconciler, and synchronous, because it must
+	// land before a client can ask for a companion.
+	svc.CloseOrphanedCompanionTerminals(p.Ctx)
 
 	// Respawn the agent processes the previous worker process left behind. It
 	// runs once, in the background, and only after the reconciler reports a

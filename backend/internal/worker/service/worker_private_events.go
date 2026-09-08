@@ -184,7 +184,8 @@ func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, agentID
 // QuakePanelCommand is deliberately NOT part of any snapshot. It is a transient
 // command rather than state the worker holds, so replaying it would reopen a
 // panel on every reconnect -- overwriting client-local state the user set. The
-// bootstrap replay is for facts; this bus carries one arm that is not one.
+// bootstrap replay is for facts, and this bus carries one case that is not a
+// fact.
 //
 // snapshotFn receives the owner and returns the events that should be
 // sent before the live stream. It runs with the bus mutex RELEASED -- the

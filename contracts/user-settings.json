@@ -1,0 +1,82 @@
+{
+  "_readme": "Single source of truth for the user-settings vocabulary that the hub and the browser BOTH spell. Every account setting has a proto key on the wire, and both sides state it: the hub in usersettings/keys.go, where it names the descriptor, and the browser in PreferencesContext.tsx and the Preferences registry, where it addresses the same descriptor. A setting whose value is a closed set or a numeric range states that constraint twice as well, and the two must agree exactly -- a hub that accepts 20..100 while the browser accepts 25..100 stores a value the browser silently discards for its fallback, and the user sees the default beside a Customized badge with no way out but Reset. The DEFAULT is the third such pair: the hub's WithDefault answers a read for an unset key, and the browser's fallback answers when no value arrives at all, so a disagreement makes one client render a setting the others do not have. Each entry carries a `kind` that says which of those a setting has. `enum` and the numeric kinds carry their whole vocabulary here. `desktopEnum` carries only its default, because its TOKENS already live in contracts/desktop.json under windowBehavior -- the Rust shell matches them too, and restating them here would be the second source this file exists to remove; the generator cross-checks that the default is one of them. `opaque` is a setting whose value is a structured object or a list (a theme, a font tier, a keybinding list), where the shape is stated in the proto and in a hand-written parse rather than as a vocabulary, so only the key is contracted. What does NOT belong here: the UI metadata (title, summary, category, unit), which the hub alone renders into its descriptor and no second language spells; the browser-tier storage key, which only the browser has; and the validator's error wording, which is prose for one reader.",
+  "settings": {
+    "theme": { "protoKey": "theme", "kind": "opaque" },
+    "terminalTheme": { "protoKey": "terminal_theme", "kind": "opaque" },
+    "syntaxTheme": { "protoKey": "syntax_theme", "kind": "opaque" },
+    "uiFonts": { "protoKey": "ui_fonts", "kind": "opaque" },
+    "monoFonts": { "protoKey": "mono_fonts", "kind": "opaque" },
+    "keybindings": { "protoKey": "keybindings", "kind": "opaque" },
+
+    "diffView": {
+      "protoKey": "diff_view",
+      "kind": "enum",
+      "default": "unified",
+      "values": ["unified", "split"]
+    },
+    "turnEndSound": {
+      "protoKey": "turn_end_sound",
+      "kind": "enum",
+      "default": "ding-dong",
+      "values": ["none", "ding-dong"]
+    },
+    "quakeOrientation": {
+      "protoKey": "quake_orientation",
+      "kind": "enum",
+      "default": "top",
+      "values": ["top", "bottom", "left", "right"]
+    },
+
+    "turnEndSoundVolume": {
+      "protoKey": "turn_end_sound_volume",
+      "kind": "int",
+      "default": 100,
+      "min": 0,
+      "max": 100
+    },
+    "quakeSizePercent": {
+      "protoKey": "quake_size_percent",
+      "kind": "int",
+      "default": 65,
+      "min": 20,
+      "max": 100
+    },
+    "quakeAnimationMs": {
+      "protoKey": "quake_animation_ms",
+      "kind": "int",
+      "default": 300,
+      "min": 0,
+      "max": 2000
+    },
+    "quakeBackgroundOpacity": {
+      "protoKey": "quake_background_opacity",
+      "kind": "float",
+      "default": 0.9,
+      "min": 0.05,
+      "max": 1
+    },
+
+    "trayEnabled": { "protoKey": "tray_enabled", "kind": "bool", "default": false },
+    "startOnLogin": { "protoKey": "start_on_login", "kind": "bool", "default": false },
+    "debugLogging": { "protoKey": "debug_logging", "kind": "bool", "default": false },
+
+    "trayOnClose": {
+      "protoKey": "tray_on_close",
+      "kind": "desktopEnum",
+      "desktopSetting": "trayOnClose",
+      "default": "tray"
+    },
+    "trayOnMinimize": {
+      "protoKey": "tray_on_minimize",
+      "kind": "desktopEnum",
+      "desktopSetting": "trayOnMinimize",
+      "default": "taskbar"
+    },
+    "startMinimized": {
+      "protoKey": "start_minimized",
+      "kind": "desktopEnum",
+      "desktopSetting": "startMinimized",
+      "default": "window"
+    }
+  }
+}

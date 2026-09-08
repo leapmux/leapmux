@@ -2,7 +2,7 @@ import type { Projection } from '~/lib/crdt'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
-import type { TabView } from '~/stores/tabView'
+import type { DetachedTerminal, TabView } from '~/stores/tabView'
 import { createMemo } from 'solid-js'
 import { useFocusInvariant } from '~/components/shell/useFocusInvariant'
 import { createProjectionMemo, getCRDTBridge } from '~/lib/crdt'
@@ -54,10 +54,18 @@ export function projectionMemo() {
   return { state, projection: createProjectionMemo(state) }
 }
 
-export function createTestTabStores(workspaceId: string): TestTabStores {
+export function createTestTabStores(
+  workspaceId: string,
+  /**
+   * The companion shells behind the quake panels, for a test that must drive
+   * one. They exist on a worker but not in the CRDT, so no `emitAddTab` can
+   * produce one and a caller supplies them directly.
+   */
+  detachedTerminals?: () => readonly DetachedTerminal[],
+): TestTabStores {
   const { state, projection } = projectionMemo()
   const metadata = createTabMetadataStore()
-  const view = createTabView({ projection, state, metadata })
+  const view = createTabView({ projection, state, metadata, detachedTerminals })
   const selection = createTabSelectionStore(view, metadata)
   const layoutStore = createLayoutStore({ getWorkspaceId: () => workspaceId, projection })
   const floatingWindowStore = createFloatingWindowStore({ getWorkspaceId: () => workspaceId, projection })

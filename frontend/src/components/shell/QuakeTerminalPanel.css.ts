@@ -101,6 +101,25 @@ export const quakePanel = style({
   },
 })
 
+/**
+ * The hide control, floated over the terminal's top-right corner.
+ *
+ * Absolute rather than a header row, so the panel keeps giving the shell every
+ * row it has: a quake terminal is short by design, and a chrome bar would cost
+ * one of them permanently. The offsets are positioning, not spacing, so they
+ * are plain pixels and not `--space-N`.
+ */
+export const quakeClose = style({
+  position: 'absolute',
+  top: 4,
+  right: 4,
+  zIndex: 1,
+  opacity: 0.55,
+  selectors: {
+    '&:hover, &:focus-visible': { opacity: 1 },
+  },
+})
+
 /** The terminal fills whatever the panel's chrome leaves. */
 export const quakeBody = style({
   position: 'relative',

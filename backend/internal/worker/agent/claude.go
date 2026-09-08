@@ -569,7 +569,7 @@ func (a *ClaudeCodeAgent) reconcileStartupEffortFlags() map[string]interface{} {
 	// A third-party session presents no model/effort UI and (when detected from
 	// settings) launches with no --model/--effort; pushing effort/ultracode flags
 	// would apply settings its user can neither see nor control, so leave it at the
-	// CLI's own resolution. Gated on the same predicate AvailableModels uses so the
+	// CLI's own resolution. It reads the same predicate AvailableModels uses, so the
 	// "hidden UI" and "no effort push" decisions can't drift.
 	if a.hidesModelEffortUI() {
 		return nil

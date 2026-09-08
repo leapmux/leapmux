@@ -101,7 +101,7 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
         onQuakePanelCommand: (evt) => {
           // An agent this client cannot see is not an error: the command
           // reaches every frontend of the account, and another one may be
-          // looking at a workspace this one is not.
+          // on a workspace this one does not display.
           const owner = opts.view.getAgentTab(evt.agentId)
           if (!owner)
             return

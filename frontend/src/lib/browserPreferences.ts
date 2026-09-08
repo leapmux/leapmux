@@ -200,9 +200,9 @@ export function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserP
  * Run `body` with every browser-preference write applied to ONE document,
  * stored once at the end.
  *
- * "Reset all browser overrides" clears seventeen fields, and each one is
+ * "Reset all browser overrides" clears every browser override, and each one is
  * otherwise a full read, parse, serialize and write of the whole document. One
- * write is also one `storage` event for the other tabs rather than seventeen.
+ * write is also one `storage` event for the other tabs rather than one per field.
  *
  * Both guards are required. The `finally` closes the batch even when a write
  * inside `body` throws; without it every later write in the page would

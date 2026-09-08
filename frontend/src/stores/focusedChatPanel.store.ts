@@ -11,7 +11,7 @@
  *
  * There is at most one mounted panel: `FocusedAgentEditorPanel` is rendered in
  * exactly one of the two shell layers (mobile and desktop are mutually
- * exclusive) and is keyed to the focused agent. `activePanel` therefore names
+ * exclusive) and is keyed to the focused agent. `activePanel` therefore identifies
  * "the current agent tab's composer" unambiguously, and a re-registration
  * replaces it.
  */

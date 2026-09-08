@@ -269,8 +269,8 @@ export function useShortcuts(props: UseShortcutsProps): void {
     if (tab?.type !== TabType.AGENT || !tab.supportsSteering)
       return
     // Index 0 and never a scan: the worker marks `canSteer` on the head alone,
-    // so searching for a steerable item would answer a different question than
-    // the one the worker will enforce.
+    // so a search for a steerable item answers a different question from the
+    // one the worker enforces.
     const head = props.getAgentInputQueue(tab.id)?.items[0]
     if (!head?.canSteer)
       return
@@ -295,31 +295,26 @@ export function useShortcuts(props: UseShortcutsProps): void {
       return null
     // A subagent transcript owns no process, so it owns no companion shell
     // either: the worker refuses `SetQuakePanel` for one, and the keyboard must
-    // not be the one route around that. A companion owned by a child agent
-    // would also outlive its tab, because only a ROOT close tears one down.
+    // not be the one route around that. A companion owned by a child agent also
+    // outlives its tab, because only a ROOT close tears one down.
     if (tab.parentAgentId)
       return null
     return tab
   }
 
-  cmd('terminal.toggleQuake', 'Toggle Quake Terminal', () => {
+  /** Run one quake action on the focused agent tab, or nothing when there is not one. */
+  function withQuakeTab(act: (tab: AgentTab) => void): void {
     const tab = focusedAgentTabForQuake()
     if (tab)
-      props.quakePanel.toggle(tab)
-  }, 'Terminal')
+      act(tab)
+  }
+
+  cmd('terminal.toggleQuake', 'Toggle Quake Terminal', () => withQuakeTab(tab => props.quakePanel.toggle(tab)), 'Terminal')
   // Registered without a default chord, so Preferences lists them with proper
   // titles and a user can bind either one. A caller that wants a key that only
   // ever opens -- or only ever closes -- should not have to write a toggle.
-  cmd('terminal.openQuake', 'Open Quake Terminal', () => {
-    const tab = focusedAgentTabForQuake()
-    if (tab)
-      props.quakePanel.open(tab)
-  }, 'Terminal')
-  cmd('terminal.closeQuake', 'Close Quake Terminal', () => {
-    const tab = focusedAgentTabForQuake()
-    if (tab)
-      props.quakePanel.close(tab.id)
-  }, 'Terminal')
+  cmd('terminal.openQuake', 'Open Quake Terminal', () => withQuakeTab(tab => props.quakePanel.open(tab)), 'Terminal')
+  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTab(tab => props.quakePanel.close(tab.id)), 'Terminal')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')
@@ -342,7 +337,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   // "The current agent tab's composer has nothing to submit."
   //
   // Deliberately does NOT consult focus: the steer action is about the current
-  // TAB, so it works from the transcript as well as the composer. The active
+  // TAB, so it works from the transcript and from the composer alike. The active
   // panel is the current agent tab's composer -- see the registry's header for
   // why exactly one can be mounted.
   //

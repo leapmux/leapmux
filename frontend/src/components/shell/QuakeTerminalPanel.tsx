@@ -1,9 +1,12 @@
 import type { Component } from 'solid-js'
+import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
+import { X } from 'lucide-solid'
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { IconButton } from '~/components/common/IconButton'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { usePreferences } from '~/context/PreferencesContext'
 import * as styles from './QuakeTerminalPanel.css'
@@ -14,11 +17,15 @@ export interface QuakeTerminalPanelProps {
   metadata: TabMetadataStore
   /** The agent tab whose panel this is, or null when the active tab is not one. */
   activeAgentId: () => string | null
+  /** Hide the panel of one owner. Wired to the store's `close`. */
+  onClose: (ownerId: string) => void
   onInput: (terminalId: string, data: Uint8Array) => void
   onResize: (terminalId: string, cols: number, rows: number) => void
   onContentReady: (terminalId: string) => void
   /** Whether a tab rename is open anywhere; see TerminalViewProps.tabEditing. */
   tabEditing?: () => boolean
+  /** See TerminalViewProps.confirmLink. A companion's links raise the same dialog. */
+  confirmLink: UntrustedLinkConfirm
 }
 
 /**
@@ -32,8 +39,8 @@ export interface QuakeTerminalPanelProps {
  * throw away the WebGL slot and the live buffer on every toggle, which is the
  * opposite of what a quake terminal is for.
  *
- * Every live companion is handed to one `TerminalView`, with only the active
- * owner's visible. That is what makes switching agent tabs instant: each
+ * Every live companion goes to one `TerminalView`, and only the active owner's
+ * is visible. That is what makes switching agent tabs instant: each
  * terminal keeps its own xterm and scrollback, and `TerminalView` hides the rest
  * with `visibility: hidden` so their dimensions stay valid. Only the visible one
  * competes for a WebGL context.
@@ -46,22 +53,21 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
     return agentId === null ? undefined : props.quakeStore.entryFor(agentId)
   })
 
-  /** Every companion this client holds, as terminal tabs the view can resolve. */
-  const terminals = createMemo<TerminalTab[]>(() => {
-    const out: TerminalTab[] = []
-    for (const detached of props.quakeStore.detachedTerminals()) {
-      const tab = props.view.getTerminalTab(detached.id)
-      if (tab)
-        out.push(tab)
-    }
-    return out
-  })
+  /**
+   * Every companion this client holds, as terminal tabs.
+   *
+   * Read from the view's own memo rather than mapped back through
+   * `getTerminalTab` here: the view already assembles this exact list, and a
+   * second reconstruction per render is one more place a field can be served
+   * differently.
+   */
+  const terminals = (): TerminalTab[] => props.view.detachedTerminalTabs()
 
   /**
    * Whether the panel painted its closed state at least once.
    *
    * False for the render that CREATES the panel, and true from the next
-   * microtask on. See `armFirstSlide` for why the first open needs that.
+   * microtask onward. See `armFirstSlide` for why the first open needs that.
    */
   const [firstSlideArmed, setFirstSlideArmed] = createSignal(false)
 
@@ -70,10 +76,10 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
   /**
    * Two jobs the panel element owns, both of which need the element itself.
    *
-   * FIRST SLIDE. A CSS transition interpolates between two computed values, and
-   * the panel does not exist until the first open of its lifetime -- so an element inserted
-   * already carrying `data-quake-open="true"` has no earlier value to leave, and
-   * it appears fully in place instead of sliding. Every LATER open animates on
+   * FIRST SLIDE. A CSS transition interpolates between two computed values,
+   * and the panel does not exist until the first open of its lifetime -- so an
+   * element inserted already carrying `data-quake-open="true"` has no earlier
+   * value to leave, and it appears fully in place instead of sliding. Every LATER open animates on
    * its own, because the panel stays mounted once it exists. Reading a layout
    * property supplies the missing value: it forces the browser to compute style
    * and layout for the CLOSED panel before the open one lands in the same task.
@@ -140,6 +146,23 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
           // `aria-hidden` covers the reader.
           aria-hidden={open() ? undefined : 'true'}
         >
+          {/* The one pointer route to hide the panel.
+              A keyboard user has the toggle chord, but the panel covers the
+              whole centre area and a touch device has no chord at all -- a
+              panel the Control CLI opened on a phone was otherwise impossible
+              to dismiss without a page reload. */}
+          <Show when={entry()?.ownerId}>
+            {ownerId => (
+              <IconButton
+                class={styles.quakeClose}
+                icon={X}
+                iconSize="xs"
+                title="Hide the quake terminal"
+                aria-label="Hide the quake terminal"
+                onClick={() => props.onClose(ownerId())}
+              />
+            )}
+          </Show>
           <div class={styles.quakeBody}>
             <TerminalView
               terminals={terminals()}
@@ -149,6 +172,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
               // TerminalView focus the xterm on the way in.
               tileFocused={open()}
               tabEditing={props.tabEditing}
+              confirmLink={props.confirmLink}
               getLastOffset={id => props.metadata.get(id)?.lastOffset}
               onInput={props.onInput}
               onResize={props.onResize}

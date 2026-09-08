@@ -132,15 +132,6 @@ describe('createQuakeTerminalStore', () => {
     dispose()
   })
 
-  it('restores composer focus when a panel closes', async () => {
-    const { store, focusComposer, dispose } = setup()
-    await store.open(OWNER)
-    store.close('a1')
-
-    expect(focusComposer).toHaveBeenCalledWith('a1')
-    dispose()
-  })
-
   // The shell's restore asks whether focus is still INSIDE the panel, and
   // closing it marks it `inert`, which blurs whatever it holds. Asked
   // afterwards, the answer would always be "focus is elsewhere" and the caret
@@ -306,7 +297,7 @@ describe('createQuakeTerminalStore', () => {
 
     // A 300 ms retract is a real window, and the toggle is one keypress. The
     // panel must survive it AND come back with a working shell -- releasing the
-    // entry on the timer would unmount a panel the user had just asked for.
+    // entry on the timer would unmount a panel the user just asked for.
     it('keeps the panel and starts a fresh shell when it is reopened mid-retract', async () => {
       vi.useFakeTimers()
       const { store, dispose } = setup(300)
@@ -381,6 +372,97 @@ describe('createQuakeTerminalStore', () => {
     store.handleShellExit('quake-1')
     expect(() => store.retireOwners(new Set(['a1']))).not.toThrow()
     expect(store.entryFor('a1')).toBeUndefined()
+    dispose()
+  })
+
+  // The shell of a panel the user already hid must not pull the caret back: the
+  // close that hid it already restored focus, and the caret moved on since.
+  it('asks for no focus restore when the shell of an already-closed panel exits', async () => {
+    const { store, focusComposer, dispose } = setup()
+    await store.open(OWNER)
+    store.close('a1')
+    focusComposer.mockClear()
+
+    store.handleShellExit('quake-1')
+
+    expect(focusComposer).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  // The owner's tab can close while the two resolve RPCs are in flight. A write
+  // to a store path whose parent key `retireOwners` deleted does not no-op:
+  // Solid's `updatePath` dereferences the absent parent and THROWS, and the
+  // rejection reached the caller's catch as "Failed to open the quake
+  // terminal" -- a failure toast for a tab the user merely closed.
+  it('survives its owner retiring while the open RPC is in flight', async () => {
+    const { store, dispose } = setup()
+    let resolveOpen!: (v: { terminalId: string, title: string }) => void
+    openTerminal.mockReturnValue(new Promise((r) => {
+      resolveOpen = r
+    }))
+
+    const opening = store.open(OWNER)
+    store.retireOwners(new Set([OWNER.id]))
+    resolveOpen({ terminalId: 'quake-1', title: 'Terminal Alpha' })
+    await opening
+
+    expect(warnToast, 'closing a tab is not an open failure').not.toHaveBeenCalled()
+    expect(store.entryFor(OWNER.id)).toBeUndefined()
+    // The shell the worker may have spawned in that window is the WORKER's to
+    // reclaim -- see `retireOwners`. A CloseTerminal from here would race
+    // closeAgentTabCommon and the orphan reconciler.
+    expect(closeTerminal).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  // A fresh shell after an exit is a COLD open, so it takes the same refusal
+  // `open` applies. Without it the client asks the worker for a shell in an
+  // archived workspace and then shows a failure toast for its own request.
+  it('does not respawn into a workspace archived during the retract', async () => {
+    vi.useFakeTimers()
+    const { store, workspace, dispose } = setup(300)
+    await store.open(OWNER)
+    openTerminal.mockClear()
+
+    store.handleShellExit('quake-1')
+    // Reopened inside the animation window, and archived in the same window.
+    void store.open(OWNER)
+    workspace.mutatable = false
+    vi.advanceTimersByTime(300)
+    await Promise.resolve()
+
+    expect(openTerminal, 'an archived workspace takes no new shell').not.toHaveBeenCalled()
+    expect(store.entryFor(OWNER.id)).toBeUndefined()
+    dispose()
+  })
+
+  // One panel element holds every companion's terminal, so "is focus inside the
+  // panel?" is true whenever ANY of them has the caret. The store therefore
+  // reports WHICH shell it retracts, and the shell tells the caller apart from
+  // a background owner whose panel closed underneath it.
+  it('reports the terminal it retracts, so a background close cannot steal focus', async () => {
+    const { store, focusComposer, dispose } = setup()
+    await store.open(OWNER)
+
+    store.close(OWNER.id)
+
+    expect(focusComposer).toHaveBeenCalledWith(OWNER.id, 'quake-1')
+    dispose()
+  })
+
+  it('reports no terminal for a panel whose RPC never resolved', async () => {
+    const { store, focusComposer, dispose } = setup()
+    let resolveOpen!: (v: { terminalId: string, title: string }) => void
+    openTerminal.mockReturnValue(new Promise((r) => {
+      resolveOpen = r
+    }))
+    const opening = store.open(OWNER)
+
+    store.close(OWNER.id)
+    expect(focusComposer).toHaveBeenCalledWith(OWNER.id, undefined)
+
+    resolveOpen({ terminalId: 'quake-1', title: 'Terminal Alpha' })
+    await opening
     dispose()
   })
 })

@@ -136,7 +136,7 @@ attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
 queue lives on the Worker, so it survives a page refresh, a reconnect, and a
 Worker restart, and every device you are signed in on sees the same one.
 
-An item leaves the queue when the agent takes it. While the agent is working,
+An item leaves the queue when the agent takes it. While the agent works,
 anything you send waits its turn, and the queue appears above the composer with
 one row per waiting item. Each row shows a preview, what kind of input it is,
 and its delivery state.
@@ -152,7 +152,7 @@ and its delivery state.
 | **Steer** | Hand the first item to the turn already running, instead of waiting for it to finish. |
 | **Pause Queue** | Stop delivering. The Send button reads **Queue** while paused. |
 
-An item that is being delivered cannot be moved, reordered around, or deleted.
+An item already on its way to the agent cannot be moved, reordered around, or deleted.
 
 ### Pausing
 
@@ -172,10 +172,10 @@ Press **`Cmd/Ctrl+Enter`** while the composer is empty, or click **Steer** on th
 first row. The shortcut and the button offer the same thing under the same
 conditions, and nothing happens when any of them is unmet:
 
-- the agent's provider has to accept a steer while it is running;
-- a turn has to be running, and it has to be an ordinary turn rather than a
+- the agent's provider has to accept a steer while it runs;
+- a turn has to be in progress, and it has to be an ordinary turn rather than a
   `/clear` or a `/compact`;
-- the first item has to be waiting — not being delivered, and not being edited.
+- the first item has to be waiting — not on its way to the agent, and not open for edit.
 
 The shortcut acts only on an **empty** composer, because `Cmd/Ctrl+Enter` sends
 whatever the composer holds. Text, an attachment, or a permission prompt waiting

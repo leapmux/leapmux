@@ -81,9 +81,12 @@ export function mergeKeybindings(
         })
       }
     }
-    else {
+    else if (def.key !== '') {
       result.push({ ...def })
     }
+    // An empty default key means the command has NO default chord, and the
+    // entry exists only to declare the `when` clause every user binding of it
+    // inherits above. Emitting it would register a binding on the empty key.
   }
 
   for (const [command, commandOverrides] of overrideMap) {
@@ -133,11 +136,72 @@ function hasModifier(key: string): boolean {
 }
 
 /**
- * Convert single-letter key parts to their `KeyX` event.code form so tinykeys
- * matches by physical key position. tinykeys compares against `event.key` for
- * literal letters, which fails on macOS WebKit when Option transforms the
- * character (e.g. Cmd+Alt+N produces `event.key = '\u02dc'`). `event.code`
- * stays `KeyN` regardless of the Option transformation or keyboard layout.
+ * The physical key positions one AUTHOR-FACING key name can arrive on.
+ *
+ * A binding names a key the user presses, and for punctuation that name is not
+ * the character on the keycap: the character moves between physical positions
+ * from one layout to the next, and the browsers disagree about which position
+ * reports which `event.code`. So the author writes the intent (`grave` = "the
+ * key under Esc") and this table expands it to every code that intent can
+ * produce, as a tinykeys `(<regex>)` matcher -- which tinykeys tests against
+ * BOTH `event.key` and `event.code`.
+ *
+ * `grave` accepts two codes, and both are needed:
+ *
+ *   - `Backquote` is the W3C name for the key left of `1`, "``~` on a US
+ *     keyboard" (https://www.w3.org/TR/uievents-code/). It is what Chrome and
+ *     Firefox report there on every layout, including the German `^`, the
+ *     French `²` and the Spanish `º` -- none of which produce a backquote
+ *     CHARACTER, and the first of which is a dead key whose `event.key` is
+ *     `Dead`. Matching the code rather than the character is the same reason
+ *     single letters become `KeyX` below.
+ *   - `IntlBackslash` is what WebKit reports for that same physical key on a
+ *     macOS ISO keyboard. macOS swaps the scan codes of `kVK_ANSI_Grave` and
+ *     `kVK_ISO_Section` on an ISO keyboard; Chrome and Firefox unswap them to
+ *     follow the spec, and WebKit does not
+ *     (https://bugs.webkit.org/show_bug.cgi?id=244202, open since 2022). The
+ *     desktop app is WKWebView on macOS, so without this the shortcut is dead
+ *     there for every European Mac.
+ *
+ * The cost is that on an ISO keyboard the extra key beside the left Shift also
+ * fires the binding. That is one spare key, behind a modifier, and it buys a
+ * shortcut that works in every engine -- the alternative needs the host's
+ * keyboard layout, which `navigator.keyboard` supplies on Chromium alone.
+ *
+ * A JIS keyboard is the one layout this cannot serve: there `Backquote` is the
+ * 半角/全角 key, which the IME consumes. The command stays rebindable.
+ */
+const PHYSICAL_KEY_ALIASES: Record<string, string> = {
+  grave: '(Backquote|IntlBackslash)',
+}
+
+/**
+ * The canonical author-facing name for an `event.code`, when one physical key
+ * has several codes. Used by the capture path in Preferences, so a rebinding
+ * records the INTENT rather than whichever code the current engine and layout
+ * happened to report -- otherwise a chord captured in Chrome would not fire in
+ * the desktop app on the same machine.
+ */
+export function physicalKeyAliasFor(code: string): string | undefined {
+  for (const [name, pattern] of Object.entries(PHYSICAL_KEY_ALIASES)) {
+    if (pattern.slice(1, -1).split('|').includes(code))
+      return name
+  }
+  return undefined
+}
+
+/**
+ * Convert a key part to the form tinykeys matches on.
+ *
+ * Single letters become their `KeyX` event.code form so tinykeys matches by
+ * physical key position. tinykeys compares against `event.key` for literal
+ * letters, which fails on macOS WebKit when Option transforms the character
+ * (e.g. Cmd+Alt+N produces `event.key = '\u02dc'`). `event.code` stays `KeyN`
+ * regardless of the Option transformation or keyboard layout.
+ *
+ * A name in `PHYSICAL_KEY_ALIASES` becomes the set of codes that key can
+ * report -- the same problem one level further out, for punctuation whose
+ * position moves between layouts and engines.
  */
 function toTinykeysKey(key: string): string {
   return key
@@ -145,7 +209,12 @@ function toTinykeysKey(key: string): string {
     .map(chord =>
       chord
         .split('+')
-        .map(part => (SINGLE_LETTER_RE.test(part) ? `Key${part.toUpperCase()}` : part))
+        .map((part) => {
+          const alias = PHYSICAL_KEY_ALIASES[part.toLowerCase()]
+          if (alias !== undefined)
+            return alias
+          return SINGLE_LETTER_RE.test(part) ? `Key${part.toUpperCase()}` : part
+        })
         .join('+'),
     )
     .join(' ')

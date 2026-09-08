@@ -9,7 +9,7 @@ package audit
 // Which methods those are is NOT a hand-written list. registryMethodKinds below
 // classifies every exported *workermgr.Manager method that touches the
 // live-worker maps, the walk fails if one is missing from it, and the scanned
-// set is derived from the entries marked registryUngatedByID. A fourth
+// set is derived from the entries marked registryUnguardedByID. A fourth
 // accessor added to the Manager therefore cannot be born unscanned: it fails
 // the classification before any of its call sites exist.
 //
@@ -88,14 +88,14 @@ var workerReachSites = map[string]workerReachKind{
 type registryMethodKind int
 
 const (
-	// registryUngatedByID: takes a worker id, touches the live-worker maps, and
+	// registryUnguardedByID: takes a worker id, touches the live-worker maps, and
 	// runs no authorizer. EVERY call site must be classified in workerReachSites.
 	// Reads and writes alike: marking someone else's worker deregistering is
 	// reached by the same arbitrary id as probing whether it is online.
-	registryUngatedByID registryMethodKind = iota
-	// registryGated: runs the ReachAuthorizer itself, so the check cannot be
+	registryUnguardedByID registryMethodKind = iota
+	// registryGuarded: runs the ReachAuthorizer itself, so the check cannot be
 	// skipped by a caller and no call-site classification is needed.
-	registryGated
+	registryGuarded
 	// registryConnScoped: mutates only on behalf of a caller that already holds
 	// the *Conn. A bare worker id cannot reach it, so it is not an oracle.
 	registryConnScoped
@@ -107,16 +107,16 @@ const (
 // registryMethodKinds classifies every exported *workermgr.Manager method whose
 // body reads or writes conns / deregistering. The walk in TestRepoInvariants
 // fails on a method missing from this map, AND on an entry whose kind the
-// source contradicts -- a registryUngatedByID that calls the authorizer, a
+// source contradicts -- a registryUnguardedByID that calls the authorizer, a
 // registryConnScoped that takes no *Conn, a registryBroadcast that takes a
 // worker id. So the kind is a claim about the code, not a comment with a type.
 var registryMethodKinds = map[string]registryMethodKind{
-	"ConnForTrustedPath":     registryUngatedByID,
-	"OnlineForTrustedPath":   registryUngatedByID,
-	"IsDeregistering":        registryUngatedByID,
-	"MarkDeregistering":      registryUngatedByID,
-	"ClearDeregistering":     registryUngatedByID,
-	"ConnForUser":            registryGated,
+	"ConnForTrustedPath":     registryUnguardedByID,
+	"OnlineForTrustedPath":   registryUnguardedByID,
+	"IsDeregistering":        registryUnguardedByID,
+	"MarkDeregistering":      registryUnguardedByID,
+	"ClearDeregistering":     registryUnguardedByID,
+	"ConnForUser":            registryGuarded,
 	"Register":               registryConnScoped,
 	"Unregister":             registryConnScoped,
 	"NotifyShutdownAndFence": registryBroadcast,

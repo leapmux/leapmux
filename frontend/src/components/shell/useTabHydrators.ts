@@ -20,6 +20,34 @@ import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
 
 /**
+ * Every tab a hydrator may act on.
+ *
+ * `view.all()` holds the PLACED tabs, and a companion terminal -- the shell
+ * behind an agent tab's quake panel -- is deliberately absent from it. That
+ * absence made the worker-offline sweep a one-way door: the sweep writes
+ * DISCONNECTED onto a companion's metadata row, the READY event refuses to move
+ * a DISCONNECTED tab back, and the terminal hydrator that exists to re-ask on
+ * exactly that state never saw the row. Every keystroke into a live-looking
+ * panel then disappeared until a page reload.
+ */
+function hydratableTabsOf(view: TabView) {
+  return [...view.all(), ...view.detachedTerminalTabs()]
+}
+
+/**
+ * The current state of one tab, for a retry that fires later.
+ *
+ * `view.get` is PLACEMENT-shaped and answers nothing for a companion, so a
+ * per-tab retry for one would read "the tab is gone" and cancel itself on its
+ * first tick.
+ */
+function resolveHydratableIn(view: TabView, tab: { type: TabType, id: string }) {
+  return tab.type === TabType.TERMINAL
+    ? view.getTerminalTab(tab.id)
+    : view.get(tabKey(tab))
+}
+
+/**
  * Per-tab-type hydration of CRDT-projected tabs that arrived without
  * their worker-side metadata (path / agent record / terminal title).
  * The hub strips file paths and agent/terminal payloads from the
@@ -74,6 +102,8 @@ export interface UseTabHydratorsOpts {
 
 export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   type Tab = ReturnType<typeof opts.view.all>[number]
+  const hydratableTabs = (): Tab[] => hydratableTabsOf(opts.view)
+  const resolveHydratable = (tab: Tab): Tab | undefined => resolveHydratableIn(opts.view, tab)
 
   /**
    * Has the worker answered for this tab yet?
@@ -187,7 +217,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     const matches = createMemo<{ ids: Set<string>, candidates: Tab[] }>(() => {
       const candidates: Tab[] = []
       const ids = new Set<string>()
-      for (const tab of opts.view.all()) {
+      for (const tab of hydratableTabs()) {
         if (!spec.predicate(tab))
           continue
         candidates.push(tab)
@@ -198,9 +228,8 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
 
     function schedulePerTabRetry(tab: Tab): void {
       const tabId = tab.id
-      const key = tabKey(tab)
       retry.schedule(tabId, () => {
-        const stillPending = opts.view.get(key)
+        const stillPending = resolveHydratable(tab)
         if (!stillPending || !spec.predicate(stillPending)) {
           // Tab is gone (closed by user, removed by another client,
           // or hydrated by another path). Drop the per-tab delay so
@@ -215,7 +244,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     /** Every candidate on `workerId` that still matches the predicate, now. */
     function pendingForWorker(workerId: string): Tab[] {
       const stillPending: Tab[] = []
-      for (const tab of opts.view.all()) {
+      for (const tab of hydratableTabs()) {
         if (tab.workerId === workerId && spec.predicate(tab))
           stillPending.push(tab)
       }

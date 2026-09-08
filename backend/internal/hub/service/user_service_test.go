@@ -2158,14 +2158,14 @@ func assertOutOfScope(t *testing.T, err error) {
 // The account shape below matters: it holds a password, so the account has a
 // factor to prove and requireElevation is the rule that applies where the
 // scope rung lets the request through.
-// TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith covers
+// TestGuardedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith covers
 // the other shape, where the answer is different for a stated reason.
 //
 // This is unreachable from the shipped CLI, which calls no restricted UserService
 // procedure, and from a worker-spawned tab, whose delegation bearer the
 // interceptor refuses several layers earlier. This pins the rule anyway: the
 // hub must not depend on its clients to keep a refusal honest.
-func TestGatedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
+func TestGuardedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
@@ -2221,7 +2221,7 @@ func TestGatedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 	require.NoError(t, loginErr, "a refused change must leave the password alone")
 }
 
-// TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith is the
+// TestGuardedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith is the
 // one shape where the step-up mutations still answer a command-line
 // credential without a prompt.
 //
@@ -2232,7 +2232,7 @@ func TestGatedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 // nothing about who holds it now. The message states the remedy the caller
 // can act on, and the absent marker keeps the client from opening a prompt
 // whose retry would meet the same answer.
-func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testing.T) {
+func TestGuardedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testing.T) {
 	t.Parallel()
 
 	env := setupOAuthUserTest(t)
@@ -2258,10 +2258,10 @@ func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testi
 	assert.False(t, after.FirstCredentialExempt, "a refused change must attach no first password")
 }
 
-// TestGatedRPCs_TellASessionToElevate is the contrast that gives the test
+// TestGuardedRPCs_TellASessionToElevate is the contrast that gives the test
 // above its meaning: the SAME procedures, refused with the marker, because
 // this caller has a remedy.
-func TestGatedRPCs_TellASessionToElevate(t *testing.T) {
+func TestGuardedRPCs_TellASessionToElevate(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)

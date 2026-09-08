@@ -118,7 +118,7 @@ func TestDelegationScopeCache_DoesNotSweepBelowThreshold(t *testing.T) {
 // added after the first sweep survives until the interval elapses. This pins
 // the interval gate that keeps a working set sustained above the threshold from
 // sweeping (a full O(map) scan under the write lock) on ~every miss.
-func TestDelegationScopeCache_SweepIntervalGated(t *testing.T) {
+func TestDelegationScopeCache_SweepIntervalHasAFloor(t *testing.T) {
 	old := delegationScopeCacheSweepThreshold
 	delegationScopeCacheSweepThreshold = 1
 	defer func() { delegationScopeCacheSweepThreshold = old }()

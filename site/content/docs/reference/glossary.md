@@ -139,7 +139,7 @@ A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join
 
 ### Quake-mode terminal
 
-A shell that slides over the centre of the app for one agent tab, toggled with `Cmd/Ctrl+J`. It belongs to the agent tab rather than to a tile, so it costs the agent no space. One shell per agent tab, shared by every device; whether the panel is showing is per-device. It ends when its agent tab closes or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
+A shell that slides over the centre of the app for one agent tab, toggled with `Ctrl` and the key under `Esc`. It belongs to the agent tab rather than to a tile, so it costs the agent no space. One shell per agent tab, shared by every device; whether the panel is visible is per-device. It ends when its agent tab closes or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
 
 ## S
 
@@ -153,7 +153,7 @@ The single-user mode (`leapmux solo`) that runs a Hub and a Worker in one proces
 
 ### Steering
 
-Handing the **input queue**'s first item to the turn an agent is already running, instead of letting it wait for the turn to end. It is how you correct an agent mid-thought. Offered by the queue row's **Steer** button and by `Cmd/Ctrl+Enter` on an empty composer, and only while the provider accepts one during a running ordinary turn. See [Steering](/docs/using/coding-agents/#steering).
+Handing the **input queue**'s first item to the turn an agent already runs, instead of letting it wait for the turn to end. It is how you correct an agent mid-thought. Offered by the queue row's **Steer** button and by `Cmd/Ctrl+Enter` on an empty composer, and only while the provider accepts one during a running ordinary turn. See [Steering](/docs/using/coding-agents/#steering).
 
 ### Step-up
 

@@ -97,9 +97,14 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
  * guards, so it is now the only path — and it had no tests, which is how a
  * predicate that could never go false shipped in it.
  */
-function setup(workspaceId = 'ws-test') {
+/** `setup`, plus one COMPANION terminal in the detached family. */
+function setupWithCompanion(terminalId: string, workspaceId = 'ws-test') {
+  return setup(workspaceId, () => [{ id: terminalId, workerId: 'w1', workspaceId }])
+}
+
+function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id: string, workerId: string, workspaceId: string }[]) {
   const harness = installTestBridge({ workspaceId })
-  const stores = createTestTabStores(workspaceId)
+  const stores = createTestTabStores(workspaceId, detachedTerminals)
   const repoGitStore = createRepoGitStore()
   const agentActivityStore = createAgentActivityStore()
   let seq = 0
@@ -344,6 +349,28 @@ describe('useTabHydrators', () => {
       await flush()
 
       expect(mockListTerminals).toHaveBeenCalledTimes(1)
+      d()
+    })
+
+    // The worker-offline sweep writes DISCONNECTED onto a COMPANION's metadata
+    // row, and the READY event refuses to move a DISCONNECTED tab back -- this
+    // hydrator is the only thing that re-asks. Its candidate source used to be
+    // `view.all()`, which excludes the detached family by construction, so a
+    // companion stayed DISCONNECTED for the life of the page and
+    // `handleTerminalInput` dropped every keystroke into a live-looking panel.
+    it('re-asks for a companion terminal the offline sweep disconnected', async () => {
+      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('q1', { title: 'zsh' })], verdicts: [] })
+      const s = setupWithCompanion('q1')
+      const d = createRoot((dispose) => {
+        s.metadata.patch('q1', { terminalStatus: TerminalStatus.DISCONNECTED })
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+      expect(mockListTerminals.mock.calls[0]?.[1]?.tabIds).toContain('q1')
       d()
     })
 

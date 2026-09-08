@@ -142,18 +142,18 @@ describe('buildWatchPlans', () => {
     const detached = (mode: WatchMode) => [{ terminalId: 'q1', workerId: 'w1', mode }]
 
     it('folds a detached terminal into its worker plan', () => {
-      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
+      const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
       expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['q1'])
       expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.FULL)
     })
 
     it('carries the mode the caller decided', () => {
-      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.NOTIFY))
+      const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
       expect(plans.get('w1')?.terminals[0].mode).toBe(WatchMode.NOTIFY)
     })
 
     it('shares a worker plan with the placed tabs', () => {
-      const plans = buildWatchPlans([terminal()], 'ws-1', () => '1:t1', undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
+      const plans = buildWatchPlans([terminal()], 'ws-1', () => '1:t1', { detachedTerminals: detached(WatchMode.FULL) })
       expect(plans.get('w1')?.terminals.map(t => t.terminalId).toSorted()).toEqual(['q1', 't1'])
       expect(plans.size).toBe(1)
     })
@@ -163,12 +163,11 @@ describe('buildWatchPlans', () => {
         [],
         'ws-1',
         () => null,
-        undefined,
-        undefined,
-        () => 500,
-        id => id === 'q1',
-        undefined,
-        detached(WatchMode.FULL),
+        {
+          terminalAfterOffset: () => 500,
+          terminalNeedsResync: (id: string) => id === 'q1',
+          detachedTerminals: detached(WatchMode.FULL),
+        },
       )
       expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(0))
       expect(plans.get('w1')?.terminalResync.has('q1')).toBe(true)
@@ -179,37 +178,51 @@ describe('buildWatchPlans', () => {
         [],
         'ws-1',
         () => null,
-        undefined,
-        undefined,
-        () => 500,
-        () => false,
-        undefined,
-        detached(WatchMode.FULL),
+        {
+          terminalAfterOffset: () => 500,
+          terminalNeedsResync: () => false,
+          detachedTerminals: detached(WatchMode.FULL),
+        },
       )
       expect(plans.get('w1')?.terminals[0].afterOffset).toBe(BigInt(500))
     })
 
     it('skips an entry with no worker or no terminal id', () => {
-      const plans = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, [
-        { terminalId: 'q1', workerId: '', mode: WatchMode.FULL },
-        { terminalId: '', workerId: 'w1', mode: WatchMode.FULL },
-      ])
+      const plans = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: [
+          { terminalId: 'q1', workerId: '', mode: WatchMode.FULL },
+          { terminalId: '', workerId: 'w1', mode: WatchMode.FULL },
+        ],
+      })
       expect(plans.size).toBe(0)
+    })
+
+    // The two cursor callbacks share the type `(agentId: string) => bigint`, so
+    // as adjacent positional parameters a transposition type-checked silently.
+    // Named, each lands on its own field, and this pins that.
+    it('routes each named cursor input to its own field', () => {
+      const plans = buildWatchPlans([agent({ id: 'a1' })], 'ws-1', () => '1:a1', {
+        agentResumeSeq: () => 7n,
+        agentWindowTailSeq: () => 9n,
+      })
+      const entry = plans.get('w1')!.agents[0]
+      expect(entry.cursorSeq).toBe(7n)
+      expect(entry.windowTailSeq).toBe(9n)
     })
 
     // The panel opening and closing is exactly a mode flip, and the plan has to
     // go out for it -- otherwise a reopened panel keeps receiving nothing.
     it('re-keys the plan on a mode flip and stays stable across reordering', () => {
-      const full = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.FULL))
-      const notify = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, detached(WatchMode.NOTIFY))
+      const full = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
+      const notify = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
       expect(watchPlanKey(full.get('w1')!)).not.toBe(watchPlanKey(notify.get('w1')!))
 
       const two = [
         { terminalId: 'q1', workerId: 'w1', mode: WatchMode.FULL },
         { terminalId: 'q2', workerId: 'w1', mode: WatchMode.FULL },
       ]
-      const a = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, two)
-      const b = buildWatchPlans([], 'ws-1', () => null, undefined, undefined, undefined, undefined, undefined, two.toReversed())
+      const a = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: two })
+      const b = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: two.toReversed() })
       expect(watchPlanKey(a.get('w1')!)).toBe(watchPlanKey(b.get('w1')!))
     })
   })
@@ -249,7 +262,7 @@ describe('buildWatchPlans', () => {
     }
     const getAgentTab = (id: string): AgentTab | undefined =>
       tabs.find(t => t.id === id) as AgentTab | undefined
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, { getAgentTab })
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // root-1 appears twice (its own FULL + the child-driven NOTIFY). The dedup
     // keeps it to one entry — the root's own tab already placed it.
@@ -269,7 +282,7 @@ describe('buildWatchPlans', () => {
         return { ...child, id: 'root-1', parentAgentId: undefined } as AgentTab
       return undefined
     }
-    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', { getAgentTab })
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // The child's own entry + a NOTIFY root entry.
     expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
@@ -293,7 +306,7 @@ describe('buildWatchPlans', () => {
         return { type: TabType.AGENT, id: 'root-1' } as AgentTab
       return tabs.find(t => t.id === id) as AgentTab | undefined
     }
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, { getAgentTab })
     const rootEntries = plans.get('w1')!.agents.filter(a => a.agentId === 'root-1')
     expect(rootEntries).toHaveLength(1)
     expect(rootEntries[0].mode).toBe(WatchMode.NOTIFY)
@@ -347,15 +360,10 @@ describe('terminal resync plans', () => {
       tileId: 'tile-1',
       position: 'p1',
     } as never
-    const plans = buildWatchPlans(
-      [tab],
-      'ws-1',
-      () => '1:t1',
-      () => 0n,
-      () => 0n,
-      () => 400,
-      () => true,
-    )
+    const plans = buildWatchPlans([tab], 'ws-1', () => '1:t1', {
+      terminalAfterOffset: () => 400,
+      terminalNeedsResync: () => true,
+    })
     const plan = plans.get('w1')!
     expect(plan.terminals).toHaveLength(1)
     expect(plan.terminals[0].afterOffset).toBe(BigInt(0))

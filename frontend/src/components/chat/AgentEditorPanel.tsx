@@ -430,7 +430,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
    * One definition, read by the editor's own Enter handling and by the keyboard
    * layer's emptiness context. Two copies would eventually disagree, and the
    * disagreement has a name: `$mod+Enter` would steer the input queue at the
-   * exact moment a control request was waiting for an approval this submits.
+   * exact moment a control request waits for an approval this submits.
    */
   const allowEmptySend = () =>
     (!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0
@@ -444,7 +444,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
    * `markdownEditor/editorSetup.ts`), so for a fifth of a second after every
    * keystroke it still reads empty -- and `handleSend` re-serializes the
    * document for exactly this reason. A context built on the signal would let
-   * the steer shortcut claim `$mod+Enter` from a user who had just typed, and
+   * the steer shortcut claim `$mod+Enter` from a user who just typed, and
    * `preventDefault` would stop the message ever reaching the editor.
    *
    * `hasContent` is deliberately left alone: the Send button, the height reset

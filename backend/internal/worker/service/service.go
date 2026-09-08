@@ -1057,13 +1057,6 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 		// landed a real exit code, leave the row alone.
 		return true
 	}
-	if !hasNotice {
-		notice := formatTerminalExitedNotice(exitCode)
-		_ = svc.Terminals.AppendOutput(tid, notice)
-		// SnapshotTerminal returns a freshly-allocated slice (tailBytesLocked),
-		// so append can extend it directly without aliasing the manager's buffer.
-		screen = append(screen, notice...)
-	}
 	// Re-bind the row's own closed_at, the way the title-update path does.
 	// UpsertTerminal's DO UPDATE assigns `closed_at = excluded.closed_at`, so
 	// leaving the field at its zero value writes NULL and RESURRECTS a tab the
@@ -1073,12 +1066,39 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	// comes back as live on the next worker start and its screen blob falls out
 	// of reach of DeleteClosedTerminalsBefore. A read error leaves the field
 	// zero, which is the pre-close state and the same answer as before.
-	var closedAt sqltime.SQLiteNullTime
-	if row, err := svc.Queries.GetTerminalForReady(bgCtx(), tid); err == nil {
-		closedAt = row.ClosedAt
+	//
+	// The owner comes back on the same read, because the notice below depends
+	// on it and a second query for one column would run on every terminal exit.
+	var (
+		closedAt     sqltime.SQLiteNullTime
+		ownerAgentID string
+	)
+	if row, err := svc.Queries.GetTerminalOwnerAndClosed(bgCtx(), tid); err == nil {
+		closedAt, ownerAgentID = row.ClosedAt, row.OwnerAgentID
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("failed to read terminal closed_at before persisting exit",
 			"terminal_id", tid, "error", err)
+	}
+	// A COMPANION terminal gets NO exit notice, and the reason is that the
+	// notice offers an action the companion refuses. "Press Enter to restart"
+	// reaches an open quake panel as ordinary terminal data -- AppendOutput is
+	// the PTY reader's own handler, so every FULL watcher receives it -- and
+	// both the browser and RestartTerminal then decline the Enter it invites,
+	// because a companion's exit IS its end. Suppressing the text is what lets
+	// the panel retract on a clean screen rather than on a dead offer.
+	if !hasNotice && ownerAgentID == "" {
+		notice := formatTerminalExitedNotice(exitCode)
+		_ = svc.Terminals.AppendOutput(tid, notice)
+		// SnapshotTerminal returns a freshly-allocated slice (tailBytesLocked),
+		// so append can extend it directly without aliasing the manager's buffer.
+		screen = append(screen, notice...)
+	}
+	// `screen` is NOT NULL, and it is nil whenever the metadata-only fallback
+	// above ran (no live buffer) and no notice was appended -- which is every
+	// COMPANION exit. An empty buffer is the column's "no screen content"
+	// value; nil is a constraint violation that costs the row its exit code.
+	if screen == nil {
+		screen = []byte{}
 	}
 	// Shell column is INSERT-only (see UpsertTerminal SQL): UPDATE
 	// preserves whatever was written at OpenTerminal time, so passing
@@ -1111,7 +1131,7 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 // of where the handler is registered rather than a line each author must
 // remember. Both Register and RegisterTracked are wrapped -- gating only one
 // would leave a silent hole (git uses both). Each Register also records
-// gateOwnerOnly on the shared registrar so TestEveryRegisteredMethodIsClassified
+// guardOwnerOnly on the shared registrar so TestEveryRegisteredMethodIsClassified
 // sees the method without replaying the family register functions.
 type ownerOnlyRegistrar struct {
 	r registrar
@@ -1127,7 +1147,7 @@ func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFun
 }
 
 func (o ownerOnlyRegistrar) Register(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, scope, dispatchPlain, o.gate(handler))
+	o.r.register(method, guardOwnerOnly, scope, dispatchPlain, o.gate(handler))
 }
 
 // RegisterMode is Register/RegisterTracked selected by an argument, so a gated
@@ -1150,7 +1170,7 @@ func (o ownerOnlyRegistrar) RegisterMode(method string, scope leapmuxv1.Scope, m
 }
 
 func (o ownerOnlyRegistrar) RegisterTracked(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, scope, dispatchTracked, o.gate(handler))
+	o.r.register(method, guardOwnerOnly, scope, dispatchTracked, o.gate(handler))
 }
 
 // gateStream is gate for a STREAMING method: same predicate, different denial
@@ -1166,14 +1186,14 @@ func (o ownerOnlyRegistrar) gateStream(handler channel.HandlerFunc) channel.Hand
 }
 
 // RegisterStream is the streaming lane's entry point, and it exists so the
-// streaming helpers cannot record gateOwnerOnly without also applying it.
+// streaming helpers cannot record guardOwnerOnly without also applying it.
 //
 // The two stream helpers used to call r.register directly and re-implement the
 // gate inline, which made "recorded owner-gated but never gated" a one-line
-// mistake nothing would catch. Routing them through here leaves gateOwnerOnly
+// mistake nothing would catch. Routing them through here leaves guardOwnerOnly
 // mentioned in exactly three places, all inside this type.
 func (o ownerOnlyRegistrar) RegisterStream(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, scope, dispatchStreaming, o.gateStream(handler))
+	o.r.register(method, guardOwnerOnly, scope, dispatchStreaming, o.gateStream(handler))
 }
 
 // SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
@@ -1319,9 +1339,9 @@ func requireWorkerOwnerStream(svc *Service, userID userid.UserID, sender channel
 // Every method records a methodGate at registration time (default-deny: a
 // method with no recorded gate fails TestEveryRegisteredMethodIsClassified):
 //
-//   - gateOwnerOnly — everything, via ownerOnlyRegistrar directly (the
+//   - guardOwnerOnly — everything, via ownerOnlyRegistrar directly (the
 //     machine-scoped file/git/sysinfo/tunnel families) or via the typed
-//     registerOwnerGated / registerAgentGated / registerTerminalGated helpers
+//     registerOwnerGuarded / registerAgentGuarded / registerTerminalGuarded helpers
 //     that layer an unmarshal and a row load on top of the same gate. The
 //     ByID variants resolve the tab through an id-only existence probe for
 //     handlers that never read the row.
@@ -1340,19 +1360,19 @@ func requireWorkerOwnerStream(svc *Service, userID userid.UserID, sender channel
 // about to shut.
 func RegisterAll(d *channel.Dispatcher, svc *Service) {
 	d.BindCleanup(&svc.Cleanup)
-	_ = registerAllWithGates(d, svc)
+	_ = registerAllWithGuards(d, svc)
 }
 
-// registerAllWithGates is the registration body shared by RegisterAll and
+// registerAllWithGuards is the registration body shared by RegisterAll and
 // tests that need the gate map. Production call sites use RegisterAll; tests
 // call this on a throwaway dispatcher so the gate map and Methods() come from
 // the same function production runs — replay drift is impossible.
-func registerAllWithGates(d *channel.Dispatcher, svc *Service) map[string]methodGate {
+func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]methodGate {
 	gates, _, _ := registerAllClassified(d, svc)
 	return gates
 }
 
-// registerAllClassified is registerAllWithGates plus the reply-shape and
+// registerAllClassified is registerAllWithGuards plus the reply-shape and
 // scope maps, so a test can assert that every classification came from the
 // one function production runs -- including that each method's declared scope
 // sits inside the delegation grant a sibling-worker caller carries.

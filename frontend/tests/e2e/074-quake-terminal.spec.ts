@@ -18,9 +18,14 @@ import { loginViaToken, openWorkspace, setInitialBrowserPref } from './helpers/u
 const PANEL = '[data-testid="quake-panel"]'
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+// The quake chord is `Control` on EVERY platform, unlike `MOD` above: macOS
+// reserves Command+` for its window cycler, so the binding does not use it.
+// `Backquote` is the physical key Playwright presses, which is what the
+// binding's `grave` expands to -- see PHYSICAL_KEY_ALIASES in
+// `~/lib/shortcuts/keybindings`.
 
 async function toggleQuake(page: Page) {
-  await page.keyboard.press(`${MOD}+KeyJ`)
+  await page.keyboard.press('Control+Backquote')
 }
 
 const panel = (page: Page) => page.locator(PANEL)
@@ -77,7 +82,7 @@ async function centreBox(page: Page) {
 }
 
 /**
- * The xterm of the quake terminal that is SHOWING.
+ * The xterm of the quake terminal that is VISIBLE.
  *
  * Scoped by `data-active`, because the panel holds one container per companion
  * this client has open and hides the rest with `visibility: hidden` -- so a
@@ -166,7 +171,7 @@ test.describe('Quake-mode terminal', () => {
 
     await page.keyboard.press(`${MOD}+KeyW`)
 
-    // The agent is running, so the close asks first. Confirm through the
+    // The agent runs, so the close asks first. Confirm through the
     // two-click ConfirmButton the dialog uses.
     const busy = page.locator('dialog[data-testid="busy-tab-close-dialog"]')
     if (await busy.isVisible()) {
@@ -220,7 +225,7 @@ test.describe('Quake-mode terminal', () => {
    * The other three edges, and the axis each one drives.
    *
    * One attribute picks the anchoring AND the size axis, so the check that
-   * matters is that the clip is flush with the edge it names and short (or
+   * matters is that the clip is flush with the edge it gives and short (or
    * narrow) on the axis that edge implies. A rule that anchored correctly but
    * sized the wrong axis would still pass an attribute-only assertion.
    */
@@ -247,7 +252,7 @@ test.describe('Quake-mode terminal', () => {
       }
       else {
         // Side-anchored: full height, 65% of the width, and flush with the edge
-        // it names.
+        // it gives.
         expect(Math.abs(clipBox.height - centre.height)).toBeLessThan(4)
         expect(Math.abs(clipBox.width - centre.width * 0.65)).toBeLessThan(4)
         if (orientation === 'left')

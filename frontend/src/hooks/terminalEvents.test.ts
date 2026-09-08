@@ -17,7 +17,10 @@ const QUAKE_ID = 'quake-1'
  * carries. That is the whole point of the detached predicate, so the fakes here
  * answer nothing rather than pretending otherwise.
  */
-function deps(over: { isDetachedOnScreen?: (id: string) => boolean } = {}) {
+function deps(over: {
+  isDetachedOnScreen?: (id: string) => boolean
+  detachedOwnerOf?: (id: string) => string | undefined
+} = {}) {
   const metadata = createTabMetadataStore()
   const selection = {
     activeKeyForTile: () => null,
@@ -29,6 +32,7 @@ function deps(over: { isDetachedOnScreen?: (id: string) => boolean } = {}) {
     getActiveWorkspaceId: () => 'ws-1',
     view: { getTerminalTab: () => undefined },
     isDetachedOnScreen: over.isDetachedOnScreen,
+    detachedOwnerOf: over.detachedOwnerOf,
   }
 }
 
@@ -41,7 +45,7 @@ beforeEach(() => {
 describe('handleTerminalNotification for a quake terminal', () => {
   // The predicate is asked FIRST for exactly this case. Without it a companion
   // falls to the workspace-key branch, which can never match an id that is not
-  // a tab -- so an OSC 9 in a shell the user is watching would raise a desktop
+  // a tab -- so an OSC 9 in a shell the user watches would raise a desktop
   // notification and badge a row nobody can see.
   it('raises no OS notification while its panel is open and its owner is on screen', () => {
     const d = deps({ isDetachedOnScreen: id => id === QUAKE_ID })
@@ -61,8 +65,34 @@ describe('handleTerminalNotification for a quake terminal', () => {
     expect(d.metadata.get(QUAKE_ID)?.hasNotification).toBe(true)
   })
 
+  // The badge goes on the row a surface RENDERS. No surface renders a
+  // companion: the tab strip and the sidebar tree both derive from the placed
+  // tabs. Worse, nothing could ever clear it -- the one clear site runs from
+  // tab selection, and a companion is never selected -- so the flag would sit
+  // on an invisible row until the shell exits. The owner agent tab is rendered,
+  // and it is where the user goes to reach the panel.
+  it('badges the owner agent tab, not the companion nobody renders', () => {
+    const d = deps({
+      isDetachedOnScreen: () => false,
+      detachedOwnerOf: id => (id === QUAKE_ID ? 'agent-1' : undefined),
+    })
+
+    handleTerminalNotification(QUAKE_ID, NOTIFICATION, d)
+
+    expect(d.metadata.get('agent-1')?.hasNotification).toBe(true)
+    expect(d.metadata.get(QUAKE_ID)?.hasNotification).toBeUndefined()
+  })
+
+  it('badges a placed terminal on its own row', () => {
+    const d = deps({ isDetachedOnScreen: () => false, detachedOwnerOf: () => undefined })
+
+    handleTerminalBell('t-placed', d)
+
+    expect(d.metadata.get('t-placed')?.hasNotification).toBe(true)
+  })
+
   // A caller with no panels at all -- every unit test of the placed path, and
-  // the background-workspace arm -- must behave exactly as it did before.
+  // the background-workspace branch -- must behave exactly as before.
   it('raises one when the caller supplies no detached predicate', () => {
     const d = deps()
 

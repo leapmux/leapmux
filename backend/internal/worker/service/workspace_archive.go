@@ -44,6 +44,7 @@ func (svc *Service) ApplyTabArchiveState(
 	if err != nil {
 		return nil, err
 	}
+	requested = svc.withCompanionTerminals(ctx, requested)
 
 	// Held across the flag write AND the teardown below: see archiveTabLocks
 	// for why the pair must be atomic per tab.
@@ -76,6 +77,37 @@ func (svc *Service) ApplyTabArchiveState(
 		}
 	}
 	return changed.agents, nil
+}
+
+// withCompanionTerminals adds each requested agent's COMPANION terminal -- the
+// shell behind its quake panel -- to the terminal half of the set.
+//
+// The Hub lists root TABS, and a companion has no CRDT tab, so it never reaches
+// this call on its own. Left out, its workspace_archived column stays 0 for
+// ever: stopArchivedTabs walks only the changed set, so its shell keeps
+// running, and refuseArchivedWrite reads that same 0, so SendInput keeps
+// reaching the PTY. This is the same expansion the input-queue pause does with
+// agentSubtreeIDs, and for the same reason.
+func (svc *Service) withCompanionTerminals(ctx context.Context, set archiveTabSet) archiveTabSet {
+	seen := make(map[string]struct{}, len(set.terminals))
+	for _, terminalID := range set.terminals {
+		seen[terminalID] = struct{}{}
+	}
+	for _, agentID := range set.agents {
+		companion, err := svc.Queries.GetOpenTerminalIDByOwner(ctx, agentID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				slog.Warn("archive: look up the companion terminal", "agent_id", agentID, "error", err)
+			}
+			continue
+		}
+		if _, dup := seen[companion.ID]; dup {
+			continue
+		}
+		seen[companion.ID] = struct{}{}
+		set.terminals = append(set.terminals, companion.ID)
+	}
+	return set
 }
 
 // lockArchiveTabs takes every lock this request needs and returns their

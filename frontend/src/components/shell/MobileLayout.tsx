@@ -88,7 +88,16 @@ interface MobileLayoutProps {
   tabBarHidden: boolean
   tileContent: JSX.Element
   editorPanel: JSX.Element | false
-  /** See DesktopLayoutProps.quakePanel. */
+  /**
+   * See DesktopLayoutProps.quakePanel.
+   *
+   * Mounted here although nothing on a touch device OPENS a panel: the three
+   * routes into the store are the keyboard commands and the Control CLI relay,
+   * and a phone has no chord. The mount serves the two cases that DO reach a
+   * small viewport -- a tablet with an external keyboard, and a panel another
+   * device opened through `leapmux control agent quake open`. The panel carries
+   * its own hide control, so a touch user can always dismiss one.
+   */
   quakePanel?: JSX.Element
   /**
    * Act on a horizontal swipe across the content region. Wired to the overlay

@@ -495,8 +495,18 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// The action is pinned to UNSPECIFIED rather than forwarded: a
 		// companion holds no worktree link of its own, so the user's choice
 		// about THIS agent's worktree is not a choice about the companion.
-		if companion, err := svc.Queries.GetOpenTerminalIDByOwner(bgCtx(), agentID); err == nil {
+		//
+		// sql.ErrNoRows is the ordinary "this agent has no companion" answer
+		// and stays silent. Every other failure leaves a live PTY behind with
+		// its owner tab gone, and only the orphan reconciler's next pass
+		// reclaims it -- so it is logged rather than swallowed, the way every
+		// other DB failure in this file is.
+		companion, err := svc.Queries.GetOpenTerminalIDByOwner(bgCtx(), agentID)
+		switch {
+		case err == nil:
 			svc.closeTerminalTabCommon(userID, companion.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, linkPolicy)
+		case !errors.Is(err, sql.ErrNoRows):
+			slog.Error("failed to look up the companion terminal for agent close", "agent_id", agentID, "error", err)
 		}
 		svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
 		// Close the root AND every virtual descendant in one tree. Closing only

@@ -180,15 +180,36 @@ agent tab. It belongs to that tab rather than to a tile, so it costs the agent
 none of its space: press the shortcut, run a command, press it again, and the
 transcript is exactly where you left it.
 
-Press **`Cmd/Ctrl+J`** in an agent tab to show or hide it (command
-`terminal.toggleQuake`). The first press creates the shell; every press after
-that only shows or hides the panel. There are two more commands, unbound by
+Press **`Ctrl`** and the key under `Esc` in an agent tab to show or hide it
+(command `terminal.toggleQuake`). The first press creates the shell; every
+press after that only shows or hides the panel.
+
+The panel opens from the keyboard or the Control CLI, and from nowhere else:
+there is no button or menu item for it. On a phone you can therefore hide a
+panel that the CLI opened, using the control in its corner, but you cannot open
+one. A tablet with an external keyboard uses the shortcut like any other device.
+
+`Ctrl` on every platform, and not `Cmd` on macOS: macOS reserves `Cmd` and that
+key for "switch between the windows of the app you're using", so the shortcut
+would never reach LeapMux. The binding follows the key's POSITION rather than
+the character on it, so it is the same key on a US, German, French or Spanish
+layout even though that key prints `` ` ``, `^`, `²` or `º`. A Japanese (JIS)
+keyboard is the exception: there the same position is the 半角/全角 key, which
+the input method takes, so rebind the command in Preferences. There are two more commands, unbound by
 default, for a key that only ever opens or only ever closes:
 `terminal.openQuake` and `terminal.closeQuake`.
 
 The shell is the Worker's default shell, started in the agent's working
-directory. It is a full terminal: the same scrollback, copy and paste,
-resizing, and remote control every other LeapMux terminal has.
+directory. It is a full terminal: the same scrollback, copy and paste, and
+resizing every other LeapMux terminal has.
+
+One thing differs. The Quake terminal is not a tab, so the Control CLI treats
+the shell inside it as part of the AGENT tab that owns it: inside the panel,
+`LEAPMUX_CONTROL_TAB_ID` gives that agent. `leapmux control agent ...` commands
+therefore act on the agent whose panel you typed them into, and
+`leapmux control terminal ...` commands refuse the ambient tab, because it is
+an agent rather than a terminal. Give `--tab-id` for a terminal tab to reach
+one of those.
 
 ### What it belongs to
 
@@ -233,9 +254,9 @@ leapmux control agent quake toggle --tab-id <agent-tab-id>
 ```
 
 Run inside an agent's own terminal, the agent tab is the ambient one and
-`--tab-id` is unnecessary. Run inside the Quake terminal itself, the command
-resolves the panel from the shell it is running in, so `leapmux control agent
-quake close` hides the panel you typed it into.
+`--tab-id` is unnecessary. The same holds inside the Quake terminal, because
+the shell there reports the agent tab that owns it — so
+`leapmux control agent quake close` hides the panel you typed it into.
 
 These commands carry no state. They ask the frontends to act now, which is why
 they can move a panel although the active tab and the focused tile stay
@@ -247,8 +268,8 @@ A terminal moves through several states, reflected both in the terminal pane and
 
 | Status | Meaning |
 | --- | --- |
-| Starting | The PTY is being spawned. |
-| Ready | The PTY has spawned and the view can mount. |
+| Starting | The Worker spawns the PTY. |
+| Ready | The PTY is up and the view can mount. |
 | Startup failed | The shell could not be spawned. |
 | Disconnected | The connection to the terminal's Worker was lost. |
 | Exited | The shell process exited. |

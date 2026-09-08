@@ -10,55 +10,72 @@ import { openedTerminalMetadata, terminalMetadata } from '~/stores/tab.helpers'
 
 /**
  * One agent tab's quake terminal: the shell that slides over the centre area.
- *
- * `terminalId` is empty only in the window between the first open and the RPC
- * that resolves it, which is what lets the panel animate while the worker is
- * still answering.
  */
 export interface QuakeEntry {
   /** The agent tab that owns this shell. */
   ownerId: string
   workerId: string
   workspaceId: string
-  terminalId: string
-  /** Whether the panel is showing. Per-client, and deliberately not persisted. */
+  /**
+   * The companion terminal, once the worker answered.
+   *
+   * ABSENT in the window between the first open and the RPC that resolves it,
+   * which is what lets the panel animate while the worker is still answering.
+   * The absence is in the type rather than an empty string, so a reader cannot
+   * mistake "the RPC has not answered yet" for "an empty id", and so the three
+   * call sites cannot each test it a different way.
+   */
+  terminalId?: string
+  /** Whether the panel is visible. Per-client, and deliberately not persisted. */
   open: boolean
 }
+
+/** A resolved entry: one whose companion terminal the worker already gave. */
+export type ResolvedQuakeEntry = QuakeEntry & { terminalId: string }
 
 /** What the store needs from the shell to resolve and record a companion. */
 export interface QuakeTerminalDeps {
   metadata: TabMetadataStore
   /**
    * The agent tab that owns a panel, by id. Read at call time rather than
-   * captured, because the CLI command path names an agent this store has never
-   * seen and must resolve it against the live tab set.
+   * captured, because the CLI command path gives an agent this store never
+   * saw, and must resolve it against the live tab set.
    */
   getAgentTab: (agentId: string) => AgentTab | undefined
   /**
    * Restore keyboard focus to the composer when a panel closes.
    *
-   * Called while the panel is still open, so the implementation can ask whether
-   * focus is inside it -- closing by shortcut from the transcript, or from
-   * another device through the Control CLI, must not yank the caret out of
-   * wherever the user is working.
+   * `terminalId` is the shell THIS close retracts, and it is the whole point of
+   * the argument. One panel element holds every companion's terminal, so
+   * "is focus inside the panel?" is true whenever ANY companion has the caret
+   * -- and a background owner's close (its shell exited, or another device ran
+   * the Control CLI) would then pull the caret out of the foreground shell the
+   * user types in. The implementation compares this id against the focused
+   * terminal instead.
+   *
+   * Called while the panel is still open, so focus is still where the user left
+   * it: closing the panel marks it `inert`, which blurs whatever it holds.
+   *
+   * `terminalId` is absent when the RPC has not resolved yet, which is also
+   * when no terminal of this entry can hold focus.
    */
-  focusComposer?: (ownerId: string) => void
+  focusComposer?: (ownerId: string, terminalId: string | undefined) => void
   /** How long the panel takes to retract, so a dispose can wait it out. */
   closeDelayMs: () => number
   /**
-   * Whether one named workspace can be mutated -- false while it is archived,
+   * Whether ONE workspace, by id, can be mutated -- false while it is archived,
    * and false for one that no longer exists.
    *
    * Consulted on the OPENING direction alone, and it lives here rather than in
    * each caller so the keyboard commands and the Control CLI cannot answer
-   * differently. Per id, because a CLI request names an agent in a workspace
-   * this client may not be looking at.
+   * differently. Per id, because a CLI request gives an agent in a workspace
+   * this client does not display.
    */
   isWorkspaceMutatable: (workspaceId: string) => boolean
 }
 
 /**
- * The quake terminals this client knows about, and which panels are showing.
+ * The quake terminals this client knows about, and which panels are visible.
  *
  * NEVER stamp MRU on a quake terminal id. The MRU map is persisted, and
  * `useMetadataSweep` seeds its `seen` set from the persisted rows on the next
@@ -68,7 +85,7 @@ export interface QuakeTerminalDeps {
  * because the failure is silent and a page load away from its cause.
  *
  * The open state is per-client on purpose. The SHELL is shared -- one PTY per
- * agent tab, which every device attaches to -- but whether the panel is showing
+ * agent tab, which every device attaches to -- but whether the panel is visible
  * is the same kind of fact as which tab is active in a tile, which this codebase
  * deliberately keeps client-local.
  */
@@ -83,16 +100,14 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    * The watch plan reads this rather than mapping ids back through `ownerOf`:
    * it needs the owner and the open state together, and both are right here.
    */
-  const liveEntries = (): QuakeEntry[] =>
-    Object.values(entries).filter(entry => entry.terminalId !== '')
+  const liveEntries = (): ResolvedQuakeEntry[] =>
+    Object.values(entries).filter((entry): entry is ResolvedQuakeEntry => entry.terminalId !== undefined)
 
   /** Every companion this client holds, for the tab view's detached family. */
   const detachedTerminals = (): DetachedTerminal[] => {
     const out: DetachedTerminal[] = []
-    for (const entry of Object.values(entries)) {
-      if (entry.terminalId)
-        out.push({ id: entry.terminalId, workerId: entry.workerId, workspaceId: entry.workspaceId })
-    }
+    for (const entry of liveEntries())
+      out.push({ id: entry.terminalId, workerId: entry.workerId, workspaceId: entry.workspaceId })
     return out
   }
 
@@ -107,18 +122,34 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     deps.metadata.remove(terminalId)
   }
 
+  /** Forget one owner's entry. The store's only delete. */
+  const dropEntry = (ownerId: string) => {
+    setEntries(produce((state) => {
+      delete state[ownerId]
+    }))
+  }
+
   /** Drop an entry and release everything it holds. Safe to run twice. */
   const release = (ownerId: string) => {
     const entry = entries[ownerId]
     if (!entry)
       return
     // `captureScreen: false` for the reason `handleTerminalClose` gives: the
-    // terminal is going away, so a serialized buffer has no future reader.
-    if (entry.terminalId)
+    // terminal ends here, so a serialized buffer has no future reader.
+    if (entry.terminalId !== undefined)
       releaseTerminal(entry.terminalId)
-    setEntries(produce((state) => {
-      delete state[ownerId]
-    }))
+    dropEntry(ownerId)
+  }
+
+  /**
+   * Abandon a panel whose open failed, and say so.
+   *
+   * No half-entry survives a failure: the next toggle must start clean rather
+   * than show an empty panel for ever.
+   */
+  const failOpen = (ownerId: string, err: unknown) => {
+    release(ownerId)
+    showWarnToast('Failed to open the quake terminal', err)
   }
 
   /**
@@ -136,8 +167,8 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     const existing = await workerRpc.listTerminals(workerId, { tabIds: [], ownerAgentIds: [owner.id] })
     const adopted = existing.terminals.find(t => t.ownerAgentId === owner.id)
     if (adopted) {
-      deps.metadata.patch(adopted.terminalId, terminalMetadata(workerId, adopted))
-      setEntries(owner.id, 'terminalId', adopted.terminalId)
+      recordResolvedTerminal(owner.id, adopted.terminalId, () =>
+        deps.metadata.patch(adopted.terminalId, terminalMetadata(workerId, adopted)))
       return
     }
     const resp = await workerRpc.openTerminal(workerId, {
@@ -149,11 +180,34 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       shellStartDir: '',
       ownerAgentId: owner.id,
     })
-    deps.metadata.patch(resp.terminalId, openedTerminalMetadata({
-      title: resp.title,
-      workingDir: owner.workingDir ?? '',
-    }))
-    setEntries(owner.id, 'terminalId', resp.terminalId)
+    recordResolvedTerminal(owner.id, resp.terminalId, () =>
+      deps.metadata.patch(resp.terminalId, openedTerminalMetadata({
+        title: resp.title,
+        workingDir: owner.workingDir ?? '',
+      })))
+  }
+
+  /**
+   * Attach a resolved terminal to its owner's entry, unless the entry is gone.
+   *
+   * The entry CAN be gone, because `resolveTerminal` awaits two RPCs and the
+   * owner's tab can close in that window -- `retireOwners` then deletes the
+   * key. A `setEntries(ownerId, 'terminalId', ...)` on a deleted key does not
+   * no-op: Solid's `updatePath` dereferences the absent parent and THROWS, the
+   * throw surfaces as a rejected promise, and the caller's catch shows "Failed
+   * to open the quake terminal" for a tab the user merely closed.
+   *
+   * The shell the worker may have spawned in that window is left to the WORKER,
+   * for the reason `retireOwners` gives: `closeAgentTabCommon` closes a
+   * companion on every close path, and the orphan reconciler reaps one whose
+   * owner the hub no longer lists. A CloseTerminal from here would be a second
+   * teardown racing those.
+   */
+  function recordResolvedTerminal(ownerId: string, terminalId: string, applyMetadata: () => void) {
+    if (entries[ownerId] === undefined)
+      return
+    applyMetadata()
+    setEntries(ownerId, 'terminalId', terminalId)
   }
 
   const open = async (owner: AgentTab): Promise<void> => {
@@ -184,17 +238,13 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       ownerId: owner.id,
       workerId: owner.workerId,
       workspaceId: owner.workspaceId,
-      terminalId: '',
       open: true,
     })
     try {
       await resolveTerminal(owner)
     }
     catch (err) {
-      // No half-entry survives a failure: the next toggle must start clean
-      // rather than show an empty panel forever.
-      release(owner.id)
-      showWarnToast('Failed to open the quake terminal', err)
+      failOpen(owner.id, err)
     }
   }
 
@@ -204,9 +254,9 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     // Asked BEFORE the panel retracts, and the order is load-bearing. Closing
     // the panel marks it `inert`, which blurs whatever it holds -- so a
     // focus-restore that ran afterwards would see focus on the body and could
-    // no longer tell "the user was typing in the shell" from "the user closed
+    // no longer tell "the user typed in the shell" from "the user closed
     // it from the transcript".
-    deps.focusComposer?.(ownerId)
+    deps.focusComposer?.(ownerId, entries[ownerId]?.terminalId)
     setEntries(ownerId, 'open', false)
   }
 
@@ -234,25 +284,23 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       return
     }
     if (!entry.open) {
-      setEntries(produce((state) => {
-        delete state[ownerId]
-      }))
+      dropEntry(ownerId)
       return
     }
-    // Reopened while it was sliding out. The panel stays, and it gets the fresh
-    // shell the user is now looking at an empty pane waiting for.
-    setEntries(ownerId, 'terminalId', '')
+    // Reopened during the retract. The panel stays, and it gets the fresh
+    // shell that the user now waits for in front of an empty pane.
+    setEntries(ownerId, 'terminalId', undefined)
     const owner = deps.getAgentTab(ownerId)
-    if (!owner) {
-      setEntries(produce((state) => {
-        delete state[ownerId]
-      }))
+    // A fresh shell is a COLD open, so it takes the same refusal `open` applies
+    // -- the workspace can have been archived while the panel was up, and the
+    // reopen-during-retract window is precisely where that guard was missing.
+    // Without it the client asks the worker for a shell in an archived
+    // workspace and shows a failure toast for its own request.
+    if (!owner || !deps.isWorkspaceMutatable(owner.workspaceId)) {
+      dropEntry(ownerId)
       return
     }
-    void resolveTerminal(owner).catch((err) => {
-      release(ownerId)
-      showWarnToast('Failed to open the quake terminal', err)
-    })
+    void resolveTerminal(owner).catch(err => failOpen(ownerId, err))
   }
 
   /**
@@ -271,9 +319,10 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     const ownerId = ownerOf(terminalId)
     if (ownerId === undefined)
       return
-    // Before the retract, for the reason `close` states.
-    deps.focusComposer?.(ownerId)
-    setEntries(ownerId, 'open', false)
+    // The same retract the user's own close performs, including the focus
+    // restore it asks for first. `ownerOf` matched this entry on `terminalId`,
+    // so `close` reports the identical shell.
+    close(ownerId)
     const wait = deps.closeDelayMs()
     if (wait <= 0) {
       finishShellExit(ownerId, terminalId)

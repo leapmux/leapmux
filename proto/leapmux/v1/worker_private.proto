@@ -76,7 +76,7 @@ enum QuakePanelAction {
   QUAKE_PANEL_ACTION_TOGGLE = 3;
 }
 
-// QuakePanelCommand is a TRANSIENT COMMAND, not a fact, and it is the only arm
+// QuakePanelCommand is a TRANSIENT COMMAND, not a fact, and it is the only case
 // of WorkerPrivateEvent that is. The other three describe state the worker
 // holds, so the bootstrap reply replays them; this one describes an instant.
 // It must therefore stay OUT of the subscribe-time replay -- a replayed command

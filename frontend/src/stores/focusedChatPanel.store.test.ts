@@ -55,7 +55,7 @@ describe('focusedChatPanel store', () => {
   })
 
   // The steer action reads the CURRENT agent tab's composer, which is not
-  // necessarily the one holding focus -- the user may be reading the transcript.
+  // necessarily the one holding focus -- the user may read the transcript.
   describe('the active panel', () => {
     it('answers without focus being inside it', () => {
       const { send } = mountPanel()

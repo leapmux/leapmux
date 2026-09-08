@@ -108,6 +108,30 @@ const (
 // drift from it. `settings.TestEnumDeclarationsAreSingleSourced` already
 // pins the other direction — every advertised value must pass the
 // validator.
+// validateRange REFUSES a numeric value outside the closed interval [min, max].
+//
+// The sibling of validateEnum, and it exists for the same reason: a bound
+// written once beside the key it guards cannot drift from the bound written
+// beside the next one. `subject` and `unit` are what keep each message the
+// sentence the user needs -- "quake size must be between 20 and 100 percent
+// (got 5)" -- so the shared helper costs no precision.
+//
+// Generic over the two numeric kinds a settings key carries. %v prints an
+// int64 the way %d does, and it prints a float64 without a trailing zero, so
+// one format string serves both.
+func validateRange[T int64 | float64](subject, unit string, minValue, maxValue T) func(T) error {
+	suffix := ""
+	if unit != "" {
+		suffix = " " + unit
+	}
+	return func(v T) error {
+		if v < minValue || v > maxValue {
+			return fmt.Errorf("%s must be between %v and %v%s (got %v)", subject, minValue, maxValue, suffix, v)
+		}
+		return nil
+	}
+}
+
 func validateEnum(allowed []settings.EnumValue) func(string) error {
 	names := make([]string, 0, len(allowed))
 	for _, ev := range allowed {
@@ -377,6 +401,22 @@ func validateKeybindings(v []KeybindingOverride) error {
 	return nil
 }
 
+// enumValuesOf builds a UIMeta catalogue from a contract's vocabulary.
+//
+// The catalogue and the write-path validator both derive from it, exactly as
+// before -- what changed is where the tokens come from. They are now stated in
+// contracts/user-settings.json, because the browser parses the same set and a
+// token this hub accepted but the browser refused was stored and then silently
+// discarded for the fallback, leaving the user a Customized badge with no way
+// out but Reset.
+func enumValuesOf(tokens []string) []settings.EnumValue {
+	out := make([]settings.EnumValue, 0, len(tokens))
+	for _, token := range tokens {
+		out = append(out, settings.EnumValue{Value: token})
+	}
+	return out
+}
+
 // The enum catalogues of the account-scope scalar keys. Each one is the
 // single source for both halves of its key: the advertised set in UIMeta
 // and the write-path validator derived from it, so the two cannot drift.
@@ -390,23 +430,12 @@ var (
 	// that ties it to the UI's RESOLVED mode.
 	terminalThemeModeEnumValues = append(
 		[]settings.EnumValue{{Value: MatchUI}}, themeModeEnumValues...)
-	diffViewEnumValues = []settings.EnumValue{
-		{Value: "unified"},
-		{Value: "split"},
-	}
-	turnEndSoundEnumValues = []settings.EnumValue{
-		{Value: "none"},
-		{Value: "ding-dong"},
-	}
+	diffViewEnumValues     = enumValuesOf(contracts.SettingDiffViewValues)
+	turnEndSoundEnumValues = enumValuesOf(contracts.SettingTurnEndSoundValues)
 	// Which edge of the centre area the quake panel slides in from. The value
 	// picks the axis AND the sign of the slide, so these four are the whole
 	// vocabulary -- there is no separate "direction".
-	quakeOrientationEnumValues = []settings.EnumValue{
-		{Value: "top"},
-		{Value: "bottom"},
-		{Value: "left"},
-		{Value: "right"},
-	}
+	quakeOrientationEnumValues = enumValuesOf(contracts.SettingQuakeOrientationValues)
 	// The Desktop keys are the ONE family whose tokens come from
 	// contracts/desktop.json rather than from a literal here, because a THIRD
 	// language spells them: the Rust shell matches them out of the
@@ -458,7 +487,7 @@ func dropStaleVariant(prev, next ThemeValue, specified map[string]bool) ThemeVal
 // The declared account-scope keys. Names are the JSON property names
 // inside the users.prefs blob.
 var (
-	KeyTheme = settings.NewKey[ThemeValue]("theme").
+	KeyTheme = settings.NewKey[ThemeValue](contracts.SettingKeyTheme).
 			WithDefault(ThemeValue{Name: DefaultThemeName, Mode: "system"}).
 			WithNormalize(dropStaleVariant).
 			WithValidate(validateTheme).
@@ -472,7 +501,7 @@ var (
 			}},
 		})
 
-	KeyTerminalTheme = settings.NewKey[ThemeValue]("terminal_theme").
+	KeyTerminalTheme = settings.NewKey[ThemeValue](contracts.SettingKeyTerminalTheme).
 				WithDefault(ThemeValue{Name: MatchUI, Mode: MatchUI}).
 				WithNormalize(dropStaleVariant).
 				WithValidate(validateTerminalTheme).
@@ -486,7 +515,7 @@ var (
 			}},
 		})
 
-	KeySyntaxTheme = settings.NewKey[ThemeValue]("syntax_theme").
+	KeySyntaxTheme = settings.NewKey[ThemeValue](contracts.SettingKeySyntaxTheme).
 			WithDefault(ThemeValue{Name: MatchUI, Mode: MatchUI}).
 			WithNormalize(dropStaleVariant).
 			WithValidate(validateTerminalTheme).
@@ -500,7 +529,7 @@ var (
 			}},
 		})
 
-	KeyUIFonts = settings.NewKey[FontFamilyValue]("ui_fonts").
+	KeyUIFonts = settings.NewKey[FontFamilyValue](contracts.SettingKeyUiFonts).
 			WithDefault(FontFamilyValue{}).
 			WithValidate(validateFontFamily).
 			WithUI(settings.UIMeta{
@@ -513,7 +542,7 @@ var (
 			},
 		})
 
-	KeyMonoFonts = settings.NewKey[FontFamilyValue]("mono_fonts").
+	KeyMonoFonts = settings.NewKey[FontFamilyValue](contracts.SettingKeyMonoFonts).
 			WithDefault(FontFamilyValue{}).
 			WithValidate(validateFontFamily).
 			WithUI(settings.UIMeta{
@@ -526,8 +555,8 @@ var (
 			},
 		})
 
-	KeyDiffView = settings.NewKey[string]("diff_view").
-			WithDefault("unified").
+	KeyDiffView = settings.NewKey[string](contracts.SettingKeyDiffView).
+			WithDefault(contracts.SettingDiffViewDefault).
 			WithValidate(validateEnum(diffViewEnumValues)).
 			WithUI(settings.UIMeta{
 			Category: "appearance",
@@ -539,8 +568,8 @@ var (
 			}},
 		})
 
-	KeyTurnEndSound = settings.NewKey[string]("turn_end_sound").
-			WithDefault("ding-dong").
+	KeyTurnEndSound = settings.NewKey[string](contracts.SettingKeyTurnEndSound).
+			WithDefault(contracts.SettingTurnEndSoundDefault).
 			WithValidate(validateEnum(turnEndSoundEnumValues)).
 			WithUI(settings.UIMeta{
 			Category: "notifications",
@@ -552,21 +581,16 @@ var (
 			}},
 		})
 
-	KeyTurnEndSoundVolume = settings.NewKey[int64]("turn_end_sound_volume").
-				WithDefault(100).
-				WithValidate(func(v int64) error {
-			if v < 0 || v > 100 {
-				return fmt.Errorf("turn-end volume must be between 0 and 100 (got %d)", v)
-			}
-			return nil
-		}).
-		WithUI(settings.UIMeta{
+	KeyTurnEndSoundVolume = settings.NewKey[int64](contracts.SettingKeyTurnEndSoundVolume).
+				WithDefault(contracts.SettingTurnEndSoundVolumeDefault).
+				WithValidate(validateRange[int64]("turn-end volume", "", contracts.SettingTurnEndSoundVolumeMin, contracts.SettingTurnEndSoundVolumeMax)).
+				WithUI(settings.UIMeta{
 			Category: "notifications",
 			Title:    "Turn-end volume",
 			Summary:  "playback volume for the turn-end sound",
 			Fields: []settings.Field{{
 				Name: "", Kind: settings.FieldInt,
-				Min: ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](100), Unit: "percent",
+				Min: ptrconv.Ptr[int64](contracts.SettingTurnEndSoundVolumeMin), Max: ptrconv.Ptr[int64](contracts.SettingTurnEndSoundVolumeMax), Unit: "percent",
 			}},
 		})
 
@@ -580,8 +604,8 @@ var (
 	// The panel is the browser's concept and the worker never hears these
 	// values, so they need no contract file: Go validates them and the browser
 	// renders them, and no third language spells them.
-	KeyQuakeOrientation = settings.NewKey[string]("quake_orientation").
-				WithDefault("top").
+	KeyQuakeOrientation = settings.NewKey[string](contracts.SettingKeyQuakeOrientation).
+				WithDefault(contracts.SettingQuakeOrientationDefault).
 				WithValidate(validateEnum(quakeOrientationEnumValues)).
 				WithUI(settings.UIMeta{
 			Category: "terminal",
@@ -596,41 +620,31 @@ var (
 	// The floor keeps the panel usable: below roughly a fifth of the centre
 	// area a terminal has too few rows to read. 100 is allowed and means a
 	// panel that covers the whole centre area.
-	KeyQuakeSizePercent = settings.NewKey[int64]("quake_size_percent").
-				WithDefault(65).
-				WithValidate(func(v int64) error {
-			if v < 20 || v > 100 {
-				return fmt.Errorf("quake size must be between 20 and 100 percent (got %d)", v)
-			}
-			return nil
-		}).
-		WithUI(settings.UIMeta{
+	KeyQuakeSizePercent = settings.NewKey[int64](contracts.SettingKeyQuakeSizePercent).
+				WithDefault(contracts.SettingQuakeSizePercentDefault).
+				WithValidate(validateRange[int64]("quake size", "percent", contracts.SettingQuakeSizePercentMin, contracts.SettingQuakeSizePercentMax)).
+				WithUI(settings.UIMeta{
 			Category: "terminal",
 			Title:    "Quake terminal size",
 			Summary:  "share of the centre area the quake terminal covers",
 			Fields: []settings.Field{{
 				Name: "", Kind: settings.FieldInt,
-				Min: ptrconv.Ptr[int64](20), Max: ptrconv.Ptr[int64](100), Unit: "percent",
+				Min: ptrconv.Ptr[int64](contracts.SettingQuakeSizePercentMin), Max: ptrconv.Ptr[int64](contracts.SettingQuakeSizePercentMax), Unit: "percent",
 			}},
 		})
 
 	// 0 is allowed and means no animation at all, which is what a user who
 	// dislikes motion but has not set the system preference reaches for.
-	KeyQuakeAnimationMs = settings.NewKey[int64]("quake_animation_ms").
-				WithDefault(300).
-				WithValidate(func(v int64) error {
-			if v < 0 || v > 2000 {
-				return fmt.Errorf("quake animation must be between 0 and 2000 milliseconds (got %d)", v)
-			}
-			return nil
-		}).
-		WithUI(settings.UIMeta{
+	KeyQuakeAnimationMs = settings.NewKey[int64](contracts.SettingKeyQuakeAnimationMs).
+				WithDefault(contracts.SettingQuakeAnimationMsDefault).
+				WithValidate(validateRange[int64]("quake animation", "milliseconds", contracts.SettingQuakeAnimationMsMin, contracts.SettingQuakeAnimationMsMax)).
+				WithUI(settings.UIMeta{
 			Category: "terminal",
 			Title:    "Quake terminal animation",
 			Summary:  "how long the quake terminal takes to slide in and out",
 			Fields: []settings.Field{{
 				Name: "", Kind: settings.FieldInt,
-				Min: ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](2000), Unit: "ms",
+				Min: ptrconv.Ptr[int64](contracts.SettingQuakeAnimationMsMin), Max: ptrconv.Ptr[int64](contracts.SettingQuakeAnimationMsMax), Unit: "ms",
 			}},
 		})
 
@@ -641,21 +655,16 @@ var (
 	// The floor refuses a panel that is invisible but still takes clicks. It
 	// also sits on the 0.05 step the client renders with, so every value the
 	// control can reach is a value this accepts.
-	KeyQuakeBackgroundOpacity = settings.NewKey[float64]("quake_background_opacity").
-					WithDefault(0.9).
-					WithValidate(func(v float64) error {
-			if v < 0.05 || v > 1 {
-				return fmt.Errorf("quake background opacity must be between 0.05 and 1 (got %v)", v)
-			}
-			return nil
-		}).
-		WithUI(settings.UIMeta{
+	KeyQuakeBackgroundOpacity = settings.NewKey[float64](contracts.SettingKeyQuakeBackgroundOpacity).
+					WithDefault(contracts.SettingQuakeBackgroundOpacityDefault).
+					WithValidate(validateRange[float64]("quake background opacity", "", contracts.SettingQuakeBackgroundOpacityMin, contracts.SettingQuakeBackgroundOpacityMax)).
+					WithUI(settings.UIMeta{
 			Category: "terminal",
 			Title:    "Quake terminal background opacity",
 			Summary:  "opacity of the quake terminal's background",
 			Fields: []settings.Field{{
 				Name: "", Kind: settings.FieldFloat,
-				MinF: ptrconv.Ptr(0.05), MaxF: ptrconv.Ptr(1.0),
+				MinF: ptrconv.Ptr[float64](contracts.SettingQuakeBackgroundOpacityMin), MaxF: ptrconv.Ptr[float64](contracts.SettingQuakeBackgroundOpacityMax),
 			}},
 		})
 
@@ -670,7 +679,7 @@ var (
 	// bar". They are the CLI's `settings get` output, and the hub cannot know
 	// the operating system of the client that reads them. The dialog supplies
 	// its own macOS wording; see the browser registry.
-	KeyTrayEnabled = settings.NewKey[bool]("tray_enabled").
+	KeyTrayEnabled = settings.NewKey[bool](contracts.SettingKeyTrayEnabled).
 			WithDefault(false).
 			WithUI(settings.UIMeta{
 			Category: "desktop",
@@ -679,8 +688,8 @@ var (
 			Fields:   []settings.Field{{Name: "", Kind: settings.FieldBool}},
 		})
 
-	KeyTrayOnClose = settings.NewKey[string]("tray_on_close").
-			WithDefault(contracts.TrayOnCloseTray).
+	KeyTrayOnClose = settings.NewKey[string](contracts.SettingKeyTrayOnClose).
+			WithDefault(contracts.SettingTrayOnCloseDefault).
 			WithValidate(validateEnum(trayOnCloseEnumValues)).
 			WithUI(settings.UIMeta{
 			Category: "desktop",
@@ -692,8 +701,8 @@ var (
 			}},
 		})
 
-	KeyTrayOnMinimize = settings.NewKey[string]("tray_on_minimize").
-				WithDefault(contracts.TrayOnMinimizeTaskbar).
+	KeyTrayOnMinimize = settings.NewKey[string](contracts.SettingKeyTrayOnMinimize).
+				WithDefault(contracts.SettingTrayOnMinimizeDefault).
 				WithValidate(validateEnum(trayOnMinimizeEnumValues)).
 				WithUI(settings.UIMeta{
 			Category: "desktop",
@@ -705,7 +714,7 @@ var (
 			}},
 		})
 
-	KeyStartOnLogin = settings.NewKey[bool]("start_on_login").
+	KeyStartOnLogin = settings.NewKey[bool](contracts.SettingKeyStartOnLogin).
 			WithDefault(false).
 			WithUI(settings.UIMeta{
 			Category: "desktop",
@@ -714,8 +723,8 @@ var (
 			Fields:   []settings.Field{{Name: "", Kind: settings.FieldBool}},
 		})
 
-	KeyStartMinimized = settings.NewKey[string]("start_minimized").
-				WithDefault(contracts.StartMinimizedWindow).
+	KeyStartMinimized = settings.NewKey[string](contracts.SettingKeyStartMinimized).
+				WithDefault(contracts.SettingStartMinimizedDefault).
 				WithValidate(validateEnum(startMinimizedEnumValues)).
 				WithUI(settings.UIMeta{
 			Category: "desktop",
@@ -727,7 +736,7 @@ var (
 			}},
 		})
 
-	KeyDebugLogging = settings.NewKey[bool]("debug_logging").
+	KeyDebugLogging = settings.NewKey[bool](contracts.SettingKeyDebugLogging).
 			WithDefault(false).
 			WithUI(settings.UIMeta{
 			Category: "advanced",
@@ -736,7 +745,7 @@ var (
 			Fields:   []settings.Field{{Name: "", Kind: settings.FieldBool}},
 		})
 
-	KeyKeybindings = settings.NewKey[[]KeybindingOverride]("keybindings").
+	KeyKeybindings = settings.NewKey[[]KeybindingOverride](contracts.SettingKeyKeybindings).
 			WithDefault([]KeybindingOverride{}).
 			WithValidate(validateKeybindings).
 			WithUI(settings.UIMeta{

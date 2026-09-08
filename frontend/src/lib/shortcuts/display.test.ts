@@ -142,4 +142,10 @@ describe('formatShortcut', () => {
       expect(shortcutHint('New Agent', 'app.nope')).toBe('New Agent')
     })
   })
+  // `grave` is an internal spelling of a physical position; the user sees the
+  // keycap character, not the name.
+  it('renders the grave key as its character', () => {
+    expect(formatShortcut('Control+grave', 'mac')).toBe('\u2303`')
+    expect(formatShortcut('Control+grave', 'windows')).toBe('Ctrl+`')
+  })
 })

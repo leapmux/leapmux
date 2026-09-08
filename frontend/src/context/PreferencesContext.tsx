@@ -1,4 +1,5 @@
 import type { Accessor, ParentComponent } from 'solid-js'
+import type { SettingQuakeOrientation } from '~/generated/contracts/user-settings'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserPreferences'
 import type { SyncLocalKey } from '~/lib/browserStorage'
@@ -14,6 +15,42 @@ import {
   TRAY_ON_MINIMIZE_TASKBAR,
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
+import {
+  SETTING_DIFF_VIEW_DEFAULT,
+  SETTING_DIFF_VIEW_VALUES,
+  SETTING_KEY_DEBUG_LOGGING,
+  SETTING_KEY_DIFF_VIEW,
+  SETTING_KEY_KEYBINDINGS,
+  SETTING_KEY_MONO_FONTS,
+  SETTING_KEY_QUAKE_ANIMATION_MS,
+  SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
+  SETTING_KEY_QUAKE_ORIENTATION,
+  SETTING_KEY_QUAKE_SIZE_PERCENT,
+  SETTING_KEY_START_MINIMIZED,
+  SETTING_KEY_START_ON_LOGIN,
+  SETTING_KEY_SYNTAX_THEME,
+  SETTING_KEY_TERMINAL_THEME,
+  SETTING_KEY_THEME,
+  SETTING_KEY_TRAY_ENABLED,
+  SETTING_KEY_TRAY_ON_CLOSE,
+  SETTING_KEY_TRAY_ON_MINIMIZE,
+  SETTING_KEY_TURN_END_SOUND,
+  SETTING_KEY_TURN_END_SOUND_VOLUME,
+  SETTING_KEY_UI_FONTS,
+  SETTING_QUAKE_ANIMATION_MS_DEFAULT,
+  SETTING_QUAKE_ANIMATION_MS_MAX,
+  SETTING_QUAKE_ANIMATION_MS_MIN,
+  SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT,
+  SETTING_QUAKE_BACKGROUND_OPACITY_MAX,
+  SETTING_QUAKE_BACKGROUND_OPACITY_MIN,
+  SETTING_QUAKE_ORIENTATION_DEFAULT,
+  SETTING_QUAKE_ORIENTATION_VALUES,
+  SETTING_QUAKE_SIZE_PERCENT_DEFAULT,
+  SETTING_QUAKE_SIZE_PERCENT_MAX,
+  SETTING_QUAKE_SIZE_PERCENT_MIN,
+  SETTING_TURN_END_SOUND_VOLUME_MAX,
+  SETTING_TURN_END_SOUND_VOLUME_MIN,
+} from '~/generated/contracts/user-settings'
 import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
 import { hasStorageAccount, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageGet, localStorageRemove, localStorageSet, onStorageAccountChange, onStorageChanged, storedKeyFor } from '~/lib/browserStorage'
@@ -51,8 +88,11 @@ export type TurnEndSoundPreference = 'none' | 'ding-dong'
 /**
  * Which edge of the centre area the quake panel slides in from. The value picks
  * the slide axis and its sign together, so there is no separate direction.
+ *
+ * Derived from the contract rather than written again: the hub validates the
+ * same four tokens, and a fifth added there must not need a second edit here.
  */
-export type QuakeOrientation = 'top' | 'bottom' | 'left' | 'right'
+export type QuakeOrientation = SettingQuakeOrientation
 
 /**
  * The three Desktop enums, DERIVED from the generated tokens rather than
@@ -263,6 +303,19 @@ const PreferencesContext = createStableContext<PreferencesState>('context/Prefer
 /** Accept one of a closed set of string values, and refuse anything else. */
 function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefined {
   return raw => (allowed.includes(raw as T) ? raw as T : undefined)
+}
+
+/**
+ * Accept a stored number inside a closed range, and refuse anything else.
+ *
+ * The numeric sibling of {@link oneOf}, and the reason it exists is stricter
+ * than symmetry: every value it guards is interpolated into a CSS custom
+ * property, so a hand-edited entry such as `65%; position: fixed` must never
+ * reach the style attribute. `Number.isFinite` is required, because
+ * `typeof NaN === 'number'`, and it is also what refuses Infinity.
+ */
+function numberInRange(min: number, max: number): (raw: unknown) => number | undefined {
+  return raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= min && raw <= max ? raw : undefined)
 }
 
 /** Accept a stored boolean, and refuse anything else. */
@@ -894,7 +947,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // them into two keys would let a device override the palette while the
     // account still decides the mode, which no control in the app can express.
     theme: createDualSetting<ThemeValue>({
-      protoKey: 'theme',
+      protoKey: SETTING_KEY_THEME,
       browserPrefKey: 'theme',
       fallback: DEFAULT_THEME_VALUE,
       parse: parseThemeValue,
@@ -907,7 +960,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // it is one appearance choice with one scope chip, and the control states
     // it as one entry in one palette list. See ~/styles/themes/types.ts.
     terminalTheme: createDualSetting<TerminalThemeValue>({
-      protoKey: 'terminal_theme',
+      protoKey: SETTING_KEY_TERMINAL_THEME,
       browserPrefKey: 'terminalTheme',
       fallback: DEFAULT_TERMINAL_THEME_VALUE,
       parse: parseTerminalThemeValue,
@@ -916,7 +969,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // sentinel as the terminal: it is a different surface with different
     // habits, and following the app is only the default.
     syntaxTheme: createDualSetting<TerminalThemeValue>({
-      protoKey: 'syntax_theme',
+      protoKey: SETTING_KEY_SYNTAX_THEME,
       browserPrefKey: 'syntaxTheme',
       fallback: DEFAULT_TERMINAL_THEME_VALUE,
       parse: parseTerminalThemeValue,
@@ -924,31 +977,31 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // The font overrides are whole-object tiers: null means "use the
     // account value" and deletes the key; any object is a full override.
     uiFonts: createDualSetting<FontTier>({
-      protoKey: 'ui_fonts',
+      protoKey: SETTING_KEY_UI_FONTS,
       browserPrefKey: 'uiFontOverride',
       fallback: { enabled: false, fonts: [] },
       parse: parseFontTier,
     }),
     monoFonts: createDualSetting<FontTier>({
-      protoKey: 'mono_fonts',
+      protoKey: SETTING_KEY_MONO_FONTS,
       browserPrefKey: 'monoFontOverride',
       fallback: { enabled: false, fonts: [] },
       parse: parseFontTier,
     }),
     diffView: createDualSetting<DiffViewPreference>({
-      protoKey: 'diff_view',
+      protoKey: SETTING_KEY_DIFF_VIEW,
       browserPrefKey: 'diffView',
-      fallback: 'unified',
-      parse: oneOf('unified', 'split'),
+      fallback: SETTING_DIFF_VIEW_DEFAULT,
+      parse: oneOf(...SETTING_DIFF_VIEW_VALUES),
     }),
     turnEndSound: createDualSetting<TurnEndSoundPreference>({
-      protoKey: 'turn_end_sound',
+      protoKey: SETTING_KEY_TURN_END_SOUND,
       browserPrefKey: 'turnEndSound',
       fallback: 'ding-dong',
       parse: oneOf('none', 'ding-dong'),
     }),
     turnEndSoundVolume: createDualSetting<number>({
-      protoKey: 'turn_end_sound_volume',
+      protoKey: SETTING_KEY_TURN_END_SOUND_VOLUME,
       browserPrefKey: 'turnEndSoundVolume',
       fallback: 100,
       // The hub refuses `v < 0 || v > 100` (usersettings/keys.go), and the
@@ -956,41 +1009,37 @@ export const PreferencesProvider: ParentComponent = (props) => {
       // assigns `volume / 100` to an HTMLAudioElement, and a value outside
       // 0..1 throws IndexSizeError SYNCHRONOUSLY, after the rate limiter
       // already recorded the play. No sound, and no turn-end event.
-      // `Number.isFinite` is required, because `typeof NaN === 'number'`.
-      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100 ? raw : undefined),
+      parse: numberInRange(SETTING_TURN_END_SOUND_VOLUME_MIN, SETTING_TURN_END_SOUND_VOLUME_MAX),
     }),
     // Every quake parse is at least as strict as the hub validator
-    // (usersettings/keys.go), and for a reason beyond symmetry: each value is
-    // interpolated into a CSS custom property, so a stored string like
-    // `65%; position: fixed` must not reach the style attribute. `oneOf` and the
-    // numeric range checks are what stop it. `Number.isFinite` is required
-    // because `typeof NaN === 'number'`.
+    // (usersettings/keys.go). `oneOf` and `numberInRange` are what stop a
+    // hand-edited value reaching the style attribute -- see `numberInRange`.
     quakeOrientation: createDualSetting<QuakeOrientation>({
-      protoKey: 'quake_orientation',
+      protoKey: SETTING_KEY_QUAKE_ORIENTATION,
       browserPrefKey: 'quakeOrientation',
-      fallback: 'top',
-      parse: oneOf('top', 'bottom', 'left', 'right'),
+      fallback: SETTING_QUAKE_ORIENTATION_DEFAULT,
+      parse: oneOf(...SETTING_QUAKE_ORIENTATION_VALUES),
     }),
     quakeSizePercent: createDualSetting<number>({
-      protoKey: 'quake_size_percent',
+      protoKey: SETTING_KEY_QUAKE_SIZE_PERCENT,
       browserPrefKey: 'quakeSizePercent',
-      fallback: 65,
-      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 20 && raw <= 100 ? raw : undefined),
+      fallback: SETTING_QUAKE_SIZE_PERCENT_DEFAULT,
+      parse: numberInRange(SETTING_QUAKE_SIZE_PERCENT_MIN, SETTING_QUAKE_SIZE_PERCENT_MAX),
     }),
     quakeAnimationMs: createDualSetting<number>({
-      protoKey: 'quake_animation_ms',
+      protoKey: SETTING_KEY_QUAKE_ANIMATION_MS,
       browserPrefKey: 'quakeAnimationMs',
-      fallback: 300,
-      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 2000 ? raw : undefined),
+      fallback: SETTING_QUAKE_ANIMATION_MS_DEFAULT,
+      parse: numberInRange(SETTING_QUAKE_ANIMATION_MS_MIN, SETTING_QUAKE_ANIMATION_MS_MAX),
     }),
     quakeBackgroundOpacity: createDualSetting<number>({
-      protoKey: 'quake_background_opacity',
+      protoKey: SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
       browserPrefKey: 'quakeBackgroundOpacity',
-      fallback: 0.9,
-      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0.05 && raw <= 1 ? raw : undefined),
+      fallback: SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT,
+      parse: numberInRange(SETTING_QUAKE_BACKGROUND_OPACITY_MIN, SETTING_QUAKE_BACKGROUND_OPACITY_MAX),
     }),
     debugLogging: createDualSetting<boolean>({
-      protoKey: 'debug_logging',
+      protoKey: SETTING_KEY_DEBUG_LOGGING,
       browserPrefKey: 'debugLogging',
       fallback: false,
       parse: parseBoolean,
@@ -1005,31 +1054,31 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // only, and the push to the shell has to happen on an account write too.
     // `useDesktopWindowBehavior` watches the resolved values instead.
     trayEnabled: createDualSetting<boolean>({
-      protoKey: 'tray_enabled',
+      protoKey: SETTING_KEY_TRAY_ENABLED,
       browserPrefKey: 'trayEnabled',
       fallback: false,
       parse: parseBoolean,
     }),
     trayOnClose: createDualSetting<TrayOnClosePreference>({
-      protoKey: 'tray_on_close',
+      protoKey: SETTING_KEY_TRAY_ON_CLOSE,
       browserPrefKey: 'trayOnClose',
       fallback: TRAY_ON_CLOSE_TRAY,
       parse: oneOf(TRAY_ON_CLOSE_TRAY, TRAY_ON_CLOSE_QUIT),
     }),
     trayOnMinimize: createDualSetting<TrayOnMinimizePreference>({
-      protoKey: 'tray_on_minimize',
+      protoKey: SETTING_KEY_TRAY_ON_MINIMIZE,
       browserPrefKey: 'trayOnMinimize',
       fallback: TRAY_ON_MINIMIZE_TASKBAR,
       parse: oneOf(TRAY_ON_MINIMIZE_TRAY, TRAY_ON_MINIMIZE_TASKBAR),
     }),
     startOnLogin: createDualSetting<boolean>({
-      protoKey: 'start_on_login',
+      protoKey: SETTING_KEY_START_ON_LOGIN,
       browserPrefKey: 'startOnLogin',
       fallback: false,
       parse: parseBoolean,
     }),
     startMinimized: createDualSetting<StartMinimizedPreference>({
-      protoKey: 'start_minimized',
+      protoKey: SETTING_KEY_START_MINIMIZED,
       browserPrefKey: 'startMinimized',
       fallback: START_MINIMIZED_WINDOW,
       parse: oneOf(START_MINIMIZED_WINDOW, START_MINIMIZED_MINIMIZED),
@@ -1042,7 +1091,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // what the context publishes as `dual`, and every member of that record
   // must carry the browser tier its consumers address.
   const keybindings = createAccountSetting<UserKeybindingOverride[]>({
-    protoKey: 'keybindings',
+    protoKey: SETTING_KEY_KEYBINDINGS,
     fallback: [],
     // A malformed document is an EMPTY override set, not "keep what is
     // on screen": a stored value the client cannot read must not leave

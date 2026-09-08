@@ -18,13 +18,7 @@ import (
 // quakeDispatcher answers the worker-local RPCs the `agent quake` leaves make
 // and records what they carried, so a test can prove the right action reached
 // the worker rather than that the leaf merely exited zero.
-//
-// `companionOwner`, when set, is the owner ListTerminals reports for the
-// terminal id it is asked about -- which is how the leaf resolves the panel it
-// is being run INSIDE.
 type quakeDispatcher struct {
-	companionOwner string
-
 	mu      sync.Mutex
 	methods []string
 	actions []leapmuxv1.QuakePanelAction
@@ -49,20 +43,6 @@ func (d *quakeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 		d.agents = append(d.agents, in.GetAgentId())
 		d.mu.Unlock()
 		reply = &leapmuxv1.SetQuakePanelResponse{}
-	case "ListTerminals":
-		var in leapmuxv1.ListTerminalsRequest
-		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
-			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
-			return
-		}
-		resp := &leapmuxv1.ListTerminalsResponse{}
-		for _, id := range in.GetTabIds() {
-			resp.Terminals = append(resp.Terminals, &leapmuxv1.TerminalInfo{
-				TerminalId:   id,
-				OwnerAgentId: d.companionOwner,
-			})
-		}
-		reply = resp
 	default:
 		_ = w.SendError(int32(codes.Unimplemented), req.GetMethod())
 		return
@@ -85,15 +65,6 @@ func quakeAgentTab() *leapmuxv1.WorkspaceTab {
 	return &leapmuxv1.WorkspaceTab{
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:       "agent-1",
-		WorkspaceId: "ws-1",
-		WorkerId:    "worker-A",
-	}
-}
-
-func quakeTerminalTab() *leapmuxv1.WorkspaceTab {
-	return &leapmuxv1.WorkspaceTab{
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabId:       "quake-1",
 		WorkspaceId: "ws-1",
 		WorkerId:    "worker-A",
 	}
@@ -149,27 +120,48 @@ func TestRunAgentQuake_SendsEachActionToTheWorker(t *testing.T) {
 	}
 }
 
-// Run inside the Quake terminal itself, the ambient tab is that TERMINAL. The
-// leaf resolves it to its owner rather than refusing, which is what makes
-// "close the panel I am typing in" work -- the most natural use there is.
-func TestRunAgentQuake_ResolvesACompanionTerminalToItsOwner(t *testing.T) {
-	disp := &quakeDispatcher{companionOwner: "agent-1"}
-	data, disp := runQuake(t, RunAgentQuakeClose, quakeTerminalTab(), disp)
-
-	assert.Equal(t, []string{"ListTerminals", "SetQuakePanel"}, disp.called())
-	assert.Equal(t, []string{"agent-1"}, disp.agents, "the command must name the OWNER")
-	assert.Equal(t, "agent-1", data["agent_id"])
-}
-
-// A terminal that is a tab of its own owns no panel. Refused by name, because
-// "nothing happened" and "you aimed at an ordinary terminal" need different
-// fixes from the user.
-func TestRunAgentQuake_RefusesATerminalThatIsNotACompanion(t *testing.T) {
-	disp := &quakeDispatcher{companionOwner: ""}
-	startSpawnIPC(t, &recordingHub{locateTab: quakeTerminalTab()}, disp)
+// "Close the panel in front of me", which is the most natural use of this
+// command, and the one that used to fail.
+//
+// Inside the Quake terminal the worker exports the OWNER AGENT as the ambient
+// tab -- a companion has no CRDT tab, so the hub answers NotFound for its own
+// id and the whole resolve fails before the leaf runs (see TerminalSpawning in
+// `internal/worker/controlipc`). This test is the CLI half of that contract: it
+// exports exactly the pair a Quake shell carries, passes NO --tab-id, and
+// requires that the agent's own panel is what the worker is asked to hide.
+func TestRunAgentQuake_ClosesTheOwnerPanelFromInsideTheQuakeShell(t *testing.T) {
+	disp := &quakeDispatcher{}
+	startSpawnIPC(t, &recordingHub{locateTab: quakeAgentTab()}, disp)
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+	t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "agent")
 
 	out := withCapturedStdout(t, func() {
-		err := RunAgentQuakeToggle(fakeCmdCtx{}, []string{"--tab-id", "quake-1"})
+		require.NoError(t, RunAgentQuakeClose(fakeCmdCtx{}, nil))
+	})
+
+	var env struct {
+		Data  map[string]any    `json:"data"`
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
+	require.Nil(t, env.Error, "the leaf must succeed with no --tab-id: %s", out)
+	assert.Equal(t, []string{"SetQuakePanel"}, disp.called())
+	assert.Equal(t, []string{"agent-1"}, disp.agents)
+	assert.Equal(t, "close", env.Data["action"])
+}
+
+// The env default is pinned to the AGENT spelling, so an ordinary TERMINAL tab
+// supplies no id: `agent quake` acts on agent tabs, and a shell in a terminal
+// tab of its own has no panel to hide. The user gets the "pass --tab-id" hint
+// rather than a request against the wrong tab.
+func TestRunAgentQuake_IgnoresATerminalAmbientTab(t *testing.T) {
+	disp := &quakeDispatcher{}
+	startSpawnIPC(t, &recordingHub{locateTab: quakeAgentTab()}, disp)
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", "terminal-9")
+	t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "terminal")
+
+	out := withCapturedStdout(t, func() {
+		err := RunAgentQuakeToggle(fakeCmdCtx{}, nil)
 		require.Error(t, err)
 	})
 
@@ -178,7 +170,7 @@ func TestRunAgentQuake_RefusesATerminalThatIsNotACompanion(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
 	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "agent")
+	assert.Contains(t, env.Error["message"], "tab-id")
 	assert.NotContains(t, disp.called(), "SetQuakePanel")
 }
 

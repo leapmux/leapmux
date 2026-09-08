@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
@@ -71,7 +72,7 @@ func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
 	}
 }
 
-// The quake panel command is the one arm of this bus that is a COMMAND rather
+// The quake panel command is the one case of this bus that is a COMMAND rather
 // than a fact: it carries no state, and the worker stores none.
 func TestPrivateEventsBus_PublishesTheQuakePanelCommand(t *testing.T) {
 	t.Parallel()
@@ -101,6 +102,43 @@ func TestPrivateEventsBus_PublishesTheQuakePanelCommand(t *testing.T) {
 // It must stay OUT of the bootstrap replay. A replayed command would reopen a
 // panel on every reconnect, overwriting client-local state the user set -- the
 // replay is for the state the worker HOLDS, and this is not that.
+//
+// Driven through the PRODUCTION snapshot, `TabPayloadStore.SnapshotForOwner`,
+// which is what the worker actually passes to SnapshotAndSubscribe. A test that
+// supplied its own snapshot function returning nil asserted nothing: the "no
+// replay" claim held for every event kind, and a snapshot that started emitting
+// commands would leave it green.
+func TestTabPayloadStore_SnapshotReplaysFactsAndNoCommands(t *testing.T) {
+	t.Parallel()
+
+	store, bus, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+	owner := userid.MustNew("user-1")
+
+	// One real fact for the snapshot to carry, so an empty result cannot pass
+	// this test by accident.
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID:  owner.String(),
+		TabID:   "file-1",
+		Payload: filePayload(testutil.NativeAbsPath("/repo/README.md")),
+	}))
+	// A command published before the snapshot is taken, which is the state a
+	// reconnecting client arrives in.
+	bus.PublishQuakePanelCommand(owner, "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+
+	snapshot, err := store.SnapshotForOwner(ctx, owner)
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot, "the snapshot must carry the facts the worker holds")
+	for _, evt := range snapshot {
+		assert.Nil(t, evt.GetQuakePanelCommand(),
+			"the bootstrap replay is for facts; a command in it reopens a panel on every reconnect")
+		assert.NotNil(t, evt.GetTabPayloadRegistered(),
+			"every snapshot event is a stored tab payload")
+	}
+}
+
+// The live stream is the only route a command takes: a subscriber that joins
+// AFTER one was published must not receive it.
 func TestPrivateEventsBus_DoesNotReplayTheQuakePanelCommand(t *testing.T) {
 	t.Parallel()
 

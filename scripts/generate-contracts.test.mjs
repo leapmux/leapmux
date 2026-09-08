@@ -30,6 +30,7 @@ import {
   checkTabNames,
   checkTheme,
   checkTrustedProxies,
+  checkUserSettings,
   checkValidate,
   checkWire,
   checkWorkerVocab,
@@ -86,6 +87,8 @@ const HEADERS = readContract('headers')
 const RETRY = readContract('retry')
 const CHAT_HISTORY = readContract('chat-history')
 const TRUSTED_PROXIES = readContract('trusted-proxies')
+const USER_SETTINGS = readContract('user-settings')
+const DESKTOP_FOR_SETTINGS = readContract('desktop')
 
 function expectContractError(fn, fragment) {
   try {
@@ -682,6 +685,7 @@ describe('generate', () => {
       'backend/generated/contracts/tab-types.go',
       'backend/generated/contracts/theme.go',
       'backend/generated/contracts/trusted-proxies.go',
+      'backend/generated/contracts/user-settings.go',
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
@@ -707,6 +711,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/tab-types.ts',
       'frontend/src/generated/contracts/theme-default.ts',
       'frontend/src/generated/contracts/trusted-proxies.ts',
+      'frontend/src/generated/contracts/user-settings.ts',
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
       'frontend/src/generated/contracts/worker-vocab.ts',
@@ -756,6 +761,67 @@ describe('generate', () => {
     cpSync(join(ROOT, 'contracts'), partial, { recursive: true })
     rmSync(join(partial, 'desktop.json'))
     expectContractError(() => generate(partial, DESCRIPTOR), 'desktop.json')
+  })
+})
+
+describe('checkUserSettings', () => {
+  // One setting's entry, replaced. The rest of the contract rides along, so a
+  // rule that fires for the wrong reason still fails the assertion.
+  const withSetting = (name, patch) => ({
+    ...USER_SETTINGS,
+    settings: { ...USER_SETTINGS.settings, [name]: { ...USER_SETTINGS.settings[name], ...patch } },
+  })
+
+  it('accepts the shipped contract', () => {
+    expect(() => checkUserSettings(USER_SETTINGS, DESKTOP_FOR_SETTINGS)).not.toThrow()
+  })
+
+  // The default is what the hub answers for an unset key and what the browser
+  // falls back to. One outside the vocabulary would be stored and then
+  // discarded by every parse that reads it.
+  it('rejects an enum default outside its own values', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('quakeOrientation', { default: 'diagonal' }), DESKTOP_FOR_SETTINGS),
+      'is not one of its values',
+    )
+  })
+
+  it('rejects a numeric default outside its own limits', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('quakeSizePercent', { default: 5 }), DESKTOP_FOR_SETTINGS),
+      'is outside its limits',
+    )
+  })
+
+  it('rejects limits that are the wrong way round', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('quakeAnimationMs', { min: 2000, max: 0 }), DESKTOP_FOR_SETTINGS),
+      'min must be below max',
+    )
+  })
+
+  it('rejects two settings that claim one proto key', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('quakeSizePercent', { protoKey: 'quake_animation_ms' }), DESKTOP_FOR_SETTINGS),
+      'two settings share the proto key',
+    )
+  })
+
+  // The three Desktop enums state only their DEFAULT here; their tokens live in
+  // desktop.json, because the Rust shell spells them too. This is the check
+  // that keeps the two contracts in step without copying the tokens.
+  it('rejects a desktop default that desktop.json does not list', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('trayOnClose', { default: 'minimize' }), DESKTOP_FOR_SETTINGS),
+      'is not a windowBehavior token',
+    )
+  })
+
+  it('rejects a desktop block that does not exist', () => {
+    expectContractError(
+      () => checkUserSettings(withSetting('trayOnClose', { desktopSetting: 'trayOnExplode' }), DESKTOP_FOR_SETTINGS),
+      'windowBehavior has no trayOnExplode block',
+    )
   })
 })
 

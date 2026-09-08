@@ -37,7 +37,11 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
     retireOwners: vi.fn(),
     liveEntries: () => (entry ? [entry] : []),
   }
-  const view = { getTerminalTab: (id: string) => ({ id, type: 2 }) }
+  const view = {
+    getTerminalTab: (id: string) => ({ id, type: 2 }),
+    detachedTerminalTabs: () => (entry?.terminalId ? [{ id: entry.terminalId, type: 2 }] : []),
+  }
+  const onClose = vi.fn()
   const metadata = { get: () => undefined }
   const rendered = render(withPreferences(() => (
     <QuakeTerminalPanel
@@ -45,12 +49,14 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
       view={view as never}
       metadata={metadata as never}
       activeAgentId={() => entry?.ownerId ?? null}
+      onClose={onClose}
+      confirmLink={async () => false}
       onInput={vi.fn()}
       onResize={vi.fn()}
       onContentReady={vi.fn()}
     />
   )))
-  return { ...rendered, quakeStore }
+  return { ...rendered, quakeStore, onClose }
 }
 
 const OPEN: QuakeEntry = { ownerId: 'a1', workerId: 'w1', workspaceId: 'ws1', terminalId: 'q1', open: true }
@@ -145,9 +151,11 @@ describe('quakeTerminalPanel', () => {
     const { queryByTestId } = render(withPreferences(() => (
       <QuakeTerminalPanel
         quakeStore={quakeStore as never}
-        view={{ getTerminalTab: (id: string) => ({ id, type: 2 }) } as never}
+        view={{ getTerminalTab: (id: string) => ({ id, type: 2 }), detachedTerminalTabs: () => [] } as never}
         metadata={{ get: () => undefined } as never}
         activeAgentId={() => 'a1'}
+        onClose={vi.fn()}
+        confirmLink={async () => false}
         onInput={vi.fn()}
         onResize={vi.fn()}
         onContentReady={vi.fn()}

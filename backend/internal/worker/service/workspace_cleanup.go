@@ -9,7 +9,7 @@ import (
 
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
 func registerCleanupHandlers(d registrar, svc *Service) {
-	registerOwnerGated(d, "CleanupWorkspace", leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE, dispatchTracked, handleCleanupWorkspace(svc))
+	registerOwnerGuarded(d, "CleanupWorkspace", leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE, dispatchTracked, handleCleanupWorkspace(svc))
 }
 
 // handleCleanupWorkspace tears down the local resources behind the tabs a

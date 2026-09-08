@@ -81,7 +81,7 @@ export interface TerminalInstance {
    * to the surface behind it. Fixed at construction, because xterm reads
    * `allowTransparency` at `open()` and ignores a later write.
    *
-   * Recorded on the instance rather than inferred by the caller because
+   * Recorded on the instance rather than inferred by the caller, because
    * `instances` in `~/components/terminal/TerminalView` is MODULE-level: every
    * mounted view's theme effect walks every terminal in the app, so a view that
    * knows nothing about quake panels would otherwise repaint a transparent

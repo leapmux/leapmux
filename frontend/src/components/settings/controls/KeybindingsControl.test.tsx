@@ -83,6 +83,24 @@ describe('chordFromEvent', () => {
     expect(chordFromEvent(new KeyboardEvent('keydown', { key: 'Meta' }))).toBeNull()
   })
 
+  // One physical key, several codes. A chord captured in the browser must fire
+  // in the desktop app on the same machine, and the two report the key under
+  // Esc differently on a macOS ISO keyboard -- so the capture records the
+  // INTENT (`grave`) rather than whichever code arrived.
+  it('records the intent for a key whose code differs by engine and layout', () => {
+    const mac = getPlatform() === 'mac'
+    const mod = mac ? 'Control' : '$mod'
+    const press = (key: string, code: string) =>
+      chordFromEvent(new KeyboardEvent('keydown', { key, code, ctrlKey: true }))
+
+    expect(press('`', 'Backquote')).toBe(`${mod}+grave`)
+    expect(press('§', 'IntlBackslash')).toBe(`${mod}+grave`)
+    // A dead key produces no character at all, and still records the same.
+    expect(press('Dead', 'Backquote')).toBe(`${mod}+grave`)
+    // Every other punctuation key keeps its own code.
+    expect(press(',', 'Comma')).toBe(`${mod}+Comma`)
+  })
+
   it('uses $mod for the platform modifier and event.code for punctuation', () => {
     const mac = getPlatform() === 'mac'
     const chord = chordFromEvent(new KeyboardEvent('keydown', { key: ',', code: 'Comma', [mac ? 'metaKey' : 'ctrlKey']: true }))

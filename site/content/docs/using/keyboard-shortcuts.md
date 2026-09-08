@@ -121,7 +121,7 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 |---|---|---|---|
 | Steer Queued Input | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
 
-`Steer Queued Input` hands the input queue's first item to the turn the agent is already running. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+`Steer Queued Input` hands the input queue's first item to the turn the agent already runs. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state. See [The input queue](/docs/using/coding-agents/#the-input-queue).
 
 {{< callout type="info" >}}
 `Send Message` (command `chat.sendMessage`) submits the focused chat input from anywhere inside the chat panel. It has no default chord, because the chat editor's own Enter and Cmd/Ctrl+Enter already send — see [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below. Bind it in Preferences if you want a second way in.
@@ -131,9 +131,9 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
-| Toggle Quake Terminal | `⌘J` | `Ctrl+J` | agent tab, no dialog open |
+| Toggle Quake Terminal | ``⌃` `` | ``Ctrl+` `` | agent tab, no dialog open |
 
-The Quake terminal is a shell that slides over the centre of the app for one agent tab; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
+The Quake terminal is a shell that slides over the centre of the app for one agent tab; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). It uses `Ctrl` on macOS too, because macOS reserves `Cmd` and that key for its own window cycler. The binding follows the key's POSITION, so it is the key under `Esc` whatever character your layout prints on it. `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
 
 ### Terminal (macOS only)
 

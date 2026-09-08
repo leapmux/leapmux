@@ -297,7 +297,7 @@ describe('useWorkerPrivateStreams', () => {
   })
 
   // The Control CLI's only route into the UI. It stores nothing, so a client
-  // that is not running simply never hears it -- which is the right outcome for
+  // that does not run simply never hears it -- which is the right outcome for
   // what is effectively a remote keystroke.
   describe('the quake panel command', () => {
     async function withCommand(fn: (s: ReturnType<typeof mount>) => void) {
@@ -311,7 +311,7 @@ describe('useWorkerPrivateStreams', () => {
       })
     }
 
-    it('opens the panel of the agent it names', async () => {
+    it('opens the panel of the agent it gives', async () => {
       await withCommand((s) => {
         const open = vi.spyOn(s.quakeStore, 'open')
         opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.OPEN })
@@ -319,7 +319,7 @@ describe('useWorkerPrivateStreams', () => {
       })
     })
 
-    it('closes the panel of the agent it names', async () => {
+    it('closes the panel of the agent it gives', async () => {
       await withCommand((s) => {
         const close = vi.spyOn(s.quakeStore, 'close')
         opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.CLOSE })
@@ -327,7 +327,7 @@ describe('useWorkerPrivateStreams', () => {
       })
     })
 
-    it('toggles the panel of the agent it names', async () => {
+    it('toggles the panel of the agent it gives', async () => {
       await withCommand((s) => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
         opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.TOGGLE })

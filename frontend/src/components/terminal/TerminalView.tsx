@@ -56,8 +56,6 @@ interface TerminalViewProps {
    * xterm instance, which is cached and outlives this component.
    */
   confirmLink: UntrustedLinkConfirm
-  pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
-  writeRef?: (fn: (data: string) => void) => void
   /**
    * Whether these terminals leave their background to the surface behind them.
    * True for the quake panel, whose own background carries the user's opacity.
@@ -179,7 +177,7 @@ export function getTerminalInstance(id: string): TerminalInstance | undefined {
  * Answers for EVERY mounted terminal, placed in a tile or not, because
  * `data-terminal-id` is on the wrapper this module renders. That is what a
  * caller needs for the quake panel's companion shell: it has no tab, so the
- * tab-shaped "which tab is focused?" lookups cannot name it, yet the keybinding
+ * tab-shaped "which tab is focused?" lookups cannot reach it, yet the keybinding
  * layer's `terminalFocused` context is true whenever it holds focus.
  */
 export function focusedTerminalId(): string | undefined {
@@ -192,12 +190,47 @@ export function focusedTerminalId(): string | undefined {
  *
  * The same `sendInput` an `onData` keystroke takes, so a synthesized control
  * sequence goes through the identical gate, input log and RPC. A terminal that
- * is not mounted is silently skipped -- the caller resolved the id from the
- * focused element, so a missing instance means it was disposed in between.
+ * that is not mounted is silently skipped -- the caller resolved the id from
+ * the focused element, so a missing instance means a dispose in between.
  */
 export function writeToTerminalInstance(id: string, data: string): void {
   const instance = instances.get(id)
   instance?.sendInput?.(utf8Encoder.encode(data))
+}
+
+/** Scroll one terminal's buffer by a page, by id. Sibling of `writeToTerminalInstance`. */
+export function pageScrollTerminalInstance(id: string, direction: -1 | 1): void {
+  instances.get(id)?.terminal.scrollPages(direction)
+}
+
+/**
+ * Send text to the terminal that holds keyboard focus.
+ *
+ * The ONE resolver for "which terminal does a chord act on". It answers from
+ * the DOM, so it reaches every mounted terminal -- one placed in a tile, and
+ * the companion shell behind a quake panel, which has no tab and no tile for a
+ * tab-shaped lookup to walk.
+ *
+ * This replaced a second, tile-shaped resolver that read the focused tile's
+ * active tab out of a handler map. The two could disagree: a tile takes focus
+ * on CLICK, so tabbing into another tile's xterm moved DOM focus without moving
+ * the focused tile, and the chord then typed into the tile the user had left.
+ * Every `terminal.*` binding is `when: 'terminalFocused'`, which is itself a
+ * DOM question, so this resolver is the one that matches the guard.
+ */
+export function writeToFocusedTerminal(data: string): void {
+  const id = focusedTerminalId()
+  if (id !== undefined)
+    writeToTerminalInstance(id, data)
+}
+
+/** Scroll the terminal that holds keyboard focus. Sibling of `writeToFocusedTerminal`. */
+export function pageScrollFocusedTerminal(direction: -1 | 1): boolean {
+  const id = focusedTerminalId()
+  if (id === undefined)
+    return false
+  pageScrollTerminalInstance(id, direction)
+  return true
 }
 
 /** Called when a terminal instance enters the map — used to flush buffered watch data. */
@@ -581,20 +614,6 @@ const TerminalContainer: Component<{
 export const TerminalView: Component<TerminalViewProps> = (props) => {
   const preferences = usePreferences()
 
-  const pageScroll = (direction: -1 | 1) => {
-    if (!props.activeTerminalId)
-      return
-    instances.get(props.activeTerminalId)?.terminal.scrollPages(direction)
-  }
-
-  const write = (data: string) => {
-    if (!props.activeTerminalId)
-      return
-    const instance = instances.get(props.activeTerminalId)
-    if (instance?.sendInput)
-      instance.sendInput(utf8Encoder.encode(data))
-  }
-
   // React to font preference changes and update existing terminal instances.
   // refreshTerminalFont re-arms each instance's `fontsReady` for the new
   // family (so a later or in-flight pool attach builds the atlas from the new
@@ -688,8 +707,6 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
 
   createEffect(() => {
     lastActiveTerminalId = props.activeTerminalId
-    props.pageScrollRef?.(pageScroll)
-    props.writeRef?.(write)
   })
 
   // Per-view ownership of terminal ids. The `instances` map is module-

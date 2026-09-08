@@ -52,7 +52,7 @@ func seedTerminal(t *testing.T, svc *Service, terminalID string) {
 	}))
 }
 
-// agentHandlerCases enumerates the agent-ID-scoped handlers we gate via
+// agentHandlerCases enumerates the agent-ID-scoped handlers restricted via
 // requireAccessibleAgent. Each entry builds the request proto for a given
 // agent ID and returns the RPC method name to dispatch.
 type agentHandlerCase struct {
@@ -124,7 +124,7 @@ var agentHandlerCases = []agentHandlerCase{
 	{"ListMessageMarks", func(id string) proto.Message {
 		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}
 	}},
-	// InterruptAgent is agent-ID-scoped via registerAgentGated.
+	// InterruptAgent is agent-ID-scoped via registerAgentGuarded.
 	{"InterruptAgent", func(id string) proto.Message {
 		return &leapmuxv1.InterruptAgentRequest{AgentId: id}
 	}},
@@ -275,81 +275,81 @@ func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
 	require.Len(t, w.responses, 1)
 }
 
-// ownerGatedProbe describes one non-owner denial probe for a method the
+// ownerGuardedProbe describes one non-owner denial probe for a method the
 // registrar wires behind the owner gate. Completeness is enforced by
-// TestAccessControl_OwnerGatedProbesAreComplete against registerAllWithGates.
+// TestAccessControl_OwnerGuardedProbesAreComplete against registerAllWithGuards.
 //
 // The gate replaced here was the per-workspace one. It is gone because there is
 // nothing left for it to narrow: a Worker is registered by exactly one user and
 // stores no workspace id, so "the caller owns this Worker" and "the caller owns
 // every row it holds" are the same statement. What still has to be proved, and
-// is proved below, is that EVERY method is behind that one gate -- an ungated
+// is proved below, is that EVERY method is behind that one gate -- an unguarded
 // handler would parse and act on a stranger's request.
-type ownerGatedProbe struct {
+type ownerGuardedProbe struct {
 	name   string
 	method string
 	req    func() proto.Message
 }
 
-// ownerGatedProbes covers every gateOwnerOnly method that takes a typed request
+// ownerGuardedProbes covers every guardOwnerOnly method that takes a typed request
 // with at least one non-owner denial. Derived entries reuse agentHandlerCases /
 // terminalHandlerCases; the residue is hand-written.
-var ownerGatedProbes = func() []ownerGatedProbe {
-	var probes []ownerGatedProbe
+var ownerGuardedProbes = func() []ownerGuardedProbe {
+	var probes []ownerGuardedProbe
 	for _, tc := range agentHandlerCases {
-		probes = append(probes, ownerGatedProbe{
+		probes = append(probes, ownerGuardedProbe{
 			name:   tc.method,
 			method: tc.method,
 			req:    func() proto.Message { return tc.req("agent-1") },
 		})
 	}
 	for _, tc := range terminalHandlerCases {
-		probes = append(probes, ownerGatedProbe{
+		probes = append(probes, ownerGuardedProbe{
 			name:   tc.method,
 			method: tc.method,
 			req:    func() proto.Message { return tc.req("term-1") },
 		})
 	}
 	probes = append(probes,
-		ownerGatedProbe{"OpenAgent", "OpenAgent", func() proto.Message {
+		ownerGuardedProbe{"OpenAgent", "OpenAgent", func() proto.Message {
 			return &leapmuxv1.OpenAgentRequest{WorkingDir: "/tmp"}
 		}},
-		ownerGatedProbe{"OpenTerminal", "OpenTerminal", func() proto.Message {
+		ownerGuardedProbe{"OpenTerminal", "OpenTerminal", func() proto.Message {
 			return &leapmuxv1.OpenTerminalRequest{WorkingDir: "/tmp"}
 		}},
-		ownerGatedProbe{"WatchWorkerPrivateEvents", "WatchWorkerPrivateEvents", func() proto.Message {
+		ownerGuardedProbe{"WatchWorkerPrivateEvents", "WatchWorkerPrivateEvents", func() proto.Message {
 			return &leapmuxv1.WatchWorkerPrivateEventsRequest{}
 		}},
-		ownerGatedProbe{"SetQuakePanel", "SetQuakePanel", func() proto.Message {
+		ownerGuardedProbe{"SetQuakePanel", "SetQuakePanel", func() proto.Message {
 			return &leapmuxv1.SetQuakePanelRequest{
 				AgentId: "agent-1",
 				Action:  leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 			}
 		}},
-		ownerGatedProbe{"RegisterTabPayload", "RegisterTabPayload", func() proto.Message {
+		ownerGuardedProbe{"RegisterTabPayload", "RegisterTabPayload", func() proto.Message {
 			return &leapmuxv1.RegisterTabPayloadRequest{TabId: "tab-1", Payload: fileTabPayload("/tmp/x", "")}
 		}},
-		ownerGatedProbe{"CleanupWorkspace", "CleanupWorkspace", func() proto.Message {
+		ownerGuardedProbe{"CleanupWorkspace", "CleanupWorkspace", func() proto.Message {
 			return &leapmuxv1.CleanupWorkspaceRequest{}
 		}},
-		ownerGatedProbe{"GetTabPayload", "GetTabPayload", func() proto.Message {
+		ownerGuardedProbe{"GetTabPayload", "GetTabPayload", func() proto.Message {
 			return &leapmuxv1.GetTabPayloadRequest{TabId: "tab-1"}
 		}},
-		ownerGatedProbe{"RevokeTabPayload", "RevokeTabPayload", func() proto.Message {
+		ownerGuardedProbe{"RevokeTabPayload", "RevokeTabPayload", func() proto.Message {
 			return &leapmuxv1.RevokeTabPayloadRequest{TabId: "tab-1"}
 		}},
-		ownerGatedProbe{"ListAgents", "ListAgents", func() proto.Message {
+		ownerGuardedProbe{"ListAgents", "ListAgents", func() proto.Message {
 			return &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-1"}}
 		}},
-		ownerGatedProbe{"ListTerminals", "ListTerminals", func() proto.Message {
+		ownerGuardedProbe{"ListTerminals", "ListTerminals", func() proto.Message {
 			return &leapmuxv1.ListTerminalsRequest{TabIds: []string{"term-1"}}
 		}},
-		ownerGatedProbe{"WatchEvents", "WatchEvents", func() proto.Message {
+		ownerGuardedProbe{"WatchEvents", "WatchEvents", func() proto.Message {
 			return &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 			}
 		}},
-		ownerGatedProbe{"ListAgentSessions", "ListAgentSessions", func() proto.Message {
+		ownerGuardedProbe{"ListAgentSessions", "ListAgentSessions", func() proto.Message {
 			return &leapmuxv1.ListAgentSessionsRequest{
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				WorkingDir:    "/tmp",
@@ -363,88 +363,88 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 		// stranger. TestMachineScopedFamiliesAreOwnerOnly dispatches them with
 		// an EMPTY payload, which proves the gate refuses SOMETHING; these
 		// prove it refuses a request that would otherwise have work to do.
-		ownerGatedProbe{"GetGitInfo", "GetGitInfo", func() proto.Message {
+		ownerGuardedProbe{"GetGitInfo", "GetGitInfo", func() proto.Message {
 			return &leapmuxv1.GetGitInfoRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"GetGitFileStatus", "GetGitFileStatus", func() proto.Message {
+		ownerGuardedProbe{"GetGitFileStatus", "GetGitFileStatus", func() proto.Message {
 			return &leapmuxv1.GetGitFileStatusRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"ListGitBranches", "ListGitBranches", func() proto.Message {
+		ownerGuardedProbe{"ListGitBranches", "ListGitBranches", func() proto.Message {
 			return &leapmuxv1.ListGitBranchesRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"ListGitWorktrees", "ListGitWorktrees", func() proto.Message {
+		ownerGuardedProbe{"ListGitWorktrees", "ListGitWorktrees", func() proto.Message {
 			return &leapmuxv1.ListGitWorktreesRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"ReadGitFile", "ReadGitFile", func() proto.Message {
+		ownerGuardedProbe{"ReadGitFile", "ReadGitFile", func() proto.Message {
 			return &leapmuxv1.ReadGitFileRequest{Path: "/tmp/x", Ref: leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD}
 		}},
-		ownerGatedProbe{"CheckoutBranch", "CheckoutBranch", func() proto.Message {
+		ownerGuardedProbe{"CheckoutBranch", "CheckoutBranch", func() proto.Message {
 			return &leapmuxv1.CheckoutBranchRequest{Path: "/tmp", Branch: "main"}
 		}},
-		ownerGatedProbe{"CreateBranch", "CreateBranch", func() proto.Message {
+		ownerGuardedProbe{"CreateBranch", "CreateBranch", func() proto.Message {
 			return &leapmuxv1.CreateBranchRequest{Path: "/tmp", NewBranch: "feature", BaseBranch: "main"}
 		}},
-		ownerGatedProbe{"DeleteBranch", "DeleteBranch", func() proto.Message {
+		ownerGuardedProbe{"DeleteBranch", "DeleteBranch", func() proto.Message {
 			return &leapmuxv1.DeleteBranchRequest{Path: "/tmp", BranchToDelete: "feature", SwitchToBranch: "main"}
 		}},
-		ownerGatedProbe{"PushBranch", "PushBranch", func() proto.Message {
+		ownerGuardedProbe{"PushBranch", "PushBranch", func() proto.Message {
 			return &leapmuxv1.PushBranchRequest{WorkingDir: "/tmp"}
 		}},
-		ownerGatedProbe{"InspectBranchChange", "InspectBranchChange", func() proto.Message {
+		ownerGuardedProbe{"InspectBranchChange", "InspectBranchChange", func() proto.Message {
 			return &leapmuxv1.InspectBranchChangeRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"InspectBranchDeletion", "InspectBranchDeletion", func() proto.Message {
+		ownerGuardedProbe{"InspectBranchDeletion", "InspectBranchDeletion", func() proto.Message {
 			return &leapmuxv1.InspectBranchDeletionRequest{Path: "/tmp", BranchNameHint: "feature"}
 		}},
-		ownerGatedProbe{"InspectWorktreeRemoval", "InspectWorktreeRemoval", func() proto.Message {
+		ownerGuardedProbe{"InspectWorktreeRemoval", "InspectWorktreeRemoval", func() proto.Message {
 			return &leapmuxv1.InspectWorktreeRemovalRequest{Path: "/tmp"}
 		}},
-		ownerGatedProbe{"InspectLastTabClose", "InspectLastTabClose", func() proto.Message {
+		ownerGuardedProbe{"InspectLastTabClose", "InspectLastTabClose", func() proto.Message {
 			return &leapmuxv1.InspectLastTabCloseRequest{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 				TabId:   "agent-1",
 			}
 		}},
-		ownerGatedProbe{"ListDirectory", "ListDirectory", func() proto.Message {
+		ownerGuardedProbe{"ListDirectory", "ListDirectory", func() proto.Message {
 			return &leapmuxv1.ListDirectoryRequest{Path: "/tmp", MaxDepth: 1}
 		}},
-		ownerGatedProbe{"ReadFile", "ReadFile", func() proto.Message {
+		ownerGuardedProbe{"ReadFile", "ReadFile", func() proto.Message {
 			return &leapmuxv1.ReadFileRequest{Path: "/tmp/x", Limit: 1}
 		}},
-		ownerGatedProbe{"StatFile", "StatFile", func() proto.Message {
+		ownerGuardedProbe{"StatFile", "StatFile", func() proto.Message {
 			return &leapmuxv1.StatFileRequest{Path: "/tmp/x"}
 		}},
-		ownerGatedProbe{"InspectTerminalProcesses", "InspectTerminalProcesses", func() proto.Message {
+		ownerGuardedProbe{"InspectTerminalProcesses", "InspectTerminalProcesses", func() proto.Message {
 			return &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: []string{"term-1"}}
 		}},
-		ownerGatedProbe{"ListAvailableShells", "ListAvailableShells", func() proto.Message {
+		ownerGuardedProbe{"ListAvailableShells", "ListAvailableShells", func() proto.Message {
 			return &leapmuxv1.ListAvailableShellsRequest{}
 		}},
-		ownerGatedProbe{"ListAvailableProviders", "ListAvailableProviders", func() proto.Message {
+		ownerGuardedProbe{"ListAvailableProviders", "ListAvailableProviders", func() proto.Message {
 			return &leapmuxv1.ListAvailableProvidersRequest{}
 		}},
-		ownerGatedProbe{"GetWorkerSystemInfo", "GetWorkerSystemInfo", func() proto.Message {
+		ownerGuardedProbe{"GetWorkerSystemInfo", "GetWorkerSystemInfo", func() proto.Message {
 			return &leapmuxv1.GetWorkerSystemInfoRequest{}
 		}},
-		ownerGatedProbe{"OpenTunnelConn", "OpenTunnelConn", func() proto.Message {
+		ownerGuardedProbe{"OpenTunnelConn", "OpenTunnelConn", func() proto.Message {
 			return &leapmuxv1.OpenTunnelConnRequest{
 				ConnId: "conn-1", TargetAddr: "127.0.0.1", TargetPort: 9,
 			}
 		}},
-		ownerGatedProbe{"SendTunnelData", "SendTunnelData", func() proto.Message {
+		ownerGuardedProbe{"SendTunnelData", "SendTunnelData", func() proto.Message {
 			return &leapmuxv1.SendTunnelDataRequest{ConnId: "conn-1", Data: []byte("x"), Seq: 1}
 		}},
-		ownerGatedProbe{"CloseTunnelConn", "CloseTunnelConn", func() proto.Message {
+		ownerGuardedProbe{"CloseTunnelConn", "CloseTunnelConn", func() proto.Message {
 			return &leapmuxv1.CloseTunnelConnRequest{ConnId: "conn-1", Seq: 2}
 		}},
-		ownerGatedProbe{"GrantTunnelReadCredit", "GrantTunnelReadCredit", func() proto.Message {
+		ownerGuardedProbe{"GrantTunnelReadCredit", "GrantTunnelReadCredit", func() proto.Message {
 			return &leapmuxv1.GrantTunnelReadCreditRequest{ConnId: "conn-1", Credit: 4}
 		}},
 	)
 	return probes
 }()
 
-// TestAccessControl_OwnerGatedProbesAreComplete is the check three comments in
+// TestAccessControl_OwnerGuardedProbesAreComplete is the check three comments in
 // this file already claimed to perform, and did not.
 //
 // EVERY method the registrar puts behind the owner gate carries a typed denial
@@ -453,20 +453,20 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 // reaching a stranger's populated request unproved. ListAgentSessions joined the
 // gate with no probe and nothing failed, because the test the comments named had
 // never been written.
-func TestAccessControl_OwnerGatedProbesAreComplete(t *testing.T) {
+func TestAccessControl_OwnerGuardedProbesAreComplete(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+	gates := registerAllWithGuards(channel.NewDispatcher(), svc)
 
-	probed := make(map[string]struct{}, len(ownerGatedProbes))
-	for _, p := range ownerGatedProbes {
+	probed := make(map[string]struct{}, len(ownerGuardedProbes))
+	for _, p := range ownerGuardedProbes {
 		probed[p.method] = struct{}{}
 	}
 
 	var unproved []string
 	for method, gate := range gates {
-		if gate != gateOwnerOnly {
+		if gate != guardOwnerOnly {
 			continue
 		}
 		if _, ok := probed[method]; !ok {
@@ -475,13 +475,13 @@ func TestAccessControl_OwnerGatedProbesAreComplete(t *testing.T) {
 	}
 	sort.Strings(unproved)
 	assert.Empty(t, unproved,
-		"every owner-gated method needs a typed denial probe in ownerGatedProbes")
+		"every owner-gated method needs a typed denial probe in ownerGuardedProbes")
 
 	// And no probe may outlive its gate: an entry for a method that nothing
 	// registers, or one the registrar moved to another gate, passes forever
 	// while proving nothing.
-	for _, p := range ownerGatedProbes {
-		assert.Equal(t, gateOwnerOnly, gates[p.method],
+	for _, p := range ownerGuardedProbes {
+		assert.Equal(t, guardOwnerOnly, gates[p.method],
 			"%s has a denial probe but is not an owner-gated method", p.method)
 	}
 }
@@ -492,10 +492,10 @@ func TestAccessControl_OwnerGatedProbesAreComplete(t *testing.T) {
 // The rows exist and the ids are real: the point is that ownership, not
 // existence, is what decides. A probe that passed because the row was missing
 // would prove nothing.
-func TestAccessControl_OwnerGatedMethods_DenyOtherUser(t *testing.T) {
+func TestAccessControl_OwnerGuardedMethods_DenyOtherUser(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range ownerGatedProbes {
+	for _, tc := range ownerGuardedProbes {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, d, w := setupTestService(t)
 			seedAgent(t, svc, "agent-1")
@@ -618,7 +618,7 @@ func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
 // run as them on their own machine) and must be denied to everyone else -- above
 // all a delegation bearer, which is handed to a prompt-injectable agent.
 //
-// Methods are enumerated from the gateOwnerOnly bucket of registerAllWithGates
+// Methods are enumerated from the guardOwnerOnly bucket of registerAllWithGuards
 // rather than by replaying the four family register functions. An empty payload
 // suffices: ownerOnlyRegistrar.gate runs requireWorkerOwner BEFORE the handler
 // unmarshals anything, so a non-owner is refused without a valid request ever
@@ -626,20 +626,20 @@ func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
 // would get as far as parsing attacker-supplied bytes).
 //
 // Tab-scoped methods sit behind the SAME gate, wired structurally via
-// registerOwnerGated / registerAgentGated / registerTerminalGated (and the
+// registerOwnerGuarded / registerAgentGuarded / registerTerminalGuarded (and the
 // Tracked / ByID / ForRestart variants); their per-method denials are covered by
-// ownerGatedProbes. Completeness is asserted by
-// TestAccessControl_OwnerGatedProbesAreComplete and
+// ownerGuardedProbes. Completeness is asserted by
+// TestAccessControl_OwnerGuardedProbesAreComplete and
 // TestEveryRegisteredMethodIsClassified.
 func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t)
-	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+	gates := registerAllWithGuards(channel.NewDispatcher(), svc)
 
 	var methods []string
 	for method, gate := range gates {
-		if gate == gateOwnerOnly {
+		if gate == guardOwnerOnly {
 			methods = append(methods, method)
 		}
 	}
@@ -686,7 +686,7 @@ func TestListAvailableShells_OwnerAllowed(t *testing.T) {
 }
 
 // TestEveryRegisteredMethodIsClassified is the default-deny companion: EVERY
-// method registerAllWithGates wires must appear in the gate map, and the two
+// method registerAllWithGuards wires must appear in the gate map, and the two
 // open-by-design buckets are pinned with explicit lists so additions are
 // reviewed decisions. Disjointness (no method recorded twice) is enforced by
 // registrar.record's duplicate panic at registration time.
@@ -694,7 +694,7 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t)
-	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+	gates := registerAllWithGuards(channel.NewDispatcher(), svc)
 
 	var gated []string
 	for method := range gates {
@@ -1043,7 +1043,7 @@ func registrarHelperName(call *ast.CallExpr) (string, bool) {
 			return fn.Sel.Name, true
 		}
 	case *ast.IndexExpr:
-		// The generic helpers: registerOwnerGated[T, PT](...).
+		// The generic helpers: registerOwnerGuarded[T, PT](...).
 		if id, ok := fn.X.(*ast.Ident); ok && strings.HasPrefix(id.Name, "register") {
 			return id.Name, true
 		}

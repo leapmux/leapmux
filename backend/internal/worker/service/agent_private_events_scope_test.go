@@ -39,7 +39,7 @@ func TestPrivateEventFixturesStateAKindOnEveryHost(t *testing.T) {
 // file-tab events. A caller granted file:read alone must keep the file-tab
 // events and hear nothing about agents or terminals it holds no scope to read
 // -- the same partition WatchEvents applies to its sections.
-func TestPrivateEventVisibleGatesRenamesByTabKind(t *testing.T) {
+func TestPrivateEventVisibleRestrictsRenamesByTabKind(t *testing.T) {
 	fileOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read")}
 	agentAndFile := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read agent:read")}
 
@@ -70,7 +70,7 @@ func TestPrivateEventVisibleGatesRenamesByTabKind(t *testing.T) {
 // SCOPE_WORKER_READ). The stream is gated on file:read alone, so without a
 // per-kind gate every IMAGE row of the bootstrap replay told a file:read-only
 // caller which agents exist and which messages the user opened.
-func TestPrivateEventVisibleGatesImagePayloadsByAgentScope(t *testing.T) {
+func TestPrivateEventVisibleRestrictsImagePayloadsByAgentScope(t *testing.T) {
 	fileOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read")}
 	agentAndFile := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read agent:read")}
 
@@ -92,11 +92,11 @@ func TestPrivateEventVisibleGatesImagePayloadsByAgentScope(t *testing.T) {
 		"a FILE payload still rides the stream's own file:read floor")
 }
 
-// A QuakePanelCommand spans BOTH tab kinds: it names an AGENT tab, and acting
+// A QuakePanelCommand spans BOTH tab kinds: it gives an AGENT tab, and acting
 // on it puts that tab's TERMINAL in front of the user. A caller holding one of
 // the two would either learn an agent id it cannot see or be asked to reveal a
 // shell it cannot read, so it needs both.
-func TestPrivateEventVisibleGatesQuakeCommandsByBothTabKinds(t *testing.T) {
+func TestPrivateEventVisibleRequiresBothTabKindsForQuakeCommands(t *testing.T) {
 	fileOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read")}
 	agentOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read agent:read")}
 	terminalOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read terminal:read")}
@@ -114,7 +114,7 @@ func TestPrivateEventVisibleGatesQuakeCommandsByBothTabKinds(t *testing.T) {
 	assert.False(t, privateEventVisible(agentOnly, quake),
 		"agent:read alone must not open a shell the caller cannot read")
 	assert.False(t, privateEventVisible(terminalOnly, quake),
-		"terminal:read alone must not reveal the agent id the command names")
+		"terminal:read alone must not reveal the agent id the command gives")
 	assert.True(t, privateEventVisible(both, quake),
 		"a caller that reads both kinds receives the command")
 }

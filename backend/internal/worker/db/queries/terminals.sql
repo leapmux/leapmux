@@ -77,8 +77,11 @@ SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 -- loading the BLOB on every Enter-press restart, which is wasted work
 -- in the common case (in-memory entry still present, Respawn carries
 -- the live buffer forward and length is ignored).
+--
+-- owner_agent_id comes back too, because a COMPANION has no restart contract:
+-- its shell exiting ends it, and the handler refuses the respawn.
 SELECT working_dir, shell_start_dir, shell, cols, rows,
-       length(screen) AS screen_length, workspace_archived
+       length(screen) AS screen_length, workspace_archived, owner_agent_id
 FROM terminals WHERE id = ?;
 
 -- name: CloseTerminal :execresult
@@ -108,17 +111,32 @@ SELECT id FROM terminals;
 -- The owner comes back with the id because the reconciler measures a COMPANION
 -- terminal's liveness by its owner agent's tab key. A companion has no CRDT tab
 -- of its own, so the hub can never list it, and keying it on its own id would
--- reap a live shell the user is typing in.
+-- reap a live shell that the user types in.
 SELECT id, owner_agent_id FROM terminals WHERE closed_at IS NULL;
 
 -- name: ListAllOpenTabTerminalIDs :many
--- Open terminals that are TABS, i.e. companions excluded. The mirror of
--- ListAllOpenRootAgentIDs, and it exists for the same reason: a delegation mint
--- must name a tab the HUB agrees this worker owns. A companion terminal has no
+-- Open terminals that are TABS, i.e. companions excluded. The terminal-side
+-- equivalent of ListAllOpenRootAgentIDs, and it exists for the same reason: a delegation mint
+-- must give a tab the HUB agrees this worker owns. A companion terminal has no
 -- CRDT tab, so the hub answers "tab not owned by calling worker" and the mint
--- backoff loops to a permanent failure -- the identical trap a child agent id
--- sets, which is why that query filters too.
+-- backoff loops to a permanent failure. A child agent id causes the identical
+-- failure, which is why that query filters too.
 SELECT id FROM terminals WHERE closed_at IS NULL AND owner_agent_id = '';
+
+-- name: GetTerminalOwnerAndClosed :one
+-- The two columns the exit handler needs to decide whether the terminal that
+-- exited is a COMPANION that is still open. Narrow for the reason
+-- GetTerminalExitCode states: GetTerminal answers the same question and reads
+-- the 100KB screen blob, and this runs on EVERY terminal exit.
+SELECT owner_agent_id, closed_at FROM terminals WHERE id = ?;
+
+-- name: ListOpenCompanionTerminalIDs :many
+-- Every open COMPANION row. The worker boot sweep reads this to close the rows
+-- whose PTY did not survive the restart: a companion is valid only while this
+-- process hosts its shell, and no other pass reclaims one. The orphan
+-- reconciler cannot, because it measures a companion by its OWNER's tab key,
+-- and a live owner keeps the dead row open forever.
+SELECT id FROM terminals WHERE owner_agent_id <> '' AND closed_at IS NULL;
 
 -- name: GetOpenTerminalIDByOwner :one
 -- The companion terminal of one agent, if it has a live one. The unique partial
@@ -129,9 +147,11 @@ LIMIT 1;
 
 -- name: ListOpenTerminalsByOwners :many
 -- Companion terminals for a set of agents, for the hydration ListTerminals
--- serves. Returns whole rows: the caller builds a TerminalInfo from each, and a
--- client adopting a companion needs the screen to paint it.
-SELECT * FROM terminals
+-- serves. Two narrow columns, never the row: the caller folds these ids into
+-- the id set it already walks, and the walk re-reads each row through
+-- ListTerminalsByIDs. `SELECT *` here read the 100KB screen blob a second time
+-- and dropped it.
+SELECT id, owner_agent_id FROM terminals
 WHERE owner_agent_id IN (sqlc.slice('owner_agent_ids')) AND closed_at IS NULL;
 
 -- name: ListTerminalsByIDs :many
