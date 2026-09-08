@@ -947,7 +947,8 @@ export function isAgentTabOnScreen(
  * Every AgentActivityChanged is a TRANSITION, so this runs in every catch-up
  * phase. A settle that lands while the tab replays is a live settle -- the agent
  * finished while the burst drained -- and it must ring. The catch-up BASELINE is
- * a level and arrives on CatchUpStart instead; AgentActivityStore.seed takes it.
+ * a level and arrives on CatchUpStart instead; AgentActivityStore.seedPublished
+ * takes it.
  */
 export function handleActivityChanged(
   agentId: string,
@@ -985,7 +986,7 @@ export function handleActivityChanged(
  * merely RACED a replay, such as a background task ending while the
  * burst drained. That settle is the one the user waits for. The baseline the phase test
  * existed to silence no longer arrives as a transition at all: it rides
- * CatchUpStart, and AgentActivityStore.seed raises nothing for it.
+ * CatchUpStart, and AgentActivityStore.seedPublished raises nothing for it.
  */
 export function handleAgentSettled(
   agentId: string,

@@ -1,3 +1,4 @@
+import type { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalProcess } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
@@ -25,6 +26,14 @@ export interface BusyTab {
 export interface TabBusyProbeDeps {
   /** The tab's background-task rows, scoped to that tab (root roll-up or a child's own). */
   tasksFor: (agentId: string) => BackgroundTaskItem[]
+  /**
+   * Write the level the Worker PUBLISHED into the display store --
+   * AgentActivityStore.seedPublished.
+   *
+   * A write, and never a read: which state the guard asks about is the whole
+   * reason this probe exists (see below).
+   */
+  seedActivity: (agentId: string, state: AgentActivityState) => void
 }
 
 /**
@@ -35,12 +44,20 @@ export interface TabBusyProbeDeps {
  * - a TERMINAL asks because nothing watches a terminal's process tree
  *   continuously and nothing should: the answer is wanted once, at the moment
  *   of the close.
- * - an AGENT asks because the pushed state is DEBOUNCED. The Worker holds a
- *   settle for three seconds so the completion sound does not ring for work
- *   that resumes, which means the store says "busy" for that long after the
- *   work finished. A guard reading it would raise a confirmation dialog over
+ * - an AGENT asks because the level this client holds is DEBOUNCED. The Worker
+ *   holds a settle for three seconds so the completion sound does not ring for
+ *   work that resumes, which means the store says "busy" for that long after
+ *   the work finished. A guard reading it would raise a confirmation dialog over
  *   nothing, and would disagree with the CLI guard, which reads the exact
  *   state. One round trip per worker buys one answer for both surfaces.
+ *
+ * The agent round trip also REPAIRS the display store on its way past. It
+ * already holds the Worker's own answer, so it corrects a level that drifted --
+ * a WORKING left over from a link that dropped with no offline sweep, which no
+ * later transition would correct because the Worker has nothing left to
+ * announce. That write takes the PUBLISHED level, never the exact one beside
+ * it: the exact value ignores the settle window, so writing it would drop the
+ * spinner early and a resume inside the window broadcasts nothing.
  *
  * FAIL OPEN throughout. A probe that cannot answer reports "not busy" and lets
  * the close proceed, matching what handleTabClose already does for an
@@ -74,11 +91,9 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
    * state, one request per worker.
    *
    * activityInterruptsWork, not "busy". They differ for an agent blocked on a
-   * permission prompt. The indicator must
-   * not spin at somebody who is being asked
-   * a question, but its turn is still in
-   * flight and this close kills it along
-   * with every background task under it.
+   * permission prompt. The indicator must not spin at somebody who is being
+   * asked a question, but its turn is still in flight and this close kills it
+   * along with every background task under it.
    */
   const agentReasons = async (tabs: readonly Tab[]): Promise<Map<string, TabBusyReason>> => {
     const out = new Map<string, TabBusyReason>()
@@ -86,6 +101,9 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
       try {
         const resp = await workerRpc.listAgents(workerId, { tabIds })
         for (const info of resp.agents) {
+          // Every agent the reply mentions, busy or not: an agent that drifted
+          // to a stale WORKING is exactly the one this answer corrects.
+          deps.seedActivity(info.id, info.publishedActivityState)
           if (!activityInterruptsWork(info.activityState))
             continue
           out.set(info.id, {

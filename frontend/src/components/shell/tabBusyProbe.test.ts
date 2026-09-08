@@ -32,12 +32,18 @@ function task(overrides: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
 }
 
 function makeProbe(tasks: BackgroundTaskItem[] = []) {
-  return { probe: createTabBusyProbe({ tasksFor: () => tasks }) }
+  const seeded = vi.fn()
+  return { probe: createTabBusyProbe({ tasksFor: () => tasks, seedActivity: seeded }), seeded }
 }
 
-/** What the worker reports for one agent, as ListAgents returns it. */
-function agentIs(id: string, activityState: AgentActivityState) {
-  mockListAgents.mockResolvedValue({ agents: [{ id, activityState }], verdicts: [] })
+/**
+ * What the worker reports for one agent, as ListAgents returns it.
+ *
+ * The two levels differ only inside the Worker's settle window, so they default
+ * to one value and a case that needs the window states both.
+ */
+function agentIs(id: string, activityState: AgentActivityState, publishedActivityState = activityState) {
+  mockListAgents.mockResolvedValue({ agents: [{ id, activityState, publishedActivityState }], verdicts: [] })
 }
 
 describe('createTabBusyProbe', () => {
@@ -60,11 +66,12 @@ describe('createTabBusyProbe', () => {
       expect(mockInspect).not.toHaveBeenCalled()
     })
 
-    it('asks the worker rather than reading the debounced pushed state', async () => {
+    it('asks the worker rather than reading the debounced level', async () => {
       // The Worker holds a settle for three seconds so the completion sound does
-      // not ring for work that resumes, which means the pushed state still says
-      // WORKING after the work finished. A guard reading it would raise a
-      // confirmation dialog over nothing, and would disagree with the CLI guard.
+      // not ring for work that resumes, which means the level this client holds
+      // still says WORKING after the work finished. A guard reading it would
+      // raise a confirmation dialog over nothing, and would disagree with the
+      // CLI guard.
       const { probe } = makeProbe([task()])
       agentIs('a1', AgentActivityState.IDLE)
 
@@ -78,6 +85,60 @@ describe('createTabBusyProbe', () => {
       // Refusing a close nobody can confirm strands a tab the user has no other
       // way to shut, which is the same rule the terminal branch keeps.
       expect(await probe.probe(agentTab('a1'))).toBeNull()
+    })
+
+    it('seeds the published level and answers the close from the exact one', async () => {
+      // The two disagree only inside the settle window: the exact value already
+      // carries the settled state while the transition announcing it waits the
+      // window out. The close reads the exact one, so it never refuses a close
+      // for work that finished. The display takes the published one, because a
+      // level written from the exact value drops the spinner early -- and if the
+      // work then resumes, the Worker derives what it already published and
+      // broadcasts nothing, leaving that tab with no spinner for the rest of the
+      // turn.
+      const { probe, seeded } = makeProbe([task()])
+      agentIs('a1', AgentActivityState.IDLE, AgentActivityState.WORKING)
+
+      expect(await probe.probe(agentTab('a1')), 'the exact level answers the close').toBeNull()
+      expect(seeded, 'the published level seeds the display').toHaveBeenCalledWith('a1', AgentActivityState.WORKING)
+    })
+
+    it('seeds an agent the close does not warn about', async () => {
+      // The seed runs before the busy test, so an idle agent still repairs. A
+      // WORKING left over from a link that dropped with no offline sweep is
+      // exactly the level no later transition corrects, because the Worker has
+      // nothing left to announce.
+      const { probe, seeded } = makeProbe()
+      agentIs('a1', AgentActivityState.IDLE)
+
+      expect(await probe.probe(agentTab('a1'))).toBeNull()
+      expect(seeded).toHaveBeenCalledWith('a1', AgentActivityState.IDLE)
+    })
+
+    it('seeds every agent in the batch, on every worker', async () => {
+      // The seed sits before the busy test, so a BUSY agent takes one too --
+      // the `continue` below it must never skip the repair.
+      mockListAgents.mockImplementation((workerId: string) => Promise.resolve({
+        agents: workerId === 'w-1'
+          ? [{ id: 'a1', activityState: AgentActivityState.WORKING, publishedActivityState: AgentActivityState.WORKING }]
+          : [{ id: 'a2', activityState: AgentActivityState.IDLE, publishedActivityState: AgentActivityState.IDLE }],
+        verdicts: [],
+      }))
+      const { probe, seeded } = makeProbe()
+
+      await probe.probeMany([agentTab('a1'), agentTab('a2', { workerId: 'w-2' })])
+
+      expect(seeded).toHaveBeenCalledTimes(2)
+      expect(seeded, 'a busy agent seeds too').toHaveBeenCalledWith('a1', AgentActivityState.WORKING)
+      expect(seeded).toHaveBeenCalledWith('a2', AgentActivityState.IDLE)
+    })
+
+    it('seeds nothing when the worker cannot answer', async () => {
+      mockListAgents.mockRejectedValue(new Error('worker unreachable'))
+      const { probe, seeded } = makeProbe()
+
+      expect(await probe.probe(agentTab('a1'))).toBeNull()
+      expect(seeded, 'a reply that never arrived states no level').not.toHaveBeenCalled()
     })
 
     it('reports an idle agent as not busy', async () => {
@@ -105,7 +166,7 @@ describe('createTabBusyProbe', () => {
     })
 
     it('never reports a subagent tab, even a busy one', async () => {
-      const { probe } = makeProbe([task()])
+      const { probe, seeded } = makeProbe([task()])
       agentIs('child-1', AgentActivityState.WORKING)
 
       // A child tab closes in the UI only: the worker treats CloseAgent on a
@@ -113,6 +174,7 @@ describe('createTabBusyProbe', () => {
       // revived. Nothing stops, so there is nothing to warn about.
       expect(await probe.probe(agentTab('child-1', { parentAgentId: 'a1' }))).toBeNull()
       expect(mockListAgents, 'and it is not even asked about').not.toHaveBeenCalled()
+      expect(seeded, 'so nothing seeds for it').not.toHaveBeenCalled()
     })
   })
 

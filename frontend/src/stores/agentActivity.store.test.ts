@@ -119,55 +119,6 @@ describe('createAgentActivityStore', () => {
     expect(store.apply('a1', WORKING)).toBe(false)
   })
 
-  describe('seedSnapshot', () => {
-    it('writes the state without reporting a settle, so a reconnect greets nobody', () => {
-      const store = createAgentActivityStore()
-      store.apply('a1', WORKING)
-
-      store.seedSnapshot('a1', IDLE)
-
-      expect(store.isBusy('a1'), 'the state still seeds').toBe(false)
-    })
-
-    it('keeps what it holds when the worker sends no opinion', () => {
-      const store = createAgentActivityStore()
-      store.apply('a1', WORKING)
-
-      store.seedSnapshot('a1', AgentActivityState.UNSPECIFIED)
-
-      expect(store.isBusy('a1'), 'UNSPECIFIED must not overwrite a real answer').toBe(true)
-    })
-
-    it('leaves the settle edge for the transition that follows', () => {
-      // AgentInfo carries the EXACT derivation, which ignores the Worker's
-      // debounce window. A list read taken inside that window already carries
-      // the settled value. Written to the baseline, it would make the transition
-      // announcing that settle compare equal, and the sound would never ring.
-      const store = createAgentActivityStore()
-      store.apply('a1', WORKING)
-
-      store.seedSnapshot('a1', IDLE)
-
-      expect(store.apply('a1', IDLE), 'the settle still rings for the turn that ended').toBe(true)
-    })
-
-    it('arms the edge when the level says working, so a settle moments later rings', () => {
-      const store = createAgentActivityStore()
-
-      store.seedSnapshot('a1', WORKING)
-
-      expect(store.apply('a1', IDLE), 'the agent finished while this client watched').toBe(true)
-    })
-
-    it('does not invent a settle for an agent that was never working', () => {
-      const store = createAgentActivityStore()
-
-      store.seedSnapshot('a1', IDLE)
-
-      expect(store.apply('a1', IDLE), 'nothing the user watched started, so nothing finished').toBe(false)
-    })
-  })
-
   describe('seedPublished', () => {
     it('writes the state without reporting a settle, so a reconnect greets nobody', () => {
       const store = createAgentActivityStore()
@@ -199,6 +150,18 @@ describe('createAgentActivityStore', () => {
       store.seedPublished('a1', WORKING)
 
       expect(store.apply('a1', IDLE), 'the held settle still rings when it lands').toBe(true)
+    })
+
+    it('establishes the baseline for a tab whose only writer is the seed', () => {
+      // A NOTIFY-mode tab gets no catch-up replay, so a hydration seed is the
+      // only write it takes before the first transition. That seed must leave a
+      // baseline the settle can measure against, or the turn this tab watched
+      // end rings for nobody.
+      const store = createAgentActivityStore()
+
+      store.seedPublished('a1', WORKING)
+
+      expect(store.apply('a1', IDLE), 'the agent finished while this client watched').toBe(true)
     })
 
     it('keeps what it holds when the worker sends no opinion', () => {
