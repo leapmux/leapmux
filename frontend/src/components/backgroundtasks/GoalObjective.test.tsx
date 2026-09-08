@@ -15,19 +15,6 @@ function statesLayout(box: HTMLElement, contentPx: number, boxPx: number) {
   Object.defineProperty(box, 'clientHeight', { value: boxPx, configurable: true })
 }
 
-/**
- * The clamp is a vanilla-extract class, and vitest injects no stylesheet, so
- * `getComputedStyle` reports `overflow: visible` for the clamped box and
- * `Tooltip`'s clip test would refuse every tooltip. The inline longhands are
- * what the class supplies in the browser. jsdom does not expand the `overflow`
- * shorthand, which is why both axes are set by hand -- `Tooltip.test.tsx`
- * records the same limitation.
- */
-function statesClipping(box: HTMLElement) {
-  box.style.overflowX = 'hidden'
-  box.style.overflowY = 'hidden'
-}
-
 const HOVER_DELAY_MS = 700
 
 describe('goalObjective', () => {
@@ -51,7 +38,7 @@ describe('goalObjective', () => {
 
   /**
    * A goal that fits gets no disclosure and no fade. The clamp is still on --
-   * it is what keeps a later, longer goal in bounds -- but nothing is hidden,
+   * it is what caps a later, longer goal -- but nothing is hidden,
    * so a fade there would dim a line the reader can see in full.
    */
   it('offers no disclosure and no fade while the objective fits', () => {
@@ -70,6 +57,29 @@ describe('goalObjective', () => {
     triggerResizeObserversSync()
     expect(getByTestId('goal-objective-toggle').textContent).toBe('Show more')
     expect(box.classList.contains(styles.bodyFaded)).toBe(true)
+  })
+
+  /**
+   * A disclosure states whether it is open, and what it opens.
+   *
+   * Without them a screen reader announces "Show more, button" with no state,
+   * and activating it announces nothing at all -- the changed label is the only
+   * signal, and a virtual-cursor reader who moved on never receives it.
+   */
+  it('states its open state and the block it controls', () => {
+    const { getByTestId } = render(() => <GoalObjective objective="a long goal" />)
+    const box = getByTestId('goal-objective')
+    statesLayout(box, 200, 84)
+    triggerResizeObserversSync()
+
+    const toggle = getByTestId('goal-objective-toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.getAttribute('aria-controls')).toBe(box.id)
+    expect(box.id).not.toBe('')
+
+    fireEvent.click(toggle)
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
   })
 
   /**
@@ -115,7 +125,11 @@ describe('goalObjective', () => {
   describe('the hover tooltip', () => {
     beforeEach(() => {
       vi.useFakeTimers()
-      HTMLElement.prototype.showPopover = vi.fn()
+      // A SPY, not an assignment. `~/vitest.setup.ts` installs a working
+      // `showPopover` that sets `data-popover-open`, and a bare assignment
+      // replaces it with a no-op that `vi.restoreAllMocks()` cannot undo -- so
+      // every later case in this file would find `:popover-open` false forever.
+      vi.spyOn(HTMLElement.prototype, 'showPopover').mockImplementation(() => {})
     })
     afterEach(() => {
       vi.useRealTimers()
@@ -126,7 +140,6 @@ describe('goalObjective', () => {
       const { getByTestId } = render(() => <GoalObjective objective="a long **goal**" />)
       const box = getByTestId('goal-objective')
       statesLayout(box, 200, 84)
-      statesClipping(box)
       triggerResizeObserversSync()
 
       fireEvent.mouseEnter(box)
@@ -145,7 +158,6 @@ describe('goalObjective', () => {
       const { getByTestId } = render(() => <GoalObjective objective="a short goal" />)
       const box = getByTestId('goal-objective')
       statesLayout(box, 40, 40)
-      statesClipping(box)
       triggerResizeObserversSync()
 
       fireEvent.mouseEnter(box)
@@ -160,7 +172,6 @@ describe('goalObjective', () => {
       const { getByTestId } = render(() => <GoalObjective objective="a long goal" />)
       const box = getByTestId('goal-objective')
       statesLayout(box, 200, 84)
-      statesClipping(box)
       triggerResizeObserversSync()
       fireEvent.click(getByTestId('goal-objective-toggle'))
 

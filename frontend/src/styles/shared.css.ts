@@ -49,30 +49,6 @@ export const chipBase = style([controlReset, {
   },
 }])
 
-/**
- * The disclosure toggle that expands and collapses a clipped block: "Show more"
- * and "Show less".
- *
- * A dotted underline rather than a button box, because it sits at the end of
- * the content it opens and a solid control there reads as a second action on
- * the row. Three unrelated surfaces share it -- a control request's reason
- * text, a control request's option list, and the session goal's objective --
- * so it lives here rather than in any one of their stylesheets.
- */
-export const collapsibleToggle = style({
-  'all': 'unset',
-  'display': 'inline',
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--muted-foreground)',
-  'cursor': 'pointer',
-  'textDecoration': 'underline',
-  'textDecorationStyle': 'dotted',
-  'textUnderlineOffset': '2px',
-  ':hover': {
-    color: 'var(--foreground)',
-  },
-})
-
 export const errorText = style({
   color: 'var(--danger)',
   fontSize: 'var(--text-7)',

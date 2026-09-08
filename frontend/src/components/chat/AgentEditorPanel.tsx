@@ -625,7 +625,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           disabled={disabled()}
           disabledPlaceholder={props.disabledReason}
           onTogglePlanMode={ctrl.togglePlanMode}
-          requestedHeight={editorMinHeightSignal()}
+          pinnedHeight={editorMinHeightSignal()}
           maxHeight={editorHeight.maxEditorHeight()}
           onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {

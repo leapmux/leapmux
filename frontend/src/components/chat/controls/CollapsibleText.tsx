@@ -1,8 +1,8 @@
 import type { JSX } from 'solid-js'
-import { createSignal, Show } from 'solid-js'
+import { createSignal, createUniqueId, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { CollapsibleToggle } from '~/components/common/CollapsibleToggle'
 import { pluralize } from '~/lib/plural'
-import { collapsibleToggle } from '~/styles/shared.css'
 
 interface CollapsibleTextProps {
   text: string
@@ -15,6 +15,7 @@ interface CollapsibleTextProps {
 
 export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
   const [expanded, setExpanded] = createSignal(false)
+  const bodyId = createUniqueId()
 
   const lines = () => props.text.split('\n')
   const shouldCollapse = () => lines().length > props.maxLines
@@ -26,17 +27,14 @@ export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
 
   return (
     <>
-      <Dynamic component={props.tag ?? 'pre'} class={props.class}>{visibleText()}</Dynamic>
+      <Dynamic component={props.tag ?? 'pre'} class={props.class} id={bodyId}>{visibleText()}</Dynamic>
       <Show when={shouldCollapse()}>
-        <button
-          type="button"
-          class={collapsibleToggle}
-          onClick={() => setExpanded(prev => !prev)}
-        >
-          {expanded()
-            ? 'Show less'
-            : `Show ${pluralize(hiddenCount(), 'more line')}\u2026`}
-        </button>
+        <CollapsibleToggle
+          expanded={expanded()}
+          onToggle={() => setExpanded(prev => !prev)}
+          controls={bodyId}
+          moreLabel={`Show ${pluralize(hiddenCount(), 'more line')}\u2026`}
+        />
       </Show>
     </>
   )

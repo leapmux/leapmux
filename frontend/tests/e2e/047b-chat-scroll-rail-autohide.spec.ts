@@ -43,7 +43,7 @@ const SCROLLER = '[data-chat-scroll-container="true"]'
  * than on "the viewport was too tall for one message".
  */
 async function seedOverflowingConversation(page: import('@playwright/test').Page) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   // Let the agent finish starting so the send takes the fast path (see 010).
   await expect(page.getByText(/^Starting /)).not.toBeVisible()

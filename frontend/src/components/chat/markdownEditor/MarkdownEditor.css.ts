@@ -18,12 +18,12 @@ export const container = style({
   // the action buttons, the editor wrapper min-height, the separator position,
   // and the ProseMirror paddings — all derived from this single value.
   vars: {
-    '--composer-btn-h': 'calc(var(--text-7) * var(--leading-normal) + var(--space-1) * 2)',
+    '--editor-btn-h': 'calc(var(--text-7) * var(--leading-normal) + var(--space-1) * 2)',
     // Collapsed-mode left padding of the text area: the `[+]` button's left
     // offset + its width + a gap. Declared here so the stylesheet below and
     // the expand/collapse measurement in MarkdownEditor.tsx read one value
     // instead of each spelling the same calc().
-    '--composer-left-pad': 'calc(var(--space-1) + var(--composer-btn-h) + var(--space-1))',
+    '--editor-left-pad': 'calc(var(--space-1) + var(--editor-btn-h) + var(--space-1))',
   },
   selectors: {
     '&:focus-within': {
@@ -37,14 +37,14 @@ export const container = style({
  *
  * The VARIABLE is overridden, not the padding, so every value derived from it
  * moves together: the ProseMirror's left padding, the action slot's width cap,
- * the full-width footer's left edge, and the hidden probe in `./composerLayout`
+ * the full-width footer's left edge, and the hidden probe in `./editorLayout`
  * that measures the collapsed left pad through inheritance. A rule that
  * overrode the padding alone would leave those three measuring a column that no
  * longer exists.
  */
 globalStyle(`${container}:not([data-plus])`, {
   vars: {
-    '--composer-left-pad': 'var(--space-2)',
+    '--editor-left-pad': 'var(--space-2)',
   },
 })
 
@@ -65,7 +65,7 @@ export const editorRow = style({
   // Min-height fits the button height (text-7 * leading-normal + space-1 * 2)
   // plus a space-1 gap above and below.
   'alignItems': 'center',
-  'minHeight': 'calc(var(--composer-btn-h) + var(--space-1) * 2)',
+  'minHeight': 'calc(var(--editor-btn-h) + var(--space-1) * 2)',
   // The expanded state reserves the button row here (see below). Animating it
   // is what grows and shrinks the box as the layout mode flips.
   '@media': {
@@ -109,7 +109,7 @@ export const footerSlot = style({
   // `~/components/chat/ChatView.css.ts` is this slot's only child, so the
   // `flex-wrap` that moves a button onto a second line belongs there, and the
   // cluster also declares `min-width: 0` so the cap can actually compress it.
-  // `composerLayout` measures the slot's height into `--composer-actions-h`,
+  // `editorLayout` measures the slot's height into `--editor-actions-h`,
   // and the expanded layout reserves it, so a wrapped row pushes the text up
   // instead of covering it.
   //
@@ -126,7 +126,7 @@ export const footerSlot = style({
   pointerEvents: 'none',
   selectors: {
     '&:not([data-full-width])': {
-      maxWidth: 'calc(100% - var(--composer-left-pad) - var(--space-1))',
+      maxWidth: 'calc(100% - var(--editor-left-pad) - var(--space-1))',
     },
   },
 })
@@ -152,7 +152,7 @@ globalStyle(`${footerSlot} > *`, {
 // than the item, so a future non-action control placed there keeps its own
 // size too.
 globalStyle(`${footerSlot} button:not(.${paginationContainer} button)`, {
-  height: 'var(--composer-btn-h)',
+  height: 'var(--editor-btn-h)',
   padding: '0 var(--space-2)',
   fontSize: 'var(--text-8)',
   lineHeight: 1,
@@ -176,14 +176,14 @@ globalStyle(`${container}[data-expanded] ${footerSlot}`, {
 // Control-request footers (full-width two-zone action rows) stretch across the
 // box instead of hugging the right corner.
 //
-// The left edge stops at `--composer-left-pad`, not at `space-1`, because the
+// The left edge stops at `--editor-left-pad`, not at `space-1`, because the
 // `[+]` button sits at `space-1` on this same bottom line and stays rendered
 // during a control request. A row that started at `space-1` covered it
 // outright, which a narrow composer made obvious. This rule sets no
 // `max-width`: the base rule above scopes its cap to
 // `:not([data-full-width])`, so there is nothing here to undo.
 globalStyle(`${container}[data-expanded] ${footerSlot}[data-full-width]`, {
-  left: 'var(--composer-left-pad)',
+  left: 'var(--editor-left-pad)',
   right: 'var(--space-1)',
 })
 
@@ -260,7 +260,7 @@ export const editorWrapper = style({
   // Min-height matches one line of text (font-size * line-height) plus the
   // ProseMirror's top/bottom padding (space-1 * 2), so the editor wrapper is
   // exactly as tall as its content — no extra space to misalign the placeholder.
-  minHeight: 'var(--composer-btn-h)',
+  minHeight: 'var(--editor-btn-h)',
   maxHeight: '50vh',
   overflowY: 'auto',
 })
@@ -279,7 +279,7 @@ export const editorSeparator = style({
   // separator and the row. Row top = bottom(space-1) + the row's measured
   // height; the separator is space-1 above that. The fallback is one button
   // height, which is what the row measures until the ResizeObserver runs.
-  'bottom': 'calc(var(--composer-actions-h, var(--composer-btn-h)) + var(--space-1) * 2)',
+  'bottom': 'calc(var(--editor-actions-h, var(--editor-btn-h)) + var(--space-1) * 2)',
   'height': '1px',
   'backgroundColor': 'transparent',
   'pointerEvents': 'none',
@@ -303,7 +303,7 @@ globalStyle(`${container}[data-expanded] ${editorSeparator}`, {
 // state the `[+]` and actions sit on their own bottom row, so the text area
 // drops to the normal small padding and uses the box's full width.
 globalStyle(`${editorWrapper} .ProseMirror`, {
-  'padding': 'var(--space-1) var(--composer-right-pad, 96px) var(--space-1) var(--composer-left-pad)',
+  'padding': 'var(--space-1) var(--editor-right-pad, 96px) var(--space-1) var(--editor-left-pad)',
   'outline': 'none',
   'minHeight': '20px',
   'whiteSpace': 'pre-wrap',
@@ -334,7 +334,7 @@ globalStyle(`${container}[data-expanded] ${editorWrapper} .ProseMirror`, {
 // The reservation is: gap above separator (space-1) + separator + gap below
 // separator to the row (space-1) + the row's height + bottom offset (space-1).
 //
-// The height is the MEASURED one (--composer-actions-h, written by
+// The height is the MEASURED one (--editor-actions-h, written by
 // MarkdownEditor.tsx from a ResizeObserver), not a fixed button height. The row
 // is an absolutely positioned overlay anchored to the bottom edge, so a
 // reservation shorter than the row does not grow the box -- the row grows
@@ -343,7 +343,7 @@ globalStyle(`${container}[data-expanded] ${editorWrapper} .ProseMirror`, {
 // ExitPlanMode puts a column of approval switches beside Approve) does exactly
 // that. The fallback covers the frames before the first measurement.
 globalStyle(`${container}[data-expanded] ${editorRow}`, {
-  paddingBottom: 'calc(var(--composer-actions-h, var(--composer-btn-h)) + var(--space-1) * 3)',
+  paddingBottom: 'calc(var(--editor-actions-h, var(--editor-btn-h)) + var(--space-1) * 3)',
 })
 
 // Code blocks: move scroll to <code> so the language label stays fixed.

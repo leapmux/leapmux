@@ -11,7 +11,7 @@ test.describe('Failed agent input enqueue', () => {
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       await editor.fill('What is 1234 + 5678? Reply with only the number.')
@@ -48,7 +48,7 @@ test.describe('Failed agent input enqueue', () => {
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       await stopWorker()
@@ -62,7 +62,7 @@ test.describe('Failed agent input enqueue', () => {
       await page.reload()
       await appMenuTrigger(page).waitFor({ state: 'visible' })
       await page.getByText('Retained Draft Test').click()
-      await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toHaveText('Draft survives reload')
+      await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toHaveText('Draft survives reload')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

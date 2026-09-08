@@ -8,10 +8,15 @@ import { goalActionState } from '~/stores/chatGoal'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 export interface GoalActionsMenuProps {
-  /** The goal and what the running agent can do with it. */
+  /**
+   * The goal, what the running agent can do with it, AND the handler.
+   *
+   * One object, and no separate `onAction` beside it. `GoalSurface` carries the
+   * handler already, so a second prop lets a caller pair one surface's verbs
+   * with another surface's handler -- the exact split the parameter object
+   * exists to prevent.
+   */
   goal: GoalSurface
-  /** Perform one action. */
-  onAction: (action: GoalAction) => void
 }
 
 /**
@@ -54,11 +59,13 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
   // holds its place and says why.
   const offered = createMemo(() =>
     ACTIONS.filter(({ action }) =>
-      goalActionState(props.goal.current, props.goal.actions, action).kind !== 'hidden'),
+      goalActionState(props.goal, action).kind !== 'hidden'),
   )
 
+  // The menu owns the WHOLE "can act" decision: an agent with no handler gets
+  // no trigger, and neither does one whose every verb is hidden.
   return (
-    <Show when={offered().length > 0}>
+    <Show when={props.goal.onAction && offered().length > 0}>
       <DropdownMenu
         trigger={moreHorizontalTrigger({
           'title': 'Goal actions',
@@ -73,7 +80,7 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
             // process restarts updates the item and its reason together -- one
             // question, so the two can never disagree.
             const reason = () => {
-              const state = goalActionState(props.goal.current, props.goal.actions, item.action)
+              const state = goalActionState(props.goal, item.action)
               return state.kind === 'disabled' ? state.reason : undefined
             }
             return (
@@ -87,7 +94,7 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
                   reason={reason()}
                   class={item.danger ? dangerMenuItem : undefined}
                   data-testid={`goal-action-${item.action}`}
-                  onClick={() => props.onAction(item.action)}
+                  onClick={() => props.goal.onAction?.(item.action)}
                 >
                   {item.label}
                 </DisabledReasonMenuItem>

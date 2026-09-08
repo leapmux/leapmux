@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, createUniqueId, on, onCleanup, onMount, Show } from 'solid-js'
 import { MarkdownText } from '~/components/chat/messageRenderers'
+import { CollapsibleToggle } from '~/components/common/CollapsibleToggle'
 import { Tooltip } from '~/components/common/Tooltip'
-import { collapsibleToggle } from '~/styles/shared.css'
 import * as styles from './GoalObjective.css'
 
 export interface GoalObjectiveProps {
@@ -13,8 +13,7 @@ export interface GoalObjectiveProps {
 /**
  * A sub-pixel difference is not overflow. A box whose content rounds to one
  * pixel taller than its clamp hides nothing a reader can see, and offering a
- * `Show more` for it is noise. `Tooltip` uses the same tolerance for the same
- * measurement.
+ * `Show more` for it is noise.
  */
 const OVERFLOW_TOLERANCE_PX = 1
 
@@ -37,9 +36,18 @@ const OVERFLOW_TOLERANCE_PX = 1
  * the same input, because `createMarkdownParser` uses `remarkParse` and
  * `remarkGfm` and no `remark-breaks`. A goal written in the dialog is
  * unaffected: the editor ends a paragraph with a blank line.
+ *
+ * A PROVIDER can still send soft-wrapped plain text, and it reads as one
+ * paragraph here. Claude folds an objective to a single line before it stores
+ * one, but Codex, ZCode and Reasonix copy the raw string through. The case is
+ * known and accepted: one card cannot answer this input differently from every
+ * other markdown surface without splitting the app's single parser config, and
+ * `remark-breaks` is an app-wide decision rather than a goal-card one.
  */
 export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
   const [expanded, setExpanded] = createSignal(false)
+  // The clamped box, so the disclosure can point at what it opens.
+  const bodyId = createUniqueId()
   const [overflows, setOverflows] = createSignal(false)
   let boxEl: HTMLDivElement | undefined
   let contentEl: HTMLDivElement | undefined
@@ -94,6 +102,13 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
         // objective is markdown SOURCE: a screen reader would read the asterisks
         // of every bold run. The rendered objective is already on screen, and
         // the disclosure below reaches the rest of it.
+        // No `showWhen="clipped"`. This component ALREADY knows whether the box
+        // hides anything -- it measures that itself, and `content` below is
+        // gated on the answer -- so asking `Tooltip` to measure the same box
+        // again gives one fact two detectors, with two tolerances and two
+        // algorithms. They agree by construction today, and the second one
+        // reads live layout, so the two disagree in the window where this
+        // component's own answer is still stale.
         content={overflows() && !expanded()
           ? (
               <div class={styles.tooltipBody}>
@@ -101,7 +116,6 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
               </div>
             )
           : undefined}
-        showWhen="clipped"
       >
         <div
           ref={boxEl}
@@ -111,6 +125,7 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
             [styles.bodyFaded]: !expanded() && overflows(),
           }}
           data-testid="goal-objective"
+          id={bodyId}
         >
           {/* The measured element. It exists so the ResizeObserver has
               something that actually changes size -- see `onMount`. */}
@@ -121,14 +136,13 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
       </Tooltip>
       <Show when={overflows()}>
         <div class={styles.toggleRow}>
-          <button
-            type="button"
-            class={collapsibleToggle}
+          <CollapsibleToggle
+            expanded={expanded()}
+            onToggle={() => setExpanded(prev => !prev)}
+            controls={bodyId}
+            moreLabel="Show more"
             data-testid="goal-objective-toggle"
-            onClick={() => setExpanded(prev => !prev)}
-          >
-            {expanded() ? 'Show less' : 'Show more'}
-          </button>
+          />
         </div>
       </Show>
     </div>

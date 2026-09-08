@@ -15,7 +15,7 @@ import { expect, test } from './fixtures'
  */
 test.describe('Markdown editor input — smoke', () => {
   test('the bullet-list input rule + Tab produces a nested list in the live editor', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await editor.click()

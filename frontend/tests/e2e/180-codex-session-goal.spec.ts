@@ -153,8 +153,8 @@ codexTest.describe('Codex session goal', () => {
   }) => {
     void authenticatedCodexWorkspace
 
-    // The chip needs a goal to name and a busy agent to sit beside, so the goal
-    // is set first from the sidebar, while the agent is idle.
+    // The chip needs a goal to report and a busy agent to sit beside, so the
+    // goal is set first from the sidebar, while the agent is idle.
     await sendMessage(page, 'Reply with the single word: ready')
     await waitForAgentIdle(page)
     await expandBackgroundTasksSection(page)
@@ -174,10 +174,11 @@ codexTest.describe('Codex session goal', () => {
     const popover = page.locator('[data-testid="goal-popover"]')
     await expect(popover).toBeVisible()
 
-    // Scoped to the popover throughout: the sidebar card is on screen too, so
-    // every one of these test ids matches twice while this popover is open.
-    await popover.locator('[data-testid="goal-actions-trigger"]').click()
-    await expect(popover.locator('[data-testid="goal-action-clear"]')).toBeVisible()
+    // Rooted at the popover, through the same helpers the sidebar cases use:
+    // the sidebar card is on screen too, so every one of these test ids matches
+    // twice while this popover is open, and only the root separates them.
+    await openGoalMenu(popover)
+    await expect(goalAction(popover, 'clear')).toBeVisible()
     // The card survived its own menu opening. That is the assertion.
     await expect(popover).toBeVisible()
 

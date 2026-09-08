@@ -1,23 +1,22 @@
 import { style } from '@vanilla-extract/css'
 
-export const form = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-2)',
-  // Wide enough to write a paragraph in, and never wider than the viewport.
-  // `Dialog` drops to `width: 100%` below the `sm` breakpoint, so a bare 420px
-  // would push the panel off a phone screen. The subtraction matches Oat's own
-  // dialog inset, `min(100% - 2rem, 32rem)`.
-  minWidth: 'min(420px, calc(100vw - var(--space-8)))',
-})
-
-// The field column. Dialog's own stylesheet gives `> .body > form > section`
-// its scroller, so the hint, the editor and the byte notice sit in one and
-// stack here.
+/**
+ * The field column, and the dialog's width.
+ *
+ * `Dialog`'s own stylesheet gives `> .body > section` the scroller and the
+ * edge-to-edge bleed, so the hint, the editor and the byte notice sit in one
+ * and stack here. There is no wrapper element above it -- see `SetGoalDialog`.
+ *
+ * The width lives here for that reason. Wide enough to write a paragraph in,
+ * and never wider than the viewport: `Dialog` drops to `width: 100%` below the
+ * `sm` breakpoint, so a bare 420px would push the panel off a phone screen. The
+ * subtraction matches Oat's own dialog inset, `min(100% - 2rem, 32rem)`.
+ */
 export const field = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-2)',
+  minWidth: 'min(420px, calc(100vw - var(--space-8)))',
 })
 
 export const label = style({

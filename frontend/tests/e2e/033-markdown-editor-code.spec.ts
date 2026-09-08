@@ -8,7 +8,7 @@ const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
 test.describe('Markdown Editor', () => {
   test('should grow editor beyond old 120px limit', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Default mode is Cmd+Enter-to-send, so Enter creates newlines
@@ -21,13 +21,13 @@ test.describe('Markdown Editor', () => {
     }
 
     // The editor wrapper should have grown (capped at 75% of container)
-    const wrapper = page.locator('[data-testid="chat-editor"]')
+    const wrapper = page.locator('[data-testid="composer-editor"]')
     const height = await wrapper.evaluate(el => el.getBoundingClientRect().height)
     expect(height).toBeGreaterThan(60)
   })
 
   test('should use --mono-font-family CSS variable for code elements', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await editor.click()
@@ -74,7 +74,7 @@ test.describe('Code block field', () => {
 
   test('paints the composer code block a field that composites on its host, in both polarities', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -108,7 +108,7 @@ test.describe('Code block field', () => {
 
   test('paints a sent code block the same field as the one in the composer', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('```')
@@ -160,7 +160,7 @@ test.describe('Code block field', () => {
 
   test('shows the block through, rather than tinting it twice, for a child that fills the background', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('```')
@@ -193,7 +193,7 @@ test.describe('Code block field', () => {
 
   test('gives inline code and a <kbd> the same step as a fenced block', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -232,7 +232,7 @@ test.describe('Code block field', () => {
 
 test.describe('Code Language Label', () => {
   test('clicking language label opens popover and selecting language updates it', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -281,7 +281,7 @@ test.describe('Code Language Label', () => {
   })
 
   test('re-clicking the language label closes the popover instead of reopening it', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('```')
@@ -314,7 +314,7 @@ test.describe('send feedback button labels', () => {
     await expect(rejectBtn).toHaveText('Reject')
 
     // Type feedback into the editor. The button must switch to "Send feedback".
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('Please reconsider this approach')
     await expect(rejectBtn).toHaveText('Send feedback')
@@ -324,7 +324,7 @@ test.describe('send feedback button labels', () => {
 test.describe('Markdown Editor links', () => {
   test('a link URL can be corrected after it is created', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -355,7 +355,7 @@ test.describe('Markdown Editor links', () => {
 
   test('Enter in the URL field applies and dismisses the popover', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -374,7 +374,7 @@ test.describe('Markdown Editor links', () => {
 
   test('mod+K links the selected text', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -404,7 +404,7 @@ test.describe('Markdown Editor links', () => {
 
   test('mod+K on a caret in a link edits that link, and over it overrides it', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -438,7 +438,7 @@ test.describe('Markdown Editor links', () => {
 
   test('a link can be unmade, keeping its text', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -455,7 +455,7 @@ test.describe('Markdown Editor links', () => {
 
   test('saving dismisses the popover, and it reopens cleanly afterwards', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('[docs](https://old.test)')
@@ -484,7 +484,7 @@ test.describe('Markdown Editor links', () => {
 
   test('the link popover fits its own box, with no horizontal overflow', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('[docs](https://a-fairly-long-example-url.test/some/path)')

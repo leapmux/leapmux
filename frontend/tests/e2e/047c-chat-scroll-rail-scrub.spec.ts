@@ -30,7 +30,7 @@ const SCROLLER = '[data-chat-scroll-container="true"]'
 
 /** Send one tall message so the conversation overflows and the rail takes over scrolling. */
 async function seedOverflowingConversation(page: Page) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   // Let the agent finish starting so the send takes the fast path (see 010).
   await expect(page.getByText(/^Starting /)).not.toBeVisible()

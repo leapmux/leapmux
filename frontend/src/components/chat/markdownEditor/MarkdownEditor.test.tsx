@@ -1,5 +1,5 @@
 import { render, waitFor } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { flushStorageWrites } from '~/lib/browserStorage'
@@ -269,14 +269,14 @@ describe('markdownEditor surface', () => {
     ))
     await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
     expect(container.querySelector('[data-testid="composer-box"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="chat-editor"][data-chat-input]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="composer-editor"][data-chat-input]')).not.toBeNull()
   })
 
   /**
    * `useShortcuts` reads `data-chat-input` for the `chatInputFocused` context,
    * and `$mod+j` maps to `chat.sendMessage` there -- so a goal editor carrying
    * it would send a chat message from inside a dialog. The test ids are the
-   * same fact: about twenty E2E specs address `chat-editor` with an unscoped
+   * same fact: about twenty E2E specs address `composer-editor` with an unscoped
    * locator, which a second element of that name breaks.
    */
   it('leaves every chat marker off another surface', async () => {
@@ -286,14 +286,14 @@ describe('markdownEditor surface', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
-    expect(container.querySelector('[data-testid="goal-editor-box"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="goal-box"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="goal-editor"]')).not.toBeNull()
     expect(container.querySelector('[data-chat-input]')).toBeNull()
-    // Every id, not only the two that name the editor. The three layout slots
+    // Every id, not only the two that identify the editor. The three layout slots
     // would put the same collision back for anything that addresses one.
-    for (const id of ['chat-editor', 'composer-box', 'composer-plus-slot', 'composer-separator', 'composer-footer-slot'])
+    for (const id of ['composer-editor', 'composer-box', 'composer-plus-slot', 'composer-separator', 'composer-footer-slot'])
       expect(container.querySelector(`[data-testid="${id}"]`), id).toBeNull()
-    expect(container.querySelector('[data-testid="goal-editor-footer-slot"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="goal-footer-slot"]')).not.toBeNull()
   })
 
   // The stylesheet reserves a left column for the `[+]` button. A box with no
@@ -316,13 +316,45 @@ describe('markdownEditor surface', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
-    expect(container.querySelector('[data-testid="goal-editor-box"]')).not.toHaveAttribute('data-plus')
+    expect(container.querySelector('[data-testid="goal-box"]')).not.toHaveAttribute('data-plus')
+  })
+
+  /**
+   * A slot that RESOLVES to nothing reserves nothing either.
+   *
+   * `children()` gives an ARRAY for a fragment, and `[]` is truthy -- so a bare
+   * truthiness test on the resolved node reads an empty fragment, an empty
+   * `<For>`, or a fragment of falsy entries as "a button is there" and leaves a
+   * ~40px gutter with nothing in it.
+   */
+  it.each([
+    ['an empty fragment', <></>],
+    [
+      'a fragment of falsy entries',
+      <>
+        {false && <button type="button">a</button>}
+        {null}
+      </>,
+    ],
+    ['a bare false', false],
+  ])('reserves no left column for %s', async (_name, plus) => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="chat" onSend={() => {}} plus={plus} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('[data-testid="composer-box"]')).not.toHaveAttribute('data-plus')
   })
 
   /**
    * `onContentChange` answers "is there anything here"; this one carries the
    * text. The goal dialog measures the objective's UTF-8 length against the
    * worker's cap, which the boolean cannot answer.
+   *
+   * The assertion is the WHOLE serialized string, not a substring of the input.
+   * A `toContain` on the text just handed to `set` passes even when the editor
+   * parsed nothing, because `set` used to echo its own argument back.
    */
   it('reports the document text to its host', async () => {
     const seen: string[] = []
@@ -339,6 +371,186 @@ describe('markdownEditor surface', () => {
     ))
     await waitFor(() => expect(setContent).toBeTypeOf('function'))
     setContent?.('ship the **auth refactor**')
-    await waitFor(() => expect(seen.at(-1)).toContain('auth refactor'))
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('ship the **auth refactor**'))
+  })
+
+  /**
+   * A caption outside the editor names the contenteditable.
+   *
+   * It has to land on the `.ProseMirror` element, not on the wrapper: the
+   * wrapper is not the editable region, so naming it names nothing and a
+   * screen reader announces an unnamed editable area.
+   */
+  it('names the contenteditable from the caption its host points at', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="goal" ariaLabelledBy="the-caption" onSend={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('.ProseMirror')?.getAttribute('aria-labelledby')).toBe('the-caption')
+  })
+
+  /**
+   * `minHeight` is a FLOOR, so the ceiling still binds.
+   *
+   * `pinnedHeight` -- the composer's dragged handle -- becomes a fixed height
+   * once the content passes it, which stops `maxHeight` from ever applying. A
+   * host that wants a comfortable opening size and room to grow states
+   * `minHeight`, and both values must reach the box.
+   */
+  it('applies a floor and a ceiling together for a host that states minHeight', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="goal" minHeight={120} maxHeight={320} onSend={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    const wrapper = container.querySelector('[data-testid="goal-editor"]') as HTMLElement
+    expect(wrapper.style.minHeight).toBe('120px')
+    expect(wrapper.style.maxHeight).toBe('320px')
+    // Never a fixed height: that is what would make the ceiling unreachable.
+    expect(wrapper.style.height).toBe('')
+  })
+
+  /**
+   * A seeded document is announced at all, and announced as the DOCUMENT.
+   *
+   * Milkdown's `markdownUpdated` listener never fires for `defaultValueCtx`, so
+   * without this emit a host with `onMarkdownChange` learns nothing until the
+   * reader types. The value is the round trip, not the prop: the goal dialog
+   * measures it against the worker's byte cap, and the escaped form is what a
+   * send would actually submit.
+   */
+  it('reports the serialized document for an initialMarkdown seed', async () => {
+    const seen: string[] = []
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          initialMarkdown="Stop when 2 * 3 = 6"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
+    expect(seen.at(-1)?.trim()).toBe('Stop when 2 \\* 3 = 6')
+  })
+
+  /**
+   * The seed WINS over a stored draft.
+   *
+   * A host that states the starting text is editing a specific document; the
+   * draft is what it abandoned last time. Showing the draft would silently edit
+   * the wrong thing.
+   */
+  it('prefers an initialMarkdown seed over a stored draft', async () => {
+    const KEY = 'seed-beats-draft'
+    await saveDraft(KEY, 'the abandoned draft', -1)
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          draftKey={{ key: KEY }}
+          initialMarkdown="the real objective"
+          onSend={() => {}}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toHaveTextContent('the real objective'))
+    expect(container.querySelector('.ProseMirror')).not.toHaveTextContent('abandoned')
+  })
+
+  /**
+   * A loaded DRAFT is reported the same way: from the document, not from the
+   * stored string.
+   *
+   * Milkdown's `markdownUpdated` listener never fires for a document seeded
+   * through `defaultValueCtx`, so this one emit is everything a host with
+   * `onMarkdownChange` learns about a restored draft — and it has to be the
+   * text a send would submit.
+   */
+  it('reports the serialized document for a loaded draft, not the stored string', async () => {
+    const KEY = 'draft-round-trip'
+    await saveDraft(KEY, 'Stop when 2 * 3 = 6', -1)
+    const seen: string[] = []
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: KEY }}
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
+    expect(seen.at(-1)?.trim()).toBe('Stop when 2 \\* 3 = 6')
+  })
+
+  /**
+   * A programmatic `set` reports what the DOCUMENT holds, not the string it was
+   * handed.
+   *
+   * The round trip through ProseMirror is not the identity: it escapes a bare
+   * `*` so the text cannot be re-read as emphasis. A host that mirrors this
+   * report -- the goal dialog measures it against the worker's byte cap --
+   * otherwise holds a string that differs from the one a send would submit, and
+   * corrects itself a debounce later with no keystroke.
+   */
+  it('reports the serialized document after a programmatic set, not the raw seed', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('Stop when 2 * 3 = 6')
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('Stop when 2 \\* 3 = 6'))
+  })
+
+  /**
+   * A host that unmounts the editor from inside its own `onSend` -- which
+   * `SetGoalDialog` does, by closing on a successful submit -- leaves the send's
+   * continuation running against a destroyed editor. It must not rebuild the
+   * document there, and it must still clear the draft, or `onCleanup` leaves the
+   * SENT text behind as a draft that reappears on the next open.
+   */
+  it('does not touch a disposed editor after a send that unmounted it', async () => {
+    const KEY = 'disposed-after-send'
+    await saveDraft(KEY, 'the sent message', -1)
+    const seen: string[] = []
+    let send: (() => void | Promise<void>) | undefined
+    const [open, setOpen] = createSignal(true)
+    render(() => (
+      <PreferencesProvider>
+        <Show when={open()} keyed>
+          <MarkdownEditor
+            surface="chat"
+            draftKey={{ key: KEY }}
+            onSend={() => { setOpen(false) }}
+            onMarkdownChange={md => seen.push(md)}
+            imperative={{ sendRef: (fn) => { send = fn } }}
+          />
+        </Show>
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(seen.at(-1)).toContain('the sent message'))
+    const before = seen.length
+
+    await send?.()
+
+    // No report from the disposed editor: the reset never ran.
+    expect(seen.length).toBe(before)
+    expect(await loadDraft(KEY)).toEqual({ content: '', cursor: -1 })
   })
 })

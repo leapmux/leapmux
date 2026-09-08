@@ -1,4 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
+import { fadeMaskBottom } from '~/styles/fadeMask'
 
 /**
  * How many lines of the objective the card shows before it clamps.
@@ -47,10 +49,7 @@ export const bodyClamped = style({
  * A goal that is exactly four lines long carries the clamp and hides nothing,
  * and a fade there would dim a line that is completely visible.
  */
-export const bodyFaded = style({
-  WebkitMaskImage: `linear-gradient(to bottom, black calc(100% - ${LINE_HEIGHT}em), transparent)`,
-  maskImage: `linear-gradient(to bottom, black calc(100% - ${LINE_HEIGHT}em), transparent)`,
-})
+export const bodyFaded = style(fadeMaskBottom(LINE_HEIGHT))
 
 /** The disclosure sits at the right end, under the fade it removes. */
 export const toggleRow = style({
@@ -72,18 +71,30 @@ export const tooltipBody = style({
   overflow: 'hidden',
 })
 
-// The markdown renderer emits block elements with their own vertical margins.
-// Strip the outer ones so the objective sits flush against the card's padding.
-// Two levels of `> *`: this element holds the measured content wrapper, which
-// holds MarkdownText's own container.
-globalStyle(`${body} > * > * > :first-child`, { marginTop: 0 })
-globalStyle(`${body} > * > * > :last-child`, { marginBottom: 0 })
-globalStyle(`${tooltipBody} > * > :first-child`, { marginTop: 0 })
-globalStyle(`${tooltipBody} > * > :last-child`, { marginBottom: 0 })
+/**
+ * Strip the markdown renderer's outer vertical margins, so the objective sits
+ * flush against the card's padding.
+ *
+ * Anchored on `MarkdownText`'s own container class, NOT on a count of `> *`
+ * hops. The two boxes nest differently -- `body` holds the measured wrapper and
+ * `tooltipBody` does not -- so a depth-counted selector needed one spelling
+ * each, and both stopped matching, silently, the moment either box gained or
+ * lost a wrapper. The class is where the margins actually come from.
+ */
+function stripOuterMargins(scope: string): void {
+  globalStyle(`${scope} .${markdownContent} > :first-child`, { marginTop: 0 })
+  globalStyle(`${scope} .${markdownContent} > :last-child`, { marginBottom: 0 })
+}
+
+stripOuterMargins(body)
+stripOuterMargins(tooltipBody)
 
 // A heading in a 300px sidebar column renders at the transcript's size and
 // swamps the card. The weight still marks it as a heading; only the size is
-// capped. `toolResultCollapsed` caps the same way for the same reason.
+// capped. `toolResultCollapsed` in `~/components/chat/toolStyles.css.ts` caps
+// the same way for the same reason.
 const HEADINGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
-globalStyle(HEADINGS.map(h => `${body} ${h}`).join(', '), { fontSize: 'inherit' })
-globalStyle(HEADINGS.map(h => `${tooltipBody} ${h}`).join(', '), { fontSize: 'inherit' })
+globalStyle(
+  HEADINGS.flatMap(h => [`${body} ${h}`, `${tooltipBody} ${h}`]).join(', '),
+  { fontSize: 'inherit' },
+)

@@ -30,7 +30,7 @@ test.describe('1m-context model', () => {
     await waitForSettingsIdle(page)
 
     // Send a message and verify the agent responds
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('What is 5+3? Reply with just the number, nothing else.')

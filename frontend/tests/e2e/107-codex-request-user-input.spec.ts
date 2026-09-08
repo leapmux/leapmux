@@ -13,7 +13,7 @@ codexTest.describe('Codex requestUserInput', () => {
     await waitForSettingsIdle(page)
 
     // Close the menu by clicking elsewhere.
-    await page.locator('[data-testid="chat-editor"] .ProseMirror').click()
+    await page.locator('[data-testid="composer-editor"] .ProseMirror').click()
 
     // Send a command that will trigger an approval request.
     // Use rm which should always require approval in on-request mode.

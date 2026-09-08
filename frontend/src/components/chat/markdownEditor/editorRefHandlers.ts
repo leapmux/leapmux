@@ -7,9 +7,8 @@ import { replaceAll } from '@milkdown/utils'
 /** Options for setting up the ref callbacks exposed to the parent component. */
 export interface EditorRefHandlersOptions {
   editor: Editor
-  /** Reports the document's markdown after a programmatic `set`. */
-  onMarkdown: (markdown: string) => void
-  onContentChange?: (hasContent: boolean) => void
+  /** Reports the document after a programmatic `set`: see `EditorSetupOptions`. */
+  onDocument: (markdown: string) => void
   sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
@@ -63,8 +62,19 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
             }
           }
         })
-        opts.onMarkdown(text)
-        opts.onContentChange?.(text.trim().length > 0)
+        // Report what the DOCUMENT now holds, not the argument that seeded it.
+        // The two differ: the round trip through ProseMirror escapes `*`, `_`
+        // and `&`, turns an indented code block into a fenced one, and
+        // renumbers an ordered list. Reporting the input made the host's mirror
+        // briefly disagree with the text a send would submit -- the goal dialog
+        // opened a near-cap objective showing one byte count and then changed
+        // it, with no keystroke, when the debounced listener reported the real
+        // one.
+        let applied = text
+        editor.action((ctx: Ctx) => {
+          applied = ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)
+        })
+        opts.onDocument(applied)
       }
       catch { /* editor may not be ready */ }
     },

@@ -26,7 +26,7 @@ function createTestBinary(name = 'test.bin'): string {
 
 test.describe('Attachment Support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Attach moved from the deleted formatting toolbar into the `[+]` menu.
@@ -58,7 +58,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('remove attachment via X button', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file.
@@ -75,7 +75,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('attachments survive tab switch', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file.
@@ -101,7 +101,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('attachments cleared after send', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file.
@@ -119,7 +119,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('paste image adds attachment', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -130,7 +130,7 @@ test.describe('Attachment Support', () => {
       const dt = new DataTransfer()
       dt.items.add(file)
       const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
-      document.querySelector('[data-testid="chat-editor"]')!.dispatchEvent(event)
+      document.querySelector('[data-testid="composer-editor"]')!.dispatchEvent(event)
     })
 
     // An attachment pill should appear.
@@ -138,7 +138,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('paste image adds attachment when clipboardData.files is empty (Linux/WebKitGTK shape)', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
 
@@ -158,7 +158,7 @@ test.describe('Attachment Support', () => {
       }
       const event = new Event('paste', { bubbles: true, cancelable: true })
       Object.defineProperty(event, 'clipboardData', { value: fakeClipboardData })
-      document.querySelector('[data-testid="chat-editor"]')!.dispatchEvent(event)
+      document.querySelector('[data-testid="composer-editor"]')!.dispatchEvent(event)
     })
 
     // An attachment pill should appear.
@@ -173,7 +173,7 @@ test.describe('Attachment Support', () => {
   // test; manual paste in the desktop build is the only true end-to-end.
 
   test('unsupported file type rejected with toast', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a binary file (unsupported type for the default provider).
@@ -189,7 +189,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file without typing any text.
@@ -209,7 +209,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('drag and drop adds attachment', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Simulate drag and drop via the file input (Playwright doesn't natively
@@ -222,7 +222,7 @@ test.describe('Attachment Support', () => {
   })
 
   test('chat history shows attachment list in user message', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Upload a file and send with text.

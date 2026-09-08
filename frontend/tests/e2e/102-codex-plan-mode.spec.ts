@@ -41,7 +41,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.getByTestId('plan-clear-context-checkbox')).toBeVisible()
     await expect(page.getByTestId('control-permissions-pill-group')).toBeVisible()
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type(REVISE_PLAN_PROMPT, { delay: 50 })

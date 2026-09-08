@@ -22,12 +22,27 @@ function mount(props: { initialObjective?: string, onSubmit?: () => void, onClos
   return { ...result, onSubmit, onClose }
 }
 
-/** The editor is built asynchronously, so every case waits for its document. */
-async function editorReady(): Promise<HTMLElement> {
+/**
+ * The editor is built asynchronously, so every case waits for its document.
+ *
+ * `seeded` waits for the SEED to land as well. `onReady` fires after the build
+ * and replaces the document then, so a case that clicks the moment `.ProseMirror`
+ * exists can act on an empty editor and prove nothing about the text it meant to
+ * submit.
+ */
+async function editorReady(seeded?: string): Promise<HTMLElement> {
   let el: HTMLElement | null = null
   await waitFor(() => {
     el = document.querySelector('[data-testid="goal-editor"] .ProseMirror')
     expect(el).not.toBeNull()
+    // The button is disabled until the editor installs its imperative send, so
+    // this is the dialog's own readiness signal. `.ProseMirror` appearing is
+    // not enough: the refs install after it, and a click before then reaches an
+    // `undefined` send.
+    const submit = document.querySelector('[data-testid="set-goal-submit"]') as HTMLButtonElement | null
+    expect(submit?.disabled).toBe(false)
+    if (seeded !== undefined)
+      expect(el!.textContent).toContain(seeded)
   })
   return el as unknown as HTMLElement
 }
@@ -44,8 +59,7 @@ describe('setGoalDialog', () => {
 
   it('submits the trimmed objective and closes', async () => {
     const { getByTestId, onSubmit, onClose } = mount({ initialObjective: 'ship it' })
-    await editorReady()
-    await waitFor(() => expect((getByTestId('set-goal-submit') as HTMLButtonElement).disabled).toBe(false))
+    await editorReady('ship it')
 
     fireEvent.click(getByTestId('set-goal-submit'))
 
@@ -57,21 +71,49 @@ describe('setGoalDialog', () => {
   // what the worker stores -- the card renders it back the same way.
   it('submits the objective as markdown source', async () => {
     const { getByTestId, onSubmit } = mount({ initialObjective: 'ship the **auth refactor**' })
-    await editorReady()
-    await waitFor(() => expect((getByTestId('set-goal-submit') as HTMLButtonElement).disabled).toBe(false))
+    await editorReady('ship the auth refactor')
 
     fireEvent.click(getByTestId('set-goal-submit'))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('ship the **auth refactor**'))
   })
 
-  it('refuses an empty objective', async () => {
-    const { getByTestId, onSubmit } = mount()
+  /**
+   * The button is deliberately never `disabled`.
+   *
+   * Its state would have to come from the mirrored text, which lags the
+   * document by the editor's 200ms listener debounce -- so a click inside that
+   * window met a disabled button and did NOTHING, with no message. It always
+   * clicks; the refusal reads the live document and says why.
+   */
+  it('refuses an empty objective and says so', async () => {
+    const { getByTestId, onSubmit, onClose } = mount()
     await editorReady()
-    const submit = getByTestId('set-goal-submit') as HTMLButtonElement
-    expect(submit.disabled).toBe(true)
-    fireEvent.click(submit)
+
+    fireEvent.click(getByTestId('set-goal-submit'))
+
+    await waitFor(() => expect(getByTestId('set-goal-too-long').textContent)
+      .toContain('Write the condition the agent works toward.'))
     expect(onSubmit).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Whitespace is empty. The editor trims before it hands the text over, so a
+   * document of spaces reaches `submit` as `''` and is refused there -- and the
+   * dialog must not hand the worker a blank standing goal the agent can never
+   * satisfy.
+   */
+  it('refuses an objective that is only whitespace', async () => {
+    const { getByTestId, onSubmit, onClose } = mount({ initialObjective: '   ' })
+    await editorReady()
+
+    fireEvent.click(getByTestId('set-goal-submit'))
+
+    await waitFor(() => expect(getByTestId('set-goal-too-long').textContent)
+      .toContain('Write the condition the agent works toward.'))
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   /**
@@ -86,9 +128,9 @@ describe('setGoalDialog', () => {
     await editorReady()
 
     await waitFor(() => expect(getByTestId('set-goal-too-long').textContent).toContain('Too long by 12 bytes'))
-    const submit = getByTestId('set-goal-submit') as HTMLButtonElement
-    expect(submit.disabled).toBe(true)
-    fireEvent.click(submit)
+
+    fireEvent.click(getByTestId('set-goal-submit'))
+
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
@@ -106,9 +148,34 @@ describe('setGoalDialog', () => {
     const { getByTestId } = mount({ initialObjective: near })
     await editorReady()
     await waitFor(() => {
+      // The expected number is spelled with an explicit `en-US`, not with the
+      // same `toLocaleString()` the component calls: asserting a value against
+      // the call that produced it passes in every locale, including the ones
+      // where the rendered string is wrong.
       expect(getByTestId('set-goal-budget').textContent)
-        .toBe(`${(GOAL_OBJECTIVE_BYTE_LIMIT - near.length).toLocaleString()} bytes left`)
+        .toBe(`${(GOAL_OBJECTIVE_BYTE_LIMIT - near.length).toLocaleString('en-US')} bytes left`)
     })
+  })
+
+  /**
+   * No `<form>`, and the two children Dialog's stylesheet expects.
+   *
+   * A form with no `onSubmit` NAVIGATES the page on implicit submission, so the
+   * first `<input>` a later change adds to this dialog would reload the app.
+   * The shape assertion goes with it: `Dialog.css.ts` gives the scroller to
+   * `> .body > section` and the spacing to `> .body > footer`, so a wrapper
+   * reappearing would take both away silently.
+   */
+  it('renders no form, and puts the section and footer where Dialog styles them', async () => {
+    const { getByTestId } = mount({ initialObjective: 'ship it' })
+    await editorReady('ship it')
+
+    const body = getByTestId('set-goal-dialog').querySelector('[class*="body"]')!
+    // Scoped to the direct children: the editor's own LinkPopover renders a
+    // real `<form>` deeper in the tree, which is the nesting this removal also
+    // undoes.
+    expect(body.querySelector(':scope > form')).toBeNull()
+    expect([...body.children].map(el => el.tagName)).toEqual(['SECTION', 'FOOTER'])
   })
 
   it('writes nothing when cancelled', async () => {
@@ -124,12 +191,12 @@ describe('setGoalDialog', () => {
    * `data-chat-input` for the `chatInputFocused` context, and `$mod+j` sends the
    * chat message there -- so the marker here would send a message from inside
    * this dialog. The test id matters for the same kind of reason: about twenty
-   * E2E specs address `chat-editor` with an unscoped locator.
+   * E2E specs address `composer-editor` with an unscoped locator.
    */
   it('is not the chat composer', async () => {
     mount({ initialObjective: 'every test passes' })
     await editorReady()
     expect(document.querySelector('[data-chat-input]')).toBeNull()
-    expect(document.querySelector('[data-testid="chat-editor"]')).toBeNull()
+    expect(document.querySelector('[data-testid="composer-editor"]')).toBeNull()
   })
 })

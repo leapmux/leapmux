@@ -60,7 +60,7 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await expect(page.locator('[data-testid="control-permissions-pill-group"]')).toBeVisible()
 
     // Type rejection text in the editor
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('needs changes', { delay: 100 })
 

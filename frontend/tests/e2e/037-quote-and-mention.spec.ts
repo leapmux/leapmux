@@ -8,7 +8,7 @@ const frontendDir = path.resolve(import.meta.dirname, '../..')
 test.describe('Quote and Mention', () => {
   test('reply button on assistant message inserts quoted text into editor', async ({ page, authenticatedWorkspace }) => {
     // Wait for the editor to be ready
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
@@ -35,7 +35,7 @@ test.describe('Quote and Mention', () => {
   })
 
   test('cursor lands outside blockquote after quoting', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
@@ -66,7 +66,7 @@ test.describe('Quote and Mention', () => {
   test('text selection copy button copies to clipboard', async ({ page, context, authenticatedWorkspace }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
@@ -103,7 +103,7 @@ test.describe('Quote and Mention', () => {
   test('text selection copy button copies with no Clipboard API', async ({ page, context, authenticatedWorkspace }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
@@ -141,7 +141,7 @@ test.describe('Quote and Mention', () => {
   // app uses to say "copied", so a failed write must do neither -- and must say
   // why, because a Copy button that silently does nothing reads as a dead button.
   test('text selection copy button keeps the selection and says why when nothing can copy', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
@@ -170,7 +170,7 @@ test.describe('Quote and Mention', () => {
   })
 
   test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     // Send a message and wait for the assistant to reply
@@ -206,7 +206,7 @@ test.describe('Quote and Mention', () => {
       await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and the editor is ready
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
@@ -239,7 +239,7 @@ test.describe('Quote and Mention', () => {
       await expect(agentTab).toBeVisible()
       await agentTab.click()
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load
@@ -291,7 +291,7 @@ test.describe('Quote and Mention', () => {
       await expect(agentTab).toBeVisible()
       await agentTab.click()
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Type some draft text into the editor
@@ -337,7 +337,7 @@ test.describe('Quote and Mention', () => {
       await openWorkspace(page, workspaceId)
 
       // Ensure an agent tab exists and the editor is ready
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
@@ -375,7 +375,7 @@ test.describe('Quote and Mention', () => {
       await expect(agentTab).toBeVisible()
       await agentTab.click()
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load

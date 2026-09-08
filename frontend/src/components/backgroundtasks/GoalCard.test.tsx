@@ -90,6 +90,27 @@ describe('goalCard', () => {
     expect(getByTestId('goal-actions-trigger')).not.toBeNull()
   })
 
+  /**
+   * The card hands the menu the WHOLE surface, so the verb a reader picks
+   * reaches the handler that surface carries.
+   *
+   * Tested here rather than only in `./GoalActionsMenu.test.tsx`, because that
+   * suite renders the menu alone: it cannot see the card dropping the handler
+   * or forwarding the wrong action, and the only other coverage of this path
+   * sits in another component's test file.
+   */
+  it('runs a menu verb against the handler its surface carries', () => {
+    const onAction = vi.fn()
+    const { getByTestId } = render(() => (
+      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL, onAction }} />
+    ))
+
+    fireEvent.click(getByTestId('goal-actions-trigger'))
+    fireEvent.click(getByTestId('goal-action-pause'))
+
+    expect(onAction).toHaveBeenCalledWith('pause')
+  })
+
   // A read-only surface: the panel renders the goal, and nothing can change it.
   it('offers no actions menu when the surface has no handler', () => {
     const { queryByTestId, getByTestId } = render(() => (
@@ -167,6 +188,30 @@ describe('goalCard', () => {
     expect(live.length).toBe(1)
     expect(live[0].textContent).toContain('every test passes')
     expect(live[0].textContent).toContain('notSatisfied')
+  })
+
+  /**
+   * The objective is markdown SOURCE, and the card renders it. A screen reader
+   * handed the source reads the syntax -- "ship the asterisk asterisk auth
+   * refactor asterisk asterisk" -- so the live region announces the words the
+   * card actually shows. `GoalObjective` refuses to hand the source to
+   * `Tooltip`'s `text` for the same reason.
+   */
+  it('announces the objective as words, not as markdown syntax', () => {
+    const { container } = render(() => (
+      <GoalCard
+        goal={{
+          current: goal({ objective: 'ship the **auth refactor**, see `task test`' }),
+          progress: {},
+          actions: [],
+        }}
+        announce
+      />
+    ))
+    const live = container.querySelector('[role="status"][aria-live="polite"]')!
+    expect(live.textContent).toContain('ship the auth refactor, see task test')
+    expect(live.textContent).not.toContain('**')
+    expect(live.textContent).not.toContain('`')
   })
 
   /**

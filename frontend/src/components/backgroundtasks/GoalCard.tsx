@@ -3,6 +3,7 @@ import type { GoalSurface, SessionGoal } from '~/stores/chatGoal'
 import { createMemo, Show } from 'solid-js'
 import { formatSecondsParts } from '~/components/chat/rendererUtils'
 import { StatusDot } from '~/components/common/StatusDot'
+import { markdownToPlainText } from '~/lib/markdownPlainText'
 import { goalActionState, goalStatusLabel } from '~/stores/chatGoal'
 import { srOnly } from '~/styles/shared.css'
 import * as taskStyles from './BackgroundTaskList.css'
@@ -70,7 +71,12 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     if (!goal)
       return 'No session goal'
     const detail = goal.statusDetail ? `, ${goal.statusDetail}` : ''
-    return `Session goal ${goalStatusLabel(goal.status).toLowerCase()}${detail}: ${goal.objective}`
+    // The objective is markdown SOURCE, and `./GoalObjective` renders it. A
+    // screen reader given the source reads the syntax -- "ship the asterisk
+    // asterisk auth refactor asterisk asterisk" -- so strip the marks to the
+    // words the card actually shows. `GoalObjective` refuses to hand the source
+    // to `Tooltip`'s `text` for the same reason.
+    return `Session goal ${goalStatusLabel(goal.status).toLowerCase()}${detail}: ${markdownToPlainText(goal.objective)}`
   })
 
   // Only the counters the provider actually reported. An absent counter is left
@@ -94,7 +100,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
   /** Whether the empty state may offer its call to action. */
   const canSetFirstGoal = () =>
     props.goal.onAction !== undefined
-    && goalActionState(props.goal.current, props.goal.actions, 'set').kind === 'enabled'
+    && goalActionState(props.goal, 'set').kind === 'enabled'
 
   return (
     <div class={styles.card} data-testid="goal-card">
@@ -106,12 +112,11 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
         {/* No menu in the empty state. `set` is the only verb that applies with
             no goal, and the empty state offers it as its own call to action --
             a first goal must not be one click deeper than the concept it
-            introduces. */}
-        <Show when={props.goal.current && props.goal.onAction}>
-          <GoalActionsMenu
-            goal={props.goal}
-            onAction={action => props.goal.onAction?.(action)}
-          />
+            introduces.
+            That state is the only half the CARD owns. Whether any verb can run
+            is the menu's own decision, which it makes from the same surface. */}
+        <Show when={props.goal.current}>
+          <GoalActionsMenu goal={props.goal} />
         </Show>
       </div>
       {/* Offscreen rather than hidden: `display: none` and `visibility: hidden`

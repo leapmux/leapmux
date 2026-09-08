@@ -137,10 +137,21 @@ export interface EditorSetupOptions {
   codeLangHandlers: CodeLangHandlers
   /** Link-edit popover state setters + getters (getters enable toggle-on-reclick). */
   linkClickHandlers: LinkClickHandlers
-  /** Reports the document's markdown (called on every document change). */
-  onMarkdown: (markdown: string) => void
-  /** Optional callback when content changes (has content / empty). */
-  onContentChange?: (hasContent: boolean) => void
+  /**
+   * The `id` of the element whose text names this editor.
+   *
+   * A contenteditable takes no `<label for>`, so a host that shows a caption
+   * beside the box has no other way to connect the two -- without it the caret
+   * lands in an unnamed editable region and the instruction is never read.
+   */
+  ariaLabelledBy?: string
+  /**
+   * Reports the document (called on every document change): its markdown, and
+   * -- through the same call -- whether it holds anything. One callback,
+   * because the second fact is derived from the first and a site that reported
+   * one always owed the other.
+   */
+  onDocument: (markdown: string) => void
   /**
    * Synchronous callback fired on every ProseMirror document-changing
    * transaction (NOT debounced). Used for layout decisions that must land
@@ -241,6 +252,10 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
           spellcheck: 'false',
           autocorrect: 'off',
           autocapitalize: 'off',
+          // On the CONTENTEDITABLE, never on the wrapper. The wrapper is not
+          // the editable element, so naming it names nothing: a screen reader
+          // announces the region the caret lands in, which is this one.
+          ...(opts.ariaLabelledBy ? { 'aria-labelledby': opts.ariaLabelledBy } : {}),
         },
       }))
       let pendingMd = ''
@@ -258,8 +273,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
       ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
         if (typeof md !== 'string')
           return
-        opts.onMarkdown(md)
-        opts.onContentChange?.(md.trim().length > 0)
+        opts.onDocument(md)
         const draftKey = opts.getDraftKey()
         if (draftKey) {
           pendingMd = md

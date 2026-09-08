@@ -63,7 +63,7 @@ test.describe('Claude Code agent startup error', () => {
     await expect(errorPanel.locator('pre code')).toBeVisible()
 
     // The Worker retains the input as a failed queue item.
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('hello')
     await page.keyboard.press('Meta+Enter')

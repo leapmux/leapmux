@@ -43,6 +43,28 @@ describe('collapsibleText', () => {
     expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 
+  /**
+   * The disclosure states whether it is open, and which block it opens.
+   *
+   * Without them a screen reader announces the label and no state, and
+   * activating the control announces nothing at all. `CollapsibleToggle` owns
+   * both attributes for all three disclosures in the app, so this pins the
+   * contract at one of its call sites.
+   */
+  it('states its open state and the block it controls', () => {
+    render(() => <CollapsibleText text={'line 1\nline 2\nline 3'} maxLines={2} />)
+
+    const toggle = screen.getByRole('button')
+    const body = document.querySelector('pre')!
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.getAttribute('aria-controls')).toBe(body.id)
+    expect(body.id).not.toBe('')
+
+    fireEvent.click(toggle)
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('collapses back when toggle is clicked twice', () => {
     render(() => <CollapsibleText text={'line 1\nline 2\nline 3\nline 4\nline 5'} maxLines={2} />)
 

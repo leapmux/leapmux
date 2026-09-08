@@ -311,6 +311,11 @@ describe('thinking indicator chips', () => {
     const popover = getByTestId('goal-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
+    // Through the `...` menu, which is where every verb of an EXISTING goal
+    // lives. jsdom does not enforce a closed popover's `display: none`, so a
+    // direct click on the item passes here while failing in a real browser --
+    // it would prove nothing about the trigger being wired at all.
+    await fireEvent.click(getByTestId('goal-actions-trigger'))
     await fireEvent.click(getByTestId('goal-action-set'))
 
     expect(hide).toHaveBeenCalled()
@@ -329,6 +334,7 @@ describe('thinking indicator chips', () => {
     const popover = getByTestId('goal-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
+    await fireEvent.click(getByTestId('goal-actions-trigger'))
     await fireEvent.click(getByTestId('goal-action-pause'))
 
     expect(hide).not.toHaveBeenCalled()
@@ -349,6 +355,7 @@ describe('thinking indicator chips', () => {
     const card = getByTestId('goal-card')
     expect(card).toHaveTextContent('Keep the suite green')
     expect(card).toHaveTextContent('1,200 tokens')
+    fireEvent.click(getByTestId('goal-actions-trigger'))
     expect(getByTestId('goal-action-pause')).toBeInTheDocument()
   })
 

@@ -234,6 +234,43 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  /**
+   * A popover mounts its children whether it is open or shut, so a dialog that
+   * hosts one holds that popover's controls in its own subtree the whole time.
+   *
+   * Any dialog with a MarkdownEditor is in this position: the editor's
+   * LinkPopover carries a `type="submit"` Save button. Answering Enter by
+   * clicking the first submit button in the subtree therefore submitted a form
+   * the user could not see, and nothing visible happened.
+   */
+  it('ignores a submit button that lives inside a popover', () => {
+    const onClose = vi.fn()
+    const hidden = vi.fn((e: Event) => e.preventDefault())
+    const real = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        {/* Ahead of the real form in document order, which is what made it win. */}
+        <div popover="auto">
+          <form onSubmit={hidden}>
+            <button type="submit">Save link</button>
+          </form>
+        </div>
+        <form onSubmit={real}>
+          <input type="text" />
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    container.querySelector('input')!.focus()
+    container.querySelector('dialog')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+
+    expect(hidden).not.toHaveBeenCalled()
+    expect(real).toHaveBeenCalled()
+  })
+
   it('does not trigger submit on Enter when submit button is disabled', () => {
     const onClose = vi.fn()
     const onSubmit = vi.fn((e: Event) => e.preventDefault())

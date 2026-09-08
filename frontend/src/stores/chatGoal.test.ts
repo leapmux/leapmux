@@ -1,3 +1,4 @@
+import type { GoalSurface } from './chatGoal'
 import type { AgentGoal as ProtoAgentGoal } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
 import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -82,27 +83,27 @@ describe('goalActionState', () => {
   // A provider's gap is PERMANENT -- Claude Code has no pause -- so its button
   // would never light up and is better absent than dead.
   it('hides an action the agent does not support', () => {
-    expect(goalActionState(active, ['set', 'clear'], 'pause')).toEqual({ kind: 'hidden' })
-    expect(goalActionState(undefined, [], 'set')).toEqual({ kind: 'hidden' })
+    expect(goalActionState({ current: active, actions: ['set', 'clear'] }, 'pause')).toEqual({ kind: 'hidden' })
+    expect(goalActionState({ current: undefined, actions: [] }, 'set')).toEqual({ kind: 'hidden' })
   })
 
   // Pause and resume are opposites: offering both would leave one that does
   // nothing on a goal already in that state. The refused one stays RENDERED,
   // because it comes back.
   it('enables pause only for an active goal, and resume only for a paused one', () => {
-    expect(goalActionState(active, [...all], 'pause')).toEqual({ kind: 'enabled' })
-    expect(goalActionState(active, [...all], 'resume'))
+    expect(goalActionState({ current: active, actions: [...all] }, 'pause')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({ current: active, actions: [...all] }, 'resume'))
       .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
-    expect(goalActionState(paused, [...all], 'resume')).toEqual({ kind: 'enabled' })
-    expect(goalActionState(paused, [...all], 'pause'))
+    expect(goalActionState({ current: paused, actions: [...all] }, 'resume')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({ current: paused, actions: [...all] }, 'pause'))
       .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
   })
 
   // The one action that does not need a goal to exist -- it is how the first one
   // arrives, and the empty state's button depends on exactly this.
   it('enables set when there is no goal at all', () => {
-    expect(goalActionState(undefined, ['set'], 'set')).toEqual({ kind: 'enabled' })
-    expect(goalActionState(undefined, ['set', 'clear'], 'clear'))
+    expect(goalActionState({ current: undefined, actions: ['set'] }, 'set')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({ current: undefined, actions: ['set', 'clear'] }, 'clear'))
       .toEqual({ kind: 'disabled', reason: 'This session has no goal' })
   })
 
@@ -110,11 +111,23 @@ describe('goalActionState', () => {
   // applies -- and each says which state it needs rather than going silent.
   it('refuses both pause and resume for a dormant goal, with a reason', () => {
     const dormant = protoGoalToStore(protoGoal({ status: AgentGoalStatus.DORMANT }))
-    expect(goalActionState(dormant, [...all], 'pause'))
+    expect(goalActionState({ current: dormant, actions: [...all] }, 'pause'))
       .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
-    expect(goalActionState(dormant, [...all], 'resume'))
+    expect(goalActionState({ current: dormant, actions: [...all] }, 'resume'))
       .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
-    expect(goalActionState(dormant, [...all], 'clear')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({ current: dormant, actions: [...all] }, 'clear')).toEqual({ kind: 'enabled' })
+  })
+
+  /**
+   * Both fields come from ONE surface, which is what the signature is for. A
+   * caller cannot pair one agent's goal with another agent's verb list, because
+   * there is no second argument to pair it with.
+   */
+  it('reads the goal and the verb list from the same surface', () => {
+    const surface: GoalSurface = { current: paused, progress: {}, actions: [...all] }
+    expect(goalActionState(surface, 'resume')).toEqual({ kind: 'enabled' })
+    // Narrow that ONE surface's verbs, and the same goal now hides the verb.
+    expect(goalActionState({ ...surface, actions: ['set'] }, 'resume')).toEqual({ kind: 'hidden' })
   })
 })
 

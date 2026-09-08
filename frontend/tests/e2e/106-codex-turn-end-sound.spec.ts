@@ -17,7 +17,7 @@ codexTest.describe('Codex Turn End Sound', () => {
 
     // Reload so the init scripts take effect
     await page.reload()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     // Send a message that triggers tool use (command execution) so num_tool_uses > 0
     await sendMessage(page, 'Run the command `pwd` and tell me the result.')
@@ -46,7 +46,7 @@ codexTest.describe('Codex Turn End Sound', () => {
 
     // Reload so the init scripts take effect
     await page.reload()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     // Send a simple question that completes without tool use (num_tool_uses = 0)
     await sendMessage(page, 'What is 1234 + 5678? Reply with just the number, nothing else.')

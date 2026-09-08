@@ -33,7 +33,7 @@ test.describe('Plan Mode', () => {
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 3: Reject the plan with a comment ──
-    const editorForReject = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const editorForReject = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await editorForReject.click()
     await page.keyboard.type('not ready yet', { delay: 100 })
     const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')

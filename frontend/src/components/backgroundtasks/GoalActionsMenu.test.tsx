@@ -10,23 +10,31 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
+/**
+ * A live surface: the goal, its verbs AND its handler, which travel together.
+ *
+ * `onAction` is part of `GoalSurface`, so a case that wants to observe the
+ * handler overrides it here rather than passing a second prop. The menu takes
+ * no separate handler, which is what makes a surface whose verbs and handler
+ * come from different agents unrepresentable.
+ */
 function surface(over: Partial<GoalSurface> = {}): GoalSurface {
-  return { current: goal(), progress: {}, actions: ALL, ...over }
+  return { current: goal(), progress: {}, actions: ALL, onAction: vi.fn(), ...over }
 }
 
 describe('goalActionsMenu', () => {
   it('offers the verbs in the order they read', () => {
     const { getAllByRole } = render(() => (
-      <GoalActionsMenu goal={surface()} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface()} />
     ))
     expect(getAllByRole('menuitem', { hidden: true }).map(i => i.textContent))
       .toEqual(['Pause', 'Resume', 'Replace goal…', 'Clear goal'])
   })
 
-  it('runs the action a menu item names', () => {
+  it('runs the action its menu item states', () => {
     const onAction = vi.fn()
     const { getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface()} onAction={onAction} />
+      <GoalActionsMenu goal={surface({ onAction })} />
     ))
     fireEvent.click(getByTestId('goal-action-clear'))
     expect(onAction).toHaveBeenCalledWith('clear')
@@ -39,7 +47,7 @@ describe('goalActionsMenu', () => {
    */
   it('omits an action the provider does not support at all', () => {
     const { queryByTestId, getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ actions: ['set', 'clear'] })} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface({ actions: ['set', 'clear'] })} />
     ))
     expect(queryByTestId('goal-action-pause')).toBeNull()
     expect(queryByTestId('goal-action-resume')).toBeNull()
@@ -53,7 +61,7 @@ describe('goalActionsMenu', () => {
    */
   it('keeps a supported action the goal state refuses, disabled with its reason', () => {
     const { getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ current: goal({ status: 'paused' }) })} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface({ current: goal({ status: 'paused' }) })} />
     ))
     const pause = getByTestId('goal-action-pause') as HTMLButtonElement
     expect(pause.disabled).toBe(true)
@@ -68,7 +76,7 @@ describe('goalActionsMenu', () => {
   // rather than going silent.
   it('disables pause and resume for a dormant goal, and keeps clear', () => {
     const { getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ current: goal({ status: 'dormant' }) })} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface({ current: goal({ status: 'dormant' }) })} />
     ))
     expect((getByTestId('goal-action-pause') as HTMLButtonElement).disabled).toBe(true)
     expect((getByTestId('goal-action-resume') as HTMLButtonElement).disabled).toBe(true)
@@ -79,7 +87,7 @@ describe('goalActionsMenu', () => {
   // and a rule keeps it away from the verb above it.
   it('marks Clear goal as destructive and separates it', () => {
     const { getByTestId, container } = render(() => (
-      <GoalActionsMenu goal={surface()} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface()} />
     ))
     expect(getByTestId('goal-action-clear').classList.contains(dangerMenuItem)).toBe(true)
     expect(container.querySelectorAll('hr')).toHaveLength(1)
@@ -89,7 +97,7 @@ describe('goalActionsMenu', () => {
   // Nothing to separate when Clear is the only verb the provider offers.
   it('draws no rule when the destructive verb stands alone', () => {
     const { container } = render(() => (
-      <GoalActionsMenu goal={surface({ actions: ['clear'] })} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface({ actions: ['clear'] })} />
     ))
     expect(container.querySelectorAll('hr')).toHaveLength(0)
   })
@@ -100,18 +108,33 @@ describe('goalActionsMenu', () => {
    */
   it('renders nothing when the agent supports no action', () => {
     const { queryByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ actions: [] })} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface({ actions: [] })} />
     ))
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
     for (const action of ALL)
       expect(queryByTestId(`goal-action-${action}`)).toBeNull()
   })
 
+  /**
+   * The menu owns the WHOLE "can act" decision, not half of it.
+   *
+   * A host with no handler gets no trigger, for the same reason a provider with
+   * no verbs does: a `...` that opens a card of controls which cannot run is
+   * worse than no `...`. The card used to make this half of the decision
+   * itself, from the same surface, which is one question asked twice.
+   */
+  it('renders nothing when the surface carries no handler', () => {
+    const { queryByTestId } = render(() => (
+      <GoalActionsMenu goal={surface({ onAction: undefined })} />
+    ))
+    expect(queryByTestId('goal-actions-trigger')).toBeNull()
+  })
+
   // The trigger is an icon with no visible text, so its tooltip is also its
   // accessible name.
-  it('names its trigger', () => {
+  it('gives its trigger an accessible name', () => {
     const { getByRole } = render(() => (
-      <GoalActionsMenu goal={surface()} onAction={vi.fn()} />
+      <GoalActionsMenu goal={surface()} />
     ))
     expect(getByRole('button', { name: 'Goal actions' })).not.toBeNull()
   })

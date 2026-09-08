@@ -67,6 +67,34 @@ function remarkLowercaseCodeLang() {
 }
 
 /**
+ * Remark plugin: show a raw-HTML run as the literal text the author wrote.
+ *
+ * `remarkRehype` runs without `allowDangerousHtml`, which DROPS every `html`
+ * node. That is correct for safety and wrong for the reader: a goal, a message
+ * or a tool result that says `Replace <old-token> with the new one` renders as
+ * `Replace  with the new one`, and `Support a<b and c>d` loses the words
+ * between the angle brackets too. CommonMark reads `<old-token>` as inline
+ * HTML, so the text disappears with no sign that anything was there.
+ *
+ * Retyping the node to `text` BEFORE remark-rehype keeps the security property
+ * exactly as it was -- rehype-stringify escapes the value, so `<` becomes
+ * `&#x3C;` and no element is ever created -- while the reader gets the
+ * characters back. The alternative, `allowDangerousHtml`, would build real
+ * elements and reopen the exfiltration vector that `rehypeBlockRemoteImages`
+ * closes for `<img>` alone; see the invariant test in
+ * `./markdownProcessor.test.ts`.
+ */
+function remarkHtmlAsText() {
+  return (tree: MdastRoot) => {
+    visit(tree, 'html', (node) => {
+      // `html` and `text` are both literal nodes, so the value carries over and
+      // only the type changes.
+      ;(node as unknown as { type: string }).type = 'text'
+    })
+  }
+}
+
+/**
  * Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s)
  * links. Also the single source of the link-hardening rule for the placeholder anchors
  * rehypeBlockRemoteImages emits, which is why it runs AFTER that plugin.
@@ -133,6 +161,7 @@ function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeli
 export function createMarkdownProcessor(highlighter: HighlighterCore, pair: SyntaxThemePair) {
   const base = createMarkdownParser()
     .use(remarkLowercaseCodeLang)
+    .use(remarkHtmlAsText)
     .use(remarkRehype)
     .use(rehypeShikiFromHighlighter, highlighter as Parameters<typeof rehypeShikiFromHighlighter>[0], {
       ...dualThemeTokenOptions(pair),
@@ -168,6 +197,7 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
  */
 export const plainMarkdownProcessor = withHardeningTail(
   createMarkdownParser()
+    .use(remarkHtmlAsText)
     .use(remarkRehype),
 )
 

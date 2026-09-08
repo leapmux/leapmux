@@ -124,10 +124,10 @@ export const plusButton = style({
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  // Sized to match the single-line text area height (--composer-btn-h, defined
+  // Sized to match the single-line text area height (--editor-btn-h, defined
   // on the MarkdownEditor container), kept square.
-  width: 'var(--composer-btn-h)',
-  height: 'var(--composer-btn-h)',
+  width: 'var(--editor-btn-h)',
+  height: 'var(--editor-btn-h)',
   borderRadius: 'var(--radius-small)',
   color: 'var(--muted-foreground)',
   backgroundColor: 'var(--muted)',

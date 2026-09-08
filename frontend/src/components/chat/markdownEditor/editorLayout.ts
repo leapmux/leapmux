@@ -4,7 +4,7 @@ import { batch, createComputed, createMemo, createSignal, onCleanup } from 'soli
 /**
  * The right padding the collapsed layout falls back to before the action row is
  * measured. The stylesheet declares the same number as the fallback of
- * `--composer-right-pad`, and both exist only for the frames before the first
+ * `--editor-right-pad`, and both exist only for the frames before the first
  * ResizeObserver callback.
  */
 const UNMEASURED_RIGHT_PAD_PX = 96
@@ -19,7 +19,7 @@ const EXPAND_MARGIN_PX = 16
 const COLLAPSE_MARGIN_PX = 32
 
 /** The DOM the layout measures. Each getter is a ref that resolves after mount. */
-export interface ComposerLayoutRefs {
+export interface EditorLayoutRefs {
   /** The editor wrapper. Hosts the width probe, so the probe inherits its font. */
   editorRoot: () => HTMLElement | undefined
   /**
@@ -36,7 +36,7 @@ export interface ComposerLayoutRefs {
   actionSlot: () => HTMLElement | undefined
 }
 
-export interface ComposerLayout {
+export interface EditorLayout {
   /** Whether the content needs the expanded layout. */
   contentExpanded: () => boolean
   /** The collapsed-mode right padding, in pixels. */
@@ -70,7 +70,7 @@ export interface ComposerLayout {
  * down in a different place from the other three, and the decision itself is
  * reachable from a test without mounting Milkdown.
  */
-export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
+export function createEditorLayout(refs: EditorLayoutRefs): EditorLayout {
   const [docStats, setDocStats] = createSignal<DocStats>({ multiLine: false, text: '' })
   const [rightPad, setRightPad] = createSignal(UNMEASURED_RIGHT_PAD_PX)
   const [actionsHeight, setActionsHeight] = createSignal(0)
@@ -167,7 +167,7 @@ export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
     // The comparison below subtracts a margin from the available width, so a
     // width of 0 still expands once the available width falls under that
     // margin. The action row reaches that point on its own: `footerSlot` caps
-    // its width at the row minus `--composer-left-pad` and one `space-1`, and a
+    // its width at the row minus `--editor-left-pad` and one `space-1`, and a
     // slot at the cap leaves `collapsedAvailableWidth()` at exactly zero. The
     // composer then opened in the tall layout with nothing typed in it.
     //
@@ -220,7 +220,7 @@ export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
       // A throwaway probe resolves the CSS custom property to pixels, because an
       // unregistered custom property computes to its token stream, not a length.
       const padProbeEl = document.createElement('div')
-      padProbeEl.style.cssText = 'position:absolute;visibility:hidden;width:100%;padding-left:var(--composer-left-pad);'
+      padProbeEl.style.cssText = 'position:absolute;visibility:hidden;width:100%;padding-left:var(--editor-left-pad);'
       row.appendChild(padProbeEl)
       const measureRow = () => {
         setRowWidth(row.clientWidth)

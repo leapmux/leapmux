@@ -18,7 +18,7 @@ import { ensureWorkerOnline, expect, restartWorker, processTest as test } from '
  * matches more than the row.
  */
 async function seedTwoQueuedRows(page: Page) {
-  await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
   await page.getByTestId('queue-pause-button').click()
   await sendMessage(page, 'first queued')
   await sendMessage(page, 'second queued')
@@ -35,7 +35,7 @@ async function seedTwoQueuedRows(page: Page) {
 
 test.describe('agent input queue', () => {
   test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker }) => {
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     await page.getByTestId('queue-pause-button').click()
     await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
 
@@ -43,7 +43,7 @@ test.describe('agent input queue', () => {
     const secondPage = await secondContext.newPage()
     await loginViaToken(secondPage, separateHubWorker.adminToken)
     await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
-    await expect(secondPage.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     try {
       await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
@@ -71,7 +71,7 @@ test.describe('agent input queue', () => {
       await expect(page.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued second')
 
-      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await editor.fill('normal draft')
       await page.getByTestId('file-input').setInputFiles({
         name: 'normal-draft.txt',
@@ -113,7 +113,7 @@ test.describe('agent input queue', () => {
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       const secondClientItem = secondPage.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await secondClientItem.getByRole('button', { name: 'Take Over' }).click()
-      await expect(secondPage.locator('[data-testid="chat-editor"] .ProseMirror')).toHaveText('edited first')
+      await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toHaveText('edited first')
       await expect(editor).toHaveText('normal draft')
       await secondClientItem.getByRole('button', { name: 'Cancel Edit' }).click()
 
@@ -205,7 +205,7 @@ test.describe('agent input queue', () => {
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     await page.getByTestId('queue-pause-button').click()
     await sendMessage(page, 'a queued input')
     await expect(page.getByTestId('agent-input-queue')).toContainText('a queued input')
@@ -268,7 +268,7 @@ test.describe('agent input queue', () => {
     // Narrower than any phone this app targets, so the action row has the
     // least space it will ever have.
     await page.setViewportSize({ width: 320, height: 720 })
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
 
     const plus = page.getByTestId('composer-plus-trigger')
     const footer = page.getByTestId('composer-footer-slot')
@@ -295,7 +295,7 @@ test.describe('agent input queue', () => {
     // pane or a floating window puts a ~260px composer on a 1200px display, and
     // a VIEWPORT media query calls that composer wide.
     await page.setViewportSize({ width: 1200, height: 800 })
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
 
     const plus = page.getByTestId('composer-plus-trigger')

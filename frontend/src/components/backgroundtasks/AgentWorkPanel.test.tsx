@@ -1,6 +1,7 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { GoalAction, SessionGoal } from '~/stores/chatGoal'
+import type { GoalAction, GoalSurface, SessionGoal } from '~/stores/chatGoal'
 import { fireEvent, render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentWorkPanel } from './AgentWorkPanel'
 
@@ -92,28 +93,59 @@ describe('agentWorkPanel', () => {
       tasks: [row({ rowKey: 'a' })],
       goal: goal(),
     })
-    // Between the two, so the rule separates what it stands between.
-    const panel = getByTestId('goal-separator').parentElement!
+    // Between the two, so the rule separates what it stands between. Asserted
+    // as an exact prefix, never as `indexOf(a) < indexOf(b)`: a missing card
+    // gives `indexOf` a `-1`, which is less than every real index, so that
+    // comparison passes for the one regression this case exists to catch.
+    const panel = getByTestId('goal-card-separator').parentElement!
     const order = [...panel.children].map(el => el.getAttribute('data-testid'))
-    expect(order.indexOf('goal-card')).toBeLessThan(order.indexOf('goal-separator'))
+    expect(order.slice(0, 2)).toEqual(['goal-card', 'goal-card-separator'])
 
     fireEvent.click(tab(container, 'goal'))
     expect(getByTestId('goal-card')).not.toBeNull()
-    expect(queryByTestId('goal-separator')).toBeNull()
+    expect(queryByTestId('goal-card-separator')).toBeNull()
   })
 
   // The EMPTY card is still a card, and rows still follow it.
   it('rules off an empty goal card from the rows too', () => {
     const { getByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })] })
     expect(getByTestId('goal-card-empty')).not.toBeNull()
-    expect(getByTestId('goal-separator')).not.toBeNull()
+    expect(getByTestId('goal-card-separator')).not.toBeNull()
   })
 
   // No card, no rule: the rows would otherwise open with a line above them.
   it('draws no rule for an agent with no goal surface', () => {
     const { queryByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })], goalActions: [] })
     expect(queryByTestId('goal-card')).toBeNull()
-    expect(queryByTestId('goal-separator')).toBeNull()
+    expect(queryByTestId('goal-card-separator')).toBeNull()
+  })
+
+  /**
+   * The tab buttons SURVIVE a goal broadcast.
+   *
+   * `FilterTabBar` renders them through `<For>`, which reconciles by
+   * reference, so a tab list rebuilt inside the memo replaced every button on
+   * every recompute -- and the memo recomputes whenever the goal surface does,
+   * which for a Codex agent is after each tool call. A keyboard user's focus
+   * left the tablist for `<body>` every couple of seconds while the agent
+   * worked.
+   */
+  it('keeps the same tab elements when the goal surface is replaced', () => {
+    const [surface, setSurface] = createSignal<GoalSurface>({
+      current: goal(),
+      progress: {},
+      actions: ['set'],
+    })
+    const { container } = render(() => (
+      <AgentWorkPanel variant="sidebar" tasks={[]} goal={surface()} />
+    ))
+    const before = container.querySelector('[data-testid="bg-task-filter-all"]')
+
+    // A fresh object with the same content, which is exactly what a progress
+    // broadcast produces upstream.
+    setSurface({ current: goal(), progress: { tokensUsed: 10 }, actions: ['set'] })
+
+    expect(container.querySelector('[data-testid="bg-task-filter-all"]')).toBe(before)
   })
 
   it('hides the goal card on the kind tabs', () => {

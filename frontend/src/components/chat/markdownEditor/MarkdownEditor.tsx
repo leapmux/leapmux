@@ -7,17 +7,18 @@ import type { TrailingDebounced } from '~/lib/debounce'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
-import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
+import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
+import { errorText } from '~/styles/shared.css'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
-import { createComposerLayout } from './composerLayout'
 import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
+import { createEditorLayout } from './editorLayout'
 import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
 import { LinkPopover } from './LinkPopover'
@@ -46,27 +47,46 @@ export type MarkdownEditorSurface = 'chat' | 'goal'
  * Every surface's markers.
  *
  * A `Record` over the union, so a new surface fails to compile until it states
- * all four. An array of pairs type-checked with any subset, which is how a new
+ * both. An array of pairs type-checked with any subset, which is how a new
  * surface would ship with the composer's own test id.
  *
- * EVERY test id this component writes comes from here. Three of them name
- * layout slots rather than the editor itself, and leaving those shared would
- * put the whole collision back for anything that addresses one: a spec with a
- * goal dialog open resolves two `composer-footer-slot` elements and Playwright's
- * strict mode fails it.
+ * ONE prefix per surface, from which `testIds` derives every id this component
+ * writes. Spelling them out separately let `chat` disagree with itself --
+ * `chat-editor` beside `composer-box` -- and made a third surface four strings
+ * to copy rather than one to choose.
  */
 const SURFACE_MARKERS: Record<MarkdownEditorSurface, {
-  /** `data-testid` for the outer box, whose `data-expanded` states the layout. */
-  boxTestId: string
-  /** `data-testid` for the ProseMirror host. */
-  editorTestId: string
-  /** Leads the `data-testid` of each layout slot inside the box. */
-  slotPrefix: string
+  /** Leads the `data-testid` of the box, the editor and every layout slot. */
+  testIdPrefix: string
   /** Whether `chatInputFocused` treats focus here as the message composer. */
   chatInput: boolean
 }> = {
-  chat: { boxTestId: 'composer-box', editorTestId: 'chat-editor', slotPrefix: 'composer', chatInput: true },
-  goal: { boxTestId: 'goal-editor-box', editorTestId: 'goal-editor', slotPrefix: 'goal-editor', chatInput: false },
+  chat: { testIdPrefix: 'composer', chatInput: true },
+  goal: { testIdPrefix: 'goal', chatInput: false },
+}
+
+/**
+ * The six `data-testid` values of one surface.
+ *
+ * DERIVED, never declared per surface, so a surface cannot carry another one's
+ * id for a single element: a spec with the goal dialog open would otherwise
+ * resolve two `composer-footer-slot` elements and fail Playwright's strict
+ * mode.
+ *
+ * The prefixes must stay distinct from any id the rest of the app writes. The
+ * work panel's rule above its task rows is `goal-card-separator` for exactly
+ * that reason -- it and the goal editor are on screen together while the dialog
+ * is open.
+ */
+function testIds(prefix: string) {
+  return {
+    box: `${prefix}-box`,
+    editor: `${prefix}-editor`,
+    buildFailed: `${prefix}-build-failed`,
+    plusSlot: `${prefix}-plus-slot`,
+    separator: `${prefix}-separator`,
+    footerSlot: `${prefix}-footer-slot`,
+  }
 }
 
 /**
@@ -131,8 +151,46 @@ interface MarkdownEditorProps {
   onAfterSend?: () => void
   onDraftKeyChanged?: (key: string | null) => void
   disabled?: boolean
-  requestedHeight?: number
+  /**
+   * A height the box HOLDS once the content passes it: the composer's
+   * drag-to-resize.
+   *
+   * It is a floor while the content is shorter and a fixed height once the
+   * content is taller, which is what a dragged handle means -- the reader
+   * chose that height, so the box keeps it and scrolls. `maxHeight` cannot
+   * bind alongside it, because the box never grows past this value.
+   */
+  pinnedHeight?: number
+  /**
+   * A height the box OPENS at and then grows past, up to `maxHeight`.
+   *
+   * For a host that wants a comfortable starting size rather than a fixed one.
+   * Use this with `maxHeight` to state a floor and a ceiling; use
+   * `pinnedHeight` only where the reader picked the height.
+   */
+  minHeight?: number
   maxHeight?: number
+  /**
+   * The `id` of the element whose text names this editor.
+   *
+   * A contenteditable takes no `<label for>`, so a host that shows a caption
+   * beside the box states the connection here instead. It lands on the
+   * ProseMirror element, which is the one the caret enters.
+   */
+  ariaLabelledBy?: string
+  /**
+   * The text the editor OPENS with.
+   *
+   * Data rather than an imperative seed: a host that wrote the text through
+   * `contentRef` had to hold a nullable setter and call it from `onReady`, which
+   * depends on the order of two lines inside this component. It also replaced
+   * the document one frame after the build, so the editor briefly held an empty
+   * one.
+   *
+   * It WINS over a stored draft. A host that states the starting text is editing
+   * a specific document, and a draft is the text it abandoned last time.
+   */
+  initialMarkdown?: string
   onContentHeightChange?: (height: number) => void
   onContentChange?: (hasContent: boolean) => void
   /**
@@ -203,6 +261,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * its ResizeObservers, and its paste/drop listeners.
    */
   let disposed = false
+  /** Set when the asynchronous build failed -- see the `catch` on `onMount`. */
+  const [buildFailed, setBuildFailed] = createSignal(false)
   // Owns the generation token that drops a read a newer swap superseded. See
   // `createDraftSwapper` for why the token lives there and not here. Declared
   // with the other per-editor state, because `onMount` runs its own initial
@@ -212,9 +272,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   /**
    * The box's expand/collapse decision and the three DOM measurements it needs.
    * Every probe, observer, and threshold lives in that one unit — see
-   * `./composerLayout`.
+   * `./editorLayout`.
    */
-  const layout = createComposerLayout({
+  const layout = createEditorLayout({
     editorRoot: () => editorRef,
     row: () => editorRowEl,
     actionSlot: () => footerSlotEl,
@@ -237,15 +297,24 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       : dk.agentId
   }
 
-  // Editor wrapper sizing: the explicit `requestedHeight` becomes a hard cap
-  // when the content already overflows it, otherwise it acts as a min-height
-  // floor so empty/short editors still render at the expected size.
+  /**
+   * Editor wrapper sizing.
+   *
+   * `pinnedHeight` is a floor while the content is shorter and a fixed height
+   * once it is taller, so a dragged handle keeps the height the reader chose.
+   * That fixed height also stops `maxHeight` from ever binding, which is why a
+   * host that wants a floor AND a ceiling states `minHeight` instead: it stays
+   * a floor at every content size, and the box grows to `maxHeight`.
+   */
   const editorWrapperStyle = (): JSX.CSSProperties => {
     const style: JSX.CSSProperties = {}
-    const requested = props.requestedHeight
-    if (requested != null) {
-      const overflowing = contentHeight() > 0 && requested < contentHeight()
-      style[overflowing ? 'height' : 'min-height'] = `${requested}px`
+    const pinned = props.pinnedHeight
+    if (pinned != null) {
+      const overflowing = contentHeight() > 0 && pinned < contentHeight()
+      style[overflowing ? 'height' : 'min-height'] = `${pinned}px`
+    }
+    else if (props.minHeight != null) {
+      style['min-height'] = `${props.minHeight}px`
     }
     if (props.maxHeight)
       style['max-height'] = `${props.maxHeight}px`
@@ -276,13 +345,24 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let onMarkdownChangeRef: MarkdownEditorProps['onMarkdownChange']
 
   /**
-   * Reports the document's markdown to the host.
+   * Reports the document to the host: its markdown, and whether it holds
+   * anything.
+   *
+   * ONE function for both callbacks, because `hasContent` is DERIVED from the
+   * markdown and every site that reported one owed the other. Reporting them
+   * separately meant each new document-replacement path had to remember two
+   * calls, and the draft-load path already forgot: it announced `hasContent`
+   * and never announced the text, so a host with `onMarkdownChange` learned
+   * that content existed and never learned what it was until the user typed.
    *
    * Not a signal. This component never reads the text back -- it asks the
    * serializer whenever it needs one -- so storing it would be a second copy
    * that only drifts.
    */
-  const emitMarkdown = (markdown: string) => onMarkdownChangeRef?.(markdown)
+  const emitDocument = (markdown: string) => {
+    onMarkdownChangeRef?.(markdown)
+    onContentChangeRef?.(markdown.trim().length > 0)
+  }
 
   // Repaint the composer's code blocks when the syntax theme changes.
   //
@@ -428,12 +508,24 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // soft keyboard outside a user gesture, and the RPC ends the gesture -- but
     // an earlier call repairs nothing, because focus is still on the editor
     // there and `applySendFocus` skips a view that already holds it.
+    // The host may have unmounted this editor from inside its own `onSend`:
+    // `SetGoalDialog` closes on a successful submit, which disposes the whole
+    // subtree synchronously. `onCleanup` then set `disposed` and destroyed the
+    // editor before this continuation resumed, so rebuilding the document below
+    // would dispatch into a detached view. The draft still has to be cleared --
+    // `onCleanup` saved the SENT text as a draft on its way out, and leaving it
+    // there resurrects a sent message in the composer on the next open.
+    if (disposed) {
+      if (initialDraftKey)
+        clearDraft(initialDraftKey)
+      props.onAfterSend?.()
+      return
+    }
     try {
       const clearSubmittedContent = sentContentIsCurrent()
       if (clearSubmittedContent) {
         editorInstance.action(replaceAll(''))
-        emitMarkdown('')
-        onContentChangeRef?.(false)
+        emitDocument('')
       }
       if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
         clearDraft(initialDraftKey)
@@ -525,7 +617,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       latestDraftKey = key
   })
 
-  onMount(async () => {
+  /**
+   * Build the editor and attach everything that depends on it.
+   *
+   * A plain function rather than the `onMount` callback itself, so the caller
+   * below can attach a `catch` -- see there.
+   */
+  const attachEditor = async () => {
     if (!editorRef)
       return
 
@@ -541,10 +639,17 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // with its content in hand. The draft read is asynchronous now, and this
     // `onMount` already awaits `buildEditor`, so it costs no extra round trip.
     const initialDraft = initialDraftKey ? await loadDraft(initialDraftKey) : { content: '', cursor: -1 }
+    // `initialMarkdown` WINS over a stored draft -- see the prop. A host that
+    // states the starting text is editing a specific document, and a draft is
+    // the text it abandoned last time; showing the draft would silently edit
+    // the wrong thing.
+    const seed = props.initialMarkdown ?? initialDraft.content
+    const seedCursor = props.initialMarkdown != null ? -1 : initialDraft.cursor
 
     const editor = await buildEditor({
       editorRoot: editorRef,
-      initialContent: initialDraft.content,
+      initialContent: seed,
+      ariaLabelledBy: props.ariaLabelledBy,
       pluginRefs: {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
@@ -566,8 +671,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         getLinkPopoverOpen: linkPopoverOpen,
         getLinkRange: linkRange,
       },
-      onMarkdown: emitMarkdown,
-      onContentChange: hasContent => props.onContentChange?.(hasContent),
+      onDocument: emitDocument,
       onDocTransaction: layout.setDocStats,
       getDraftKey,
       draftSaveDebounce,
@@ -605,8 +709,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           return
         readyDraft = draft
         editor.action(replaceAll(draft.content))
-        emitMarkdown(draft.content)
-        props.onContentChange?.(draft.content.trim().length > 0)
+        emitDocument(draft.content)
         prevDraftKey = initialReadyDraftKey ?? null
       })
       // Checked AGAIN, for the same reason it is checked after `buildEditor`:
@@ -664,18 +767,42 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Notify parent if we loaded a draft with content, and restore cursor
     // position. `prevDraftKey` is the key whose document the editor now holds,
     // whichever of the two reads above produced it.
-    if (prevDraftKey && readyDraft.content) {
-      props.onContentChange?.(true)
+    // A seeded document is announced HERE or nowhere: Milkdown's
+    // `markdownUpdated` listener never fires for `defaultValueCtx`, so a host
+    // with `onMarkdownChange` would otherwise learn nothing until the reader
+    // typed.
+    if (props.initialMarkdown != null ? seed !== '' : Boolean(prevDraftKey && readyDraft.content)) {
+      // Both halves. Milkdown's `markdownUpdated` listener never fires for a
+      // document seeded this way, so this is the only announcement a host with
+      // `onMarkdownChange` gets for a loaded draft.
+      //
+      // Report what the DOCUMENT holds, not the stored draft string. The round
+      // trip through ProseMirror is not the identity -- it escapes `*`, `_` and
+      // `&`, and refolds a code block -- so echoing the input hands the host a
+      // string that differs from the one a send would submit. `editorRefHandlers`
+      // re-serializes for the same reason; this is the same path for a draft.
       try {
-        restoreCursor(editor, readyDraft.cursor)
+        editor.action((ctx: Ctx) => {
+          emitDocument(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc))
+        })
+      }
+      catch {
+        // The editor is not ready to serialize, so the stored text is the best
+        // answer available. A host that hears nothing at all is worse.
+        emitDocument(readyDraft.content)
+      }
+      try {
+        // `-1` for a seed, which `restoreCursor` reads as the document END --
+        // a reader who opens Replace continues the objective rather than
+        // typing in front of it.
+        restoreCursor(editor, props.initialMarkdown != null ? seedCursor : readyDraft.cursor)
       }
       catch { /* editor may not be ready */ }
     }
 
     setupEditorRefHandlers({
       editor,
-      onMarkdown: emitMarkdown,
-      onContentChange: hasContent => props.onContentChange?.(hasContent),
+      onDocument: emitDocument,
       sendRef: props.imperative?.sendRef,
       focusRef: props.imperative?.focusRef,
       contentRef: props.imperative?.contentRef,
@@ -734,6 +861,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       editorRef?.removeEventListener('paste', handlePaste, true)
       editorRef?.removeEventListener('drop', handleDrop, true)
     }))
+  }
+
+  /**
+   * The build is asynchronous and it can fail: a plugin factory that throws, or
+   * `Editor.create()` rejecting.
+   *
+   * Without this `catch` the rejection is unhandled and the box is simply DEAD
+   * -- `onReady` never fires, the imperative refs are never installed, and a
+   * host that drives its own submit button through `sendRef` has no route to
+   * the action at all. That is a grey rectangle with no message. Say so
+   * instead, and log the cause.
+   */
+  onMount(() => {
+    void attachEditor().catch((error) => {
+      logger.error('The editor failed to build:', error)
+      setBuildFailed(true)
+    })
   })
 
   onCleanup(() => {
@@ -794,7 +938,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // Load the draft for the new key and replace the editor content.
       //
       // `prevDraftKey` MOVES WITH THE DOCUMENT, inside `apply` below, never
-      // here. It names the key whose text the editor is holding, and the read is
+      // here. It identifies the key whose text the editor holds, and the read is
       // asynchronous -- so until it lands the editor still shows the OUTGOING
       // key's prose. Moving the pointer up front made a second swap arriving
       // during this read save that outgoing prose under the incoming key, which
@@ -804,9 +948,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const swapTarget = editorInstance
       // Captured before the await. `props` is reactive, and reading a prop off
       // it inside the callback below would read it outside any tracked scope --
-      // which is what solid/reactivity flags, and it is right: the handlers this
-      // swap belongs to are the ones that were installed when the swap started.
-      const notifyContentChange = props.onContentChange
+      // which is what solid/reactivity flags, and it is right: the handler this
+      // swap belongs to is the one that was installed when the swap started.
+      //
+      // The document report does NOT go through a capture like this one. It
+      // goes through `emitDocument`, which reads the mirrored refs and so
+      // reports the LATEST handlers. That was already true of the markdown half
+      // before the two were folded together, so the pair used to disagree here:
+      // one announcement reached the current host and the other reached the
+      // host that was current when the read began.
       const notifyDraftKeyChanged = props.onDraftKeyChanged
       void swapDraft(newDraftKey, (draft) => {
         // The component unmounted while the read was in flight. `onCleanup`
@@ -819,8 +969,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         try {
           swapTarget.action(replaceAll(draft.content))
           restoreCursor(swapTarget, draft.cursor)
-          emitMarkdown(draft.content)
-          notifyContentChange?.(draft.content.trim().length > 0)
+          emitDocument(draft.content)
           prevDraftKey = newDraftKey
         }
         catch { /* editor may not be ready */ }
@@ -865,13 +1014,26 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const markers = () => SURFACE_MARKERS[props.surface]
+  const ids = () => testIds(markers().testIdPrefix)
   // Resolved ONCE. `props.plus` is a prop getter, so reading it twice -- once to
   // insert it and once to ask whether it exists -- builds the menu twice and
   // mounts two copies of it. `children` memoizes the resolved node, which is
-  // what makes the question below safe to ask. Read for TRUTH rather than
-  // against `undefined`, because a caller that writes `plus={cond && <X/>}`
-  // hands this `false`, which reserves a column for nothing.
+  // what makes the question below safe to ask.
   const plusNode = children(() => props.plus)
+
+  /**
+   * Whether the `[+]` slot renders anything at all.
+   *
+   * Through `toArray`, never as a bare truthiness test on `plusNode()`.
+   * `children()` resolves a fragment to an ARRAY, and `[]` is TRUTHY -- so
+   * `plus={<></>}`, a `<For>` over an empty list, or `<>{a && <A/>}{b && <B/>}</>`
+   * (which resolves to `[false, false]`) all read as "a button is there" and
+   * reserve a ~40px left column for nothing. A caller that writes
+   * `plus={cond && <X/>}` hands this a bare `false`, which `toArray` wraps, so
+   * one test covers both shapes.
+   */
+  const hasPlus = () =>
+    plusNode.toArray().some(node => node != null && node !== false && node !== '')
 
   return (
     <div
@@ -879,25 +1041,33 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // The box whose layout mode `data-expanded` states. A test that asserts
       // the collapsed-versus-expanded decision has to address this element, and
       // the class name is a build-mode-dependent hash.
-      data-testid={markers().boxTestId}
+      data-testid={ids().box}
       data-expanded={isExpanded() ? '' : undefined}
       // Whether a `[+]` button is rendered at all. The stylesheet reserves the
       // left column for it, and a box without one starts its text 40px in for
-      // no reason -- see `--composer-left-pad` in the stylesheet.
-      data-plus={plusNode() ? '' : undefined}
+      // no reason -- see `--editor-left-pad` in the stylesheet.
+      data-plus={hasPlus() ? '' : undefined}
       style={{
-        '--composer-right-pad': `${layout.rightPad()}px`,
+        '--editor-right-pad': `${layout.rightPad()}px`,
         // Omitted until measured, so the stylesheet's own fallback applies.
-        ...(layout.actionsHeight() > 0 ? { '--composer-actions-h': `${layout.actionsHeight()}px` } : {}),
+        ...(layout.actionsHeight() > 0 ? { '--editor-actions-h': `${layout.actionsHeight()}px` } : {}),
       }}
     >
       {props.banner}
+      {/* The box is unusable when the build failed, and it looks identical to
+          an empty one. Say what happened, so the reader knows to reload rather
+          than retyping into a field that will never send. */}
+      <Show when={buildFailed()}>
+        <div class={errorText} role="alert" data-testid={ids().buildFailed}>
+          The editor failed to load. Reload the page to try again.
+        </div>
+      </Show>
       <div class={styles.editorRow} ref={editorRowEl}>
-        <div class={styles.plusSlot} data-testid={`${markers().slotPrefix}-plus-slot`}>{plusNode()}</div>
+        <div class={styles.plusSlot} data-testid={ids().plusSlot}>{plusNode()}</div>
         <div
           class={styles.editorWrapper}
           ref={editorRef}
-          data-testid={markers().editorTestId}
+          data-testid={ids().editor}
           // Only the message composer claims it. `useShortcuts` reads it for the
           // `chatInputFocused` context, and `$mod+j` sends the chat message
           // there -- so a goal editor carrying it would send a message from
@@ -908,12 +1078,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         {/* Separator between text area and button row in expanded mode. Positioned
             at the top of the button reservation (the editor row's padding-bottom
             area) so it sits right between the text and the buttons. */}
-        <div class={styles.editorSeparator} data-testid={`${markers().slotPrefix}-separator`} />
+        <div class={styles.editorSeparator} data-testid={ids().separator} />
         {/* The action cluster: compact Interrupt/Send (actions) when composing,
             or the full-width control-request actions (footer) when a request is
             active. `data-full-width` distinguishes the two so the expanded
             layout can stretch the control-request footer across the box. */}
-        <div class={styles.footerSlot} ref={footerSlotEl} data-testid={`${markers().slotPrefix}-footer-slot`} data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
+        <div class={styles.footerSlot} ref={footerSlotEl} data-testid={ids().footerSlot} data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
       </div>
       <CodeLanguagePopover
         open={codeLangPopoverOpen}
