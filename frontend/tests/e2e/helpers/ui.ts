@@ -1,10 +1,11 @@
 import type { Locator, Page } from '@playwright/test'
+import type { FileSortOrder } from '../../../src/lib/fileSort'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 
 import { expect } from '@playwright/test'
-import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT } from '../../../src/lib/browserStorage'
+import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { readEntry, storageKeys, writeEntry } from './storage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
@@ -1344,6 +1345,41 @@ export async function waitForEditorDraft(page: Page, userId: string, text: strin
     }
     return false
   }, `the editor draft "${text}" must be persisted before the reload`).toBe(true)
+}
+
+/**
+ * Wait until the Files section's sort choice has actually reached storage.
+ *
+ * The preference travels through the same coalescing write-behind queue the
+ * editor draft does, so a reload issued in the moments after the click drops
+ * it. `App`'s `pagehide` flush narrows that window and cannot close it: the
+ * flush awaits the connection before it opens a transaction, so the write
+ * lands at least a microtask after the handler returns. A click followed
+ * immediately by a reload loses the write EVERY time, not sometimes.
+ *
+ * The key carries the tab's working directory, which the Worker canonicalizes
+ * (`/var/...` becomes `/private/var/...` on macOS), so this matches on the
+ * `(prefix, workerId)` head and on the stored value instead. One agent per
+ * spec is what makes that unambiguous.
+ */
+export async function waitForFilesSortOrder(
+  page: Page,
+  userId: string,
+  workerId: string,
+  expected: FileSortOrder,
+) {
+  const prefix = accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`)
+  await expect.poll(async () => {
+    for (const key of await storageKeys(page)) {
+      if (!key.startsWith(prefix))
+        continue
+      const row = await readEntry(page, key)
+      const stored = row?.v as { key?: unknown, direction?: unknown } | undefined
+      if (stored?.key === expected.key && stored?.direction === expected.direction)
+        return true
+    }
+    return false
+  }, `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`).toBe(true)
 }
 
 /**

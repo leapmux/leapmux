@@ -283,4 +283,23 @@ describe('directorySelector drive menu', () => {
     expect(refreshTree).toHaveBeenCalledOnce()
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(2))
   })
+
+  // The other entry point. The button and the keyboard shortcut must not
+  // disagree, or a user ends up with a re-listed tree beside a stale menu.
+  it('refreshes the drive list from the refresh button', async () => {
+    workerOs.mockReturnValue('windows')
+    workerHome.mockReturnValue('C:\\Users\\alice')
+    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    const { state, tree, refreshTree } = makeState()
+    state.workingDir = () => ''
+    render(withPreferences(() => (
+      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
+    )))
+    await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByTestId('directory-selector-refresh'))
+
+    expect(refreshTree).toHaveBeenCalledOnce()
+    await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(2))
+  })
 })

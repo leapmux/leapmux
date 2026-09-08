@@ -3,7 +3,7 @@ import type { FileSortOrder } from '~/lib/fileSort'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { PREFIX_DIRECTORY_TREE, sessionStorageClearForTests, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { DIRECTORY_TREE_STATE_VERSION, DirectoryTree } from './DirectoryTree'
 
@@ -56,6 +56,18 @@ function oneListing(
   }
 }
 
+/**
+ * Drain the microtask queue a few times.
+ *
+ * An effect that re-fires on its own asynchronous write needs one turn per
+ * iteration, so a loop shows up within a handful of them. Not a timer: a
+ * fixed delay would make the test slower AND weaker.
+ */
+async function settle(turns = 10): Promise<void> {
+  for (let i = 0; i < turns; i++)
+    await Promise.resolve()
+}
+
 function rowFor(name: string): Element | undefined {
   return [...document.querySelectorAll('[data-testid="tree-row"]')]
     .find(el => el.querySelector('[data-testid="tree-row-name"]')?.textContent === name)
@@ -75,7 +87,7 @@ beforeEach(() => {
   listDirectory.mockReset()
   statFile.mockReset()
   statFile.mockResolvedValue({ info: { modTime: '2026-01-01T00:00:00Z' } })
-  sessionStorage.clear()
+  sessionStorageClearForTests()
 })
 
 describe('directoryTree', () => {
@@ -795,10 +807,70 @@ describe('directoryTree chain loading', () => {
     renderTree({ rootPath: '/tmp/ws' })
 
     await waitFor(() => expect(rowFor('src')).toBeTruthy())
-    // Settles instead of looping: the guard stops a repeat of the same
-    // (worker, root, target) request.
-    await waitFor(() => expect(listDirectory).toHaveBeenCalled())
-    expect(listDirectory.mock.calls.length).toBeLessThanOrEqual(2)
+    // Settles instead of looping: the re-keyed listing satisfies the cache
+    // guard, so the effect's next run finds the chain already loaded.
+    await settle()
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * The same canonicalization, one level DEEPER -- where re-keying cannot
+   * help.
+   *
+   * Only the FIRST listing is re-keyed, because the entries of a deeper one
+   * carry the worker's own spelling and the tree's nodes are built from those.
+   * So `/tmp/ws/src` is a directory this chain named and the cache never
+   * receives: its guard misses forever. This effect subscribes to the cache it
+   * writes, so without `lastChainKey` its own write would re-run it, and the
+   * tree would issue the same request for as long as it stayed mounted.
+   */
+  it('does not re-fetch in a loop when the worker answers under paths the chain never named', async () => {
+    listDirectory.mockResolvedValue({
+      listings: [
+        { path: '/private/tmp/ws', entries: [dirEntry('/private/tmp/ws', 'src')], truncated: false, totalEntries: 1 },
+        { path: '/private/tmp/ws/src', entries: [], truncated: false, totalEntries: 0 },
+      ],
+    })
+
+    renderTree({ rootPath: '/tmp/ws', revealPath: '/tmp/ws/src' })
+
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    await settle()
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/tmp/ws/src', fromRoot: '/tmp/ws' })
+  })
+
+  /**
+   * The chain key describes the request whose result the cache holds, so it
+   * must not outlive that cache.
+   *
+   * `showFiles` is part of the sessionStorage key and NOT part of the chain
+   * key, so toggling it replaces the whole cache while `(worker, root,
+   * target)` stays the same. A guard that remembered the old request would
+   * suppress the one fetch that refills the emptied tree, and the picker would
+   * sit blank for the rest of the session.
+   */
+  it('re-fetches after a cache reset the chain key cannot see', async () => {
+    mockChain({ '/': [dirEntry('/', 'home')] })
+
+    const [showFiles, setShowFiles] = createSignal(false)
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/"
+        selectedPath=""
+        showFiles={showFiles()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
+
+    setShowFiles(true)
+
+    await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(2))
+    expect(listDirectory.mock.calls[1][1]).toMatchObject({ path: '/', dirsOnly: false })
+    await waitFor(() => expect(rowFor('home')).toBeTruthy())
   })
 
   it('drops a file target from the chain', async () => {

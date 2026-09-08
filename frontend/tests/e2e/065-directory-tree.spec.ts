@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow, treeRowNames } from './helpers/ui'
+import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 const ABSOLUTE_PATH_RE = /^\//
@@ -359,7 +359,7 @@ test.describe('DirectoryTree', () => {
   })
 
   test('sort menu reorders the tree and the choice survives a reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const { hubUrl, adminToken, adminUserId, workerId } = leapmuxServer
     // A directory whose size order differs from its name order, so an
     // assertion on the row order cannot pass with the sort key ignored.
     const sortDir = join(tmpdir(), `leapmux-e2e-sortdir-${Date.now()}`)
@@ -385,6 +385,10 @@ test.describe('DirectoryTree', () => {
       await expect(names).toHaveText(['apple.txt', 'cherry.txt', 'banana.txt'])
 
       await page.keyboard.press('Escape')
+      // The choice is on screen well before it is on disk: it goes through a
+      // coalescing write-behind queue, and reloading without waiting drops it
+      // every time. Assert the state the reload depends on, not a delay.
+      await waitForFilesSortOrder(page, adminUserId, workerId, { key: 'size', direction: 'desc' })
       await page.reload()
       await expect(names).toHaveText(['apple.txt', 'cherry.txt', 'banana.txt'])
     }

@@ -839,9 +839,29 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // wrong machine's directories with no way to tell.
   const storageKey = () => `${PREFIX_DIRECTORY_TREE}${props.workerId}:${props.rootPath}:${props.showFiles ? 'files' : 'dirs'}`
 
+  /**
+   * The last chain request this tree issued, as workerId + root + target.
+   *
+   * NOT reactive, and deliberately not derived from the cache. The worker
+   * CANONICALIZES what it lists, so a symlinked ancestor comes back under a
+   * path the chain never named -- the chain effect's cache guard then misses
+   * forever, and that effect reads `childrenCache`, so it would re-fetch every
+   * time its own write landed. This key makes that loop impossible rather than
+   * leaving it to the unchanged-content fast path to damp.
+   *
+   * It describes the request whose result the CURRENT cache holds, so the
+   * effect below clears it whenever it replaces that cache.
+   */
+  let lastChainKey = ''
+
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
+    // The cache is about to be replaced wholesale, so the key no longer
+    // describes it. Leaving it set would suppress the one fetch that refills
+    // an emptied tree -- the guard exists to stop this effect's own writes
+    // from re-triggering it, not to outlive the cache it speaks for.
+    lastChainKey = ''
     try {
       const stored = sessionStorageGet<string>(key)
       if (stored) {
@@ -1067,18 +1087,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const known = getChildren(parent)?.find(c => c.path === target)
     return known && !known.isDir ? chain.slice(0, -1) : chain
   }
-
-  /**
-   * The last chain request this tree issued, as workerId + root + target.
-   *
-   * NOT reactive, and deliberately not derived from the cache. The worker
-   * CANONICALIZES what it lists, so a symlinked ancestor comes back under a
-   * path the chain never named -- the cache guard below then misses forever,
-   * and this effect reads `childrenCache`, so it would re-fetch every time its
-   * own write landed. This key makes that loop impossible rather than leaving
-   * it to the unchanged-content fast path to damp.
-   */
-  let lastChainKey = ''
 
   // Load the root listing and, when the tree has somewhere to reveal, every
   // listing between the root and it -- in ONE request.
