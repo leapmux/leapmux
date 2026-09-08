@@ -173,6 +173,33 @@ export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
 }
 
+/**
+ * The id of the terminal that holds keyboard focus, from the DOM.
+ *
+ * Answers for EVERY mounted terminal, placed in a tile or not, because
+ * `data-terminal-id` is on the wrapper this module renders. That is what a
+ * caller needs for the quake panel's companion shell: it has no tab, so the
+ * tab-shaped "which tab is focused?" lookups cannot name it, yet the keybinding
+ * layer's `terminalFocused` context is true whenever it holds focus.
+ */
+export function focusedTerminalId(): string | undefined {
+  const el = document.activeElement?.closest<HTMLElement>('[data-terminal-id]')
+  return el?.dataset.terminalId || undefined
+}
+
+/**
+ * Send text to one terminal's PTY, by id.
+ *
+ * The same `sendInput` an `onData` keystroke takes, so a synthesized control
+ * sequence goes through the identical gate, input log and RPC. A terminal that
+ * is not mounted is silently skipped -- the caller resolved the id from the
+ * focused element, so a missing instance means it was disposed in between.
+ */
+export function writeToTerminalInstance(id: string, data: string): void {
+  const instance = instances.get(id)
+  instance?.sendInput?.(utf8Encoder.encode(data))
+}
+
 /** Called when a terminal instance enters the map — used to flush buffered watch data. */
 type TerminalInstanceReadyListener = (id: string) => void
 // A Set, not a single slot: a second consumer (a test rendering two connection

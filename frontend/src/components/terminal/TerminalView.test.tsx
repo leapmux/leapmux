@@ -35,7 +35,7 @@ vi.mock('~/lib/terminal', async () => {
   }
 })
 
-const { TerminalView, getTerminalInstance, disposeTerminalInstance, setTerminalScreenSink }
+const { TerminalView, focusedTerminalId, getTerminalInstance, disposeTerminalInstance, setTerminalScreenSink, writeToTerminalInstance }
   = await import('~/components/terminal/TerminalView')
 
 beforeAll(() => {
@@ -1137,5 +1137,66 @@ describe('terminalView focus while a tab is being renamed', () => {
       </PreferencesProvider>
     ))
     await waitFor(() => expect(instance.terminal.focus).toHaveBeenCalled())
+  })
+})
+
+/**
+ * The by-id entry points the shell needs for a terminal that has NO TAB: the
+ * quake panel's companion shell.
+ *
+ * Every tab-shaped lookup answers "which tab holds focus", and from inside an
+ * open panel that is the AGENT tab. These two answer from the DOM and from the
+ * instance registry instead, which is what lets the macOS motion bindings reach
+ * a companion's PTY.
+ */
+describe('the focused terminal, by id', () => {
+  beforeEach(resetTerminalViewMocks)
+
+  /** Mount one TerminalView and hand back its instance and input spy. */
+  async function mount(id: string) {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const onInput = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', status: TerminalStatus.READY, screen: new Uint8Array() } as TerminalTab]}
+          activeTerminalId={id}
+          visible
+          tileFocused={false}
+          onInput={onInput}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getTerminalInstance(id)).toBe(instance))
+    return { instance, onInput }
+  }
+
+  it('answers undefined when focus is outside every terminal', async () => {
+    await mount('t-1')
+    expect(focusedTerminalId()).toBeUndefined()
+  })
+
+  it('names the terminal whose wrapper contains the focused element', async () => {
+    const { instance } = await mount('t-1')
+    instance.terminal.textarea!.focus()
+
+    expect(focusedTerminalId()).toBe('t-1')
+  })
+
+  // The same `sendInput` a keystroke takes, so a synthesized control sequence
+  // goes through the identical gate and RPC rather than a second path.
+  it('sends text to one terminal through its own input gate', async () => {
+    const { onInput } = await mount('t-1')
+
+    writeToTerminalInstance('t-1', '\x01')
+
+    expect(onInput).toHaveBeenCalledWith('t-1', new TextEncoder().encode('\x01'))
+  })
+
+  it('drops a write for a terminal that is not mounted', () => {
+    expect(() => writeToTerminalInstance('gone', '\x05')).not.toThrow()
   })
 })

@@ -3,7 +3,7 @@ import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
-import { createEffect, createMemo, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, onMount, Show } from 'solid-js'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { usePreferences } from '~/context/PreferencesContext'
 import * as styles from './QuakeTerminalPanel.css'
@@ -57,18 +57,41 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
     return out
   })
 
-  const open = () => entry()?.open === true
+  /**
+   * Whether the panel painted its closed state at least once.
+   *
+   * False for the render that CREATES the panel, and true from the next
+   * microtask on. See `armFirstSlide` for why the first open needs that.
+   */
+  const [firstSlideArmed, setFirstSlideArmed] = createSignal(false)
+
+  const open = () => firstSlideArmed() && entry()?.open === true
 
   /**
-   * Keep the closed panel out of the tab order.
+   * Two jobs the panel element owns, both of which need the element itself.
    *
-   * Written as an ATTRIBUTE rather than through the `inert` prop, which Solid
-   * sets as a DOM property. An engine without the property drops it silently,
-   * and the closed panel then stays reachable by Tab -- a keyboard user landing
-   * in a terminal that is off screen. The attribute is what every engine reads,
-   * and it is also what a test can see.
+   * FIRST SLIDE. A CSS transition interpolates between two computed values, and
+   * the panel does not exist until the first open -- so an element inserted
+   * already carrying `data-quake-open="true"` has no earlier value to leave, and
+   * it appears fully in place instead of sliding. Every LATER open animates on
+   * its own, because the panel stays mounted once it exists. Reading a layout
+   * property supplies the missing value: it forces the browser to compute style
+   * and layout for the CLOSED panel before the open one lands in the same task.
+   * A `requestAnimationFrame` would not, because its callback runs BEFORE the
+   * paint of the frame that inserted the element.
+   *
+   * INERTNESS. The closed panel stays in the DOM, so it must leave the tab
+   * order. Written as an ATTRIBUTE rather than through the `inert` prop, which
+   * Solid sets as a DOM property: an engine without the property drops it
+   * silently, and the closed panel then stays reachable by Tab -- a keyboard
+   * user landing in a terminal that is off screen. The attribute is what every
+   * engine reads, and it is also what a test can see.
    */
-  const setInertness = (el: HTMLDivElement) => {
+  const armFirstSlide = (el: HTMLDivElement) => {
+    onMount(() => {
+      void el.offsetHeight
+      setFirstSlideArmed(true)
+    })
     createEffect(() => {
       if (open())
         el.removeAttribute('inert')
@@ -76,6 +99,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
         el.setAttribute('inert', '')
     })
   }
+
   // The panel exists as soon as ANY owner has one, not just the active owner:
   // a background agent tab's shell must keep receiving bytes, and its xterm has
   // to stay mounted for that.
@@ -97,8 +121,12 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
         }}
       >
         <div
+          ref={armFirstSlide}
           class={styles.quakePanel}
           data-testid="quake-panel"
+          // The hook the shell's focus restore reads: a close only pulls the
+          // caret back to the composer when focus is still inside this box.
+          data-quake-panel
           data-quake-orientation={preferences.quakeOrientation()}
           data-quake-open={open() ? 'true' : 'false'}
           // A closed panel is still in the DOM, so it must be out of the
@@ -106,7 +134,6 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
           // user tabs into a terminal that is off screen. `inert` covers focus,
           // `aria-hidden` covers the reader.
           aria-hidden={open() ? undefined : 'true'}
-          ref={setInertness}
         >
           <div class={styles.quakeBody}>
             <TerminalView

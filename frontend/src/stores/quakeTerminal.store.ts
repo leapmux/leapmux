@@ -34,7 +34,14 @@ export interface QuakeTerminalDeps {
    * seen and must resolve it against the live tab set.
    */
   getAgentTab: (agentId: string) => AgentTab | undefined
-  /** Restore keyboard focus to the composer when a panel closes. */
+  /**
+   * Restore keyboard focus to the composer when a panel closes.
+   *
+   * Called while the panel is still open, so the implementation can ask whether
+   * focus is inside it -- closing by shortcut from the transcript, or from
+   * another device through the Control CLI, must not yank the caret out of
+   * wherever the user is working.
+   */
   focusComposer?: (ownerId: string) => void
   /** How long the panel takes to retract, so a dispose can wait it out. */
   closeDelayMs: () => number
@@ -151,9 +158,11 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     }
     if (!owner.workerId)
       return
-    // The entry lands BEFORE the RPC so the panel mounts closed and can animate
-    // open while the worker answers. A panel that appeared only after the round
-    // trip would jump into place on a cold open.
+    // The entry lands BEFORE the RPC, so the panel slides in while the worker
+    // is still answering and shows the shell's own startup state. A panel that
+    // appeared only after the round trip would jump into place on a cold open.
+    // The panel itself owns the first frame -- see `armFirstSlide` in
+    // `~/components/shell/QuakeTerminalPanel`.
     setEntries(owner.id, {
       ownerId: owner.id,
       workerId: owner.workerId,
@@ -175,8 +184,13 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
   const close = (ownerId: string) => {
     if (!entries[ownerId]?.open)
       return
-    setEntries(ownerId, 'open', false)
+    // Asked BEFORE the panel retracts, and the order is load-bearing. Closing
+    // the panel marks it `inert`, which blurs whatever it holds -- so a
+    // focus-restore that ran afterwards would see focus on the body and could
+    // no longer tell "the user was typing in the shell" from "the user closed
+    // it from the transcript".
     deps.focusComposer?.(ownerId)
+    setEntries(ownerId, 'open', false)
   }
 
   const toggle = (owner: AgentTab): void => {
@@ -240,8 +254,9 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     const ownerId = ownerOf(terminalId)
     if (ownerId === undefined)
       return
-    setEntries(ownerId, 'open', false)
+    // Before the retract, for the reason `close` states.
     deps.focusComposer?.(ownerId)
+    setEntries(ownerId, 'open', false)
     const wait = deps.closeDelayMs()
     if (wait <= 0) {
       finishShellExit(ownerId, terminalId)

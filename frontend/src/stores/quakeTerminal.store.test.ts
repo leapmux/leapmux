@@ -137,6 +137,54 @@ describe('createQuakeTerminalStore', () => {
     dispose()
   })
 
+  // The shell's restore asks whether focus is still INSIDE the panel, and
+  // closing it marks it `inert`, which blurs whatever it holds. Asked
+  // afterwards, the answer would always be "focus is elsewhere" and the caret
+  // would never come back.
+  it('asks for the focus restore while the panel is still open', async () => {
+    const { store, focusComposer, dispose } = setup()
+    await store.open(OWNER)
+
+    let openAtRestore: boolean | undefined
+    focusComposer.mockImplementation(() => {
+      openAtRestore = store.entryFor('a1')?.open
+    })
+    store.close('a1')
+
+    expect(openAtRestore).toBe(true)
+    expect(store.entryFor('a1')?.open).toBe(false)
+    dispose()
+  })
+
+  // The restore now runs BEFORE the flip, so the "already closed" guard is what
+  // stops a second close pulling the caret out of wherever the user moved it.
+  it('asks for no focus restore when the panel is already closed', async () => {
+    const { store, focusComposer, dispose } = setup()
+    await store.open(OWNER)
+    store.close('a1')
+    focusComposer.mockClear()
+
+    store.close('a1')
+    store.close('never-opened')
+
+    expect(focusComposer).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('asks for the focus restore before retracting on a shell exit too', async () => {
+    const { store, focusComposer, dispose } = setup()
+    await store.open(OWNER)
+
+    let openAtRestore: boolean | undefined
+    focusComposer.mockImplementation(() => {
+      openAtRestore = store.entryFor('a1')?.open
+    })
+    store.handleShellExit('quake-1')
+
+    expect(openAtRestore).toBe(true)
+    dispose()
+  })
+
   it('publishes its companions to the tab view, and only once resolved', async () => {
     const { store, dispose } = setup()
     expect(store.detachedTerminals()).toEqual([])

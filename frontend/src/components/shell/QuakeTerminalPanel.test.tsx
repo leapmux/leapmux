@@ -80,6 +80,41 @@ describe('quakeTerminalPanel', () => {
     expect(panel.hasAttribute('inert')).toBe(true)
   })
 
+  // A CSS transition needs two computed values, and the panel is CREATED by the
+  // first open. Inserted already open it would jump into place, and only the
+  // first open of a page load would behave differently from every later one --
+  // which is the kind of defect nobody reproduces on purpose.
+  it('inserts the panel closed and opens it in the same task, so the first open slides', () => {
+    const flips: (string | null)[] = []
+    const observer = new MutationObserver(() => {})
+    observer.observe(document.body, {
+      subtree: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ['data-quake-open'],
+    })
+
+    const { getByTestId } = mount({ entry: OPEN })
+
+    // Records are collected synchronously; the observer's own callback is a
+    // microtask and would run after the assertions.
+    for (const record of observer.takeRecords())
+      flips.push(record.oldValue)
+    observer.disconnect()
+
+    // Exactly one flip, and it LEAVES the closed state -- so the element was in
+    // the document carrying `false` before it carried `true`.
+    expect(flips).toEqual(['false'])
+    expect(getByTestId('quake-panel').getAttribute('data-quake-open')).toBe('true')
+  })
+
+  // The hook `AppShell` reads to decide whether closing the panel should pull
+  // the caret back to the composer.
+  it('marks the panel so a focus restore can ask whether focus is inside it', () => {
+    const { getByTestId } = mount({ entry: OPEN })
+    expect(getByTestId('quake-panel').hasAttribute('data-quake-panel')).toBe(true)
+  })
+
   it('passes the active owner terminal to the view, and marks it visible', () => {
     const { getByTestId } = mount({ entry: OPEN })
     const view = getByTestId('terminal-view')

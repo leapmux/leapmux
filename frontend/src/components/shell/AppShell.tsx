@@ -24,7 +24,7 @@ import { setExpectedUserId } from '~/api/workerRpc'
 import { BootSplash } from '~/components/common/BootSplash'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { setTerminalScreenSink } from '~/components/terminal/TerminalView'
+import { focusedTerminalId, setTerminalScreenSink, writeToTerminalInstance } from '~/components/terminal/TerminalView'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
@@ -174,7 +174,14 @@ export const AppShell: Component = () => {
   const quakeStore = createQuakeTerminalStore({
     metadata: tabMetadata,
     getAgentTab: agentId => tabViewRef?.getAgentTab(agentId),
-    focusComposer: () => focusEditor(),
+    // Only when focus is still INSIDE the panel. A close from the transcript,
+    // from another agent tab, or from another device through the Control CLI
+    // must not yank the caret out of wherever the user is working. The store
+    // asks before the panel retracts, so `inert` has not blurred anything yet.
+    focusComposer: () => {
+      if (document.activeElement?.closest('[data-quake-panel]'))
+        focusEditor()
+    },
     // Read at fire time: the user can change the duration while a panel is
     // retracting, and the dispose must wait out the animation the panel is
     // actually running.
@@ -1452,7 +1459,20 @@ export const AppShell: Component = () => {
     isActiveWorkspaceArchived,
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
-    writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
+    writeToFocusedTerminal: (data: string) => {
+      // A companion terminal is not a tab, so the tile renderer's tab-shaped
+      // lookup cannot reach it -- from inside an open panel it resolves the
+      // AGENT tab and returns. The motion bindings resolve on `terminalFocused`,
+      // which an open panel satisfies, so without this arm `activateBindings`
+      // would call preventDefault and then nothing would happen: the chord
+      // would neither move the cursor nor reach the PTY.
+      const focusedId = focusedTerminalId()
+      if (focusedId !== undefined && quakeStore.isQuakeTerminal(focusedId)) {
+        writeToTerminalInstance(focusedId, data)
+        return
+      }
+      tileRenderer.writeToFocusedTerminal(data)
+    },
     getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
     preferredExternalAppId: preferences.preferredExternalAppId,

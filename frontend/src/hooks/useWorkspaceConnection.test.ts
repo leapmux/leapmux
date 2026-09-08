@@ -2230,37 +2230,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    // A companion terminal has no tile, so `isWorkspaceActiveTerminal` used to
-    // fall to the workspace-key branch -- which can never match an id that is
-    // not a tab. An OPEN, focused quake panel therefore counted as off-screen
-    // and raised a desktop notification for output the user was watching happen.
-    it('notification leaves an on-screen quake terminal alone, although it has no tile', () => {
-      createRoot((dispose) => {
-        const tabs = makeTabStores()
-        handleTerminalNotification('q1', { title: '', body: 'hi' } as never, {
-          metadata: tabs.metadata,
-          selection: tabs.selection,
-          getActiveWorkspaceId: () => WS,
-          isDetachedOnScreen: id => id === 'q1',
-        })
-        expect(tabs.metadata.get('q1')?.hasNotification ?? false).toBe(false)
-        dispose()
-      })
-    })
-
-    it('notification badges a quake terminal whose panel is closed', () => {
-      createRoot((dispose) => {
-        const tabs = makeTabStores()
-        handleTerminalNotification('q1', { title: '', body: 'hi' } as never, {
-          metadata: tabs.metadata,
-          selection: tabs.selection,
-          getActiveWorkspaceId: () => WS,
-          isDetachedOnScreen: () => false,
-        })
-        expect(tabs.metadata.get('q1')?.hasNotification).toBe(true)
-        dispose()
-      })
-    })
+    // The detached (quake) predicate is covered where the module it belongs to
+    // is: `./terminalEvents.test.ts`, which can assert the OS notification
+    // itself rather than only the badge that stands in for it.
 
     it('progress patches metadata fields', () => {
       createRoot((dispose) => {
@@ -2640,6 +2612,22 @@ describe('collectWorkerOfflineTargets', () => {
 
     expect(agents).toEqual([])
     expect(terminals.size, 'a FILE tab is neither branch').toBe(0)
+  })
+
+  /**
+   * A companion terminal -- the shell behind a quake panel -- has no tile and
+   * no placement, and it is not in `view.all()` at all: the hook composes it in
+   * from the detached family precisely so this sweep can reach it.
+   *
+   * Without that composition an outage left every quake terminal reading READY
+   * for its whole duration, with a live-looking panel that swallowed input.
+   */
+  it('marks a terminal that has no tile, which is the quake panel\'s shape', () => {
+    const { terminals } = collectWorkerOfflineTargets([
+      tab({ type: TabType.TERMINAL, id: 'companion', tileId: undefined, status: TerminalStatus.READY }),
+    ], 'w1')
+
+    expect([...terminals]).toEqual(['companion'])
   })
 
   it('returns nothing for a worker that hosts none of these tabs', () => {

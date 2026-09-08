@@ -364,6 +364,6 @@ The terminal and tab shortcuts (opening, closing, scrollback paging, the Quake-m
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
-- [Settings & Preferences](/docs/using/settings/) — terminal theme and fonts.
+- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal`, `tab`, and `agent quake` command surface.
+- [Settings & Preferences](/docs/using/settings/) — terminal theme, fonts, and the four Quake-mode terminal settings.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

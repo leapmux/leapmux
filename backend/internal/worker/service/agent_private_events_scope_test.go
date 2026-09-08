@@ -92,6 +92,33 @@ func TestPrivateEventVisibleGatesImagePayloadsByAgentScope(t *testing.T) {
 		"a FILE payload still rides the stream's own file:read floor")
 }
 
+// A QuakePanelCommand spans BOTH tab kinds: it names an AGENT tab, and acting
+// on it puts that tab's TERMINAL in front of the user. A caller holding one of
+// the two would either learn an agent id it cannot see or be asked to reveal a
+// shell it cannot read, so it needs both.
+func TestPrivateEventVisibleGatesQuakeCommandsByBothTabKinds(t *testing.T) {
+	fileOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read")}
+	agentOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read agent:read")}
+	terminalOnly := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read terminal:read")}
+	both := channel.Caller{UserID: userid.MustNew("u1"), Scopes: mustScopes("file:read agent:read terminal:read")}
+
+	quake := &leapmuxv1.WorkerPrivateEvent{Event: &leapmuxv1.WorkerPrivateEvent_QuakePanelCommand{
+		QuakePanelCommand: &leapmuxv1.QuakePanelCommand{
+			AgentId: "a1",
+			Action:  leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
+		},
+	}}
+
+	assert.False(t, privateEventVisible(fileOnly, quake),
+		"a file:read caller must not learn that an agent exists")
+	assert.False(t, privateEventVisible(agentOnly, quake),
+		"agent:read alone must not open a shell the caller cannot read")
+	assert.False(t, privateEventVisible(terminalOnly, quake),
+		"terminal:read alone must not reveal the agent id the command names")
+	assert.True(t, privateEventVisible(both, quake),
+		"a caller that reads both kinds receives the command")
+}
+
 // A payload this binary cannot parse states no kind, so it states no scope
 // either. Failing closed is the only answer that cannot leak: the alternative
 // hands an unknown future payload to whichever caller happens to be listening.

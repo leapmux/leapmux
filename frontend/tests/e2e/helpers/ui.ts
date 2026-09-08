@@ -1012,8 +1012,13 @@ export async function getBrowserPrefValue(page: Page, userId: string, field: str
  * `page.evaluate` seed happening after the first load; nothing needs it now.
  *
  * The page must already be on the app's origin, which every caller satisfies.
+ *
+ * `value` is `unknown` because a preference is not always a string: the quake
+ * size is a number and the opacity a float, and every parse in
+ * `PreferencesContext` checks `typeof raw === 'number'` -- so a stringified
+ * seed would be discarded for the default with nothing to show for it.
  */
-export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: string) {
+export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: unknown) {
   const storedKey = accountStorageKey(userId, KEY_BROWSER_PREFS)
   const existing = await readEntry(page, storedKey)
   const prefs = (existing?.v != null && typeof existing.v === 'object')

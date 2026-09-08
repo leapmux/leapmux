@@ -43,6 +43,35 @@ describe('buildCommandRows', () => {
     expect(prev?.title).toBe('app.previousTab')
     expect(prev?.keys).toContain('$mod+BracketLeft')
   })
+
+  /**
+   * A row carries its default `when`, and an override the user records inherits
+   * it. That matters most for the steer chord: rebound with no clause, `$mod+
+   * Enter` would resolve everywhere -- and because `activateBindings` calls
+   * preventDefault on a command that resolves, it would swallow the composer's
+   * own send rather than fall through to it.
+   */
+  it('carries the steer binding\'s when-clause onto its row', () => {
+    const rows = buildCommandRows(WORKSPACE_KEYBINDINGS, [], [
+      { id: 'chat.steerQueuedInput', title: 'Steer Queued Input', category: 'Chat' },
+    ])
+    const steer = rows.find(r => r.command === 'chat.steerQueuedInput')
+    expect(steer?.keys).toContain('$mod+Enter')
+    expect(steer?.when).toBe('activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen')
+  })
+
+  // `chat.sendMessage` gave up $mod+j and kept no default chord, but it stays
+  // registered and rebindable -- so Preferences must still list it, with its
+  // real title and an empty binding for the user to fill in.
+  it('lists a registered command that has no default binding at all', () => {
+    const rows = buildCommandRows(WORKSPACE_KEYBINDINGS, [], [
+      { id: 'chat.sendMessage', title: 'Send Message', category: 'Chat' },
+    ])
+    const send = rows.find(r => r.command === 'chat.sendMessage')
+    expect(send?.title).toBe('Send Message')
+    expect(send?.keys).toEqual([])
+    expect(send?.customized).toBe(false)
+  })
 })
 
 describe('chordFromEvent', () => {

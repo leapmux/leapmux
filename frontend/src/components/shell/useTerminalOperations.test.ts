@@ -129,7 +129,7 @@ function addTerminal(
   stores.metadata.patch(id, meta)
 }
 
-function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}, isMutatable = true) {
+function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}, isMutatable = true, isQuakeTerminal: (id: string) => boolean = () => false) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
@@ -161,7 +161,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
       repoGitStore: createRepoGitStore(),
-      isQuakeTerminal: () => false,
+      isQuakeTerminal,
     })
     return d
   })
@@ -581,6 +581,30 @@ describe('useterminaloperations.handleterminalinput', () => {
       cols: 100,
       rows: 30,
     })
+  })
+
+  /**
+   * A COMPANION terminal has no restart contract: its shell exiting ends it,
+   * and the next open of the panel spawns a fresh one.
+   *
+   * The window is real. The close event lands, the panel begins its retract,
+   * xterm still holds focus -- and an Enter in that moment would restart a
+   * terminal the store is about to release, leaving a PTY behind that no panel
+   * will ever show.
+   */
+  it('issues no restart for Enter on an exited quake terminal', async () => {
+    const { ops } = setup(TerminalStatus.EXITED, {}, true, id => id === 'tid-1')
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(restartTerminalMock).not.toHaveBeenCalled()
+    expect(sendInputMock).not.toHaveBeenCalled()
+  })
+
+  // And a READY companion still types: the early return is about the EXITED
+  // branch below it, not about companions in general.
+  it('still sends input to a live quake terminal', async () => {
+    const { ops } = setup(TerminalStatus.READY, {}, true, id => id === 'tid-1')
+    await ops.handleTerminalInput('tid-1', new TextEncoder().encode('x'))
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
   })
 
   it.each([TerminalStatus.READY, TerminalStatus.EXITED])('suppresses input for status %s while archived', async (status) => {
