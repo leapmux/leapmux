@@ -902,14 +902,14 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const visibleRows = createMemo<VisibleRow[]>(() => {
     const rp = rootPath()
     const rows: VisibleRow[] = [{ path: rp, isDir: true, parent: undefined }]
-    const hidden = showHidden()
-    const visible = props.isVisible
-    const compare = comparator()
     const walk = (parent: string) => {
       const all = getChildren(parent)
       if (!all)
         return
-      for (const child of visibleSortedChildren(all, hidden, visible, compare)) {
+      // Read here rather than once above `walk`. This memo calls `walk` and
+      // nothing else does, so each read tracks exactly as a hoisted one did,
+      // and no inner function holds a value that a later run leaves stale.
+      for (const child of visibleSortedChildren(all, showHidden(), props.isVisible, comparator())) {
         rows.push({ path: child.path, isDir: child.isDir, parent })
         if (child.isDir && isNodeExpanded(child.path))
           walk(child.path)
@@ -931,8 +931,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
 
   const [focusedPath, setFocusedPath] = createSignal('')
   const tabStopPath = createMemo(() => {
-    const rows = visibleRows()
-    const onScreen = (path: string) => !!path && rows.some(r => r.path === path)
+    const onScreen = (path: string) => !!path && visibleRows().some(r => r.path === path)
     if (onScreen(focusedPath()))
       return focusedPath()
     if (onScreen(props.selectedPath))
@@ -1019,13 +1018,17 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
 
   // The root row's element, registered under the CURRENT root. `rootPath` can
   // change under a mounted tree, and a ref callback fires once per element.
+  // The `static` prefix marks the snapshot as deliberate, for the lint rule and
+  // for the reader: the cleanup must unregister the root this run REGISTERED,
+  // not whichever root is current when it fires. Reading `rootPath()` in the
+  // cleanup would delete the new root's entry and leave the old one behind.
   createEffect(() => {
     const el = rootNodeEl()
-    const rp = rootPath()
+    const staticRoot = rootPath()
     if (!el)
       return
-    registerRow(rp, el)
-    onCleanup(() => registerRow(rp, undefined))
+    registerRow(staticRoot, el)
+    onCleanup(() => registerRow(staticRoot, undefined))
   })
 
   /**
