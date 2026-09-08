@@ -186,6 +186,10 @@ export const AppShell: Component = () => {
     // retracting, and the dispose must wait out the animation the panel is
     // actually running.
     closeDelayMs: () => (prefersReducedMotion() ? 0 : preferences.quakeAnimationMs() + 50),
+    // A cold open refuses an archived workspace, the same rule every other
+    // "open a terminal" path applies. Named here rather than at each keyboard
+    // command, so the Control CLI cannot answer differently.
+    isWorkspaceMutatable: isWorkspaceMutatableById,
   })
   const tabView = createTabView({
     projection,
@@ -615,7 +619,12 @@ export const AppShell: Component = () => {
 
   // Whether ONE NAMED workspace can be mutated. Per id, because a dialog can
   // act on a workspace that the user does not look at.
-  const isWorkspaceMutatableById = (workspaceId: string): boolean => {
+  //
+  // A function declaration, not a const: the quake store is built above and
+  // asks this on a cold open, so hoisting is what lets the definition stay
+  // beside the memo it mirrors instead of moving hundreds of lines up. Same
+  // reason `focusEditor` below is one.
+  function isWorkspaceMutatableById(workspaceId: string): boolean {
     // An ABSENT workspace -- deleted remotely while a dialog holds its id --
     // is not mutatable. That is the same refusal archival earns, and the same
     // one the caller needs.

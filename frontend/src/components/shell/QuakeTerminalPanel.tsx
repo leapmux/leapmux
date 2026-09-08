@@ -3,7 +3,7 @@ import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
-import { createEffect, createMemo, createSignal, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { usePreferences } from '~/context/PreferencesContext'
 import * as styles from './QuakeTerminalPanel.css'
@@ -71,7 +71,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
    * Two jobs the panel element owns, both of which need the element itself.
    *
    * FIRST SLIDE. A CSS transition interpolates between two computed values, and
-   * the panel does not exist until the first open -- so an element inserted
+   * the panel does not exist until the first open of its lifetime -- so an element inserted
    * already carrying `data-quake-open="true"` has no earlier value to leave, and
    * it appears fully in place instead of sliding. Every LATER open animates on
    * its own, because the panel stays mounted once it exists. Reading a layout
@@ -92,6 +92,11 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
       void el.offsetHeight
       setFirstSlideArmed(true)
     })
+    // Re-armed for the NEXT element. The panel unmounts once the last companion
+    // is released -- the owner's tab closed, or its shell exited -- and the
+    // reopen after that builds a new element, which needs the same two painted
+    // values the first one did.
+    onCleanup(() => setFirstSlideArmed(false))
     createEffect(() => {
       if (open())
         el.removeAttribute('inert')

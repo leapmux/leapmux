@@ -279,14 +279,25 @@ export function useShortcuts(props: UseShortcutsProps): void {
     return props.steerQueueItem(head)
   }, 'Chat')
 
-  /** The agent tab a quake command acts on, or null if there is not one. */
+  /**
+   * The agent tab a quake command acts on, or null if there is not one.
+   *
+   * The archived-workspace refusal is deliberately NOT here. It belongs to the
+   * OPENING direction alone and lives in the store, which is the one
+   * implementation the keyboard and the Control CLI share -- see
+   * `isWorkspaceMutatable` there. A refusal at this level also refused the
+   * CLOSE half of the toggle, stranding a user whose workspace was archived
+   * while the panel was up.
+   */
   function focusedAgentTabForQuake(): AgentTab | null {
     const tab = resolveFocusedTab()
     if (tab?.type !== TabType.AGENT)
       return null
-    // The same guard `openTerminalCore` applies: an archived workspace opens no
-    // terminal, and the panel would otherwise be the one surface that does.
-    if (props.isActiveWorkspaceArchived())
+    // A subagent transcript owns no process, so it owns no companion shell
+    // either: the worker refuses `SetQuakePanel` for one, and the keyboard must
+    // not be the one route around that. A companion owned by a child agent
+    // would also outlive its tab, because only a ROOT close tears one down.
+    if (tab.parentAgentId)
       return null
     return tab
   }

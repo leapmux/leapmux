@@ -114,5 +114,6 @@ export function createTestQuakeStore(view?: TabView): QuakeTerminalStore {
     metadata: createTabMetadataStore(),
     getAgentTab: agentId => view?.getAgentTab(agentId),
     closeDelayMs: () => 0,
+    isWorkspaceMutatable: () => true,
   })
 }

@@ -36,9 +36,12 @@ const OWNER: AgentTab = {
   workingDir: '/repo',
 }
 
-function setup(closeDelayMs = 0) {
+function setup(closeDelayMs = 0, mutatable = true) {
   const metadata = createTabMetadataStore()
   const focusComposer = vi.fn()
+  // A box rather than a constant, so a test can archive the workspace while a
+  // panel is open -- which is the case the open/close asymmetry exists for.
+  const workspace = { mutatable }
   let dispose!: () => void
   const store = createRoot((d) => {
     dispose = d
@@ -47,9 +50,10 @@ function setup(closeDelayMs = 0) {
       getAgentTab: id => (id === OWNER.id ? OWNER : undefined),
       focusComposer,
       closeDelayMs: () => closeDelayMs,
+      isWorkspaceMutatable: () => workspace.mutatable,
     })
   })
-  return { store, metadata, focusComposer, dispose }
+  return { store, metadata, focusComposer, workspace, dispose }
 }
 
 beforeEach(() => {
@@ -195,6 +199,54 @@ describe('createQuakeTerminalStore', () => {
     expect(store.isQuakeTerminal('quake-1')).toBe(true)
     expect(store.ownerOf('quake-1')).toBe('a1')
     dispose()
+  })
+
+  /**
+   * An archived workspace opens no terminal, and the panel must not be the one
+   * surface that does.
+   *
+   * The guard lives here rather than in each caller, because the keyboard
+   * commands and the Control CLI both arrive through these three methods and
+   * would otherwise be able to answer differently.
+   */
+  describe('an archived workspace', () => {
+    it('opens no shell', async () => {
+      const { store, dispose } = setup(0, false)
+      await store.open(OWNER)
+
+      expect(listTerminals).not.toHaveBeenCalled()
+      expect(openTerminal).not.toHaveBeenCalled()
+      expect(store.entryFor('a1')).toBeUndefined()
+      dispose()
+    })
+
+    // Hiding a panel starts nothing. Refusing it stranded a user whose
+    // workspace was archived while the panel was up: it covers the whole centre
+    // area and carries no close control of its own.
+    /**
+     * A panel the user opened BEFORE the workspace was archived keeps toggling
+     * both ways, and issues no RPC either way.
+     *
+     * Archiving does not end a running shell -- an archived terminal tab keeps
+     * its own -- so showing one that already exists starts nothing. Refusing
+     * the toggle here would strand the user instead: the panel covers the whole
+     * centre area and carries no close control of its own.
+     */
+    it('still toggles a panel the user opened before it was archived', async () => {
+      const { store, workspace, dispose } = setup()
+      await store.open(OWNER)
+      expect(store.entryFor('a1')?.open).toBe(true)
+      vi.clearAllMocks()
+
+      workspace.mutatable = false
+      store.toggle(OWNER)
+      expect(store.entryFor('a1')?.open, 'the toggle still hides it').toBe(false)
+
+      store.toggle(OWNER)
+      expect(store.entryFor('a1')?.open, 'and still shows the shell it already has').toBe(true)
+      expect(openTerminal, 'neither direction starts anything').not.toHaveBeenCalled()
+      dispose()
+    })
   })
 
   it('leaves no half-entry when the worker refuses', async () => {

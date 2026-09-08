@@ -1,6 +1,7 @@
 import type { QuakeEntry } from '~/stores/quakeTerminal.store'
 import type { DetachedTerminal } from '~/stores/tabView'
 import { cleanup, render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { QuakeTerminalPanel } from './QuakeTerminalPanel'
@@ -55,6 +56,29 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
 const OPEN: QuakeEntry = { ownerId: 'a1', workerId: 'w1', workspaceId: 'ws1', terminalId: 'q1', open: true }
 const CLOSED: QuakeEntry = { ...OPEN, open: false }
 
+/**
+ * Record every `data-quake-open` value the panel LEAVES while `act` runs.
+ *
+ * Attributes set on a detached element are invisible to an observer rooted at
+ * the body, so an element inserted already open records nothing -- which is
+ * exactly the difference the first slide turns on.
+ */
+function openFlipsDuring(act: () => void): (string | null)[] {
+  const observer = new MutationObserver(() => {})
+  observer.observe(document.body, {
+    subtree: true,
+    attributes: true,
+    attributeOldValue: true,
+    attributeFilter: ['data-quake-open'],
+  })
+  act()
+  // Collected synchronously; the observer's own callback is a microtask and
+  // would run after the assertions.
+  const flips = observer.takeRecords().map(record => record.oldValue)
+  observer.disconnect()
+  return flips
+}
+
 describe('quakeTerminalPanel', () => {
   // Lazy: a user who never presses the shortcut pays no xterm, no RPC and no
   // watch entry.
@@ -85,27 +109,58 @@ describe('quakeTerminalPanel', () => {
   // first open of a page load would behave differently from every later one --
   // which is the kind of defect nobody reproduces on purpose.
   it('inserts the panel closed and opens it in the same task, so the first open slides', () => {
-    const flips: (string | null)[] = []
-    const observer = new MutationObserver(() => {})
-    observer.observe(document.body, {
-      subtree: true,
-      attributes: true,
-      attributeOldValue: true,
-      attributeFilter: ['data-quake-open'],
+    let rendered!: ReturnType<typeof mount>
+    const flips = openFlipsDuring(() => {
+      rendered = mount({ entry: OPEN })
     })
-
-    const { getByTestId } = mount({ entry: OPEN })
-
-    // Records are collected synchronously; the observer's own callback is a
-    // microtask and would run after the assertions.
-    for (const record of observer.takeRecords())
-      flips.push(record.oldValue)
-    observer.disconnect()
 
     // Exactly one flip, and it LEAVES the closed state -- so the element was in
     // the document carrying `false` before it carried `true`.
     expect(flips).toEqual(['false'])
-    expect(getByTestId('quake-panel').getAttribute('data-quake-open')).toBe('true')
+    expect(rendered.getByTestId('quake-panel').getAttribute('data-quake-open')).toBe('true')
+  })
+
+  /**
+   * The panel unmounts once the LAST companion is released -- the owner's tab
+   * closed, or its shell exited -- and the next open builds a new element.
+   *
+   * That element needs the same two painted values the first one did, so the
+   * armed flag has to be released with the old element rather than staying true
+   * for the life of the shell.
+   */
+  it('re-arms the slide after the last panel is released', () => {
+    const [entry, setEntry] = createSignal<QuakeEntry | undefined>(OPEN)
+    const quakeStore = {
+      entryFor: (id: string) => (id === 'a1' ? entry() : undefined),
+      detachedTerminals: () => (entry() ? [{ id: 'q1', workerId: 'w1', workspaceId: 'ws1' }] : []),
+      ownerOf: () => 'a1',
+      isQuakeTerminal: () => true,
+      open: vi.fn(),
+      close: vi.fn(),
+      toggle: vi.fn(),
+      handleShellExit: vi.fn(),
+      retireOwners: vi.fn(),
+      liveEntries: () => [],
+    }
+    const { queryByTestId } = render(withPreferences(() => (
+      <QuakeTerminalPanel
+        quakeStore={quakeStore as never}
+        view={{ getTerminalTab: (id: string) => ({ id, type: 2 }) } as never}
+        metadata={{ get: () => undefined } as never}
+        activeAgentId={() => 'a1'}
+        onInput={vi.fn()}
+        onResize={vi.fn()}
+        onContentReady={vi.fn()}
+      />
+    )))
+    expect(queryByTestId('quake-panel')).not.toBeNull()
+
+    setEntry(undefined)
+    expect(queryByTestId('quake-panel'), 'the last companion released unmounts it').toBeNull()
+
+    const flips = openFlipsDuring(() => setEntry(OPEN))
+    expect(flips).toEqual(['false'])
+    expect(queryByTestId('quake-panel')!.getAttribute('data-quake-open')).toBe('true')
   })
 
   // The hook `AppShell` reads to decide whether closing the panel should pull

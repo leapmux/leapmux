@@ -475,11 +475,10 @@ describe('useShortcuts', () => {
   })
 
   describe('the quake terminal commands', () => {
-    function quakeProps(tab: unknown, archived = false) {
+    function quakeProps(tab: unknown) {
       return {
         ...makeProps(),
         resolveFocusedTab: () => tab,
-        isActiveWorkspaceArchived: () => archived,
         quakePanel: { open: vi.fn(), close: vi.fn(), toggle: vi.fn() },
       }
     }
@@ -518,11 +517,24 @@ describe('useShortcuts', () => {
       expect(panel.toggle).not.toHaveBeenCalled()
     })
 
-    // The same guard the terminal-open path applies: an archived workspace
-    // opens no terminal, and the panel must not be the one surface that does.
-    it('does nothing in an archived workspace', () => {
-      const panel = run(quakeProps(agentTab, true), 'terminal.toggleQuake')
+    /**
+     * A subagent transcript owns no process, so it owns no companion shell.
+     *
+     * The worker refuses `SetQuakePanel` for one, and the keyboard must not be
+     * the one route around that: a companion owned by a child agent would also
+     * outlive its tab, because only a ROOT close tears one down.
+     */
+    it('does nothing for a subagent tab', () => {
+      const panel = run(quakeProps({ type: TabType.AGENT, id: 'c1', parentAgentId: 'a1' }), 'terminal.toggleQuake')
       expect(panel.toggle).not.toHaveBeenCalled()
+    })
+
+    // The archived-workspace refusal is NOT here. It belongs to the opening
+    // direction alone and lives in the store, which the Control CLI reaches
+    // too -- a refusal at this level also refused the CLOSE half of the toggle.
+    it('leaves the archived-workspace refusal to the store', () => {
+      const panel = run(quakeProps(agentTab), 'terminal.toggleQuake')
+      expect(panel.toggle).toHaveBeenCalledWith(agentTab)
     })
   })
 

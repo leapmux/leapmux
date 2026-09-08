@@ -45,6 +45,16 @@ export interface QuakeTerminalDeps {
   focusComposer?: (ownerId: string) => void
   /** How long the panel takes to retract, so a dispose can wait it out. */
   closeDelayMs: () => number
+  /**
+   * Whether one named workspace can be mutated -- false while it is archived,
+   * and false for one that no longer exists.
+   *
+   * Consulted on the OPENING direction alone, and it lives here rather than in
+   * each caller so the keyboard commands and the Control CLI cannot answer
+   * differently. Per id, because a CLI request names an agent in a workspace
+   * this client may not be looking at.
+   */
+  isWorkspaceMutatable: (workspaceId: string) => boolean
 }
 
 /**
@@ -157,6 +167,13 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       return
     }
     if (!owner.workerId)
+      return
+    // Refused HERE, not at each call site, and only for a cold open: starting a
+    // shell is a mutation of an archived workspace, and hiding a panel is not.
+    // A guard on the whole toggle stranded a user whose workspace was archived
+    // while the panel was up -- it covers the entire centre area and carries no
+    // close control of its own.
+    if (!deps.isWorkspaceMutatable(owner.workspaceId))
       return
     // The entry lands BEFORE the RPC, so the panel slides in while the worker
     // is still answering and shows the shell's own startup state. A panel that
