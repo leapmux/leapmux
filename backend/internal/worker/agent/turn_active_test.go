@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -506,11 +507,10 @@ func TestClaudeTurnActive_EveryRootFrameOfALiveTurnArmsIt(t *testing.T) {
 	t.Parallel()
 
 	// The frames that prove a live turn EARLIEST are the ones that return before
-	// the persist path: the thinking-token telemetry and the notification-
-	// threaded system lines, and a root user tool_result. Arming from the
-	// assistant message alone left the whole extended-thinking window of a
-	// CLI-run turn invisible, and a message the user sent inside it went
-	// straight into that turn.
+	// the persist path: the thinking-token telemetry, and a root user
+	// tool_result. Arming from the assistant message alone left the whole
+	// extended-thinking window of a CLI-run turn invisible, and a message the
+	// user sent inside it went straight into that turn.
 	for _, tc := range []struct {
 		name string
 		line string
@@ -518,10 +518,6 @@ func TestClaudeTurnActive_EveryRootFrameOfALiveTurnArmsIt(t *testing.T) {
 		{
 			name: "thinking tokens",
 			line: `{"type":"system","subtype":"thinking_tokens","thinking_tokens":120}`,
-		},
-		{
-			name: "notification-threaded status",
-			line: `{"type":"system","subtype":"compacting","status":"compacting"}`,
 		},
 		{
 			name: "root user tool_result",
@@ -661,4 +657,313 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 			assert.Greater(t, seqs[2], seqs[1])
 		})
 	}
+}
+
+func TestClaudeTurnActive_ASystemFrameOutsideATurnArmsNothing(t *testing.T) {
+	t.Parallel()
+
+	// `system` carries four families and only the thinking-token telemetry
+	// reports the root's own work. Arming from the whole type latched a turn
+	// that no `result` ever ends, and BOTH consumers of the flag then broke for
+	// the rest of the process: the input queue held every message the user sent
+	// -- unpaused, with nothing to drain it -- and the client ran a thinking
+	// indicator for an agent that does nothing.
+	//
+	// The startup init frame is the one every session emits, so a new agent tab
+	// reached that state before the user typed anything.
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{
+			name: "startup init",
+			line: `{"type":"system","subtype":"init","session_id":"s-1","slash_commands":["clear","compact"]}`,
+		},
+		{
+			name: "background task progress",
+			line: `{"type":"system","subtype":"task_progress","task_id":"t-1","description":"npm test"}`,
+		},
+		{
+			name: "background task notification",
+			line: `{"type":"system","subtype":"task_notification","task_id":"t-1","status":"completed"}`,
+		},
+		{
+			name: "background tasks changed",
+			line: `{"type":"system","subtype":"background_tasks_changed","tasks":[]}`,
+		},
+		{
+			name: "notification-threaded status",
+			line: `{"type":"system","subtype":"status","status":"compacting"}`,
+		},
+		{
+			name: "status clear",
+			line: `{"type":"system","subtype":"status","status":""}`,
+		},
+		{
+			name: "api retry",
+			line: `{"type":"system","subtype":"api_retry","attempt":2}`,
+		},
+		{
+			name: "compaction boundary",
+			line: `{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto"}}`,
+		},
+		{
+			name: "unknown subtype",
+			line: `{"type":"system","subtype":"some_future_event"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a, _ := newClaudeAgentWithStdin(sink)
+
+			a.HandleOutput([]byte(tc.line))
+
+			assert.NotContains(t, sink.TurnActives(), true, "this frame runs no turn")
+			assert.NoError(t, a.SendInput("first", nil), "the next message must reach the CLI")
+		})
+	}
+}
+
+func TestClaudeTurnActive_TheCLIsOwnSessionStateDecides(t *testing.T) {
+	t.Parallel()
+
+	// With claudeSessionStateEnv set, Claude Code publishes its own turn state.
+	// That frame is authoritative and the output heuristic never sees it:
+	// `running` opens the turn before any assistant message, `requires_action`
+	// reports a turn that a permission prompt blocks, and `idle` ends it after
+	// the last result flushes.
+	for _, tc := range []struct {
+		name string
+		line string
+		want []bool
+	}{
+		{
+			name: "running opens the turn",
+			line: `{"type":"system","subtype":"session_state_changed","state":"running"}`,
+			want: []bool{true},
+		},
+		{
+			name: "requires_action is a turn a prompt blocks",
+			line: `{"type":"system","subtype":"session_state_changed","state":"requires_action"}`,
+			want: []bool{true},
+		},
+		{
+			name: "an unknown state decides nothing",
+			line: `{"type":"system","subtype":"session_state_changed","state":"quiescing"}`,
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a, _ := newClaudeAgentWithStdin(sink)
+
+			a.HandleOutput([]byte(tc.line))
+
+			assert.Equal(t, tc.want, sink.TurnActives())
+		})
+	}
+}
+
+func TestClaudeTurnActive_SessionStateIdleEndsATurnWithNoResult(t *testing.T) {
+	t.Parallel()
+
+	// The idle frame is the recovery this provider otherwise has none of. A turn
+	// the CLI runs is normally ended by its `result`, and a turn armed with no
+	// result behind it would hold the input queue until the process exits. The
+	// CLI's own idle answers that case.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	require.ErrorIs(t, a.SendInput("second", nil), ErrAgentBusy)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+
+	assert.Equal(t, []bool{true, true, false}, sink.TurnActives(),
+		"the refused send republishes the flag; idle then clears it")
+	assert.NoError(t, a.SendInput("second", nil), "the queue dispatches again")
+}
+
+func TestClaudeLaunchEnv_CarriesTheTurnSignalOptIn(t *testing.T) {
+	t.Parallel()
+
+	// Claude Code publishes session_state_changed for this variable alone. A
+	// launch that drops it silently falls back to the output heuristic, and
+	// nothing else reports the loss.
+	t.Run("a plain launch", func(t *testing.T) {
+		t.Parallel()
+
+		env := claudeAgentEnv([]string{"PATH=/usr/bin"}, false)
+
+		assert.Contains(t, env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+		assert.Contains(t, env, "CLAUDE_CODE_ENTRYPOINT=cli")
+		assert.Contains(t, env, "PATH=/usr/bin", "the inherited environment survives")
+		assert.False(t, envutil.HasKey(env, "CLAUDECODE"),
+			"only a login shell needs the rc-file marker")
+	})
+
+	t.Run("a login shell", func(t *testing.T) {
+		t.Parallel()
+
+		env := claudeAgentEnv([]string{"PATH=/usr/bin"}, true)
+
+		assert.Contains(t, env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+		assert.Equal(t, []string{"1"}, envutil.ValuesFor(env, "CLAUDECODE"))
+	})
+
+	// A worker that a Claude Code session itself launched inherits all three
+	// markers, and each inherited value is the PARENT's. A pin that layers
+	// instead of replacing still reaches the CLI with the right value, because
+	// exec resolves a duplicate last-wins -- and leaves an environment that says
+	// two things, which is what makes the layering invisible until something
+	// else reads it.
+	t.Run("an inherited value is replaced, not layered", func(t *testing.T) {
+		t.Parallel()
+
+		env := claudeAgentEnv([]string{
+			"PATH=/usr/bin",
+			"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=0",
+			"CLAUDE_CODE_ENTRYPOINT=sdk-ts",
+			"CLAUDECODE=1",
+		}, false)
+
+		assert.Equal(t, []string{"1"}, envutil.ValuesFor(env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"))
+		assert.Equal(t, []string{"cli"}, envutil.ValuesFor(env, "CLAUDE_CODE_ENTRYPOINT"))
+		assert.Empty(t, envutil.ValuesFor(env, "CLAUDECODE"),
+			"the inherited marker is stripped, and only a login shell re-adds it")
+	})
+
+	// The inherited environment is the caller's slice. Building the launch env
+	// by appending to it writes into the spare capacity that slice owns, so a
+	// second launch overwrites what the first one holds.
+	t.Run("two launches do not share a backing array", func(t *testing.T) {
+		t.Parallel()
+
+		inherited := make([]string, 0, 8)
+		inherited = append(inherited, "PATH=/usr/bin")
+
+		plain := claudeAgentEnv(inherited, false)
+		login := claudeAgentEnv(inherited, true)
+
+		assert.Contains(t, plain, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+		assert.False(t, envutil.HasKey(plain, "CLAUDECODE"), "the second launch wrote over the first")
+		assert.Equal(t, []string{"1"}, envutil.ValuesFor(login, "CLAUDECODE"))
+		assert.Equal(t, []string{"PATH=/usr/bin"}, inherited, "the caller's environment is unchanged")
+	})
+}
+
+func TestClaudeTurnActive_ResultStillEndsATurnTheCLIOpened(t *testing.T) {
+	t.Parallel()
+
+	// Retiring the output heuristic must not retire the falling edge. `result`
+	// ends every Claude turn and arrives BEFORE the idle that reports it, so the
+	// Worker's input queue opens on the result -- one frame earlier than the
+	// CLI's own report, and on the frame every build sends.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+	assert.NoError(t, a.SendInput("next", nil), "the queue dispatches on the result")
+}
+
+func TestClaudeTurnActive_AForwardedChildStateDecidesNothing(t *testing.T) {
+	t.Parallel()
+
+	// A forwarded subagent envelope carries parent_tool_use_id, and the child's
+	// turn is not the root's: a restarted subagent runs on while the root sits
+	// idle. So a child's copy of the frame decides nothing -- for the idle, the
+	// clear it would publish is exactly the failure the turn flag exists to
+	// prevent, because the input queue would then dispatch into the root's
+	// running turn.
+	t.Run("a child idle leaves the root's turn running", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &testSink{}
+		a, _ := newClaudeAgentWithStdin(sink)
+
+		a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+		a.HandleOutput([]byte(`{"type":"system","parent_tool_use_id":"p1","subtype":"session_state_changed","state":"idle"}`))
+
+		assert.Equal(t, []bool{true}, sink.TurnActives(), "only the root's own state moves the flag")
+		assert.ErrorIs(t, a.SendInput("next", nil), ErrAgentBusy)
+	})
+
+	t.Run("a child state does not retire the heuristic", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &testSink{}
+		a, _ := newClaudeAgentWithStdin(sink)
+
+		a.HandleOutput([]byte(`{"type":"system","parent_tool_use_id":"p1","subtype":"session_state_changed","state":"running"}`))
+		require.Empty(t, sink.TurnActives(), "a child's frame arms nothing")
+
+		// The ROOT has still stated nothing, so its assistant message is still
+		// the evidence that a turn runs. A child frame that retired the
+		// heuristic would leave this build with no rising edge at all.
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`))
+
+		assert.Equal(t, []bool{true}, sink.TurnActives())
+	})
+}
+
+func TestClaudeTurnActive_AStaleSessionIdleDoesNotOpenTheNextTurn(t *testing.T) {
+	t.Parallel()
+
+	// The CLI emits idle when its run loop stops, BEFORE it reads the next
+	// message. The Worker dispatches that message off the turn end it already
+	// saw, so its send can land between the two frames -- and an idle applied
+	// after it would clear the turn that message just opened. The input queue
+	// follows this flag, so the next message would then dispatch INTO the
+	// running turn.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	require.NoError(t, a.SendInput("first", nil))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	// The queue drains on that turn end and hands the CLI the next message.
+	require.NoError(t, a.SendInput("second", nil))
+
+	// The previous turn's idle arrives now.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+
+	assert.Equal(t, []bool{true, false, true}, sink.TurnActives(),
+		"the stale idle publishes nothing")
+	assert.ErrorIs(t, a.SendInput("third", nil), ErrAgentBusy,
+		"the second turn is still in flight")
+
+	// The result for the second message ends it, and a later idle is current
+	// again. The refused send above republished the unchanged flag, which is
+	// what reconciles a queue that dispatched into the turn.
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.Equal(t, []bool{true, false, true, true, false, false}, sink.TurnActives())
+}
+
+func TestClaudeTurnActive_TheHeuristicRetiresOnceTheCLIStatesItsOwnTurn(t *testing.T) {
+	t.Parallel()
+
+	// The output heuristic exists for a CLI that publishes no
+	// session_state_changed frame. A CLI that publishes one has stated the
+	// answer, so nothing else is read as evidence for the life of the process --
+	// and the arming surface shrinks to the named signals, which is what keeps a
+	// frame the vendor adds later inert.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	require.Equal(t, []bool{false}, sink.TurnActives())
+
+	// A root assistant frame is the heuristic's strongest evidence. It arms
+	// nothing here: this CLI reports `running` when a turn starts.
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`))
+
+	assert.Equal(t, []bool{false}, sink.TurnActives(), "the CLI's own state is the only source now")
+	assert.NoError(t, a.SendInput("next", nil), "the queue still dispatches")
 }

@@ -142,8 +142,11 @@ func (a *ClaudeCodeAgent) claudeHandleTaskEvent(content []byte) bool {
 		// events and drops a NON-bookend event first when it fills, so one lost
 		// level event would hide a real background shell for its whole run.
 		return true
-	case "session_state_changed":
-		// Consumed silently: carries session bookkeeping we don't surface.
+	case claudeSystemSubtypeSessionStateChanged:
+		// Consumed here so the frame never reaches the timeline. It reports the
+		// CLI's own turn state, which observeTurnFromOutput already read off it
+		// -- and the turn flag carries what it means, so the frame itself has
+		// nothing for a reader. The CLI sends one at every edge of every turn.
 		return true
 	default:
 		return false
