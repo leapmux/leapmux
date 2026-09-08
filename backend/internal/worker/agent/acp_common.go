@@ -84,7 +84,7 @@ type jsonrpcBase struct {
 	// this base for its JSON-RPC plumbing but drives its turn from turnID and
 	// never writes promptActive, so a nil hook is what stops this base from
 	// publishing a flag Codex does not use.
-	publishTurnActive func(active bool)
+	publishTurnActive func(active bool, seq uint64)
 	steerMethod       string
 	steerRunID        string
 }
@@ -1276,14 +1276,21 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-// wireTurnActive points the base's turn-state hook at the sink.
+// wireTurnActive points the base's turn-state hook at b.sink.
 //
 // Called once in acpStart, so a new ACP provider cannot forget it: every one of
 // the six reaches that constructor, and none of them wires this itself. The
 // tests that pin the behavior call this too rather than building a hook of
 // their own, so a test cannot pass against wiring the constructor does not do.
-func (b *jsonrpcBase) wireTurnActive(sink OutputSink) {
-	b.publishTurnActive = func(active bool) { publishTurnActiveTo(sink, active) }
+//
+// The hook re-reads b.sink on every call, and takes no sink of its own.
+// startACPHandshake REPLACES that field with a decorator (thinkingResetSink),
+// and a hook that captured the raw sink would keep publishing past the
+// decorator for the life of the process. That flag is the input queue's only
+// dispatch guard, so a decorator that ever overrides SetTurnActive would then
+// hold every later message of every ACP provider, silently.
+func (b *acpBase) wireTurnActive() {
+	b.publishTurnActive = func(active bool, seq uint64) { publishTurnActiveTo(b.sink, active, seq) }
 }
 
 // notePromptActive republishes the turn state from promptActive, the single
@@ -1299,8 +1306,9 @@ func (b *jsonrpcBase) notePromptActive() {
 	}
 	b.mu.Lock()
 	active := b.promptActive
+	seq := b.nextTurnSeq()
 	b.mu.Unlock()
-	b.publishTurnActive(active)
+	b.publishTurnActive(active, seq)
 }
 
 // SendInput starts one prompt. The Worker queue holds later input until this
@@ -1336,7 +1344,6 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 		b.steerRunID = ""
 		b.mu.Unlock()
 		b.notePromptActive()
-		notifyInputReady(b.sink)
 	})
 	if err != nil {
 		b.mu.Lock()
@@ -2310,7 +2317,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	// so assigning it to the embedded processBase doesn't copy a held lock.
 	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
 	b.sink = sink
-	b.wireTurnActive(sink)
+	b.wireTurnActive()
 	b.model = opts.Model()
 	// Default settings-lifecycle hooks shared by every mode-bearing ACP provider:
 	// reapply on relaunch/ClearContext and refresh from a session response both derive
@@ -3651,3 +3658,8 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 		}
 	}
 }
+
+// PublishTurnActive satisfies Agent for every ACP provider. The base already
+// republishes promptActive from one place, so this only gives that place the
+// interface's name.
+func (b *acpBase) PublishTurnActive() { b.notePromptActive() }

@@ -26,6 +26,7 @@ type idleAgent struct{}
 
 func (idleAgent) AgentID() string                                 { return "idle" }
 func (idleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (idleAgent) PublishTurnActive()                              {}
 func (idleAgent) SendRawInput([]byte) error                       { return nil }
 func (idleAgent) Stop()                                           {}
 func (idleAgent) IsStopped() bool                                 { return false }

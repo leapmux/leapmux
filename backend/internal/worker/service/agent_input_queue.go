@@ -95,7 +95,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 			return inputqueue.DispatchResult{}, err
 		}
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
-			return inputqueue.DispatchResult{}, fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, agent.ErrAgentNotFound)
+			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
 		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments); err != nil {
 			if errors.Is(err, agent.ErrChildSteeringUnsupported) {
@@ -116,7 +116,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 			// ensureAgentRunning returns at once for a registered slot, so a
 			// start here would resolve the dying provider and write to a
 			// closed pipe. Return the input to the queue instead.
-			return fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, agent.ErrAgentNotFound)
+			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
 		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 		return svc.ensureAgentRunning(item.AgentID, &resumeID, interactiveStart)
@@ -124,6 +124,16 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 
 	switch item.Kind {
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT:
+		// A clear STOPS the process, and it is the one dispatch that destroys a
+		// turn instead of joining it. The queue's own active_turn guard already
+		// holds it behind a running turn, but that guard is a durable COPY of
+		// the provider's flag, and the store's own doc records the cases where
+		// the copy can be stale. Ask the flag itself before the stop: a wrong
+		// copy then costs a requeue on an open queue rather than the user's
+		// in-flight reply, killed mid-sentence with no result.
+		if svc.Output.TurnActive(item.AgentID) {
+			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(agent.ErrAgentBusy)
+		}
 		afterAccept, err := svc.prepareClearContext(item.AgentID)
 		if err != nil {
 			return inputqueue.DispatchResult{}, err
@@ -165,24 +175,41 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 }
 
 // classifyQueueDeliveryError turns a provider error into the queue's own
-// outcome. Two conditions are transient and must NOT become a permanent
-// failure that the user has to retry by hand:
+// outcome. Three conditions are transient and must NOT become a permanent
+// failure that the user has to retry by hand. All three mean the input never
+// reached the provider, so redispatch is safe.
 //
-//   - ErrChildNotSteerableYet: the owner process runs but has not re-fired the
-//     child spawn yet, which happens after every Worker restart.
-//   - ErrAgentBusy: the provider is already inside a turn that the queue's own
-//     active_turn view has not recorded yet.
+// Two of them need the agent to change state first, so the queue pauses and
+// waits for the cause that changes it (DispatchNotReady):
+//
+//   - ErrChildNotSteerableYet: the owner process runs, but it did not re-fire
+//     the child spawn yet. Every Worker restart produces this condition.
 //   - ErrAgentNotFound: the process exited between the readiness test and the
 //     write. Manager returns it from providerAfterLifecycle, which resolves the
 //     provider BEFORE any write, so nothing reached the agent.
 //
-// All three mean the input never reached the provider, so redispatch is safe.
+// The third needs nothing (DispatchBusy):
+//
+//   - ErrAgentBusy: the provider is already inside a turn that the queue's own
+//     active_turn view did not record. The agent works, and the end of that
+//     turn releases the item on its own -- so a pause here would stop a queue
+//     that has no problem, and hold it stopped until the user resumed it by
+//     hand.
 func classifyQueueDeliveryError(err error) error {
-	if errors.Is(err, agent.ErrChildNotSteerableYet) || errors.Is(err, agent.ErrAgentBusy) ||
-		errors.Is(err, agent.ErrAgentNotFound) {
-		return fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, err)
+	return &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
+}
+
+func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
+	switch {
+	case errors.Is(err, agent.ErrAgentBusy):
+		return inputqueue.DispatchBusy
+	case errors.Is(err, agent.ErrChildNotSteerableYet), errors.Is(err, agent.ErrAgentNotFound):
+		return inputqueue.DispatchNotReady
+	case errors.Is(err, agent.ErrDeliveryUncertain):
+		return inputqueue.DispatchUncertain
+	default:
+		return inputqueue.DispatchFailed
 	}
-	return &inputqueue.DeliveryError{Err: err, Uncertain: errors.Is(err, agent.ErrDeliveryUncertain)}
 }
 
 func classifyQueueSteerError(err error) error {

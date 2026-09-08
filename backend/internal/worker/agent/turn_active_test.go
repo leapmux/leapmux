@@ -267,8 +267,37 @@ func newACPTurnBase(t *testing.T, stdin io.WriteCloser) (*acpBase, *testSink) {
 	t.Cleanup(cancel)
 	b.ctx = ctx
 	b.processDone = make(chan struct{})
-	b.wireTurnActive(sink)
+	b.wireTurnActive()
 	return b, sink
+}
+
+// swallowingSink stands in for a decorator that forgets to forward the turn
+// flag. thinkingResetSink promotes SetTurnActive from the embedded interface
+// today, so only a type like this one can tell a hook that re-reads b.sink from
+// one that captured the sink it was wired with.
+type swallowingSink struct {
+	OutputSink
+}
+
+func (s *swallowingSink) SetTurnActive(bool, uint64) {}
+
+func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
+	t.Parallel()
+
+	// acpStart wires the hook and startACPHandshake THEN replaces b.sink with
+	// thinkingResetSink. A hook that captured the raw sink would publish past
+	// every decorator for the life of the process -- and this flag is the input
+	// queue's only dispatch guard, so a decorator that ever overrode
+	// SetTurnActive would silently hold every later message of all six ACP
+	// providers.
+	var out bytes.Buffer
+	b, sink := newACPTurnBase(t, nopWriteCloser{&out})
+	b.sink = &swallowingSink{OutputSink: sink}
+
+	b.publishTurnActive(true, 1)
+
+	assert.Empty(t, sink.TurnActives(),
+		"the hook re-reads b.sink, so the wrap installed after wireTurnActive is honored")
 }
 
 func TestACPTurnActive_PromptOpensTheTurnAndTheResponseCloses(t *testing.T) {
@@ -334,6 +363,10 @@ func TestACPTurnActive_ClearActivePromptCloses(t *testing.T) {
 // different handler and the order is easy to invert while every other assertion
 // in the suite stays green.
 
+// reset_spans is in the sequence for the same reason turn_end is: the clear
+// releases the Worker's input queue, so the next message dispatches on it and
+// must find the finished turn's spans already reset. A provider that publishes
+// the clear before ResetSpans draws the dead turn's bars beside that message.
 func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
 	t.Parallel()
 
@@ -343,7 +376,7 @@ func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
 
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success","num_tool_uses":2}`))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestTurnEndPrecedesTheClear_Codex(t *testing.T) {
@@ -355,7 +388,7 @@ func TestTurnEndPrecedesTheClear_Codex(t *testing.T) {
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestTurnEndPrecedesTheClear_ZCode(t *testing.T) {
@@ -371,7 +404,7 @@ func TestTurnEndPrecedesTheClear_ZCode(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"toolCallCount":1}`))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestTurnEndPrecedesTheClear_Pi(t *testing.T) {
@@ -383,7 +416,7 @@ func TestTurnEndPrecedesTheClear_Pi(t *testing.T) {
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
@@ -398,8 +431,8 @@ func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
 	require.NoError(t, b.SendInput("hi", nil))
 	b.handleJSONRPCResponse(parseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
-	assert.Eventually(t, func() bool { return len(sink.TurnLifecycle()) == 3 }, time.Second, 5*time.Millisecond)
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Eventually(t, func() bool { return len(sink.TurnLifecycle()) == 4 }, time.Second, 5*time.Millisecond)
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 // Pi keeps the turn open across a retry it drives itself, so the retried
@@ -418,10 +451,214 @@ func TestTurnEndPrecedesTheClear_PiRetryEndsNoTurn(t *testing.T) {
 	// turn. It is harmless because the Worker's latch is edge-triggered, and it
 	// is the price of publishing from the field rather than from an argument --
 	// which is what makes a MISSING publish the only way the two can drift.
-	assert.Equal(t, []string{"turn_active:true", "turn_active:true"}, sink.TurnLifecycle(),
+	assert.Equal(t, []string{"turn_active:true", "reset_spans", "turn_active:true"}, sink.TurnLifecycle(),
 		"a retried attempt neither ends the turn nor clears the flag")
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{
+		"turn_active:true", "reset_spans", "turn_active:true", "turn_end", "reset_spans", "turn_active:false",
+	}, sink.TurnLifecycle())
+}
+
+// --- a turn the Worker did not start -----------------------------------------
+
+func TestClaudeTurnActive_RootAssistantOutputArmsATurnTheWorkerDidNotStart(t *testing.T) {
+	t.Parallel()
+
+	// Claude Code emits no turn-start frame, so the Worker used to learn of a
+	// turn only from its own SendInput. A turn the CLI runs by itself -- one it
+	// continues after the `result` the Worker already consumed -- then left the
+	// flag clear, and the next queued message went straight into that running
+	// turn.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}`))
+
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "root assistant output means a turn is in flight")
+	assert.ErrorIs(t, a.SendInput("second", nil), ErrAgentBusy)
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	// The refused send republishes the unchanged flag, which is what reconciles
+	// a queue that dispatched into it. The clear that follows is the result's.
+	assert.Equal(t, []bool{true, true, false}, sink.TurnActives(),
+		"the CLI's own result still ends the turn")
+}
+
+func TestClaudeTurnActive_RootAssistantOutputPublishesOncePerTurn(t *testing.T) {
+	t.Parallel()
+
+	// Every assistant message of one turn reaches this path. Only the first
+	// arms anything, so a streaming turn does not republish -- and does not
+	// reconcile the Worker's input queue -- once per message block.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	for range 3 {
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"chunk"}]}}`))
+	}
+
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+}
+
+func TestClaudeTurnActive_EveryRootFrameOfALiveTurnArmsIt(t *testing.T) {
+	t.Parallel()
+
+	// The frames that prove a live turn EARLIEST are the ones that return before
+	// the persist path: the thinking-token telemetry and the notification-
+	// threaded system lines, and a root user tool_result. Arming from the
+	// assistant message alone left the whole extended-thinking window of a
+	// CLI-run turn invisible, and a message the user sent inside it went
+	// straight into that turn.
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{
+			name: "thinking tokens",
+			line: `{"type":"system","subtype":"thinking_tokens","thinking_tokens":120}`,
+		},
+		{
+			name: "notification-threaded status",
+			line: `{"type":"system","subtype":"compacting","status":"compacting"}`,
+		},
+		{
+			name: "root user tool_result",
+			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		},
+		{
+			name: "root user text echo",
+			line: `{"type":"user","message":{"role":"user","content":"hello"}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a, _ := newClaudeAgentWithStdin(sink)
+
+			a.HandleOutput([]byte(tc.line))
+
+			assert.Equal(t, []bool{true}, sink.TurnActives(),
+				"a root frame only a live turn produces arms the turn")
+			assert.ErrorIs(t, a.SendInput("second", nil), ErrAgentBusy)
+		})
+	}
+}
+
+func TestClaudeTurnActive_TheWorkersOwnTrafficArmsNothing(t *testing.T) {
+	t.Parallel()
+
+	// A result ENDS a turn, and the control frames are the Worker talking to
+	// itself. Neither is evidence that the CLI is working.
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{name: "result", line: `{"type":"result","subtype":"success"}`},
+		{name: "control_response", line: `{"type":"control_response","response":{"request_id":"r1","subtype":"success"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a, _ := newClaudeAgentWithStdin(sink)
+
+			a.HandleOutput([]byte(tc.line))
+
+			assert.NotContains(t, sink.TurnActives(), true,
+				"no turn is in flight because of this frame")
+		})
+	}
+}
+
+func TestClaudeTurnActive_SubagentAssistantOutputArmsNoRootTurn(t *testing.T) {
+	t.Parallel()
+
+	// A forwarded subagent envelope carries parent_tool_use_id and belongs to
+	// the child's transcript. It says nothing about the root, which may well be
+	// idle while a restarted subagent runs on.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"parent-1","message":{"role":"assistant","content":[{"type":"text","text":"child"}]}}`))
+
+	assert.Empty(t, sink.TurnActives(), "only ROOT output arms the root's turn")
+}
+
+func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
+	t.Parallel()
+
+	// The token is what lets the Worker tell a publish it overtook from a
+	// current one, and it only does that if it RISES with each publish and comes
+	// from the same critical section that reads the flag. A provider that reused
+	// a token, or took one outside that section, would order nothing -- and a
+	// stale value would latch a turn that is over.
+	for _, tc := range []struct {
+		name    string
+		publish func(t *testing.T, sink OutputSink)
+	}{
+		{
+			name: "claude",
+			publish: func(t *testing.T, sink OutputSink) {
+				a, _ := newClaudeAgentWithStdin(sink)
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+			},
+		},
+		{
+			name: "codex",
+			publish: func(t *testing.T, sink OutputSink) {
+				a := newCodexAgentWithSink(sink)
+				a.sink = sink
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+			},
+		},
+		{
+			name: "pi",
+			publish: func(t *testing.T, sink OutputSink) {
+				a := newPiAgentWithSink(sink)
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+			},
+		},
+		{
+			name: "zcode",
+			publish: func(t *testing.T, sink OutputSink) {
+				a := newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+				a.PublishTurnActive()
+			},
+		},
+		{
+			name: "acpBase",
+			publish: func(t *testing.T, sink OutputSink) {
+				var out bytes.Buffer
+				b, _ := newACPTurnBase(t, nopWriteCloser{&out})
+				b.sink = sink
+				b.wireTurnActive()
+				b.PublishTurnActive()
+				b.PublishTurnActive()
+				b.PublishTurnActive()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			tc.publish(t, sink)
+
+			seqs := sink.TurnSeqs()
+			require.Len(t, seqs, 3, "each publish carries a token")
+			assert.Greater(t, seqs[1], seqs[0], "the token rises with each publish")
+			assert.Greater(t, seqs[2], seqs[1])
+		})
+	}
 }

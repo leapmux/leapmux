@@ -719,7 +719,7 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	clear(a.pendingControls)
 	sessionID := a.sessionID
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 	a.toolCallPrompts.clear()
 	a.children.clear()
 	a.resetCumulativeDeltas()

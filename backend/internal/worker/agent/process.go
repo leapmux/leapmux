@@ -41,6 +41,12 @@ type processBase struct {
 	mu      sync.Mutex
 	stopped bool
 
+	// turnSeqSource issues the ordering token that rides every publish of this
+	// provider's turn flag. It lives here so all five providers get it from one
+	// embed and a sixth cannot forget it, and because mu -- the lock that makes
+	// the token atomic with the flag read -- lives here too.
+	turnSeqSource
+
 	// stdinMu serializes Write syscalls to p.stdin without coupling them to
 	// p.mu, so a slow stdin (full kernel pipe buffer, e.g. when a large
 	// inline image attachment is being shipped) cannot stall state operations

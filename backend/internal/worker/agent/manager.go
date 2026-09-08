@@ -408,7 +408,17 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 	if err != nil {
 		return err
 	}
-	return p.SendInput(content, attachments)
+	err = p.SendInput(content, attachments)
+	if errors.Is(err, ErrAgentBusy) {
+		// The refusal disproves the Worker's view of the turn, and both consumers
+		// of the turn flag -- the activity state and the input queue's dispatch
+		// guard -- are wrong at exactly this moment. Repairing here rather than
+		// in each provider's SendInput is what stops a sixth provider from
+		// leaving it out. SendChildInput does NOT do this: a collab child's
+		// activity comes from its background-task registry row.
+		p.PublishTurnActive()
+	}
+	return err
 }
 
 func (m *Manager) CompactContext(agentID string) error {

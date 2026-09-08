@@ -170,7 +170,7 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 
 // --- turn lifecycle ---
 
-// publishTurnActive republishes the Worker-visible turn state from turnActive,
+// PublishTurnActive republishes the Worker-visible turn state from turnActive,
 // the single source. Call it after EVERY critical section that writes that
 // field.
 //
@@ -183,11 +183,12 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
-func (a *zcodeAgent) publishTurnActive() {
+func (a *zcodeAgent) PublishTurnActive() {
 	a.mu.Lock()
 	active := a.turnActive
+	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active)
+	publishTurnActiveTo(a.sink, active, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.
@@ -221,7 +222,7 @@ func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 		a.turnToolUses = 0
 	}
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 
 	if !background {
 		// A fresh user turn begins: restart the thinking-token estimate from zero.
@@ -322,7 +323,7 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	// latch: the clear is what produces the settle edge that spends the count,
 	// so publishing it first would settle the agent with no count and ring the
 	// completion sound for a turn that used no tool.
-	defer a.publishTurnActive()
+	defer a.PublishTurnActive()
 
 	content := event.persistBytes()
 	if content == nil {
@@ -354,7 +355,6 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 		}
 	}
 	a.mu.Unlock()
-	notifyInputReady(a.sink)
 
 	// The app-server's own reading is authoritative, and reading it takes an RPC --
 	// which the read loop must stay free to deliver, so it cannot run inline here.

@@ -593,14 +593,17 @@ func New(cfg Config) *Service {
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
 	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
-	svc.Output.SetInputReadyFunc(func(agentID string) {
-		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil {
-			slog.Warn("advance agent input queue after turn end failed", "agent_id", agentID, "error", err)
+	// The one turn flag every provider publishes. A queue that already closed
+	// admission refuses it, and a Worker shutdown stops every agent it runs --
+	// so that refusal is the expected end of the signal, not a fault to report.
+	svc.Output.SetTurnActiveFunc(func(agentID string, active bool) {
+		reconcile, what := svc.InputQueue.TurnEnded, "turn end"
+		if active {
+			reconcile, what = svc.InputQueue.TurnStarted, "turn start"
 		}
-	})
-	svc.Output.SetInputStartedFunc(func(agentID string) {
-		if _, err := svc.InputQueue.TurnStarted(bgCtx(), agentID); err != nil {
-			slog.Warn("mark agent input queue turn active failed", "agent_id", agentID, "error", err)
+		if _, err := reconcile(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Warn("reconcile agent input queue with the provider's turn flag failed",
+				"agent_id", agentID, "edge", what, "error", err)
 		}
 	})
 	svc.startAgentFn = svc.Agents.StartAgent
@@ -630,6 +633,7 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 	// A new process owns no turn. See NoteAgentProcessStarted for why this does
 	// not wait for the old process's exit handler to have said so.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
+	svc.abandonUnownedTurn(opts.AgentID)
 	if svc.startAgentFn != nil {
 		return svc.startAgentFn(ctx, opts, sink)
 	}
@@ -647,6 +651,7 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
 	// Same rule as startAgent: a new process owns no turn.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
+	svc.abandonUnownedTurn(opts.AgentID)
 	if svc.startBackgroundAgentFn != nil {
 		return svc.startBackgroundAgentFn(ctx, opts, sink)
 	}
@@ -778,11 +783,19 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	// holding the tab open, which would otherwise keep a live Active dot and
 	// working Pause and Clear buttons until its next cold load.
 	svc.Output.publishGoalCapabilities(agentID)
-	if !stopped {
-		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
-			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
-				slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
-			}
+	for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
+		if stopped {
+			// An explicit stop does NOT pause: the user asked for this exit, and
+			// the queue's own /clear dispatch stops the process on purpose. The
+			// turn still has to go, because the process that would have ended it
+			// is gone -- otherwise the queue holds every later message and the
+			// stop the user just made is what stranded it.
+			svc.abandonUnownedTurn(queueAgentID)
+			continue
+		}
+		// A crash pauses, and the pause ends the turn with it.
+		if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+			slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
 		}
 	}
 	// Last, so it observes the cleared prompts and the ended registry rows. This
@@ -790,6 +803,20 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	// this handler broadcasts no AgentStatusChange, so without it a lost process
 	// left every watching tab showing work that had already died.
 	svc.Output.NoteAgentProcessExited(agentID)
+}
+
+// abandonUnownedTurn reconciles the input queue with a process boundary. It is
+// the queue's half of NoteAgentProcessStarted / NoteAgentProcessExited, which
+// reset the activity latch for the same reason: no turn is in flight across a
+// process boundary.
+//
+// A turn the queue itself dispatched is left alone. That dispatch is still in
+// flight -- ensureAgentRunning starts the process from INSIDE it -- and its own
+// acceptance resolves the turn.
+func (svc *Service) abandonUnownedTurn(agentID string) {
+	if _, err := svc.InputQueue.TurnAbandoned(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+		slog.Warn("clear agent input queue turn at a process boundary failed", "agent_id", agentID, "error", err)
+	}
 }
 
 // agentSubtreeIDs returns the agent and every descendant of it. A subagent

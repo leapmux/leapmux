@@ -282,7 +282,11 @@ func TestCopilotAssistedApprovalChangeRequiresRestart(t *testing.T) {
 // restart must start with the flag off on the FIRST attempt instead of paying a failed
 // spawn, and a relaunch must not resurrect a flag this binary already refused.
 func TestCopilotBinaryFlagCapabilityIsRememberedPerBinary(t *testing.T) {
-	shell := "/bin/zsh-" + t.Name()
+	// The cache is process-global and stores only a negative, so it has nothing
+	// to invalidate and no reset. t.TempDir gives a key no other run reuses,
+	// which keeps the case correct under `go test -count=N` -- t.Name() alone
+	// repeats, and the second run then reads the mark the first one left.
+	shell := "/bin/zsh-" + t.TempDir()
 
 	assert.False(t, BinaryFlagUnsupported(shell, false, copilotBinaryName, copilotAssistedApprovalFlag),
 		"an unprobed binary is not known to refuse the flag")

@@ -932,6 +932,7 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 	}
 	child := &agentOutputSink{
 		h:             s.h,
+		root:          s.turnPublisherSink(),
 		agentID:       childAgentID,
 		rootAgentID:   s.rootAgentID,
 		agentProvider: s.agentProvider,

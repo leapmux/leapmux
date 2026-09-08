@@ -198,15 +198,17 @@ func TestThinkingResetSink_ResetsOnFrontendClearBoundariesOnly(t *testing.T) {
 	}
 }
 
-func TestThinkingResetSink_ForwardsQueueLifecycle(t *testing.T) {
+func TestThinkingResetSink_ForwardsTheTurnFlag(t *testing.T) {
 	t.Parallel()
 
+	// The decorator wraps every provider's sink, and the turn flag it carries
+	// drives both the agent's activity state and the Worker's input queue. A
+	// decorator that swallowed it would hold every later message forever.
 	inner := &testSink{}
 	sink := newThinkingResetSink(inner, &thinkingTokenEstimator{})
 
-	notifyInputStarted(sink)
-	notifyInputReady(sink)
+	publishTurnActiveTo(sink, true, 1)
+	publishTurnActiveTo(sink, false, 2)
 
-	assert.Equal(t, 1, inner.InputStartedCount())
-	assert.Equal(t, 1, inner.InputReadyCount())
+	assert.Equal(t, []bool{true, false}, inner.TurnActives())
 }

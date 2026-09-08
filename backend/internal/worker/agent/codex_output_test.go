@@ -54,9 +54,8 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	agent.mu.Unlock()
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
 	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
-	assert.Equal(t, []bool{true}, sink.TurnActives(), "the Worker's activity state opens with the turn")
-	assert.Equal(t, 1, sink.InputStartedCount(),
-		"turn/started must reactivate a queue after uncertain delivery")
+	assert.Equal(t, []bool{true}, sink.TurnActives(),
+		"turn/started opens the Worker's activity state AND its input queue's turn")
 	// The turn id used to ride an ephemeral session-info frame as well, for a
 	// browser-side working-state heuristic that no longer exists. Nothing reads
 	// it now, so nothing sends it.
@@ -892,7 +891,7 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyFinalReceivers(t *testing.T) {
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	// The collab span closes at completion regardless of which receivers are
-	// terminal -- the span lifecycle is about the tool_call, not the children.
+	// finished -- the span lifecycle is about the tool_call, not the children.
 	require.Contains(t, sink.ClosedSpans(), "call-4", "wait span closes at completion")
 }
 
@@ -1304,8 +1303,6 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 
 	// The turn-end divider lands in the CHILD transcript, not the parent's.
 	child := sink.ChildSink("child-of-call-1").(*testSink)
-	assert.Equal(t, 1, child.InputStartedCount(),
-		"child turn/started must activate the child input queue")
 	turnEnds := 0
 	for _, m := range child.Messages() {
 		if m.TurnEnd {
@@ -1314,8 +1311,11 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	}
 	assert.Equal(t, 1, turnEnds,
 		"child turn/completed must persist a turn-end divider into the child transcript")
-	assert.Equal(t, 1, child.InputReadyCount(),
-		"child turn/completed must release the child input queue")
+	// publishTurnActive covers the MAIN thread alone, so a collab child's turn
+	// is published against the CHILD's sink -- which is what the child tab's
+	// own input queue follows.
+	assert.Equal(t, []bool{true, false}, child.TurnActives(),
+		"the child's own turn opens and releases the child input queue")
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
@@ -1809,7 +1809,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 			if tc.wantNonBlank {
 				assert.NotEmpty(t, gotActivity, "resumable interrupted carries a paused activity line")
 			}
-			// The mapped status must NOT be terminal for a resumable interrupt.
+			// The mapped status must NOT be final for a resumable interrupt.
 			if !tc.wantFinal {
 				assert.False(t, gotStatus.IsFinished(), "%s must not map to a final status", tc.status)
 			}
@@ -1893,4 +1893,33 @@ func TestHandleCodexOutput_ASubAgentActivityAloneDoesNotReopenARow(t *testing.T)
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
 	assert.True(t, status.IsFinished(), "the row keeps its final status")
+}
+
+func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
+	t.Parallel()
+
+	// The child's turn end is the ONLY thing that clears the child's own input
+	// queue. It resolves the child agent id through the span index, and a
+	// ClearContext wipes that index -- so a turn that ends after one left the
+	// child holding every later message with a turn nothing would clear. The
+	// agent id does not change once assigned, so it is remembered.
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-1"}}}`)))
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	require.Equal(t, []bool{true}, child.TurnActives(), "the child's turn opened")
+
+	// The span index goes away, the way ClearContext wipes it.
+	agent.mu.Lock()
+	clear(agent.collabThreadSpans)
+	agent.mu.Unlock()
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`)))
+
+	assert.Equal(t, []bool{true, false}, child.TurnActives(),
+		"the child's turn still ends, so its input queue is released")
 }

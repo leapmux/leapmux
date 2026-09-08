@@ -157,6 +157,8 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 
 	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", msgType, "len", len(content))
 
+	a.armTurnFromOutput(content, msgType)
+
 	switch msgType {
 	case claudeMsgTypeAssistant, claudeMsgTypeSystem, claudeMsgTypeResult:
 		if msgType == claudeMsgTypeSystem {
@@ -580,7 +582,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// so the assistant message stays at the parent depth.
 	var persistErr error
 	if msgType == claudeMsgTypeResult {
-		// Terminal turn-end envelope — routes through PersistTurnEnd so
+		// Final turn-end envelope — routes through PersistTurnEnd so
 		// the sink fires the git-status auto-broadcast explicitly.
 		persistErr = a.sink.PersistTurnEnd(content, spanInfo)
 	} else {
@@ -614,10 +616,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// After PersistTurnEnd, which records this turn's tool-call count for the
 		// settle the clear is about to produce. An interrupted or errored turn
 		// ends with a `result` too, so this one site covers those paths as well.
-		a.mu.Lock()
-		a.turnActive = false
-		a.mu.Unlock()
-		a.publishTurnActive()
 		scheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
@@ -632,7 +630,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
 		a.tasks.clearClaudeRestarts("")
-		notifyInputReady(a.sink)
+		// LAST, because the publish inside releases the Worker's input queue:
+		// the next message dispatches on it, and it must find the spans of the
+		// finished turn already reset -- a passthrough column captured before
+		// ResetSpans draws the dead turn's bars beside the new message.
+		a.disarmTurn()
 	}
 }
 
@@ -1399,4 +1401,44 @@ func isSimpleUserTextEcho(content []byte) bool {
 	}
 	trimmed := bytes.TrimSpace(msg.Message.Content)
 	return len(trimmed) > 0 && trimmed[0] == '"'
+}
+
+// armTurnFromOutput records a turn that the CLI runs and this Worker did not
+// start. Claude Code emits no turn-start frame of its own (Codex has
+// turn/started, ZCode turn.started), so without this the Worker learns of a turn
+// only from its own SendInput -- and a turn the CLI runs by itself, or one it
+// continues past a `result` the Worker already consumed, stayed invisible. Both
+// the turn flag and the input queue then read idle, and the next message the
+// user sent went straight into the running turn.
+//
+// It runs BEFORE the type switch, because the frames that prove a live turn
+// earliest are the ones that return early: the thinking-token telemetry and the
+// notification-threaded `system` lines never reach handlePersistableMessage, and
+// a root `user` tool_result is skipped there. Arming from the assistant message
+// alone left the whole extended-thinking window of a CLI-run turn invisible,
+// which is the longest part of it.
+//
+// The class is "a ROOT frame that only a live turn produces". A forwarded
+// subagent envelope carries parent_tool_use_id and belongs to the child, and it
+// says nothing about the root, which may well be idle while a restarted subagent
+// runs on. `result` ENDS a turn, and `control_*` frames are the Worker's own
+// traffic, so neither arms anything.
+//
+// The clear needs no counterpart rule: Claude ends EVERY turn with a `result`,
+// including an interrupted or a failed one, and a `result` always follows the
+// frames of the turn it ends. A process that dies without one is answered at the
+// process boundary instead, where the Worker releases a turn no dispatch owns.
+func (a *ClaudeCodeAgent) armTurnFromOutput(content []byte, msgType string) {
+	switch msgType {
+	case claudeMsgTypeAssistant, claudeMsgTypeUser, claudeMsgTypeSystem:
+	default:
+		return
+	}
+	var envelope struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil || envelope.ParentToolUseID != "" {
+		return
+	}
+	a.armTurn()
 }

@@ -13,6 +13,14 @@ import (
 type coordinator struct {
 	mu       sync.Mutex
 	draining bool
+	// drainAgain records a drain request that arrived while the drain loop held
+	// the flag above. scheduleDrain cannot start a second loop for it, and the
+	// running loop released the coordinator lock across a provider call, so the
+	// request can carry state that the loop still misses: a turn that ended
+	// inside that call, or an item enqueued during it. The loop consumes the
+	// request before it stops, and the request dies with the read that answers
+	// it.
+	drainAgain bool
 	// plannedRestarts counts the restarts in flight for this agent. The last
 	// one to finish resumes the pause that the first one created.
 	//
@@ -66,23 +74,59 @@ func NewManager(store *Store, dispatcher Dispatcher, observer Observer) *Manager
 // broadcasts the new snapshot, and then schedules a drain OUTSIDE that lock.
 // The order is load-bearing: scheduleDrain takes the same non-reentrant mutex,
 // so a copy that called it while holding the lock would deadlock.
-func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, error)) (Snapshot, error) {
+//
+// A mutation that reports no change broadcasts nothing. The turn signal
+// reconciles the queue on every publish of the provider's flag, including the
+// many that repeat the state the queue already holds.
+func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, error)) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	snapshot, err := mutate()
-	if err == nil {
+	snapshot, changed, err := mutate()
+	if err == nil && changed {
 		m.observer.QueueChanged(snapshot)
 	}
 	c.mu.Unlock()
 	if err != nil {
 		return snapshot, err
 	}
-	m.scheduleDrain(agentID)
+	if changed {
+		m.scheduleDrain(agentID)
+		return snapshot, nil
+	}
+	// A mutation that moved nothing still restarts a drain loop that a store
+	// error stopped. That loop leaves the items queued with no turn and no
+	// pause, and it schedules nothing further, so the queue waits for an event
+	// that only a new user action produces. The turn signal repeats often
+	// enough to be that event.
+	m.drainIfReleased(agentID, snapshot)
 	return snapshot, nil
+}
+
+// drainIfReleased schedules a drain when the snapshot shows a queue that can
+// move: no turn in flight, no pause, and at least one item that waits. A drain
+// for a queue that cannot move costs a transaction and delivers nothing.
+//
+// The caller must NOT hold the coordinator lock, because scheduleDrain takes
+// that same non-reentrant mutex.
+func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
+	if snapshot.ActiveTurn || snapshot.Paused || len(snapshot.Items) == 0 {
+		return
+	}
+	m.scheduleDrain(agentID)
+}
+
+// alwaysChanged adapts a store call whose every success moves the queue. The
+// changed Boolean belongs to the two calls that reconcile against a signal the
+// provider repeats; for an explicit user action the answer is always yes.
+func alwaysChanged(mutate func() (Snapshot, error)) func() (Snapshot, bool, error) {
+	return func() (Snapshot, bool, error) {
+		snapshot, err := mutate()
+		return snapshot, true, err
+	}
 }
 
 func (m *Manager) beginActivity() bool {
@@ -117,6 +161,27 @@ func (m *Manager) Stop() func() {
 // StopAndWait closes queue admission and then joins active work.
 func (m *Manager) StopAndWait() {
 	m.Stop()()
+}
+
+// stopRoundAndUnlock ends one pass of the drain loop, releases the coordinator
+// lock, and reports whether the loop stops. A drain request that arrived during
+// the provider call is news that the loop still misses, so the loop repeats for
+// it instead of stopping. Nothing else can take that request, because
+// scheduleDrain refused to start a second loop while this one held the draining
+// flag.
+//
+// The repeat has a limit: it happens once for each request, and each request
+// costs one scheduleDrain call from a real state change.
+//
+// The caller must hold c.mu. This method releases it on every path.
+func (c *coordinator) stopRoundAndUnlock() bool {
+	defer c.mu.Unlock()
+	if c.drainAgain {
+		c.drainAgain = false
+		return false
+	}
+	c.draining = false
+	return true
 }
 
 func (m *Manager) coordinator(agentID string) *coordinator {
@@ -172,9 +237,9 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 	if err := m.refuseUnacceptedKind(input.AgentID, m.store.Classify(input.Kind, input.Text)); err != nil {
 		return Snapshot{}, err
 	}
-	return m.mutateAndDrain(input.AgentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
 		return m.store.Enqueue(ctx, input)
-	})
+	}))
 }
 
 func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -215,27 +280,27 @@ func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string,
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Snapshot{}, err
 	}
-	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
 		return m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments)
-	})
+	}))
 }
 
 func (m *Manager) CancelEdit(ctx context.Context, agentID, inputID, clientID string) (Snapshot, error) {
-	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
 		return m.store.CancelEdit(ctx, agentID, inputID, clientID)
-	})
+	}))
 }
 
 func (m *Manager) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
 		return m.store.Delete(ctx, agentID, inputID)
-	})
+	}))
 }
 
 func (m *Manager) Move(ctx context.Context, agentID, inputID, beforeInputID string) (Snapshot, error) {
-	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
 		return m.store.Move(ctx, agentID, inputID, beforeInputID)
-	})
+	}))
 }
 
 func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (Snapshot, error) {
@@ -285,26 +350,31 @@ func (m *Manager) PauseForArchive(ctx context.Context, agentID string) (Snapshot
 
 // ResumeAfterArchive resumes only a pause that PauseForArchive created.
 func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, changed, err := m.store.ResumeAfterArchive(ctx, agentID)
-	if err == nil && changed {
-		m.observer.QueueChanged(snapshot)
-	}
-	c.mu.Unlock()
-	if err == nil && changed {
-		m.scheduleDrain(agentID)
-	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
+		return m.store.ResumeAfterArchive(ctx, agentID)
+	})
 }
 
+// TurnEnded and TurnStarted reconcile the queue against the turn flag that the
+// agent's provider publishes. The provider owns that flag -- its own SendInput
+// refuses input from the same value -- so the queue follows it rather than
+// keeping a second answer of its own.
+//
+// Both are idempotent, because a provider republishes the unchanged value
+// freely. A call that moves nothing broadcasts nothing.
 func (m *Manager) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
-	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
 		return m.store.TurnEnded(ctx, agentID)
+	})
+}
+
+// TurnAbandoned clears a turn that no dispatch owns. A process boundary calls
+// it: a process that starts or exits runs no turn, and a turn the agent process
+// reported has no other end once that process is gone. See
+// Store.AbandonUnownedTurn for why a turn a dispatch owns is left alone.
+func (m *Manager) TurnAbandoned(ctx context.Context, agentID string) (Snapshot, error) {
+	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
+		return m.store.AbandonUnownedTurn(ctx, agentID)
 	})
 }
 
@@ -314,8 +384,7 @@ func (m *Manager) TurnStarted(ctx context.Context, agentID string) (Snapshot, er
 	}
 	defer m.endActivity()
 	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
-		snapshot, err := m.store.TurnStarted(ctx, agentID)
-		return snapshot, true, err
+		return m.store.TurnStarted(ctx, agentID)
 	})
 }
 
@@ -348,7 +417,14 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	if dispatchErr != nil {
 		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, dispatchErr)
 		c.mu.Unlock()
-		return snapshot, storeErr
+		if storeErr != nil {
+			return snapshot, storeErr
+		}
+		// A busy refusal returns the item to an OPEN queue, and the turn that
+		// refused it delivers it. A turn that ended inside the provider call
+		// leaves no later edge, so only this drain moves the item.
+		m.drainIfReleased(agentID, snapshot)
+		return snapshot, nil
 	}
 	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
 	if err != nil {
@@ -388,24 +464,24 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	c.mu.Lock()
 	if errors.Is(err, ErrSteeringUnsupported) {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
-		if storeErr == nil {
-			m.observer.QueueChanged(snapshot)
-		}
-		shouldDrain := storeErr == nil && !snapshot.ActiveTurn && !snapshot.Paused
-		c.mu.Unlock()
-		if shouldDrain {
-			m.scheduleDrain(agentID)
-		}
 		if storeErr != nil {
+			c.mu.Unlock()
 			return Snapshot{}, storeErr
 		}
+		m.observer.QueueChanged(snapshot)
+		c.mu.Unlock()
+		m.drainIfReleased(agentID, snapshot)
 		return snapshot, ErrSteeringUnsupported
 	}
 	turnEnded := errors.Is(err, ErrTurnEnded)
 	if err != nil && !turnEnded {
 		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, err)
 		c.mu.Unlock()
-		return snapshot, storeErr
+		if storeErr != nil {
+			return snapshot, storeErr
+		}
+		m.drainIfReleased(agentID, snapshot)
+		return snapshot, nil
 	}
 	if !turnEnded {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
@@ -422,11 +498,8 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 			return Snapshot{}, storeErr
 		}
 		m.observer.QueueChanged(snapshot)
-		shouldDrain := !snapshot.ActiveTurn && !snapshot.Paused
 		c.mu.Unlock()
-		if shouldDrain {
-			m.scheduleDrain(agentID)
-		}
+		m.drainIfReleased(agentID, snapshot)
 		return snapshot, nil
 	}
 	result.StartsTurn = true
@@ -436,11 +509,8 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		c.mu.Unlock()
 		return Snapshot{}, err
 	}
-	shouldDrain := !snapshot.ActiveTurn && !snapshot.Paused
 	c.mu.Unlock()
-	if shouldDrain {
-		m.scheduleDrain(agentID)
-	}
+	m.drainIfReleased(agentID, snapshot)
 	return snapshot, nil
 }
 
@@ -493,11 +563,11 @@ func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSuc
 		if err == nil && changed {
 			r.manager.observer.QueueChanged(snapshot)
 		}
-		shouldDrain := err == nil && changed && !snapshot.Paused && !snapshot.ActiveTurn && len(snapshot.Items) > 0
+		shouldDrain := err == nil && changed
 		r.coordinator.mu.Unlock()
 		r.manager.endActivity()
 		if shouldDrain {
-			r.manager.scheduleDrain(r.agentID)
+			r.manager.drainIfReleased(r.agentID, snapshot)
 		}
 		r.err = err
 	})
@@ -576,6 +646,7 @@ func (m *Manager) scheduleDrain(agentID string) {
 	c := m.coordinator(agentID)
 	c.mu.Lock()
 	if c.draining {
+		c.drainAgain = true
 		c.mu.Unlock()
 		m.endActivity()
 		return
@@ -608,9 +679,14 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		c.mu.Lock()
 		if m.isStopped() {
 			c.draining = false
+			c.drainAgain = false
 			c.mu.Unlock()
 			return
 		}
+		// The read below answers every drain request made so far, so a request
+		// recorded before it is spent. Only one that arrives during the provider
+		// call carries news that this loop still misses.
+		c.drainAgain = false
 		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID)
 		if err != nil {
 			slog.Error("agent input queue prepare failed", "agent_id", agentID, "error", err)
@@ -633,21 +709,29 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 			if _, storeErr := m.recordDispatchFailure(context.Background(), *prepared, dispatchErr); storeErr != nil {
 				slog.Error("agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
 			}
-			c.draining = false
-			c.mu.Unlock()
-			return
+			if c.stopRoundAndUnlock() {
+				return
+			}
+			continue
 		}
-		_, persisted, err := m.acceptDispatch(context.Background(), *prepared, result)
+		snapshot, persisted, err := m.acceptDispatch(context.Background(), *prepared, result)
 		if err != nil {
 			slog.Error("agent input queue acceptance persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", err)
-			c.draining = false
-			c.mu.Unlock()
-			return
+			if c.stopRoundAndUnlock() {
+				return
+			}
+			continue
 		}
-		if !persisted || result.StartsTurn {
-			c.draining = false
-			c.mu.Unlock()
-			return
+		// The COMMITTED state decides, not the dispatch's own report. A turn
+		// that ended while the provider call ran cleared the flag, and the
+		// scheduleDrain it fired found this loop still marked draining and did
+		// nothing -- so reading result.StartsTurn here left the queue holding
+		// the rest of its items with no turn to wait for.
+		if !persisted || snapshot.ActiveTurn {
+			if c.stopRoundAndUnlock() {
+				return
+			}
+			continue
 		}
 		c.mu.Unlock()
 	}
@@ -673,23 +757,28 @@ func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch,
 }
 
 // recordDispatchFailure stores the outcome of a dispatch that the provider
-// refused. Delivery has three outcomes, not two. ErrDispatchNotReady means the
-// input never reached the provider, so the item returns to the queue and only
-// the queue pauses: a message the user typed must not need a manual retry
-// because the agent was between processes. The other two outcomes mark the
-// item FAILED or DELIVERY_UNCERTAIN, which the user resolves explicitly.
+// refused. DispatchOutcome states which of the four it was, and the switch is
+// exhaustive so a fifth cannot be added without answering for it here.
 func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
-	if errors.Is(dispatchErr, ErrDispatchNotReady) {
-		snapshot, err := m.store.RequeueAndPause(ctx, prepared.Item.AgentID, prepared.Item.ID, dispatchErr)
-		if err != nil {
-			return Snapshot{}, err
+	item := prepared.Item
+	var record func() (Snapshot, error)
+	switch dispatchOutcome(dispatchErr) {
+	case DispatchBusy:
+		record = func() (Snapshot, error) { return m.store.RequeueBusy(ctx, item.AgentID, item.ID) }
+	case DispatchNotReady:
+		record = func() (Snapshot, error) {
+			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr)
 		}
-		m.observer.QueueChanged(snapshot)
-		return snapshot, nil
+	case DispatchUncertain:
+		record = func() (Snapshot, error) {
+			return m.store.FailDispatch(ctx, item.AgentID, item.ID, dispatchErr, true)
+		}
+	case DispatchFailed:
+		record = func() (Snapshot, error) {
+			return m.store.FailDispatch(ctx, item.AgentID, item.ID, dispatchErr, false)
+		}
 	}
-	var deliveryErr *DeliveryError
-	uncertain := errors.As(dispatchErr, &deliveryErr) && deliveryErr.Uncertain
-	snapshot, err := m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, dispatchErr, uncertain)
+	snapshot, err := record()
 	if err != nil {
 		return Snapshot{}, err
 	}

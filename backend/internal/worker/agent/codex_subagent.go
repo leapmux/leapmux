@@ -234,6 +234,9 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	if a.collabThreadSpans != nil {
 		delete(a.collabThreadSpans, threadID)
 	}
+	if a.collabChildAgents != nil {
+		delete(a.collabChildAgents, threadID)
+	}
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
 	}
@@ -294,6 +297,11 @@ func (a *CodexAgent) SendChildInput(childKey, content string, attachments []*lea
 	// would tell the queue to store a permanent failure whose text says the
 	// child has no turn, while the child is visibly working.
 	if a.childTurnID(threadID) != "" {
+		// No publish here, unlike the main-thread refusals. A child's activity
+		// state comes from its background-task registry row rather than from a
+		// turn flag, and the child's own queue already holds the turn that its
+		// dispatch opened -- so the publish would need a registry write to
+		// resolve the child agent id, and would then tell nobody anything new.
 		return ErrAgentBusy
 	}
 	return a.sendTurnStartChild(threadID, codexChildInput(content, attachments))

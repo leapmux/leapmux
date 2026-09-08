@@ -478,9 +478,18 @@ func TestClassifyQueueSteerErrorPreservesUncertainDelivery(t *testing.T) {
 	t.Parallel()
 
 	err := classifyQueueSteerError(fmt.Errorf("steer timed out: %w", agent.ErrDeliveryUncertain))
+	assert.Equal(t, inputqueue.DispatchUncertain, dispatchOutcomeOf(t, err))
+}
+
+// dispatchOutcomeOf reads the outcome a classified refusal carries. Every case
+// goes through it rather than through errors.Is on a sentinel: the outcome is
+// the queue's whole answer, so a test that matched only the CAUSE would pass
+// while the queue did the wrong thing with it.
+func dispatchOutcomeOf(t *testing.T, err error) inputqueue.DispatchOutcome {
+	t.Helper()
 	var deliveryErr *inputqueue.DeliveryError
 	require.ErrorAs(t, err, &deliveryErr)
-	assert.True(t, deliveryErr.Uncertain)
+	return deliveryErr.Outcome
 }
 
 func TestAutoContinueProducerUsesGeneratedQueueKind(t *testing.T) {
@@ -592,8 +601,20 @@ func TestClassifyQueueDeliveryErrorRequeuesAVanishedProcess(t *testing.T) {
 	t.Parallel()
 
 	err := classifyQueueDeliveryError(fmt.Errorf("send: %w", agent.ErrAgentNotFound))
-	assert.ErrorIs(t, err, inputqueue.ErrDispatchNotReady)
+	assert.Equal(t, inputqueue.DispatchNotReady, dispatchOutcomeOf(t, err))
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
+}
+
+func TestClassifyQueueDeliveryErrorKeepsTheQueueOpenForABusyAgent(t *testing.T) {
+	t.Parallel()
+
+	// A busy agent works, and its turn end releases the item. Pausing there
+	// stopped a healthy queue on the outcome its own contract calls transient,
+	// and only the user could start it again.
+	err := classifyQueueDeliveryError(fmt.Errorf("send: %w", agent.ErrAgentBusy))
+	assert.Equal(t, inputqueue.DispatchBusy, dispatchOutcomeOf(t, err),
+		"a busy agent needs no state change, so the queue must not pause for one")
+	assert.ErrorIs(t, err, agent.ErrAgentBusy, "and the cause still reaches the user")
 }
 
 // startEchoAgent registers a mock Claude Code process for agentID. The mock is
