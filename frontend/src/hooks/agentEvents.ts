@@ -942,7 +942,13 @@ export function isAgentTabOnScreen(
  * answers whether this write was the busy -> idle EDGE, which is not the same
  * as an idle report arriving: the same value reaches a client twice when a
  * catch-up replay lands beside a live event, and an idle report can arrive for
- * an agent this client never saw working. See AgentActivityStore.setBusy.
+ * an agent this client never saw working. See AgentActivityStore.apply.
+ *
+ * Every AgentActivityChanged is a TRANSITION, so this runs in every catch-up
+ * phase. A settle that lands while the tab replays is a live settle -- the agent
+ * finished while the burst drained -- and it must ring. The catch-up BASELINE is
+ * a level and arrives on CatchUpStart instead; AgentActivityStore.seedPublished
+ * takes it.
  */
 export function handleActivityChanged(
   agentId: string,
@@ -951,10 +957,9 @@ export function handleActivityChanged(
     agentActivityStore: AgentActivityStore
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
-  catchUpPhase: CatchUpPhase,
 ): void {
   if (stores.agentActivityStore.apply(agentId, value.state))
-    handleAgentSettled(agentId, value.numToolUses, stores, catchUpPhase)
+    handleAgentSettled(agentId, value.numToolUses, stores)
 }
 
 /**
@@ -976,8 +981,12 @@ export function handleActivityChanged(
  * that cannot report one. Explicit 0 means the turn did nothing worth
  * interrupting the user for.
  *
- * Restricted to the 'live' phase: a catch-up replay would otherwise ring for
- * every agent that settled while the tab was closed.
+ * Runs in every catch-up phase, because its one caller only reaches it on a
+ * transition. The phase test that used to stand here dropped a settle that
+ * merely RACED a replay, such as a background task ending while the
+ * burst drained. That settle is the one the user waits for. The baseline the phase test
+ * existed to silence no longer arrives as a transition at all: it rides
+ * CatchUpStart, and AgentActivityStore.seedPublished raises nothing for it.
  */
 export function handleAgentSettled(
   agentId: string,
@@ -985,10 +994,7 @@ export function handleAgentSettled(
   stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
-  catchUpPhase: CatchUpPhase,
 ): void {
-  if (catchUpPhase !== 'live')
-    return
   const { metadata, selection, getActiveWorkspaceId, view } = stores
   if (!view.getAgentTab(agentId))
     return

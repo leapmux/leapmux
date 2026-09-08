@@ -365,6 +365,17 @@ message AgentEvent {
   string agent_id = 1;
   reserved 8, 9;
   reserved "message_error", "message_deleted";
+
+  // True when the catch-up REPLAY produced this frame, false when it is live.
+  //
+  // A replay re-sends state a client may already hold, so a client must not
+  // alert on one. The client cannot tell the two apart by itself. It registers
+  // its live watch BEFORE the replay burst runs, and both write
+  // the same stream, so a live frame that arrives mid-burst looks
+  // exactly like a replayed one. Guessing from that order dropped a permission prompt's
+  // badge, a plan-title update and an INACTIVE sweep whenever they raced a
+  // replay. broadcastReplayAgentEvent is the one writer that sets this.
+  bool replay = 18;
   oneof event {
     AgentChatMessage agent_message = 2;
     AgentStreamChunk stream_chunk = 3;
@@ -405,6 +416,29 @@ message AgentTurnEnd {
 //
 // The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
 // background task of this agent's is still running.
+//
+// EVERY instance of this message is a TRANSITION: the Worker sends it only where
+// its derived state differs from the one it last sent. The catch-up baseline is
+// a LEVEL and travels on CatchUpStart.activity_state instead. The two rode this
+// message together
+// once, and the
+// client could not
+// tell them apart.
+// It suppressed the
+// alert for the
+// whole catch-up
+// window, which
+// discarded each
+// genuine settle
+// that landed while
+// a tab replayed.
+//
+// A transition is not the same as news, so a client still compares against the
+// state it holds before it alerts. The Worker's "already sent" mark is per
+// process and per agent entry, and a worker
+// restart or a tab teardown drops it. The
+// first send afterwards then repeats a value
+// the client may already hold.
 message AgentActivityChanged {
   AgentActivityState state = 1;
   // Tool calls in the turn that this settle completes. The Worker records the
@@ -418,11 +452,12 @@ message AgentActivityChanged {
   // zero-tool turn, so unset and 0 must stay distinguishable: unset means
   // "ring", 0 means "this turn did nothing worth interrupting the user for".
   optional int32 num_tool_uses = 2;
-
 }
 
 // CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
-// message replay burst, carrying the agent's authoritative live-tail seq. A windowed
+// message replay burst. It carries the agent's authoritative live-tail seq and the
+// agent's derived activity, which are the two things a tab needs before it renders
+// the burst. A windowed
 // client that was disconnected reconciles against it FIRST -- dropping any loaded row
 // whose seq exceeds latest_seq (a tail deletion it missed while away) and clamping its
 // recorded live-tail -- so phantom rows are gone before the replay renders rather than
@@ -434,6 +469,25 @@ message CatchUpStart {
   // reconciliation; present 0 = the agent genuinely has no messages; present >0 = the
   // authoritative MAX(seq).
   optional int64 latest_seq = 1;
+  // What the agent is doing at the moment replay begins. A tab that just
+  // promoted to FULL then renders the right spinner and the right Interrupt
+  // button while the burst lands, rather than after it drains.
+  //
+  // A LEVEL, not a transition, which is why it rides this frame instead of
+  // AgentActivityChanged: the client rings on that message and must not ring for
+  // an agent that settled while it was away. The client seeds its store from
+  // this field and raises no alert. Under the WATCHED agent's own id, not the
+  // registry owner's -- a child tab's answer is its own registry row.
+  //
+  // The PUBLISHED state, which is what the live events carry, and not the exact
+  // derivation. The Worker debounces a settle, so the two differ for as long as
+  // one waits. A client seeded with the exact value would hold the
+  // settled state before the transition announcing it arrived, and
+  // would see no edge to ring on. See the Worker's AgentActivityPublished.
+  //
+  // UNSPECIFIED when the worker sends no opinion; the client then keeps whatever
+  // it holds rather than overwriting a fresher answer with a blank one.
+  AgentActivityState activity_state = 2;
 }
 
 message CatchUpComplete {

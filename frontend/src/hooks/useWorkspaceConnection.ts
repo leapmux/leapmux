@@ -214,8 +214,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, agentActivityStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
-  // Per-agent catch-up phase across all workers.
-  const catchUpPhases = new Map<string, CatchUpPhase>()
   // Resume cursor sent per agent on promotion — CatchUpStart reap ceiling.
   const resumeTails = new Map<string, bigint>()
   // TerminalData that arrived before the xterm instance was mounted. Snapshot
@@ -307,7 +305,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
 
-    const catchUpPhase = catchUpPhases.get(agentId) ?? 'live'
+    // The FRAME says which it is. A client registers its live watch before the
+    // replay burst runs and both write the same
+    // stream, so arrival order cannot tell them
+    // apart. Guessing from it dropped a permission
+    // prompt's badge, a plan-title update and an
+    // INACTIVE sweep whenever they raced a replay. See AgentEvent.replay.
+    const catchUpPhase: CatchUpPhase = agentEvent.replay ? 'catchingUp' : 'live'
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
         return
@@ -403,10 +407,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // and edge-triggered, so an off-screen tab still learns that its agent
         // settled -- which is the tab that most needs to ring and badge.
         //
-        // `catchUpPhase` is this file's shared resolution, which reads 'live'
-        // for an agent with no entry: catchUpPhases carries one only while a tab
-        // replays into FULL, so a tab watching in NOTIFY mode has none -- and
-        // that is exactly the off-screen tab this event exists to ring for.
+        // No `catchUpPhase` here, unlike every other alerting branch. Each of
+        // these is a TRANSITION, so a settle that lands while this tab replays
+        // is a live settle and rings. The catch-up BASELINE is a level and
+        // arrives on catchUpStart below, where a level seeds the store. The
+        // replay never sends this message at all, so the frame's own flag would
+        // answer 'live' here in every case.
         handleActivityChanged(agentId, inner.value, {
           metadata,
           selection,
@@ -414,13 +420,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           agentActivityStore,
           onAgentSettled: params.onAgentSettled,
-        }, catchUpPhase)
+        })
         break
       case 'catchUpStart':
         chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTails.get(agentId))
+        // The activity level the replay opens with. It seeds the spinner ahead
+        // of the message burst and rings nothing. It is the PUBLISHED level, so
+        // it also resets the edge
+        // baseline. This client may
+        // hold a WORKING from a link
+        // that dropped without an
+        // offline sweep, and the
+        // Worker's own answer is what
+        // supersedes it. See AgentActivityStore.seedPublished.
+        agentActivityStore.seedPublished(agentId, inner.value.activityState)
         break
       case 'catchUpComplete':
-        catchUpPhases.set(agentId, 'live')
         chatStore.setCatchingUp(agentId, false)
         chatStore.reconcileAuthoritativeTail(
           agentId,
@@ -528,7 +543,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     onWorkerOnline: setWorkerOnline,
     onPromoted: (workerId, agentIds) => {
       for (const agentId of agentIds) {
-        catchUpPhases.set(agentId, 'catchingUp')
         chatStore.setCatchingUp(agentId, true)
         const resumeSeq = untrack(() => chatStore.getResumeAfterSeq(agentId))
         resumeTails.set(agentId, resumeSeq)

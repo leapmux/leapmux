@@ -565,12 +565,27 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
         )
         opts.metadata.patch(tab.id, { ...fields, ...settingsFields })
-        // Hydration, not a transition: seed the store and drop the settle edge
-        // setBusy reports. This batch runs when a tab first appears and on an
-        // explicit re-ask, never as a poll, so an agent that settled between
-        // the two is not news the user asked for -- and the live event that
-        // announced that settle already rang if this client was watching.
-        opts.agentActivityStore.apply(tab.id, agent.activityState)
+        // Hydration, not a transition, so it seeds and raises nothing. This
+        // batch runs when a tab first appears and on an explicit re-ask, never
+        // as a poll, so an agent that settled between the two is not news the
+        // user asked for.
+        //
+        // publishedActivityState, not activityState. The display must match
+        // what the live events
+        // carry. Seeded with the
+        // EXACT value, a tab
+        // hydrating inside the
+        // Worker's settle window
+        // drops its spinner early.
+        // If the work then resumes,
+        // the Worker derives a state
+        // equal to what it already
+        // published and broadcasts
+        // nothing, so that tab shows
+        // no spinner for the rest of
+        // the turn. The exact value belongs to the close guard,
+        // which fetches it at the moment of the close (see createTabBusyProbe).
+        opts.agentActivityStore.seedPublished(tab.id, agent.publishedActivityState)
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createAgentActivityStore } from '~/stores/agentActivity.store'
+import { activityInterruptsWork, createAgentActivityStore } from '~/stores/agentActivity.store'
 
 const { WORKING, IDLE, WAITING_FOR_USER } = AgentActivityState
 
@@ -89,7 +89,7 @@ describe('createAgentActivityStore', () => {
     store.apply('a1', WAITING_FOR_USER)
 
     expect(store.isBusy('a1')).toBe(false)
-    expect(store.interruptsWork('a1')).toBe(true)
+    expect(activityInterruptsWork(WAITING_FOR_USER)).toBe(true)
   })
 
   it('agrees with itself for the states that are not ambiguous', () => {
@@ -97,14 +97,15 @@ describe('createAgentActivityStore', () => {
 
     store.apply('working', WORKING)
     expect(store.isBusy('working')).toBe(true)
-    expect(store.interruptsWork('working')).toBe(true)
+    expect(activityInterruptsWork(WORKING)).toBe(true)
 
     store.apply('idle', IDLE)
     expect(store.isBusy('idle')).toBe(false)
-    expect(store.interruptsWork('idle')).toBe(false)
+    expect(activityInterruptsWork(IDLE)).toBe(false)
 
     // An agent nothing has reported on yet reads like an idle one.
-    expect(store.interruptsWork('never-seen')).toBe(false)
+    expect(store.isBusy('never-seen')).toBe(false)
+    expect(activityInterruptsWork(AgentActivityState.UNSPECIFIED)).toBe(false)
   })
 
   it('treats a move into waiting as a settle', () => {
@@ -116,5 +117,71 @@ describe('createAgentActivityStore', () => {
     expect(store.apply('a1', WAITING_FOR_USER)).toBe(true)
     // Answering the prompt resumes work, which is no settle.
     expect(store.apply('a1', WORKING)).toBe(false)
+  })
+
+  describe('seedPublished', () => {
+    it('writes the state without reporting a settle, so a reconnect greets nobody', () => {
+      const store = createAgentActivityStore()
+      store.apply('a1', WORKING)
+
+      store.seedPublished('a1', IDLE)
+
+      expect(store.isBusy('a1'), 'the state still seeds').toBe(false)
+    })
+
+    it('clears an edge baseline the worker no longer stands behind', () => {
+      // A link that dropped with no offline sweep leaves a WORKING baseline the
+      // Worker retired while this client was away. The published level is what
+      // the Worker last broadcast, so it is the answer that baseline must hold.
+      const store = createAgentActivityStore()
+      store.apply('a1', WORKING)
+
+      store.seedPublished('a1', IDLE)
+
+      expect(store.apply('a1', IDLE), 'a repeat of what the worker already sent is not a settle').toBe(false)
+    })
+
+    it('keeps a settle the worker still holds in its window', () => {
+      // The published level reads WORKING for as long as the debounce runs, so
+      // the transition that ends it still finds an edge to report.
+      const store = createAgentActivityStore()
+      store.apply('a1', WORKING)
+
+      store.seedPublished('a1', WORKING)
+
+      expect(store.apply('a1', IDLE), 'the held settle still rings when it lands').toBe(true)
+    })
+
+    it('establishes the baseline for a tab whose only writer is the seed', () => {
+      // A NOTIFY-mode tab gets no catch-up replay, so a hydration seed is the
+      // only write it takes before the first transition. That seed must leave a
+      // baseline the settle can measure against, or the turn this tab watched
+      // end rings for nobody.
+      const store = createAgentActivityStore()
+
+      store.seedPublished('a1', WORKING)
+
+      expect(store.apply('a1', IDLE), 'the agent finished while this client watched').toBe(true)
+    })
+
+    it('keeps what it holds when the worker sends no opinion', () => {
+      const store = createAgentActivityStore()
+      store.apply('a1', WORKING)
+
+      store.seedPublished('a1', AgentActivityState.UNSPECIFIED)
+
+      expect(store.isBusy('a1'), 'UNSPECIFIED must not overwrite a real answer').toBe(true)
+    })
+  })
+
+  describe('forget', () => {
+    it('forgets the edge baseline with the state', () => {
+      const store = createAgentActivityStore()
+      store.apply('a1', WORKING)
+
+      store.forget('a1')
+
+      expect(store.apply('a1', IDLE), 'a retired agent leaves no edge behind').toBe(false)
+    })
   })
 })

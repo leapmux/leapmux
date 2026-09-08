@@ -209,11 +209,23 @@ type OutputHandler struct {
 	// that already flushed. The zero value works, so nothing constructs it.
 	activityRefreshes sync.WaitGroup
 
+	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
+	// time.AfterFunc; a test replaces it to fire the window on demand, because a
+	// window sized by a real timer lets the machine running the suite decide
+	// whether a case passes. See settleDelay.
+	newSettleTimer func(d time.Duration, f func()) settleStopper
+
 	// processRunning reports whether the feeding process for a ROOT agent id is
 	// up. Defaults to the agent manager; a test replaces it to drive the other
 	// activity inputs in isolation, because a real subprocess is not a seam the
 	// derivation's own rules should depend on.
 	processRunning func(rootAgentID string) bool
+
+	// treeChildren indexes the activity map by ROOT, so a tree refresh asks for
+	// one tree rather than walking every agent this worker ever published for.
+	// Derived from the rootAgentID that activityFor already records, written by
+	// the same call, and pruned by ForgetActivity. See indexTreeChild.
+	treeChildren sync.Map // rootAgentID -> *sync.Map[childAgentID]struct{}
 
 	// rootSinks tracks the root agentOutputSink per root agent id so CleanupAgent
 	// can prune a closed child from its parent's childSinks cache (which would

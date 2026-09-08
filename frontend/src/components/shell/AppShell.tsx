@@ -767,8 +767,8 @@ export const AppShell: Component = () => {
   })
 
   const busyProbe = createTabBusyProbe({
-    activity: agentActivityStore,
     tasksFor: taskScope.tasksForTab,
+    seedActivity: agentActivityStore.seedPublished,
   })
 
   // Tab operations (select, close, file open, worktree confirm).
