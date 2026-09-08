@@ -540,11 +540,26 @@ These groups inspect a Worker's filesystem and git state read-only. The Worker i
 
 | Command | Key flags | Output |
 | --- | --- | --- |
-| `file list` | `--path <dir>` (required), `--max-depth N`, `--dirs-only` | `{path, truncated, entries}` |
+| `file list` | `--path <dir>` (required), `--max-depth N`, `--dirs-only`, `--from-root <dir>` | `{listings}` |
 | `file read` | `--path <file>` (required), `--offset N`, `--limit N` | `{path, total_size, content}` |
 | `file stat` | `--path <path>` (required) | Stat info |
+| `file roots` | none beyond the entity selectors | `{roots}` |
 
-`file read --limit 0` means the default 64 KB cap.
+`file read --limit 0` means the default 60 KB cap.
+
+`file list` answers a LIST of directory listings, one per entry, each
+`{path, entries, truncated, total_entries}`. Without `--from-root` that list
+holds exactly one entry, for `--path`. With `--from-root` it holds one entry
+per directory from that ancestor down to `--path`, outermost first, so a
+caller reads a whole branch in one request. `--from-root` must be `--path`
+itself or an ancestor of it. The Worker may answer with fewer entries than the
+depth implies, because the chain is capped by a listing count and by the
+message-size budget; both drop the deepest levels.
+
+`file roots` reports the Worker's own filesystem roots: `["/"]` on a POSIX
+host, and the drive roots that carry a volume (`"C:\\"`, `"D:\\"`) on
+Windows. A WSL or Docker Worker runs a Linux binary, so it reports `["/"]`
+like any other Linux host.
 
 ### `git`
 

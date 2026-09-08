@@ -55,7 +55,8 @@ test.describe('Worker Registration', () => {
     const refreshBtn = page.getByLabel('Refresh directory tree')
     const refreshIcon = refreshBtn.locator('svg')
 
-    // Click a directory node in the tree (the root node)
+    // Click a directory node in the tree (the root node, which is the
+    // filesystem root -- the picker no longer roots at the home directory).
     await page.getByTestId('tree-root-node').click()
 
     // The refresh button's icon should NOT have a spinning animation

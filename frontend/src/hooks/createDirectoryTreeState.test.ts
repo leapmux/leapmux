@@ -5,10 +5,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { flush } from '~/test-support/async'
 
-function makeHandle(): DirectoryTreeHandle & { refresh: Mock<() => void> } {
+function makeHandle(): DirectoryTreeHandle & {
+  refresh: Mock<() => void>
+  expandPath: Mock<(path: string) => void>
+} {
   return {
     collapseAll: vi.fn<() => void>(),
     refresh: vi.fn<() => void>(),
+    expandPath: vi.fn<(path: string) => void>(),
   }
 }
 
@@ -85,6 +89,39 @@ describe('createDirectoryTreeState', () => {
       state.refreshTree()
       expect(first.refresh).not.toHaveBeenCalled()
       expect(second.refresh).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('expandTreePath forwards the path to the handle', () => {
+    createRoot((dispose) => {
+      const state = createDirectoryTreeState()
+      const handle = makeHandle()
+      state.setTreeRef(handle)
+      state.expandTreePath('/home/alice')
+      expect(handle.expandPath).toHaveBeenCalledExactlyOnceWith('/home/alice')
+      dispose()
+    })
+  })
+
+  // The picker calls this from a click handler, which can run before the tree
+  // mounts and hands its handle over.
+  it('expandTreePath is a no-op while no tree handle is set', () => {
+    createRoot((dispose) => {
+      const state = createDirectoryTreeState()
+      expect(() => state.expandTreePath('/home/alice')).not.toThrow()
+      dispose()
+    })
+  })
+
+  // Unlike refreshTree, this does NOT bump treeKey: opening one directory
+  // invalidates no branch or worktree list.
+  it('expandTreePath leaves treeKey alone', () => {
+    createRoot((dispose) => {
+      const state = createDirectoryTreeState()
+      state.setTreeRef(makeHandle())
+      state.expandTreePath('/home/alice')
+      expect(state.treeKey()).toBe(0)
       dispose()
     })
   })

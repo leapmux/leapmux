@@ -135,6 +135,7 @@ var controlTree = cmdGroup{
 				{Name: "list", Summary: "List a directory", Run: controlRun(cmdcontrol.RunFileList)},
 				{Name: "read", Summary: "Read a file (with optional --offset/--limit)", Run: controlRun(cmdcontrol.RunFileRead)},
 				{Name: "stat", Summary: "Stat a path", Run: controlRun(cmdcontrol.RunFileStat)},
+				{Name: "roots", Summary: "List the worker's filesystem roots", Run: controlRun(cmdcontrol.RunFileRoots)},
 			},
 		},
 		{

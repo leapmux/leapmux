@@ -3,10 +3,14 @@ import {
   basename,
   detectFlavor,
   extname,
+  filesystemRoot,
   flavorFromOs,
   isAbsolute,
+  isFilesystemRoot,
   join,
+  normalizeSeparators,
   parentDirectory,
+  pathEq,
   relativeUnder,
   relativizePath,
   split,
@@ -118,6 +122,30 @@ describe('join', () => {
 
   it('drops empty and consecutive separators', () => {
     expect(join(['/home/', '/alice/', '/proj'], 'posix')).toBe('/home/alice/proj')
+  })
+
+  /**
+   * A POSIX root is nothing but a separator, so stripping the trailing one
+   * empties it. Without the root prefix the result came out RELATIVE, and a
+   * tree rooted at `/` built every git path wrong.
+   */
+  it('keeps the leading separator when the first fragment is a posix root', () => {
+    expect(join(['/', 'home'], 'posix')).toBe('/home')
+    expect(join(['/', 'home', 'alice'], 'posix')).toBe('/home/alice')
+    expect(join(['/', '/home/', 'alice'], 'posix')).toBe('/home/alice')
+  })
+
+  it('answers the root itself when there is nothing to append', () => {
+    expect(join(['/'], 'posix')).toBe('/')
+    expect(join(['/', ''], 'posix')).toBe('/')
+  })
+
+  // The same shape on win32: `\foo` is rooted but volume-less. `C:\` is NOT
+  // this case -- it strips to `C:`, which still identifies the drive, which is why
+  // the defect only ever showed on POSIX.
+  it('keeps the leading separator for a volume-less win32 root', () => {
+    expect(join(['\\', 'foo'], 'win32')).toBe('\\foo')
+    expect(join(['C:\\', 'Users', 'alice'], 'win32')).toBe('C:\\Users\\alice')
   })
 })
 
@@ -241,6 +269,55 @@ describe('untildify', () => {
   it('is a no-op when homeDir is missing', () => {
     expect(untildify('~/proj')).toBe('~/proj')
   })
+
+  // A home directory at the filesystem root goes through `join`'s root case.
+  // Without it this answered `proj` -- a RELATIVE path where the caller needs
+  // an absolute one.
+  it('expands against a home directory that is the filesystem root', () => {
+    expect(untildify('~/proj', '/', 'posix')).toBe('/proj')
+    expect(untildify('~', '/', 'posix')).toBe('/')
+  })
+})
+
+describe('filesystemRoot', () => {
+  it('returns / for any absolute posix path', () => {
+    expect(filesystemRoot('/', 'posix')).toBe('/')
+    expect(filesystemRoot('/etc/hosts', 'posix')).toBe('/')
+    expect(filesystemRoot('/a/b/', 'posix')).toBe('/')
+  })
+
+  it('returns undefined for a relative posix path', () => {
+    expect(filesystemRoot('proj/src', 'posix')).toBeUndefined()
+    expect(filesystemRoot('', 'posix')).toBeUndefined()
+  })
+
+  it('returns the drive root with the native separator on win32', () => {
+    expect(filesystemRoot('C:\\Users\\alice', 'win32')).toBe('C:\\')
+    expect(filesystemRoot('C:/Users/alice', 'win32')).toBe('C:\\')
+  })
+
+  it('is idempotent on a drive root', () => {
+    expect(filesystemRoot('C:\\', 'win32')).toBe('C:\\')
+    expect(filesystemRoot('C:/', 'win32')).toBe('C:\\')
+  })
+
+  it('returns the share root for a UNC path', () => {
+    expect(filesystemRoot('\\\\srv\\share\\x', 'win32')).toBe('\\\\srv\\share\\')
+    expect(filesystemRoot('\\\\srv\\share\\', 'win32')).toBe('\\\\srv\\share\\')
+  })
+
+  // Which drive a volume-less rooted path lands on is the worker's current
+  // directory, so the browser must not guess one.
+  it('returns undefined for a win32 path with no volume', () => {
+    expect(filesystemRoot('\\rooted', 'win32')).toBeUndefined()
+    expect(filesystemRoot('/rooted', 'win32')).toBeUndefined()
+    expect(filesystemRoot('proj\\src', 'win32')).toBeUndefined()
+  })
+
+  it('sniffs the flavor when none is given', () => {
+    expect(filesystemRoot('C:\\x')).toBe('C:\\')
+    expect(filesystemRoot('/x')).toBe('/')
+  })
 })
 
 describe('relativeUnder', () => {
@@ -263,6 +340,16 @@ describe('relativeUnder', () => {
     expect(relativeUnder('/home/alice-fork', '/home/alice', 'posix')).toBeNull()
   })
 
+  // A filesystem root IS a trailing separator, so without this every path
+  // under a root answered null and a tree rooted at `/` found no descendants.
+  it('treats a trailing separator on the base as a root', () => {
+    expect(relativeUnder('/a/b', '/', 'posix')).toBe('a/b')
+    expect(relativeUnder('/', '/', 'posix')).toBe('')
+    expect(relativeUnder('C:\\Users', 'C:\\', 'win32')).toBe('Users')
+    expect(relativeUnder('C:\\', 'C:\\', 'win32')).toBe('')
+    expect(relativeUnder('\\\\srv\\share\\x', '\\\\srv\\share\\', 'win32')).toBe('x')
+  })
+
   it('compares case-insensitively on win32', () => {
     expect(relativeUnder('C:\\Repo\\src', 'c:\\repo', 'win32')).toBe('src')
     expect(relativeUnder('C:\\Repo', 'c:\\REPO', 'win32')).toBe('')
@@ -270,6 +357,101 @@ describe('relativeUnder', () => {
 
   it('returns null when the win32 volume differs', () => {
     expect(relativeUnder('D:\\data', 'C:\\data', 'win32')).toBeNull()
+  })
+
+  // One trailing separator was stripped, not every one, so a base spelled
+  // `/a//` built the prefix `/a//` and matched none of its own descendants.
+  it('strips every trailing separator on the base, not only one', () => {
+    expect(relativeUnder('/a/b', '/a//', 'posix')).toBe('b')
+    expect(relativeUnder('/a/b', '/a///', 'posix')).toBe('b')
+    expect(relativeUnder('/a/b', '//', 'posix')).toBe('a/b')
+    expect(relativeUnder('C:\\Users\\alice', 'C:\\Users\\\\', 'win32')).toBe('alice')
+  })
+
+  // A base of nothing but separators trims to '', and comparing against ''
+  // reported EVERY path as the base itself -- including the drive-relative
+  // `C:`, which identifies the current directory on drive C and not the
+  // drive's root.
+  it('does not treat a drive-relative path as the drive root', () => {
+    expect(relativeUnder('C:', 'C:\\', 'win32')).toBeNull()
+    expect(relativeUnder('C:', 'C:', 'win32')).toBe('')
+  })
+
+  it('returns null for an empty path', () => {
+    expect(relativeUnder('', '/', 'posix')).toBeNull()
+    expect(relativeUnder('', '', 'posix')).toBeNull()
+  })
+})
+
+describe('pathEq', () => {
+  it('compares byte-exactly on posix', () => {
+    expect(pathEq('/A', '/a', 'posix')).toBe(false)
+    expect(pathEq('/a', '/a', 'posix')).toBe(true)
+  })
+
+  it('compares case-insensitively on win32', () => {
+    expect(pathEq('C:\\Users', 'c:\\users', 'win32')).toBe(true)
+    expect(pathEq('C:\\Users', 'C:\\Other', 'win32')).toBe(false)
+  })
+
+  // Text, not paths: it neither cleans nor normalizes separators, which is
+  // why a caller that wants "the same directory" must normalize first.
+  it('does not normalize separators', () => {
+    expect(pathEq('C:/Users', 'C:\\Users', 'win32')).toBe(false)
+  })
+})
+
+describe('isFilesystemRoot', () => {
+  it('accepts a posix root however many separators it carries', () => {
+    expect(isFilesystemRoot('/', 'posix')).toBe(true)
+    expect(isFilesystemRoot('//', 'posix')).toBe(true)
+    expect(isFilesystemRoot('///', 'posix')).toBe(true)
+  })
+
+  it('accepts a win32 drive root in either separator', () => {
+    expect(isFilesystemRoot('C:\\', 'win32')).toBe(true)
+    expect(isFilesystemRoot('C:/', 'win32')).toBe(true)
+  })
+
+  // A UNC share root arrives with and without its trailing separator; both
+  // are the same root, so both must answer true.
+  it('accepts a UNC share root with or without a trailing separator', () => {
+    expect(isFilesystemRoot('\\\\srv\\share\\', 'win32')).toBe(true)
+    expect(isFilesystemRoot('\\\\srv\\share', 'win32')).toBe(true)
+  })
+
+  it('refuses anything under a root', () => {
+    expect(isFilesystemRoot('/home', 'posix')).toBe(false)
+    expect(isFilesystemRoot('C:\\Users', 'win32')).toBe(false)
+    expect(isFilesystemRoot('\\\\srv\\share\\x', 'win32')).toBe(false)
+  })
+
+  // `C:` is drive-relative -- the current directory on drive C, not its root.
+  it('refuses a drive-relative path and a relative path', () => {
+    expect(isFilesystemRoot('C:', 'win32')).toBe(false)
+    expect(isFilesystemRoot('proj/src', 'posix')).toBe(false)
+    expect(isFilesystemRoot('', 'posix')).toBe(false)
+  })
+
+  // A win32 path that is rooted but volume-less lands on whichever drive the
+  // worker's current directory is on, so the browser cannot call it a root.
+  it('refuses a volume-less win32 root', () => {
+    expect(isFilesystemRoot('\\', 'win32')).toBe(false)
+  })
+})
+
+describe('normalizeSeparators', () => {
+  it('rewrites forward slashes on win32', () => {
+    expect(normalizeSeparators('C:/Users/alice', 'win32')).toBe('C:\\Users\\alice')
+    expect(normalizeSeparators('C:\\Users\\alice', 'win32')).toBe('C:\\Users\\alice')
+  })
+
+  // `\` is a legal character in a POSIX file name, so `weird\name` is ONE
+  // component. Rewriting it made that file compare equal to a directory
+  // `weird/name` that may also exist.
+  it('keeps a backslash on posix, where it is a legal file-name character', () => {
+    expect(normalizeSeparators('/a/weird\\name', 'posix')).toBe('/a/weird\\name')
+    expect(normalizeSeparators('/a/b', 'posix')).toBe('/a/b')
   })
 })
 
@@ -308,5 +490,39 @@ describe('relativizePath', () => {
 
   it('falls back to absolute when roots differ on win32', () => {
     expect(relativizePath('D:\\data\\a.txt', 'C:\\proj')).toBe('D:\\data\\a.txt')
+  })
+})
+
+describe('relativizePath from a filesystem root', () => {
+  // The picker's tree is rooted at `/` now. Without the root guard the direct
+  // relative answer wins and "Copy relative path" reads `home/alice/proj/a.ts`.
+  it('prefers the tilde form when the base is the filesystem root', () => {
+    expect(relativizePath('/home/alice/proj/a.ts', '/', '/home/alice')).toBe('~/proj/a.ts')
+  })
+
+  it('falls back to the absolute path when the tilde does not apply', () => {
+    expect(relativizePath('/opt/data', '/', '/home/alice')).toBe('/opt/data')
+  })
+
+  it('still answers . for the root itself', () => {
+    expect(relativizePath('/', '/')).toBe('.')
+    expect(relativizePath('C:\\', 'C:\\')).toBe('.')
+  })
+
+  it('prefers the tilde form from a win32 drive root', () => {
+    expect(relativizePath('C:\\Users\\alice\\p', 'C:\\', 'C:\\Users\\alice')).toBe('~\\p')
+  })
+
+  // Regression guard for rewriting rootsMatch on top of filesystemRoot.
+  it('still compares win32 volumes case-insensitively', () => {
+    expect(relativizePath('C:\\proj\\src', 'c:\\PROJ')).toBe('src')
+  })
+
+  // rootsMatch is reached through relativizePath. Its rewrite must keep
+  // answering false when only ONE side has a root, or a `../` chain would be
+  // offered between an absolute path and a relative base.
+  it('offers no relative chain between an absolute path and a relative base', () => {
+    expect(relativizePath('/opt/data', 'rel/base')).toBe('/opt/data')
+    expect(relativizePath('C:\\opt\\data', 'rel\\base', undefined, 'win32')).toBe('C:\\opt\\data')
   })
 })

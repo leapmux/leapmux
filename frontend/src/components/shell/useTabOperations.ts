@@ -847,11 +847,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     })
   }
 
-  // Reset file tree selection when active tab changes
+  // Reset file tree selection when active tab changes.
+  //
+  // No `'~'` fallback: this feeds the tree's `selectedPath`, which it compares
+  // against the absolute paths the worker reports. A tilde resolves only on
+  // the worker, so it matches no node and selects nothing -- an empty string
+  // says that with no pretence, and the tree then reveals its own
+  // `revealPath` instead.
   createEffect(() => {
     const _tab = activeTab()
     const ctx = getCurrentTabContext()
-    setFileTreePath(ctx.workingDir || '~')
+    setFileTreePath(ctx.workingDir)
   })
 
   /**

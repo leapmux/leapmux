@@ -22,7 +22,12 @@ export function createDirectoryTreeState() {
     treeHandle?.refresh()
     setTreeKey(k => k + 1)
   }
-  return { treeKey, setTreeRef, refreshTree }
+  // Forwarded rather than re-implemented: the expansion state lives in the
+  // tree's own store, and this hook holds the handle that reaches it.
+  const expandTreePath = (path: string) => {
+    treeHandle?.expandPath(path)
+  }
+  return { treeKey, setTreeRef, refreshTree, expandTreePath }
 }
 
 export type DirectoryTreeState = ReturnType<typeof createDirectoryTreeState>

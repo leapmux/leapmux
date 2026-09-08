@@ -11,7 +11,7 @@ import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
-import { clippedText } from '~/styles/shared.css'
+import { clippedText, fieldTriggerChevron } from '~/styles/shared.css'
 import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
@@ -79,7 +79,7 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
                 <AgentProviderIcon provider={currentProvider()} size={16} />
                 <ClippedText text={agentProviderLabel(currentProvider())} />
               </span>
-              <ChevronDown size={16} class={styles.triggerChevron} />
+              <ChevronDown size={16} class={fieldTriggerChevron} />
             </button>
           )}
         >

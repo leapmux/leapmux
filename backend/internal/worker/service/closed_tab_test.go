@@ -209,9 +209,10 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 type setupOption func(*setupConfig)
 
 type setupConfig struct {
-	remoteIPC    ControlIPCFactory
-	rewriteQuery func(string) string
-	clock        quartz.Clock
+	remoteIPC      ControlIPCFactory
+	rewriteQuery   func(string) string
+	clock          quartz.Clock
+	maxMessageSize int
 }
 
 // withClock installs the clock the Service's startup registries arm their
@@ -241,6 +242,13 @@ func withRemoteIPC(ipc ControlIPCFactory) setupOption {
 // selects the same seam.
 func withQueryRewrite(rewrite func(query string) string) setupOption {
 	return func(c *setupConfig) { c.rewriteQuery = rewrite }
+}
+
+// withMaxMessageSize shrinks the worker's application payload budget, so a
+// test can reach a size guard without building a response of the default
+// budget's size. Zero keeps the default, exactly as production config does.
+func withMaxMessageSize(n int) setupOption {
+	return func(c *setupConfig) { c.maxMessageSize = n }
 }
 
 // rewritingDBTX hands each statement to rewrite and runs whatever comes back.
@@ -326,6 +334,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		// connect-time WorkerIdentity rather than at construction.
 		SeedRegisteredBy: "user-1",
 		Clock:            cfg.clock,
+		MaxMessageSize:   cfg.maxMessageSize,
 	})
 	svc.ControlIPC = cfg.remoteIPC
 	// Before RegisterAll, exactly like every other field of Service: the

@@ -130,6 +130,17 @@ describe('computeGitVisibility', () => {
     const { paths } = computeGitVisibility([entry('src/main.ts')], 'C:\\repo', 'win32')
     expect(paths.has('C:\\repo\\src\\main.ts')).toBe(true)
   })
+
+  /**
+   * A repo checked out AT the filesystem root. `join` used to strip the root
+   * away, so every path here came out relative -- `src/main.ts` instead of
+   * `/src/main.ts` -- and matched no node the tree renders, which hides the
+   * whole repository behind a git filter.
+   */
+  it('builds absolute paths when the root is the filesystem root', () => {
+    const { paths } = computeGitVisibility([entry('src/main.ts')], '/', unix)
+    expect(paths).toEqual(new Set(['/', '/src', '/src/main.ts']))
+  })
 })
 
 describe('flatEntryOpenTarget', () => {
@@ -137,6 +148,10 @@ describe('flatEntryOpenTarget', () => {
 
   it('resolves a file entry against the repo root', () => {
     expect(flatEntryOpenTarget({ path: 'src/main.ts', isDir: false }, '/repo', unix)).toBe('/repo/src/main.ts')
+  })
+
+  it('resolves against the filesystem root without losing the leading separator', () => {
+    expect(flatEntryOpenTarget({ path: 'src/main.ts', isDir: false }, '/', unix)).toBe('/src/main.ts')
   })
 
   it('refuses an untracked-directory entry', () => {

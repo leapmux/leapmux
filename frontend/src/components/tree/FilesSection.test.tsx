@@ -9,7 +9,7 @@ import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
 import { FilesSection, FilesSectionHeaderActions } from './FilesSection'
 
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: vi.fn(async () => ({ entries: [], truncated: false })),
+  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
   statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
   channelManager: { subscribe: () => () => {} },
 }))
@@ -333,5 +333,54 @@ describe('filesSectionHeaderActions', () => {
     renderActions(undefined)
     expect(screen.getByTestId('files-sort-key-name').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('files-sort-direction-asc').getAttribute('aria-checked')).toBe('true')
+  })
+})
+
+describe('filesSection tree root', () => {
+  function rootRowName(): string | undefined {
+    return document
+      .querySelector('[data-testid="tree-root-node"] [data-testid="tree-row-name"]')
+      ?.textContent ?? undefined
+  }
+
+  function renderWithDirs(workingDir: string, homeDir: string) {
+    return render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={workingDir}
+        homeDir={homeDir}
+        flavor="posix"
+        fileTreePath=""
+        onFileSelect={() => {}}
+        gitStatusStore={fakeGitStore([])}
+        hasActiveFileTab={false}
+      />
+    ))
+  }
+
+  // The root ROW's label is the observable statement of the tree's root.
+  it('roots the tree at the working directory', async () => {
+    renderWithDirs('/repo', '/home/alice')
+    await waitFor(() => expect(rootRowName()).toBe('repo'))
+  })
+
+  /**
+   * A tab mounts from the CRDT before its working directory arrives. The tree
+   * used to receive the literal `'~'` in that window, which `DirectoryTree`
+   * documents as forbidden: a tilde resolves only on the worker, so
+   * `filesystemRoot('~')` is undefined, `relativeUnder(abs, '~')` is null, and
+   * the reveal, the auto-expand and "Copy relative path" all quietly stop
+   * working against a root that names nothing on disk.
+   */
+  it('falls back to the worker home directory, never to a tilde', async () => {
+    renderWithDirs('', '/home/alice')
+    await waitFor(() => expect(rootRowName()).toBe('alice'))
+  })
+
+  it('renders no tree at all while neither directory is known', async () => {
+    renderWithDirs('', '')
+    // A tick, so this cannot pass merely because the tree has not painted yet.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(document.querySelector('[data-testid="tree-root-node"]')).toBeNull()
   })
 })

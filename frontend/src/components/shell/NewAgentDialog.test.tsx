@@ -33,7 +33,7 @@ vi.mock('~/api/workerRpc', () => ({
   getGitInfo: vi.fn(async () => ({})),
   getWorkerSystemInfo: vi.fn(async () => ({})),
   statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({ entries: [] })),
+  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
   openAgent: vi.fn(async () => ({})),
 }))
 

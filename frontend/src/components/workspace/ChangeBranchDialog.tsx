@@ -143,13 +143,9 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   createEffect(on(worktreeTabType, () => title.regenerateIfPristine(), { defer: true }))
 
   const shellState = useAvailableShells(
-    () => {
-      if (gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.TERMINAL) {
-        return { workerId: props.workerId }
-      }
-      return null
-    },
-    err => log.warn('Failed to list shells', err),
+    () => props.workerId,
+    () => gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.TERMINAL,
+    (err: unknown) => log.warn('Failed to list shells', err),
   )
   const { shell } = shellState
 

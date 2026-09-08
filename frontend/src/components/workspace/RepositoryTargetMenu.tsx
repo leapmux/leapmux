@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createMemo, For, Show } from 'solid-js'
 import { SubMenu } from '~/components/common/SubMenu'
+import { slugify } from '~/lib/slug'
 import { menuSectionHeader } from '~/styles/shared.css'
 
 export interface RepositoryTargetMenuProps<T> {
@@ -19,22 +20,6 @@ export interface RepositoryTargetMenuProps<T> {
    * only case that renders a submenu at all.
    */
   testIdPrefix: string
-}
-
-/**
- * A label reduced to something addressable: lowercase, and every run of
- * non-alphanumerics folded to one hyphen. Repository labels carry spaces,
- * dots, slashes and a middle dot, none of which belong in a selector.
- *
- * The fold is LOSSY, which is why {@link targetSlugs} below never trusts it
- * alone: `worker · a/b` and `worker-a-b` both reduce to `worker-a-b`, `foo_bar`
- * and `foo-bar` both reduce to `foo-bar`, and a label with no ASCII
- * alphanumerics at all reduces to the empty string.
- */
-function slugify(label: string): string {
-  // No `i` flag: `.toLowerCase()` already ran, and on a NEGATED class the flag
-  // would stop `[^a-z0-9]` from excluding uppercase letters.
-  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
 /**

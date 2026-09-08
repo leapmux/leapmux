@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { menuSectionHeader } from '~/styles/shared.css'
+import { fieldTrigger, menuSectionHeader } from '~/styles/shared.css'
 import { breakpoints } from '~/styles/tokens'
 
 /**
@@ -76,39 +76,20 @@ export const nav = style({
 })
 
 /** Phone-band section picker: oat-styled trigger (mirrors form select chrome). */
-export const navSelect = style({
-  'width': '100%',
-  'marginBottom': 'var(--space-1)',
-  'padding': 'var(--space-2) var(--space-3)',
-  'fontSize': 'var(--text-7)',
-  'lineHeight': 'var(--leading-normal)',
-  'backgroundColor': 'var(--background)',
-  'color': 'var(--foreground)',
-  'border': '1px solid var(--input)',
-  'borderRadius': 'var(--radius-medium)',
-  'transition': 'border-color var(--transition-fast), box-shadow var(--transition-fast)',
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'space-between',
-  'gap': 'var(--space-3)',
-  'textAlign': 'left',
-  ':focus-visible': {
-    outline: 'none',
-    borderColor: 'var(--ring)',
-    boxShadow: '0 0 0 2px rgb(from var(--ring) r g b / 0.2)',
-  },
-})
+export const navSelect = style([fieldTrigger, {
+  width: '100%',
+  marginBottom: 'var(--space-1)',
+  padding: 'var(--space-2) var(--space-3)',
+  justifyContent: 'space-between',
+  gap: 'var(--space-3)',
+  textAlign: 'left',
+}])
 
 export const navSelectValue = style({
   minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-})
-
-export const navSelectChevron = style({
-  color: 'var(--muted-foreground)',
-  flexShrink: 0,
 })
 
 /** Compact section menu: themed popover, not the OS native picker. */

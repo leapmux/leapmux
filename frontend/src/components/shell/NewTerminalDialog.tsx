@@ -61,13 +61,9 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   })
   const tree = createDirectoryTreeState()
   const shellState = useAvailableShells(
-    () => {
-      const id = worker.workerId()
-      if (!id)
-        return null
-      return { workerId: id }
-    },
-    err => setError(formatErrorMessage(err, 'Failed to load shells')),
+    () => worker.workerId(),
+    () => true,
+    (err: unknown) => setError(formatErrorMessage(err, 'Failed to load shells')),
     // A later load withdraws the report the failed one wrote. Without this the
     // Refresh-shells button repopulates the menu and arms Create while the
     // banner still reads "Failed to load shells", which is the one state that

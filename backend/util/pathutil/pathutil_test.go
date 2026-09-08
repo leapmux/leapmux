@@ -52,6 +52,35 @@ func TestHasPathPrefix(t *testing.T) {
 	}
 }
 
+// A filesystem ROOT is nothing but a separator, so appending the boundary
+// separator unconditionally built "//" (and `C:\\`) and every path under a
+// root answered false. A directory tree rooted at "/" could not prove that any
+// of its own entries were under it.
+func TestHasPathPrefix_RootPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		assert.True(t, HasPathPrefix(`C:\Users\alice`, `C:\`))
+		assert.True(t, HasPathPrefix(`C:\`, `C:\`))
+		assert.False(t, HasPathPrefix(`D:\Users`, `C:\`))
+		return
+	}
+	assert.True(t, HasPathPrefix("/home/alice", "/"))
+	assert.True(t, HasPathPrefix("/home", "/"))
+	assert.True(t, HasPathPrefix("/", "/"))
+	// A relative path is under no root.
+	assert.False(t, HasPathPrefix("home/alice", "/"))
+}
+
+// A caller that spells the prefix with a trailing separator means the same
+// directory, so it must get the same answer.
+func TestHasPathPrefix_TrailingSeparatorOnPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		assert.True(t, HasPathPrefix(`C:\home\user\plans\a.md`, `C:\home\user\plans\`))
+		return
+	}
+	assert.True(t, HasPathPrefix("/home/user/plans/a.md", "/home/user/plans/"))
+	assert.False(t, HasPathPrefix("/home/user/plansx", "/home/user/plans/"))
+}
+
 func TestNormalizeNative_WindowsForwardSlashes(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific separator normalization")

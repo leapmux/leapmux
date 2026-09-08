@@ -408,6 +408,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{"ListDirectory", "ListDirectory", func() proto.Message {
 			return &leapmuxv1.ListDirectoryRequest{Path: "/tmp", MaxDepth: 1}
 		}},
+		ownerGuardedProbe{"ListFilesystemRoots", "ListFilesystemRoots", func() proto.Message {
+			return &leapmuxv1.ListFilesystemRootsRequest{}
+		}},
 		ownerGuardedProbe{"ReadFile", "ReadFile", func() proto.Message {
 			return &leapmuxv1.ReadFileRequest{Path: "/tmp/x", Limit: 1}
 		}},

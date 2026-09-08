@@ -25,11 +25,10 @@ beforeEach(() => {
 })
 
 describe('useAvailableProviders', () => {
-  it('does not fetch while the source returns null', async () => {
+  it('does not fetch while there is no worker', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
+        const hook = useAvailableProviders(() => '', () => true)
         await flush()
         expect(listAvailableProviders).not.toHaveBeenCalled()
         expect(hook.loading()).toBe(false)
@@ -40,13 +39,13 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('fetches once the source returns args and populates the list', async () => {
+  it('fetches once a worker arrives and populates the list', async () => {
     listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
-        setSource({ workerId: 'A' })
+        const [workerId, setWorkerId] = createSignal('')
+        const hook = useAvailableProviders(workerId, () => true)
+        setWorkerId('A')
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
         expect(listAvailableProviders.mock.calls[0][0]).toBe('A')
@@ -65,9 +64,9 @@ describe('useAvailableProviders', () => {
     listAvailableProviders.mockResolvedValueOnce(providersResp([]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
-        setSource({ workerId: 'A' })
+        const [workerId, setWorkerId] = createSignal('')
+        const hook = useAvailableProviders(workerId, () => true)
+        setWorkerId('A')
         await flush()
         expect(hook.providers()).toEqual([])
         dispose()
@@ -76,25 +75,46 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('latches: source flipping null and back does not re-fetch and keeps the list', async () => {
+  it('latches: the gate closing and re-opening does not re-fetch and keeps the list', async () => {
     listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
-        setSource({ workerId: 'A' })
+        const [open, setOpen] = createSignal(true)
+        const hook = useAvailableProviders(() => 'A', open)
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
 
         // The branch menu closes: the gate drops but the answer stays, so
         // re-opening the same row costs no round trip.
-        setSource(null)
+        setOpen(false)
         await flush()
         expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE])
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
 
-        setSource({ workerId: 'A' })
+        setOpen(true)
         await flush()
+        expect(listAvailableProviders).toHaveBeenCalledTimes(1)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  // The defect the workerId/gate split exists to remove. A gate keyed on a
+  // property OF the worker closes on the same tick the worker changes, so a
+  // source that folded the two together had no transition left to clear on.
+  it('clears on a worker change even when the gate shuts at the same moment', async () => {
+    listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const [workerId, setWorkerId] = createSignal('A')
+        const hook = useAvailableProviders(workerId, () => workerId() === 'A')
+        await flush()
+        expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE])
+
+        setWorkerId('B')
+        await flush()
+        expect(hook.providers()).toBeUndefined()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
         dispose()
         done()
@@ -109,16 +129,16 @@ describe('useAvailableProviders', () => {
       .mockImplementationOnce(() => second.promise)
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
-        setSource({ workerId: 'A' })
+        const [workerId, setWorkerId] = createSignal('')
+        const hook = useAvailableProviders(workerId, () => true)
+        setWorkerId('A')
         await flush()
         expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE])
 
         // Worker B may not have A's providers, so the stale list must go
         // before the new answer lands -- otherwise the menu offers a provider
         // this machine cannot run.
-        setSource({ workerId: 'B' })
+        setWorkerId('B')
         await flush()
         expect(hook.providers()).toBeUndefined()
         expect(hook.loading()).toBe(true)
@@ -133,17 +153,15 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('source identity churn with a stable workerId does not refire the fetch', async () => {
+  // The hook takes the workerId as a plain string accessor, so there is no
+  // object for a caller to reallocate. What can still re-evaluate is the gate,
+  // and a gate that answers the same value must not re-issue the RPC.
+  it('re-evaluating the gate to the same value does not refire the fetch', async () => {
     listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const [tick, setTick] = createSignal(0)
-        // A fresh object on every read, exactly as a real caller builds one.
-        const source = () => {
-          tick()
-          return { workerId: 'A' }
-        }
-        useAvailableProviders(source)
+        useAvailableProviders(() => 'A', () => tick() >= 0)
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
         setTick(1)
@@ -162,9 +180,9 @@ describe('useAvailableProviders', () => {
       .mockResolvedValueOnce(providersResp([AgentProvider.CODEX]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source, onError)
-        setSource({ workerId: 'A' })
+        const [workerId, setWorkerId] = createSignal('')
+        const hook = useAvailableProviders(workerId, () => true, onError)
+        setWorkerId('A')
         await flush()
         expect(onError).toHaveBeenCalledTimes(1)
         expect(hook.providers()).toBeUndefined()
@@ -182,14 +200,31 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('refresh is a no-op while the source is null', async () => {
+  it('refresh is a no-op while there is no worker', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
+        const hook = useAvailableProviders(() => '', () => true)
         await hook.refresh()
         await flush()
         expect(listAvailableProviders).not.toHaveBeenCalled()
+        dispose()
+        done()
+      })
+    })
+  })
+
+  // `refresh` is the caller's own retry, so a shut gate must not veto it.
+  it('refresh fetches even while the gate is shut', async () => {
+    listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CODEX]))
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const hook = useAvailableProviders(() => 'A', () => false)
+        await flush()
+        expect(listAvailableProviders).not.toHaveBeenCalled()
+
+        await hook.refresh()
+        await flush()
+        expect(hook.providers()).toEqual([AgentProvider.CODEX])
         dispose()
         done()
       })
@@ -201,9 +236,9 @@ describe('useAvailableProviders', () => {
     listAvailableProviders.mockImplementationOnce(() => d.promise)
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const [source, setSource] = createSignal<{ workerId: string } | null>(null)
-        const hook = useAvailableProviders(source)
-        setSource({ workerId: 'A' })
+        const [workerId, setWorkerId] = createSignal('')
+        const hook = useAvailableProviders(workerId, () => true)
+        setWorkerId('A')
         await flush()
         expect(hook.loading()).toBe(true)
         d.resolve(providersResp([AgentProvider.CLAUDE_CODE]))
