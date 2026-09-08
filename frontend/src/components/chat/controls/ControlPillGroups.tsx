@@ -8,8 +8,9 @@ import * as styles from '../ControlRequestBanner.css'
 
 /**
  * The permission pill group a control request's decision row offers: Default /
- * Smart permissions / Bypass permissions, one row segment shared by the decision
- * footer and the providers that lay out their own action row (ACP, OpenCode).
+ * Smart / Bypass, one row segment shared by the decision footer and the
+ * providers that lay out their own action row (ACP, OpenCode). The group's own
+ * name supplies the noun each option drops.
  */
 export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill }> = props => (
   <Tooltip text="The selected preset applies when you allow or approve this request">
@@ -19,6 +20,7 @@ export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill
         options={props.pill.options}
         selectedKey={props.pill.selected}
         onSelect={props.pill.onSelect}
+        small
       />
     </div>
   </Tooltip>
@@ -41,6 +43,7 @@ export const ControlAllowScopePillGroup: Component<{
       options={props.options}
       selectedKey={props.selected}
       onSelect={props.onSelect}
+      small
     />
   </div>
 )

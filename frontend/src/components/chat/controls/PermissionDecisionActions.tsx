@@ -5,7 +5,7 @@ import type { ActionsProps } from './types'
 import { createMemo, For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import * as styles from '../ControlRequestBanner.css'
-import { ControlActionRow } from './ControlActionRow'
+import { actionButtonClass, ControlActionRow } from './ControlActionRow'
 import { ControlAllowScopePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
 import {
   ALLOW_SCOPE_CHOICE_ID,
@@ -17,7 +17,7 @@ import {
   permissionOptionLabel,
   resolvePermissionOption,
 } from './permissionOptions'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from './permissionPresets'
+import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice, sessionPermissionChoice } from './permissionPresets'
 import { createControlChoice } from './types'
 
 /** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
@@ -43,7 +43,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   send: SendPermissionOption
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options(props.request.payload)))
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
   const scopeChoice = createControlChoice(() => props.answerState, ALLOW_SCOPE_CHOICE_ID)
 
   // The scope pills a payload with always options draws (Once / Always, or
@@ -109,7 +109,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
           <ButtonGroup>
             <Show when={layout().negative}>
               <button
-                class="outline"
+                class={actionButtonClass(true)}
                 onClick={() => handleDecision('reject')}
                 data-testid="control-deny-btn"
               >
@@ -118,6 +118,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
             </Show>
             <Show when={layout().positive}>
               <button
+                class={actionButtonClass()}
                 onClick={() => handleDecision('allow')}
                 data-testid="control-allow-btn"
               >
@@ -127,7 +128,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
             <For each={layout().additional}>
               {option => (
                 <button
-                  class={isRejectPermissionKind(option.kind) ? 'outline' : undefined}
+                  class={actionButtonClass(isRejectPermissionKind(option.kind))}
                   onClick={() => handleOption(option)}
                   data-testid={`control-decision-${option.optionId}`}
                 >

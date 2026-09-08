@@ -8,7 +8,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from '../../controls/permissionPresets'
+import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice, sessionPermissionChoice } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
 import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
@@ -205,7 +205,7 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
   const handleAllow = async () => {
     await sendCodexPermissionsResponse(
       props.onRespond,
@@ -268,7 +268,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
     props.onRespond,

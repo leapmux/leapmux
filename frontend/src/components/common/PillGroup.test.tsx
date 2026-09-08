@@ -1,5 +1,6 @@
 import type { PillOptions } from './PillGroup'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { Minus } from 'lucide-solid'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
@@ -570,5 +571,102 @@ describe('pill group sliding selection', () => {
     expect([...labels!.querySelectorAll('[data-label]')].map(label => label.getAttribute('data-label')))
       .toEqual(['First', 'A wider second option'])
     expect(secondRadio).toHaveClass(styles.pillOptionSelectedTarget)
+  })
+})
+
+describe('pill group small variant', () => {
+  const first = { key: 'first', label: 'First' }
+  const second = { key: 'second', label: 'Second' }
+
+  beforeEach(() => installControllableResizeObserver())
+
+  function renderSized(small: boolean | undefined) {
+    render(() => (
+      <PillGroup
+        label="Sized options"
+        options={[first, second]}
+        selectedKey="first"
+        onSelect={vi.fn()}
+        small={small}
+      />
+    ))
+    const group = screen.getByRole('radiogroup', { name: 'Sized options' })
+    const radios = [
+      screen.getByRole('radio', { name: first.label }),
+      screen.getByRole('radio', { name: second.label }),
+    ]
+    stubSelectionGeometry(group, radios[0], { groupWidth: 220, left: 0, width: 70 })
+    stubSelectionGeometry(group, radios[1], { groupWidth: 220, left: 70, width: 150 })
+    triggerResizeObserversSync()
+    return { copies: [...group.querySelectorAll('[data-label]')], radios }
+  }
+
+  it('keeps the full metrics when no size is asked for', () => {
+    const { copies, radios } = renderSized(undefined)
+
+    for (const element of [...radios, ...copies])
+      expect(element).not.toHaveClass(styles.pillOptionSmall)
+  })
+
+  it('sizes the radios and their label copies together', () => {
+    // Each copy covers one real radio exactly, and the moving fill is clipped
+    // to the radio underneath. A size that reached one of the two rows alone
+    // would move every copy off the radio it covers.
+    const { copies, radios } = renderSized(true)
+
+    expect(copies).toHaveLength(2)
+    for (const element of [...radios, ...copies])
+      expect(element).toHaveClass(styles.pillOptionSmall)
+  })
+})
+
+describe('pill group icon option', () => {
+  const icon = { key: 'icon', label: 'Unchanged', icon: Minus }
+  const text = { key: 'text', label: 'Smart' }
+
+  beforeEach(() => installControllableResizeObserver())
+
+  function renderIconGroup() {
+    render(() => (
+      <PillGroup
+        label="Named options"
+        options={[icon, text]}
+        selectedKey="icon"
+        onSelect={vi.fn()}
+      />
+    ))
+    const group = screen.getByRole('radiogroup', { name: 'Named options' })
+    const radios = [
+      screen.getByRole('radio', { name: icon.label }),
+      screen.getByRole('radio', { name: text.label }),
+    ]
+    stubSelectionGeometry(group, radios[0], { groupWidth: 220, left: 0, width: 70 })
+    stubSelectionGeometry(group, radios[1], { groupWidth: 220, left: 70, width: 150 })
+    triggerResizeObserversSync()
+    return { copies: [...group.querySelectorAll('[data-label]')], group, radios }
+  }
+
+  it('keeps the name of an option that spells out no text', () => {
+    // The label is the accessible name and the tooltip. Without it the option
+    // reaches neither a screen reader nor a by-name lookup.
+    const { radios } = renderIconGroup()
+
+    expect(radios[0]).toHaveAttribute('aria-label', 'Unchanged')
+    expect(radios[0]!.querySelector('svg')).not.toBeNull()
+    expect(radios[0]).not.toHaveTextContent('Unchanged')
+    expect(radios[1]).toHaveTextContent('Smart')
+    expect(radios[1]!.querySelector('svg')).toBeNull()
+  })
+
+  it('copies an icon into the sliding overlay', () => {
+    // The copy is what paints the option once the fill slides under it. A copy
+    // that reproduced the label STRING would leave an icon option blank there.
+    const { copies } = renderIconGroup()
+
+    expect(copies).toHaveLength(2)
+    expect(copies[0]!.querySelector('svg')).not.toBeNull()
+    expect(copies[0]).not.toHaveTextContent('Unchanged')
+    expect(copies[1]!.querySelector('svg')).toBeNull()
+    expect(copies[1]).toHaveTextContent('Smart')
   })
 })

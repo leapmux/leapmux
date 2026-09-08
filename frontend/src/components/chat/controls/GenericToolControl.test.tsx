@@ -43,8 +43,9 @@ describe('genericToolActions', () => {
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
     expect(screen.getByTestId('control-permissions-pill-group')).toBeInTheDocument()
-    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).not.toBeChecked()
+    // No preset is on, so the group opens on the pill that changes nothing.
+    expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
   it('shows only Send feedback when editor has content', () => {
@@ -114,7 +115,7 @@ describe('genericToolActions', () => {
     })
   })
 
-  it('sends allow response and applies the bypass preset when Bypass permissions is selected', async () => {
+  it('sends allow response and applies the bypass preset when Bypass is selected', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const apply = vi.fn()
     const request = makeRequest('req-42', 'agent-7')
@@ -134,7 +135,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     // The handler AWAITS the allow before applying the preset, so the assertion
     // waits for that microtask -- ordering is the point of the fix.
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -151,7 +152,7 @@ describe('genericToolActions', () => {
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
   })
 
-  it('applies the smart preset when Smart permissions is selected', async () => {
+  it('applies the smart preset when Smart is selected', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const apply = vi.fn()
 
@@ -170,10 +171,65 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
+  })
+
+  it('opens on the preset the session has on', async () => {
+    // The session runs on bypass, so the group opens there and an Allow keeps
+    // it there rather than dropping the session back to asking.
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
+
+    render(() => (
+      <GenericToolActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        presets={{
+          smart: { sets: { permissionMode: 'auto' } },
+          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          apply,
+          active: 'bypass',
+        }}
+      />
+    ))
+
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).toBeChecked()
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
+  })
+
+  it('applies nothing when no preset is on', async () => {
+    // An ordinary request must never turn a preset ON by itself, so an
+    // untouched group leaves the agent's permission mode alone.
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
+
+    render(() => (
+      <GenericToolActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        presets={{
+          smart: { sets: { permissionMode: 'auto' } },
+          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          apply,
+        }}
+      />
+    ))
+
+    expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    expect(apply).not.toHaveBeenCalled()
   })
 
   it('does not apply a preset when deny is clicked with one selected', async () => {
@@ -191,7 +247,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
     expect(apply).not.toHaveBeenCalled()

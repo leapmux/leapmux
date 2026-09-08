@@ -9,8 +9,8 @@ import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
-import { PERMISSION_PRESET_LABELS, permissionPresetAvailable, usablePresets } from '~/components/chat/providerSettings'
-import { hasOptions, resolvedCurrent } from '~/components/chat/settingsGroups'
+import { PERMISSION_PRESET_LABELS, permissionPresetActive, permissionPresetAvailable, usablePresets } from '~/components/chat/providerSettings'
+import { hasOptions } from '~/components/chat/settingsGroups'
 import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -163,8 +163,8 @@ interface PermissionAction {
 }
 
 const PERMISSION_ACTIONS: ReadonlyArray<Omit<PermissionAction, 'preset'>> = [
-  { kind: 'smart', label: PERMISSION_PRESET_LABELS.smart, testId: 'composer-smart-permissions' },
-  { kind: 'bypass', label: PERMISSION_PRESET_LABELS.bypass, testId: 'composer-bypass-permissions' },
+  { kind: 'smart', label: PERMISSION_PRESET_LABELS.smart.full, testId: 'composer-smart-permissions' },
+  { kind: 'bypass', label: PERMISSION_PRESET_LABELS.bypass.full, testId: 'composer-bypass-permissions' },
 ]
 
 function permissionActionsFor(
@@ -431,9 +431,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             <button
               role="menuitem"
               data-testid={action.testId}
-              disabled={!props.onSettingChange || !!props.disabledReason || !permissionActionAvailable(action) || Object.entries(action.preset.sets).every(
-                ([k, v]) => resolvedCurrent(props.optionGroups, props.optionValues, k) === v,
-              )}
+              disabled={!props.onSettingChange || !!props.disabledReason || !permissionActionAvailable(action)
+                || permissionPresetActive(action.preset, props.optionGroups, props.optionValues)}
               onClick={() => props.onSettingChange?.({ sets: { ...action.preset.sets } })}
             >
               {action.label}

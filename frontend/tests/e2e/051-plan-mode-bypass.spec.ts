@@ -26,9 +26,11 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await expect(clearContextSwitch).not.toBeChecked()
 
     const permissionPill = page.getByRole('radiogroup', { name: 'Permissions' })
-    const bypassRadio = permissionPill.getByRole('radio', { name: 'Bypass permissions' })
-    await expect(permissionPill.getByRole('radio', { name: 'Default' })).toBeVisible()
-    await expect(permissionPill.getByRole('radio', { name: 'Default' })).toBeChecked()
+    const bypassRadio = permissionPill.getByRole('radio', { name: 'Bypass' })
+    await expect(permissionPill.getByRole('radio', { name: 'Unchanged' })).toBeVisible()
+    // A plan approval opens on Smart, which Claude offers.
+    await expect(permissionPill.getByRole('radio', { name: 'Smart' })).toBeChecked()
+    await expect(permissionPill.getByRole('radio', { name: 'Unchanged' })).not.toBeChecked()
     await expect(bypassRadio).toBeVisible()
     await expect(bypassRadio).not.toBeChecked()
 
@@ -77,5 +79,63 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     // Reject and Approve visible again
     await expect(page.locator('[data-testid="plan-reject-btn"]')).toBeVisible()
     await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
+  })
+
+  test('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace }) => {
+    const banner = await enterAndExitPlanMode(page)
+    await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
+
+    const group = page.getByRole('radiogroup', { name: 'Permissions' })
+    await expect(group).toBeVisible()
+
+    // A serif face, far from the UA control font. A `<button>` takes its family
+    // from the UA stylesheet unless the rule states `inherit`, and on some
+    // platforms that family and `system-ui` resolve to the SAME face -- which
+    // would let a font divergence pass unseen here. The write goes through the
+    // CSSOM, which the page's content security policy does not restrict.
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty('--font-sans', '"Times New Roman", serif')
+    })
+    await expect.poll(async () => group.evaluate(el =>
+      getComputedStyle(el.querySelector('[role="radio"]')!).fontFamily)).toContain('Times New Roman')
+
+    const measured = await group.evaluate((element) => {
+      const metrics = (el: Element | null | undefined) => {
+        if (!el)
+          return undefined
+        const rect = el.getBoundingClientRect()
+        const style = getComputedStyle(el)
+        return {
+          x: rect.x,
+          width: rect.width,
+          font: style.fontFamily,
+          fontSize: style.fontSize,
+          padding: style.padding,
+        }
+      }
+      const radios = [...element.querySelectorAll('[role="radio"]')]
+      const copies = [...element.querySelectorAll('[data-pill-selection-labels] [data-label]')]
+      return radios.map((radio, index) => ({
+        label: radio.textContent ?? '',
+        radio: metrics(radio),
+        copy: metrics(copies[index]),
+      }))
+    })
+
+    // The group paints each label twice: the real radio carries the text, and
+    // the sliding overlay repeats it as a copy that must cover that radio
+    // exactly. The fill is clipped to the RADIO, so a copy that lays out to a
+    // different width drags its 1px divider off the boundary and the primary
+    // window appears to spill into the next option. Every metric that decides
+    // the width is compared, so a rule that reaches one row and not the other
+    // fails here whatever property it sets.
+    expect(measured.length).toBeGreaterThan(1)
+    for (const option of measured) {
+      expect(option.copy?.font).toBe(option.radio?.font)
+      expect(option.copy?.fontSize).toBe(option.radio?.fontSize)
+      expect(option.copy?.padding).toBe(option.radio?.padding)
+      expect(Math.abs((option.copy?.x ?? 0) - (option.radio?.x ?? 0))).toBeLessThanOrEqual(0.5)
+      expect(Math.abs((option.copy?.width ?? 0) - (option.radio?.width ?? 0))).toBeLessThanOrEqual(0.5)
+    }
   })
 })

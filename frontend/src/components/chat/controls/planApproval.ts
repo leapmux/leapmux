@@ -6,7 +6,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createMemo } from 'solid-js'
 import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
-import { buildPermissionPill, createPermissionPresetChoice, planApprovalPresets, presetPermissionMode } from './permissionPresets'
+import { buildPermissionPill, createPermissionPresetChoice, PLAN_APPROVAL_PERMISSION_CHOICE, planApprovalPresets, presetPermissionMode } from './permissionPresets'
 import { createControlSwitch } from './types'
 
 export interface PlanApprovalState {
@@ -25,7 +25,7 @@ export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage'
   // choice is stored the same way under its own group id. See
   // `createControlSwitch` / `createPermissionPresetChoice`.
   const clear = createControlSwitch(() => props.answerState, 'plan-clear-context-checkbox')
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createPermissionPresetChoice(props, () => PLAN_APPROVAL_PERMISSION_CHOICE)
   const { checked: clearContext, set: setClearContext } = clear
   const contextPct = createMemo(() => {
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)

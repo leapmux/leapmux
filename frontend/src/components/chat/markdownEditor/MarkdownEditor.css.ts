@@ -13,12 +13,19 @@ export const container = style({
   borderRadius: 'var(--radius-medium)',
   backgroundColor: 'var(--background)',
   overflow: 'hidden',
-  // The composer button height: one line of text (font-size × line-height)
-  // plus its top/bottom padding (space-1 × 2). Referenced by the `[+]` button,
-  // the action buttons, the editor wrapper min-height, the separator position,
-  // and the ProseMirror paddings — all derived from this single value.
+  // The composer button height: the natural height of an Oat `.small` button,
+  // which is what every action button in the footer slot is. One line of text
+  // (font-size × line-height), its top/bottom padding (space-1 × 2), and its
+  // top/bottom border (1px × 2, which Oat gives every button and which the
+  // `[+]` button below has no equivalent of -- it is sized to this value
+  // instead). Referenced by the `[+]` button, the editor wrapper min-height,
+  // the separator position, and the ProseMirror paddings.
+  //
+  // The action buttons do NOT read it. They reach this height by carrying
+  // `.small`, so the class is the one source for how they are sized and this
+  // value follows it. Change `.small` and this calc together.
   vars: {
-    '--editor-btn-h': 'calc(var(--text-7) * var(--leading-normal) + var(--space-1) * 2)',
+    '--editor-btn-h': 'calc(var(--text-8) * var(--leading-normal) + var(--space-1) * 2 + 2px)',
     // Collapsed-mode left padding of the text area: the `[+]` button's left
     // offset + its width + a gap. Declared here so the stylesheet below and
     // the expand/collapse measurement in MarkdownEditor.tsx read one value
@@ -140,22 +147,38 @@ globalStyle(`${footerSlot} > *`, {
   pointerEvents: 'auto',
 })
 
-// Constrain the ACTION buttons in the footer slot (Interrupt/Send and the
-// control-request actions) to the single-line text area height so they match
-// the `[+]` button.
+// The chrome the footer slot's ACTION buttons share (Pause, Interrupt, Send and
+// the control-request actions).
 //
-// The pagination zone is excluded. Its items are square 22px page numbers, not
-// action buttons, and this rule outranks them: `.footerSlot button` is (0,1,1)
-// against `paginationItem`'s (0,1,0), so it would stretch each square to the
-// button height and give it 16px of horizontal padding inside a 22px box,
-// leaving no room for the digit. The exclusion specifies the CENTER zone rather
-// than the item, so a future non-action control placed there keeps its own
-// size too.
-globalStyle(`${footerSlot} button:not(.${paginationContainer} button)`, {
-  height: 'var(--editor-btn-h)',
-  padding: '0 var(--space-2)',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1,
+// SIZE is not here. Each of those buttons carries Oat's `.small` class, which
+// states its padding and font size, and `--editor-btn-h` above is derived from
+// that class so the `[+]` button matches. A size stated here would win over the
+// class and could never lose: this rule is unlayered while Oat's `.small` sits
+// in `@layer base`, so no specificity the class could reach would beat it. That
+// is what made the class inert, and what made the pill radios below disagree
+// with their own overlay.
+//
+// Two things in the slot are NOT action buttons, and each is excluded.
+//
+// The pagination zone. Its items are square 22px page numbers that state their
+// own chrome, and this rule outranks them: `.footerSlot button` is (0,1,1)
+// against `paginationItem`'s (0,1,0). The exclusion specifies the CENTER zone
+// rather than the item, so a future non-action control placed there keeps its
+// own chrome too.
+//
+// A RADIO. It is one segment of a composite control -- `PillGroup`, which the
+// permission and allow-scope groups draw -- and that control owns its own
+// metrics. The exclusion is by role rather than by zone because a pill group
+// sits in the same zone as the actions it qualifies, so no zone separates them.
+//
+// A pill group is also the case where overriding a segment does more than
+// resize it. `PillGroup` paints the selected label TWICE: the real radio, and a
+// `<span>` copy in the sliding overlay that must cover that radio exactly. This
+// rule reaches the radios and not the copies, so the padding and font size it
+// forced laid the two rows out to different widths -- the copies' dividers fell
+// off the option boundaries, and the moving fill appeared to spill into the
+// next option.
+globalStyle(`${footerSlot} button:not(.${paginationContainer} button):not([role="radio"])`, {
   gap: 'var(--space-1)',
   borderRadius: 'var(--radius-small)',
 })

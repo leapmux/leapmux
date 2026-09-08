@@ -6,7 +6,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleText } from './CollapsibleText'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from './permissionPresets'
+import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice, sessionPermissionChoice } from './permissionPresets'
 import { sendResponse } from './types'
 
 export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
@@ -33,7 +33,7 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
 }
 
 export const GenericToolActions: Component<ActionsProps> = (props) => {
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createPermissionPresetChoice(props, () => sessionPermissionChoice(props.presets))
 
   const handleDeny = () => {
     return sendResponse(props.onRespond, buildDenyResponse(props.request.requestId))

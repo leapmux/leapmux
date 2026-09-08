@@ -1,6 +1,19 @@
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { ControlActionRow } from './ControlActionRow'
+import { actionButtonClass, ControlActionRow } from './ControlActionRow'
+
+describe('actionButtonClass', () => {
+  it('sizes a filled action', () => {
+    expect(actionButtonClass()).toBe('small')
+    expect(actionButtonClass(false)).toBe('small')
+  })
+
+  it('keeps the outline variant beside the size', () => {
+    // Oat reads the two as independent classes, so an outline action must
+    // carry both. Dropping either one restores the full-size metrics.
+    expect(actionButtonClass(true)).toBe('outline small')
+  })
+})
 
 describe('controlActionRow', () => {
   it('puts the primary actions in the right-hand zone', () => {

@@ -388,6 +388,45 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitFor(() => expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument())
   })
 
+  // The panel is the only scope that holds BOTH halves the opening choice needs
+  // -- the live catalog and the confirmed values -- so it is the only place the
+  // wiring from `activePermissionPreset` to the drawn pill can be checked.
+  it('opens an ordinary request on the preset the session already has on', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash'), claimToken: 'claim-1' })
+    const modeGroup = (currentValue: string) => ({
+      id: 'permissionMode',
+      label: 'Approval',
+      order: 30,
+      mutable: true,
+      defaultValue: CLAUDE_MODE.Default,
+      currentValue,
+      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
+    } as unknown as AgentInfo['optionGroups'][number])
+    const pill = () => within(screen.getByRole('radiogroup', { name: 'Permissions' }))
+
+    // The session runs on Claude's bypass mode, so the group opens there and an
+    // Allow keeps it there instead of dropping the session back to asking.
+    const running = renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [modeGroup(CLAUDE_MODE.BypassPermissions)],
+    })
+    await waitFor(() => expect(pill().getByRole('radio', { name: 'Bypass' })).toBeChecked())
+
+    // Nothing on: the group opens on the option that changes nothing. Bypass
+    // must never arrive without the user choosing it.
+    running.unmount()
+    cleanup()
+    renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [modeGroup(CLAUDE_MODE.Default)],
+    })
+    await waitFor(() => expect(pill().getByRole('radio', { name: 'Unchanged' })).toBeChecked())
+    expect(pill().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
+  })
+
   // The pill choice belongs to the request INSTANCE like a switch: a rebuild of
   // the control component must not reset it to Default.
   it('restores the permission pill choice of the rendered request instance after a remount', async () => {
@@ -402,7 +441,7 @@ describe('agentEditorPanel control request lifecycle', () => {
       currentValue: CLAUDE_MODE.Default,
       options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
     } as unknown as AgentInfo['optionGroups'][number]
-    const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' })
+    const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })
     const first = renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
 
     fireEvent.click(bypassRadio())
@@ -606,6 +645,17 @@ describe('agent editor panel', () => {
   it('shows an icon beside the queue pause label', () => {
     renderPanel()
     expect(screen.getByTestId('queue-pause-button').querySelector('svg')).not.toBeNull()
+  })
+
+  it('sizes every composer action with the shared small class', () => {
+    // The footer slot's own rule states no size, so a button that omits this
+    // class falls back to Oat's full-size metrics and breaks the row it shares
+    // with the `[+]` button, whose height is derived from `.small`.
+    renderPanel()
+
+    expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', 'small')
+    expect(screen.getByTestId('send-button')).toHaveClass('small')
+    expect(screen.getByTestId('send-button')).not.toHaveClass('outline')
   })
 
   it('shows no pause banner while the queue runs', () => {

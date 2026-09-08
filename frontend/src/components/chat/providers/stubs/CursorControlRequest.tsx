@@ -5,7 +5,7 @@ import { Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
-import { ControlActionRow } from '../../controls/ControlActionRow'
+import { actionButtonClass, ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
 function getCursorParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -119,8 +119,8 @@ export const CursorControlActions: Component<ActionsProps> = (props) => {
     <ControlActionRow
       primary={(
         <ButtonGroup>
-          <button class="outline" onClick={createPlanReject} data-testid="control-deny-btn">Reject</button>
-          <button onClick={createPlanAllow} data-testid="control-allow-btn">Allow</button>
+          <button class={actionButtonClass(true)} onClick={createPlanReject} data-testid="control-deny-btn">Reject</button>
+          <button class={actionButtonClass()} onClick={createPlanAllow} data-testid="control-allow-btn">Allow</button>
         </ButtonGroup>
       )}
     />

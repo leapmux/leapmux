@@ -59,7 +59,7 @@ describe('openCodeControlActions', () => {
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('once')
     expect(apply).not.toHaveBeenCalled()
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
 
     fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))

@@ -5,7 +5,7 @@ import { For, Index, Show } from 'solid-js'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import * as styles from '../ControlRequestBanner.css'
-import { ControlActionRow } from './ControlActionRow'
+import { actionButtonClass, ControlActionRow } from './ControlActionRow'
 import { ControlPermissionPillGroup } from './ControlPillGroups'
 
 export interface ControlRequestSwitch {
@@ -66,7 +66,7 @@ export const ControlDecisionFooter: Component<{
             </div>
           </Show>
           <button
-            class="outline"
+            class={actionButtonClass(true)}
             onMouseDown={keepFocusOnPress}
             onClick={() => props.hasEditorContent ? props.onSendFeedback() : props.negativeAction.onSelect()}
             data-testid={props.negativeAction.testId}
@@ -75,7 +75,7 @@ export const ControlDecisionFooter: Component<{
           </button>
           <Show when={!props.hasEditorContent}>
             <button
-              class={props.positiveAction.outline ? 'outline' : undefined}
+              class={actionButtonClass(props.positiveAction.outline)}
               onClick={props.positiveAction.onSelect}
               data-testid={props.positiveAction.testId}
             >
@@ -84,7 +84,7 @@ export const ControlDecisionFooter: Component<{
             <For each={additionalActions()}>
               {decision => (
                 <button
-                  class={decision.outline ? 'outline' : undefined}
+                  class={actionButtonClass(decision.outline)}
                   onClick={decision.onSelect}
                   data-testid={decision.testId}
                 >

@@ -10,7 +10,7 @@ import { screen, within } from '@solidjs/testing-library'
  * rename cannot be applied to some suites and missed in others.
  */
 
-/** The permission preset group (Default / Smart permissions / Bypass permissions). */
+/** The permission preset group (Default / Smart / Bypass). */
 export function permissionPillGroup() {
   return within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 }

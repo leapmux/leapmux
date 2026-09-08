@@ -1,8 +1,10 @@
+import type { LucideIcon } from 'lucide-solid'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { nextRovingValue } from '~/lib/rovingFocus'
 import { sameValueZero, shallowEqualMapKeyArrays } from '~/lib/shallowEqual'
+import { Icon } from './Icon'
 import * as styles from './PillGroup.css'
 import { Tooltip } from './Tooltip'
 
@@ -11,9 +13,18 @@ export interface PillOptionSpec<K> {
   /** The unique selection key. */
   key: K
   label: string
+  /**
+   * Draw this in place of the label text, for an option too narrow to spell
+   * out. `label` stays the accessible name and becomes the tooltip, so the
+   * option keeps a name for a screen reader and for a by-name lookup.
+   */
+  icon?: LucideIcon
   /** A non-empty reason that makes this option unavailable. */
   disabledReason?: string
 }
+
+/** The icon size an option draws at. One line of `--text-8` is 18px tall. */
+const OPTION_ICON_SIZE = 'xs'
 
 /** One through four fixed choices. Use a menu for any other list. */
 export type PillOptions<K>
@@ -55,13 +66,32 @@ function PillOption(props: {
   tabStop: boolean
   state: PillOptionState
   separated: boolean
+  small: boolean
+  label: string
+  icon?: LucideIcon
   onClick: () => void
   onFocus: () => void
   ref: (element: HTMLButtonElement) => void
-  children: string
 }) {
   const optionRefused = () => props.state.kind === 'option-refused'
   const groupRefused = () => props.state.kind === 'group-refused'
+  /**
+   * What the tooltip says: the reason this option refuses selection, or the
+   * name an icon-only option does not spell out. A named option with no reason
+   * needs no tooltip, because its own text already says what it is.
+   */
+  const tooltipText = () => {
+    if (props.state.kind === 'option-refused')
+      return props.state.reason
+    return props.icon === undefined ? undefined : props.label
+  }
+  /**
+   * The name an icon-only option carries. Passed as a STRING rather than
+   * `true`, so it stays the name even when the tooltip states a refusal reason
+   * instead; `Tooltip` then publishes the reason as a description, because the
+   * two strings differ.
+   */
+  const tooltipName = () => (props.icon === undefined ? undefined : props.label)
   const pill = () => (
     <button
       type="button"
@@ -73,6 +103,7 @@ function PillOption(props: {
           && props.selectionSettled,
         [styles.pillOptionDimmed]: optionRefused() && !props.selected,
         [styles.pillOptionSeparated]: props.separated,
+        [styles.pillOptionSmall]: props.small,
         [styles.pillOptionUnavailable]: optionRefused(),
       }}
       role="radio"
@@ -84,16 +115,15 @@ function PillOption(props: {
       onClick={props.onClick}
       onFocus={props.onFocus}
     >
-      {props.children}
+      <Show when={props.icon} fallback={props.label}>
+        {icon => <Icon icon={icon()} size={OPTION_ICON_SIZE} />}
+      </Show>
     </button>
   )
 
   return (
-    <Show
-      when={props.state.kind === 'option-refused' ? props.state.reason : undefined}
-      fallback={pill()}
-    >
-      {reason => <Tooltip text={reason()}>{pill()}</Tooltip>}
+    <Show when={tooltipText()} fallback={pill()}>
+      {text => <Tooltip text={text()} ariaLabel={tooltipName()}>{pill()}</Tooltip>}
     </Show>
   )
 }
@@ -120,6 +150,8 @@ export function PillGroup<K>(props: {
   onSelect: (key: K) => void
   /** Show the current selection and refuse all changes. */
   disabled?: boolean
+  /** Draw the group at Oat's `.small` button metrics. */
+  small?: boolean
 }) {
   const optionsByKey = createMemo(() => optionMap(props.label, props.options))
   const optionKeys = createMemo(
@@ -375,9 +407,16 @@ export function PillGroup<K>(props: {
                     {option => (
                       <span
                         class={styles.selectionLabel}
-                        classList={{ [styles.pillOptionSeparated]: index() > 0 }}
+                        classList={{
+                          [styles.pillOptionSeparated]: index() > 0,
+                          [styles.pillOptionSmall]: props.small === true,
+                        }}
                         data-label={option().label}
-                      />
+                      >
+                        <Show when={option().icon} fallback={option().label}>
+                          {icon => <Icon icon={icon()} size={OPTION_ICON_SIZE} />}
+                        </Show>
+                      </span>
                     )}
                   </Show>
                 )}
@@ -397,6 +436,9 @@ export function PillGroup<K>(props: {
                 tabStop={ownsTabStop(key)}
                 state={stateFor(option())}
                 separated={index() > 0}
+                small={props.small === true}
+                label={option().label}
+                icon={option().icon}
                 onClick={() => select(key)}
                 onFocus={() => setFocusedKey({ value: key })}
                 ref={(element) => {
@@ -405,9 +447,7 @@ export function PillGroup<K>(props: {
                   onCleanup(() => resizeObserver?.unobserve(element))
                   restoreFocusAfterRemoval(element)
                 }}
-              >
-                {option().label}
-              </PillOption>
+              />
             )}
           </Show>
         )}

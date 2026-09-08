@@ -62,8 +62,8 @@ zcodeTest.describe('ZCode Permission Prompt', () => {
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Bash')
     const pills = page.getByRole('radiogroup', { name: 'Permissions' })
-    await expect(pills.getByRole('radio', { name: 'Default' })).toBeChecked()
-    const bypass = pills.getByRole('radio', { name: 'Bypass permissions' })
+    await expect(pills.getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    const bypass = pills.getByRole('radio', { name: 'Bypass' })
     await bypass.click()
     await expect(bypass).toBeChecked()
 

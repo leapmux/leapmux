@@ -121,10 +121,25 @@ describe('acpControlActions', () => {
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Always' })).not.toBeChecked()
     const pill = permissionPillGroup()
-    expect(pill.getByRole('radio', { name: 'Default' })).toBeChecked()
+    // An ordinary request opens on the preset the session has on. This one
+    // reports none, so the group opens on the pill that changes nothing.
+    expect(pill.getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    expect(pill.getByRole('radio', { name: 'Smart' })).not.toBeChecked()
     // The always options live in the scope group, not as their own buttons.
     expect(screen.queryByTestId('control-decision-allow_always')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-reject_always')).not.toBeInTheDocument()
+  })
+
+  it('sizes the decisions with the shared small class', () => {
+    // This row builds its own decisions rather than going through
+    // `ControlDecisionFooter`, so it carries the class on its own. The footer
+    // slot states no size, and a button that omits it falls back to Oat's
+    // full-size metrics.
+    renderGooseActions()
+
+    expect(screen.getByTestId('control-deny-btn')).toHaveClass('outline', 'small')
+    expect(screen.getByTestId('control-allow-btn')).toHaveClass('small')
+    expect(screen.getByTestId('control-allow-btn')).not.toHaveClass('outline')
   })
 
   it('sends the once options while Once is selected', async () => {
@@ -198,7 +213,7 @@ describe('acpControlActions', () => {
   it('applies the chosen permission preset after an allow and never after a reject', async () => {
     const { onRespond, apply } = renderGooseActions()
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(onRespond).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
@@ -235,7 +250,7 @@ describe('acpControlActions', () => {
       presets: { bypass: { sets: { permissionMode: 'yolo' } }, apply },
     }))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-decision-ask'))
 
     expect(onRespond).toHaveBeenCalledOnce()

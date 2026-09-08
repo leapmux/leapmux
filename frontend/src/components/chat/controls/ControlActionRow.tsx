@@ -37,6 +37,26 @@ export interface ControlActionRowProps {
   primary: JSX.Element
 }
 
+/**
+ * The class every action button in the composer's footer slot carries — the
+ * control-request decisions here, and the composer's own Pause, Interrupt and
+ * Send.
+ *
+ * Oat's `.small` supplies the metrics (`--text-8`, and
+ * `var(--space-1) var(--space-3)` of padding), which the `CompactSwitch` beside
+ * them and the `PillGroup` `small` variant match. It is the ONE source for that
+ * size: `--editor-btn-h` is derived from it so the `[+]` button matches, and the
+ * slot's own rule in `~/components/chat/markdownEditor/MarkdownEditor.css.ts`
+ * deliberately states no size, because an unlayered rule there would outrank
+ * this class and could never lose to it.
+ *
+ * One function rather than a literal at each button, so a button added to the
+ * slot later cannot fall back to Oat's full-size metrics by omission.
+ */
+export function actionButtonClass(outline?: boolean): string {
+  return outline === true ? 'outline small' : 'small'
+}
+
 export const ControlActionRow: Component<ControlActionRowProps> = props => (
   <div class={styles.controlFooter} data-testid="control-footer">
     <Show when={props.secondary}>

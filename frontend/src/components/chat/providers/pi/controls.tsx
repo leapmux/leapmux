@@ -5,7 +5,7 @@ import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import * as styles from '../../ControlRequestBanner.css'
-import { ControlActionRow } from '../../controls/ControlActionRow'
+import { actionButtonClass, ControlActionRow } from '../../controls/ControlActionRow'
 import {
   piCancelResponse,
   piConfirmResponse,
@@ -152,8 +152,8 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
             </Match>
           </Switch>
           <ButtonGroup>
-            <button class="outline" onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
-            <button onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
+            <button class={actionButtonClass(true)} onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
+            <button class={actionButtonClass()} onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
           </ButtonGroup>
         </>
       )}
