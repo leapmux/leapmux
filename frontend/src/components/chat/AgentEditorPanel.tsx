@@ -47,10 +47,11 @@ import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
 import { ComposerStatusBar } from './composer/ComposerStatusBar'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
+import { actionButtonClass } from './controls/ControlActionRow'
 import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
-import { usablePresets } from './providerSettings'
+import { activePermissionPreset, usablePresets } from './providerSettings'
 import { createQueueEditSession } from './queueEditSession'
 import {
   OPTION_ID_MODEL,
@@ -169,7 +170,7 @@ const AgentInputQueuePauseButton: Component<{
     <Tooltip text={label()} ariaLabel>
       <button
         type="button"
-        class="outline"
+        class={actionButtonClass(true)}
         disabled={props.busy}
         onMouseDown={keepFocusOnPress}
         onClick={() => props.onToggle()}
@@ -363,8 +364,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       ? providerFor(props.agent.agentProvider)?.permissionPresets
       : undefined
     const usable = usablePresets(presets, props.agent?.optionGroups)
-    return (usable.smart || usable.bypass) && props.onSettingChange
-      ? { ...usable, apply: props.onSettingChange }
+    // The preset the session already has on. A control request's pill group
+    // opens on it, and only this scope holds both halves it needs -- the live
+    // catalog and the confirmed values.
+    const active = activePermissionPreset(usable, props.agent?.optionGroups, currentOptionValues())
+    return Object.keys(usable).length > 0
+      ? { ...usable, apply: props.onSettingChange, active }
       : undefined
   })
 
@@ -810,7 +815,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         */}
                         <Tooltip text={interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
                           <button
-                            class="outline"
+                            class={actionButtonClass(true)}
                             onMouseDown={keepFocusOnPress}
                             onClick={() => {
                               interruptLoading.start()
@@ -848,6 +853,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       <Tooltip text={queuePaused() ? 'Add to queue' : 'Send'} ariaLabel>
                         <button
                           type="button"
+                          class={actionButtonClass()}
                           disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
                           onMouseDown={keepFocusOnPress}
                           onClick={() => { void triggerSend?.() }}

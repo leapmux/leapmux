@@ -6,7 +6,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleText } from './CollapsibleText'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from './permissionPresets'
+import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
 import { sendResponse } from './types'
 
 export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
@@ -33,7 +33,7 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
 }
 
 export const GenericToolActions: Component<ActionsProps> = (props) => {
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createSessionPermissionPresetChoice(props)
 
   const handleDeny = () => {
     return sendResponse(props.onRespond, buildDenyResponse(props.request.requestId))
@@ -43,10 +43,11 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
   // concurrently, and applying a permission mode the provider cannot take live
   // relaunches the agent -- a relaunch that won the race killed the session
   // before the allow reached it, so the tool call was never answered.
-  const handleAllow = async () => {
-    await sendResponse(props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))
-    await applyPermissionPreset(props.presets, permissionChoice.choice())
-  }
+  const handleAllow = () => respondThenApplyPermissionPreset(
+    sendResponse(props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload))),
+    props.presets,
+    permissionChoice.choice(),
+  )
 
   return (
     <ControlDecisionFooter
@@ -54,7 +55,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
       onSendFeedback={props.onTriggerSend}
       negativeAction={{ label: 'Deny', testId: 'control-deny-btn', onSelect: handleDeny }}
       positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
-      permissionPill={() => buildPermissionPill(props.presets, permissionChoice)}
+      permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
     />
   )
 }

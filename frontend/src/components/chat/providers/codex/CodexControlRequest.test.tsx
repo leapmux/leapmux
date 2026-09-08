@@ -45,8 +45,9 @@ describe('codex control request actions', () => {
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
     expect(screen.getByTestId('control-remember-checkbox')).toHaveTextContent('Remember')
-    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
+    // No preset is on, so the group opens on the pill that changes nothing.
+    expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
   it('uses the remembered Codex decision only when Remember is checked', async () => {
@@ -162,7 +163,7 @@ describe('codex control request actions', () => {
       finishResponse = resolve
     }))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
@@ -200,10 +201,10 @@ describe('codex control request actions', () => {
     })
   })
 
-  it('embeds the bypass mode in a plan approval when Bypass permissions is selected', async () => {
+  it('embeds the bypass mode in a plan approval when Bypass is selected', async () => {
     const { onRespond, onSettingChange } = renderActions(makePlanRequest())
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]

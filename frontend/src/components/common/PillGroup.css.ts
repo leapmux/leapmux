@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { compactControlProperties } from './CompactControl.css'
 
 /** One content-sized control with one outer border. */
 export const pillGroup = style({
@@ -32,9 +33,19 @@ const pillOptionLayout = style({
   fontSize: 'var(--text-7)',
   lineHeight: 'var(--leading-normal)',
   fontWeight: 'var(--font-normal)',
+  // A `<button>` carries its own font-family from the UA stylesheet, so it does
+  // NOT inherit one. Oat sets `--font-sans` on `body` and on the other form
+  // controls, never on `button`, so without this the real radios render in the
+  // UA control font while their `<span>` copies render in the user's UI font.
+  // The two rows then lay out to different widths, and the moving fill lands
+  // off the option boundary it is clipped to.
+  fontFamily: 'inherit',
   whiteSpace: 'normal',
   overflowWrap: 'anywhere',
 })
+
+/** Compact metrics for both the real radios and their visual copies. */
+export const pillOptionSmall = style(compactControlProperties)
 
 /** Shape and behavior for each real radio. */
 export const pillOption = style([pillOptionLayout, {
@@ -164,15 +175,18 @@ export const selectionLabels = style([selectionWindow, {
   },
 }])
 
-/** One label copy. It has the exact metrics of its real radio. */
+/**
+ * One label copy. It has the exact metrics of its real radio, and renders the
+ * same content -- the label text, or the icon an icon-only option draws.
+ *
+ * The content is real children rather than a `content: attr(data-label)`
+ * pseudo-element. `attr()` can only reproduce a STRING, so an icon option had
+ * no copy at all, and the copy is what paints the label once the fill slides
+ * under it.
+ */
 export const selectionLabel = style([pillOptionLayout, {
   backgroundColor: 'transparent',
   color: 'inherit',
-  selectors: {
-    '&::before': {
-      content: 'attr(data-label)',
-    },
-  },
 }])
 
 /** Slide both clipped layers after the first valid measurement. */

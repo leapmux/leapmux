@@ -13,7 +13,7 @@ import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
-import { ControlActionRow } from './ControlActionRow'
+import { actionButtonClass, ControlActionRow } from './ControlActionRow'
 
 // ---------------------------------------------------------------------------
 // Selection helpers
@@ -392,7 +392,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       secondary={(
         <>
           <button
-            class="outline"
+            class={actionButtonClass(true)}
             onClick={handleStop}
             disabled={stopping()}
             data-testid="control-stop-btn"
@@ -402,7 +402,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
           </button>
           <Tooltip text="Auto-fill unanswered questions and submit">
             <button
-              class="outline"
+              class={actionButtonClass(true)}
               onClick={handleYolo}
               disabled={!anyUnanswered()}
               data-testid="control-yolo-btn"
@@ -435,6 +435,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       )}
       primary={(
         <button
+          class={actionButtonClass()}
           onClick={handleSubmit}
           disabled={!allAnswered() || submitting()}
           data-testid="control-submit-btn"

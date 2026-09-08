@@ -3,7 +3,7 @@ import { expect, ZCODE_E2E_SKIP_REASON, zcodeTest } from './zcode-fixtures'
 
 zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
 
-zcodeTest.describe('ZCode Basic Chat', () => {
+zcodeTest.describe('uses ZCode for basic chat', () => {
   zcodeTest('opens, sends a prompt, and receives a response', async ({ authenticatedZCodeWorkspace, page }) => {
     void authenticatedZCodeWorkspace
     await sendMessage(page, ARITHMETIC_PROMPT)
@@ -24,7 +24,7 @@ zcodeTest.describe('ZCode Basic Chat', () => {
   })
 })
 
-zcodeTest.describe('ZCode Tool Execution', () => {
+zcodeTest.describe('uses ZCode for tool execution', () => {
   zcodeTest('a bash command renders as a tool card with its output', async ({ authenticatedZCodeWorkspace, page }) => {
     void authenticatedZCodeWorkspace
     await sendMessage(page, 'Run the bash command: echo "zcode-test-output" and show me the output.')
@@ -35,7 +35,7 @@ zcodeTest.describe('ZCode Tool Execution', () => {
   })
 })
 
-zcodeTest.describe('ZCode Permission Prompt', () => {
+zcodeTest.describe('handles ZCode permission prompts', () => {
   // Build is the default and asks before a risky action. A destructive command
   // is the shape that produces a permission banner rather than running silently.
   zcodeTest('a risky command produces a permission banner that can be denied', async ({ authenticatedZCodeWorkspace, page }) => {
@@ -62,8 +62,8 @@ zcodeTest.describe('ZCode Permission Prompt', () => {
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Bash')
     const pills = page.getByRole('radiogroup', { name: 'Permissions' })
-    await expect(pills.getByRole('radio', { name: 'Default' })).toBeChecked()
-    const bypass = pills.getByRole('radio', { name: 'Bypass permissions' })
+    await expect(pills.getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    const bypass = pills.getByRole('radio', { name: 'Bypass' })
     await bypass.click()
     await expect(bypass).toBeChecked()
 
@@ -74,7 +74,7 @@ zcodeTest.describe('ZCode Permission Prompt', () => {
   })
 })
 
-zcodeTest.describe('ZCode Mode Switch', () => {
+zcodeTest.describe('changes ZCode modes', () => {
   zcodeTest('offers only the bypass permission shortcut', async ({ authenticatedZCodeWorkspace, page }) => {
     void authenticatedZCodeWorkspace
     await waitForSettingsHydrated(page)

@@ -54,12 +54,12 @@ describe('openCodeControlActions', () => {
   it('sends once while Once is selected and always beyond it, applying the preset after each allow', async () => {
     const { onRespond, apply } = renderOptionsActions()
 
-    // A preset applies only when the pill selects one; Default applies nothing.
+    // A preset applies only when the pill selects one; Unchanged applies nothing.
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('once')
     expect(apply).not.toHaveBeenCalled()
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
 
     fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))

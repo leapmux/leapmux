@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { Show } from 'solid-js'
+import { compactControl } from '~/components/common/CompactControl.css'
 import * as styles from '../ControlRequestBanner.css'
 
 /**
@@ -33,8 +34,24 @@ export interface ControlActionRowProps {
    * action. Today only the multi-question pagination uses it.
    */
   centre?: JSX.Element
-  /** The right-end actions: the decision on the request. */
+  /** Controls that qualify the decision, before the decision buttons. */
+  leading?: JSX.Element
+  /** The right-end decision buttons. */
   primary: JSX.Element
+}
+
+/**
+ * The class every action button in the composer's footer slot carries — the
+ * control-request decisions here, and the composer's own Pause, Interrupt and
+ * Send.
+ *
+ * The shared compact-control style supplies the metrics. `CompactSwitch`, the
+ * `PillGroup` small variant, and the editor height use the same source.
+ *
+ * One function keeps the current call sites on the same class string.
+ */
+export function actionButtonClass(outline?: boolean): string {
+  return outline === true ? `${compactControl} outline` : compactControl
 }
 
 export const ControlActionRow: Component<ControlActionRowProps> = props => (
@@ -45,6 +62,9 @@ export const ControlActionRow: Component<ControlActionRowProps> = props => (
     <Show when={props.centre}>
       <div class={styles.controlFooterCentre}>{props.centre}</div>
     </Show>
-    <div class={styles.controlFooterRight}>{props.primary}</div>
+    <div class={styles.controlFooterRight}>
+      <Show when={props.leading}>{props.leading}</Show>
+      {props.primary}
+    </div>
   </div>
 )

@@ -37,9 +37,10 @@ describe('exitPlanModeActions', () => {
     expect(screen.getByTestId('plan-reject-btn')).toBeInTheDocument()
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
     expect(screen.getByTestId('plan-clear-context-checkbox')).toHaveTextContent('Clear Context (30%)')
-    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' })).toBeInTheDocument()
-    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
+    // A plan approval opens on Smart, whatever the session runs on.
+    expect(permissionPillGroup().getByRole('radio', { name: 'Smart' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).not.toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
   it('shows only Send feedback when editor has content', () => {
@@ -84,7 +85,7 @@ describe('exitPlanModeActions', () => {
     expect(decoded.response.response.behavior).toBe('allow')
   })
 
-  it('sends allow response with the bypass mode when Bypass permissions is selected', () => {
+  it('sends allow response with the bypass mode when Bypass is selected', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const apply = vi.fn()
     const request = makeRequest('req-99', 'agent-3')
@@ -101,7 +102,7 @@ describe('exitPlanModeActions', () => {
     ))
 
     // Select bypass permissions, then approve.
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
@@ -115,7 +116,7 @@ describe('exitPlanModeActions', () => {
     expect(apply).not.toHaveBeenCalled()
   })
 
-  it('sends allow response with the smart mode when Smart permissions is selected', () => {
+  it('sends allow response with the smart mode when Smart is selected', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const apply = vi.fn()
 
@@ -134,12 +135,60 @@ describe('exitPlanModeActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBe('auto')
     expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('carries the smart mode when the user touches no pill', () => {
+    // Smart is the opening choice, so an approval attaches its mode with no
+    // click on the group.
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+
+    render(() => (
+      <ExitPlanModeActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        presets={{
+          smart: { sets: { permissionMode: 'auto' } },
+          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          apply: vi.fn(),
+        }}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBe('auto')
+  })
+
+  it('carries no mode when the catalog offers no smart preset', () => {
+    // The opening choice clamps to Unchanged, so an untouched group leaves the
+    // agent's permission mode where it is.
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+
+    render(() => (
+      <ExitPlanModeActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBeUndefined()
   })
 
   // A preset that switches some axis OTHER than the permission mode cannot act

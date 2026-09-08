@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { compactControlHeight } from '~/components/common/CompactControl.css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
 import { popoverBase } from '~/styles/popover.css'
 import { paginationContainer } from '../ControlRequestBanner.css'
@@ -13,12 +14,11 @@ export const container = style({
   borderRadius: 'var(--radius-medium)',
   backgroundColor: 'var(--background)',
   overflow: 'hidden',
-  // The composer button height: one line of text (font-size × line-height)
-  // plus its top/bottom padding (space-1 × 2). Referenced by the `[+]` button,
-  // the action buttons, the editor wrapper min-height, the separator position,
-  // and the ProseMirror paddings — all derived from this single value.
+  // The composer button height comes from the same compact-control source as
+  // each action button and small pill. The `[+]` button, the editor wrapper,
+  // the separator, and the ProseMirror padding use this value.
   vars: {
-    '--editor-btn-h': 'calc(var(--text-7) * var(--leading-normal) + var(--space-1) * 2)',
+    '--editor-btn-h': compactControlHeight,
     // Collapsed-mode left padding of the text area: the `[+]` button's left
     // offset + its width + a gap. Declared here so the stylesheet below and
     // the expand/collapse measurement in MarkdownEditor.tsx read one value
@@ -62,8 +62,7 @@ export const editorRow = style({
   'flex': 1,
   // Center the editor wrapper vertically so the text/placeholder sits between
   // the top edge and the bottom-anchored buttons, with equal gaps above and below.
-  // Min-height fits the button height (text-7 * leading-normal + space-1 * 2)
-  // plus a space-1 gap above and below.
+  // Min-height fits the compact button height plus a space-1 gap above and below.
   'alignItems': 'center',
   'minHeight': 'calc(var(--editor-btn-h) + var(--space-1) * 2)',
   // The expanded state reserves the button row here (see below). Animating it
@@ -140,22 +139,34 @@ globalStyle(`${footerSlot} > *`, {
   pointerEvents: 'auto',
 })
 
-// Constrain the ACTION buttons in the footer slot (Interrupt/Send and the
-// control-request actions) to the single-line text area height so they match
-// the `[+]` button.
+// The chrome the footer slot's ACTION buttons share (Pause, Interrupt, Send and
+// the control-request actions).
 //
-// The pagination zone is excluded. Its items are square 22px page numbers, not
-// action buttons, and this rule outranks them: `.footerSlot button` is (0,1,1)
-// against `paginationItem`'s (0,1,0), so it would stretch each square to the
-// button height and give it 16px of horizontal padding inside a 22px box,
-// leaving no room for the digit. The exclusion specifies the CENTER zone rather
-// than the item, so a future non-action control placed there keeps its own
-// size too.
-globalStyle(`${footerSlot} button:not(.${paginationContainer} button)`, {
-  height: 'var(--editor-btn-h)',
-  padding: '0 var(--space-2)',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1,
+// SIZE is not here. Each action reads the shared compact-control style, and
+// `--editor-btn-h` comes from the same source. A size here would reach the real
+// pill radios but not their overlay copies, which would split their geometry.
+//
+// Two things in the slot are NOT action buttons, and each is excluded.
+//
+// The pagination zone. Its items are square 22px page numbers that state their
+// own chrome, and this rule outranks them: `.footerSlot button` is (0,1,1)
+// against `paginationItem`'s (0,1,0). The exclusion specifies the CENTER zone
+// rather than the item, so a future non-action control placed there keeps its
+// own chrome too.
+//
+// A RADIO. It is one segment of a composite control -- `PillGroup`, which the
+// permission and allow-scope groups draw -- and that control owns its own
+// metrics. The exclusion is by role rather than by zone because a pill group
+// sits in the same zone as the actions it qualifies, so no zone separates them.
+//
+// A pill group is also the case where overriding a segment does more than
+// resize it. `PillGroup` paints the selected label TWICE: the real radio, and a
+// `<span>` copy in the sliding overlay that must cover that radio exactly. This
+// rule reaches the radios and not the copies, so the padding and font size it
+// forced laid the two rows out to different widths -- the copies' dividers fell
+// off the option boundaries, and the moving fill appeared to spill into the
+// next option.
+globalStyle(`${footerSlot} button:not(.${paginationContainer} button):not([role="radio"])`, {
   gap: 'var(--space-1)',
   borderRadius: 'var(--radius-small)',
 })
@@ -231,7 +242,7 @@ export const linkPopoverInput = style({
   'color': 'var(--foreground)',
   // The field absorbs the row's slack and yields first when the box is narrow,
   // so the two buttons stay reachable at any width. `all: unset` resets
-  // `min-width` to `auto`, which would otherwise floor an input at its default
+  // `min-width` to `auto`, which would otherwise give an input its default
   // size and reintroduce the overflow.
   'flex': '1 1 14rem',
   'minWidth': 0,
@@ -246,7 +257,7 @@ export const linkPopoverInput = style({
 export const codeLangPopoverContent = style([popoverBase, {
   // popoverBase supplies the UA-reset (position:fixed; margin:0 -- so calcPopoverPosition's
   // top/left place the popover at the trigger instead of margin:auto re-centering it) and
-  // the `:popover-open`-gated `display: flex`. This adds the picker's own box.
+  // the `display: flex` that `:popover-open` controls. This adds the picker's box.
   flexDirection: 'column',
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',

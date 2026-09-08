@@ -359,6 +359,7 @@ describe('handleControlSend', () => {
     // the owner of the answers -- which is the state a real session answers in.
     answerState.setSelections({ 0: ['Build'] })
     expect(await localStorageLoad(key)).toBeDefined()
+    await vi.waitFor(() => expect(answerState.ready()).toBe(true))
 
     batch(() => result.handleControlSend(''))
 
@@ -510,13 +511,15 @@ describe('handleControlSend', () => {
       onSendMessage,
     }
     const resetEditorHeight = vi.fn()
+    const answerState = createControlAnswerState()
     const result = useControlResponseHandling(
       props,
-      createControlAnswerState(),
+      answerState,
       () => undefined,
       resetEditorHeight,
       () => attachments,
     )
+    await vi.waitFor(() => expect(answerState.ready()).toBe(true))
     // handleControlSend builds a control response — it should NOT include attachments.
     result.handleControlSend('')
     // onSendMessage should NOT have been called (it's a control response, not a user message).
@@ -538,7 +541,9 @@ describe('handleControlSend', () => {
       onControlResponse,
       onSendMessage: vi.fn(),
     }
-    const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
+    const answerState = createControlAnswerState()
+    const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
+    await vi.waitFor(() => expect(answerState.ready()).toBe(true))
     expect(result.handleControlSend('')).toBe(false)
     expect(onControlResponse).not.toHaveBeenCalled()
     expect(showWarnToast).toHaveBeenCalledWith(expect.stringContaining('unsupported agent provider'))

@@ -8,7 +8,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from '../../controls/permissionPresets'
+import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
 import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
@@ -205,16 +205,17 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const permissionChoice = createPermissionPresetChoice(props)
-  const handleAllow = async () => {
-    await sendCodexPermissionsResponse(
+  const permissionChoice = createSessionPermissionPresetChoice(props)
+  const handleAllow = () => respondThenApplyPermissionPreset(
+    sendCodexPermissionsResponse(
       props.onRespond,
       props.request.requestId,
       codexRequestedPermissions(props.request.payload),
       rememberSwitch.checked() ? 'session' : 'turn',
-    )
-    await applyPermissionPreset(props.presets, permissionChoice.choice())
-  }
+    ),
+    props.presets,
+    permissionChoice.choice(),
+  )
   return (
     <ControlDecisionFooter
       hasEditorContent={props.hasEditorContent}
@@ -228,7 +229,7 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
       switches={() => [
         { id: 'control-remember-checkbox', label: 'Remember', checked: rememberSwitch.checked(), onChange: rememberSwitch.set },
       ]}
-      permissionPill={() => buildPermissionPill(props.presets, permissionChoice)}
+      permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
     />
   )
 }
@@ -268,7 +269,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const permissionChoice = createPermissionPresetChoice(props)
+  const permissionChoice = createSessionPermissionPresetChoice(props)
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
     props.onRespond,
@@ -276,10 +277,11 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     decision,
   )
 
-  const handleAllow = async () => {
-    await handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive)
-    await applyPermissionPreset(props.presets, permissionChoice.choice())
-  }
+  const handleAllow = () => respondThenApplyPermissionPreset(
+    handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive),
+    props.presets,
+    permissionChoice.choice(),
+  )
 
   return (
     <Switch
@@ -299,7 +301,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                 }]
               : []),
           ]}
-          permissionPill={() => buildPermissionPill(props.presets, permissionChoice)}
+          permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
           additionalActions={() => decisions().additional.map(decision => ({
             label: codexDecisionLabel(decision),
             testId: `control-decision-${codexDecisionKey(decision)}`,

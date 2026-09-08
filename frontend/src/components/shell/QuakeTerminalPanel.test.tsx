@@ -50,7 +50,7 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
       metadata={metadata as never}
       activeAgentId={() => entry?.ownerId ?? null}
       onClose={onClose}
-      confirmLink={async () => false}
+      confirmLink={() => Promise.resolve(false)}
       onInput={vi.fn()}
       onResize={vi.fn()}
       onContentReady={vi.fn()}
@@ -155,7 +155,7 @@ describe('quakeTerminalPanel', () => {
         metadata={{ get: () => undefined } as never}
         activeAgentId={() => 'a1'}
         onClose={vi.fn()}
-        confirmLink={async () => false}
+        confirmLink={() => Promise.resolve(false)}
         onInput={vi.fn()}
         onResize={vi.fn()}
         onContentReady={vi.fn()}

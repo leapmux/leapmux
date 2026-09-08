@@ -229,7 +229,7 @@ describe('zcode permission control', () => {
         }}
       />
     ))
-    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(order).toEqual(['allow', `mode:${ZCODE_MODE.Yolo}`]))
   })
