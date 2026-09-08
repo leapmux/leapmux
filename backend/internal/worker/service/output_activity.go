@@ -204,12 +204,19 @@ const (
 	settleHeld settleMode = iota
 	// settleImmediate publishes at once, and supersedes any window in flight.
 	// Three reasons ask for it. The window closing, which IS the settle's
-	// delivery. A process boundary, where a held settle would leave a timer to
-	// fire after shutdown closed the database it reads. And an entry about to be
-	// retired, whose held settle has no later refresh to deliver it.
+	// delivery. An entry about to be retired, whose held settle has no later
+	// refresh to deliver it. And a process boundary -- for the START, not the
+	// exit: resetAgentActivity clears pendingControl and the new process is
+	// alive, so settleCanResumeLocked calls that stop RESUMABLE and would hold
+	// the "a new process took over and it owns no turn" publish for a whole
+	// window. NoteAgentProcessStarted says why idle is the only honest answer
+	// there, and a spinner that waits three seconds for it is not one.
 	//
 	// "nothing can resume this stop" is NOT one of them. That rule belongs to the
 	// derivation, which reads it from its own inputs -- see settleCanResumeLocked.
+	// The two overlap on a dead process and separate on a live one, so neither
+	// replaces the other. Do not delete a settleImmediate because the derivation
+	// appears to cover it: check whether the process is alive at that call site.
 	settleImmediate
 )
 
