@@ -134,6 +134,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         tasksForRoot: () => [],
       }),
       clientId: () => 'test-client',
+      confirmLink: async () => false,
       ops: {
         agentOps: {
           availableProviders: () => [],

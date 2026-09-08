@@ -173,6 +173,7 @@ function makeDialogs(): AppShellDialogStates {
     confirmDeleteWs: createDialogState(),
     confirmArchiveWs: createDialogState(),
     confirmEmptyArchive: createDialogState(),
+    confirmLink: createDialogState(),
     sectionName: createDialogState(),
     confirmDeleteSection: createDialogState(),
     lastTabConfirm: createUpdatableDialogState(),

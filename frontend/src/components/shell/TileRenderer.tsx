@@ -14,6 +14,7 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
+import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -97,6 +98,12 @@ interface TileRendererOpts {
    * helper are two places a later change can update only one of.
    */
   taskScope: TabTaskScope
+  /**
+   * Asks the user before an untrusted link opens. The shell's own, shared with
+   * the markdown interceptor, so a terminal hyperlink and an agent-written
+   * anchor cannot answer the same risk differently.
+   */
+  confirmLink: UntrustedLinkConfirm
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
     agentOps: ReturnType<typeof useAgentOperations>
@@ -208,6 +215,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     repoGitStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
+  const confirmLink = opts.confirmLink
   const mruEditorDeps = opts.mruEditorDeps
 
   // A child (subagent) tab whose provider cannot steer a subagent conversation
@@ -733,6 +741,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onInput={termOps.handleTerminalInput}
           onResize={termOps.handleTerminalResize}
           onContentReady={id => metadata.patch(id, { contentReady: true })}
+          confirmLink={confirmLink}
           pageScrollRef={(fn) => {
             terminalPageScroll = fn
             syncTerminalHandler()

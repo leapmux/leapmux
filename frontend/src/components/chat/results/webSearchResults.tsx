@@ -5,6 +5,7 @@ import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { pluralize } from '~/lib/plural'
+import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { extractDomain } from '~/lib/url'
 import { clippedText } from '~/styles/shared.css'
 import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
@@ -54,7 +55,9 @@ export function WebSearchResultsBody(props: {
                     this panel, so the tooltip is the only route to the rest. */}
                 <Tooltip text={link.title} showWhen="clipped">
                   <span class={clippedText}>
-                    <a href={link.url} target="_blank" rel="noopener noreferrer nofollow">{link.title}</a>
+                    {/* The title comes from a search result, so the text and
+                        the address are two different strangers' words. */}
+                    <a href={link.url} target="_blank" rel="noopener noreferrer nofollow" {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}>{link.title}</a>
                   </span>
                 </Tooltip>
                 <span class={webSearchLinkDomain}>{extractDomain(link.url)}</span>

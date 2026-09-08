@@ -1,6 +1,7 @@
 import type { ITheme } from '@xterm/xterm'
 import type { BrowserPreferences, TerminalRendererPreference } from './browserPreferences'
 import type { TerminalImeHandle } from './terminalIme'
+import type { UntrustedLinkConfirm } from './untrustedLinks'
 import type {
   ResolvedThemeMode,
   TerminalThemeMode,
@@ -18,7 +19,9 @@ import { copyTextToClipboard } from './clipboard'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
 import { sleep } from './sleep'
+import { readTerminalLinkLabel } from './terminalLinkLabel'
 import { DEFAULT_TERMINAL_THEME_VALUE, DEFAULT_THEME_VALUE, parseTerminalThemeValue, parseThemeValue } from './themeStore'
+import { activateUntrustedLink } from './untrustedLinks'
 
 const log = createLogger('terminal')
 // TextEncoder construction is not free, so one stateless instance serves
@@ -86,6 +89,16 @@ export interface TerminalInstance {
    * driven by the WebGL terminal pool.
    */
   webglAddon?: WebglAddon
+  /**
+   * Install the prompt that a hyperlink in this terminal must pass.
+   *
+   * Called by the view on EVERY mount, not once at construction: the instance
+   * is cached per terminal id and survives a remount of the view, while the
+   * prompt belongs to the app shell around it. A shell that an error boundary
+   * replaced leaves the old prompt unable to render anything, so the newest
+   * mount is the only one that can supply a live one.
+   */
+  setConfirmLink: (confirm: UntrustedLinkConfirm) => void
   /** Send raw input data to the PTY backing this terminal. */
   sendInput?: (data: Uint8Array) => void
   /**
@@ -348,6 +361,18 @@ export function bufferHasVisibleContent(terminal: Terminal): boolean {
   return false
 }
 
+/**
+ * Ask nobody and open nothing.
+ *
+ * What a terminal starts with, until a mounted view installs the shell's real
+ * prompt. It fails CLOSED, because a link whose risk the app cannot disclose
+ * must not open on its own.
+ */
+const refuseLinkWithoutPrompt: UntrustedLinkConfirm = async () => {
+  log.warn('refused a terminal link: no confirm prompt is wired to this terminal')
+  return false
+}
+
 export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
   const prefs = loadBrowserPrefs()
   const theme = opts?.theme ?? resolveTerminalTheme(
@@ -360,6 +385,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   const fontFamily = opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY
   const fontSize = opts?.fontSize || DEFAULT_FONT_SIZE
 
+  let confirmLink = refuseLinkWithoutPrompt
   const terminal = new Terminal({
     cursorBlink: true,
     fontSize,
@@ -367,6 +393,29 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     theme,
     ...(opts?.cols ? { cols: opts.cols } : {}),
     ...(opts?.rows ? { rows: opts.rows } : {}),
+    // Supplying this is what keeps xterm's own `defaultActivate` unreachable,
+    // and that handler is broken under the desktop shell in two ways at once.
+    // It calls `window.confirm`, which Tauri replaces with an ASYNCHRONOUS
+    // shim: the shim returns a promise, every promise is truthy, so the answer
+    // is read as yes before the user sees the question -- and the promise then
+    // rejects, because the shell grants no `dialog:allow-confirm` permission.
+    // It then calls `window.open`, which returns null in a webview that has no
+    // new-window handler, so the link never opened even when the user said yes.
+    //
+    // `allowNonHttpProtocols` stays UNSET on purpose. It leaves xterm's own
+    // scheme allowlist in force, so a `file:` or `javascript:` URI never
+    // becomes a clickable link at all. `classifyUntrustedLink` refuses the same
+    // set a second time, for a link that reaches here from anywhere else.
+    linkHandler: {
+      // Reads `confirmLink` at CLICK time, never at construction. The
+      // instance outlives the view that mounted it -- `TerminalView` caches
+      // one per terminal id across remounts -- so a prompt captured here once
+      // would still point at the shell that has since been torn down and
+      // replaced, and the click would then wait on a dialog nobody renders.
+      activate: (_event, uri, range) => {
+        void activateUntrustedLink(uri, readTerminalLinkLabel(terminal, range), confirmLink)
+      },
+    },
   })
 
   const fitAddon = new FitAddon()
@@ -423,6 +472,9 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     webglAllowed,
     fontsReady,
     webglAddon: undefined,
+    setConfirmLink(confirm) {
+      confirmLink = confirm
+    },
     dispose() {
       terminal.dispose()
     },

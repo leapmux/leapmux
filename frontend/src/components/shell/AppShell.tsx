@@ -11,6 +11,7 @@ import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/works
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { BranchRef } from '~/components/workspace/workspaceTabTree.model'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
@@ -30,6 +31,7 @@ import { useWorkspace } from '~/context/WorkspaceContext'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createDialogState } from '~/hooks/createDialogState'
+import { createLinkConfirm } from '~/hooks/createLinkConfirm'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
@@ -51,6 +53,7 @@ import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
+import { interceptUntrustedLinkClicks } from '~/lib/untrustedLinkClicks'
 import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
@@ -195,6 +198,12 @@ export const AppShell: Component = () => {
   const sectionNameDialog = createDialogState<SectionNamePayload>()
   const confirmDeleteSectionDialog = createDialogState<SectionConfirmPayload>()
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
+  const confirmLinkDialog = createDialogState<LinkConfirmState>()
+  // ONE prompt for every untrusted link, whoever wrote it: an OSC 8 hyperlink
+  // a program printed into a terminal, and an anchor an agent wrote into
+  // markdown. Both carry the same risk -- text that states one address over a
+  // link that opens another -- so both must answer it the same way.
+  const confirmLink = createLinkConfirm(confirmLinkDialog)
   // The session-goal editor. Carries the agent it acts on and the objective to
   // start from, so REPLACE opens with the current text rather than an empty box.
   const setGoalDialog = createDialogState<SetGoalState>()
@@ -234,6 +243,14 @@ export const AppShell: Component = () => {
   // whoever was signed in when the shell mounted — which is the whole divergence
   // this catches.
   setExpectedUserId(() => auth.user()?.id)
+
+  // Every untrusted anchor the app renders, wherever it lands. `document.body`
+  // rather than a chat container, because a dialog and a tooltip portal out of
+  // the tree that rendered them, and an anchor that escaped this listener would
+  // open with no prompt at all. The listener runs in the CAPTURE phase and
+  // stops nothing that the policy would open anyway -- see
+  // `interceptUntrustedLinkClicks`.
+  onMount(() => onCleanup(interceptUntrustedLinkClicks(document.body, confirmLink)))
 
   // Publish `--vvh` / `--vv-shift` (the visible region's size and place) for
   // the mobile layout, and report whether the soft keyboard is up. No-op on a
@@ -833,6 +850,7 @@ export const AppShell: Component = () => {
     lastTabConfirm: tabOps.lastTabConfirmDialog,
     busyTabConfirm: tabOps.busyTabConfirmDialog,
     keyPinConfirm: keyPinConfirmDialog,
+    confirmLink: confirmLinkDialog,
     setGoal: setGoalDialog,
     changeBranch: changeBranchDialog,
     deleteBranch: deleteBranchDialog,
@@ -1321,6 +1339,7 @@ export const AppShell: Component = () => {
       repoGitStore,
     },
     taskScope,
+    confirmLink,
     ops: { agentOps, termOps },
     clientId: ownClientId,
     workspace: {

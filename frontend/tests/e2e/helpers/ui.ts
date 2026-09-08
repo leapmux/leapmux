@@ -571,6 +571,20 @@ async function openAppMenu(page: Page) {
 }
 
 /**
+ * Open the About dialog from the app menu.
+ *
+ * The item's label differs between the desktop shell and the browser ("About
+ * LeapMux Desktop..." against "About..."), so it is matched by prefix.
+ */
+export async function openAboutDialog(page: Page): Promise<Locator> {
+  await openAppMenu(page)
+  await page.getByRole('menuitem', { name: /^About/ }).click()
+  const dialog = page.getByRole('dialog', { name: 'About' })
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+/**
  * Open the Preferences dialog from the app menu and land on a category.
  *
  * The dialog's navigation is a category list (sidebar tabs on desktop, an

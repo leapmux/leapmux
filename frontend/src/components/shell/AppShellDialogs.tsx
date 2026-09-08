@@ -10,6 +10,7 @@ import type { useTerminalOperations } from './useTerminalOperations'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState, UpdatableDialogState } from '~/hooks/createDialogState'
+import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
 import type { createLayoutStore } from '~/stores/layout.store'
@@ -25,6 +26,7 @@ import { SetGoalDialog } from '~/components/backgroundtasks/SetGoalDialog'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
 import { showWarnToast } from '~/components/common/Toast'
+import { UntrustedLinkDialog } from '~/components/common/UntrustedLinkDialog'
 import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
 import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
@@ -166,6 +168,7 @@ export interface AppShellDialogStates {
   lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
   busyTabConfirm: DialogState<BusyTabConfirmState>
   keyPinConfirm: DialogState<KeyPinConfirmState>
+  confirmLink: DialogState<LinkConfirmState>
   setGoal: DialogState<SetGoalState>
   changeBranch: DialogState<ChangeBranchState>
   deleteBranch: DialogState<DeleteBranchState>
@@ -555,6 +558,18 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           <BusyTabCloseDialog
             state={state}
             onDismiss={() => props.dialogs.busyTabConfirm.close()}
+          />
+        )}
+      </Show>
+
+      <Show when={props.dialogs.confirmLink.value()} keyed>
+        {state => (
+          <UntrustedLinkDialog
+            request={state.request}
+            onResolve={(approved) => {
+              state.resolve(approved)
+              props.dialogs.confirmLink.close()
+            }}
           />
         )}
       </Show>
