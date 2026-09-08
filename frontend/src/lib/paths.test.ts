@@ -120,6 +120,30 @@ describe('join', () => {
   it('drops empty and consecutive separators', () => {
     expect(join(['/home/', '/alice/', '/proj'], 'posix')).toBe('/home/alice/proj')
   })
+
+  /**
+   * A POSIX root is nothing but a separator, so stripping the trailing one
+   * empties it. Without the root prefix the result came out RELATIVE, and a
+   * tree rooted at `/` built every git path wrong.
+   */
+  it('keeps the leading separator when the first fragment is a posix root', () => {
+    expect(join(['/', 'home'], 'posix')).toBe('/home')
+    expect(join(['/', 'home', 'alice'], 'posix')).toBe('/home/alice')
+    expect(join(['/', '/home/', 'alice'], 'posix')).toBe('/home/alice')
+  })
+
+  it('answers the root itself when there is nothing to append', () => {
+    expect(join(['/'], 'posix')).toBe('/')
+    expect(join(['/', ''], 'posix')).toBe('/')
+  })
+
+  // The same shape on win32: `\foo` is rooted but volume-less. `C:\` is NOT
+  // this case -- it strips to `C:`, which still names the drive, which is why
+  // the defect only ever showed on POSIX.
+  it('keeps the leading separator for a volume-less win32 root', () => {
+    expect(join(['\\', 'foo'], 'win32')).toBe('\\foo')
+    expect(join(['C:\\', 'Users', 'alice'], 'win32')).toBe('C:\\Users\\alice')
+  })
 })
 
 describe('parentDirectory', () => {
@@ -241,6 +265,14 @@ describe('untildify', () => {
 
   it('is a no-op when homeDir is missing', () => {
     expect(untildify('~/proj')).toBe('~/proj')
+  })
+
+  // A home directory at the filesystem root goes through `join`'s root case.
+  // Without it this answered `proj` -- a RELATIVE path where the caller needs
+  // an absolute one.
+  it('expands against a home directory that is the filesystem root', () => {
+    expect(untildify('~/proj', '/', 'posix')).toBe('/proj')
+    expect(untildify('~', '/', 'posix')).toBe('/')
   })
 })
 

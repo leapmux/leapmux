@@ -152,8 +152,16 @@ export function join(parts: string[], flavor?: PathFlavor): string {
     return ''
   const f = flavorOf(filtered[0], flavor)
   const s = sep(f)
+  // A first element that is NOTHING BUT separators is a filesystem root: `/`,
+  // and win32's volume-less `\`. It becomes a prefix rather than an element,
+  // because the loop below strips the trailing separator from every element
+  // but the last -- which empties a root and drops it, so `join(['/', 'home'])`
+  // answered `'home'`. Every path built from a POSIX root then came out
+  // RELATIVE, which is how a tree rooted at `/` lost its git decorations.
+  // Win32 hides the defect: `C:\` strips to `C:`, which still names the drive.
+  const rooted = filtered[0].replace(TRAILING_SEP_RE, '') === ''
   const out: string[] = []
-  for (let i = 0; i < filtered.length; i++) {
+  for (let i = rooted ? 1 : 0; i < filtered.length; i++) {
     let piece = filtered[i]
     if (i > 0)
       piece = piece.replace(LEADING_SEP_RE, '')
@@ -162,12 +170,11 @@ export function join(parts: string[], flavor?: PathFlavor): string {
     if (piece !== '')
       out.push(piece)
   }
-  if (out.length === 0)
-    return ''
   let joined = out.join(s)
   if (f === 'win32')
     joined = joined.replace(FWD_SLASH_G, '\\')
-  return joined
+  // One separator, never two: the root supplies it, so the elements must not.
+  return rooted ? `${s}${joined}` : joined
 }
 
 // Parent directory of `p`. For a root, returns the root itself.

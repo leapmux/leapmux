@@ -18,7 +18,7 @@ import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/l
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator } from '~/lib/fileSort'
-import { basename, detectFlavor, filesystemRoot, relativeUnder, sep, split } from '~/lib/paths'
+import { basename, detectFlavor, filesystemRoot, join, relativeUnder, split } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { emptyState } from '~/styles/shared.css'
@@ -411,21 +411,15 @@ async function loadChildren(
  * `split` rather than a scan for separators, because on win32 the VOLUME is one
  * leading segment: a hand-rolled walk over the separator would emit `C:` as an
  * ancestor, and `C:` names the current directory on drive C, not its root.
- *
- * The accumulator is spelled out rather than built with `join`, which strips a
- * trailing separator from every element but the last -- and a POSIX root IS
- * that separator, so `join(['/', 'home'])` answers `'home'`. The win32 root
- * survives that, which is the kind of half-working that hides inside a helper.
  */
 function ancestorChain(root: string, target: string, flavor: PathFlavor): string[] {
   const rel = target ? relativeUnder(target, root, flavor) : null
   if (!rel)
     return [root]
-  const separator = sep(flavor)
   const chain = [root]
   let cur = root
   for (const part of split(rel, flavor)) {
-    cur = cur.endsWith(separator) ? `${cur}${part}` : `${cur}${separator}${part}`
+    cur = join([cur, part], flavor)
     chain.push(cur)
   }
   return chain
