@@ -5,11 +5,29 @@
 package agent
 
 import (
+	"io"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe. The read
+// end drains so a long command cannot fill the pipe buffer.
+func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
+	t.Helper()
+	readPipe, writePipe, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = writePipe.Close()
+		_ = readPipe.Close()
+	})
+	go func() { _, _ = io.Copy(io.Discard, readPipe) }()
+	agent := newTestAgent(sink)
+	agent.stdin = writePipe
+	return agent
+}
 
 // goalStub implements the Agent provider surface (via stubProvider) plus
 // GoalWriter, so Manager.UpdateGoal can reach it.

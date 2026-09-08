@@ -2,8 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -757,22 +755,6 @@ func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
 		`{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`))
 
 	assert.Empty(t, sink.Goals(), "a patch for the replaced session is not this session's goal")
-}
-
-// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe. The read
-// end drains so a long command cannot fill the pipe buffer.
-func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
-	t.Helper()
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = writePipe.Close()
-		_ = readPipe.Close()
-	})
-	go func() { _, _ = io.Copy(io.Discard, readPipe) }()
-	agent := newTestAgent(sink)
-	agent.stdin = writePipe
-	return agent
 }
 
 // Claude Code does not report a command-driven goal change. The observer writes
