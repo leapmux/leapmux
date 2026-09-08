@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
 import { createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
@@ -18,10 +19,10 @@ export interface UseAvailableProvidersResult {
   providers: Accessor<AgentProvider[] | undefined>
   loading: Accessor<boolean>
   /**
-   * Re-run the fetch for the current source. The source-driven effect fires on
+   * Re-run the fetch for the current worker. The worker-driven effect fires on
    * a workerId TRANSITION only, so a transient failure on the current worker
-   * would otherwise leave the caller with no list and no way back. No-op while
-   * the source returns null.
+   * would otherwise leave the caller with no list and no way back. Runs
+   * whatever `enabled` says; no-op while there is no worker.
    */
   refresh: () => Promise<void>
 }
@@ -31,11 +32,12 @@ export interface UseAvailableProvidersResult {
  * that asks about ONE stated worker on demand.
  *
  * The sibling of {@link import('./useAvailableShells').useAvailableShells}, and
- * deliberately the same shape: `source` returns the fetch args or `null` to
- * skip, the hook fetches on the first non-null value and re-fetches only when
- * the workerId changes, and a null source keeps the cached list rather than
- * clearing it — so a caller that ties the source to "the menu is open"
- * re-opens without a second round trip.
+ * deliberately the same shape: `workerId` says which worker and `enabled` says
+ * whether to ask, the hook fetches the first time the gate is open for a worker
+ * and re-fetches only when the workerId changes, and a closed gate keeps the
+ * cached list rather than clearing it — so a caller that ties the gate to "the
+ * menu is open" re-opens without a second round trip. A WORKER change clears
+ * whatever the gate says.
  *
  * `useAgentOperations.loadAvailableProviders` is NOT this hook and does not use
  * it. That one scans for whichever worker the ACTIVE TAB is on, and it carries
@@ -45,15 +47,18 @@ export interface UseAvailableProvidersResult {
  * machine the current tab happens to sit on.
  */
 export function useAvailableProviders(
-  source: Accessor<UseAvailableProvidersArgs | null>,
+  workerId: Accessor<string>,
+  enabled: Accessor<boolean>,
   onError?: (err: unknown) => void,
 ): UseAvailableProvidersResult {
   const [providers, setProviders] = createSignal<AgentProvider[] | undefined>(undefined)
 
   // Every rule about WHEN to fetch, when to retry and when to clear lives in
   // `createWorkerScopedList`. This hook keeps only the payload it stores.
-  const list = createWorkerScopedList<UseAvailableProvidersArgs, Awaited<ReturnType<typeof workerRpc.listAvailableProviders>>>({
-    source,
+  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerRpc.listAvailableProviders>>>({
+    workerId,
+    enabled,
+    args: () => ({}),
     fetch: (args, signal) => workerRpc.listAvailableProviders(args.workerId, { signal }),
     applySuccess: resp => setProviders([...resp.providers]),
     // The previous worker's list is not an answer for this one, and

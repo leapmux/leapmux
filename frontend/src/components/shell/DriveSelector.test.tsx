@@ -94,7 +94,7 @@ describe('driveSelector', () => {
   // The trigger's own text is a bare drive letter, so without an explicit name
   // a screen reader announces the current drive where the control's PURPOSE
   // belongs.
-  it('names the trigger', () => {
+  it('gives the trigger an accessible name', () => {
     renderSelector({ value: 'C:\\', roots: ['C:\\', 'D:\\'] })
 
     expect(screen.getByRole('button', { name: 'Drive' })).toBeInTheDocument()
@@ -102,7 +102,7 @@ describe('driveSelector', () => {
 
   // A <menu> of radio items carries no name of its own either. jsdom keeps the
   // popover out of the accessibility tree, so the attribute is what to assert.
-  it('names the menu', () => {
+  it('gives the menu an accessible name', () => {
     renderSelector({ value: 'C:\\', roots: ['C:\\', 'D:\\'] })
     openMenu()
 

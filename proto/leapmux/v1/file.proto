@@ -28,6 +28,28 @@ message ListDirectoryResponse {
   // deepest levels. A short chain is a valid answer, never an error -- the
   // caller already knows how to list the remaining levels one at a time.
   repeated DirectoryListing listings = 1;
+  // Set when the chain stopped because a directory could not be READ, rather
+  // than because a cap cut it. See UnreadableDirectory.
+  UnreadableDirectory unreadable = 2;
+}
+
+// The directory a chain stopped at, when it stopped because that directory
+// could not be read.
+//
+// Absent when the chain is complete, and absent when a cap cut it -- a listing
+// count and a payload budget are not failures, and the caller lists the rest
+// itself. Present only for the one directory whose read failed, so a tree can
+// say WHY a row will not open instead of refusing to open it in silence.
+//
+// The OUTERMOST directory is not reported here. Its failure is the request's
+// failure, and the request answers with an error instead.
+message UnreadableDirectory {
+  string path = 1;
+  // Why the read failed, for a person to read. A short fixed phrase --
+  // "permission denied", "no such directory" -- never the operating system's
+  // own message, which carries paths and errno spellings that no caller needs
+  // and that differ per platform. Do not branch on it.
+  string reason = 2;
 }
 
 // One directory's listing. The single-directory answer is a chain of length
@@ -48,7 +70,7 @@ message ReadFileRequest {
   string worker_id = 1;
   string path = 2;
   int64 offset = 3;
-  int64 limit = 4; // Max bytes; 0 = default (64KB)
+  int64 limit = 4; // Max bytes; 0 = default (60KB)
   // When true and the file size exceeds the read window
   // (offset + effective limit), the server returns an empty content
   // payload with the file's total_size populated, skipping the actual
@@ -99,8 +121,8 @@ message ListFilesystemRootsResponse {
   // Plain strings, and deliberately no label and no drive type. A volume LABEL
   // costs GetVolumeInformationW, which does I/O against the volume and is the
   // documented way to block for the SMB timeout on a disconnected mapped
-  // drive. That would turn a bitmask read into an unbounded wait, for a string
-  // no caller needs.
+  // drive. That would turn a bitmask read into a wait with no limit, for a
+  // string no caller needs.
   repeated string roots = 1;
 }
 

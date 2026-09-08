@@ -33,8 +33,14 @@ test.describe('Directory picker root', () => {
     // `/tmp` exists on every POSIX host the suite runs on and is never under
     // `$HOME`, so reaching it by clicking is exactly what the old root made
     // impossible.
+    //
+    // The label may carry more than one segment. The tree asks for
+    // `max_depth: 5`, and the worker merges a directory holding exactly one
+    // child into its parent's row, so `/tmp` with a single subdirectory
+    // renders as `tmp/<child>`. Match the leading segment, not the whole
+    // label.
     const tmpRow = page.locator('[data-testid="tree-row"]:visible')
-      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(private|tmp)$/ }) })
+      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(private|tmp)(\/|$)/ }) })
       .first()
     await expect(tmpRow).toBeVisible()
     await tmpRow.click()
@@ -54,8 +60,11 @@ test.describe('Directory picker root', () => {
     // The dialog opens with no selection, so the tree walks itself open toward
     // the Worker's home directory. Its own row is visible with zero clicks,
     // and nothing is selected: `revealPath` expands, it never selects.
+    //
+    // The leading segment only, for the merge reason the test above states: a
+    // single-user host renders `/home` as `home/<user>` in one row.
     const homeRow = page.locator('[data-testid="tree-row"]:visible')
-      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(home|Users|root)$/ }) })
+      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(home|Users|root)(\/|$)/ }) })
       .first()
     await expect(homeRow).toBeVisible()
     await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(0)

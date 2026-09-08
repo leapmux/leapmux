@@ -4,6 +4,9 @@ import HardDrive from 'lucide-solid/icons/hard-drive'
 import { createMemo, For } from 'solid-js'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { pathEq } from '~/lib/paths'
+import { slugify } from '~/lib/slug'
+import { fieldTriggerChevron } from '~/styles/shared.css'
 import * as styles from './DriveSelector.css'
 
 export interface DriveSelectorProps {
@@ -24,13 +27,17 @@ export interface DriveSelectorProps {
  * `linux`, and both really do have a single `/`.
  *
  * A `DropdownMenu` of radio items, never a native `<select>`. A drive list is
- * dynamic and unbounded -- mapped network drives and removable media come and
- * go -- so it is the second of the two shapes this project allows.
+ * dynamic and has no upper limit -- mapped network drives and removable media
+ * come and go -- so it is the second of the two shapes this project allows.
  */
 export const DriveSelector: Component<DriveSelectorProps> = (props) => {
-  // This renders for a Windows worker alone, so a case-insensitive comparison
-  // is the CORRECT one here, not a shortcut.
-  const sameRoot = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  // This renders for a Windows worker alone, so the win32 rule -- a
+  // case-insensitive comparison -- is the CORRECT one here, not a shortcut.
+  // Through `pathEq` so the one module that decides how two paths compare
+  // stays the only one that decides it: both sides already arrive with the
+  // trailing separator that makes a root a root, so there is nothing to
+  // normalize.
+  const sameRoot = (a: string, b: string) => pathEq(a, b, 'win32')
 
   const options = createMemo(() => {
     // The current root may not be in the reported list: Windows does not
@@ -43,8 +50,11 @@ export const DriveSelector: Component<DriveSelectorProps> = (props) => {
   })
 
   // A backslash and a colon are awkward to address in a selector, and the
-  // letter already identifies the drive.
-  const optionTestId = (root: string) => `drive-option-${root.replace(/[^a-z0-9]/gi, '').toLowerCase()}`
+  // letter already identifies the drive. `slugify`, not a second fold of its
+  // own: two folds mean two statements of which characters survive, and this
+  // one used to DELETE every separator, so `\\srv\a-b` and `\\srv\ab`
+  // collided on one id.
+  const optionTestId = (root: string) => `drive-option-${slugify(root)}`
 
   return (
     <DropdownMenu
@@ -64,9 +74,9 @@ export const DriveSelector: Component<DriveSelectorProps> = (props) => {
           onPointerDown={triggerProps.onPointerDown}
           onClick={triggerProps.onClick}
         >
-          <Icon icon={HardDrive} size="sm" class={styles.triggerIcon} />
+          <Icon icon={HardDrive} size="sm" class={fieldTriggerChevron} />
           <span class={styles.triggerValue}>{props.value}</span>
-          <ChevronDown size={16} class={styles.triggerChevron} />
+          <ChevronDown size={16} class={fieldTriggerChevron} />
         </button>
       )}
     >

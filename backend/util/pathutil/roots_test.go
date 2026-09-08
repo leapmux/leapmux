@@ -70,11 +70,6 @@ func TestDrivesFromBitmask(t *testing.T) {
 			assert.Regexp(t, re, root)
 		}
 	})
-
-	t.Run("a nil probe skips the filter", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, []string{`C:\`, `D:\`}, drivesFromBitmask(maskOf('C', 'D'), nil))
-	})
 }
 
 func TestDrivesFromBitmask_FiltersOnDriveType(t *testing.T) {

@@ -10,8 +10,15 @@ export interface PathInputProps {
   selectedPath: string
   /** The worker's home directory, used to abbreviate and expand `~`. */
   homeDir?: string
-  /** The worker's path flavor, which decides what an absolute path looks like. */
-  flavor: PathFlavor
+  /**
+   * The worker's path flavor, which decides what an absolute path looks like.
+   *
+   * Undefined until the worker reports its OS. The tilde helpers already sniff
+   * the path when the flavor is absent; the mismatch hint below stays silent,
+   * because "this looks like a Windows path but the worker expects POSIX
+   * paths" is a guess whenever the worker has not said which it expects.
+   */
+  flavor?: PathFlavor
   /** Called with an expanded, worker-flavored path on Enter or on blur. */
   onSubmit: (path: string) => void
   /**
@@ -72,6 +79,8 @@ export const PathInput: Component<PathInputProps> = (props) => {
   }
 
   const flavorHint = createMemo(() => {
+    if (!props.flavor)
+      return null
     const raw = inputValue().trim()
     if (!raw || raw.startsWith('~'))
       return null

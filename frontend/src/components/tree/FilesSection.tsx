@@ -187,6 +187,18 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   // FilterTabBar's other call site already generates its own for that reason.
   const filterPanelId = createUniqueId()
   const [flatListMode, setFlatListMode] = createSignal(false)
+  /**
+   * The tree's root row.
+   *
+   * `DirectoryTreeProps.rootPath` is REQUIRED and must be an absolute path --
+   * a placeholder `'~'` resolves only on the worker, so nothing in the browser
+   * can reason about it. A tab mounts from the CRDT before its working
+   * directory arrives, so this falls back to the worker's home directory,
+   * which the tab is about to root at anyway. Empty until one of the two
+   * answers, and the tree renders nothing in that window.
+   */
+  const treeRoot = createMemo(() => props.workingDir || props.homeDir)
+
   // Both preferences are scoped to (workerId, workingDir), so the key changes
   // whenever the active tab does. createPersistedSignal owns the two rules that
   // go with that: re-read on a key change, and never write on mount.
@@ -257,13 +269,13 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   const gitErrorHint = () => props.gitStatusStore.focusedState()?.errorHint || undefined
 
   return (
-    // `data-working-dir` carries the RESOLVED dir, unlike the tree below, which
-    // falls back to `~` so it can render something while the dir is still
-    // hydrating. E2E needs the distinction: several actions (opening a terminal
-    // from the tab bar) read the active tab's dir synchronously on click and
-    // take a one-shot degraded branch when it is empty, so a spec must be able
-    // to wait for the real thing rather than for a placeholder that is already
-    // on screen.
+    // `data-working-dir` carries the tab's own dir, which is empty until the
+    // tab hydrates -- unlike the tree below, which roots at the worker's home
+    // directory in that window. E2E needs the distinction: several actions
+    // (opening a terminal from the tab bar) read the active tab's dir
+    // synchronously on click and take a one-shot degraded branch when it is
+    // empty, so a spec must be able to wait for the real thing rather than for
+    // a tree that is already on screen.
     <div class={styles.wrapper} data-working-dir={props.workingDir}>
       <Show when={gitErrorHint()}>
         <div class={`${warningText} ${styles.gitErrorHint}`} data-testid="files-git-error-hint">
@@ -292,25 +304,29 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
           when={isFiltered() && flatListMode()}
           fallback={(
             <div class={styles.treeContent}>
-              <DirectoryTree
-                workerId={props.workerId}
-                showFiles
-                selectedPath={props.fileTreePath}
-                onSelect={props.onFileSelect}
-                onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
-                onMention={props.onMention}
-                onOpenTerminal={props.onOpenTerminal}
-                rootPath={props.workingDir || '~'}
-                homeDir={props.homeDir}
-                flavor={props.flavor}
-                gitStatusStore={props.gitStatusStore}
-                isVisible={isVisible()}
-                showHiddenFiles={showHiddenFiles()}
-                sortOrder={sortOrder()}
-                turnEndTrigger={props.turnEndTrigger}
-                enabled={props.enabled}
-                ref={(h) => { treeHandle = h }}
-              />
+              <Show when={treeRoot()}>
+                {root => (
+                  <DirectoryTree
+                    workerId={props.workerId}
+                    showFiles
+                    selectedPath={props.fileTreePath}
+                    onSelect={props.onFileSelect}
+                    onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
+                    onMention={props.onMention}
+                    onOpenTerminal={props.onOpenTerminal}
+                    rootPath={root()}
+                    homeDir={props.homeDir}
+                    flavor={props.flavor}
+                    gitStatusStore={props.gitStatusStore}
+                    isVisible={isVisible()}
+                    showHiddenFiles={showHiddenFiles()}
+                    sortOrder={sortOrder()}
+                    turnEndTrigger={props.turnEndTrigger}
+                    enabled={props.enabled}
+                    ref={(h) => { treeHandle = h }}
+                  />
+                )}
+              </Show>
             </div>
           )}
         >

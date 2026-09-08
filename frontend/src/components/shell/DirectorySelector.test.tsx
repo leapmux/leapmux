@@ -84,10 +84,25 @@ function makeState() {
   }
 }
 
+/**
+ * Render the picker, and hand back everything a test in this file asserts on.
+ *
+ * `workingDir` takes a string or an accessor: one test drives a signal through
+ * it to watch the tree re-root. Omit it to keep `makeState`'s own `/repo`.
+ */
+function renderSelector(workingDir?: string | (() => string)) {
+  const { state, tree, refreshTree } = makeState()
+  if (workingDir !== undefined)
+    state.workingDir = typeof workingDir === 'function' ? workingDir : () => workingDir
+  const view = render(withPreferences(() => (
+    <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
+  )))
+  return { ...view, state, tree, refreshTree }
+}
+
 describe('directorySelector', () => {
   it('refreshFileTree invokes the current tree state refreshTree', () => {
-    const { state, tree, refreshTree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+    const { refreshTree } = renderSelector()
 
     refreshFileTree()
 
@@ -95,8 +110,7 @@ describe('directorySelector', () => {
   })
 
   it('toggleHiddenFiles updates the visible button title through the registry callback', () => {
-    const { state, tree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+    renderSelector()
 
     expect(screen.getByRole('button', { name: 'Hide hidden files' })).toBeInTheDocument()
 
@@ -106,35 +120,24 @@ describe('directorySelector', () => {
   })
 
   it('unregisters dialog ops on unmount', () => {
-    const { state, tree, refreshTree } = makeState()
-    const view = render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+    const { unmount, refreshTree } = renderSelector()
 
-    view.unmount()
+    unmount()
     refreshFileTree()
 
     expect(refreshTree).not.toHaveBeenCalled()
   })
 
   it('disables git status decorations in the picker tree', () => {
-    const { state, tree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+    renderSelector()
 
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-show-git-status', 'false')
   })
 })
 
 describe('directorySelector root derivation', () => {
-  function renderWith(workingDir: string) {
-    const { state, tree } = makeState()
-    state.workingDir = () => workingDir
-    render(withPreferences(() => (
-      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
-    )))
-    return state
-  }
-
   it('roots the tree at the filesystem root of the selected path', () => {
-    renderWith('/repo/sub')
+    renderSelector('/repo/sub')
 
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', '/')
   })
@@ -143,13 +146,13 @@ describe('directorySelector root derivation', () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('D:\\Users\\alice')
 
-    renderWith('')
+    renderSelector('')
 
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', 'D:\\')
   })
 
   it('passes the worker home directory as the tree reveal path', () => {
-    renderWith('')
+    renderSelector('')
 
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-reveal-path', '/home/alice')
   })
@@ -161,12 +164,9 @@ describe('directorySelector root derivation', () => {
   it('re-roots the tree when the selection changes drive', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    const { state, tree } = makeState()
     const [dir, setDir] = createSignal('C:\\a')
-    state.workingDir = dir
-    render(withPreferences(() => (
-      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
-    )))
+    // eslint-disable-next-line solid/reactivity -- renderSelector stores the accessor on the state object the component reads, which IS a tracked scope
+    renderSelector(dir)
 
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', 'C:\\')
 
@@ -178,7 +178,7 @@ describe('directorySelector root derivation', () => {
   // round trip would buy nothing. This is also what keeps WSL and Docker
   // workers out of the Windows path: both report `linux`.
   it('never asks a posix worker for its roots', () => {
-    renderWith('/repo')
+    renderSelector('/repo')
 
     expect(listFilesystemRoots).not.toHaveBeenCalled()
     expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', '/')
@@ -191,7 +191,7 @@ describe('directorySelector root derivation', () => {
     workerHome.mockReturnValue('')
     listFilesystemRoots.mockResolvedValue({ roots: ['E:\\', 'F:\\'] })
 
-    renderWith('')
+    renderSelector('')
 
     await waitFor(() => expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', 'E:\\'))
   })
@@ -200,29 +200,69 @@ describe('directorySelector root derivation', () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('')
 
-    renderWith('')
+    renderSelector('')
 
     expect(screen.queryByTestId('directory-tree')).toBeNull()
     expect(screen.getByText('Loading drives…')).toBeInTheDocument()
   })
+
+  /**
+   * `flavorFromOs(undefined)` answers `'posix'`, and that answer now picks the
+   * tree's ROOT. A Windows worker whose info has not arrived would mount at
+   * `/`, issue a ListDirectory the worker refuses, and paint an error over the
+   * whole pane before re-rooting at `C:\`. "Unknown" has to be its own state.
+   */
+  it('waits rather than rooting at / while the worker os is unknown', () => {
+    workerOs.mockReturnValue(undefined)
+    workerHome.mockReturnValue('')
+
+    renderSelector('')
+
+    expect(screen.queryByTestId('directory-tree')).toBeNull()
+  })
+
+  // An unknown OS does not stop a root the PATH itself states. `filesystemRoot`
+  // sniffs the flavor, so a prefilled selection roots immediately either way.
+  it('still roots from the selection while the worker os is unknown', () => {
+    workerOs.mockReturnValue(undefined)
+    workerHome.mockReturnValue('')
+
+    renderSelector('C:\\proj\\app')
+
+    expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', 'C:\\')
+  })
+
+  it('roots a posix selection while the worker os is unknown', () => {
+    workerOs.mockReturnValue(undefined)
+    workerHome.mockReturnValue('')
+
+    renderSelector('/repo/sub')
+
+    expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-root-path', '/')
+  })
+
+  // Without an onError the picker showed "Loading drives…" for a fetch that
+  // had already failed, and only the Refresh button escaped -- with nothing on
+  // screen saying to press it.
+  it('reports a failed drive listing instead of a permanent loading state', async () => {
+    workerOs.mockReturnValue('windows')
+    workerHome.mockReturnValue('')
+    listFilesystemRoots.mockRejectedValue(new Error('worker offline'))
+
+    renderSelector('')
+
+    await waitFor(() => expect(screen.getByTestId('directory-selector-no-root')).toHaveTextContent(/worker offline/))
+    expect(screen.queryByText('Loading drives…')).toBeNull()
+  })
 })
 
 describe('directorySelector drive menu', () => {
-  function renderPicker(workingDir = '') {
-    const { state, tree } = makeState()
-    state.workingDir = () => workingDir
-    render(withPreferences(() => (
-      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
-    )))
-    return state
-  }
-
   it('shows the drive selector for a windows worker with more than one root', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
     listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
 
-    renderPicker()
+    renderSelector('')
 
     await waitFor(() => expect(screen.getByTestId('drive-selector-trigger')).toBeInTheDocument())
   })
@@ -232,7 +272,7 @@ describe('directorySelector drive menu', () => {
     workerHome.mockReturnValue('C:\\Users\\alice')
     listFilesystemRoots.mockResolvedValue({ roots: ['C:\\'] })
 
-    renderPicker()
+    renderSelector('')
 
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalled())
     expect(screen.queryByTestId('drive-selector-trigger')).toBeNull()
@@ -247,7 +287,7 @@ describe('directorySelector drive menu', () => {
     workerOs.mockReturnValue('linux')
     workerHome.mockReturnValue('/mnt/c/Users/alice')
 
-    renderPicker()
+    renderSelector('')
 
     await Promise.resolve()
     expect(screen.queryByTestId('drive-selector-trigger')).toBeNull()
@@ -259,7 +299,7 @@ describe('directorySelector drive menu', () => {
     workerHome.mockReturnValue('C:\\Users\\alice')
     listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
 
-    const state = renderPicker()
+    const { state } = renderSelector('')
     await waitFor(() => expect(screen.getByTestId('drive-option-d')).toBeInTheDocument())
 
     fireEvent.click(screen.getByTestId('drive-option-d'))
@@ -271,11 +311,7 @@ describe('directorySelector drive menu', () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
     listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
-    const { state, tree, refreshTree } = makeState()
-    state.workingDir = () => ''
-    render(withPreferences(() => (
-      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
-    )))
+    const { refreshTree } = renderSelector('')
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(1))
 
     refreshFileTree()
@@ -290,11 +326,7 @@ describe('directorySelector drive menu', () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
     listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
-    const { state, tree, refreshTree } = makeState()
-    state.workingDir = () => ''
-    render(withPreferences(() => (
-      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
-    )))
+    const { refreshTree } = renderSelector('')
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByTestId('directory-selector-refresh'))

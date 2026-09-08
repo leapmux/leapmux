@@ -89,9 +89,9 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   // nobody opened. Both hooks keep their cached answer once the menu closes and
   // re-fetch only on a workerId change, so re-opening the same row is free.
   const [menuOpen, setMenuOpen] = createSignal(false)
-  const listSource = () => menuOpen() && props.workerId ? { workerId: props.workerId } : null
-  const { providers } = useAvailableProviders(listSource)
-  const { shells, defaultShell } = useAvailableShells(listSource)
+  const listWorkerId = () => props.workerId
+  const { providers } = useAvailableProviders(listWorkerId, menuOpen)
+  const { shells, defaultShell } = useAvailableShells(listWorkerId, menuOpen)
 
   /** One change item. The three differ only in their mode. */
   const changeItem = (mode: ChangeBranchMode) => (

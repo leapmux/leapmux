@@ -529,7 +529,7 @@ type Config struct {
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	// MaxMessageSize is the worker's configured application payload budget
 	// (0 = contracts.MaxMessageSize). Raises agent stdout scanner ceiling
-	// and ReadFile's maxReadLimit; other stream sends still reject at
+	// and ReadFile's payload budget; other stream sends still reject at
 	// sendEncrypted when the reassembled frame exceeds the negotiated gate.
 	MaxMessageSize int
 	// Clock supplies the two startup registries' timers. Nil installs the real

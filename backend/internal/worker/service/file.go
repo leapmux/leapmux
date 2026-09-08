@@ -3,8 +3,10 @@ package service
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -29,7 +31,7 @@ const maxDirEntries = 256
 // defaultReadLimit is the max bytes returned by ReadFile when the request
 // omits limit (or passes <= 0). Kept near one Noise transport chunk so a
 // default page stays a single chunk after protobuf/AEAD overhead; callers
-// that need more raise limit explicitly up to maxReadLimit.
+// that need more raise limit explicitly, up to the sender's payload budget.
 const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
 // payloadBudget is the largest response body this sender accepts: the tighter
@@ -38,9 +40,9 @@ const defaultReadLimit int64 = 60 * 1024 // 60 KB
 //
 // A response above it is one the receiver refuses, and on the unary path that
 // refusal surfaces as ResourceExhausted. Two handlers here spend it, for
-// different reasons: ReadFile clamps what a caller may ASK for
-// (see maxReadLimit), and ListDirectory stops adding listings to a chain
-// before the reply outgrows it.
+// different reasons: ReadFile clamps what a caller may ASK for, and
+// ListDirectory stops adding listings to a chain before the reply outgrows
+// it.
 func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 	configured := channelwire.ResolveMaxMessageSize(svc.MaxMessageSize)
 	if sender != nil {
@@ -49,16 +51,6 @@ func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 		}
 	}
 	return int64(configured)
-}
-
-// maxReadLimit caps what a ReadFile request may ask for, whatever it
-// asks for.
-//
-// It is the same producer ceiling the agent stdout scanners bound
-// themselves by. Without the clamp the limit field also picks the worker's
-// allocation size, so a single request could ask it to reserve gigabytes.
-func (svc *Service) maxReadLimit(sender channel.ResponseWriter) int64 {
-	return svc.payloadBudget(sender)
 }
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
@@ -94,53 +86,45 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// Resolve symlinks so paths are consistent (e.g. /var → /private/var on macOS).
 		dirPath = pathutil.Canonicalize(dirPath)
 
-		dirs, err := chainDirs(dirPath, r.GetFromRoot(), svc.HomeDir)
+		// from_root is sanitized HERE, not inside chainDirs, so one rejection
+		// class carries one status code: a path this worker refuses to accept
+		// is PermissionDenied whichever field carried it. What chainDirs
+		// reports is the relationship between the two paths, and that is a
+		// genuine InvalidArgument -- the caller can fix it.
+		fromRoot := r.GetFromRoot()
+		if fromRoot != "" {
+			fromRoot, err = validate.SanitizePath(fromRoot, svc.HomeDir)
+			if err != nil {
+				sendPermissionDenied(sender, "access denied")
+				return
+			}
+			fromRoot = pathutil.Canonicalize(fromRoot)
+		}
+
+		dirs, err := chainDirs(dirPath, fromRoot)
 		if err != nil {
 			sendInvalidArgument(sender, err.Error())
 			return
 		}
 
-		budget := svc.payloadBudget(sender)
-		listings := make([]*leapmuxv1.DirectoryListing, 0, len(dirs))
-		var used int64
-		for _, dir := range dirs {
-			entries, truncated, totalEntries, err := listDirectory(dir, dir, r.GetMaxDepth(), 0, r.GetDirsOnly())
-			if err != nil {
-				// The FIRST directory is the one the caller asked about, so
-				// its failure is the request's failure. A deeper one failing
-				// only shortens the chain, which the response already allows:
-				// a directory the caller cannot read is one it would have
-				// discovered on its own next request.
-				if len(listings) == 0 {
-					slog.Error("failed to list directory", "path", dir, "error", err)
-					sendInternalError(sender, "failed to list directory")
-					return
-				}
-				break
+		listings, unreadable, err := listChain(ctx, dirs, svc.payloadBudget(sender), r.GetMaxDepth(), r.GetDirsOnly())
+		if err != nil {
+			// A cancelled session is not a failure to report: the caller is gone,
+			// so an error response only queues bytes nobody reads.
+			if ctx.Err() != nil {
+				return
 			}
-
-			listing := &leapmuxv1.DirectoryListing{
-				Path:         dir,
-				Entries:      entries,
-				Truncated:    truncated,
-				TotalEntries: int32(totalEntries),
-			}
-			// Stop before the response outgrows what the channel accepts,
-			// rather than after. A chain of deep directories listed with
-			// dirs_only=false carries up to maxDirEntries FileInfos per level,
-			// and a response above the negotiated budget comes back to the
-			// caller as ResourceExhausted -- losing the levels it could have
-			// had. The first listing is always kept, because a response with
-			// no listing at all is not an answer.
-			size := int64(proto.Size(listing))
-			if len(listings) > 0 && used+size > budget {
-				break
-			}
-			used += size
-			listings = append(listings, listing)
+			// dirs[0] is the directory that failed, because listChain returns an
+			// error only for the outermost one.
+			slog.Error("failed to list directory", "path", dirs[0], "error", err)
+			sendInternalError(sender, "failed to list directory")
+			return
 		}
 
-		sendProtoResponse(sender, &leapmuxv1.ListDirectoryResponse{Listings: listings})
+		sendProtoResponse(sender, &leapmuxv1.ListDirectoryResponse{
+			Listings:   listings,
+			Unreadable: unreadable,
+		})
 	})
 
 	d.Register("ReadFile", leapmuxv1.Scope_SCOPE_FILE_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
@@ -197,7 +181,12 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// cannot report. Truncating is the honest answer: the response
 		// already carries total_size, so a caller reading a large file
 		// pages rather than being told nothing.
-		if max := svc.maxReadLimit(sender); limit > max {
+		//
+		// The clamp is the same producer ceiling the agent stdout scanners
+		// hold themselves to. Without it the limit field also picks the
+		// worker's allocation size, so a single request could ask it to
+		// reserve gigabytes.
+		if max := svc.payloadBudget(sender); limit > max {
 			limit = max
 		}
 
@@ -311,32 +300,26 @@ const maxChainListings = 64
 // it is every directory from fromRoot down to dirPath, so a tree rooted at "/"
 // can reveal a deep selection in one round trip instead of one per level.
 //
-// dirPath must already be sanitized and canonicalized. fromRoot is
-// canonicalized here, so a symlinked ancestor -- /tmp on macOS, which resolves
-// to /private/tmp -- passes the containment test that a textual comparison
-// would fail.
+// BOTH paths must already be sanitized and canonicalized, by the same pair of
+// calls: a symlinked ancestor -- /tmp on macOS, which resolves to /private/tmp
+// -- must reach the containment test in the same spelling as its descendant,
+// or a textual comparison rejects a real ancestor.
 //
 // A dirPath that is not a directory ends the chain at its parent, so revealing
 // a FILE costs one request too. That rule applies only to the chain form: with
 // no fromRoot the caller asked to list a file, and listDirectory reports that
 // as the error it is.
-func chainDirs(dirPath, fromRoot, homeDir string) ([]string, error) {
-	if fromRoot == "" {
+func chainDirs(dirPath, root string) ([]string, error) {
+	if root == "" {
 		return []string{dirPath}, nil
 	}
-
-	root, err := validate.SanitizePath(fromRoot, homeDir)
-	if err != nil {
-		return nil, fmt.Errorf("invalid from_root: %w", err)
-	}
-	root = pathutil.Canonicalize(root)
 
 	if !pathutil.HasPathPrefix(dirPath, root) {
 		return nil, fmt.Errorf("from_root %q is not an ancestor of %q", root, dirPath)
 	}
 
 	// Drop a trailing non-directory, so the chain ends at the deepest
-	// directory the caller named. os.Stat, not the dir entry: dirPath may be a
+	// directory the caller gave. os.Stat, not the dir entry: dirPath may be a
 	// symlink to a directory, and that is a directory to every other part of
 	// this file.
 	tail := dirPath
@@ -353,7 +336,7 @@ func chainDirs(dirPath, fromRoot, homeDir string) ([]string, error) {
 	// that is correct for every root spelling ("/", "C:\\", "\\\\srv\\share\\"),
 	// because it stops at the volume rather than one segment past it.
 	//
-	// The walk itself is unbounded because it costs only string operations and
+	// The walk itself has no limit because it costs only string operations and
 	// the OS already limits how many components a path can hold. The cap below
 	// limits what is expensive: one directory read per surviving entry.
 	dirs := []string{tail}
@@ -375,6 +358,93 @@ func chainDirs(dirPath, fromRoot, homeDir string) ([]string, error) {
 		dirs = dirs[:maxChainListings]
 	}
 	return dirs, nil
+}
+
+// unreadableReason turns a listDirectory failure into a short fixed phrase a
+// person can read.
+//
+// Never err.Error(): the operating system's own message carries the path, the
+// errno spelling and the syscall name, all of which differ per platform and
+// none of which a caller needs. The path is already in the response.
+func unreadableReason(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return "permission denied"
+	case errors.Is(err, fs.ErrNotExist):
+		return "no such directory"
+	default:
+		return "cannot be read"
+	}
+}
+
+// listChain lists every directory in dirs, outermost first, and stops before
+// the reply outgrows budget.
+//
+// It returns an error only when the OUTERMOST directory fails, which is the
+// request's failure. With no from_root that is the directory the caller asked
+// about. With one it is from_root, and the chain has to start there: the
+// caller keys the first listing to the root it asked for, so a chain that
+// skips its own root mounts every remaining listing under the wrong path.
+//
+// A deeper failure only shortens the chain, which the response already allows:
+// a directory the caller cannot read is one it would have discovered on its
+// own next request.
+//
+// A cancelled ctx returns ctx.Err() and no listing, because the caller is
+// already gone.
+//
+// The second return value names the directory a READ failure stopped the chain
+// at, so the caller can say why that row will not open. It stays nil when the
+// chain is complete and when a cap cut it, because neither is a failure.
+func listChain(ctx context.Context, dirs []string, budget int64, maxDepth int32, dirsOnly bool) ([]*leapmuxv1.DirectoryListing, *leapmuxv1.UnreadableDirectory, error) {
+	listings := make([]*leapmuxv1.DirectoryListing, 0, len(dirs))
+	var used int64
+	for _, dir := range dirs {
+		// One chain request performs up to maxChainListings directory walks,
+		// each with its own ReadDir and up to maxDirEntries Stat calls. The
+		// caller may be gone well before the last one, and the session context
+		// is cancelled when the channel closes.
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+
+		entries, truncated, totalEntries, err := listDirectory(dir, dir, maxDepth, 0, dirsOnly)
+		if err != nil {
+			if len(listings) == 0 {
+				return nil, nil, err
+			}
+			return listings, &leapmuxv1.UnreadableDirectory{
+				Path:   dir,
+				Reason: unreadableReason(err),
+			}, nil
+		}
+
+		listing := &leapmuxv1.DirectoryListing{
+			Path:         dir,
+			Entries:      entries,
+			Truncated:    truncated,
+			TotalEntries: int32(totalEntries),
+		}
+		// Stop before the response outgrows what the channel accepts, rather
+		// than after. A chain of deep directories listed with dirs_only=false
+		// carries up to maxDirEntries FileInfos per level, and a response above
+		// the negotiated budget comes back to the caller as ResourceExhausted
+		// -- losing the levels it could have had. The first listing is always
+		// kept, because a response with no listing at all is not an answer.
+		//
+		// proto.Size walks the whole message, so it runs only where its answer
+		// is read: never for the first listing, and therefore never at all on
+		// the single-directory path that every ordinary tree click takes.
+		if len(listings) > 0 {
+			size := int64(proto.Size(listing))
+			if used+size > budget {
+				break
+			}
+			used += size
+		}
+		listings = append(listings, listing)
+	}
+	return listings, nil, nil
 }
 
 // fileInfoToProto converts an os.FileInfo into a protobuf FileInfo.

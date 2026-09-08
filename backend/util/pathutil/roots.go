@@ -1,6 +1,6 @@
 package pathutil
 
-// Mirrors of the two GetDriveType results the drive filter names.
+// Mirrors of the two GetDriveType results the drive filter checks for.
 //
 // Declared here rather than imported from golang.org/x/sys/windows so that
 // drivesFromBitmask -- the bit math AND the filter rule -- compiles and runs
@@ -24,9 +24,6 @@ const maxDriveLetters = 26
 // func, so a test on macOS or Linux can hand this function any machine's drive
 // layout as one literal. What is left in roots_windows.go is two calls with no
 // branching.
-//
-// A nil probe skips the filter, which is what a caller that only has a mask
-// wants.
 func drivesFromBitmask(mask uint32, driveType func(root string) uint32) []string {
 	roots := make([]string, 0, maxDriveLetters)
 	for i := 0; i < maxDriveLetters; i++ {
@@ -42,7 +39,7 @@ func drivesFromBitmask(mask uint32, driveType func(root string) uint32) []string
 		// already renders as an error for any unreadable directory. An empty
 		// optical drive and a mapped share report CDROM and REMOTE, so both
 		// stay.
-		if driveType != nil && driveType(root) == driveNoRootDir {
+		if driveType(root) == driveNoRootDir {
 			continue
 		}
 		roots = append(roots, root)

@@ -1,29 +1,14 @@
 import { style } from '@vanilla-extract/css'
+import { fieldTrigger } from '~/styles/shared.css'
 
-export const trigger = style({
+export const trigger = style([fieldTrigger, {
   width: '100%',
   marginTop: 'var(--space-1)',
   padding: 'var(--space-2) var(--space-3)',
-  fontSize: 'var(--text-7)',
-  lineHeight: 'var(--leading-normal)',
-  backgroundColor: 'var(--background)',
-  color: 'var(--foreground)',
-  border: '1px solid var(--input)',
-  borderRadius: 'var(--radius-medium)',
-  transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast)',
-  display: 'flex',
-  alignItems: 'center',
   justifyContent: 'space-between',
   gap: 'var(--space-3)',
   textAlign: 'left',
-  selectors: {
-    '&:focus-visible': {
-      outline: 'none',
-      borderColor: 'var(--ring)',
-      boxShadow: '0 0 0 2px rgb(from var(--ring) r g b / 0.2)',
-    },
-  },
-})
+}])
 
 export const triggerDisabled = style({
   opacity: 0.5,
@@ -35,11 +20,6 @@ export const triggerValue = style({
   alignItems: 'center',
   gap: 'var(--space-2)',
   minWidth: 0,
-})
-
-export const triggerChevron = style({
-  color: 'var(--muted-foreground)',
-  flexShrink: 0,
 })
 
 export const menu = style({

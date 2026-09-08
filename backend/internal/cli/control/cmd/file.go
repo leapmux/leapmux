@@ -62,7 +62,24 @@ func RunFileList(rawCtx any, args []string) error {
 		// A list, even without --from-root, where it holds one entry. One
 		// output shape means a script does not branch on which flags it
 		// passed.
-		func() any { return map[string]any{"listings": resp.GetListings()} })
+		//
+		// Shaped by hand rather than emitted as the proto: the generated
+		// struct tags carry `omitempty`, and `encoding/json` then drops
+		// `truncated` for every listing that is not truncated and
+		// `total_entries` for every empty directory. A script reading
+		// `.truncated` would get null where false belongs.
+		func() any {
+			listings := make([]map[string]any, 0, len(resp.GetListings()))
+			for _, l := range resp.GetListings() {
+				listings = append(listings, map[string]any{
+					"path":          l.GetPath(),
+					"entries":       l.GetEntries(),
+					"truncated":     l.GetTruncated(),
+					"total_entries": l.GetTotalEntries(),
+				})
+			}
+			return map[string]any{"listings": listings}
+		})
 }
 
 // RunFileRoots prints the worker's filesystem roots: ["/"] on POSIX, the drive
@@ -94,7 +111,7 @@ func RunFileRead(rawCtx any, args []string) error {
 	f := bindPathCmd(cmd, false, "path to read (required)")
 	var offset, limit int64
 	f.FS.Int64Var(&offset, "offset", 0, "byte offset")
-	f.FS.Int64Var(&limit, "limit", 0, "max bytes (0 = default 64KB)")
+	f.FS.Int64Var(&limit, "limit", 0, "max bytes (0 = default 60KB)")
 	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
 		return err
 	}

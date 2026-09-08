@@ -19,7 +19,7 @@ import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger
 import { copyTextToClipboard } from '~/lib/clipboard'
 import { formatBytes } from '~/lib/formatBytes'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { relativizePath } from '~/lib/paths'
+import { isFilesystemRoot, relativizePath } from '~/lib/paths'
 
 /**
  * Shared file/dir actions context menu. Hosts the size/modified info block,
@@ -203,7 +203,14 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
         <Icon icon={Copy} size="sm" />
         Copy path
       </button>
-      <Show when={props.rootPath !== undefined}>
+      {/*
+        Hidden for a ROOT base. Every absolute path is under `/` (or `C:\`),
+        so `relativizePath` deliberately refuses it and answers the absolute
+        path -- byte for byte what "Copy path" above already copies. The
+        directory picker's tree is rooted at the filesystem root, so without
+        this the menu offers two items that do the same thing.
+      */}
+      <Show when={props.rootPath !== undefined && !isFilesystemRoot(props.rootPath, props.flavor)}>
         <button
           role="menuitem"
           data-testid={tid('copy-relative-path-button')}

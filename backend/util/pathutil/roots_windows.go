@@ -49,7 +49,7 @@ func systemDriveRoot() string {
 // CDROM device class without touching the media -- so an empty optical drive
 // and a disconnected mapped drive both answer promptly. The calls that wait
 // out the SMB timeout are GetVolumeInformationW and GetDiskFreeSpaceExW, and
-// this file makes neither. The loop is also bounded at 26 calls.
+// this file makes neither. The loop also makes at most 26 calls.
 //
 // If a volume label is ever added to the response, that changes: the label
 // needs GetVolumeInformationW, and a timeout wrapper then becomes mandatory.

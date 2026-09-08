@@ -9,7 +9,7 @@ import { PathInput } from './PathInput'
 function renderInput(props: {
   selectedPath: string
   homeDir: string
-  flavor: PathFlavor
+  flavor?: PathFlavor
   onSubmit: (path: string) => void
 }) {
   return render(() => (
@@ -90,6 +90,36 @@ describe('pathInput on a POSIX worker', () => {
     renderInput({ ...posixProps, onSubmit })
     fireEvent.input(pathInput(), { target: { value: '/opt/data' } })
     expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
+  })
+})
+
+describe('pathInput before the worker reports its os', () => {
+  /**
+   * The flavor is undefined until the worker answers, and the hint is a
+   * comparison against it. "This looks like a Windows path but the worker
+   * expects POSIX paths" is a GUESS while the worker has not said which it
+   * expects -- and it is the wrong guess for a Windows worker, whose real
+   * `C:\` path would be flagged as a mistake.
+   */
+  it('shows no flavor hint while the flavor is unknown', () => {
+    renderInput({ selectedPath: '', homeDir: '', flavor: undefined, onSubmit: vi.fn() })
+
+    fireEvent.input(pathInput(), { target: { value: 'C:\\Users\\alice' } })
+    expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
+
+    fireEvent.input(pathInput(), { target: { value: '/home/alice' } })
+    expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
+  })
+
+  // The input still works: only the hint waits.
+  it('still submits a typed path while the flavor is unknown', () => {
+    const onSubmit = vi.fn()
+    renderInput({ selectedPath: '', homeDir: '', flavor: undefined, onSubmit })
+
+    fireEvent.input(pathInput(), { target: { value: '/opt/data' } })
+    fireEvent.keyDown(pathInput(), { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith('/opt/data')
   })
 })
 

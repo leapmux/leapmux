@@ -58,6 +58,34 @@ describe('fileActionsMenu — common items', () => {
     expect(screen.queryByTestId('file-actions-copy-relative-path-button')).not.toBeInTheDocument()
   })
 
+  /**
+   * Every absolute path is under a filesystem root, so `relativizePath`
+   * refuses one as a base and answers the absolute path -- byte for byte what
+   * "Copy path" copies. The directory picker roots its tree at `/` (or a
+   * Windows drive), so without this the menu offers two items that do the
+   * same thing for every path outside the home directory.
+   */
+  it('hides Copy relative path when the root IS the filesystem root', () => {
+    renderMenu({ rootPath: '/', path: '/etc/hosts' })
+    expect(screen.getByTestId('file-actions-copy-path-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('file-actions-copy-relative-path-button')).not.toBeInTheDocument()
+  })
+
+  it('hides Copy relative path for a win32 drive root in either spelling', () => {
+    const a = renderMenu({ rootPath: 'C:\\', path: 'C:\\Users\\alice\\a.ts', flavor: 'win32' })
+    expect(screen.queryByTestId('file-actions-copy-relative-path-button')).not.toBeInTheDocument()
+    a.unmount()
+
+    renderMenu({ rootPath: 'C:/', path: 'C:\\Users\\alice\\a.ts', flavor: 'win32' })
+    expect(screen.queryByTestId('file-actions-copy-relative-path-button')).not.toBeInTheDocument()
+  })
+
+  // A real directory base still offers it: the item is only useless for a root.
+  it('keeps Copy relative path for an ordinary directory root', () => {
+    renderMenu({ rootPath: '/repo', path: '/repo/src/main.ts' })
+    expect(screen.getByTestId('file-actions-copy-relative-path-button')).toBeInTheDocument()
+  })
+
   it('shows Mention only when onMention is supplied', () => {
     const { unmount } = renderMenu()
     expect(screen.queryByTestId('file-actions-mention-button')).not.toBeInTheDocument()

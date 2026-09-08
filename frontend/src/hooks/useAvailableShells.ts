@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
 import { createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
@@ -16,12 +17,12 @@ interface UseAvailableShellsResult {
   setShell: (v: string | null) => void
   loading: Accessor<boolean>
   /**
-   * Manual retry hook for the current source. The worker-change effect
+   * Manual retry hook for the current worker. The worker-change effect
    * only fires on a workerId transition, so a transient failure on the
    * current worker would otherwise leave the dialog stuck with an empty
    * shell list and no recovery path until the user picked a different
-   * worker. Refresh re-runs the fetch against the current source; no-op
-   * when the source is null (the gate said "don't fetch yet").
+   * worker. Refresh re-runs the fetch against the current worker, whatever
+   * `enabled` says; no-op when there is no worker.
    */
   refresh: () => Promise<void>
 }
@@ -35,12 +36,12 @@ interface UseAvailableShellsResult {
  * route while a resource is loading, flashing blank under any dialog
  * that reads it during initial fetch.
  *
- * - `source` returns the fetch args or `null` to skip. The hook fetches
- *   the first time `source` returns a non-null value and re-fetches on
- *   `workerId` change. While `source` returns null, the cached shells
- *   remain in place so a caller that gates the source on a mode toggle
- *   (e.g. show shell list only in worktree-terminal mode) doesn't
- *   re-issue the RPC when re-toggling.
+ * - `workerId` says WHICH worker; `enabled` says whether to ask. The hook
+ *   fetches the first time `enabled` is true for a worker and re-fetches on
+ *   `workerId` change. While `enabled` is false the cached shells remain in
+ *   place, so a caller that gates on a mode toggle (e.g. show the shell list
+ *   only in worktree-terminal mode) doesn't re-issue the RPC when
+ *   re-toggling -- but a WORKER change still clears, whatever the gate says.
  * - `defaultShell` returns the server-reported default, falling back to
  *   the first shell in the list, falling back to ''.
  * - The user override resets whenever `workerId` changes, so picking a
@@ -53,7 +54,8 @@ interface UseAvailableShellsResult {
  *   the banner still says the load failed. `onLoaded` is that withdrawal.
  */
 export function useAvailableShells(
-  source: Accessor<UseAvailableShellsArgs | null>,
+  workerId: Accessor<string>,
+  enabled: Accessor<boolean>,
   onError?: (err: unknown) => void,
   onLoaded?: () => void,
 ): UseAvailableShellsResult {
@@ -64,8 +66,10 @@ export function useAvailableShells(
   // Every rule about WHEN to fetch, when to retry and when to clear lives in
   // `createWorkerScopedList`. This hook keeps only the state it stores: the
   // server default beside the list, and the user's explicit override.
-  const list = createWorkerScopedList<UseAvailableShellsArgs, Awaited<ReturnType<typeof workerRpc.listAvailableShells>>>({
-    source,
+  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerRpc.listAvailableShells>>>({
+    workerId,
+    enabled,
+    args: () => ({}),
     fetch: args => workerRpc.listAvailableShells(args.workerId, args),
     applySuccess: (resp) => {
       setShells(resp.shells)

@@ -5,7 +5,7 @@ import { createMemo, For, Show } from 'solid-js'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { nextRovingValue } from '~/lib/rovingFocus'
-import { menuSectionHeader } from '~/styles/shared.css'
+import { fieldTriggerChevron, menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
 export interface PreferencesNavProps {
@@ -82,7 +82,7 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
           <span class={styles.navSelectValue}>
             {optionLabel(props.active, props.restartGroups().has(props.active.id))}
           </span>
-          <ChevronDown size={16} class={styles.navSelectChevron} aria-hidden="true" />
+          <ChevronDown size={16} class={fieldTriggerChevron} aria-hidden="true" />
         </button>
       )}
     >

@@ -6,8 +6,11 @@ import {
   filesystemRoot,
   flavorFromOs,
   isAbsolute,
+  isFilesystemRoot,
   join,
+  normalizeSeparators,
   parentDirectory,
+  pathEq,
   relativeUnder,
   relativizePath,
   split,
@@ -138,7 +141,7 @@ describe('join', () => {
   })
 
   // The same shape on win32: `\foo` is rooted but volume-less. `C:\` is NOT
-  // this case -- it strips to `C:`, which still names the drive, which is why
+  // this case -- it strips to `C:`, which still identifies the drive, which is why
   // the defect only ever showed on POSIX.
   it('keeps the leading separator for a volume-less win32 root', () => {
     expect(join(['\\', 'foo'], 'win32')).toBe('\\foo')
@@ -354,6 +357,101 @@ describe('relativeUnder', () => {
 
   it('returns null when the win32 volume differs', () => {
     expect(relativeUnder('D:\\data', 'C:\\data', 'win32')).toBeNull()
+  })
+
+  // One trailing separator was stripped, not every one, so a base spelled
+  // `/a//` built the prefix `/a//` and matched none of its own descendants.
+  it('strips every trailing separator on the base, not only one', () => {
+    expect(relativeUnder('/a/b', '/a//', 'posix')).toBe('b')
+    expect(relativeUnder('/a/b', '/a///', 'posix')).toBe('b')
+    expect(relativeUnder('/a/b', '//', 'posix')).toBe('a/b')
+    expect(relativeUnder('C:\\Users\\alice', 'C:\\Users\\\\', 'win32')).toBe('alice')
+  })
+
+  // A base of nothing but separators trims to '', and comparing against ''
+  // reported EVERY path as the base itself -- including the drive-relative
+  // `C:`, which identifies the current directory on drive C and not the
+  // drive's root.
+  it('does not treat a drive-relative path as the drive root', () => {
+    expect(relativeUnder('C:', 'C:\\', 'win32')).toBeNull()
+    expect(relativeUnder('C:', 'C:', 'win32')).toBe('')
+  })
+
+  it('returns null for an empty path', () => {
+    expect(relativeUnder('', '/', 'posix')).toBeNull()
+    expect(relativeUnder('', '', 'posix')).toBeNull()
+  })
+})
+
+describe('pathEq', () => {
+  it('compares byte-exactly on posix', () => {
+    expect(pathEq('/A', '/a', 'posix')).toBe(false)
+    expect(pathEq('/a', '/a', 'posix')).toBe(true)
+  })
+
+  it('compares case-insensitively on win32', () => {
+    expect(pathEq('C:\\Users', 'c:\\users', 'win32')).toBe(true)
+    expect(pathEq('C:\\Users', 'C:\\Other', 'win32')).toBe(false)
+  })
+
+  // Text, not paths: it neither cleans nor normalizes separators, which is
+  // why a caller that wants "the same directory" must normalize first.
+  it('does not normalize separators', () => {
+    expect(pathEq('C:/Users', 'C:\\Users', 'win32')).toBe(false)
+  })
+})
+
+describe('isFilesystemRoot', () => {
+  it('accepts a posix root however many separators it carries', () => {
+    expect(isFilesystemRoot('/', 'posix')).toBe(true)
+    expect(isFilesystemRoot('//', 'posix')).toBe(true)
+    expect(isFilesystemRoot('///', 'posix')).toBe(true)
+  })
+
+  it('accepts a win32 drive root in either separator', () => {
+    expect(isFilesystemRoot('C:\\', 'win32')).toBe(true)
+    expect(isFilesystemRoot('C:/', 'win32')).toBe(true)
+  })
+
+  // A UNC share root arrives with and without its trailing separator; both
+  // are the same root, so both must answer true.
+  it('accepts a UNC share root with or without a trailing separator', () => {
+    expect(isFilesystemRoot('\\\\srv\\share\\', 'win32')).toBe(true)
+    expect(isFilesystemRoot('\\\\srv\\share', 'win32')).toBe(true)
+  })
+
+  it('refuses anything under a root', () => {
+    expect(isFilesystemRoot('/home', 'posix')).toBe(false)
+    expect(isFilesystemRoot('C:\\Users', 'win32')).toBe(false)
+    expect(isFilesystemRoot('\\\\srv\\share\\x', 'win32')).toBe(false)
+  })
+
+  // `C:` is drive-relative -- the current directory on drive C, not its root.
+  it('refuses a drive-relative path and a relative path', () => {
+    expect(isFilesystemRoot('C:', 'win32')).toBe(false)
+    expect(isFilesystemRoot('proj/src', 'posix')).toBe(false)
+    expect(isFilesystemRoot('', 'posix')).toBe(false)
+  })
+
+  // A win32 path that is rooted but volume-less lands on whichever drive the
+  // worker's current directory is on, so the browser cannot call it a root.
+  it('refuses a volume-less win32 root', () => {
+    expect(isFilesystemRoot('\\', 'win32')).toBe(false)
+  })
+})
+
+describe('normalizeSeparators', () => {
+  it('rewrites forward slashes on win32', () => {
+    expect(normalizeSeparators('C:/Users/alice', 'win32')).toBe('C:\\Users\\alice')
+    expect(normalizeSeparators('C:\\Users\\alice', 'win32')).toBe('C:\\Users\\alice')
+  })
+
+  // `\` is a legal character in a POSIX file name, so `weird\name` is ONE
+  // component. Rewriting it made that file compare equal to a directory
+  // `weird/name` that may also exist.
+  it('keeps a backslash on posix, where it is a legal file-name character', () => {
+    expect(normalizeSeparators('/a/weird\\name', 'posix')).toBe('/a/weird\\name')
+    expect(normalizeSeparators('/a/b', 'posix')).toBe('/a/b')
   })
 })
 

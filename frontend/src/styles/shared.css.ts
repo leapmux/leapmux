@@ -28,6 +28,47 @@ export const controlReset = style({
 })
 
 /**
+ * The surface every FIELD TRIGGER shares: a button that sits where a form
+ * control would and opens a menu.
+ *
+ * Three carry it -- the directory picker's drive selector, the new-agent
+ * dialog's provider selector, and Preferences' phone-band section picker --
+ * and the repo's own conventions name the last two together as the shape to
+ * follow. Two of them render in the same dialog, so a divergence in the
+ * border, the radius or the focus ring is visible side by side. The `menu`
+ * rule already diverged once between them.
+ *
+ * ONLY what all three share. A call site composes this and adds its own
+ * padding, gap, width and alignment, which is why the base sets none of them:
+ * no call site overrides a property this declares, so the composition needs no
+ * ordering rule to be correct.
+ */
+export const fieldTrigger = style({
+  display: 'flex',
+  alignItems: 'center',
+  fontSize: 'var(--text-7)',
+  lineHeight: 'var(--leading-normal)',
+  backgroundColor: 'var(--background)',
+  color: 'var(--foreground)',
+  border: '1px solid var(--input)',
+  borderRadius: 'var(--radius-medium)',
+  transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast)',
+  selectors: {
+    '&:focus-visible': {
+      outline: 'none',
+      borderColor: 'var(--ring)',
+      boxShadow: '0 0 0 2px rgb(from var(--ring) r g b / 0.2)',
+    },
+  },
+})
+
+/** The chevron that marks a {@link fieldTrigger} as opening something. */
+export const fieldTriggerChevron = style({
+  color: 'var(--muted-foreground)',
+  flexShrink: 0,
+})
+
+/**
  * The small muted button that opens something: the composer's status-bar chips
  * (branch, model, effort, mode) and the info cluster beside them (the
  * context-usage trigger, the copy buttons inside its card).

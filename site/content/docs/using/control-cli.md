@@ -545,7 +545,7 @@ These groups inspect a Worker's filesystem and git state read-only. The Worker i
 | `file stat` | `--path <path>` (required) | Stat info |
 | `file roots` | none beyond the entity selectors | `{roots}` |
 
-`file read --limit 0` means the default 64 KB cap.
+`file read --limit 0` means the default 60 KB cap.
 
 `file list` answers a LIST of directory listings, one per entry, each
 `{path, entries, truncated, total_entries}`. Without `--from-root` that list

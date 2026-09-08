@@ -69,12 +69,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // Populates the tab-bar's "new terminal" dropdown. The hook re-fetches
   // on workerId change and skips while the source returns null (worker
   // still resolving).
-  const { shells: availableShells, defaultShell } = useAvailableShells(() => {
-    const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId)
-      return null
-    return { workerId: ctx.workerId }
-  })
+  const { shells: availableShells, defaultShell } = useAvailableShells(
+    () => props.getCurrentTabContext().workerId,
+    () => true,
+  )
   // Dedup concurrent restartTerminal RPCs. Held Enter (autorepeat) would
   // otherwise fire one RPC per keystroke, and the backend rejects every
   // redundant call with FailedPrecondition while the first restart is

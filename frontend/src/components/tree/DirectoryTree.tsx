@@ -1,6 +1,7 @@
 import type { Accessor, Component } from 'solid-js'
-import type { DirectoryListing } from '~/generated/proto/leapmux/v1/file_pb'
-import type { FileSortFields, FileSortKey, FileSortOrder } from '~/lib/fileSort'
+import type { DirectoryListingData } from './directoryListings'
+import type { DirectoryTreeStateJSON, TreeNodeData } from './directoryTreeState'
+import type { FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createRepoGitStore, DiffStats } from '~/stores/repoGit.store'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -16,13 +17,23 @@ import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
-import { formatErrorMessage } from '~/lib/errors'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator } from '~/lib/fileSort'
-import { basename, detectFlavor, filesystemRoot, join, relativeUnder, split } from '~/lib/paths'
+import { basename, detectFlavor, isFilesystemRoot } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
-import { emptyState } from '~/styles/shared.css'
+import { emptyState, warningText } from '~/styles/shared.css'
+import { createDirectoryListings } from './directoryListings'
 import * as styles from './DirectoryTree.css'
+import {
+  deserializeState,
+  formatTruncationNotice,
+  isDescendantPath,
+  samePath,
+  sameTreeEntries,
+  serializeState,
+  TREE_SORT_FIELDS,
+  visibleSortedChildren,
+} from './directoryTreeState'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
 import { menuTrigger, sidebarActions } from './sidebarActions.css'
 
@@ -106,51 +117,6 @@ export interface DirectoryTreeProps {
   ref?: (handle: DirectoryTreeHandle) => void
 }
 
-interface TreeNodeData {
-  path: string
-  displayName: string
-  isDir: boolean
-  hidden: boolean
-  /**
-   * Bytes, from the listing's stat. For a DIRECTORY this is the inode's own
-   * size, which says nothing about its contents — nothing displays or sorts on
-   * it (see `makeFileComparator` and `FileActionsMenu`'s `showSize`).
-   */
-  size: number
-  /** RFC3339 UTC, from the listing's stat. */
-  modTime: string
-}
-
-/** The fields the sort comparator reads off a tree node. */
-const TREE_SORT_FIELDS: FileSortFields<TreeNodeData> = {
-  name: node => node.displayName,
-  isDir: node => node.isDir,
-  size: node => node.size,
-  modTime: node => node.modTime || undefined,
-}
-
-// Content equality for the children cache; see setChildrenInStore.
-function sameTreeEntries(a: readonly TreeNodeData[], b: readonly TreeNodeData[]): boolean {
-  if (a === b)
-    return true
-  if (a.length !== b.length)
-    return false
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]
-    const y = b[i]
-    // size and modTime are part of the comparison because the tree SORTS and
-    // DISPLAYS them: without them, a file whose contents changed but whose
-    // name did not would keep its stale size in the three-dot menu and its
-    // stale position under a size or modified sort. It does cost fast-path
-    // hits that the pre-sort tree never lost -- see setChildrenInStore.
-    if (x.path !== y.path || x.displayName !== y.displayName || x.isDir !== y.isDir
-      || x.hidden !== y.hidden || x.size !== y.size || x.modTime !== y.modTime) {
-      return false
-    }
-  }
-  return true
-}
-
 // -------------------------------------------------------------------------
 // Tree context — bundles stable, tree-wide values to avoid prop drilling
 // -------------------------------------------------------------------------
@@ -175,6 +141,15 @@ interface TreeContextValue {
   comparator: () => (a: TreeNodeData, b: TreeNodeData) => number
   /** The inline notice for a directory the worker truncated, bound to the current sort. */
   truncationNotice: (path: string, shown: number) => string
+  /**
+   * Why a directory would not list, or undefined when it listed.
+   *
+   * The one surface for a per-node listing failure. The tree's own error slot
+   * belongs to the FIRST load, when there is nothing on screen at all, so
+   * without this a directory the caller cannot read simply refused to open
+   * and said nothing.
+   */
+  unreadableReason: (path: string) => string | undefined
   isVisible: () => ((path: string) => boolean) | undefined
   refreshVersion: () => number
   onSelect: (path: string) => void
@@ -195,6 +170,14 @@ interface TreeContextValue {
    * a listing that fails leaves the node collapsed, exactly as before.
    */
   ensureChildren: (path: string) => Promise<void>
+  /**
+   * Fetch one directory's children again, whatever is already in flight.
+   *
+   * The refresh path, and only that: a user who presses Refresh has said the
+   * cached answer is stale, so awaiting a claim made before that would return
+   * exactly the answer they rejected.
+   */
+  refetchChildren: (path: string) => Promise<void>
   isTruncated: (path: string) => boolean
 }
 
@@ -205,224 +188,6 @@ function useTree(): TreeContextValue {
   if (!ctx)
     throw new Error('useTree must be used within a TreeContext.Provider')
   return ctx
-}
-
-// -------------------------------------------------------------------------
-// Serialization helpers for sessionStorage
-// -------------------------------------------------------------------------
-
-/**
- * Schema version for the persisted tree state.
- *
- * Bump this whenever the SHAPE of anything in the payload changes -- a field
- * added to or removed from `TreeNodeData`, or a change to how the two path maps
- * are keyed. The next load then discards the whole payload and re-fetches,
- * instead of hydrating a shape the current code misreads.
- *
- * A version, not a per-field probe: the probe this replaced tested two of
- * `TreeNodeData`'s six fields and could not reach `expandedPaths` or
- * `truncatedDirs` at all, so the next field added here would have needed
- * someone to remember to extend it. Same mechanism as
- * `STORED_ROW_HEIGHTS_VERSION` in the chat's row-height cache.
- *
- * 1: entries carry `size` and `modTime`, so the sidebar can sort by them.
- */
-export const DIRECTORY_TREE_STATE_VERSION = 1
-
-interface DirectoryTreeStateJSON {
-  v?: number
-  expandedPaths: Record<string, boolean>
-  childrenCache: Record<string, TreeNodeData[]>
-  truncatedDirs?: Record<string, number>
-}
-
-function serializeState(
-  expandedPaths: Record<string, boolean>,
-  childrenCache: Record<string, TreeNodeData[]>,
-  truncatedDirs: Record<string, number>,
-): string {
-  return JSON.stringify({ v: DIRECTORY_TREE_STATE_VERSION, expandedPaths, childrenCache, truncatedDirs })
-}
-
-/**
- * Restores the persisted tree state, or null when the payload is unusable.
- *
- * A version mismatch discards EVERYTHING, expansion included. That costs a
- * collapsed tree once per bump, and it buys the one rule that covers every key
- * in the payload: a partial restore would have to prove, for each surviving
- * key, that the old shape still reads correctly under the new code.
- */
-function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]>, truncatedDirs: Record<string, number> } | null {
-  try {
-    const json: DirectoryTreeStateJSON = JSON.parse(raw)
-    if (!json || typeof json !== 'object' || json.v !== DIRECTORY_TREE_STATE_VERSION)
-      return null
-    return {
-      expandedPaths: json.expandedPaths ?? {},
-      // Still filtered, for a payload that is the right VERSION but corrupt --
-      // a hand edit, or a truncated write. The version answers "is this shape
-      // current"; this answers "is this value well formed".
-      childrenCache: wellFormedCachedChildren(json.childrenCache),
-      truncatedDirs: json.truncatedDirs ?? {},
-    }
-  }
-  catch {
-    return null
-  }
-}
-
-/** Drops any cached directory whose entries are not a well-formed array. */
-function wellFormedCachedChildren(cache: Record<string, TreeNodeData[]> | undefined): Record<string, TreeNodeData[]> {
-  const usable: Record<string, TreeNodeData[]> = {}
-  for (const [path, entries] of Object.entries(cache ?? {})) {
-    if (!Array.isArray(entries))
-      continue
-    if (entries.every(e => typeof e?.path === 'string' && typeof e?.displayName === 'string'))
-      usable[path] = entries
-  }
-  return usable
-}
-
-// -------------------------------------------------------------------------
-// Visibility helpers
-// -------------------------------------------------------------------------
-
-function isDescendantPath(child: string, parent: string, flavor: PathFlavor): boolean {
-  const rel = relativeUnder(child, parent, flavor)
-  return rel !== null && rel !== ''
-}
-
-/**
- * The inline row shown under a directory the worker truncated.
- *
- * The worker sorts by name and cuts at its entry limit BEFORE stat-ing, so a
- * sort by anything else orders only the entries that survived that cut. The
- * notice names the window, so the user does not read a partial answer as a
- * complete one.
- */
-function formatTruncationNotice(shown: number, total: number, sortKey: FileSortKey): string {
-  // The worker reports what the directory really held, so the notice names the
-  // size of what is hidden instead of only that something is. `total` is 0 for
-  // a listing restored from a cache written before the worker sent it.
-  const count = total > shown ? `${shown} of ${total} entries` : `${shown}+ entries`
-  return sortKey === 'name'
-    ? `${count}, listing truncated`
-    : `${count}, truncated by name before sorting`
-}
-
-/** The rows one directory renders: hidden/git filters first, then the sort. */
-function visibleSortedChildren(
-  all: readonly TreeNodeData[],
-  showHidden: boolean,
-  isVisible: ((path: string) => boolean) | undefined,
-  comparator: (a: TreeNodeData, b: TreeNodeData) => number,
-): TreeNodeData[] {
-  const filtered = showHidden && !isVisible
-    ? all
-    : all.filter(c => (showHidden || !c.hidden) && (!isVisible || isVisible(c.path)))
-  return filtered.toSorted(comparator)
-}
-
-// -------------------------------------------------------------------------
-// File listing
-// -------------------------------------------------------------------------
-
-/** One directory's listing, as the tree caches it. */
-interface DirectoryListingData {
-  path: string
-  entries: TreeNodeData[]
-  truncated: boolean
-  totalEntries: number
-}
-
-function toListingData(listing: DirectoryListing): DirectoryListingData {
-  return {
-    path: listing.path,
-    entries: listing.entries.map(entry => ({
-      path: entry.path,
-      displayName: entry.name,
-      isDir: entry.isDir,
-      hidden: entry.hidden,
-      // `size` is a protobuf int64, so the wire type is bigint. File sizes stay
-      // far below Number.MAX_SAFE_INTEGER, and JSON.stringify -- which the
-      // sessionStorage cache runs on this value -- throws on a bigint.
-      size: Number(entry.size ?? 0n),
-      modTime: entry.modTime,
-    })),
-    truncated: listing.truncated,
-    // `?? 0` for a worker that predates the field: the notice then falls back
-    // to "N+ entries" rather than claiming a total of zero.
-    totalEntries: listing.totalEntries ?? 0,
-  }
-}
-
-/**
- * List one directory, or -- when `fromRoot` is given -- every directory from
- * `fromRoot` down to `dirPath`, outermost first.
- *
- * The chain form is what lets a tree rooted at the FILESYSTEM ROOT reveal a
- * deep selection without one round trip per level. Rooted at `/` and revealing
- * `/home/alice/proj`, the per-node cascade issued four sequential requests,
- * because each level can only ask once the previous level's listing mounted
- * it. One request now answers all four.
- *
- * No sort here: the cache holds the worker's order (directories first, then
- * name), and the display order is applied when the rows render, so changing the
- * sort reorders what is already on screen instead of re-fetching every
- * expanded directory.
- */
-async function loadListings(
-  workerId: string,
-  dirPath: string,
-  showFiles: boolean,
-  fromRoot?: string,
-): Promise<DirectoryListingData[]> {
-  const resp = await workerRpc.listDirectory(workerId, {
-    workerId,
-    path: dirPath,
-    maxDepth: 5,
-    dirsOnly: !showFiles,
-    ...(fromRoot ? { fromRoot } : {}),
-  })
-  return resp.listings.map(toListingData)
-}
-
-/** The single-directory form every per-node caller uses. */
-async function loadChildren(
-  workerId: string,
-  dirPath: string,
-  showFiles: boolean,
-): Promise<DirectoryListingData> {
-  const [only] = await loadListings(workerId, dirPath, showFiles)
-  // A worker that answers a single-directory request with NO listing committed
-  // a protocol violation, not "the directory is empty" -- an empty directory
-  // answers with one listing whose `entries` is empty. Throw rather than cache
-  // a phantom listing, which the "already loaded" guard would then honour for
-  // the rest of the session.
-  if (!only)
-    throw new Error(`ListDirectory returned no listing for ${dirPath}`)
-  return only
-}
-
-/**
- * Every directory from `root` down to `target`, outermost first, or `[root]`
- * when the target is not under the root.
- *
- * `split` rather than a scan for separators, because on win32 the VOLUME is one
- * leading segment: a hand-rolled walk over the separator would emit `C:` as an
- * ancestor, and `C:` names the current directory on drive C, not its root.
- */
-function ancestorChain(root: string, target: string, flavor: PathFlavor): string[] {
-  const rel = target ? relativeUnder(target, root, flavor) : null
-  if (!rel)
-    return [root]
-  const chain = [root]
-  let cur = root
-  for (const part of split(rel, flavor)) {
-    cur = join([cur, part], flavor)
-    chain.push(cur)
-  }
-  return chain
 }
 
 /**
@@ -542,9 +307,19 @@ const TreeNode: Component<{
     childrenRef.addEventListener('transitionend', onEnd)
   }
 
-  const doLoad = async () => {
-    if (loaded() || loading())
-      return
+  // Loads this node's children, and reports whether they arrived.
+  //
+  // The ANSWER is what stops a failure from spinning. A directory the caller
+  // cannot read -- and a tree rooted at `/` puts several in front of every
+  // user -- fails every time it is asked. Expanding it anyway leaves the
+  // "expanded but the cache is missing" effect below permanently satisfied,
+  // and that effect reads `loading()`, so each failure re-triggers it: one
+  // ListDirectory per round trip, for as long as the tree is on screen.
+  const doLoad = async (): Promise<boolean> => {
+    if (loaded())
+      return true
+    if (loading())
+      return false
     setLoading(true)
     try {
       // Through the tree, not straight to the RPC: the chain loader claims
@@ -554,11 +329,20 @@ const TreeNode: Component<{
       // has on screen costs one request per level again -- the exact cost the
       // chain exists to remove.
       await tree.ensureChildren(props.node.path)
+      return loaded()
     }
     finally {
       setLoading(false)
     }
   }
+
+  // Why this node's listing would not load, or undefined when it loaded.
+  //
+  // Read from the tree's store rather than held in a local signal: the reason
+  // is also what the row RENDERS, and one statement of it means the "do not
+  // ask again" mark and the message on screen cannot disagree. A refresh
+  // clears it, which is the user's own "try again".
+  const loadError = () => tree.unreadableReason(props.node.path)
 
   const toggle = async () => {
     if (!props.node.isDir) {
@@ -566,8 +350,11 @@ const TreeNode: Component<{
       tree.onFileOpen?.(props.node.path)
       return
     }
-    await doLoad()
-    const willExpand = !expanded()
+    const ok = await doLoad()
+    // A directory that would not list does not expand: expanding it arms the
+    // re-fetch effect against a request that fails every time. Collapsing is
+    // always allowed, so this gates the OPEN direction alone.
+    const willExpand = !expanded() && ok
 
     // Set expanded state before onSelect so that the scroll-on-select
     // effect sees the correct state and skips scrolling on collapse.
@@ -598,12 +385,17 @@ const TreeNode: Component<{
         return
 
       if (!loaded()) {
-        doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load
+        doLoad().then((ok) => { // eslint-disable-line solid/reactivity -- one-shot async load
+          // A listing that failed leaves the node collapsed. Expanding it
+          // would arm the re-fetch effect below against a request that fails
+          // every time -- see `doLoad`.
+          if (!ok)
+            return
           tree.setNodeExpanded(props.node.path, true)
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).
           const hasMatchingChild = children().some(
-            c => c.isDir && (isDescendantPath(target, c.path, flavor) || target === c.path),
+            c => c.isDir && (isDescendantPath(target, c.path, flavor) || samePath(target, c.path, flavor)),
           )
           if (!hasMatchingChild) {
             scrollIntoViewIfNeeded()
@@ -616,10 +408,12 @@ const TreeNode: Component<{
     },
   ))
 
-  // Re-fetch when expanded but cache is missing (e.g. after sessionStorage restore).
+  // Re-fetch when expanded but cache is missing (e.g. after sessionStorage
+  // restore). Never after a failure: this effect reads `loading()`, so a
+  // directory that cannot be read would re-arm it on every rejection.
   createEffect(() => {
-    if (props.node.isDir && expanded() && !loaded() && !loading()) {
-      doLoad()
+    if (props.node.isDir && expanded() && !loaded() && !loading() && !loadError()) {
+      void doLoad()
     }
   })
 
@@ -631,11 +425,14 @@ const TreeNode: Component<{
         return
       if (!props.node.isDir || !expanded())
         return
-      loadChildren(tree.workerId, props.node.path, tree.showFiles)
-        .then((result) => { // eslint-disable-line solid/reactivity -- one-shot async refresh
-          tree.setChildren(props.node.path, result.entries, result.truncated, result.totalEntries)
-        })
-        .catch(() => { /* ignore refresh errors */ })
+      // Through the tree, not straight to the RPC, so the refresh carries the
+      // worker guard: an answer that lands after the tree moved to another
+      // worker must not write the previous worker's listing into it.
+      //
+      // `refetchChildren`, never `ensureChildren`: a pending claim's answer is
+      // the one the user just called stale, so the de-duplicating form would
+      // swallow the refresh entirely.
+      void tree.refetchChildren(props.node.path)
     },
   ))
 
@@ -738,6 +535,24 @@ const TreeNode: Component<{
           Loading...
         </div>
       </Show>
+      {/*
+        Beside the loading row, NOT inside the children block below: a listing
+        that failed leaves the node collapsed, so a reason rendered among the
+        children it does not have would never be seen. This is the one surface
+        for a per-node failure -- the tree's own error slot belongs to the
+        first load, when nothing is on screen at all.
+      */}
+      <Show when={!loading() && loadError()}>
+        {reason => (
+          <div
+            class={`${styles.emptyInline} ${warningText}`}
+            style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}
+            data-testid="tree-node-error"
+          >
+            {reason()}
+          </div>
+        )}
+      </Show>
       <Show when={loaded()}>
         <div ref={childrenRef} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: expanded() && !loading() }}>
           <div class={styles.childrenInner}>
@@ -768,9 +583,6 @@ const TreeNode: Component<{
 }
 
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
-  const [loading, setLoading] = createSignal(false)
-  const [error, setError] = createSignal<string | null>(null)
-  let loadVersion = 0
   let treeRef!: HTMLDivElement
   // The root row element, for its right-click / long-press menu.
   const [rootNodeEl, setRootNodeEl] = createContextMenuAnchor()
@@ -801,10 +613,22 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     expandedPaths: Record<string, boolean>
     childrenCache: Record<string, TreeNodeData[]>
     truncatedDirs: Record<string, number>
+    /**
+     * Why a directory would not list, by path.
+     *
+     * Deliberately NOT in the persisted payload. It describes the last
+     * ATTEMPT, not the cached contents, and a reason restored from a previous
+     * session would sit on a row that lists perfectly well now. It is also the
+     * "do not ask again" mark: the re-fetch effect skips a path that has one,
+     * so a directory the caller cannot read is asked about once per Refresh
+     * rather than once per round trip.
+     */
+    unreadableDirs: Record<string, string>
   }>({
     expandedPaths: {},
     childrenCache: {},
     truncatedDirs: {},
+    unreadableDirs: {},
   })
 
   const [refreshVersion, setRefreshVersion] = createSignal(0)
@@ -833,35 +657,15 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // wrong machine's directories with no way to tell.
   const storageKey = () => `${PREFIX_DIRECTORY_TREE}${props.workerId}:${props.rootPath}:${props.showFiles ? 'files' : 'dirs'}`
 
-  /**
-   * The last chain request this tree issued, as workerId + root + target.
-   *
-   * NOT reactive, and deliberately not derived from the cache. The worker
-   * CANONICALIZES what it lists, so a symlinked ancestor comes back under a
-   * path the chain never named -- the chain effect's cache guard then misses
-   * forever, and that effect reads `childrenCache`, so it would re-fetch every
-   * time its own write landed. This key makes that loop impossible rather than
-   * leaving it to the unchanged-content fast path to damp.
-   *
-   * It describes the request whose result the CURRENT cache holds, so the
-   * effect below clears it whenever it replaces that cache.
-   */
-  let lastChainKey = ''
-
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
-    // The cache is about to be replaced wholesale, so the key no longer
-    // describes it. Leaving it set would suppress the one fetch that refills
-    // an emptied tree -- the guard exists to stop this effect's own writes
-    // from re-triggering it, not to outlive the cache it speaks for.
-    lastChainKey = ''
     try {
-      const stored = sessionStorageGet<string>(key)
+      const stored = sessionStorageGet<DirectoryTreeStateJSON>(key)
       if (stored) {
         const restored = deserializeState(stored)
         if (restored) {
-          setState(restored)
+          setState({ ...restored, unreadableDirs: {} })
           return
         }
       }
@@ -872,6 +676,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       expandedPaths: { [props.rootPath]: true },
       childrenCache: {},
       truncatedDirs: {},
+      unreadableDirs: {},
     })
   })
 
@@ -900,10 +705,23 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // PRESENCE means truncated, not truthiness: the stored value is a count, and
   // a worker that does not report one stores 0. Testing the number would make
   // the notice vanish for exactly that case.
+  /** Why this directory would not list, or undefined when it listed. */
+  const unreadableReason = (path: string): string | undefined => state.unreadableDirs[path]
+  const setUnreadable = (path: string, reason: string | undefined) => {
+    if (state.unreadableDirs[path] === reason)
+      return
+    setState('unreadableDirs', produce((u: Record<string, string>) => {
+      if (reason === undefined)
+        delete u[path]
+      else
+        u[path] = reason
+    }))
+  }
+
   const isTruncated = (path: string): boolean => state.truncatedDirs[path] !== undefined
   /** How many entries the worker saw before it cut; 0 when it did not say. */
   const truncatedTotal = (path: string): number => state.truncatedDirs[path] ?? 0
-  // Every turn-end fans out into one loadChildren per expanded TreeNode.
+  // Every turn-end fans out into one listing request per expanded TreeNode.
   // Most subtrees haven't changed between turns, so skip the setState when
   // data and truncation match the cache — otherwise Solid would invalidate
   // children(), per-node gitIcon/diffStats, prefixIndex (walks every file ×
@@ -914,6 +732,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     // Compares the stored value INCLUDING its absence, so both "was it cut"
     // and "how much is missing" are covered: an unchanged listing whose total
     // moved (files added past the cut) still refreshes the notice.
+    // A listing that arrived clears the reason: whatever stopped it before,
+    // it does not stop it now.
+    setUnreadable(path, undefined)
     const truncationUnchanged = state.truncatedDirs[path] === (truncated ? totalEntries : undefined)
     if (truncationUnchanged && existing && sameTreeEntries(existing, data))
       return
@@ -953,49 +774,31 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     })
   }
 
-  /**
-   * Directories with a listing request already in flight, and the request that
-   * will supply each of them.
-   *
-   * A plain Map, NOT reactive: it says what is happening right now, and a node
-   * that re-rendered because of it would learn nothing it does not already
-   * learn from the cache. The chain loader claims every directory it is about
-   * to fetch BEFORE it awaits, so a per-node load that starts in the same tick
-   * finds the claim and awaits it.
-   */
-  const inFlight = new Map<string, Promise<void>>()
-
-  /** Register one promise as the pending listing for each of `paths`. */
-  const claimInFlight = (paths: readonly string[], work: Promise<void>) => {
-    const settled = work.finally(() => {
-      for (const path of paths) {
-        if (inFlight.get(path) === settled)
-          inFlight.delete(path)
-      }
-    })
-    for (const path of paths)
-      inFlight.set(path, settled)
-    return settled
-  }
-
-  const ensureChildren = (path: string): Promise<void> => {
-    const pending = inFlight.get(path)
-    if (pending)
-      return pending
-    const work = loadChildren(props.workerId, path, props.showFiles ?? false)
-      // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
-      .then((result) => {
-        setChildrenInStore(path, result.entries, result.truncated, result.totalEntries)
-      })
-      .catch(() => { /* a failed listing leaves the node collapsed */ })
-    return claimInFlight([path], work)
-  }
-
   const workerFlavor = createMemo<PathFlavor>(() =>
     props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
 
   const rootPath = () => props.rootPath
   const revealTarget = () => props.selectedPath || props.revealPath || ''
+  // Everything about WHEN to ask the worker, and for what, lives in the
+  // loader. This component owns the store it writes into, and the rows.
+  const listings = createDirectoryListings({
+    workerId: () => props.workerId,
+    rootPath: () => props.rootPath,
+    showFiles: () => props.showFiles ?? false,
+    flavor: () => workerFlavor(),
+    enabled: () => props.enabled !== false,
+    // The key of the cache the loader speaks for. When it changes the store is
+    // replaced wholesale, so every claim and the chain guard go with it -- see
+    // `DirectoryListingsOptions.cacheKey`.
+    cacheKey: storageKey,
+    revealTarget,
+    getChildren,
+    setChildren: setChildrenInStore,
+    setListings: setListingsInStore,
+    setUnreadable,
+  })
+  const { ensureChildren, refetchChildren, loading, error } = listings
+
   const rootDisplayName = () => {
     const rp = rootPath()
     const flavor = workerFlavor()
@@ -1003,7 +806,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     // and `basename('C:\\')` is 'C:' -- the drive without the separator that
     // makes it a root, and not what a drive selector beside it reads. Label
     // the root with itself.
-    if (filesystemRoot(rp, flavor) === rp)
+    //
+    // `isFilesystemRoot`, not a comparison against `filesystemRoot`'s output:
+    // a root arrives spelled several ways (`C:/` as well as `C:\`), and only
+    // one of them equals that output.
+    if (isFilesystemRoot(rp, flavor))
       return rp
     return basename(rp, flavor) || rp
   }
@@ -1064,100 +871,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     },
   ))
 
-  /**
-   * The chain, minus a target the tree already knows is a FILE.
-   *
-   * A file has no listing, so keeping it would leave the "everything cached"
-   * guard permanently false and fire a request on every click of that file.
-   * Before its parent's listing arrives the tree knows nothing about it, so
-   * the file survives exactly one request and drops out afterwards. The worker
-   * ends the chain at the parent as well, so this is belt and braces.
-   */
-  const revealChain = (root: string, target: string, flavor: PathFlavor): string[] => {
-    const chain = ancestorChain(root, target, flavor)
-    if (chain.length < 2)
-      return chain
-    const parent = chain[chain.length - 2]
-    const known = getChildren(parent)?.find(c => c.path === target)
-    return known && !known.isDir ? chain.slice(0, -1) : chain
-  }
-
-  // Load the root listing and, when the tree has somewhere to reveal, every
-  // listing between the root and it -- in ONE request.
-  //
-  // This is what makes a root of `/` affordable. Revealing `/home/alice/proj`
-  // through the per-node cascade alone costs four SEQUENTIAL requests, because
-  // each level can only ask once the previous level's listing mounted it.
-  createEffect(() => {
-    const workerId = props.workerId
-    const root = props.rootPath
-    const target = revealTarget()
-    if (!workerId)
-      return
-    if (props.enabled === false)
-      return
-
-    const chain = revealChain(root, target, workerFlavor())
-    // Skip only when EVERY directory on the chain is cached (from
-    // sessionStorage or a previous load), which also removes the flicker on a
-    // tab switch. The old guard tested the root alone, which sufficed while
-    // the root was all this effect fetched; a cached root beside an uncached
-    // ancestor is now the normal state right after a path is typed.
-    if (chain.every(p => getChildren(p) !== undefined))
-      return
-
-    const chainKey = JSON.stringify([workerId, root, target])
-    if (chainKey === lastChainKey)
-      return
-    lastChainKey = chainKey
-
-    // The loading and error UI belongs to the FIRST load, when the tree has
-    // nothing to show. A reveal that runs with the root already on screen is
-    // silent -- the same rule the refresh path below states -- so changing the
-    // selection never blanks the tree, and a failed chain never paints an
-    // error over a working one. The per-node cascade still walks the user
-    // there one level at a time when this request fails.
-    const initialRootCached = getChildren(root) !== undefined
-    const chained = chain.length > 1
-    const version = ++loadVersion
-    if (!initialRootCached) {
-      setLoading(true)
-      setError(null)
-    }
-    const work = loadListings(workerId, chained ? target : root, props.showFiles ?? false, chained ? root : undefined)
-      // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
-      .then((listings) => {
-        if (version !== loadVersion)
-          return
-        if (listings.length === 0)
-          throw new Error(`ListDirectory returned no listings for ${root}`)
-        // Re-key the FIRST listing to the root we asked for. The worker
-        // canonicalizes what it lists, so a root that is a symlink answers
-        // under a different path -- `/tmp/ws` as `/private/tmp/ws` on macOS --
-        // and the root row's cache is keyed by `props.rootPath`. Deeper
-        // listings keep the worker's spelling, because that is what the
-        // entries' own paths, and therefore the tree's nodes, are built from.
-        setListingsInStore([{ ...listings[0], path: root }, ...listings.slice(1)])
-        if (!initialRootCached)
-          setLoading(false)
-      })
-      .catch((err) => {
-        if (version !== loadVersion)
-          return
-        // Let the next run retry: the failure was this request's, not this
-        // (workerId, root, target)'s.
-        lastChainKey = ''
-        if (!initialRootCached) {
-          setError(formatErrorMessage(err, 'Failed to load directory'))
-          setLoading(false)
-        }
-      })
-    // Claimed AFTER the promise exists but BEFORE anything awaits it, so a
-    // node mounted by this same reveal finds the claim rather than issuing its
-    // own request for a directory this response already carries.
-    claimInFlight(chain, work)
-  })
-
   // Auto-refresh tree when an agent turn ends.
   createEffect(on(
     () => props.turnEndTrigger,
@@ -1174,16 +887,27 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     (_, prev) => {
       if (prev === undefined)
         return
+      // Refresh is "everything you know is stale", and that covers what the
+      // tree knows about a directory it could NOT read. A node whose listing
+      // failed stays collapsed, so nothing re-lists it and its reason would
+      // otherwise sit on the row for the rest of the session. Clearing it also
+      // lifts the "do not ask again" mark, so the next click on that row
+      // retries rather than showing the old message again.
+      // `produce`, not `setState('unreadableDirs', {})`: a store write MERGES
+      // the object it is given, so an empty one changes nothing at all.
+      setState('unreadableDirs', produce((u: Record<string, string>) => {
+        for (const path of Object.keys(u))
+          delete u[path]
+      }))
+
       const workerId = props.workerId
       const root = props.rootPath
       if (!workerId)
         return
-      loadChildren(workerId, root, props.showFiles ?? false)
-        // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
-        .then((result) => {
-          setChildrenInStore(root, result.entries, result.truncated, result.totalEntries)
-        })
-        .catch(() => { /* ignore refresh errors */ })
+      // Same form as the per-node refresh above, and for the same two
+      // reasons: the worker guard, and a refresh that must ask again rather
+      // than await a claim it has just declared stale.
+      void refetchChildren(root)
     },
   ))
 
@@ -1204,6 +928,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     get showHiddenFiles() { return showHidden() },
     comparator,
     truncationNotice,
+    unreadableReason,
     gitStatusStore: () => props.gitStatusStore,
     get showGitStatus() { return props.showGitStatus !== false },
     isVisible: () => props.isVisible,
@@ -1217,6 +942,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     getChildren,
     setChildren: setChildrenInStore,
     ensureChildren,
+    refetchChildren,
     isTruncated,
   }
 

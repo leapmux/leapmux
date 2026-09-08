@@ -48,10 +48,10 @@ const CheckoutActions: Component<{
   // Fetched only while the menu is open, like the branch row's. One of these
   // mounts per repository row of every workspace, so a mount-time fetch would
   // scan every Worker in the fleet to fill menus nobody opened.
-  const listSource = () =>
-    props.menuOpen() && props.checkout.workerId ? { workerId: props.checkout.workerId } : null
-  const { providers } = useAvailableProviders(listSource)
-  const { shells, defaultShell } = useAvailableShells(listSource)
+  const listWorkerId = () => props.checkout.workerId
+  const menuOpen = () => props.menuOpen()
+  const { providers } = useAvailableProviders(listWorkerId, menuOpen)
+  const { shells, defaultShell } = useAvailableShells(listWorkerId, menuOpen)
 
   return (
     <>
