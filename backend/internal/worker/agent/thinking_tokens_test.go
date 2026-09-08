@@ -207,8 +207,8 @@ func TestThinkingResetSink_ForwardsTheTurnFlag(t *testing.T) {
 	inner := &testSink{}
 	sink := newThinkingResetSink(inner, &thinkingTokenEstimator{})
 
-	publishTurnActiveTo(sink, true)
-	publishTurnActiveTo(sink, false)
+	publishTurnActiveTo(sink, true, 1)
+	publishTurnActiveTo(sink, false, 2)
 
 	assert.Equal(t, []bool{true, false}, inner.TurnActives())
 }

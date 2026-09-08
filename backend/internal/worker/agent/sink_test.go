@@ -73,6 +73,7 @@ type testSink struct {
 	// double from drifting from the behavior it stands in for.
 	tracker        spantrack.SpanTracker
 	resetSpanCount int
+	turnSeqs       []uint64
 	statusActives  []string
 	// goals records every UpsertGoal in arrival order, and goalClears counts
 	// ClearGoal. A provider's goal parser is tested through these: they hold the
@@ -224,11 +225,22 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 
 // SetTurnActive records the provider's turn flag transitions in order, so a
 // provider test can assert the exact sequence it published.
-func (s *testSink) SetTurnActive(active bool) {
+func (s *testSink) SetTurnActive(active bool, seq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
+	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", active))
+}
+
+// TurnSeqs returns the ordering token of each publish, in arrival order. A
+// provider test asserts these to pin that the token comes from the same
+// critical section as the flag: without that, two goroutines publish out of
+// order and the Worker latches a turn that is over.
+func (s *testSink) TurnSeqs() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]uint64(nil), s.turnSeqs...)
 }
 
 // TurnLifecycle returns the turn-end envelopes and the turn-flag transitions in
@@ -292,9 +304,15 @@ func (s *testSink) CloseSpan(spanID string) {
 	s.tracker.CloseSpan(spanID)
 }
 
+// ResetSpans joins the turn lifecycle, because WHERE it falls relative to the
+// clear is a requirement on every provider: the clear releases the Worker's
+// input queue, and the next message must find the finished turn's spans already
+// reset. A passthrough column captured before the reset draws the dead turn's
+// bars beside the new message.
 func (s *testSink) ResetSpans() {
 	s.mu.Lock()
 	s.resetSpanCount++
+	s.turnLifecycle = append(s.turnLifecycle, "reset_spans")
 	s.mu.Unlock()
 	s.tracker.Reset()
 }
@@ -1167,7 +1185,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error 
 	return nil
 }
 func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
-func (noopSink) SetTurnActive(bool)                                                {}
+func (noopSink) SetTurnActive(bool, uint64)                                        {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}

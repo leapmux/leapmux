@@ -343,10 +343,6 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 		return ErrNoActiveTurn
 	}
 	if !steer && turnActive {
-		// The refusal is proof that this turn is in flight, and the Worker
-		// dispatched into it, so its view of the turn was wrong. See
-		// CodexAgent.SendInput for why the publish belongs here.
-		a.publishTurnActive()
 		return ErrAgentBusy
 	}
 
@@ -477,7 +473,7 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 	// The session was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
 	// agent_start also resets, but resetting here keeps every provider's context

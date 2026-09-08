@@ -784,3 +784,115 @@ func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
 	require.NotEmpty(t, clearing.Items)
 	assert.False(t, clearing.Items[0].CanSteer, "a clear is not a regular turn")
 }
+
+func TestStoreAcceptKeepsTheRevisionMovingWhenTheTurnEndedMidDispatch(t *testing.T) {
+	t.Parallel()
+
+	// The manager releases the coordinator lock across the provider call, so a
+	// turn end can commit its clear between PrepareDispatch and Accept. Accept
+	// must not write the turn back -- no envelope ever ends it again -- but the
+	// item DID leave the queue, so every watcher still owes a revision it can
+	// order that removal against.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	cleared, changed, err := store.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	require.True(t, changed, "the dispatch opened a turn, so the clear moves the state")
+
+	_, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.NoError(t, err)
+	assert.False(t, snapshot.ActiveTurn, "a turn that ended inside the dispatch is not restored")
+	assert.Empty(t, snapshot.Items, "the item still left the queue")
+	assert.Greater(t, snapshot.Revision, cleared.Revision,
+		"the removal needs a revision, although the guarded turn write matched no row")
+}
+
+func TestStoreProviderReportedTurnStatesNoKindAndRefusesASteer(t *testing.T) {
+	t.Parallel()
+
+	// SetTurnActive carries no kind, so the store records none. The steer
+	// predicate reads that column, and a fabricated USER_MESSAGE would offer a
+	// steer into whatever the agent process started on its own -- an
+	// auto-compaction, a plan the CLI resumed, a background turn.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	snapshot, changed, err := store.TurnStarted(ctx, "agent-1")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.True(t, snapshot.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, snapshot.ActiveTurnKind,
+		"the signal states no kind, so the store invents none")
+
+	_, err = store.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "steer me",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	snapshot, err = store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.False(t, snapshot.Items[0].CanSteer, "the browser is offered no steer it cannot make")
+
+	_, _, err = store.PrepareSteer(ctx, "agent-1", "one")
+	assert.ErrorIs(t, err, ErrSteeringState, "and the Worker refuses one that arrives anyway")
+}
+
+func TestStoreAbandonUnownedTurnClearsAProviderReportedTurnOnly(t *testing.T) {
+	t.Parallel()
+
+	// A process boundary runs no turn. The one a provider reported has no other
+	// end once that process is gone -- a stalled CLI never sends its result, and
+	// an explicit stop skips the AGENT_STOPPED pause on purpose -- so the queue
+	// would hold every later message with no pause and no error.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, _, err := store.TurnStarted(ctx, "agent-1")
+	require.NoError(t, err)
+
+	snapshot, changed, err := store.AbandonUnownedTurn(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.False(t, snapshot.ActiveTurn, "no process, no turn")
+
+	_, changed, err = store.AbandonUnownedTurn(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, changed, "a boundary that clears nothing moves no revision")
+}
+
+func TestStoreAbandonUnownedTurnKeepsTheTurnADispatchOwns(t *testing.T) {
+	t.Parallel()
+
+	// ensureAgentRunning starts the process from INSIDE a dispatch, so a
+	// boundary fires while that dispatch is still in flight. Clearing there
+	// would wipe the input id Accept's own identity guard matches on, and the
+	// turn the dispatch just started would be dropped.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	snapshot, changed, err := store.AbandonUnownedTurn(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, changed, "the dispatch owns this turn")
+	assert.True(t, snapshot.ActiveTurn)
+
+	_, accepted, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.NoError(t, err)
+	assert.True(t, accepted.ActiveTurn, "the dispatched turn survives the boundary")
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, accepted.ActiveTurnKind)
+}

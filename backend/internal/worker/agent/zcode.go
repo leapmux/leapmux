@@ -577,10 +577,6 @@ func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachme
 		return fmt.Errorf("agent has no ZCode session")
 	}
 	if requestedDelivery == "" && turnActive {
-		// The refusal is proof that this turn is in flight, and the Worker
-		// dispatched into it, so its view of the turn was wrong. See
-		// CodexAgent.SendInput for why the publish belongs here.
-		a.publishTurnActive()
 		return ErrAgentBusy
 	}
 	if requestedDelivery != "" && !turnActive {
@@ -723,7 +719,7 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	clear(a.pendingControls)
 	sessionID := a.sessionID
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 	a.toolCallPrompts.clear()
 	a.children.clear()
 	a.resetCumulativeDeltas()

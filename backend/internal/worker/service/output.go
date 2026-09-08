@@ -260,11 +260,17 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
-	// turnStarted and turnEnded carry the provider's turn flag to the input
-	// queue. Both edges of ONE signal (OutputSink.SetTurnActive), so the queue's
-	// dispatch guard follows the same flag the provider's own SendInput reads.
-	turnStarted func(agentID string)
-	turnEnded   func(agentID string)
+	// turnActive carries the provider's turn flag to the input queue. It takes
+	// the flag itself, not one callback for each edge: the queue's dispatch
+	// guard must follow the SAME signal that the provider's own SendInput
+	// reads, and a wiring that sets one edge and not the other is the exact
+	// fault this callback exists to prevent.
+	turnActive func(agentID string, active bool)
+
+	// turnPublisher holds, for each root agent id, the sink whose turn flag
+	// counts. A launch adopts one; a publish from any other sink comes from a
+	// process the Worker already replaced. See acceptTurnPublish.
+	turnPublisher sync.Map
 
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
@@ -349,15 +355,10 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
 }
 
-// SetTurnStartedFunc and SetTurnEndedFunc wire the input queue's turn state to
-// the turn flag every provider publishes. Call both before any agent output is
-// processed.
-func (h *OutputHandler) SetTurnStartedFunc(fn func(agentID string)) {
-	h.turnStarted = fn
-}
-
-func (h *OutputHandler) SetTurnEndedFunc(fn func(agentID string)) {
-	h.turnEnded = fn
+// SetTurnActiveFunc wires the input queue's turn state to the turn flag every
+// provider publishes. Call it before any agent output is processed.
+func (h *OutputHandler) SetTurnActiveFunc(fn func(agentID string, active bool)) {
+	h.turnActive = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -651,6 +652,10 @@ type agentOutputSink struct {
 	h *OutputHandler
 	// agentID is THIS sink's agent id (a child id for a child sink).
 	agentID string
+	// root is the sink this one came from, and nil for a root sink. It is the
+	// PROCESS identity that acceptTurnPublish compares: a child sink stands for
+	// the same process as the root that produced it.
+	root *agentOutputSink
 	// rootAgentID is the ROOT main agent id that owns the registry; it equals
 	// agentID for a root sink. A child sink shares its parent's rootAgentID so
 	// every registry write (EnsureChildAgent, UpsertBackgroundTask, ...) lands
@@ -769,15 +774,30 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 // record at every process boundary, and a reconciliation that the reset drops
 // leaves the queue on a turn state the provider no longer reports. The queue
 // answers idempotently instead, and reports its own change.
-func (s *agentOutputSink) SetTurnActive(active bool) {
+func (s *agentOutputSink) SetTurnActive(active bool, seq uint64) {
+	// Both consumers are downstream of ONE ordering test, because both latch: a
+	// stale value that reaches either one is never corrected by a later publish
+	// of the same state. A child publishes through its own sink, so the test
+	// keys on this sink's agent id but identifies the publisher by the ROOT
+	// sink, which is what a launch adopts.
+	if !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
+		return
+	}
 	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
-	notify := s.h.turnEnded
-	if active {
-		notify = s.h.turnStarted
+	if s.h.turnActive != nil {
+		s.h.turnActive(s.agentID, active)
 	}
-	if notify != nil {
-		notify(s.agentID)
+}
+
+// turnPublisher identifies the PROCESS behind this sink. A child sink stands for
+// the same process as the root it came from, so it reports the root.
+func (s *agentOutputSink) turnPublisher() any { return s.turnPublisherSink() }
+
+func (s *agentOutputSink) turnPublisherSink() *agentOutputSink {
+	if s.root != nil {
+		return s.root
 	}
+	return s
 }
 
 func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {

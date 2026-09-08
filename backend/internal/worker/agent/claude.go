@@ -645,19 +645,24 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	return a.sendInput(content, attachments, "")
 }
 
-// publishTurnActive republishes the Worker-visible turn state from turnActive,
+// PublishTurnActive republishes the Worker-visible turn state from turnActive,
 // the single source. Call it after EVERY critical section that writes that
 // field.
 //
 // It re-reads rather than taking a value, so a caller cannot publish something
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block on
-// a slow transport.
-func (a *ClaudeCodeAgent) publishTurnActive() {
+// a slow transport.//
+// seq comes from the SAME critical section that reads the flag. Two goroutines
+// reach the sink unordered -- the reader that ends a turn, and the drain that a
+// refusal answers -- so without it the older value can land second and latch a
+// turn that is over.
+func (a *ClaudeCodeAgent) PublishTurnActive() {
 	a.mu.Lock()
 	active := a.turnActive
+	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active)
+	publishTurnActiveTo(a.sink, active, seq)
 }
 
 // armTurn records a turn that the CLI runs and this Worker did not start. The
@@ -674,7 +679,22 @@ func (a *ClaudeCodeAgent) armTurn() {
 	if already {
 		return
 	}
-	a.publishTurnActive()
+	a.PublishTurnActive()
+}
+
+// disarmTurn records the end of the turn and publishes it, the way armTurn
+// records the start. OutputSink.SetTurnActive requires the mutation and the
+// publish at ONE site, and the falling edge kept them twenty lines apart in the
+// middle of the output handler.
+//
+// The caller decides WHEN. The publish releases the Worker's input queue, so
+// the next message dispatches on it and must find the finished turn's spans
+// already reset.
+func (a *ClaudeCodeAgent) disarmTurn() {
+	a.mu.Lock()
+	a.turnActive = false
+	a.mu.Unlock()
+	a.PublishTurnActive()
 }
 
 // SupportsSteering always reports true. The Claude Code stream-json protocol
@@ -699,7 +719,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	// steer, which opens no turn -- publish the unchanged value, and the Worker
 	// reconciles rather than moves. That covers the busy refusal for this
 	// provider, which the other four publish explicitly.
-	defer a.publishTurnActive()
+	defer a.PublishTurnActive()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -1879,7 +1899,7 @@ func claudeSupportedEfforts(supported map[string]bool) []*EffortInfo {
 // does not report one, so we prefer xhigh, else high -- the product-chosen sweet
 // spot, deliberately NOT merely the strongest level (max is overkill as a default
 // for a model that also offers xhigh). Every effort-capable model in the current
-// catalog reports xhigh, so the "else high" arm is the fallback for a model whose
+// catalog reports xhigh, so the "else high" branch is the fallback for a model whose
 // live level set turns out narrower, not a description of Sonnet. A model with no
 // effort support gets "" -- inert, since the effort selector is hidden and the
 // launch path omits --effort for it.

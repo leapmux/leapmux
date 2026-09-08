@@ -3,6 +3,8 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -71,35 +73,35 @@ func TestManagerSupportsSteeringAsksTheProvider(t *testing.T) {
 // reads them differently: ErrAgentBusy is transient, so the item waits for the
 // turn to end, while ErrNoActiveTurn says that steering has no target.
 //
-// The refusal also PUBLISHES the turn it refused for. The Worker sent this
-// input, so its view of the turn disagreed with the provider's, and the
-// refusal is the proof. The publish repairs the agent's activity state and the
-// input queue's dispatch guard at the one moment both are known to be wrong.
+// Manager.SendInput turns that refusal into a republish of the turn flag, and
+// TestManagerSendInputRepublishesTheTurnARefusalDisproves pins that half. This
+// one pins the sentinel, and that every provider can republish on demand --
+// PublishTurnActive is the interface method the Manager calls.
 func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name string
-		send func(t *testing.T, sink OutputSink) error
+		send func(t *testing.T, sink OutputSink) (Agent, error)
 	}{
 		{
 			name: "acpBase",
-			send: func(t *testing.T, sink OutputSink) error {
+			send: func(t *testing.T, sink OutputSink) (Agent, error) {
 				agent, requests := newACPAgentForRPC(t,
 					func() *OpenCodeAgent { return &OpenCodeAgent{} },
 					func(agent *OpenCodeAgent) *acpBase { return &agent.acpBase },
 				)
 				agent.sink = sink
-				agent.wireTurnActive(sink)
+				agent.wireTurnActive()
 				agent.promptActive = true
 				err := agent.SendInput("later turn", nil)
 				assert.Empty(t, requests(), "a refused send must reach no RPC")
-				return err
+				return agent, err
 			},
 		},
 		{
 			name: "codex",
-			send: func(t *testing.T, sink OutputSink) error {
+			send: func(t *testing.T, sink OutputSink) (Agent, error) {
 				agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
 					return json.RawMessage(`{}`)
 				})
@@ -108,30 +110,30 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 				agent.turnID = "turn-1"
 				err := agent.SendInput("later turn", nil)
 				assert.Empty(t, requests(), "a refused send must reach no RPC")
-				return err
+				return agent, err
 			},
 		},
 		{
 			name: "claude",
-			send: func(t *testing.T, sink OutputSink) error {
+			send: func(t *testing.T, sink OutputSink) (Agent, error) {
 				agent := &ClaudeCodeAgent{turnActive: true, sink: sink}
-				return agent.SendInput("later turn", nil)
+				return agent, agent.SendInput("later turn", nil)
 			},
 		},
 		{
 			name: "pi",
-			send: func(t *testing.T, sink OutputSink) error {
+			send: func(t *testing.T, sink OutputSink) (Agent, error) {
 				agent := &PiAgent{
 					processBase:       processBase{agentID: "test-agent"},
 					currentTurnActive: true,
 					sink:              sink,
 				}
-				return agent.SendInput("later turn", nil)
+				return agent, agent.SendInput("later turn", nil)
 			},
 		},
 		{
 			name: "zcode",
-			send: func(t *testing.T, sink OutputSink) error {
+			send: func(t *testing.T, sink OutputSink) (Agent, error) {
 				stdin := &zcodeRecordedStdin{}
 				agent := newZCodeTestAgentWithStdin(t, sink, stdin)
 				agent.mu.Lock()
@@ -139,7 +141,7 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 				agent.model = "provider/model"
 				agent.turnActive = true
 				agent.mu.Unlock()
-				return agent.SendInput("later turn", nil)
+				return agent, agent.SendInput("later turn", nil)
 			},
 		},
 	} {
@@ -147,12 +149,20 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 			t.Parallel()
 
 			sink := &testSink{}
-			err := tc.send(t, sink)
+			provider, err := tc.send(t, sink)
 			assert.ErrorIs(t, err, ErrAgentBusy)
 			assert.NotErrorIs(t, err, ErrNoActiveTurn,
 				"a busy agent has a turn; the no-active-turn sentinel states the opposite")
-			assert.Equal(t, []bool{true}, sink.TurnActives(),
-				"the refusal publishes the turn that caused it")
+
+			// What Manager.SendInput does with that refusal. Every provider must
+			// answer it with the turn the refusal proves is in flight. The LAST
+			// value is what matters, not the count: Claude's sendInput already
+			// publishes from a defer that also covers its error paths and its
+			// steer, so it answers twice and the others answer once.
+			provider.PublishTurnActive()
+			last, published := sink.LastTurnActive()
+			require.True(t, published, "the refused provider republishes on demand")
+			assert.True(t, last, "and what it republishes is the turn that caused the refusal")
 		})
 	}
 }
@@ -372,4 +382,51 @@ func TestZCodeSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 	agent.mu.Unlock()
 
 	assert.ErrorIs(t, agent.SteerInput("guide", nil), ErrDeliveryUncertain)
+}
+
+// busyProvider refuses every send the way a provider inside its own turn does,
+// and counts the republishes the Manager asks for. It embeds idleAgent for the
+// rest of the Agent surface, for the same reason steeringStub does.
+type busyProvider struct {
+	idleAgent
+	refuse    error
+	republish int
+}
+
+func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) error { return p.refuse }
+func (p *busyProvider) PublishTurnActive()                              { p.republish++ }
+
+func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
+	t.Parallel()
+
+	// A busy refusal is PROOF that the Worker's view of the turn was wrong: it
+	// dispatched into a turn the provider was already running. Both consumers of
+	// the flag -- the activity state and the input queue's dispatch guard -- are
+	// wrong at that moment, and this is where they are repaired. Doing it here
+	// rather than in each provider is what stops a sixth provider from leaving
+	// it out.
+	for _, tc := range []struct {
+		name      string
+		refuse    error
+		republish int
+	}{
+		{name: "busy", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1},
+		{name: "delivered", refuse: nil, republish: 0},
+		{name: "other failure", refuse: errors.New("broken pipe"), republish: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &busyProvider{refuse: tc.refuse}
+			m := NewManager(nil)
+			m.mu.Lock()
+			m.agents["agent-1"] = provider
+			m.mu.Unlock()
+
+			err := m.SendInput("agent-1", "later turn", nil)
+			assert.Equal(t, tc.refuse != nil, err != nil)
+			assert.Equal(t, tc.republish, provider.republish,
+				"only a busy refusal disproves the Worker's view of the turn")
+		})
+	}
 }

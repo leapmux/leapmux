@@ -26,10 +26,14 @@ type stubProvider struct {
 
 func (s *stubProvider) AgentID() string                                 { return "stub" }
 func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (s *stubProvider) SendRawInput([]byte) error                       { return nil }
-func (s *stubProvider) Stop()                                           {}
-func (s *stubProvider) IsStopped() bool                                 { return false }
-func (s *stubProvider) DiscardOutput()                                  {}
+
+// PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
+// Manager.SendInput calls it only after a refusal this stub never returns.
+func (s *stubProvider) PublishTurnActive()        {}
+func (s *stubProvider) SendRawInput([]byte) error { return nil }
+func (s *stubProvider) Stop()                     {}
+func (s *stubProvider) IsStopped() bool           { return false }
+func (s *stubProvider) DiscardOutput()            {}
 func (s *stubProvider) ClearContext() (string, bool) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()

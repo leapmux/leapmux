@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -22,6 +23,29 @@ import (
 // itself dispatched ever raised. A turn the agent process started on its own
 // was then invisible, and the next message the user sent went straight into it
 // instead of waiting in the queue.
+
+// turnPublisher mints the ordering token a provider takes under its own lock,
+// and adopts the sink the way a launch does. Going through both is deliberate:
+// a test that published a bare token would pass against a Worker that stopped
+// ordering the publishes at all.
+type turnPublisher struct {
+	sink agent.OutputSink
+	seq  uint64
+}
+
+func (p *turnPublisher) publish(active bool) {
+	p.seq++
+	p.sink.SetTurnActive(active, p.seq)
+}
+
+// launchTurnPublisher registers a sink and runs the two things startAgent runs
+// for a new process: adopt the publisher, and release a turn the old one left.
+func launchTurnPublisher(svc *Service, agentID string) *turnPublisher {
+	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted(agentID)
+	svc.abandonUnownedTurn(agentID)
+	return &turnPublisher{sink: sink}
+}
 
 func newTurnSignalFixture(t *testing.T) (*Service, string) {
 	t.Helper()
@@ -41,10 +65,10 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := launchTurnPublisher(svc, agentID)
 
 	// The agent process reports a turn the queue did not dispatch.
-	sink.SetTurnActive(true)
+	sink.publish(true)
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn
@@ -60,33 +84,199 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 		return snapshotErr == nil && len(snapshot.Items) == 0
 	}, 100*time.Millisecond, 10*time.Millisecond)
 
-	sink.SetTurnActive(false)
+	sink.publish(false)
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
 	}, time.Second, 10*time.Millisecond)
 }
 
-func TestProviderReportedTurnEndRepeatsWithoutChurningTheQueueRevision(t *testing.T) {
+func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T) {
 	t.Parallel()
 
 	// Every publish reconciles the queue against the provider's own flag, and a
 	// provider republishes the unchanged value freely (a failed send, a steer,
 	// an interrupt). A reconciliation that changes nothing must not bump the
 	// revision, or every watcher takes a snapshot that says the same thing.
+	//
+	// Both edges are measured after a REAL transition. A queue that never held
+	// a turn answers every clear with "nothing to do", so a repeat measured
+	// from there proves nothing about the guard.
 	ctx := context.Background()
 	svc, agentID := newTurnSignalFixture(t)
-	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := launchTurnPublisher(svc, agentID)
 
-	sink.SetTurnActive(false)
-	before, err := svc.InputQueue.Snapshot(ctx, agentID)
+	sink.publish(true)
+	var active inputqueue.Snapshot
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		if err != nil || !snapshot.ActiveTurn {
+			return false
+		}
+		active = snapshot
+		return true
+	}, time.Second, 10*time.Millisecond)
+
+	sink.publish(true)
+	sink.publish(true)
+	repeated, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
+	assert.Equal(t, active.Revision, repeated.Revision, "a repeated turn start moves nothing")
+	assert.True(t, repeated.ActiveTurn)
 
-	sink.SetTurnActive(false)
-	sink.SetTurnActive(false)
+	sink.publish(false)
+	var cleared inputqueue.Snapshot
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		if snapshotErr != nil || snapshot.ActiveTurn {
+			return false
+		}
+		cleared = snapshot
+		return true
+	}, time.Second, 10*time.Millisecond)
+	assert.Greater(t, cleared.Revision, active.Revision, "the real transition does move it")
 
+	sink.publish(false)
+	sink.publish(false)
 	after, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, before.Revision, after.Revision)
+	assert.Equal(t, cleared.Revision, after.Revision, "a repeated clear moves nothing either")
 	assert.False(t, after.ActiveTurn)
+}
+
+func TestProcessExitReleasesATurnTheProviderNeverEnded(t *testing.T) {
+	t.Parallel()
+
+	// A provider can report a turn and then neither end it nor exit -- a CLI
+	// that stalls after its first assistant block. Stopping the agent is the
+	// user's only escape, and an explicit stop skips the AGENT_STOPPED pause on
+	// purpose, so before this the stop left the turn standing and the queue held
+	// every later message with no pause, no error, and no Retry.
+	ctx := context.Background()
+	svc, agentID := newTurnSignalFixture(t)
+	sink := launchTurnPublisher(svc, agentID)
+
+	sink.publish(true)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.ActiveTurn
+	}, time.Second, 10*time.Millisecond)
+
+	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: newTestAgentInputID(), AgentID: agentID, Text: "hello",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	assert.Never(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, 100*time.Millisecond, 10*time.Millisecond)
+
+	// The user stops the agent. stopped=true, so nothing pauses the queue -- and
+	// nothing ended the turn either, which is what stranded the message.
+	svc.HandleAgentProcessExit(agentID, 0, nil, true)
+
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.False(t, snapshot.Paused, "an explicit stop still does not pause the queue")
+}
+
+func TestClearContextRefusesToStopAnAgentInsideATurn(t *testing.T) {
+	t.Parallel()
+
+	// A clear STOPS the process, and it is the one dispatch that destroys a turn
+	// instead of joining it. The queue's active_turn guard normally holds it
+	// back, but that guard is a durable COPY of the provider's flag. When the
+	// copy is stale the clear went through and killed the user's in-flight
+	// reply, which ended with no result at all.
+	svc, agentID := newTurnSignalFixture(t)
+	sink := launchTurnPublisher(svc, agentID)
+	sink.publish(true)
+
+	adapter := &agentInputQueueAdapter{svc: svc}
+	_, err := adapter.Dispatch(inputqueue.Item{
+		ID: newTestAgentInputID(), AgentID: agentID, Text: "/clear",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+	})
+	assert.Equal(t, inputqueue.DispatchBusy, dispatchOutcomeOf(t, err),
+		"the flag itself says a turn runs, so the clear waits for it")
+	assert.ErrorIs(t, err, agent.ErrAgentBusy)
+
+	// And once the turn ends, the same clear goes through.
+	sink.publish(false)
+	_, err = adapter.Dispatch(inputqueue.Item{
+		ID: newTestAgentInputID(), AgentID: agentID, Text: "/clear",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+	})
+	require.NoError(t, err)
+}
+
+func TestAStalePublishFromTheSameProcessLosesToTheOneItOvertook(t *testing.T) {
+	t.Parallel()
+
+	// Two goroutines reach the sink unordered: the reader that ends a turn, and
+	// the drain that a busy refusal answers. Each reads the provider's flag under
+	// a lock and calls the sink without one, so the older value can land second.
+	// It must lose, because nothing later clears a turn that is already over --
+	// the queue would hold every message the user sends after it.
+	ctx := context.Background()
+	svc, agentID := newTurnSignalFixture(t)
+	sink := launchTurnPublisher(svc, agentID)
+
+	sink.sink.SetTurnActive(true, 1)
+	sink.sink.SetTurnActive(false, 2)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && !snapshot.ActiveTurn
+	}, time.Second, 10*time.Millisecond)
+
+	// The refusal read its flag BEFORE the clear did, so its token is lower.
+	sink.sink.SetTurnActive(true, 1)
+
+	assert.Never(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.ActiveTurn
+	}, 100*time.Millisecond, 10*time.Millisecond)
+	assert.False(t, svc.Output.TurnActive(agentID), "and the activity latch agrees")
+}
+
+func TestAPublishFromAReplacedProcessCannotReopenATurn(t *testing.T) {
+	t.Parallel()
+
+	// A replaced process keeps publishing while its reader drains the pipe, and
+	// its tokens mean nothing to the new process, whose counter restarted at
+	// zero. Identity, not the token, is what separates them: one sink per launch.
+	ctx := context.Background()
+	svc, agentID := newTurnSignalFixture(t)
+	old := launchTurnPublisher(svc, agentID)
+	old.publish(true)
+	old.publish(false)
+	old.publish(true)
+
+	// The Worker replaces the process. The new launch registers its own sink.
+	fresh := launchTurnPublisher(svc, agentID)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && !snapshot.ActiveTurn
+	}, time.Second, 10*time.Millisecond)
+
+	// The dead process reports a turn, with a token far above the new one's.
+	old.publish(true)
+	assert.Never(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.ActiveTurn
+	}, 100*time.Millisecond, 10*time.Millisecond)
+
+	// The new process starts its first turn, whose token is 1 -- far BELOW the
+	// dead process's. The adoption forgot that count, so this one still wins.
+	fresh.publish(true)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.ActiveTurn
+	}, time.Second, 10*time.Millisecond)
 }

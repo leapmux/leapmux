@@ -949,3 +949,45 @@ func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
 	assert.True(t, got.Working())
 	assert.Equal(t, int32(1), got.ActiveTasks)
 }
+
+func TestActivity_AChildTurnFlagKeepsTheCountItsTurnEndRecorded(t *testing.T) {
+	t.Parallel()
+
+	// A collab child publishes SetTurnActive on its OWN sink, because the input
+	// queue follows that flag and a child owns a queue of its own. The publish
+	// must not touch the settle count: activityStateLocked answers a child from
+	// its registry row and never reads the flag, so the refresh cannot spend the
+	// count, and clearing it would only destroy what PersistTurnEnd recorded one
+	// call earlier. The child's settle then reports no tool count at all, and a
+	// client that reads a missing count alerts unconditionally.
+	h, _ := newActivityHandler(t, "root-1")
+	h.setTurnActive("child-1", "root-1", true)
+	h.noteTurnEnded("child-1", "root-1", 4, true)
+
+	h.setTurnActive("child-1", "root-1", false)
+	require.NotNil(t, unspentToolCount(h, "child-1"),
+		"the child's clear must not discard the count its own turn end recorded")
+	assert.Equal(t, int32(4), *unspentToolCount(h, "child-1"))
+
+	// The next turn's rising edge must not discard it either: the child's
+	// registry row settles the run, and that settle is what spends the count.
+	h.setTurnActive("child-1", "root-1", true)
+	require.NotNil(t, unspentToolCount(h, "child-1"))
+	assert.Equal(t, int32(4), *unspentToolCount(h, "child-1"))
+}
+
+func TestActivity_ARootTurnFlagStillOwnsTheCount(t *testing.T) {
+	t.Parallel()
+
+	// The counterpart to the child rule above: a ROOT's flag keeps both effects.
+	// A fresh turn supersedes an unspent count, and a clear whose refresh could
+	// not spend it drops it so the settle that eventually comes alerts rather
+	// than reading a stale zero.
+	h, _ := newActivityHandler(t, "agent-1")
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteTurnEnded("agent-1", "agent-1", 7, true)
+	require.NotNil(t, unspentToolCount(h, "agent-1"))
+
+	h.setTurnActive("agent-1", "agent-1", true)
+	assert.Nil(t, unspentToolCount(h, "agent-1"), "a fresh turn supersedes an unspent count")
+}

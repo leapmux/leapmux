@@ -47,9 +47,25 @@ type agentActivity struct {
 	rootAgentID string
 
 	// turnActive is what the provider last reported through
-	// OutputSink.SetTurnActive. Meaningful for a root only: a child owns no
-	// process and no turn of its own, and its run IS its registry row.
+	// OutputSink.SetTurnActive. The DERIVED state reads it for a root only:
+	// activityStateLocked answers a child from its background-task registry
+	// row, which IS the child's run.
+	//
+	// A child still publishes the flag, because the input queue follows the
+	// same signal and a collab child owns a queue of its own. So this field is
+	// written for a child and never read for one, and setTurnActive must keep
+	// every other effect of that publish away from a child entry.
 	turnActive bool
+
+	// turnSeq is the ordering token of the last publish this entry accepted. A
+	// provider reads its flag under a lock and calls the sink without one, so
+	// two goroutines reach here unordered and the older value can arrive second.
+	// Comparing the token drops what it overtook.
+	//
+	// The token is monotonic within ONE provider process. It restarts at zero in
+	// the next one, so acceptTurnPublish resets this whenever the publisher
+	// changes -- see turnPublisher.
+	turnSeq uint64
 
 	// pendingControl holds the request ids of the unanswered control requests
 	// (permission prompts) this agent is blocked on. An agent waiting for the
@@ -573,11 +589,18 @@ func (h *OutputHandler) treeChildIDs(rootAgentID string, rows []bgtask.Item) []s
 // setTurnActive records the provider's turn bookkeeping and republishes.
 // Providers reach it through OutputSink.SetTurnActive.
 func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) {
+	// The settle count belongs to the ROOT's turn. A child publishes this flag
+	// too, because the input queue follows it, but activityStateLocked answers
+	// a child from its registry row and never reads the flag -- so the refresh
+	// below cannot spend a child's count, and clearing it here would only
+	// destroy what PersistTurnEnd just recorded. The child's settle then
+	// reports no tool count at all.
+	root := agentID == rootAgentID
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	changed := st.turnActive != active
 	st.turnActive = active
-	if active {
+	if active && root {
 		// A fresh turn supersedes whatever the previous one left unspent, so a
 		// stale count cannot silence the alert for the turn now starting.
 		st.settledToolUses = nil
@@ -587,7 +610,7 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 		return
 	}
 	h.refreshActivity(agentID, rootAgentID)
-	if active {
+	if active || !root {
 		return
 	}
 	// Only the settle that THIS clear produces may spend the count. When the
@@ -602,6 +625,72 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	st.mu.Lock()
 	st.settledToolUses = nil
 	st.mu.Unlock()
+}
+
+// acceptTurnPublish answers whether one publish of the turn flag is current,
+// and records it when it is.
+//
+// Two publishes can arrive out of order, and the wrong one winning latches a
+// turn that is over: nothing later clears it, so the input queue holds every
+// message the user sends after it. Two things can reorder them.
+//
+// Inside ONE provider process, the reader goroutine that ends a turn and the
+// drain goroutine that a busy refusal answers both reach here. Their tokens come
+// from one counter under the provider's own lock, so the later token is the
+// later read of the flag, and a lower one is stale.
+//
+// ACROSS processes, a replaced process can still publish: its reader is draining
+// the pipe of an agent the Worker already stopped. Its tokens mean nothing to
+// the new process, whose counter restarted at zero. publisher identifies the
+// SINK the publish came through -- one sink per launch -- so a publish from a
+// superseded sink is dropped whatever its token, and the first publish of a new
+// one is accepted whatever its token.
+func (h *OutputHandler) acceptTurnPublish(agentID, rootAgentID string, publisher any, seq uint64) bool {
+	current, ok := h.turnPublisher.Load(rootAgentID)
+	if ok && current != publisher {
+		return false
+	}
+	st := h.activityFor(agentID, rootAgentID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !ok {
+		// No launch adopted a publisher yet, which is the state a bare unit test
+		// and the window before the first NoteAgentProcessStarted both leave.
+		// Accept, because dropping here would lose the only publisher there is.
+		st.turnSeq = seq
+		return true
+	}
+	if seq <= st.turnSeq {
+		return false
+	}
+	st.turnSeq = seq
+	return true
+}
+
+// adoptTurnPublisher makes one sink the only publisher of an agent's turn flag,
+// and forgets the token of the process that came before it. A launch calls it:
+// the sink it registers is the one the new process publishes through, and every
+// later publish from the old process is answering for a turn that died with it.
+func (h *OutputHandler) adoptTurnPublisher(rootAgentID string, publisher any) {
+	h.turnPublisher.Store(rootAgentID, publisher)
+	st := h.activityFor(rootAgentID, rootAgentID)
+	st.mu.Lock()
+	st.turnSeq = 0
+	st.mu.Unlock()
+}
+
+// TurnActive reports the flag the agent's provider last published. It is the
+// SAME value the provider's own SendInput refuses input from, and the same one
+// the input queue's dispatch guard follows -- so a caller that must not run into
+// a turn asks here rather than deriving an answer of its own.
+//
+// It answers for a ROOT. A child owns no turn of its own: its run IS its
+// registry row.
+func (h *OutputHandler) TurnActive(agentID string) bool {
+	st := h.activityFor(agentID, agentID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.turnActive
 }
 
 // noteTurnEnded records the finished turn's tool-call count for the settle edge
@@ -693,6 +782,11 @@ func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string) {
 // forever, the Interrupt button offers to cancel a turn that does not exist, and
 // the close guard refuses a tab on work that already stopped.
 func (h *OutputHandler) NoteAgentProcessStarted(rootAgentID string) {
+	// The sink registered now belongs to the process starting now, and it is the
+	// only one whose turn flag counts from here on. See acceptTurnPublish.
+	if sink, ok := h.rootSinks.Load(rootAgentID); ok {
+		h.adoptTurnPublisher(rootAgentID, sink)
+	}
 	h.resetAgentActivity(rootAgentID)
 }
 

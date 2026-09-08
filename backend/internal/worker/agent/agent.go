@@ -252,11 +252,11 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 // The jsonrpcBase hook takes the same stance for the same reason: nobody is
 // listening, so there is nothing to say. Every agent the Worker builds has a
 // sink, so this is never nil in production.
-func publishTurnActiveTo(sink OutputSink, active bool) {
+func publishTurnActiveTo(sink OutputSink, active bool, seq uint64) {
 	if sink == nil {
 		return
 	}
-	sink.SetTurnActive(active)
+	sink.SetTurnActive(active, seq)
 }
 
 // OutputSink provides generic primitives for persisting and broadcasting
@@ -276,23 +276,34 @@ type OutputSink interface {
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
-	// SetTurnActive publishes whether a turn is in flight. It is the ONE signal
-	// for that fact, and the Worker derives two answers from it: "is this agent
-	// busy", which a client renders without re-deriving it from the transcript,
-	// and the input queue's dispatch guard, which holds a message until the
-	// running turn ends. Providers already keep this flag for their own control
-	// flow -- SendInput refuses input from the same value -- so call this from
-	// the SAME site that mutates it, and the three cannot drift.
+	// SetTurnActive publishes whether a turn is in flight, and it is the ONE
+	// signal for that fact. The Worker derives two answers from it. The first is
+	// "is this agent busy", which a client renders without re-deriving it from
+	// the transcript. The second is the input queue's dispatch guard, which
+	// holds a message until the running turn ends. Providers already keep this
+	// flag for their own control flow, and SendInput refuses input from the same
+	// value. Call this from the SAME site that mutates the flag, and the three
+	// cannot drift.
 	//
-	// A publish that repeats the current state costs nothing: the Worker
-	// deduplicates it, and the queue reconciles idempotently. A MISSING publish
-	// is the only failure, and it hands the queue a turn it cannot see.
+	// A publish that repeats the current state is SAFE, and every caller may
+	// repeat it freely: the Worker deduplicates it, and the queue reconciles
+	// idempotently and moves no revision. It is not free -- the queue answers
+	// from one small write transaction -- so publish on a turn boundary or a
+	// refusal, not once per streamed message block. A MISSING publish is the
+	// only failure, and it hands the queue a turn it cannot see.
+	//
+	// seq ORDERS the publishes. A provider reads its flag under a lock and then
+	// calls this without one, because the sink broadcasts and a broadcast can
+	// block -- so two goroutines can reach the Worker with the older value
+	// second. Take seq from the SAME critical section that reads the flag, and
+	// the Worker drops what it overtook. Every provider gets it from
+	// nextTurnSeq, so no call site chooses the number.
 	//
 	// Report the turn as active for as long as the agent owes the user a reply,
 	// which is not always the same as "between one envelope and the next": a
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
-	SetTurnActive(active bool)
+	SetTurnActive(active bool, seq uint64)
 	OpenSpan(spanID string, parentSpanID string)
 	// CloseSpan frees a span's column. The recorded span type SURVIVES it (only
 	// ResetSpans clears types), because a provider's closing message reads that
@@ -636,6 +647,17 @@ type Agent interface {
 	// A turn-level failure is reported afterwards, out of band, through the
 	// provider's own error notification -- not by holding this call open.
 	SendInput(content string, attachments []*leapmuxv1.Attachment) error
+	// PublishTurnActive republishes this provider's turn flag through its sink.
+	// It re-reads the flag, so a caller states nothing: it only asks the
+	// provider to say again what it already holds.
+	//
+	// Manager.SendInput calls it on ErrAgentBusy. That refusal is PROOF that the
+	// Worker's view of the turn was wrong -- the Worker dispatched into a turn
+	// the provider was already running -- and the one moment both the activity
+	// state and the input queue's dispatch guard are known to need repair. It
+	// lives on the interface rather than in each provider's SendInput so a new
+	// provider cannot leave it out.
+	PublishTurnActive()
 	SendRawInput(data []byte) error
 	Stop()
 	IsStopped() bool
@@ -742,3 +764,22 @@ var ErrChildSteeringUnsupported = errors.New("agent provider does not support st
 // (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
 // the queue records the failed delivery.
 var ErrChildNotSteerableYet = errors.New("subagent not yet steerable in the running owner process; retry")
+
+// turnSeqSource issues the ordering token that goes with a provider's turn
+// flag. Read the token in the SAME critical section that reads the flag: the
+// pair is what lets the Worker tell a publish it overtook from a current one,
+// and a token taken outside that section orders nothing.
+//
+// It is a plain counter under the provider's own lock rather than an atomic,
+// because the lock is what makes the pair atomic. An atomic would let the two
+// reads separate again, which is the defect this exists to close.
+type turnSeqSource struct {
+	seq uint64
+}
+
+// nextTurnSeq issues the next token. The caller must hold the lock that guards
+// the provider's turn flag.
+func (t *turnSeqSource) nextTurnSeq() uint64 {
+	t.seq++
+	return t.seq
+}

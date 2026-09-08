@@ -234,6 +234,9 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	if a.collabThreadSpans != nil {
 		delete(a.collabThreadSpans, threadID)
 	}
+	if a.collabChildAgents != nil {
+		delete(a.collabChildAgents, threadID)
+	}
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
 	}

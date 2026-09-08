@@ -157,7 +157,7 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 	}
 }
 
-// publishTurnActive republishes the Worker-visible turn state from
+// PublishTurnActive republishes the Worker-visible turn state from
 // currentTurnActive, the single source. Call it after EVERY critical section
 // that writes that field.
 //
@@ -171,11 +171,12 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 // nothing streams and no envelope arrives, and where a client that inferred
 // idleness would drop the spinner and hide the Interrupt button on a run that is
 // still going.
-func (a *PiAgent) publishTurnActive() {
+func (a *PiAgent) PublishTurnActive() {
 	a.mu.Lock()
 	active := a.currentTurnActive
+	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active)
+	publishTurnActiveTo(a.sink, active, seq)
 }
 
 func (a *PiAgent) handlePiAgentStart() {
@@ -190,7 +191,7 @@ func (a *PiAgent) handlePiAgentStart() {
 		a.turnStartedAt = startedAt
 	}
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 	// A fresh turn begins: start the thinking-token estimate from zero.
 	a.thinkingTokens.reset()
 }
@@ -226,7 +227,7 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// would settle the agent with no count. Pi reports no count today
 	// (https://github.com/leapmux/leapmux/issues/435), which is exactly why the
 	// order has to be right before it does.
-	defer a.publishTurnActive()
+	defer a.PublishTurnActive()
 	// Recover from any tool calls that didn't get a matching
 	// tool_execution_end (e.g. aborted turn). Otherwise the map retains the
 	// cumulative result text indefinitely across sessions.

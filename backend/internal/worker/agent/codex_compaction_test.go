@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,24 +179,65 @@ func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 		"item/completed is the compaction boundary now; thread/compacted stays a plain threadable notification")
 }
 
-func TestHandleCodexOutput_CompactionTurnCompletionReportsTheEndInWireOrder(t *testing.T) {
+// blockingTurnFlagSink blocks inside SetTurnActive until the test releases it,
+// which is what tells a synchronous publish apart from one a goroutine carries.
+// Asserting the recorded order alone cannot: a spawned goroutine usually wins
+// the race to the slice, so the same sequence appears either way.
+type blockingTurnFlagSink struct {
+	testSink
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingTurnFlagSink) SetTurnActive(active bool, seq uint64) {
+	if !active {
+		s.once.Do(func() {
+			close(s.entered)
+			<-s.release
+		})
+	}
+	s.testSink.SetTurnActive(active, seq)
+}
+
+func TestHandleCodexOutput_TurnCompletionPublishesTheClearBeforeItReturns(t *testing.T) {
 	t.Parallel()
 
 	// The Worker's input queue takes its turn state from this publish, and the
 	// state carries no turn identity -- so ORDER is the only thing that keeps
-	// the clear attached to the turn it belongs to. Reporting it from a new
-	// goroutine (this site once did, to keep the reader free for the response
-	// to a compaction the app-server submits before it answers) lets the clear
-	// land after the NEXT turn already opened, and that turn is then dispatched
-	// into.
-	sink := &testSink{}
+	// the clear attached to the turn it belongs to. A clear that a goroutine
+	// carries can land after the NEXT turn already opened, and the queue then
+	// dispatches the next message into that running turn.
+	//
+	// This site once did carry it that way, to keep the reader free for the
+	// response to a compaction the app-server submits before it answers. The
+	// publish is safe inline instead, because Manager.drain never holds the
+	// coordinator lock across dispatcher.Dispatch.
+	sink := &blockingTurnFlagSink{entered: make(chan struct{}), release: make(chan struct{})}
 	agent := newCodexAgentWithSink(sink)
 	// Bypass the thinking-token wrapper so this test isolates the output-reader
 	// callback order. A separate assertion verifies wrapper forwarding.
 	agent.sink = sink
 
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
+	returned := make(chan struct{})
+	go func() {
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
+		close(returned)
+	}()
+
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the turn end published no clear")
+	}
+	select {
+	case <-returned:
+		t.Fatal("the handler returned before the clear reached the sink, so a new goroutine carried it")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(sink.release)
+	<-returned
 
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(),
 		"the handler reports the end before it returns, so the reader's next line cannot overtake it")

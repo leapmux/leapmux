@@ -72,18 +72,50 @@ var (
 	// the agent process. The durable pause_owner records the restart, so the
 	// refusal survives a Worker restart that leaves the marker behind.
 	ErrPlannedRestart = errors.New("agent input queue waits for a planned agent restart")
-	// ErrDispatchNotReady marks a dispatch failure that never reached the
-	// provider. The manager returns the item to the queue instead of storing a
-	// permanent failure, so an agent that starts later delivers it.
-	ErrDispatchNotReady = errors.New("agent cannot accept input yet")
-	// ErrDispatchBusy marks a dispatch that the provider refused because a turn
-	// of its own is already in flight. The item returns to the queue and the
-	// queue stays OPEN, which is what separates it from ErrDispatchNotReady: an
-	// agent that runs needs no pause and no manual resume, because the turn that
-	// refused the item ends, publishes that end, and releases the drain that
-	// delivers it.
-	ErrDispatchBusy = errors.New("agent input waits for the turn in flight")
 )
+
+// DispatchOutcome states what a refused dispatch means for the item and for the
+// queue. It replaces a set of sentinel errors, so the decode site is one
+// exhaustive switch that the linter checks rather than a chain of errors.Is
+// whose ORDER decided the answer.
+type DispatchOutcome int
+
+const (
+	// DispatchFailed: the provider took the input and something went wrong, or
+	// it refused for a reason nothing will resolve. The item is marked FAILED
+	// and the user retries it explicitly.
+	DispatchFailed DispatchOutcome = iota
+	// DispatchUncertain: the Worker cannot tell whether the input arrived.
+	// Redispatch could duplicate it, so the user confirms.
+	DispatchUncertain
+	// DispatchBusy: the agent is inside a turn of its own. Nothing failed and
+	// nothing has to change for the item to go out, so the item returns to the
+	// queue and the queue stays OPEN. The turn it collided with holds it, and
+	// the end of that turn drains it.
+	DispatchBusy
+	// DispatchNotReady: the input never reached the provider AND the agent must
+	// change state before it can. The item returns to the queue and the queue
+	// PAUSES: a message the user typed must not need a manual retry because the
+	// agent was between processes.
+	DispatchNotReady
+)
+
+// String gives the text that a refusal carries into the item's error column,
+// which the browser renders. DispatchFailed adds nothing, because there the
+// cause already says what happened.
+func (o DispatchOutcome) String() string {
+	switch o {
+	case DispatchBusy:
+		return "agent input waits for the turn in flight"
+	case DispatchNotReady:
+		return "agent cannot accept input yet"
+	case DispatchUncertain:
+		return "agent input delivery is uncertain"
+	case DispatchFailed:
+		return ""
+	}
+	return ""
+}
 
 type Attachment struct {
 	Filename string
@@ -171,16 +203,34 @@ type DispatchResult struct {
 	AfterAccept func()
 }
 
+// DeliveryError carries a refused dispatch: the provider's own error, and what
+// the queue must do about it.
 type DeliveryError struct {
-	Err       error
-	Uncertain bool
+	Err     error
+	Outcome DispatchOutcome
 }
 
 func (e *DeliveryError) Error() string {
 	if e == nil || e.Err == nil {
 		return "input delivery failed"
 	}
+	// The prefix is what a user reads on a held item, so it states the outcome
+	// rather than only the provider's wording.
+	if prefix := e.Outcome.String(); prefix != "" {
+		return prefix + ": " + e.Err.Error()
+	}
 	return e.Err.Error()
+}
+
+// dispatchOutcome reads the outcome a refusal carries. An error that is not a
+// DeliveryError is a plain failure: only the queue's own classifier builds one,
+// and everything else that reaches the manager already went wrong.
+func dispatchOutcome(err error) DispatchOutcome {
+	var deliveryErr *DeliveryError
+	if errors.As(err, &deliveryErr) {
+		return deliveryErr.Outcome
+	}
+	return DispatchFailed
 }
 
 func (e *DeliveryError) Unwrap() error {

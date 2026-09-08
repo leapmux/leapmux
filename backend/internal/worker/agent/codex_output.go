@@ -158,7 +158,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 				// The child's own turn. publishTurnActive covers the MAIN thread
 				// alone, so the child's flag is published against the child's
 				// sink -- which is what its own input queue follows.
-				publishTurnActiveTo(a.sink.ChildSink(childID), true)
+				publishTurnActiveTo(a.sink.ChildSink(childID), true, a.childTurnSeq())
 			}
 			return
 		}
@@ -178,7 +178,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// can't leak across turns (e.g. a reasoning item left open by an abort).
 		clear(a.reasoningStreamKind)
 		a.mu.Unlock()
-		a.publishTurnActive()
+		a.PublishTurnActive()
 		// A fresh turn begins: restart the thinking-token estimate from zero. The
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
@@ -597,7 +597,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", notif.ThreadID, "error", err)
 			}
 			a.clearChildTurnID(notif.ThreadID)
-			publishTurnActiveTo(a.sink.ChildSink(childID), false)
+			publishTurnActiveTo(a.sink.ChildSink(childID), false, a.childTurnSeq())
 			return
 		}
 		a.clearChildTurnID(notif.ThreadID)
@@ -655,7 +655,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// the assignment above would settle the agent with no count and ring the
 	// completion sound for a turn that used no tool. The turn state itself
 	// still clears early, which is what lets the next queued input start a turn.
-	defer a.publishTurnActive()
+	//
+	// The publish runs INLINE on this reader goroutine, although it reaches the
+	// input queue's store. That is safe because Manager.drain never holds the
+	// coordinator lock across dispatcher.Dispatch, so nothing an in-flight RPC
+	// waits for can hold what this publish needs. An earlier version escaped to
+	// a new goroutine for that reason, and the escape reordered the clear past
+	// the next turn's start.
+	defer a.PublishTurnActive()
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
@@ -665,7 +672,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Reset all span tracking at turn-end so the next turn starts clean.
 	// The collab child index is NOT cleared here: background tasks outlive
-	// turns, and the child-index entries are removed only on terminal collab
+	// turns, and the child-index entries are removed only on a final collab
 	// status (collabAgentsStatesToRegistry). Clearing on ClearContext/restart
 	// stays.
 	a.sink.ResetSpans()
@@ -1044,7 +1051,7 @@ func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 
 // registerCollabReceiver records a child thread -> spawnSpanID mapping (the
 // child index). Idempotent. The index is NOT cleared at turn end (background
-// tasks outlive turns); entries are removed on terminal collab status by
+// tasks outlive turns); entries are removed on a final collab status by
 // collabAgentsStatesToRegistry -> removeCollabChildIndex.
 func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) bool {
 	if threadID == "" || spanID == "" {
@@ -1079,14 +1086,40 @@ func (a *CodexAgent) routeChildItemIfApplicable(threadID string) string {
 		return ""
 	}
 	if spanID == "" {
-		return ""
+		// The span index is gone (a ClearContext wiped it, or the spawn was
+		// never registered). A thread that resolved before still has to resolve
+		// now: its turn end is the only thing that clears the child's own input
+		// queue, and nothing else ever will.
+		return a.rememberedChildAgent(threadID)
 	}
 	childID, err := a.sink.EnsureChildAgent(spanID, threadID, a.collabChildTitle(threadID))
 	if err != nil {
 		slog.Warn("codex route child ensure failed", "thread", threadID, "error", err)
-		return ""
+		return a.rememberedChildAgent(threadID)
 	}
+	a.rememberChildAgent(threadID, childID)
 	return childID
+}
+
+// rememberChildAgent records the agent id a child thread resolved to, and
+// rememberedChildAgent reads it back. removeCollabChildIndex drops both together
+// when the child reaches a final status.
+func (a *CodexAgent) rememberChildAgent(threadID, childID string) {
+	if threadID == "" || childID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabChildAgents == nil {
+		a.collabChildAgents = make(map[string]string)
+	}
+	a.collabChildAgents[threadID] = childID
+}
+
+func (a *CodexAgent) rememberedChildAgent(threadID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.collabChildAgents[threadID]
 }
 
 // persistItemStartedChild runs the item/started per-type persist/span logic

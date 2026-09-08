@@ -124,6 +124,13 @@ type CodexAgent struct {
 	reasoningStreamKind map[string]string
 	availableModels     []*ModelInfo
 	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID (child index)
+	// collabChildAgents remembers the child AGENT id each thread resolved to.
+	// The span index above answers the same question, but it is torn down on a
+	// ClearContext and a registry write can fail, and a thread whose id cannot
+	// be resolved publishes no turn end -- which holds that child's own input
+	// queue with a turn that nothing will ever clear. The agent id does not
+	// change once assigned, so remembering it makes the clear survive both.
+	collabChildAgents map[string]string // child thread ID -> child agent ID
 	// collabChildItems records the child agent id that owns a streamed item
 	// (commandExecution/fileChange itemID -> childID). Populated when
 	// persistItemStartedChild routes the item/started to a child; consulted by
@@ -628,7 +635,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.childTurnIDs)
 	clear(a.childTurnStartAcks)
 	a.mu.Unlock()
-	a.publishTurnActive()
+	a.PublishTurnActive()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
 	// turn/started also resets, but resetting here keeps every provider's context
@@ -645,7 +652,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	return thread.ID, true
 }
 
-// publishTurnActive republishes the Worker-visible turn state from turnID, the
+// PublishTurnActive republishes the Worker-visible turn state from turnID, the
 // single source. Call it after EVERY critical section that writes turnID.
 //
 // It re-reads rather than taking a value, so a caller cannot publish something
@@ -655,14 +662,15 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 //
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block
 // on a slow transport.
-func (a *CodexAgent) publishTurnActive() {
+func (a *CodexAgent) PublishTurnActive() {
 	a.mu.Lock()
 	active := a.turnID != ""
+	seq := a.nextTurnSeq()
 	a.mu.Unlock()
 	// Codex tracks collab child turns in childTurnIDs, deliberately not here: a
 	// child's own run is its background-task registry row, and the Worker reads
 	// that for the child tab. This is the MAIN thread's turn only.
-	publishTurnActiveTo(a.sink, active)
+	publishTurnActiveTo(a.sink, active, seq)
 }
 
 // SendInput starts a new turn with the current settings. It refuses an active
@@ -704,11 +712,8 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	// Normal queue dispatch never changes the active turn. Steering is an
 	// explicit queue operation through SteerInput.
 	if turnID != "" {
-		// The refusal is proof that this turn is in flight, and the Worker
-		// dispatched into it, so its view of the turn was wrong. Publish before
-		// the return: the same signal drives the agent's activity state and the
-		// input queue's guard, and both are what the refusal just disproved.
-		a.publishTurnActive()
+		// Manager.SendInput republishes the flag for this refusal. See
+		// Agent.PublishTurnActive for why the rule lives there.
 		return fmt.Errorf("%w: %s", ErrAgentBusy, turnID)
 	}
 
@@ -1589,4 +1594,14 @@ func (a *CodexAgent) handleOutput(line *parsedLine) {
 // HandleOutput processes a single JSONL notification from Codex.
 func (a *CodexAgent) HandleOutput(content []byte) {
 	handleCodexOutput(a, parseLine(content))
+}
+
+// childTurnSeq issues the ordering token for a collab CHILD's turn flag. Both
+// edges arrive on the one reader goroutine, so the token only has to be
+// monotonic -- the counter the main thread shares supplies that, and the Worker
+// tracks the last token for each agent id separately.
+func (a *CodexAgent) childTurnSeq() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.nextTurnSeq()
 }
