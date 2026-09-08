@@ -97,9 +97,24 @@ type ClaudeCodeAgent struct {
 	sink       OutputSink
 
 	// Claude Code-specific state.
-	contextUsage           *contextUsageSnapshot
-	lastAgentStatus        string
-	turnActive             bool
+	contextUsage    *contextUsageSnapshot
+	lastAgentStatus string
+	turnActive      bool
+	// sessionStateReported records that this CLI publishes
+	// `system`/`session_state_changed`. Once it does, the output heuristic
+	// stands down for the life of the process: the CLI states its own turn
+	// state, so nothing else needs to be read as evidence of one, and no frame
+	// the vendor adds later can arm a turn that nothing ends.
+	sessionStateReported bool
+
+	// awaitingResult is true from the moment a message reaches the CLI's stdin
+	// until the `result` that answers it. It is what tells a STALE
+	// session_state_changed idle from a live one: the CLI emits idle before it
+	// reads the next message, so an idle that arrives after this Worker handed
+	// one over describes the state before that hand-over, and clearing the turn
+	// on it would open the queue on a turn about to start. See
+	// ClaudeCodeAgent.noteSessionIdle.
+	awaitingResult         bool
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 	// hasGoalCommand records whether the running CLI advertises /goal in its
 	// init frame's slash_commands. The command shipped in 2.1.139, so this is
@@ -180,6 +195,51 @@ func claudeResumeArgs(resumeSessionID string) ([]string, error) {
 			fmt.Errorf("the stored session ID is not a valid token: %w", err))
 	}
 	return []string{"--resume", resumeSessionID}, nil
+}
+
+// claudeSessionStateEnv makes Claude Code publish its own turn state on the
+// output stream, as `system`/`session_state_changed` frames carrying
+// running / requires_action / idle.
+//
+// The CLI keeps the frames behind this variable, and the variable alone: it
+// emits nothing without it, whatever the output format. The variable exists for
+// clients whose "is it working" answer is a scan of the last message, which the
+// trailing idle frame pins at "running" -- the exact heuristic this Worker
+// replaced with the flag every provider publishes, so the frame is what this
+// Worker wants and the reason to withhold it does not apply here.
+//
+// A CLI too old to know the variable ignores it and emits nothing. The output
+// heuristic in armTurnFromOutput still covers that build, which is why both
+// exist.
+const claudeSessionStateEnv = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1"
+
+// claudeAgentEnv builds the environment for one Claude Code launch, from the
+// environment the worker inherited.
+//
+// It is a function, not a run of appends at the call site, so a test can state
+// what the launch carries without a process. It takes the RAW inherited
+// environment for the same reason: the strip and the assignment for one variable
+// are one decision, and a call site that holds half of it puts that half out of
+// reach of a test.
+//
+// The pins REPLACE an inherited value; they do not layer over it. A worker that
+// a Claude Code session launched inherits each of these markers with the
+// PARENT's value. `exec.Cmd` resolves a duplicate last-wins, so a layered pin
+// still reaches the CLI with the right value, and leaves an environment that
+// states two values for one variable. See envutil.PinEnv.
+//
+// CLAUDECODE cannot go through PinEnv. Its strip is unconditional and its
+// assignment is not.
+func claudeAgentEnv(environ []string, loginShell bool) []string {
+	env := envutil.PinEnv(envutil.FilterEnv(environ, "CLAUDECODE"),
+		"CLAUDE_CODE_ENTRYPOINT=cli", claudeSessionStateEnv)
+	if loginShell {
+		// Set CLAUDECODE=1 so the user's shell rc files can detect they are
+		// being sourced inside Claude Code and skip conflicting aliases.
+		// The inner command unsets it before invoking claude.
+		env = append(env, "CLAUDECODE=1")
+	}
+	return env
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -264,14 +324,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		WorkingDir:      opts.WorkingDir,
 	})
 
-	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
-	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=cli")
-	if opts.LoginShell {
-		// Set CLAUDECODE=1 so the user's shell rc files can detect they are
-		// being sourced inside Claude Code and skip conflicting aliases.
-		// The inner command unsets it before invoking claude.
-		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
-	}
+	cmd.Env = claudeAgentEnv(cmd.Environ(), opts.LoginShell)
 	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
 
 	// setupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
@@ -682,6 +735,58 @@ func (a *ClaudeCodeAgent) armTurn() {
 	a.PublishTurnActive()
 }
 
+// noteSessionState applies one session_state_changed frame, and records that
+// this CLI publishes them at all.
+//
+// That record is what retires the output heuristic. The frame states the turn
+// state that armTurnFromOutput can only infer, so a build that sends it needs no
+// inference -- and the arming surface shrinks to the named signals this file
+// lists, which is what keeps a message the vendor adds later inert.
+func (a *ClaudeCodeAgent) noteSessionState(state string) {
+	a.mu.Lock()
+	a.sessionStateReported = true
+	a.mu.Unlock()
+	if state == claudeSessionStateIdle {
+		a.noteSessionIdle()
+		return
+	}
+	a.armTurn()
+}
+
+// publishesSessionState reports whether this CLI stated its own turn state at
+// least once.
+func (a *ClaudeCodeAgent) publishesSessionState() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionStateReported
+}
+
+// noteSessionIdle applies the CLI's own idle report.
+//
+// It REFUSES an idle that arrives while a message this Worker sent has no
+// `result` yet. Claude Code emits idle when its run loop stops, before it reads
+// the next message, so such a frame describes the state before that message --
+// and the turn it would clear is the one about to start. The Worker's input
+// queue follows this flag, so the clear would dispatch the next message INTO
+// the running turn, which is the failure the flag exists to prevent.
+//
+// Every other idle clears the turn, and that is the point of reading the frame
+// at all. A turn armed from output has only `result` to end it, so one armed by
+// a frame that no turn produced would otherwise hold the queue until the process
+// exits.
+func (a *ClaudeCodeAgent) noteSessionIdle() {
+	a.mu.Lock()
+	stale := a.awaitingResult
+	if !stale {
+		a.turnActive = false
+	}
+	a.mu.Unlock()
+	if stale {
+		return
+	}
+	a.PublishTurnActive()
+}
+
 // disarmTurn records the end of the turn and publishes it, the way armTurn
 // records the start. OutputSink.SetTurnActive requires the mutation and the
 // publish at ONE site, and the falling edge kept them twenty lines apart in the
@@ -693,6 +798,9 @@ func (a *ClaudeCodeAgent) armTurn() {
 func (a *ClaudeCodeAgent) disarmTurn() {
 	a.mu.Lock()
 	a.turnActive = false
+	// The `result` this ends is the answer to whatever the Worker sent, so a
+	// later idle is no longer stale.
+	a.awaitingResult = false
 	a.mu.Unlock()
 	a.PublishTurnActive()
 }
@@ -762,6 +870,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	// already in flight, so it opens none.
 	if priority == "" {
 		a.turnActive = true
+		a.awaitingResult = true
 	}
 
 	return nil

@@ -35,6 +35,7 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 	// FinalizeAgentEnv, plus auth tokens, provider-selection, and config dirs.
 	mustSurvive := []string{
 		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
 		"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
 		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "PATH",
 	}
@@ -46,7 +47,7 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 		}
 		env = append(env,
 			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1",
-			"CLAUDE_CODE_ENTRYPOINT=cli",
+			"CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
 			"CLAUDE_CODE_OAUTH_TOKEN=tok", "OPENAI_API_KEY=sk-test", "CODEX_API_KEY=sk-codex",
 			"CLAUDE_CODE_USE_BEDROCK=1", "CODEX_HOME=/home/u/.codex", "GOOSE_MODEL=gpt-x",
 			"PI_CODING_AGENT_DIR=/home/u/.pi", "PATH=/usr/bin:/bin",

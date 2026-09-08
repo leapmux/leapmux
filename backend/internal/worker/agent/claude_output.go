@@ -157,7 +157,7 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 
 	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", msgType, "len", len(content))
 
-	a.armTurnFromOutput(content, msgType)
+	a.observeTurnFromOutput(content, msgType)
 
 	switch msgType {
 	case claudeMsgTypeAssistant, claudeMsgTypeSystem, claudeMsgTypeResult:
@@ -1403,26 +1403,123 @@ func isSimpleUserTextEcho(content []byte) bool {
 	return len(trimmed) > 0 && trimmed[0] == '"'
 }
 
+// claudeSystemSubtypeSessionStateChanged is the `subtype` of the `system` frame
+// Claude Code publishes for its own turn state. It emits the frame only when
+// claudeSessionStateEnv is set.
+//
+// Two paths read it, and the split is deliberate. observeTurnFromOutput reads
+// the STATE it carries, which is the whole reason this Worker asks for the
+// frame. claudeHandleTaskEvent drops the frame from the timeline, because the
+// turn flag already carries what it means and the CLI sends one at every edge of
+// every turn.
+const claudeSystemSubtypeSessionStateChanged = "session_state_changed"
+
+// The states that a `system`/`session_state_changed` frame carries.
+const (
+	claudeSessionStateIdle           = "idle"
+	claudeSessionStateRunning        = "running"
+	claudeSessionStateRequiresAction = "requires_action"
+)
+
+// observeTurnFromOutput reads the CLI's turn state off one output frame and
+// records both edges.
+//
+// It prefers the CLI's OWN answer. With claudeSessionStateEnv set, Claude Code
+// publishes `system`/`session_state_changed` with running, requires_action or
+// idle, and that frame is authoritative: `running` opens the turn at the top of
+// the run loop, `requires_action` reports a turn that a permission prompt
+// blocks (still in flight), and `idle` fires after the last result flushes and
+// the background-agent loop exits. A ROOT frame that carries it therefore
+// decides alone, and the heuristic below never sees it. A forwarded child's copy
+// decides nothing, for the reason claudeIsRootFrame gives.
+//
+// The heuristic below is for a build that publishes no such frame, which is
+// every one that predates the variable. The FIRST session_state_changed frame
+// retires it for the life of the process, so on a current CLI the turn flag
+// moves on the named signals alone -- this frame, the Worker's own SendInput,
+// and `result`. See armTurnFromOutput.
+func (a *ClaudeCodeAgent) observeTurnFromOutput(content []byte, msgType string) {
+	if msgType == claudeMsgTypeSystem && claudeIsRootFrame(content) {
+		if state, ok := claudeSessionStateOf(content); ok {
+			a.noteSessionState(state)
+			return
+		}
+	}
+	if a.publishesSessionState() {
+		// This CLI states its turn state, and it did so already. Reading any
+		// other frame as evidence could only disagree with it.
+		return
+	}
+	a.armTurnFromOutput(content, msgType)
+}
+
+// claudeSessionStateOf reads the state of a `session_state_changed` frame, and
+// reports false for every other frame.
+//
+// An unknown state value is REFUSED rather than treated as a turn. The three
+// states are a closed set that the CLI's own schema states, so a fourth one is
+// a build this Worker does not know -- and answering "a turn runs" for it would
+// latch the queue on a frame nothing here can end.
+func claudeSessionStateOf(content []byte) (string, bool) {
+	var msg struct {
+		Subtype string `json:"subtype"`
+		State   string `json:"state"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != claudeSystemSubtypeSessionStateChanged {
+		return "", false
+	}
+	switch msg.State {
+	case claudeSessionStateIdle, claudeSessionStateRunning, claudeSessionStateRequiresAction:
+		return msg.State, true
+	default:
+		slog.Warn("unknown claude session state", "state", msg.State)
+		return "", false
+	}
+}
+
 // armTurnFromOutput records a turn that the CLI runs and this Worker did not
-// start. Claude Code emits no turn-start frame of its own (Codex has
-// turn/started, ZCode turn.started), so without this the Worker learns of a turn
-// only from its own SendInput -- and a turn the CLI runs by itself, or one it
-// continues past a `result` the Worker already consumed, stayed invisible. Both
-// the turn flag and the input queue then read idle, and the next message the
-// user sent went straight into the running turn.
+// start, for a build that publishes no session_state_changed frame. Such a
+// build announces a turn start in no other way (Codex has turn/started, ZCode
+// turn.started), so without this the Worker learns of a turn only from its own
+// SendInput -- and a turn the CLI runs by itself, or one it continues past a
+// `result` the Worker already consumed, stayed invisible. Both the turn flag and
+// the input queue then read idle, and the next message the user sent went
+// straight into the running turn.
 //
 // It runs BEFORE the type switch, because the frames that prove a live turn
-// earliest are the ones that return early: the thinking-token telemetry and the
-// notification-threaded `system` lines never reach handlePersistableMessage, and
-// a root `user` tool_result is skipped there. Arming from the assistant message
-// alone left the whole extended-thinking window of a CLI-run turn invisible,
-// which is the longest part of it.
+// earliest are the ones that return early: the thinking-token telemetry never
+// reaches handlePersistableMessage, and a root `user` tool_result is skipped
+// there. Arming from the assistant message alone left the whole
+// extended-thinking window of a CLI-run turn invisible, which is the longest
+// part of it.
 //
-// The class is "a ROOT frame that only a live turn produces". A forwarded
-// subagent envelope carries parent_tool_use_id and belongs to the child, and it
-// says nothing about the root, which may well be idle while a restarted subagent
-// runs on. `result` ENDS a turn, and `control_*` frames are the Worker's own
-// traffic, so neither arms anything.
+// The class is "a ROOT frame that only a live turn produces", and
+// claudeIsRootFrame supplies the first half. `result` ENDS a turn, and
+// `control_*` frames are the Worker's own traffic, so neither arms anything.
+//
+// The `system` type is the narrow one, because it carries four unrelated
+// families and only ONE of them reports the root's own work:
+//
+//   - The thinking-token telemetry, which the model emits as it thinks. This one
+//     arms the turn.
+//   - `init` announces a SESSION. The CLI emits it at startup, and again after a
+//     context clear, at a moment when no turn exists.
+//   - The task_* family and background_tasks_changed belong to a BACKGROUND
+//     task, which outlives the turn that spawned it. A backgrounded shell
+//     reports task_progress for as long as it runs, with the root idle.
+//   - The notification-threaded lines -- status, api_retry, both compaction
+//     boundaries -- report an event, not a live turn. A status CLEAR is the end
+//     of the work it announced, an api_retry can answer a call the CLI makes on
+//     its own, and a compaction boundary lands on a resumed session before any
+//     turn starts.
+//
+// So the `system` test is an allowlist of one, and an unknown subtype arms
+// nothing. That direction is the safe one, and the asymmetry is the whole point.
+// A turn this misses is armed a moment later by the assistant message that
+// follows it. A turn armed with no turn to end it latches until the process
+// exits: `result` is the only falling edge, and nothing ever sends one. The
+// queue then holds every message the user sends, unpaused and with no visible
+// cause, and the client shows a thinking indicator that nothing stops.
 //
 // The clear needs no counterpart rule: Claude ends EVERY turn with a `result`,
 // including an interrupted or a failed one, and a `result` always follows the
@@ -1430,15 +1527,38 @@ func isSimpleUserTextEcho(content []byte) bool {
 // process boundary instead, where the Worker releases a turn no dispatch owns.
 func (a *ClaudeCodeAgent) armTurnFromOutput(content []byte, msgType string) {
 	switch msgType {
-	case claudeMsgTypeAssistant, claudeMsgTypeUser, claudeMsgTypeSystem:
+	case claudeMsgTypeAssistant, claudeMsgTypeUser:
+	case claudeMsgTypeSystem:
+		if _, thinking := parseThinkingTokens(content); !thinking {
+			return
+		}
 	default:
 		return
 	}
-	var envelope struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
-	}
-	if err := json.Unmarshal(content, &envelope); err != nil || envelope.ParentToolUseID != "" {
+	if !claudeIsRootFrame(content) {
 		return
 	}
 	a.armTurn()
+}
+
+// claudeIsRootFrame reports whether an output frame describes the ROOT agent.
+//
+// A forwarded subagent envelope carries parent_tool_use_id and belongs to the
+// child, whose turn is its own: a child runs on while the root waits for it, and
+// a restarted child runs while the root is idle. So no frame that carries the
+// field may move the root's turn flag, whether it reports the state (a
+// session_state_changed frame) or only implies it (the thinking-token telemetry,
+// an assistant message).
+//
+// A frame this cannot parse is not a root frame. Nothing downstream reads a
+// frame the JSON decoder refused, and answering "root" for one would arm a turn
+// off bytes with no established shape.
+func claudeIsRootFrame(content []byte) bool {
+	var envelope struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		return false
+	}
+	return envelope.ParentToolUseID == ""
 }
