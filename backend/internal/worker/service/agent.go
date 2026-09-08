@@ -1225,6 +1225,12 @@ func (svc *Service) replayAgentCatchUp(
 		return
 	}
 
+	// Resolve the root once for the whole replay. Calling rootAgentIDFor twice
+	// would run the recursive CTE twice and could return different roots if the
+	// parent chain changed between the calls, shipping one root's tasks under
+	// another's id.
+	rootID := svc.rootAgentIDFor(bgCtx(), agentID)
+
 	// Pre-trim marker: read the authoritative live-tail seq and send it BEFORE
 	// the message replay, so a reconnecting windowed client drops phantom rows
 	// (a tail it loaded before disconnect that was deleted while it was away) up
@@ -1232,34 +1238,24 @@ func (svc *Service) replayAgentCatchUp(
 	// An unset field on a query error tells the client to skip the reconcile (see
 	// CatchUpStart.latest_seq). The tail is re-read for CatchUpComplete below so the
 	// final authority reflects any message created mid-replay.
+	//
+	// The derived activity rides the same frame, which puts it ahead of the
+	// message burst: the tab renders the replayed rows as they arrive, and an
+	// activity frame behind them leaves the burst painting with no thinking
+	// indicator on an agent that works. It travels HERE and not as an
+	// AgentActivityChanged because it is a LEVEL. That message means a
+	// transition, and the client rings on one; sending the baseline as a
+	// transition forced the client to suppress the alert for the whole catch-up
+	// window, which discarded each genuine settle that raced the replay.
 	replayStartTail := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up start")
 	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpStart{
-			CatchUpStart: &leapmuxv1.CatchUpStart{LatestSeq: replayStartTail},
-		},
-	})
-
-	if !sink.alive() {
-		return
-	}
-
-	// Resolve the root once for the whole replay. Calling rootAgentIDFor twice
-	// would run the recursive CTE twice and could return different roots if the
-	// parent chain changed between the calls, shipping one root's tasks under
-	// another's id.
-	rootID := svc.rootAgentIDFor(bgCtx(), agentID)
-
-	// Replay the derived activity BEFORE the message burst, so a tab that just
-	// promoted to FULL renders the right spinner and the right Interrupt button
-	// while the burst lands rather than after it. Under this agent's OWN id, not
-	// the root's: a child tab's answer is its own registry row, which differs
-	// from its root's.
-	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_ActivityChanged{
-			ActivityChanged: &leapmuxv1.AgentActivityChanged{
-				State: svc.Output.AgentActivitySnapshot(agentID, rootID).State,
+			CatchUpStart: &leapmuxv1.CatchUpStart{
+				LatestSeq: replayStartTail,
+				// Under this agent's OWN id, not the root's: a child tab's answer is
+				// its own registry row, which differs from its root's.
+				ActivityState: svc.Output.AgentActivitySnapshot(agentID, rootID).State,
 			},
 		},
 	})

@@ -586,7 +586,7 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	}
 	// Unconditional, unlike the broadcast above: the process died, so every
 	// descendant is idle now whether or not the DISPLAY list moved.
-	h.refreshActivityTree(rootAgentID)
+	h.refreshActivityTree(rootAgentID, settleHeld)
 	h.WriteSubagentEndDividers(endedChildIDs, status)
 }
 
@@ -668,7 +668,7 @@ func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title 
 		//
 		// Safe here and not one line earlier: the lock is released above, and
 		// refreshing reads that same cache.
-		s.h.refreshActivityTree(s.rootAgentID)
+		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
 	}
 	return childID, nil
 }
@@ -1214,7 +1214,7 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 		// broadcasts nothing. Safe here and not one line earlier: the appliers
 		// released the cache lock before returning, and refreshing reads that
 		// same cache.
-		s.h.refreshActivityTree(s.rootAgentID)
+		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
 	}
 	// After the broadcast, so a slow transport cannot delay the DB write. The
 	// applier sets endedChildID only on the active -> final transition, and the

@@ -209,6 +209,12 @@ type OutputHandler struct {
 	// that already flushed. The zero value works, so nothing constructs it.
 	activityRefreshes sync.WaitGroup
 
+	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
+	// time.AfterFunc; a test replaces it to fire the window on demand, because a
+	// window sized by a real timer lets the machine running the suite decide
+	// whether a case passes. See settleDelay.
+	newSettleTimer func(d time.Duration, f func()) settleStopper
+
 	// processRunning reports whether the feeding process for a ROOT agent id is
 	// up. Defaults to the agent manager; a test replaces it to drive the other
 	// activity inputs in isolation, because a real subprocess is not a seam the

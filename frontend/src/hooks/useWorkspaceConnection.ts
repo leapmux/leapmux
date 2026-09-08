@@ -23,6 +23,7 @@ import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
   handleActivityChanged,
+  handleActivityLevel,
   handleAgentMessage,
   handleAgentStatusChange,
   handleControlRequest,
@@ -403,10 +404,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // and edge-triggered, so an off-screen tab still learns that its agent
         // settled -- which is the tab that most needs to ring and badge.
         //
-        // `catchUpPhase` is this file's shared resolution, which reads 'live'
-        // for an agent with no entry: catchUpPhases carries one only while a tab
-        // replays into FULL, so a tab watching in NOTIFY mode has none -- and
-        // that is exactly the off-screen tab this event exists to ring for.
+        // No `catchUpPhase` here, unlike every other alerting branch. Each of
+        // these is a TRANSITION, so a settle that lands while this tab replays
+        // is a live settle and rings. The catch-up BASELINE is a level and
+        // arrives on catchUpStart below.
         handleActivityChanged(agentId, inner.value, {
           metadata,
           selection,
@@ -414,10 +415,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           agentActivityStore,
           onAgentSettled: params.onAgentSettled,
-        }, catchUpPhase)
+        })
         break
       case 'catchUpStart':
         chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTails.get(agentId))
+        // The activity level the replay opens with. It seeds the spinner ahead
+        // of the message burst and rings nothing -- see handleActivityLevel.
+        handleActivityLevel(agentId, inner.value.activityState, agentActivityStore)
         break
       case 'catchUpComplete':
         catchUpPhases.set(agentId, 'live')

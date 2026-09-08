@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -22,6 +23,15 @@ import (
 // a marshal and one SendStream per subscribed channel whether or not any tab is
 // on screen, so refreshActivity broadcasts only when the derived value actually
 // changes -- never per output line.
+//
+// One edge is DEBOUNCED: the stop. A settle waits out settleDelay before it
+// reaches a client, and work that resumes inside that window cancels it, so a
+// wake or a subagent restart never rings the completion sound at the moment the
+// agent starts again. The broadcast alone waits, and this derivation stays
+// exact throughout: AgentActivitySnapshot answers from the inputs and never
+// consults the window, so ListAgents and the CLI close guard are unaffected. A
+// client that CACHES the published state is not -- see settleDelay for what
+// that costs.
 //
 // It is also PURELY IN MEMORY, and must stay that way. Do not add a column for
 // it. Every process boundary resets it (see NoteAgentProcessStarted), so a
@@ -87,6 +97,12 @@ type agentActivity struct {
 	// turn starts and consumed by the edge.
 	settledToolUses *int32
 
+	// settleTimer runs the debounce window for a settle this entry derived and
+	// has not published. Non-nil means a settle is in flight: `published` still
+	// says WORKING and the client has not been told otherwise, so the window can
+	// still end in silence. See settleDelay.
+	settleTimer settleStopper
+
 	// published is the last state broadcast, and hasPublished distinguishes
 	// "published IDLE" from "never published". Without the second field the
 	// first genuine idle transition after startup would look like a no-op and
@@ -94,14 +110,148 @@ type agentActivity struct {
 	published    leapmuxv1.AgentActivityState
 	hasPublished bool
 
-	// publishedSeq is the ticket of the refresh that recorded `published`. A
-	// refresh that read its registry rows EARLIER than one which already
-	// published carries a lower ticket and is dropped, so a slow reader cannot
-	// latch a stale answer. Without it the edge trigger then swallows the
-	// correction: the next real change compares equal to what the stale publish
-	// recorded, and the tab keeps a spinner for a whole turn and misses its
-	// settle.
+	// publishedSeq is the ticket of the freshest refresh this entry acted on --
+	// one that published, one that agreed with what stands, or one that opened a
+	// settle window. A refresh that read its registry rows EARLIER carries a
+	// lower ticket and is dropped, so a slow reader cannot latch a stale answer.
+	// Without it the edge trigger then swallows the correction: the next real
+	// change compares equal to what the stale publish recorded, and the tab keeps
+	// a spinner for a whole turn and misses its settle.
 	publishedSeq uint64
+}
+
+// settleDelay is how long a WORKING -> not-WORKING publish waits before it
+// reaches a client.
+//
+// The window exists because the worker sees work ending and the same work
+// resuming as two events microseconds apart. A backgrounded shell completes and
+// the CLI wakes the agent into a new turn. A subagent's own shell completes and
+// the CLI restarts that subagent, which ends its registry row and reopens it in
+// the same output burst. Publishing the gap rings the completion sound and drops
+// the spinner for an instant, and the work then carries on -- which tells the
+// user their agent finished at the moment it started again.
+//
+// Every genuine settle pays it, and the price rises with the value. The sound,
+// the thinking indicator and the Interrupt button are all this much late, and so
+// is the browser's close guard, which reads its cached copy of the published
+// state rather than asking the Worker -- so a tab closed inside the window warns
+// about work that already finished. Three seconds is chosen to cover a wake that
+// needs the CLI to start a whole new turn, not merely the same-burst reopen that
+// a few hundred milliseconds would cover, and it buys that at the cost above.
+//
+// This derivation is exact while a settle waits. AgentActivitySnapshot reads the
+// inputs and never consults the window, so ListAgents and the CLI close guard
+// answer correctly throughout; only what was BROADCAST lags.
+const settleDelay = 3 * time.Second
+
+// settleStopper is the part of *time.Timer a held settle needs.
+type settleStopper interface{ Stop() bool }
+
+// settleMode says what a refresh does with a settle it derives.
+type settleMode bool
+
+const (
+	// settleHeld waits out the debounce window, so work that resumes at once
+	// never reaches a client as a stop. Every ordinary input uses it.
+	settleHeld settleMode = true
+	// settleImmediate publishes at once, and supersedes any window in flight.
+	// Two callers use it: the window closing, which IS the settle's delivery,
+	// and a process boundary, where nothing can resume -- and where a held
+	// settle would leave a timer to fire after shutdown closed the database it
+	// reads.
+	settleImmediate settleMode = false
+)
+
+// afterSettleDelay schedules f at the end of the settle window.
+//
+// It goes through the seam rather than calling time.AfterFunc directly, so a
+// test fires the window on demand. Sizing this window with a real timer would
+// let the machine that runs the suite decide whether a case passes.
+func (h *OutputHandler) afterSettleDelay(f func()) settleStopper {
+	if h.newSettleTimer != nil {
+		return h.newSettleTimer(settleDelay, f)
+	}
+	return time.AfterFunc(settleDelay, f)
+}
+
+// holdSettleLocked opens the window for a settle, unless one already runs.
+// Caller must hold st.mu.
+//
+// It never RE-arms. The window opens at the edge that stopped the work, and a
+// second derivation of the same stop is not a second edge -- restarting there
+// would let a busy registry push a real settle out indefinitely.
+func (st *agentActivity) holdSettleLocked(h *OutputHandler, agentID, rootAgentID string) {
+	if st.settleTimer != nil {
+		return
+	}
+	st.settleTimer = h.afterSettleDelay(func() {
+		h.deliverHeldSettle(agentID, rootAgentID)
+	})
+}
+
+// cancelSettleLocked drops a held settle. Caller must hold st.mu.
+//
+// A Stop that reports false means the timer already fired and its callback is on
+// its way. Nothing is left to undo: that callback RE-DERIVES before it
+// publishes, so it finds the agent working and says nothing.
+func (st *agentActivity) cancelSettleLocked() {
+	if st.settleTimer == nil {
+		return
+	}
+	st.settleTimer.Stop()
+	st.settleTimer = nil
+}
+
+// voidHeldSettleLocked drops a held settle because the work came back, and drops
+// the count that settle was carrying with it. Caller must hold st.mu.
+//
+// The count described the turn that stopped, and that stop did not last. The
+// settle that eventually comes belongs to the work running NOW, so it must alert
+// unconditionally -- the same rule setTurnActive applies to a clear that settles
+// nothing. Keeping a zero here would silence the settle that follows, which is
+// the failure that rule exists to prevent.
+func (st *agentActivity) voidHeldSettleLocked() {
+	if st.settleTimer == nil {
+		return
+	}
+	st.cancelSettleLocked()
+	st.settledToolUses = nil
+}
+
+// deliverHeldSettle publishes the settle whose window just closed.
+//
+// It re-derives rather than replaying the value the window captured, so a state
+// that moved inside the window reaches the client as what it IS -- and an agent
+// that went back to working publishes nothing at all, which is the case the
+// window exists for.
+func (h *OutputHandler) deliverHeldSettle(agentID, rootAgentID string) {
+	st := h.activityFor(agentID, rootAgentID)
+	st.mu.Lock()
+	// Release the slot BEFORE the derivation, and unconditionally. This window is
+	// spent whatever the re-derivation decides, and the ticket guard below can
+	// drop this call -- a handle left standing would then block every later
+	// settle from ever opening a window of its own.
+	st.settleTimer = nil
+	st.mu.Unlock()
+	seq := h.activitySeq.Add(1)
+	h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
+}
+
+// CancelHeldSettles drops every settle window still open. Shutdown calls it
+// after the deferred refreshes join, so no timer reads the registry or
+// broadcasts once the caller closes the database.
+//
+// The process exits already cancel each window they reach (they publish through
+// settleImmediate), so this is the belt to that pair of braces: it holds however
+// the exits ran, and it costs one walk of a map that has an entry per open tab.
+func (h *OutputHandler) CancelHeldSettles() {
+	h.activity.Range(func(_, v any) bool {
+		st := v.(*agentActivity)
+		st.mu.Lock()
+		st.cancelSettleLocked()
+		st.mu.Unlock()
+		return true
+	})
 }
 
 // activityInputs are the derivation's inputs from OUTSIDE the entry. Reading
@@ -190,6 +340,15 @@ func (h *OutputHandler) resolveRoot(agentID, rootAgentID string) string {
 // that prunes the other per-agent caches, so a closed agent leaves nothing
 // behind in the map.
 func (h *OutputHandler) ForgetActivity(agentID string) {
+	// The window first. A timer left running would re-create the entry it fires
+	// against (activityFor mints one on any touch) and broadcast for an agent
+	// this call just retired.
+	if v, ok := h.activity.Load(agentID); ok {
+		st := v.(*agentActivity)
+		st.mu.Lock()
+		st.cancelSettleLocked()
+		st.mu.Unlock()
+	}
 	h.activity.Delete(agentID)
 }
 
@@ -454,7 +613,7 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 	// The ticket is taken BEFORE the rows are read, so it orders refreshes by
 	// the age of the inputs they derive from.
 	seq := h.activitySeq.Add(1)
-	h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq)
+	h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleHeld)
 }
 
 // refreshActivityFrom is refreshActivity against a root the caller already
@@ -465,6 +624,10 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 // the answer. Reading them separately let two refreshes derive, then publish in
 // the reverse order, so a stale value latched.
 //
+// A settle it derives is HELD rather than published, unless the caller asks for
+// settleImmediate. See settleDelay for what the window is worth and what it
+// costs.
+//
 // One residual, stated because it is not free to close: the broadcast runs after
 // the unlock, because BroadcastAgentEvent can block on a slow transport and
 // holding a lock across it would serialize every registry op for the root behind
@@ -472,7 +635,7 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 // reach the wire out of order. The ticket removes the case that mattered -- a
 // stale reader overwriting a fresher answer, which the edge trigger then made
 // permanent -- and leaves only a reordering of two genuine transitions.
-func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []bgtask.Item, seq uint64) {
+func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []bgtask.Item, seq uint64, mode settleMode) {
 	in := h.externalActivityInputs(agentID, rootAgentID, rows)
 
 	st := h.activityFor(agentID, rootAgentID)
@@ -483,14 +646,38 @@ func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []
 		st.mu.Unlock()
 		return
 	}
+	if mode == settleImmediate {
+		// A process boundary supersedes any window in flight: no wake can follow a
+		// dead process. AFTER the ticket guard, never before -- an older refresh
+		// that cancels and then drops itself takes the settle with it, and the tab
+		// keeps a spinner for an agent whose process is gone.
+		st.cancelSettleLocked()
+	}
 	state := activityStateLocked(st, in)
 	if st.hasPublished && st.published == state {
 		st.publishedSeq = seq
+		// The agent is doing what the client already believes it is doing. A held
+		// settle described a stop that did not last, so it is void -- this is the
+		// cancel that a wake, a subagent restart and a drained input queue all
+		// reach. The ticket guard above is what makes it safe: a stale reader
+		// cannot cancel a window a fresher one opened.
+		st.voidHeldSettleLocked()
 		st.mu.Unlock()
 		return
 	}
 	var toolUses *int32
 	working := leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+	if state != working && st.published == working && mode == settleHeld {
+		// A settle, and nothing has told this client the work stopped yet. Hold
+		// it: the CLI resumes the same work microseconds later often enough that
+		// publishing here rings the completion sound at the moment the agent
+		// starts again. `published` stays WORKING, so the window ending re-derives
+		// against the state the client actually holds.
+		st.publishedSeq = seq
+		st.holdSettleLocked(h, agentID, rootAgentID)
+		st.mu.Unlock()
+		return
+	}
 	if state != working && st.published == working {
 		// The settle edge spends the count the last turn end recorded. A settle
 		// that follows no turn end -- a control request, a process exit -- leaves
@@ -522,7 +709,7 @@ func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []
 // row under it. A process exit and a registry change both move more than one
 // tab's answer at once, and a child that is never recomputed keeps a spinner
 // that nothing will ever clear.
-func (h *OutputHandler) refreshActivityTree(rootAgentID string) {
+func (h *OutputHandler) refreshActivityTree(rootAgentID string, mode settleMode) {
 	if rootAgentID == "" {
 		return
 	}
@@ -533,9 +720,9 @@ func (h *OutputHandler) refreshActivityTree(rootAgentID string) {
 	// different instant.
 	seq := h.activitySeq.Add(1)
 	rows := h.backgroundTaskRows(rootAgentID)
-	h.refreshActivityFrom(rootAgentID, rootAgentID, rows, seq)
+	h.refreshActivityFrom(rootAgentID, rootAgentID, rows, seq, mode)
 	for _, childID := range h.treeChildIDs(rootAgentID, rows) {
-		h.refreshActivityFrom(childID, rootAgentID, rows, seq)
+		h.refreshActivityFrom(childID, rootAgentID, rows, seq, mode)
 	}
 }
 
@@ -622,8 +809,15 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	// Without this, a turn that used no tool while an unrelated shell task ran
 	// left a zero behind, and the client suppresses a zero. The shell task then
 	// finished hours later in silence.
+	//
+	// A HELD settle is exempt, and reading the window is what tells the two
+	// apart. That settle IS the one this clear produced; it has not landed yet,
+	// so its count is still unspent and clearing here would make every ordinary
+	// turn end ring, zero-tool turns included.
 	st.mu.Lock()
-	st.settledToolUses = nil
+	if st.settleTimer == nil {
+		st.settledToolUses = nil
+	}
 	st.mu.Unlock()
 }
 
@@ -820,7 +1014,7 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	h.activityRefreshes.Add(1)
 	go func() {
 		defer h.activityRefreshes.Done()
-		h.refreshActivityTree(rootAgentID)
+		h.refreshActivityTree(rootAgentID, settleImmediate)
 	}()
 }
 

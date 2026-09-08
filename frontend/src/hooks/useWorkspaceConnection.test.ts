@@ -8,7 +8,7 @@ import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleActivityLevel, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -1972,11 +1972,11 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: Array<{ id: string, uses?: number }> = []
         const stores = activityStores(tabs, activity, (id, uses) => ended.push({ id, uses }))
 
-        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
         expect(activity.isBusy('a1')).toBe(true)
         expect(ended, 'going busy is not a settle').toEqual([])
 
-        handleActivityChanged('a1', { state: AgentActivityState.IDLE, numToolUses: 3 }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE, numToolUses: 3 }, stores)
         expect(activity.isBusy('a1')).toBe(false)
         expect(ended).toEqual([{ id: 'a1', uses: 3 }])
         expect(tabs.view.getAgentTab('a1')?.hasNotification, 'a1 is off screen').toBe(true)
@@ -1996,9 +1996,9 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const activity = createAgentActivityStore()
         const stores = activityStores(tabs, activity)
 
-        handleActivityChanged('root-1', { state: AgentActivityState.WORKING }, stores, 'live')
-        handleActivityChanged('child-1', { state: AgentActivityState.WORKING }, stores, 'live')
-        handleActivityChanged('child-1', { state: AgentActivityState.IDLE }, stores, 'live')
+        handleActivityChanged('root-1', { state: AgentActivityState.WORKING }, stores)
+        handleActivityChanged('child-1', { state: AgentActivityState.WORKING }, stores)
+        handleActivityChanged('child-1', { state: AgentActivityState.IDLE }, stores)
 
         expect(activity.isBusy('child-1')).toBe(false)
         expect(activity.isBusy('root-1'), 'the parent owes the user a reply').toBe(true)
@@ -2014,12 +2014,12 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: string[] = []
         const stores = activityStores(tabs, activity, id => ended.push(id))
 
-        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'live')
-        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
         // A catch-up replay lands beside the live event, and a subprocess
         // teardown drops the worker's "already published" mark, so the same
         // value reaches a client twice.
-        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
 
         expect(ended).toEqual(['a1'])
         dispose()
@@ -2035,7 +2035,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
 
         // A NOTIFY-mode tab can subscribe after the turn started and receive the
         // idle report alone. Nothing the user watched finished.
-        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, activityStores(tabs, activity, id => ended.push(id)), 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, activityStores(tabs, activity, id => ended.push(id)))
 
         expect(ended).toEqual([])
         expect(activity.isBusy('a1'), 'the write still lands').toBe(false)
@@ -2043,19 +2043,63 @@ describe('extracted handleAgentEvent arm handlers', () => {
       })
     })
 
-    it('stores the replay burst without ringing for it', () => {
+    it('rings for a settle that races the replay it arrives during', () => {
       createRoot((dispose) => {
+        // The reason the catch-up phase no longer stands between this event and
+        // the alert. A background task that ends while the burst drains settles
+        // the agent for real, and that settle is the one the user waits for.
+        // Suppressing it for the whole window discarded it.
         const tabs = makeTabStores()
         tabs.addAgent('a1')
         const activity = createAgentActivityStore()
         const ended: string[] = []
         const stores = activityStores(tabs, activity, id => ended.push(id))
 
-        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'catchingUp')
-        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'catchingUp')
+        handleActivityLevel('a1', AgentActivityState.WORKING, activity)
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
 
-        expect(ended, 'a reconnect must not greet the user with a burst').toEqual([])
-        expect(activity.isBusy('a1'), 'the state still hydrates').toBe(false)
+        expect(ended).toEqual(['a1'])
+        dispose()
+      })
+    })
+  })
+
+  describe('handleActivityLevel', () => {
+    it('seeds the store without ringing, so a reconnect greets nobody', () => {
+      createRoot((dispose) => {
+        // The catch-up BASELINE. An agent that settled while this client was
+        // away is not news the user asked for, and ringing for each one on
+        // every reconnect is the failure this split prevents.
+        const tabs = makeTabStores()
+        tabs.addAgent('a1')
+        const activity = createAgentActivityStore()
+        const ended: string[] = []
+        const stores = {
+          metadata: tabs.metadata,
+          selection: tabs.selection,
+          getActiveWorkspaceId: () => WS,
+          view: tabs.view,
+          agentActivityStore: activity,
+          onAgentSettled: (id: string) => ended.push(id),
+        }
+
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
+        handleActivityLevel('a1', AgentActivityState.IDLE, activity)
+
+        expect(ended, 'a level is not a transition').toEqual([])
+        expect(activity.isBusy('a1'), 'the state still seeds').toBe(false)
+        dispose()
+      })
+    })
+
+    it('keeps what it holds when the worker sends no opinion', () => {
+      createRoot((dispose) => {
+        const activity = createAgentActivityStore()
+        activity.apply('a1', AgentActivityState.WORKING)
+
+        handleActivityLevel('a1', AgentActivityState.UNSPECIFIED, activity)
+
+        expect(activity.isBusy('a1'), 'UNSPECIFIED must not overwrite a real answer').toBe(true)
         dispose()
       })
     })
@@ -2078,8 +2122,8 @@ describe('extracted handleAgentEvent arm handlers', () => {
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         const ended: Array<{ id: string, uses?: number }> = []
         const push = (id: string, uses?: number) => ended.push({ id, uses })
-        handleAgentSettled('a1', undefined, settledStores(tabs, push), 'live')
-        handleAgentSettled('a2', 3, settledStores(tabs, push), 'live')
+        handleAgentSettled('a1', undefined, settledStores(tabs, push))
+        handleAgentSettled('a2', 3, settledStores(tabs, push))
         // undefined is not zero: a settle that no turn end caused carries no
         // count and must still alert.
         expect(ended).toEqual([{ id: 'a1', uses: undefined }, { id: 'a2', uses: 3 }])
@@ -2097,23 +2141,8 @@ describe('extracted handleAgentEvent arm handlers', () => {
         tabs.addAgent('a2', {}, { tileId: secondTile, activate: false })
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a1')
-        handleAgentSettled('a2', undefined, settledStores(tabs), 'live')
+        handleAgentSettled('a2', undefined, settledStores(tabs))
         expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
-        dispose()
-      })
-    })
-
-    it('stays silent during catch-up', () => {
-      createRoot((dispose) => {
-        const tabs = makeTabStores()
-        tabs.addAgent('a1')
-        tabs.selection.setActiveById(TabType.AGENT, 'a1')
-        const ended: string[] = []
-        // A reconnect replays the activity of every agent that settled while the
-        // tab was closed. Ringing for each would greet the user with a burst.
-        handleAgentSettled('a1', undefined, settledStores(tabs, id => ended.push(id)), 'catchingUp')
-        expect(ended).toEqual([])
-        expect(tabs.view.getAgentTab('a1')?.hasNotification).not.toBe(true)
         dispose()
       })
     })
@@ -2122,7 +2151,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
         const ended: string[] = []
-        handleAgentSettled('never-existed', undefined, settledStores(tabs, id => ended.push(id)), 'live')
+        handleAgentSettled('never-existed', undefined, settledStores(tabs, id => ended.push(id)))
         expect(ended).toEqual([])
         dispose()
       })

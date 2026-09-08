@@ -942,6 +942,12 @@ func (svc *Service) Shutdown() {
 	// StopAll, which is what produces the exits that spawn them.
 	svc.Output.WaitActivityRefreshes()
 
+	// Then drop every settle still waiting out its debounce window. The exits
+	// above cancel each window they reach, and this holds however they ran: a
+	// timer that survived would read the registry and broadcast after the
+	// context below is cancelled and the caller closes the database.
+	svc.Output.CancelHeldSettles()
+
 	// Cancel the background-task write context last, AFTER every drain. Any
 	// in-flight bgtask write the drains did not cover now fails fast
 	// (context.Canceled) instead of racing the caller's sqlDB.Close() and

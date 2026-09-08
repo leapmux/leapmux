@@ -72,6 +72,80 @@ func (r *activityRecorder) agentIDs() []string {
 	return append([]string(nil), r.agents...)
 }
 
+// settleWindows drives the settle debounce in a test.
+//
+// The handler holds a WORKING -> not-WORKING publish for settleDelay, so a case
+// that asserts a settle has to say WHEN that window closes. Letting the real
+// delay run would make the machine that runs the suite decide the outcome, which
+// is the reason the handler takes its timer through a seam at all.
+//
+// A window cannot deliver from inside the arm: holdSettleLocked arms while it
+// holds the entry's mutex, and the delivery takes that mutex again.
+type settleWindows struct {
+	mu   sync.Mutex
+	open []*heldWindow
+}
+
+type heldWindow struct {
+	windows *settleWindows
+	deliver func()
+	// closed covers both ends: delivered, and stopped before it could deliver.
+	closed bool
+}
+
+func (w *settleWindows) timer(_ time.Duration, deliver func()) settleStopper {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	held := &heldWindow{windows: w, deliver: deliver}
+	w.open = append(w.open, held)
+	return held
+}
+
+// Stop reports whether this window was still open, matching *time.Timer.Stop.
+func (h *heldWindow) Stop() bool {
+	h.windows.mu.Lock()
+	defer h.windows.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.closed = true
+	return true
+}
+
+// close ends every window open right now, exactly as the delay expiring would.
+// It reports how many delivered, so a case can prove a window was open at all
+// rather than asserting against a settle that never waited.
+func (w *settleWindows) close() int {
+	w.mu.Lock()
+	delivering := make([]*heldWindow, 0, len(w.open))
+	for _, held := range w.open {
+		if !held.closed {
+			held.closed = true
+			delivering = append(delivering, held)
+		}
+	}
+	w.open = nil
+	w.mu.Unlock()
+	// Outside the lock: each delivery re-derives, which can arm the NEXT window.
+	for _, held := range delivering {
+		held.deliver()
+	}
+	return len(delivering)
+}
+
+// holdSettles puts a controllable settle window on h and returns it.
+//
+// Every handler a test builds gets one from its own constructor, so no case ever
+// arms a real 500 ms timer that outlives it. A case that drives the window calls
+// this again for the handle; the second install is safe because it lands at
+// setup time, before any output flows and so before anything can arm.
+func holdSettles(t *testing.T, h *OutputHandler) *settleWindows {
+	t.Helper()
+	w := &settleWindows{}
+	h.newSettleTimer = w.timer
+	return w
+}
+
 // newActivityHandler wires a handler whose process-running check always answers
 // true, so a test can drive the other inputs in isolation. `agents` is nil here,
 // which the derivation reads as "no process": the fake below replaces that.
@@ -81,6 +155,7 @@ func newActivityHandler(t *testing.T, agentID string) (*OutputHandler, *activity
 	rec := newActivityRecorder("ch-1")
 	m.agents.setWatches("ch-1", []watchEntry{{id: agentID, mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, rec)
 	h := &OutputHandler{watcher: m, processRunning: func(string) bool { return true }}
+	holdSettles(t, h)
 	return h, rec
 }
 
@@ -88,9 +163,15 @@ func TestActivity_TurnOpensAndClosesTheBusyState(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.setTurnActive("agent-1", "agent-1", false)
+
+	// Opening the turn is published at once; the settle waits out its window,
+	// because work that resumes inside it never reaches a client as a stop.
+	assert.Equal(t, []bool{true}, rec.busyStates())
+	require.Equal(t, 1, settles.close(), "the clear opened a settle window")
 
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
 	assert.Equal(t, []string{"agent-1", "agent-1"}, rec.agentIDs())
@@ -128,6 +209,7 @@ func TestActivity_PendingControlRequestMakesAnAgentIdleMidTurn(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	require.Equal(t, []bool{true}, rec.busyStates())
 
@@ -135,6 +217,7 @@ func TestActivity_PendingControlRequestMakesAnAgentIdleMidTurn(t *testing.T) {
 	// prompt. Reporting busy there would spin an indicator at somebody who is
 	// being asked a question.
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	settles.close()
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
 
 	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
@@ -150,13 +233,18 @@ func TestActivity_APromptMidTurnIsWaitingRatherThanIdle(t *testing.T) {
 	// straight at the prompt, but the turn is still in flight and closing the tab
 	// kills it along with every subagent under it.
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
 
+	// The SNAPSHOT is exact while the window runs -- it derives from the inputs
+	// and never consults it -- so the assertions below split: the read path
+	// answers now, the wire answers when the window closes.
 	got := h.AgentActivitySnapshot("agent-1", "agent-1")
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER, got.State)
 	assert.False(t, got.Working(), "the indicator must not spin at somebody being asked a question")
 	assert.True(t, got.InterruptsWork(), "but a close would still kill the turn")
+	require.Equal(t, 1, settles.close())
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
 		rec.last().GetState(), "and the state reaches the wire, so both surfaces read the same rule")
 }
@@ -179,12 +267,14 @@ func TestActivity_DuplicateControlRequestPublishesOnce(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
 	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-unknown")
 
+	require.Equal(t, 1, settles.close(), "the duplicate opened no second window either")
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
 }
 
@@ -192,9 +282,11 @@ func TestActivity_TwoPromptsNeedBothAnswersBeforeWorkResumes(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-2")
+	settles.close()
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
 	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
@@ -208,6 +300,7 @@ func TestActivity_DeadProcessIsIdleWhateverElseIsRecorded(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	running := true
 	h.processRunning = func(string) bool { return running }
 
@@ -219,6 +312,7 @@ func TestActivity_DeadProcessIsIdleWhateverElseIsRecorded(t *testing.T) {
 	running = false
 	h.refreshActivity("agent-1", "agent-1")
 
+	require.Equal(t, 1, settles.close(), "a settle waits out its window whatever produced it")
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
 }
 
@@ -226,8 +320,10 @@ func TestActivity_ProcessExitClearsEverythingAndSettles(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	settles.close()
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
 	// HandleAgentProcessExit broadcasts no AgentStatusChange, so this is the only
@@ -291,10 +387,12 @@ func TestActivity_SettleCarriesTheToolCountOfTheTurnThatEnded(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 
 	h.noteTurnEnded("agent-1", "agent-1", 3, true)
 	h.setTurnActive("agent-1", "agent-1", false)
+	require.Equal(t, 1, settles.close())
 
 	last := rec.last()
 	require.NotNil(t, last)
@@ -310,9 +408,11 @@ func TestActivity_ZeroToolTurnStaysDistinguishableFromNoCount(t *testing.T) {
 	// not collapse: unset means "ring", 0 means "this turn did nothing worth
 	// interrupting the user for".
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteTurnEnded("agent-1", "agent-1", 0, true)
 	h.setTurnActive("agent-1", "agent-1", false)
+	require.Equal(t, 1, settles.close())
 
 	last := rec.last()
 	require.NotNil(t, last.NumToolUses)
@@ -355,6 +455,221 @@ func TestActivity_NewTurnDropsAnUnspentCount(t *testing.T) {
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	assert.Nil(t, rec.last().NumToolUses)
+}
+
+// --- The settle debounce window. See settleDelay. ---
+
+func TestActivity_WorkThatResumesInsideTheWindowNeverSettles(t *testing.T) {
+	t.Parallel()
+
+	// The window's whole reason. A backgrounded shell completes and the CLI wakes
+	// the agent into a new turn; publishing the gap between the two rings the
+	// completion sound at the moment the agent starts again.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.setTurnActive("agent-1", "agent-1", false)
+	h.setTurnActive("agent-1", "agent-1", true)
+
+	assert.Equal(t, 0, settles.close(), "the wake voided the window")
+	assert.Equal(t, []bool{true}, rec.busyStates(),
+		"the client was never told the work stopped, so there is nothing to correct")
+}
+
+func TestActivity_ASubagentRestartDoesNotSettleTheRoot(t *testing.T) {
+	t.Parallel()
+
+	// The same flicker through the registry. A subagent's own shell completes,
+	// the CLI restarts that subagent, and the row ends and reopens in one output
+	// burst. The root has no turn of its own here, so the row IS its work.
+	const rootID = "root-1"
+	svc, sink := setupRootSink(t, rootID)
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "SCAN", Status: bgtask.StatusRunning,
+	}))
+	rec := watchActivity(t, svc, rootID)
+	settles := holdSettles(t, svc.Output)
+	require.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working())
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	assert.Equal(t, 0, settles.close(), "the restart voided the window")
+	assert.Empty(t, rec.busyStates(), "the root published nothing at all")
+	assert.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working())
+}
+
+func TestActivity_TheWindowPublishesTheStateItENDSWith(t *testing.T) {
+	t.Parallel()
+
+	// The delivery re-derives rather than replaying what opened the window, so a
+	// state that moved inside it reaches the client as what it IS. Here the turn
+	// clear opens the window and a prompt arrives before it closes.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+
+	require.Equal(t, 1, settles.close())
+
+	require.NotNil(t, rec.last())
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, rec.last().GetState(),
+		"a prompt with no turn behind it is plain idle, and that is what lands")
+}
+
+func TestActivity_ASecondDerivationDoesNotRestartTheWindow(t *testing.T) {
+	t.Parallel()
+
+	// The window opens at the edge that stopped the work. A refresh that derives
+	// the same stop again is not a second edge, and re-arming there would let a
+	// busy registry push a real settle out for as long as it kept mutating.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+	h.refreshActivity("agent-1", "agent-1")
+	h.refreshActivity("agent-1", "agent-1")
+
+	require.Equal(t, 1, settles.close(), "three derivations of one stop, one window")
+	assert.Equal(t, []bool{true, false}, rec.busyStates())
+}
+
+func TestActivity_AVoidedWindowDropsTheCountItCarried(t *testing.T) {
+	t.Parallel()
+
+	// A zero-tool turn ends, work resumes inside the window, and the settle that
+	// eventually comes belongs to that work. Keeping the zero would silence it --
+	// the same failure AClearThatDoesNotSettleDropsTheCount prevents, reached
+	// through the window instead of through the clear.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteTurnEnded("agent-1", "agent-1", 0, true)
+	h.setTurnActive("agent-1", "agent-1", false)
+	require.NotNil(t, unspentToolCount(h, "agent-1"), "the held settle still owns the count")
+
+	// The wake, then a stop that really lasts.
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, 0, settles.close())
+	assert.Nil(t, unspentToolCount(h, "agent-1"), "the voided window dropped it")
+
+	h.setTurnActive("agent-1", "agent-1", false)
+	require.Equal(t, 1, settles.close())
+	assert.Nil(t, rec.last().NumToolUses, "so this settle alerts unconditionally")
+}
+
+func TestActivity_AProcessBoundaryPublishesWithoutWaiting(t *testing.T) {
+	t.Parallel()
+
+	// A dead process resumes nothing, so there is nothing to wait for -- and a
+	// window held there would leave a timer to fire after shutdown closed the
+	// database it reads.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.NoteAgentProcessExited("agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true, false}, rec.busyStates(), "the exit lands with no window")
+	assert.Equal(t, 0, settles.close(), "and opened none")
+}
+
+func TestActivity_ShutdownDropsAWindowStillOpen(t *testing.T) {
+	t.Parallel()
+
+	// The belt to the process exits' braces. A timer that survived shutdown would
+	// read the registry and broadcast after the caller closed the database.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	h.CancelHeldSettles()
+
+	assert.Equal(t, 0, settles.close(), "the window was already dropped")
+	assert.Equal(t, []bool{true}, rec.busyStates(), "and nothing reached the wire")
+}
+
+func TestActivity_ForgettingAnAgentDropsItsWindow(t *testing.T) {
+	t.Parallel()
+
+	// A timer left running would re-create the entry it fires against and
+	// broadcast for an agent this call just retired.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	h.ForgetActivity("agent-1")
+
+	assert.Equal(t, 0, settles.close())
+	assert.Equal(t, []bool{true}, rec.busyStates())
+}
+
+func TestActivity_AStaleRefreshDoesNotCancelAFresherWindow(t *testing.T) {
+	t.Parallel()
+
+	// The ticket guard covers the settle window too, and the ORDER inside
+	// refreshActivityFrom is what makes it hold. A refresh that cancels before it
+	// checks its ticket takes a fresher window down and then drops itself, so the
+	// settle is lost and the tab keeps a spinner nothing will ever clear.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	// A process-boundary refresh, parked between taking its ticket and deriving.
+	staleSeq := h.activitySeq.Add(1)
+
+	// The turn ends meanwhile, on a fresher ticket, and opens the window.
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	// Now the parked one lands, carrying inputs older than that.
+	h.refreshActivityFrom("agent-1", "agent-1", nil, staleSeq, settleImmediate)
+
+	require.Equal(t, 1, settles.close(), "the older refresh must leave the window alone")
+	assert.Equal(t, []bool{true, false}, rec.busyStates(), "so the settle still lands")
+}
+
+func TestActivity_AChildSettleIsHeldAndDeliveredUnderItsOwnID(t *testing.T) {
+	t.Parallel()
+
+	// The window is per AGENT, and the delivery has to address the agent it was
+	// opened for. A subagent tab shows its own spinner, so a settle delivered
+	// under the root's id would leave the child spinning and drop the parent's
+	// indicator instead.
+	const rootID = "root-1"
+	svc, sink := setupRootSink(t, rootID)
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "SCAN", Status: bgtask.StatusRunning,
+	}))
+	rec := watchActivity(t, svc, rootID, childID)
+	settles := holdSettles(t, svc.Output)
+	// The root owes the user a reply, so only the CHILD settles when the row ends.
+	svc.Output.setTurnActive(rootID, rootID, true)
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	assert.Empty(t, rec.agentIDs(), "the child's settle waits out its window")
+
+	require.Equal(t, 1, settles.close(), "one window, for the child alone")
+
+	assert.Equal(t, []string{childID}, rec.agentIDs())
+	assert.Equal(t, []bool{false}, rec.busyStates())
+	assert.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working(),
+		"and the root's turn is untouched")
 }
 
 func TestActivity_TreeRecomputesAChildTheDisplayCapDropped(t *testing.T) {
@@ -418,6 +733,7 @@ func TestActivity_AChildTurnEndLeavesTheRootWorking(t *testing.T) {
 	// must not settle the root: the root still owes the user a reply, and
 	// dropping the spinner there says it finished while the root still runs.
 	h, rec := newActivityHandler(t, "root-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("root-1", "root-1", true)
 	require.Equal(t, []bool{true}, rec.busyStates())
 
@@ -434,6 +750,7 @@ func TestActivity_AChildTurnEndLeavesTheRootWorking(t *testing.T) {
 	// because no turn end of the ROOT's recorded one -- which is what tells the
 	// client to ring rather than to read a zero.
 	h.setTurnActive("root-1", "root-1", false)
+	settles.close()
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 	assert.Nil(t, rec.last().NumToolUses, "a child's count belongs to the child's settle")
 }
@@ -588,7 +905,7 @@ func TestActivity_AStaleDerivationDoesNotLatchOverAFresherOne(t *testing.T) {
 		"the running task makes the agent busy")
 
 	// Now the slow refresh finishes, carrying its older rows.
-	svc.Output.refreshActivityFrom(rootID, rootID, staleRows, staleSeq)
+	svc.Output.refreshActivityFrom(rootID, rootID, staleRows, staleSeq, settleHeld)
 
 	st := svc.Output.activityFor(rootID, rootID)
 	st.mu.Lock()
@@ -663,6 +980,78 @@ func TestActivity_AClearThatDoesNotSettleDropsTheCount(t *testing.T) {
 		"the settle the shell task causes belongs to the task, so it must alert")
 }
 
+// watchActivity attaches a recorder to a service-backed test, so a case can
+// assert what reached the WIRE rather than only what a snapshot read derives.
+func watchActivity(t *testing.T, svc *Service, agentIDs ...string) *activityRecorder {
+	t.Helper()
+	rec := newActivityRecorder("ch-activity")
+	entries := make([]watchEntry, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		entries = append(entries, watchEntry{id: agentID, mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY})
+	}
+	svc.Watchers.agents.setWatches("ch-activity", entries, rec)
+	return rec
+}
+
+func TestActivity_TheLastBackgroundTaskSettlesTheAgent(t *testing.T) {
+	t.Parallel()
+
+	// The other end of AClearThatDoesNotSettleDropsTheCount, which stops at the
+	// unspent count. A turn that leaves a shell task running rings nothing, and
+	// the ring the user waits for is the one that task's END produces. Without
+	// this the whole path is asserted up to the last hop and never through it.
+	// setupRootSink, not setupActivityRegistryTest: the latter leaves a running
+	// subagent row behind, and a second live row means the shell task's close is
+	// never the LAST one.
+	const rootID = "root-1"
+	svc, sink := setupRootSink(t, rootID)
+	svc.Output.processRunning = func(string) bool { return true }
+	rec := watchActivity(t, svc, rootID)
+	settles := holdSettles(t, svc.Output)
+	svc.Output.setTurnActive(rootID, rootID, true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-shell", Kind: bgtask.KindShell,
+		Title: "npm run build", Status: bgtask.StatusRunning,
+	}))
+
+	svc.Output.noteTurnEnded(rootID, rootID, 4, true)
+	svc.Output.setTurnActive(rootID, rootID, false)
+	assert.Equal(t, []bool{true}, rec.busyStates(),
+		"the shell task holds the agent past its own turn end, so nothing rings yet")
+
+	require.NoError(t, sink.CloseBackgroundTask("row-shell", bgtask.StatusCompleted))
+	require.Equal(t, 1, settles.close(), "the last task's close opened the settle window")
+
+	require.Equal(t, []bool{true, false}, rec.busyStates(), "the last task ends the work")
+	assert.Nil(t, rec.last().NumToolUses,
+		"the settle belongs to the task, not to the turn, so it alerts unconditionally")
+}
+
+func TestActivity_AnEarlierBackgroundTaskSettlesNothing(t *testing.T) {
+	t.Parallel()
+
+	// LAST, not any. A task that ends while a sibling runs moved nothing the
+	// user is waiting for, and ringing there is the same early alert the
+	// subagent rule exists to prevent.
+	const rootID = "root-1"
+	svc, sink := setupRootSink(t, rootID)
+	svc.Output.processRunning = func(string) bool { return true }
+	rec := watchActivity(t, svc, rootID)
+	for _, rowKey := range []string{"row-shell-1", "row-shell-2"} {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: rowKey, Kind: bgtask.KindShell,
+			Title: rowKey, Status: bgtask.StatusRunning,
+		}))
+	}
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	require.NoError(t, sink.CloseBackgroundTask("row-shell-1", bgtask.StatusCompleted))
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "one of two tasks ending is not a settle")
+	assert.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working())
+}
+
 func TestActivity_AClearThatSettlesStillSpendsTheCount(t *testing.T) {
 	t.Parallel()
 
@@ -671,9 +1060,14 @@ func TestActivity_AClearThatSettlesStillSpendsTheCount(t *testing.T) {
 	// sound for every turn that used no tool, which is the case it exists to
 	// suppress.
 	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteTurnEnded("agent-1", "agent-1", 0, true)
 	h.setTurnActive("agent-1", "agent-1", false)
+	// The clear runs while the settle it produced still waits, so the count has
+	// to survive the window. Clearing it there made every ordinary turn end ring,
+	// zero-tool turns included.
+	require.Equal(t, 1, settles.close())
 
 	last := rec.last()
 	require.NotNil(t, last)

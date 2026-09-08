@@ -7,7 +7,7 @@
  * 1700-line module without changing a line of behaviour.
  */
 import type { Provider } from '~/components/chat/providers/registry'
-import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -26,7 +26,7 @@ import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
@@ -943,6 +943,11 @@ export function isAgentTabOnScreen(
  * as an idle report arriving: the same value reaches a client twice when a
  * catch-up replay lands beside a live event, and an idle report can arrive for
  * an agent this client never saw working. See AgentActivityStore.setBusy.
+ *
+ * Every AgentActivityChanged is a TRANSITION, so this runs in every catch-up
+ * phase. A settle that lands while the tab replays is a live settle -- the agent
+ * finished while the burst drained -- and it must ring. The catch-up BASELINE is
+ * a level and arrives on CatchUpStart instead; handleActivityLevel takes it.
  */
 export function handleActivityChanged(
   agentId: string,
@@ -951,10 +956,32 @@ export function handleActivityChanged(
     agentActivityStore: AgentActivityStore
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
-  catchUpPhase: CatchUpPhase,
 ): void {
   if (stores.agentActivityStore.apply(agentId, value.state))
-    handleAgentSettled(agentId, value.numToolUses, stores, catchUpPhase)
+    handleAgentSettled(agentId, value.numToolUses, stores)
+}
+
+/**
+ * The CatchUpStart branch of the same state: seed the store, and raise nothing.
+ *
+ * A LEVEL, not a transition. It says what the agent is doing as the replay
+ * begins, so the tab paints the right spinner while the burst lands. An agent
+ * that settled while this client was away is not news the user asked for, and
+ * ringing for each one on every reconnect is the failure this split prevents.
+ * `apply` reports the edge it saw; dropping that return is the whole point, and
+ * `useTabHydrators` drops it for the same reason on the list-read path.
+ *
+ * UNSPECIFIED is "no opinion", not a state: a worker that sends one must not
+ * overwrite an answer this client already holds.
+ */
+export function handleActivityLevel(
+  agentId: string,
+  state: AgentActivityState,
+  agentActivityStore: AgentActivityStore,
+): void {
+  if (state === AgentActivityState.UNSPECIFIED)
+    return
+  agentActivityStore.apply(agentId, state)
 }
 
 /**
@@ -976,8 +1003,12 @@ export function handleActivityChanged(
  * that cannot report one. Explicit 0 means the turn did nothing worth
  * interrupting the user for.
  *
- * Restricted to the 'live' phase: a catch-up replay would otherwise ring for
- * every agent that settled while the tab was closed.
+ * Runs in every catch-up phase, because its one caller only reaches it on a
+ * transition. The phase test that used to stand here dropped a settle that
+ * merely RACED a replay -- a background task ending while the burst drained --
+ * and that settle is the one the user waits for. The baseline the phase test
+ * existed to silence no longer arrives as a transition at all: it rides
+ * CatchUpStart, and handleActivityLevel raises nothing for it.
  */
 export function handleAgentSettled(
   agentId: string,
@@ -985,10 +1016,7 @@ export function handleAgentSettled(
   stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
-  catchUpPhase: CatchUpPhase,
 ): void {
-  if (catchUpPhase !== 'live')
-    return
   const { metadata, selection, getActiveWorkspaceId, view } = stores
   if (!view.getAgentTab(agentId))
     return

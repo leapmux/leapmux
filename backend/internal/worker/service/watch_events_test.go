@@ -516,7 +516,6 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 
 			var start *leapmuxv1.CatchUpStart
 			replayed := 0
-			sawActivity := false
 			sawTodos := false
 			sawStatus := false
 			sawControl := false
@@ -527,7 +526,6 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				if event.GetAgentMessage() != nil {
 					replayed++
 				}
-				sawActivity = sawActivity || event.GetActivityChanged() != nil
 				sawTodos = sawTodos || event.GetTodosChanged() != nil
 				sawStatus = sawStatus || event.GetStatusChange() != nil
 				sawControl = sawControl || event.GetControlRequest() != nil
@@ -536,7 +534,8 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 			require.NotNil(t, start.LatestSeq)
 			assert.Equal(t, seqs[len(seqs)-1], start.GetLatestSeq())
 			assert.Equal(t, tc.wantReplayFrames, replayed)
-			assert.True(t, sawActivity, "the replay decision must not skip the activity snapshot")
+			assert.NotEqual(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED,
+				start.GetActivityState(), "the replay decision must not skip the activity level")
 			assert.True(t, sawTodos, "the replay decision must not skip the to-do snapshot")
 			assert.True(t, sawStatus, "the replay decision must not skip the status marker")
 			assert.True(t, sawControl, "the replay decision must not skip pending control requests")
@@ -983,6 +982,11 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 // This is the third leg of the same pattern the background-task registry
 // already uses -- AgentInfo.busy hydrates, this replays, AgentActivityChanged
 // pushes -- and it is the one that covers the transition into FULL.
+//
+// It rides CatchUpStart, and the case asserts that no AgentActivityChanged
+// carries it. That message means a TRANSITION, and the client rings on one; a
+// baseline sent as a transition forced the client to suppress the alert for the
+// whole catch-up window, which discarded every settle that raced the replay.
 func TestReplayIncludesActivitySnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -1011,30 +1015,34 @@ func TestReplayIncludesActivitySnapshot(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
 	assert.False(t, streamEndedWithError(w), "watch replay must not surface a stream error")
 
-	var activity *leapmuxv1.AgentActivityChanged
-	var activityAgentID string
+	var start *leapmuxv1.CatchUpStart
+	var startAgentID string
+	sawTransition := false
 	for _, e := range decodeAgentEvents(w) {
-		if changed := e.GetActivityChanged(); changed != nil {
-			activity = changed
-			activityAgentID = e.GetAgentId()
-			break
+		if s := e.GetCatchUpStart(); s != nil && start == nil {
+			start = s
+			startAgentID = e.GetAgentId()
 		}
+		sawTransition = sawTransition || e.GetActivityChanged() != nil
 	}
-	require.NotNil(t, activity, "replay must include an AgentActivityChanged event")
+	require.NotNil(t, start, "replay must include a CatchUpStart frame")
 	// Under the WATCHED agent's own id, not the registry owner's: a child tab's
 	// answer is its own row, which differs from its root's.
-	assert.Equal(t, "root-1", activityAgentID)
-	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, activity.GetState(), "a running registry row makes the agent working")
-	assert.Nil(t, activity.NumToolUses, "a replay completes no turn, so it carries no count")
+	assert.Equal(t, "root-1", startAgentID)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, start.GetActivityState(),
+		"a running registry row makes the agent working")
+	assert.False(t, sawTransition,
+		"a baseline is a level; sending it as a transition makes the client ring for an agent that settled while it was away")
 }
 
 // TestReplayActivityPrecedesTheMessageBurst pins the ORDER, which is the whole
-// reason this event is in the replay at all.
+// reason this state is in the replay at all.
 //
-// The tab renders the replayed messages as they arrive. An activity frame that
+// The tab renders the replayed messages as they arrive. An activity level that
 // lands after them leaves the burst painting with no thinking indicator and no
-// Interrupt button on an agent that is working -- exactly the window the event
-// exists to close.
+// Interrupt button on an agent that is working -- exactly the window the state
+// exists to close. Riding CatchUpStart is what puts it first; this case fails if
+// that state ever moves to a frame of its own again.
 func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 	t.Parallel()
 
@@ -1073,17 +1081,68 @@ func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 
 	activityAt, firstMessageAt := -1, -1
 	for i, e := range decodeAgentEvents(w) {
-		if e.GetActivityChanged() != nil && activityAt < 0 {
+		if s := e.GetCatchUpStart(); s != nil && activityAt < 0 &&
+			s.GetActivityState() != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED {
 			activityAt = i
 		}
 		if e.GetAgentMessage() != nil && firstMessageAt < 0 {
 			firstMessageAt = i
 		}
 	}
-	require.GreaterOrEqual(t, activityAt, 0, "replay must include an AgentActivityChanged event")
+	require.GreaterOrEqual(t, activityAt, 0, "replay must carry the activity level on CatchUpStart")
 	require.GreaterOrEqual(t, firstMessageAt, 0, "this case needs a message burst to overtake")
 	assert.Less(t, activityAt, firstMessageAt,
 		"the tab must know it is busy before it renders the replayed messages")
+}
+
+// TestReplayActivityIsTheWATCHEDAgentsOwnAnswer pins the id the level derives
+// against.
+//
+// A child's answer is its own registry row, and a root rolls up every
+// descendant. Deriving the level against the ROOT would hand a finished subagent
+// its parent's spinner for the whole time a sibling ran, and the swap is
+// invisible in the root case because there the two ids are equal.
+func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-own",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	svc.Output.processRunning = func(string) bool { return true }
+	sink := svc.Output.NewSink("root-own", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	childID, err := sink.EnsureChildAgent("spawn-own", "row-own", "finished child")
+	require.NoError(t, err)
+	// This child is DONE while a sibling keeps running, so the two ids disagree:
+	// the child is idle and the root still rolls the sibling up.
+	require.NoError(t, sink.CloseBackgroundTask("row-own", bgtask.StatusCompleted))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-sibling", Kind: bgtask.KindSubagent, Title: "sibling", Status: bgtask.StatusRunning,
+	}))
+	require.True(t, svc.Output.AgentActivitySnapshot("root-own", "root-own").Working(),
+		"the sibling keeps the root busy, or this case proves nothing")
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: childID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "the child's FULL watch must drive one catch-up replay")
+
+	var start *leapmuxv1.CatchUpStart
+	for _, e := range decodeAgentEvents(w) {
+		if s := e.GetCatchUpStart(); s != nil && e.GetAgentId() == childID {
+			start = s
+			break
+		}
+	}
+	require.NotNil(t, start, "the child's replay must carry a CatchUpStart")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, start.GetActivityState(),
+		"the finished child is idle, whatever its root rolls up")
 }
 
 // TestWatchChildAgentReplaysWithoutProcess pins that watching a CHILD agent

@@ -405,6 +405,13 @@ message AgentTurnEnd {
 //
 // The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
 // background task of this agent's is still running.
+//
+// EVERY instance of this message is a transition, so a client may ring on one
+// with no further test. The catch-up baseline is a LEVEL and travels on
+// CatchUpStart.activity_state instead. The two rode this message together once,
+// and the client could not tell them apart: it suppressed the alert for the
+// whole catch-up window, which discarded each genuine settle that landed while a
+// tab replayed.
 message AgentActivityChanged {
   AgentActivityState state = 1;
   // Tool calls in the turn that this settle completes. The Worker records the
@@ -418,11 +425,12 @@ message AgentActivityChanged {
   // zero-tool turn, so unset and 0 must stay distinguishable: unset means
   // "ring", 0 means "this turn did nothing worth interrupting the user for".
   optional int32 num_tool_uses = 2;
-
 }
 
 // CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
-// message replay burst, carrying the agent's authoritative live-tail seq. A windowed
+// message replay burst. It carries the agent's authoritative live-tail seq and the
+// agent's derived activity, which are the two things a tab needs before it renders
+// the burst. A windowed
 // client that was disconnected reconciles against it FIRST -- dropping any loaded row
 // whose seq exceeds latest_seq (a tail deletion it missed while away) and clamping its
 // recorded live-tail -- so phantom rows are gone before the replay renders rather than
@@ -434,6 +442,19 @@ message CatchUpStart {
   // reconciliation; present 0 = the agent genuinely has no messages; present >0 = the
   // authoritative MAX(seq).
   optional int64 latest_seq = 1;
+  // What the agent is doing at the moment replay begins, so a tab that just
+  // promoted to FULL renders the right spinner and the right Interrupt button
+  // while the burst lands rather than after it drains.
+  //
+  // A LEVEL, not a transition, which is why it rides this frame instead of
+  // AgentActivityChanged: the client rings on that message and must not ring for
+  // an agent that settled while it was away. The client seeds its store from
+  // this field and raises no alert. Under the WATCHED agent's own id, not the
+  // registry owner's -- a child tab's answer is its own registry row.
+  //
+  // UNSPECIFIED when the worker sends no opinion; the client then keeps whatever
+  // it holds rather than overwriting a fresher answer with a blank one.
+  AgentActivityState activity_state = 2;
 }
 
 message CatchUpComplete {
