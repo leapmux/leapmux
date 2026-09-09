@@ -377,6 +377,18 @@ test.describe('agent input queue', () => {
     await expect(page.getByTestId('send-button').locator('span')).toBeHidden()
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
 
+    // Losing the word must not change the button's HEIGHT. A button is
+    // `inline-flex`, so a flex container with no line-box strut takes the
+    // height of its tallest ITEM: one line of text is 18px and the icon that
+    // replaces it is 14px, so an unpinned button shrinks by 4px exactly here
+    // and stops matching the `[+]` it shares the row with.
+    const heightOf = (id: string) =>
+      page.getByTestId(id).evaluate(el => el.getBoundingClientRect().height)
+    const plusHeight = await heightOf('composer-plus-trigger')
+    expect(plusHeight).toBeGreaterThan(0)
+    for (const id of ['queue-pause-button', 'send-button'])
+      expect(await heightOf(id), `${id} must match the [+] while icon-only`).toBe(plusHeight)
+
     // The CLUSTER's own box, not the slot's. The slot obeys its `max-width`
     // whatever its content does, so measuring the slot alone proves nothing --
     // a cluster that refuses to shrink simply overflows the slot's left edge
