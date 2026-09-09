@@ -151,16 +151,46 @@ export const controlBannerTitle = style({
 // Interrupt/Send cluster included. A border here as well painted a SECOND line
 // a couple of pixels from the first, because a control request forces the
 // expanded layout and therefore always renders both.
+/**
+ * The action row of a control request.
+ *
+ * NO vertical padding. The row is the only child of the composer's footer slot
+ * that sets its own height, and the slot centres what it holds -- so padding
+ * here made the slot taller than the Pause button inside it, and that button
+ * then sat 4px above the `[+]` anchored to the same bottom line. The slot's own
+ * `bottom` offset is what separates the row from the box edge.
+ *
+ * It SHRINKS. `flex-shrink: 0` pinned the row at its max-content width, so a
+ * row wider than the composer overflowed to the LEFT -- `justify-content:
+ * flex-end` pushes the overflow that way -- and the editor's `overflow: hidden`
+ * clipped it. On a phone the whole allow-choice group sat off the left edge,
+ * invisible and impossible to tap. `min-width: 0` alone could not help, because
+ * a shrink factor of zero refuses to shrink at all.
+ *
+ * The tracks are `auto auto 1fr`, so a zone the caller omits reserves nothing.
+ * `1fr auto 1fr` gave the empty left zone an equal share of the row, which left
+ * a decision row half the width it had.
+ */
 export const controlFooter = style({
   display: 'grid',
-  gridTemplateColumns: '1fr auto 1fr',
+  gridTemplateColumns: 'auto auto 1fr',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-1) var(--space-2)',
+  padding: '0 var(--space-2)',
   backgroundColor: 'var(--background)',
-  flexShrink: 0,
   flexGrow: 1,
   minWidth: 0,
+})
+
+/**
+ * The track shape that CENTRES the middle zone, for a row that fills it.
+ *
+ * Equal outer tracks are what put the centre in the middle, and they are also
+ * what wastes a row that has no middle -- so the base rule above omits them and
+ * this restores them exactly where the centring is the point.
+ */
+export const controlFooterCentred = style({
+  gridTemplateColumns: '1fr auto 1fr',
 })
 
 // All three zones pin their own column. Auto-placement would put a zone's column
@@ -183,20 +213,35 @@ export const controlFooterCentre = style({
   gridColumn: 2,
 })
 
+// `minWidth: 0`, so the `1fr` track can actually constrain this zone. A grid
+// item's automatic minimum size is its min-content width, and the decision
+// buttons never wrap, so without this the track grew to fit them and the row
+// overflowed the composer instead of compressing.
 export const controlFooterRight = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
   justifyContent: 'flex-end',
   gridColumn: 3,
+  minWidth: 0,
 })
 
-// The leading options cluster of a decision row: the request's switches, then
-// the allow-choice pill group, then the permission pill group, on ONE line ahead
-// of the decision buttons. A pill group is button-high, so nothing here needs
-// the second line the switch COLUMN used to occupy; the cluster keeps
-// `minWidth: 0` so a narrow composer can compress the pills (they clip inside
-// their own box) before the buttons move.
+/**
+ * The leading options cluster of a decision row: the request's switches, then
+ * the allow-choice pill group, then the permission pill group, on ONE line ahead
+ * of the decision buttons. A pill group is button-high, so nothing here needs
+ * the second line the switch COLUMN used to occupy.
+ *
+ * It SCROLLS sideways, and it is the only part of the row that gives way. The
+ * decision buttons keep their size, because Allow and Reject must stay readable
+ * and reachable at every width; this cluster takes what is left and the user
+ * swipes it. The alternative -- letting the pills compress -- squeezed a group
+ * to two pixels on a phone, which states nothing and answers nothing.
+ *
+ * The scrollbar is HIDDEN, as the tab strip hides its own (`tabList` in
+ * `~/components/shell/TabBar.css.ts`). A scrollbar inside a 28px row would eat
+ * most of it, and this is a swipe surface rather than a scroll region.
+ */
 export const controlRequestSwitches = style({
   display: 'flex',
   flexDirection: 'row',
@@ -204,15 +249,23 @@ export const controlRequestSwitches = style({
   gap: 'var(--space-1)',
   marginRight: 'var(--space-1)',
   minWidth: 0,
+  flex: '1 1 auto',
+  overflowX: 'auto',
+  scrollbarWidth: 'none',
+  WebkitOverflowScrolling: 'touch',
+  touchAction: 'pan-x',
 })
 
-// The pill group yields width before the decision buttons do: `flexShrink` lets
-// the row compress it, and PillGroup's own `max-width: 100%` + `overflow: hidden`
-// decide what a compressed group shows.
+globalStyle(`${controlRequestSwitches}::-webkit-scrollbar`, {
+  display: 'none',
+})
+
+// A pill group keeps its natural width and the cluster around it scrolls, so
+// `flexShrink: 0`. It used to shrink, and the group's own `max-width: 100%` then
+// resolved against a box the row had already squeezed to nothing.
 export const controlRequestPill = style({
   display: 'flex',
-  minWidth: 0,
-  flexShrink: 1,
+  flexShrink: 0,
 })
 
 export const bannerReason = style({

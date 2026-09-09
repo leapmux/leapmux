@@ -55,7 +55,10 @@ export function actionButtonClass(outline?: boolean): string {
 }
 
 export const ControlActionRow: Component<ControlActionRowProps> = props => (
-  <div class={styles.controlFooter} data-testid="control-footer">
+  <div
+    class={props.centre ? `${styles.controlFooter} ${styles.controlFooterCentred}` : styles.controlFooter}
+    data-testid="control-footer"
+  >
     <Show when={props.secondary}>
       <div class={styles.controlFooterLeft}>{props.secondary}</div>
     </Show>

@@ -37,4 +37,8 @@ export const compactControlProperties = {
 export const compactControl = style({
   ...compactControlProperties,
   minHeight: compactControlHeight,
+  // Never compress. A decision button must stay readable at every width, so the
+  // row gives way somewhere else: the control request's options cluster scrolls,
+  // and the composer's own cluster wraps.
+  flexShrink: 0,
 })
