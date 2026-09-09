@@ -18,6 +18,10 @@ test.describe('Full Hub+Worker Restart', () => {
       const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
+      // This specification tests persistence across a restart. The dedicated
+      // startup-queue specification sends while this overlay is visible.
+      await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
+
       // Step 1: Send a message and wait for a response
       await editor.click()
       await page.keyboard.type(ARITHMETIC_PROMPT)
