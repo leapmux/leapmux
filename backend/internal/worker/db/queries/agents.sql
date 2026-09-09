@@ -392,3 +392,20 @@ WHERE a.agent_provider = ?
   AND a.agent_session_id <> ''
   AND a.parent_agent_id IS NULL
 ORDER BY last_activity DESC;
+
+-- ListOpenRootAgentsByWorkingDirs is half of the answer to "does any open tab
+-- still work in this directory?" -- the other half is
+-- ListOpenTerminalTabsByWorkingDirs. The quake terminal of a directory lives
+-- exactly as long as some tab still works there, so the close paths and the
+-- orphan reconciler both ask this before reaping one.
+--
+-- Roots only, for the same reason ListAllOpenRootAgentIDs gives: a subagent
+-- inherits its root's working directory and owns no tab, so counting one would
+-- keep a shell alive for a tab that does not exist.
+--
+-- workspace_archived rides along so the archive expansion can tell a tab that
+-- is merely elsewhere from one that is already archived.
+-- name: ListOpenRootAgentsByWorkingDirs :many
+SELECT id, working_dir, workspace_archived FROM agents
+WHERE closed_at IS NULL AND parent_agent_id IS NULL
+  AND working_dir IN (sqlc.slice('working_dirs'));

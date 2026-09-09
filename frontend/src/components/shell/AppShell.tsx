@@ -66,7 +66,7 @@ import { shouldShowGoalsAndTodosSection } from '~/stores/chatTodos'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
-import { createQuakeTerminalStore } from '~/stores/quakeTerminal.store'
+import { createQuakeTerminalStore, quakeKeyForTab, quakeKeyId } from '~/stores/quakeTerminal.store'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
@@ -167,24 +167,30 @@ export const AppShell: Component = () => {
   // above it. It read `undefined`, and the whole shell failed to mount.
   //
   // This direction has no such window. The store touches nothing at
-  // construction: `getAgentTab` is called only from an event -- a keyboard
-  // command, or a Control CLI request arriving on the private-event stream --
-  // and by then the assignment below already ran.
+  // construction: `tabForKey` is called only from an event -- a keyboard
+  // command, a metadata sweep, or a Control CLI request arriving on the
+  // private-event stream -- and by then the assignment below already ran.
   let tabViewRef: TabView | undefined
+  // The focused tab's quake key, filled in once `tileRenderer` exists. Same
+  // forward-reference shape as `tabViewRef` above and for the same reason: the
+  // watch plan is built hundreds of lines before the tile renderer that knows
+  // which tab has focus, and a `const` read from there would be in its temporal
+  // dead zone.
+  let activeQuakeKeyIdRef: (() => string | null) | undefined
   const quakeStore = createQuakeTerminalStore({
     metadata: tabMetadata,
-    getAgentTab: agentId => tabViewRef?.getAgentTab(agentId),
+    tabForKey: key => tabViewRef?.findTabInWorkingDir(key.workerId, key.workingDir),
     // Only when focus is inside THIS entry's own shell. A close from the
-    // transcript, from another agent tab, or from another device through the
+    // transcript, from another tab, or from another device through the
     // Control CLI must not move the caret out of the place where the user
     // works. The store asks before the panel retracts, so `inert` blurred
     // nothing yet.
     //
     // Compared by TERMINAL id, not by "is focus inside the panel?": one panel
-    // element holds every companion's xterm, so the DOM question is true
-    // whenever ANY of them has the caret. A background owner's close would
+    // element holds every directory's xterm, so the DOM question is true
+    // whenever ANY of them has the caret. A background directory's close would
     // then pull focus out of the foreground shell the user types in.
-    focusComposer: (_ownerId, terminalId) => {
+    focusComposer: (_keyId, terminalId) => {
       if (terminalId !== undefined && focusedTerminalId() === terminalId)
         focusEditor()
     },
@@ -442,6 +448,7 @@ export const AppShell: Component = () => {
     quakeStore,
     settingsLoading,
     repoGitStore,
+    getActiveQuakeKeyId: () => activeQuakeKeyIdRef?.() ?? null,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     onAgentSettled: handleAgentSettled,
     // Per TURN, not per settle: the working tree changed even when a subagent
@@ -1101,11 +1108,13 @@ export const AppShell: Component = () => {
   useMetadataSweep(() => crdtState(), tabMetadata, (retired) => {
     for (const tabId of retired)
       agentInputQueueStore.clearAgent(tabId)
-    // The same "was live, now is not" edge answers "the owner agent tab closed",
-    // which is one of the two things that ends a quake terminal. The worker
-    // already closed the shell on its own side (closeAgentTabCommon), so this
-    // only releases what the browser holds.
-    quakeStore.retireOwners(retired)
+    // The same "was live, now is not" edge answers "a tab closed", and the
+    // store re-asks its own question from it: has the LAST tab of some
+    // directory gone, which is one of the two things that ends a quake
+    // terminal. The worker already closed the shell on its own side
+    // (closeQuakeTerminalIfUnused), so this only releases what the browser
+    // holds.
+    quakeStore.retireStaleKeys()
   })
   // The tile owners, not a third walk of their trees: both stores memoize
   // "which tiles does this workspace have" per tick, and the sweep asks the
@@ -1459,6 +1468,21 @@ export const AppShell: Component = () => {
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
+  /**
+   * The quake key of the focused tab, for the panel and for the watch plan.
+   *
+   * Both need the SAME answer: the panel renders the entry for this key, so
+   * "is a quake terminal on screen?" is exactly "does the focused key's entry
+   * exist and is it open". Two derivations of that would let the FULL/NOTIFY
+   * watch decision disagree with what the user is looking at, which is how a
+   * visible shell stops receiving bytes.
+   */
+  const activeQuakeKeyId = createMemo(() => {
+    const key = quakeKeyForTab(tileRenderer.focusedQuakeTab() ?? undefined)
+    return key === undefined ? null : quakeKeyId(key)
+  })
+  activeQuakeKeyIdRef = activeQuakeKeyId
+
   useShortcuts({
     view: tabView,
     selection,
@@ -1487,7 +1511,7 @@ export const AppShell: Component = () => {
     splitFocusedTile: tileRenderer.splitFocusedTile,
     // Both resolve the terminal from the DOM, which is the same question the
     // `terminalFocused` guard on these bindings asks -- and the only one that
-    // reaches a quake companion, which has no tab for a tile-shaped lookup to
+    // reaches a quake terminal, which has no tab for a tile-shaped lookup to
     // walk. `scrollFocusedTabPage` falls back to the focused tile's tab for a
     // chat transcript, which has no terminal of its own.
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
@@ -1499,9 +1523,9 @@ export const AppShell: Component = () => {
     getAgentInputQueue: agentId => agentInputQueueStore.get(agentId),
     steerQueueItem: item => tileRenderer.queueOps.steerQueueItem(item),
     quakePanel: {
-      open: owner => void quakeStore.open(owner),
-      close: ownerId => quakeStore.close(ownerId),
-      toggle: owner => quakeStore.toggle(owner),
+      open: tab => void quakeStore.open(tab),
+      close: keyId => quakeStore.close(keyId),
+      toggle: tab => quakeStore.toggle(tab),
     },
   })
 
@@ -1611,8 +1635,8 @@ export const AppShell: Component = () => {
       quakeStore={quakeStore}
       view={tabView}
       metadata={tabMetadata}
-      activeAgentId={() => tileRenderer.focusedAgentId() ?? null}
-      onClose={ownerId => quakeStore.close(ownerId)}
+      activeQuakeKeyId={activeQuakeKeyId}
+      onClose={keyId => quakeStore.close(keyId)}
       onInput={termOps.handleTerminalInput}
       onResize={termOps.handleTerminalResize}
       onContentReady={id => tabMetadata.patch(id, { contentReady: true })}

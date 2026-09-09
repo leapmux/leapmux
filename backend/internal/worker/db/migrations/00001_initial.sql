@@ -298,26 +298,27 @@ CREATE TABLE terminals (
     exit_code     INTEGER NOT NULL DEFAULT 0,
     startup_error TEXT NOT NULL DEFAULT '',
     workspace_archived INTEGER NOT NULL DEFAULT 0,
-    -- Empty for an ordinary terminal tab. Set to the owning agent's id for a
-    -- COMPANION terminal -- the shell behind an agent tab's quake panel.
+    -- 0 for an ordinary terminal tab. 1 for a QUAKE terminal -- the shell
+    -- behind the quake panel, which belongs to a working DIRECTORY on this
+    -- worker rather than to any one tab, so every tab that works in
+    -- working_dir reaches the same shell.
     --
-    -- Deliberately no REFERENCES agents(id): closing an agent leaves its row in
-    -- place as a tombstone, and the orphan reconciler's grace window needs this
-    -- row to outlive a transient absence of its owner rather than cascade with
-    -- it.
-    owner_agent_id TEXT NOT NULL DEFAULT '',
+    -- A flag rather than a second copy of the directory: working_dir above IS
+    -- the address, and a duplicate column could disagree with it.
+    is_quake      INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
--- UNIQUE, and that is the whole guarantee that every device shares one shell:
--- an agent can have at most one OPEN companion, so two devices racing to open
--- the panel cannot end up on two PTYs. The loser of the insert re-reads the row
--- and attaches to the winner's terminal.
+-- UNIQUE, and that is the whole guarantee that every device -- and every tab in
+-- the directory -- shares one shell: a directory can have at most one OPEN
+-- quake terminal, so two devices racing to open the panel cannot end up on two
+-- PTYs. The loser of the insert re-reads the row and attaches to the winner's
+-- terminal.
 --
--- Scoped to open rows, so a companion can follow a shell the user exited.
-CREATE UNIQUE INDEX idx_terminals_owner_agent_id ON terminals(owner_agent_id)
-  WHERE owner_agent_id <> '' AND closed_at IS NULL;
+-- Scoped to open rows, so a directory can follow a shell the user exited.
+CREATE UNIQUE INDEX idx_terminals_quake_working_dir ON terminals(working_dir)
+  WHERE is_quake = 1 AND closed_at IS NULL;
 
 -- Junction: which tabs use which LeapMux-created worktree.
 --

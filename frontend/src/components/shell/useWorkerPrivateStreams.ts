@@ -5,6 +5,7 @@ import { createEffect, createMemo, onCleanup } from 'solid-js'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
+import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
 /**
@@ -99,21 +100,27 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           opts.metadata.patch(evt.tabId, { title: evt.title })
         },
         onQuakePanelCommand: (evt) => {
-          // An agent this client cannot see is not an error: the command
-          // reaches every frontend of the account, and another one may be
-          // on a workspace this one does not display.
-          const owner = opts.view.getAgentTab(evt.agentId)
-          if (!owner)
+          // The event names a DIRECTORY, and the stream names the worker, so
+          // together they are the whole address. The tab is resolved from that
+          // key because the store needs one: a cold open is refused in the
+          // tab's workspace, and `open` takes a tab for exactly that.
+          //
+          // A directory this client has no tab in is not an error: the command
+          // reaches every frontend of the account, and another one may be on a
+          // workspace this one does not display.
+          const key = { workerId, workingDir: evt.workingDir }
+          const tab = opts.view.findTabInWorkingDir(workerId, evt.workingDir)
+          if (!tab)
             return
           switch (evt.action) {
             case QuakePanelAction.OPEN:
-              void opts.quakeStore.open(owner)
+              void opts.quakeStore.open(tab)
               break
             case QuakePanelAction.CLOSE:
-              opts.quakeStore.close(owner.id)
+              opts.quakeStore.close(quakeKeyId(key))
               break
             case QuakePanelAction.TOGGLE:
-              opts.quakeStore.toggle(owner)
+              opts.quakeStore.toggle(tab)
               break
             default:
               // An action a newer CLI knows and this build does not. Doing

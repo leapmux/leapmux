@@ -12,7 +12,7 @@ vi.mock('~/lib/osNotification', () => ({
 const QUAKE_ID = 'quake-1'
 
 /**
- * A companion terminal has NO tab, so every field the placed-terminal branch
+ * A quake terminal has NO tab, so every field the placed-terminal branch
  * reads is absent for it: no tile, no workspace, and no key any selection
  * carries. That is the whole point of the detached predicate, so the fakes here
  * answer nothing rather than pretending otherwise.
@@ -43,11 +43,11 @@ beforeEach(() => {
 })
 
 describe('handleTerminalNotification for a quake terminal', () => {
-  // The predicate is asked FIRST for exactly this case. Without it a companion
-  // falls to the workspace-key branch, which can never match an id that is not
+  // The predicate is asked FIRST for exactly this case. Without it a quake
+  // terminal falls to the workspace-key branch, which can never match an id that is not
   // a tab -- so an OSC 9 in a shell the user watches would raise a desktop
   // notification and badge a row nobody can see.
-  it('raises no OS notification while its panel is open and its owner is on screen', () => {
+  it('raises no OS notification while its panel is open and its directory is focused', () => {
     const d = deps({ isDetachedOnScreen: id => id === QUAKE_ID })
 
     handleTerminalNotification(QUAKE_ID, NOTIFICATION, d)
@@ -65,13 +65,13 @@ describe('handleTerminalNotification for a quake terminal', () => {
     expect(d.metadata.get(QUAKE_ID)?.hasNotification).toBe(true)
   })
 
-  // The badge goes on the row a surface RENDERS. No surface renders a
-  // companion: the tab strip and the sidebar tree both derive from the placed
+  // The badge goes on the row a surface RENDERS. No surface renders a quake
+  // terminal: the tab strip and the sidebar tree both derive from the placed
   // tabs. Worse, nothing could ever clear it -- the one clear site runs from
-  // tab selection, and a companion is never selected -- so the flag would sit
-  // on an invisible row until the shell exits. The owner agent tab is rendered,
-  // and it is where the user goes to reach the panel.
-  it('badges the owner agent tab, not the companion nobody renders', () => {
+  // tab selection, and a quake terminal is never selected -- so the flag would
+  // sit on an invisible row until the shell exits. A TAB in its working
+  // directory is rendered, and it is where the user goes to reach the panel.
+  it('badges a tab in the directory, not the quake terminal nobody renders', () => {
     const d = deps({
       isDetachedOnScreen: () => false,
       detachedOwnerOf: id => (id === QUAKE_ID ? 'agent-1' : undefined),

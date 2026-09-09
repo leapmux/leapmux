@@ -238,6 +238,36 @@ const terminalThemeCache = new Map<string, ITheme>()
  */
 const TRANSPARENT_TERMINAL_BACKGROUND = '#00000000'
 
+/**
+ * The width of the terminal's scrollbar, in px -- both the bar and the room
+ * kept for it.
+ *
+ * ONE number does both jobs, because xterm 6 reads
+ * `options.overviewRuler?.width` in two places and defaults both to 14.
+ * `FitAddon` subtracts it from the width before dividing by the cell width, so
+ * it is the gutter the last column stops at. The viewport passes it to the
+ * vendored VS Code scrollable element as `verticalScrollbarSize`, which is the
+ * inline width of the `.slider` that element draws -- xterm 6 renders its OWN
+ * scrollbar rather than leaning on the browser's, so this is the real bar and
+ * not a reservation for one.
+ *
+ * Eight, to match the `::-webkit-scrollbar` box every other scrollbar in this
+ * app gets from `~/styles/global.css.ts`. The slider is shaped to match those
+ * too -- see the rules in `~/components/terminal/TerminalView.css.ts`, which
+ * inset it by the same 2px border and round it by the same radius, so the
+ * terminal's bar and the chat's beside it are one shape.
+ *
+ * Setting `width` is also what turns the overview ruler ON. That costs an empty
+ * canvas per terminal and nothing else: this app registers no decorations, so
+ * the ruler has nothing to paint, and xterm gives the element
+ * `pointer-events: none` -- it cannot swallow a drag meant for the slider
+ * underneath it. It does make a 2D canvas context load-bearing, though: the
+ * ruler's constructor THROWS on a null one, so a terminal cannot be built
+ * without it -- which is why the canvas stub in `vitest.setup.ts` answers
+ * `2d`.
+ */
+const SCROLLBAR_WIDTH_PX = 8
+
 export function terminalThemeFor(
   name: string,
   mode: ResolvedThemeMode,
@@ -431,6 +461,10 @@ export function createTerminalInstance(
   let confirmLink = refuseLinkWithoutPrompt
   const terminal = new Terminal({
     cursorBlink: true,
+    // Read by `FitAddon` as the gutter to keep clear, and by the viewport as
+    // the slider's own width; see `SCROLLBAR_WIDTH_PX`. The ruler's borders stay
+    // off, so it draws nothing.
+    overviewRuler: { width: SCROLLBAR_WIDTH_PX },
     fontSize,
     fontFamily,
     theme,

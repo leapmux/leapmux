@@ -590,13 +590,30 @@ globalStyle('button, [role="button"]', {
   },
 })
 
-// Consistent thin scrollbars across browsers (standard CSS — Firefox & Chrome 121+).
+// Consistent narrow scrollbars across browsers. TWO mechanisms, and they are
+// mutually exclusive rather than complementary: Chromium IGNORES every
+// `::-webkit-scrollbar` rule below for any element that specifies
+// `scrollbar-width` or `scrollbar-color`. Declared on `*`, as this was, the
+// standard pair therefore threw away the whole styled scrollbar -- the 8px box,
+// the rounded thumb, the transparent inset border -- in the browser most of
+// this app's users are in, and left Chrome's own `thin` bar, which is wider
+// than the 8px asked for here and square.
+//
+// So the standard pair is scoped to the one engine that has no other route.
+// Firefox does not implement the pseudo-elements and never will; Chrome and
+// Safari both do. `-moz-appearance` is the feature query for "this is Gecko":
+// Chromium and WebKit dropped the prefix, so it is false in both.
 globalStyle('*', {
-  scrollbarWidth: 'thin',
-  scrollbarColor: 'var(--scrollbar-thumb) var(--scrollbar-track)',
+  '@supports': {
+    '(-moz-appearance: none)': {
+      scrollbarWidth: 'thin',
+      scrollbarColor: 'var(--scrollbar-thumb) var(--scrollbar-track)',
+    },
+  },
 })
 
-// WebKit scrollbar styling (Safari & older Chrome).
+// WebKit scrollbar styling (Chrome and Safari; see above for why it is not
+// dead code in Chrome any more).
 globalStyle('*::-webkit-scrollbar', {
   width: '8px',
   height: '8px',

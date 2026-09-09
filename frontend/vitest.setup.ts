@@ -102,7 +102,28 @@ if (typeof globalThis.sessionStorage?.getItem !== 'function' && typeof jsdom !==
 
 // Stub HTMLCanvasElement.getContext() to suppress jsdom's
 // "Not implemented" warning when the canvas npm package is not installed.
-HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext
+//
+// `2d` is the one context that answers, because xterm's overview ruler THROWS
+// on a null one ("Ctx cannot be null") in its constructor -- and every terminal
+// asks for that ruler now, since its width is what `FitAddon` reserves for the
+// scrollbar (see `SCROLLBAR_GUTTER_PX` in `~/lib/terminal`). A null answer
+// there is not a degraded ruler, it is a terminal that cannot be constructed at
+// all. The stub carries only the calls the ruler makes on an empty decoration
+// set; anything else would be inventing a canvas nobody asserts on.
+//
+// Every other context stays null, so the WebGL paths keep taking the branch
+// they took before.
+function canvas2dStub(): CanvasRenderingContext2D {
+  return {
+    canvas: null,
+    clearRect: () => {},
+    fillRect: () => {},
+    fillStyle: '',
+  } as unknown as CanvasRenderingContext2D
+}
+
+HTMLCanvasElement.prototype.getContext = ((kind: string) =>
+  kind === '2d' ? canvas2dStub() : null) as typeof HTMLCanvasElement.prototype.getContext
 
 // jsdom does not implement ResizeObserver; provide an inert stub so
 // components that observe layout changes render without throwing.

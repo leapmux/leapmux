@@ -139,7 +139,7 @@ A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join
 
 ### Quake-mode terminal
 
-A shell that slides over the centre of the app for one agent tab, toggled with `Ctrl` and the key under `Esc`. It belongs to the agent tab rather than to a tile, so it costs the agent no space. One shell per agent tab, shared by every device; whether the panel is visible is per-device. It ends when its agent tab closes or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
+A shell that slides over the centre of the app for one working DIRECTORY, toggled with `Ctrl` and the key under `Esc` from any tab. It belongs to the directory rather than to a tab or a tile, so it costs the tab underneath no space. One shell per (Worker, working directory), shared by every tab in that directory and by every device; whether the panel is visible is per-device. It ends when the last tab working in its directory closes, or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
 
 ## S
 

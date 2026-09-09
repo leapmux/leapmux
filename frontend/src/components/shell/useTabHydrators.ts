@@ -22,10 +22,10 @@ const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
 /**
  * Every tab a hydrator may act on.
  *
- * `view.all()` holds the PLACED tabs, and a companion terminal -- the shell
- * behind an agent tab's quake panel -- is deliberately absent from it. That
- * absence made the worker-offline sweep a one-way door: the sweep writes
- * DISCONNECTED onto a companion's metadata row, the READY event refuses to move
+ * `view.all()` holds the PLACED tabs, and a quake terminal -- the shell behind
+ * a quake panel -- is deliberately absent from it. That absence made the
+ * worker-offline sweep a one-way door: the sweep writes DISCONNECTED onto a
+ * quake terminal's metadata row, the READY event refuses to move
  * a DISCONNECTED tab back, and the terminal hydrator that exists to re-ask on
  * exactly that state never saw the row. Every keystroke into a live-looking
  * panel then disappeared until a page reload.
@@ -37,7 +37,7 @@ function hydratableTabsOf(view: TabView) {
 /**
  * The current state of one tab, for a retry that fires later.
  *
- * `view.get` is PLACEMENT-shaped and answers nothing for a companion, so a
+ * `view.get` is PLACEMENT-shaped and answers nothing for a quake terminal, so a
  * per-tab retry for one would read "the tab is gone" and cancel itself on its
  * first tick.
  */

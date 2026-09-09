@@ -42,7 +42,7 @@ export function makeFakePrefs() {
       turnEndSoundVolume: fakeDual('turn_end_sound_volume', 100),
       quakeOrientation: fakeDual('quake_orientation', 'top'),
       quakeSizePercent: fakeDual('quake_size_percent', 65),
-      quakeAnimationMs: fakeDual('quake_animation_ms', 300),
+      quakeAnimationMs: fakeDual('quake_animation_ms', 200),
       quakeBackgroundOpacity: fakeDual('quake_background_opacity', 0.9),
       debugLogging: fakeDual('debug_logging', false),
       uiFonts: fakeDual('ui_fonts', { enabled: false, fonts: [] as string[] }),

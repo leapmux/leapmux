@@ -646,7 +646,7 @@ describe('terminalView', () => {
 
   // Reached by id, and by the DOM-focus door onto it -- the two entry points
   // that replaced the `pageScrollRef` a tile used to register. The focus form
-  // is what makes a quake companion, which has no tab, scrollable at all.
+  // is what makes a quake terminal, which has no tab, scrollable at all.
   it('scrolls a terminal by one page, by id and by focus', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
@@ -1164,12 +1164,12 @@ describe('terminalView focus while a tab is being renamed', () => {
 
 /**
  * The by-id entry points the shell needs for a terminal that has NO TAB: the
- * quake panel's companion shell.
+ * quake panel's shell.
  *
  * Every tab-shaped lookup answers "which tab holds focus", and from inside an
  * open panel that is the AGENT tab. These two answer from the DOM and from the
  * instance registry instead, which is what lets the macOS motion bindings reach
- * a companion's PTY.
+ * a quake terminal's PTY.
  */
 describe('the focused terminal, by id', () => {
   beforeEach(resetTerminalViewMocks)

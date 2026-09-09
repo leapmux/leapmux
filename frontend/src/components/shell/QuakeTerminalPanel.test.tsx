@@ -3,6 +3,7 @@ import type { DetachedTerminal } from '~/stores/tabView'
 import { cleanup, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { QuakeTerminalPanel } from './QuakeTerminalPanel'
 
@@ -26,15 +27,15 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
   const entry = over.entry
   const detached = over.detached ?? (entry?.terminalId ? [{ id: entry.terminalId, workerId: 'w1', workspaceId: 'ws1' }] : [])
   const quakeStore = {
-    entryFor: (id: string) => (entry && entry.ownerId === id ? entry : undefined),
+    entryFor: (id: string) => (entry && entry.keyId === id ? entry : undefined),
     detachedTerminals: () => detached,
-    ownerOf: () => entry?.ownerId,
+    keyOf: () => entry?.keyId,
     isQuakeTerminal: () => true,
     open: vi.fn(),
     close: vi.fn(),
     toggle: vi.fn(),
     handleShellExit: vi.fn(),
-    retireOwners: vi.fn(),
+    retireStaleKeys: vi.fn(),
     liveEntries: () => (entry ? [entry] : []),
   }
   const view = {
@@ -48,7 +49,7 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
       quakeStore={quakeStore as never}
       view={view as never}
       metadata={metadata as never}
-      activeAgentId={() => entry?.ownerId ?? null}
+      activeQuakeKeyId={() => entry?.keyId ?? null}
       onClose={onClose}
       confirmLink={() => Promise.resolve(false)}
       onInput={vi.fn()}
@@ -59,7 +60,8 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
   return { ...rendered, quakeStore, onClose }
 }
 
-const OPEN: QuakeEntry = { ownerId: 'a1', workerId: 'w1', workspaceId: 'ws1', terminalId: 'q1', open: true }
+const KEY = quakeKeyId({ workerId: 'w1', workingDir: '/repo' })
+const OPEN: QuakeEntry = { keyId: KEY, workerId: 'w1', workingDir: '/repo', workspaceId: 'ws1', terminalId: 'q1', open: true }
 const CLOSED: QuakeEntry = { ...OPEN, open: false }
 
 /**
@@ -137,15 +139,15 @@ describe('quakeTerminalPanel', () => {
   it('re-arms the slide after the last panel is released', () => {
     const [entry, setEntry] = createSignal<QuakeEntry | undefined>(OPEN)
     const quakeStore = {
-      entryFor: (id: string) => (id === 'a1' ? entry() : undefined),
+      entryFor: (id: string) => (id === KEY ? entry() : undefined),
       detachedTerminals: () => (entry() ? [{ id: 'q1', workerId: 'w1', workspaceId: 'ws1' }] : []),
-      ownerOf: () => 'a1',
+      keyOf: () => KEY,
       isQuakeTerminal: () => true,
       open: vi.fn(),
       close: vi.fn(),
       toggle: vi.fn(),
       handleShellExit: vi.fn(),
-      retireOwners: vi.fn(),
+      retireStaleKeys: vi.fn(),
       liveEntries: () => [],
     }
     const { queryByTestId } = render(withPreferences(() => (
@@ -153,7 +155,7 @@ describe('quakeTerminalPanel', () => {
         quakeStore={quakeStore as never}
         view={{ getTerminalTab: (id: string) => ({ id, type: 2 }), detachedTerminalTabs: () => [] } as never}
         metadata={{ get: () => undefined } as never}
-        activeAgentId={() => 'a1'}
+        activeQuakeKeyId={() => KEY}
         onClose={vi.fn()}
         confirmLink={() => Promise.resolve(false)}
         onInput={vi.fn()}
@@ -164,7 +166,7 @@ describe('quakeTerminalPanel', () => {
     expect(queryByTestId('quake-panel')).not.toBeNull()
 
     setEntry(undefined)
-    expect(queryByTestId('quake-panel'), 'the last companion released unmounts it').toBeNull()
+    expect(queryByTestId('quake-panel'), 'the last quake terminal released unmounts it').toBeNull()
 
     const flips = openFlipsDuring(() => setEntry(OPEN))
     expect(flips).toEqual(['false'])
@@ -192,18 +194,18 @@ describe('quakeTerminalPanel', () => {
   })
 
   describe('geometry', () => {
-    // One property drives ONE axis, and the orientation attribute picks which.
-    it('states the orientation and the size for the clip to resolve', () => {
+    // The size rides on the CLIP, which is the centre area and therefore the
+    // box the panel's percentage resolves against.
+    it('states the size on the clip, which is the box the panel resolves against', () => {
       const { getByTestId } = mount({ entry: OPEN })
       const clip = getByTestId('quake-panel').parentElement!
-      expect(clip.getAttribute('data-quake-orientation')).toBe('top')
       expect(clip.style.getPropertyValue('--quake-size')).toBe('65%')
     })
 
     it('states the duration the slide runs for', () => {
       const { getByTestId } = mount({ entry: OPEN })
       const clip = getByTestId('quake-panel').parentElement!
-      expect(clip.style.getPropertyValue('--quake-duration')).toBe('300ms')
+      expect(clip.style.getPropertyValue('--quake-duration')).toBe('200ms')
     })
 
     // A percentage, because `color-mix` takes one directly.
@@ -221,7 +223,9 @@ describe('quakeTerminalPanel', () => {
       expect(getByTestId('quake-panel').style.transform).toBe('')
     })
 
-    it('repeats the orientation on the panel, which is what picks the slide axis', () => {
+    // One attribute drives the anchored edge, the size axis, the border side,
+    // the shadow's direction and the slide axis -- all five on the panel.
+    it('states the orientation on the panel, which is what picks the slide axis', () => {
       const { getByTestId } = mount({ entry: CLOSED })
       expect(getByTestId('quake-panel').getAttribute('data-quake-orientation')).toBe('top')
     })

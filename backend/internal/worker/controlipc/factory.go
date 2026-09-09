@@ -93,8 +93,18 @@ type HubBridge interface {
 // exported entrypoints project their service-package input into this
 // shape so the listen/acquire/cleanup wiring is in one place.
 type spawnCommon struct {
-	UserID        userid.UserID
-	WorkerID      string
+	UserID   userid.UserID
+	WorkerID string
+	// SocketID names the SOCKET, and it is always the spawned entity's own id.
+	// Kept apart from TabID because a quake terminal advertises ANOTHER tab:
+	// keyed on that tab the socket path would collide with the tab's own spawn
+	// -- with the agent's socket in the best case (different SocketKind, so
+	// merely confusing) and with a terminal tab's socket in the worst, where
+	// two live shells would fight over one listener.
+	SocketID string
+	// TabID is the tab the spawn ADVERTISES as ambient, which every
+	// `leapmux control` command resolves through the hub's LocateTab. Empty
+	// when there is no such tab; EnvVars then omits LEAPMUX_CONTROL_TAB_ID.
 	TabID         string
 	TabType       leapmuxv1.TabType
 	WorkingDir    string
@@ -109,7 +119,7 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 	if sc.UserID.IsZero() {
 		return nil, nil, service.ErrMissingIdentity
 	}
-	socketURL := DefaultSocketPath(sc.WorkerID, socketKind, sc.TabID)
+	socketURL := DefaultSocketPath(sc.WorkerID, socketKind, sc.SocketID)
 	token := MintToken()
 	tokenInfo := TokenInfo{
 		UserID:        sc.UserID,
@@ -118,6 +128,13 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 		TabType:       sc.TabType,
 		WorkingDir:    sc.WorkingDir,
 		AgentProvider: sc.AgentProvider,
+	}
+	// Derived from the socket KIND rather than carried as another spawnCommon
+	// field, because SocketID already IS the spawned entity's own id -- so for
+	// a terminal spawn the two cannot disagree, and an agent spawn cannot set
+	// it by mistake. See TokenInfo.TerminalID.
+	if socketKind == SocketKindTerminal {
+		tokenInfo.TerminalID = sc.SocketID
 	}
 	router := f.newRouter(sc.UserID)
 	srv, err := Listen(Options{
@@ -141,6 +158,7 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 	return f.spawn(SocketKindAgent, "agent_id", spawnCommon{
 		UserID:        info.UserID,
 		WorkerID:      info.WorkerID,
+		SocketID:      info.TabID,
 		TabID:         info.TabID,
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
 		WorkingDir:    info.WorkingDir,
@@ -150,20 +168,28 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 
 // TerminalSpawning satisfies service.ControlIPCFactory.
 //
-// A COMPANION terminal advertises its OWNER AGENT as the ambient tab, not
-// itself. LEAPMUX_CONTROL_TAB_ID exists to be resolved through the hub's
-// LocateTab, and a companion has no CRDT tab for the hub to find -- so its own
-// id resolves to `not_found` and every `leapmux control` command typed into the
-// quake panel fails before it reaches its own body. The owner agent tab is the
-// tab this shell belongs to, and it is the one the user means.
+// A terminal TAB advertises itself as the ambient tab. A QUAKE terminal
+// advertises NO TAB: LEAPMUX_CONTROL_TAB_ID exists to be resolved through the
+// hub's LocateTab, and a quake terminal has no CRDT tab for the hub to find --
+// so its own id would resolve to `not_found`, and any OTHER tab in its
+// directory would be a target the user never chose. Both env vars are simply
+// omitted, and a command that acts on a tab asks for --tab-id.
+//
+// What the panel keeps is its own identity: LEAPMUX_CONTROL_TERMINAL_ID names
+// the shell (see TokenInfo.TerminalID), and WORKER_ID + WORKING_DIR are what
+// `terminal quake ...` needs, so those still run with no flags.
+//
+// The SOCKET stays keyed on the terminal's own id either way -- see
+// spawnCommon.SocketID.
 func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, func(), error) {
-	tabID, tabType, spawnKey := info.TabID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "terminal_id"
-	if info.OwnerAgentID != "" {
-		tabID, tabType, spawnKey = info.OwnerAgentID, leapmuxv1.TabType_TAB_TYPE_AGENT, "owner_agent_id"
+	tabID, tabType := info.TabID, leapmuxv1.TabType_TAB_TYPE_TERMINAL
+	if info.IsQuake {
+		tabID, tabType = "", leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
 	}
-	return f.spawn(SocketKindTerminal, spawnKey, spawnCommon{
+	return f.spawn(SocketKindTerminal, "terminal_id", spawnCommon{
 		UserID:     info.UserID,
 		WorkerID:   info.WorkerID,
+		SocketID:   info.TabID,
 		TabID:      tabID,
 		TabType:    tabType,
 		WorkingDir: info.WorkingDir,
@@ -182,17 +208,20 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // they both come from the same spawn, and re-listing them as bare parameters
 // invites a caller to pass one spawn's user with another's tab.
 // spawnKey stays separate -- it is the slog attribute NAME ("agent_id" /
-// "terminal_id"), not spawn data.
+// "terminal_id"), not spawn data. Its VALUE is SocketID, the spawn's own
+// entity: a quake terminal's advertised TabID names a different tab, and
+// logging that under "terminal_id" would attribute the teardown to a tab that
+// is still running.
 func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func() {
 	return func() {
 		if err := srv.Close(); err != nil {
-			slog.Warn("remote IPC close failed", spawnKey, sc.TabID, "error", err)
+			slog.Warn("remote IPC close failed", spawnKey, sc.SocketID, "error", err)
 		}
 		if f.Delegation != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
 			defer cancel()
 			if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
-				slog.Warn("delegation release failed", spawnKey, sc.TabID, "user_id", sc.UserID, "error", err)
+				slog.Warn("delegation release failed", spawnKey, sc.SocketID, "user_id", sc.UserID, "error", err)
 			}
 		}
 	}

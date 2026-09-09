@@ -53,6 +53,10 @@ type FlagOptions struct {
 // (agent / terminal subgroup), the env-var default fires only if
 // LEAPMUX_CONTROL_TAB_TYPE matches. This prevents `tab close --type=agent`
 // from auto-targeting the terminal you're running inside.
+//
+// The `terminal ...` subgroup has one more source ahead of that gate,
+// LEAPMUX_CONTROL_TERMINAL_ID: the terminal the caller is running inside,
+// which in a quake panel is NOT the ambient tab. See tabIDEnvDefault.
 func BindEntityFlags(fs *flag.FlagSet, in *Inputs, opts FlagOptions) {
 	if !opts.HideTab {
 		fs.StringVar(&in.TabID, "tab-id", tabIDEnvDefault(opts.FixedTabType), tabIDFlagUsage(opts.FixedTabType, opts.HideTabType))
@@ -95,6 +99,20 @@ func tabIDEnvDefault(fixed leapmuxv1.TabType) string {
 	if fixed == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
 		return os.Getenv("LEAPMUX_CONTROL_TAB_ID")
 	}
+	// The `terminal ...` subgroup prefers the terminal the caller is running
+	// INSIDE over the ambient tab, and the difference only shows up in a quake
+	// panel: there TAB_ID names a neighbouring tab (a quake terminal has none
+	// of its own), so without this a bare `terminal send` would either target
+	// that neighbour or, once the type gate below refused it, nothing at all.
+	//
+	// In an ordinary terminal TAB the two ids are the same, so this changes
+	// nothing; in an agent spawn TERMINAL_ID is unset and the gate below still
+	// decides. See TokenInfo.TerminalID on the worker side.
+	if fixed == leapmuxv1.TabType_TAB_TYPE_TERMINAL {
+		if id := os.Getenv("LEAPMUX_CONTROL_TERMINAL_ID"); id != "" {
+			return id
+		}
+	}
 	envType, _ := ParseTabType(os.Getenv("LEAPMUX_CONTROL_TAB_TYPE"))
 	if envType != fixed {
 		return ""
@@ -113,7 +131,7 @@ func tabIDFlagUsage(fixed leapmuxv1.TabType, tabTypeHidden bool) string {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
 		return `agent tab id (defaults to $LEAPMUX_CONTROL_TAB_ID when $LEAPMUX_CONTROL_TAB_TYPE="agent")`
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return `terminal tab id (defaults to $LEAPMUX_CONTROL_TAB_ID when $LEAPMUX_CONTROL_TAB_TYPE="terminal")`
+		return `terminal id (defaults to $LEAPMUX_CONTROL_TERMINAL_ID, else $LEAPMUX_CONTROL_TAB_ID when $LEAPMUX_CONTROL_TAB_TYPE="terminal")`
 	default:
 		if tabTypeHidden {
 			return `tab id (defaults to $LEAPMUX_CONTROL_TAB_ID; type auto-detected)`

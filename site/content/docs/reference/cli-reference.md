@@ -275,12 +275,12 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
 | `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
 | `worker` | `list`, `get`; subgroup `pins`: `list`, `show`, `remove` |
-| `agent` | `send`, `interrupt`, `get`, `providers`, `messages`, `set`, `send-control-response`; subgroup `quake`: `open`, `close`, `toggle` |
+| `agent` | `send`, `interrupt`, `get`, `providers`, `messages`, `set`, `send-control-response` |
 | `tile` | `list`, `split`, `close`, `make-grid`, `remove-grid`, `set-ratios`, `set-grid-ratios` |
 | `layout` | `get`, `set` |
 | `file` | `list`, `read`, `stat` |
 | `git` | `status`, `branches`, `worktrees`, `read` |
-| `terminal` | `send`, `get`, `shells` |
+| `terminal` | `send`, `get`, `shells`; subgroup `quake`: `open`, `close`, `toggle` |
 | `events` | `watch` |
 
 {{< callout type="info" >}}
@@ -328,6 +328,7 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_CONTROL_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
 | `LEAPMUX_CONTROL_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
 | `LEAPMUX_CONTROL_TAB_TYPE` | spawned agents | `agent` or `terminal` |
+| `LEAPMUX_CONTROL_TERMINAL_ID` | spawned terminals | The terminal you are inside (default for `--tab-id` on `terminal ...`). In a Quake panel it is the only id set — a panel gets no `_TAB_ID` / `_TAB_TYPE`. |
 | `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 

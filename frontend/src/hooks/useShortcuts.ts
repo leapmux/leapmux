@@ -8,7 +8,7 @@ import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/prot
 import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
-import type { AgentTab, Tab } from '~/stores/tab.types'
+import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
@@ -25,6 +25,7 @@ import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/k
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { isTypingContext } from '~/lib/textInputBehavior'
 import { getActiveChatPanel, getFocusedChatPanel } from '~/stores/focusedChatPanel.store'
+import { quakeKeyForTab, quakeKeyId } from '~/stores/quakeTerminal.store'
 import { canCloseTab, tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
@@ -80,11 +81,18 @@ interface UseShortcutsProps {
   getAgentInputQueue: (agentId: string) => AgentInputQueueSnapshot | undefined
   /** Hand the queue head to the running turn. Rejects like every queue RPC. */
   steerQueueItem: (item: QueuedAgentInput) => Promise<void>
-  /** Show, hide, or flip the current agent tab's quake terminal panel. */
+  /**
+   * Show, hide, or flip the quake terminal panel of the focused tab's working
+   * directory.
+   *
+   * `open` and `toggle` take the TAB, because a cold open needs its workspace
+   * for the archived refusal; `close` needs only the key, and is the one of the
+   * three that can act on a directory whose tabs this client cannot see.
+   */
   quakePanel: {
-    open: (owner: AgentTab) => void
-    close: (ownerId: string) => void
-    toggle: (owner: AgentTab) => void
+    open: (tab: Tab) => void
+    close: (keyId: string) => void
+    toggle: (tab: Tab) => void
   }
 }
 
@@ -280,7 +288,22 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'Chat')
 
   /**
-   * The agent tab a quake command acts on, or null if there is not one.
+   * The tab a quake command acts on, or null if there is not one.
+   *
+   * ANY tab type qualifies, and that is the invariant this function exists to
+   * hold: a quake terminal belongs to a working DIRECTORY, and an agent tab, a
+   * terminal tab, a file viewer and an image viewer all carry one. The old
+   * `type === AGENT` narrowing here was a restatement of an addressing rule
+   * that no longer exists, and it would now hide the panel from three tab kinds
+   * whose directory has a perfectly good shell -- often the very shell the
+   * agent tab beside them is already showing.
+   *
+   * The subagent refusal is gone with it: a subagent transcript inherits its
+   * root's working directory, so its panel IS the root's panel, which is the
+   * right answer rather than a special case.
+   *
+   * A tab with no worker or no working directory still has no panel, and
+   * `quakeKeyForTab` is the one place that decides it.
    *
    * The archived-workspace refusal is deliberately NOT here. It belongs to the
    * OPENING direction alone and lives in the store, which is the one
@@ -289,22 +312,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
    * CLOSE half of the toggle, stranding a user whose workspace was archived
    * while the panel was up.
    */
-  function focusedAgentTabForQuake(): AgentTab | null {
+  function focusedTabForQuake(): Tab | null {
     const tab = resolveFocusedTab()
-    if (tab?.type !== TabType.AGENT)
-      return null
-    // A subagent transcript owns no process, so it owns no companion shell
-    // either: the worker refuses `SetQuakePanel` for one, and the keyboard must
-    // not be the one route around that. A companion owned by a child agent also
-    // outlives its tab, because only a ROOT close tears one down.
-    if (tab.parentAgentId)
-      return null
-    return tab
+    return tab && quakeKeyForTab(tab) !== undefined ? tab : null
   }
 
-  /** Run one quake action on the focused agent tab, or nothing when there is not one. */
-  function withQuakeTab(act: (tab: AgentTab) => void): void {
-    const tab = focusedAgentTabForQuake()
+  /** Run one quake action on the focused tab, or nothing when there is not one. */
+  function withQuakeTab(act: (tab: Tab) => void): void {
+    const tab = focusedTabForQuake()
     if (tab)
       act(tab)
   }
@@ -314,7 +329,11 @@ export function useShortcuts(props: UseShortcutsProps): void {
   // titles and a user can bind either one. A caller that wants a key that only
   // ever opens -- or only ever closes -- should not have to write a toggle.
   cmd('terminal.openQuake', 'Open Quake Terminal', () => withQuakeTab(tab => props.quakePanel.open(tab)), 'Terminal')
-  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTab(tab => props.quakePanel.close(tab.id)), 'Terminal')
+  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTab((tab) => {
+    const key = quakeKeyForTab(tab)
+    if (key)
+      props.quakePanel.close(quakeKeyId(key))
+  }), 'Terminal')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')

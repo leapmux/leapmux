@@ -396,6 +396,12 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 	if info.TabID != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TAB_ID="+info.TabID)
 	}
+	// The terminal the process is running INSIDE, which is not always TAB_ID:
+	// inside a quake panel TAB_ID names a neighbouring tab, because a quake
+	// terminal has none of its own. See TokenInfo.TerminalID.
+	if info.TerminalID != "" {
+		envs = append(envs, "LEAPMUX_CONTROL_TERMINAL_ID="+info.TerminalID)
+	}
 	if tt := tabTypeWireName(info.TabType); tt != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TAB_TYPE="+tt)
 	}

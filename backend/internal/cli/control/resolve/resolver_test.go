@@ -3,6 +3,8 @@ package resolve_test
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -648,5 +650,163 @@ func TestTabTypeVocabularyCoversEveryEnumValue(t *testing.T) {
 		canonical, ok := resolve.ParseTabType(name)
 		require.True(t, ok, "%s must parse in its canonical spelling", name)
 		assert.Equal(t, kind, canonical)
+	}
+}
+
+// A QUAKE terminal has no CRDT tab, so LocateTab can never place its id. The
+// commands that address it -- `terminal send`, `terminal get` -- need only the
+// WORKER, which a worker-spawned CLI already has from its env, so the miss
+// costs them nothing and the command must run.
+//
+// This is the regression test for the whole class: LocateTab fires eagerly for
+// any supplied tab id, so a fatal miss made EVERY `leapmux control` command
+// typed inside a quake panel fail before reaching its own body -- including the
+// `terminal quake` commands that exist to be typed there.
+func TestResolve_UnlocatableTabIsToleratedWhenNothingNeedsIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{TabID: "quake-1", WorkerID: "w1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.NoError(t, err, "a tab the hub cannot place must not fail a command that only needs the worker")
+	assert.Equal(t, "quake-1", got.TabID)
+	assert.Equal(t, "w1", got.WorkerID, "the worker still comes from its own input")
+}
+
+// The other half of the rule: the miss becomes fatal the moment it is what
+// leaves a required field empty, and it says so rather than reporting a bare
+// "missing required ID(s)".
+func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{WorkspaceID: true},
+		resolve.Inputs{TabID: "quake-1", WorkerID: "w1"},
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resolve.ErrTabNotLocatable,
+		"the cause stays reachable, so a caller need not match on the message")
+	assert.Contains(t, err.Error(), "--workspace-id",
+		"and it still names the flag that would satisfy what the miss left empty")
+}
+
+// A LocateTab failure that is NOT "no such tab" stays fatal. A transport error
+// or a 5xx means the Hub could not be ASKED, which says nothing about whether
+// the tab exists -- tolerating those would turn an outage into a confusing
+// worker-side failure much later.
+func TestResolve_LocateTabTransportFailureStaysFatal(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", errors.New("connection refused")
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{TabID: "t1", WorkerID: "w1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.Error(t, err, "an unreachable hub must not read as an absent tab")
+	assert.NotErrorIs(t, err, resolve.ErrTabNotLocatable)
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+// The `terminal ...` subgroup's --tab-id default, across the three spawn
+// shapes a `leapmux control` invocation can find itself in.
+//
+// The quake row is the one that needed the new source: there TAB_ID names a
+// NEIGHBOURING tab, so the old type gate refused it (agent != terminal) and a
+// bare `terminal send` had no target at all.
+func TestBindEntityFlags_TerminalTabIDDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tabID       string
+		tabType     string
+		terminalID  string
+		wantDefault string
+	}{
+		{
+			name: "inside a quake panel, the shell is the only id there is",
+			// What a quake spawn exports: NO ambient tab -- the panel belongs
+			// to a directory, and no tab in it is "the tab you are in" -- and
+			// the panel's own shell as the terminal.
+			tabID: "", tabType: "", terminalID: "quake-1",
+			wantDefault: "quake-1",
+		},
+		{
+			name:  "inside an ordinary terminal tab, both name the same id",
+			tabID: "term-1", tabType: "terminal", terminalID: "term-1",
+			wantDefault: "term-1",
+		},
+		{
+			name: "inside an agent, there is no terminal to default to",
+			// The type gate still decides here, and it refuses: an agent tab
+			// is not a terminal, so `terminal send` must ask for --tab-id
+			// rather than target the agent.
+			tabID: "agent-1", tabType: "agent", terminalID: "",
+			wantDefault: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
+			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
+			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", tc.terminalID)
+
+			var in resolve.Inputs
+			fs := flag.NewFlagSet("terminal send", flag.ContinueOnError)
+			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
+				FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+			})
+			require.NoError(t, fs.Parse(nil))
+
+			assert.Equal(t, tc.wantDefault, in.TabID)
+		})
+	}
+}
+
+// The AGENT subgroup never reads TERMINAL_ID: an agent command must not default
+// to a terminal id, whatever the surrounding spawn is.
+//
+// The two rows are the two spawns that set it. Inside an ordinary terminal TAB
+// the ambient tab is that terminal, so `agent send` still has no default and
+// asks for --tab-id. Inside a QUAKE panel there is no ambient tab at all, which
+// is the deliberate outcome: the panel belongs to a directory, so the user
+// names the agent they mean rather than having one picked for them.
+func TestBindEntityFlags_AgentTabIDDefaultIgnoresTheTerminalID(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tabID   string
+		tabType string
+	}{
+		{name: "inside an ordinary terminal tab", tabID: "term-1", tabType: "terminal"},
+		{name: "inside a quake panel", tabID: "", tabType: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
+			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
+			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", "quake-1")
+
+			var in resolve.Inputs
+			fs := flag.NewFlagSet("agent send", flag.ContinueOnError)
+			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
+				FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			})
+			require.NoError(t, fs.Parse(nil))
+
+			assert.Empty(t, in.TabID, "an agent command must never default to a terminal")
+		})
 	}
 }

@@ -44,7 +44,6 @@ func (svc *Service) ApplyTabArchiveState(
 	if err != nil {
 		return nil, err
 	}
-	requested = svc.withCompanionTerminals(ctx, requested)
 
 	// Held across the flag write AND the teardown below: see archiveTabLocks
 	// for why the pair must be atomic per tab.
@@ -55,6 +54,29 @@ func (svc *Service) ApplyTabArchiveState(
 	if err != nil {
 		return nil, err
 	}
+
+	// A QUAKE terminal takes no archive flag of its own, and this is where that
+	// decision pays for itself.
+	//
+	// It is not a tab: the Hub never lists one, so it could only ever reach the
+	// archive path by being expanded onto the request from the tabs around it.
+	// That expansion has to answer "is this shell's workspace being archived?",
+	// and a shell keyed on (worker, directory) can belong to tabs in SEVERAL
+	// workspaces -- so the honest version of it was a conditional that included
+	// the row only when every tab in its directory was already archived or in
+	// this very request.
+	//
+	// The reference count answers the same question without knowing about
+	// workspaces at all: a directory with no open, non-archived tab has nobody
+	// who can reach its panel, so its shell ends. A directory that still has one
+	// -- in ANY workspace -- keeps it, which is exactly what stops archiving one
+	// workspace from stopping a shell another one is typing into.
+	//
+	// It CLOSES rather than archives, and that is not a shortcut: a quake
+	// terminal has no restart contract, so there is no state an unarchive could
+	// restore. The next open in that directory spawns a fresh shell, which is
+	// what an unarchived workspace wants anyway.
+	svc.closeUnusedQuakeTerminals(ctx, "")
 
 	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
 		// The Hub lists root tabs only. A subagent owns no tab, so the pause
@@ -77,37 +99,6 @@ func (svc *Service) ApplyTabArchiveState(
 		}
 	}
 	return changed.agents, nil
-}
-
-// withCompanionTerminals adds each requested agent's COMPANION terminal -- the
-// shell behind its quake panel -- to the terminal half of the set.
-//
-// The Hub lists root TABS, and a companion has no CRDT tab, so it never reaches
-// this call on its own. Left out, its workspace_archived column stays 0 for
-// ever: stopArchivedTabs walks only the changed set, so its shell keeps
-// running, and refuseArchivedWrite reads that same 0, so SendInput keeps
-// reaching the PTY. This is the same expansion the input-queue pause does with
-// agentSubtreeIDs, and for the same reason.
-func (svc *Service) withCompanionTerminals(ctx context.Context, set archiveTabSet) archiveTabSet {
-	seen := make(map[string]struct{}, len(set.terminals))
-	for _, terminalID := range set.terminals {
-		seen[terminalID] = struct{}{}
-	}
-	for _, agentID := range set.agents {
-		companion, err := svc.Queries.GetOpenTerminalIDByOwner(ctx, agentID)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				slog.Warn("archive: look up the companion terminal", "agent_id", agentID, "error", err)
-			}
-			continue
-		}
-		if _, dup := seen[companion.ID]; dup {
-			continue
-		}
-		seen[companion.ID] = struct{}{}
-		set.terminals = append(set.terminals, companion.ID)
-	}
-	return set
 }
 
 // lockArchiveTabs takes every lock this request needs and returns their

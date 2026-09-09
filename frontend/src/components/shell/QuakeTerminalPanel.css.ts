@@ -2,18 +2,43 @@ import { style } from '@vanilla-extract/css'
 import { motion } from '~/styles/tokens'
 
 /**
- * The clip the panel slides out of.
+ * The shadow the open panel drops on the tile it covers, and how far past its
+ * own edge that shadow reaches.
  *
- * Anchored to one edge of the positioned ancestor -- `center` in
- * `./AppShell.css.ts` on desktop, `mobileCenter` on mobile -- and sized on ONE
- * axis from `--quake-size`. `overflow: hidden` is what hides the panel while it
- * sits outside; without it a closed panel would paint over the sidebars.
+ * The reach is DERIVED, because the closed panel has to travel its own size
+ * plus that distance: stopping at `-100%` parks the box out of sight but leaves
+ * its shadow spilling back over the centre area, as a band of shade with no
+ * terminal above it. Writing the closed offset as its own literal would let a
+ * wider blur leave it behind, silently, in the one state where the panel is not
+ * on screen to explain it.
+ */
+const SHADOW_OFFSET_PX = 2
+const SHADOW_BLUR_PX = 8
+const SHADOW_REACH_PX = SHADOW_OFFSET_PX + SHADOW_BLUR_PX
+const SHADOW_COLOR = 'rgba(0, 0, 0, 0.3)'
+
+/**
+ * The clip the panel slides through.
  *
- * `pointerEvents: none` so a closed clip never takes a click meant for the tile
- * underneath. The panel turns them back on for itself.
+ * Covers the WHOLE centre area -- `center` in `./AppShell.css.ts` on desktop,
+ * `mobileCenter` on mobile -- and the panel takes `--quake-size` on its own
+ * axis, resolved against this box. `overflow: hidden` is what hides the panel
+ * while it sits outside; without it a closed panel would paint over the
+ * sidebars.
  *
- * Same shape as the mobile tab sheet's clip in `./TabBar.css.ts`, which is the
- * established slide-out in this codebase.
+ * The clip is deliberately BIGGER than the panel, and that is what lets the
+ * panel's shadow exist. `overflow: hidden` clips a descendant's shadow, so a
+ * clip cut down to the panel's own size erases it for the whole open state and
+ * leaves only the spill of a closed panel -- shade on the centre area with
+ * nothing casting it. Sized to the centre instead, the shadow falls INSIDE the
+ * clip and travels with the slide, which is the one place it can both show and
+ * move. The alternative -- hanging it on this element, whose own shadow escapes
+ * its own `overflow` -- cannot move at all: the clip never slides, so its
+ * shadow appears at the panel's final edge the instant it turns on.
+ *
+ * `pointerEvents: none` so the clip never takes a click meant for the tile
+ * underneath. It now covers every tile rather than the panel's strip, so this
+ * is load-bearing rather than tidy. The panel turns them back on for itself.
  *
  * ONE `zIndex` serves both mounts. On desktop it clears the tile resize handles
  * at 5, which are the clip's siblings. On mobile it stays under the drawers at
@@ -23,39 +48,19 @@ import { motion } from '~/styles/tokens'
  */
 export const quakeClip = style({
   position: 'absolute',
+  inset: 0,
   overflow: 'hidden',
   pointerEvents: 'none',
   zIndex: 10,
-  selectors: {
-    '&[data-quake-orientation="top"]': {
-      top: 0,
-      left: 0,
-      right: 0,
-      height: 'var(--quake-size)',
-    },
-    '&[data-quake-orientation="bottom"]': {
-      bottom: 0,
-      left: 0,
-      right: 0,
-      height: 'var(--quake-size)',
-    },
-    '&[data-quake-orientation="left"]': {
-      left: 0,
-      top: 0,
-      bottom: 0,
-      width: 'var(--quake-size)',
-    },
-    '&[data-quake-orientation="right"]': {
-      right: 0,
-      top: 0,
-      bottom: 0,
-      width: 'var(--quake-size)',
-    },
-  },
 })
 
 /**
  * The sliding surface.
+ *
+ * Anchored to one edge of the clip and sized from `--quake-size` on ONE axis:
+ * the orientation rule picks whether that lands on height or width, so there is
+ * no second value to keep in step. The percentage resolves against the clip,
+ * which is the centre area, so it means what the setting says.
  *
  * The OPEN state settles on `transform: none`, not `translateY(0)`. An identity
  * transform is still a transform, and it makes the element a containing block
@@ -66,35 +71,79 @@ export const quakeClip = style({
  *
  * The four closed selectors are attribute PAIRS of equal specificity and are
  * mutually exclusive, so the open base rule needs no `:not()` and the order of
- * the block does not matter.
+ * the block does not matter. Each carries the shadow's reach on top of its own
+ * `100%`; see `SHADOW_REACH_PX`.
  *
  * The background is translucent, and the TEXT is not: the alpha lives on this
  * surface's own colour rather than on an `opacity` that would fade the terminal
  * with it. For that to show, the xterm underneath must paint nothing -- see
  * `transparentBackground` in `~/lib/terminal`, which is what makes both the DOM
  * and the WebGL renderer leave this background alone.
+ *
+ * That colour is `--background` and NOT the `--card` a floating surface would
+ * normally take, because this panel is a terminal sliding over a terminal: a
+ * tile paints `--background` on `terminalWrapper` in
+ * `~/components/terminal/TerminalView.css.ts` and again in xterm's own theme,
+ * so `--card` made the same shell read as a lighter slab -- and it stayed
+ * lighter at full opacity, since the token difference is independent of the
+ * alpha. The slide, the border and the shadow are what mark the panel as
+ * floating; the colour does not have to.
  */
 export const quakePanel = style({
-  'height': '100%',
-  'width': '100%',
+  'position': 'absolute',
   'display': 'flex',
   'flexDirection': 'column',
   'overflow': 'hidden',
   'pointerEvents': 'auto',
   'outline': 'none',
-  'backgroundColor': 'color-mix(in srgb, var(--card) var(--quake-opacity), transparent)',
-  'boxShadow': '0 2px 8px rgba(0, 0, 0, 0.3)',
+  'backgroundColor': 'color-mix(in srgb, var(--background) var(--quake-opacity), transparent)',
   'transform': 'none',
   'transition': `transform var(--quake-duration, ${motion.medium}ms) ease`,
   'selectors': {
-    '&[data-quake-orientation="top"]': { borderBottom: '1px solid var(--border)' },
-    '&[data-quake-orientation="bottom"]': { borderTop: '1px solid var(--border)' },
-    '&[data-quake-orientation="left"]': { borderRight: '1px solid var(--border)' },
-    '&[data-quake-orientation="right"]': { borderLeft: '1px solid var(--border)' },
-    '&[data-quake-open="false"][data-quake-orientation="top"]': { transform: 'translateY(-100%)' },
-    '&[data-quake-open="false"][data-quake-orientation="bottom"]': { transform: 'translateY(100%)' },
-    '&[data-quake-open="false"][data-quake-orientation="left"]': { transform: 'translateX(-100%)' },
-    '&[data-quake-open="false"][data-quake-orientation="right"]': { transform: 'translateX(100%)' },
+    '&[data-quake-orientation="top"]': {
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 'var(--quake-size)',
+      borderBottom: '1px solid var(--border)',
+      boxShadow: `0 ${SHADOW_OFFSET_PX}px ${SHADOW_BLUR_PX}px ${SHADOW_COLOR}`,
+    },
+    '&[data-quake-orientation="bottom"]': {
+      bottom: 0,
+      left: 0,
+      right: 0,
+      height: 'var(--quake-size)',
+      borderTop: '1px solid var(--border)',
+      boxShadow: `0 -${SHADOW_OFFSET_PX}px ${SHADOW_BLUR_PX}px ${SHADOW_COLOR}`,
+    },
+    '&[data-quake-orientation="left"]': {
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 'var(--quake-size)',
+      borderRight: '1px solid var(--border)',
+      boxShadow: `${SHADOW_OFFSET_PX}px 0 ${SHADOW_BLUR_PX}px ${SHADOW_COLOR}`,
+    },
+    '&[data-quake-orientation="right"]': {
+      right: 0,
+      top: 0,
+      bottom: 0,
+      width: 'var(--quake-size)',
+      borderLeft: '1px solid var(--border)',
+      boxShadow: `-${SHADOW_OFFSET_PX}px 0 ${SHADOW_BLUR_PX}px ${SHADOW_COLOR}`,
+    },
+    '&[data-quake-open="false"][data-quake-orientation="top"]': {
+      transform: `translateY(calc(-100% - ${SHADOW_REACH_PX}px))`,
+    },
+    '&[data-quake-open="false"][data-quake-orientation="bottom"]': {
+      transform: `translateY(calc(100% + ${SHADOW_REACH_PX}px))`,
+    },
+    '&[data-quake-open="false"][data-quake-orientation="left"]': {
+      transform: `translateX(calc(-100% - ${SHADOW_REACH_PX}px))`,
+    },
+    '&[data-quake-open="false"][data-quake-orientation="right"]': {
+      transform: `translateX(calc(100% + ${SHADOW_REACH_PX}px))`,
+    },
   },
   '@media': {
     '(prefers-reduced-motion: reduce)': { transition: 'none' },

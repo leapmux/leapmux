@@ -176,7 +176,7 @@ export function getTerminalInstance(id: string): TerminalInstance | undefined {
  *
  * Answers for EVERY mounted terminal, placed in a tile or not, because
  * `data-terminal-id` is on the wrapper this module renders. That is what a
- * caller needs for the quake panel's companion shell: it has no tab, so the
+ * caller needs for the quake panel's shell: it has no tab, so the
  * tab-shaped "which tab is focused?" lookups cannot reach it, yet the keybinding
  * layer's `terminalFocused` context is true whenever it holds focus.
  */
@@ -208,7 +208,7 @@ export function pageScrollTerminalInstance(id: string, direction: -1 | 1): void 
  *
  * The ONE resolver for "which terminal does a chord act on". It answers from
  * the DOM, so it reaches every mounted terminal -- one placed in a tile, and
- * the companion shell behind a quake panel, which has no tab and no tile for a
+ * the shell behind a quake panel, which has no tab and no tile for a
  * tab-shaped lookup to walk.
  *
  * This replaced a second, tile-shaped resolver that read the focused tile's

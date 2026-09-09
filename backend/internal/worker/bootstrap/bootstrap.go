@@ -327,7 +327,7 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 		if ids, err := queries.ListAllOpenRootAgentIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
 		}
-		// Companion terminals are excluded for exactly the reason child agents
+		// Quake terminals are excluded for exactly the reason child agents
 		// are: they have no CRDT tab, so the hub refuses their id with a 403
 		// and the mint backoff loops to a permanent failure.
 		if ids, err := queries.ListAllOpenTabTerminalIDs(ctx); err == nil && len(ids) > 0 {
@@ -356,20 +356,21 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		return sync
 	}
 
-	// Close the COMPANION terminals the previous worker process left behind.
+	// Close the QUAKE terminals the previous worker process left behind.
 	//
-	// A companion is the shell behind an agent tab's quake panel, and it is
-	// valid only while this process hosts its PTY. A restart breaks that link
-	// with the row still open, and no other pass reclaims one: the orphan
-	// reconciler measures a companion by its OWNER's tab key, so a live agent
-	// tab keeps the dead row open for as long as it exists. The next panel open
-	// would then adopt a terminal with no PTY, and a companion refuses the Enter
-	// that restarts a terminal TAB -- so the panel would stay dead for the life
-	// of the agent tab, across reloads.
+	// A quake terminal is the shell behind a quake panel, it belongs to a
+	// working DIRECTORY, and it is valid only while this process hosts its PTY.
+	// A restart breaks that link with the row still open, and no other pass
+	// reclaims one: the orphan reconciler measures a quake terminal by whether
+	// any open tab still works in its directory, so one live tab there keeps
+	// the dead row open for as long as it exists. The next panel open would
+	// then adopt a terminal with no PTY, and a quake terminal refuses the Enter
+	// that restarts a terminal TAB -- so the panel would stay dead for as long
+	// as a tab works in that directory, across reloads.
 	//
 	// Before the resumer and the reconciler, and synchronous, because it must
-	// land before a client can ask for a companion.
-	svc.CloseOrphanedCompanionTerminals(p.Ctx)
+	// land before a client can ask for a quake terminal.
+	svc.CloseOrphanedQuakeTerminals(p.Ctx)
 
 	// Respawn the agent processes the previous worker process left behind. It
 	// runs once, in the background, and only after the reconciler reports a

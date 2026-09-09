@@ -484,7 +484,10 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 	}
 
 	rootTeardown := func() {
-		// The agent's COMPANION terminal goes with it. Here rather than in the
+		// The QUAKE terminal of this agent's directory goes with it, but only
+		// once this agent was the LAST tab working there -- the shell belongs
+		// to the directory, not to any one tab, so another agent or terminal
+		// tab in the same directory keeps it. Here rather than in the
 		// CloseAgent handler because rootTeardown is the one funnel every close
 		// passes through -- the online RPC, closeTabForConvergence (the orphan
 		// reap and the deleted-workspace sweep), and the workspace cleanup. In
@@ -492,22 +495,11 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// defect this function's doc says it exists to prevent, and the reaped
 		// agent would leave a shell running until the worker process exited.
 		//
-		// The action is pinned to UNSPECIFIED rather than forwarded: a
-		// companion holds no worktree link of its own, so the user's choice
-		// about THIS agent's worktree is not a choice about the companion.
-		//
-		// sql.ErrNoRows is the ordinary "this agent has no companion" answer
-		// and stays silent. Every other failure leaves a live PTY behind with
-		// its owner tab gone, and only the orphan reconciler's next pass
-		// reclaims it -- so it is logged rather than swallowed, the way every
-		// other DB failure in this file is.
-		companion, err := svc.Queries.GetOpenTerminalIDByOwner(bgCtx(), agentID)
-		switch {
-		case err == nil:
-			svc.closeTerminalTabCommon(userID, companion.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, linkPolicy)
-		case !errors.Is(err, sql.ErrNoRows):
-			slog.Error("failed to look up the companion terminal for agent close", "agent_id", agentID, "error", err)
-		}
+		// dbAgent is the row read above, so this costs no second query. A read
+		// that failed leaves WorkingDir empty, which
+		// closeQuakeTerminalIfUnused treats as "no directory to reap" and the
+		// orphan reconciler picks up on its next pass.
+		svc.closeQuakeTerminalIfUnused(userID, dbAgent.WorkingDir, agentID, linkPolicy)
 		svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
 		// Close the root AND every virtual descendant in one tree. Closing only
 		// the root row would orphan child rows (they have no worktree_tabs link
@@ -587,6 +579,15 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 // leaves the manager's terminals/meta/exitDone entries behind, which the
 // reconciler used to do and which leaked one entry per reaped terminal.
 func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+	// Read BEFORE the teardown, because the reap below needs the row's
+	// working_dir and closeTabCommon stamps closed_at on the way out. A failed
+	// read leaves both zero, which the reap treats as "no directory", and the
+	// orphan reconciler picks it up on its next pass.
+	//
+	// is_quake is what stops this recursing: a quake terminal must not ask
+	// whether its own directory still needs a quake terminal, because the
+	// answer would be itself.
+	dbTerm, termErr := svc.Queries.GetTerminalQuakeAndWorkingDir(bgCtx(), terminalID)
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 		terminalID,
@@ -594,6 +595,9 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 		action,
 		linkPolicy,
 		func() {
+			if termErr == nil && dbTerm.IsQuake == 0 {
+				svc.closeQuakeTerminalIfUnused(userID, dbTerm.WorkingDir, terminalID, linkPolicy)
+			}
 			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(action, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)

@@ -305,6 +305,7 @@ describe('background agent history trimming', () => {
       stores: {
         controlStore: createControlStore(),
         quakeStore: createTestQuakeStore(),
+        getActiveQuakeKeyId: () => null,
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
@@ -1876,6 +1877,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       getActiveWorkspaceId: () => WS,
       controlStore: createControlStore(),
       quakeStore: createTestQuakeStore(),
+      getActiveQuakeKeyId: () => null,
       repoGitStore: createRepoGitStore(),
       tabs,
     }
@@ -2615,7 +2617,7 @@ describe('collectWorkerOfflineTargets', () => {
   })
 
   /**
-   * A companion terminal -- the shell behind a quake panel -- has no tile and
+   * A quake terminal -- the shell behind a quake panel -- has no tile and
    * no placement, and it is not in `view.all()` at all: the hook composes it in
    * from the detached family precisely so this sweep can reach it.
    *
@@ -2744,6 +2746,7 @@ describe('useWorkspaceConnection chat history load', () => {
         selection: tabs.selection,
         controlStore: createControlStore(),
         quakeStore: createTestQuakeStore(),
+        getActiveQuakeKeyId: () => null,
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),
@@ -2823,6 +2826,7 @@ describe('useWorkspaceConnection chat history load', () => {
         selection: tabs.selection,
         controlStore: createControlStore(),
         quakeStore: createTestQuakeStore(),
+        getActiveQuakeKeyId: () => null,
         agentSessionStore: createAgentSessionStore(),
         agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),

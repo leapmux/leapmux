@@ -32,6 +32,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"sort"
@@ -42,6 +43,31 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"golang.org/x/sync/errgroup"
 )
+
+// ErrTabNotLocatable reports a tab id the Hub holds no placement for.
+//
+// It is NOT an ordinary lookup failure, and the resolver treats it as one of
+// two very different things depending on what the command actually needs.
+//
+// Some worker-hosted entities have no CRDT tab at all, and a QUAKE terminal is
+// the one that matters: it belongs to a working directory rather than to a tab,
+// so nothing in the CRDT describes it and LocateTab can never place it. A
+// command that only needs the WORKER -- `terminal send`, `terminal get` -- has
+// everything it requires without the derivation, so failing it here would
+// refuse a perfectly answerable request purely because a lookup it did not need
+// came back empty. That is what used to make every `leapmux control` command
+// typed inside a quake panel fail before reaching its own body.
+//
+// So: an unlocatable tab is tolerated while nothing required is missing, and
+// reported as this error the moment something is. A command that needs the
+// workspace or the tile still fails, with this message rather than a vaguer
+// "missing required ID(s)".
+//
+// Every OTHER LocateTab failure stays fatal. A network error or a permission
+// denial means the Hub could not be ASKED, which says nothing about whether the
+// tab exists -- swallowing those would turn an outage into a confusing
+// worker-side error much later.
+var ErrTabNotLocatable = errors.New("the hub has no placement for this tab")
 
 // Need declares which fields the caller requires. Resolve returns
 // invalid_request when any required field is empty after derivation.
@@ -145,6 +171,11 @@ type Deps struct {
 	// tile, worker). When the caller passes TAB_TYPE_UNSPECIFIED the
 	// server matches any type and returns the actual type in the
 	// first slot; the resolver records that back into Resolved.TabType.
+	//
+	// It must report ErrTabNotLocatable for an id the Hub holds no
+	// placement for, so the resolver can tell that apart from "the Hub
+	// could not be asked" -- see that error for why the difference decides
+	// whether the command proceeds.
 	LocateTab func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (matchedTabType leapmuxv1.TabType, workspaceID, tileID, workerID string, err error)
 	// GetWorkspace confirms the supplied workspace id identifies a
 	// workspace the caller can read. The hub conflates "no such
@@ -274,10 +305,23 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	// authoritative discriminator. Only one goroutine writes this
 	// field (the LocateTab goroutine below) and the post-Wait read
 	// is happens-after the goroutine's exit, so no mutex is needed.
+	// unlocatableTabErr holds a LocateTab miss that has not been judged yet.
+	// Written by the one goroutine below and read after Wait, so it needs no
+	// mutex for the same reason resolvedTabTypeFromLocate does not.
+	//
+	// It is deliberately NOT returned from the goroutine: doing that cancels
+	// the errgroup's context and kills the sibling derivations, and the whole
+	// point is that this miss may turn out not to matter. See
+	// ErrTabNotLocatable.
+	var unlocatableTabErr error
 	var resolvedTabTypeFromLocate leapmuxv1.TabType
 	if in.TabID != "" && deps.LocateTab != nil {
 		g.Go(func() error {
 			matched, ws, tile, worker, err := deps.LocateTab(gctx, tabType, in.TabID)
+			if errors.Is(err, ErrTabNotLocatable) {
+				unlocatableTabErr = fmt.Errorf("locate tab %s: %w", in.TabID, err)
+				return nil
+			}
 			if err != nil {
 				return fmt.Errorf("locate tab %s: %w", in.TabID, err)
 			}
@@ -360,6 +404,14 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	// surfaces the names of the flags that satisfy it,
 	// so the user sees one error envelope listing every fix.
 	if missing := missingRequired(need, out); len(missing) > 0 {
+		// A tolerated LocateTab miss becomes fatal HERE, and only here: the
+		// fields it would have filled are the ones now reported missing, so
+		// naming the miss explains the gap that "missing required ID(s):
+		// workspace_id" only describes. See ErrTabNotLocatable.
+		if unlocatableTabErr != nil {
+			return Resolved{}, invalidArgWrapping(unlocatableTabErr,
+				"%s (needed for: %s)", unlocatableTabErr.Error(), strings.Join(missing, "; "))
+		}
 		return Resolved{}, invalidArg("missing required ID(s): %s", strings.Join(missing, "; "))
 	}
 
@@ -373,15 +425,30 @@ func invalidArg(format string, args ...any) error {
 	return &ResolveError{Code: "invalid_request", Message: fmt.Sprintf(format, args...)}
 }
 
+// invalidArgWrapping is invalidArg that keeps `cause` reachable through
+// errors.Is, so a caller (and a test) can ask WHICH failure produced the
+// envelope rather than matching on its message text.
+func invalidArgWrapping(cause error, format string, args ...any) error {
+	return &ResolveError{Code: "invalid_request", Message: fmt.Sprintf(format, args...), cause: cause}
+}
+
 // ResolveError is the structured error every resolver failure
 // surfaces. The Code is a stable identifier the cmd package emits
 // in the JSON envelope; Message is the human-facing detail.
 type ResolveError struct {
 	Code    string
 	Message string
+	// cause, when set, is the underlying failure this envelope reports. It is
+	// unexported because it is NOT part of the envelope -- the CLI emits Code
+	// and Message and nothing else -- but it keeps errors.Is working, so a
+	// caller can ask whether a resolve failed because a tab had no hub
+	// placement without matching on the message text.
+	cause error
 }
 
 func (e *ResolveError) Error() string { return e.Message }
+
+func (e *ResolveError) Unwrap() error { return e.cause }
 
 // --- internals: aggregation and conflict detection ---
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
@@ -26,6 +27,21 @@ func resolveDeps(c *control.Client) resolve.Deps {
 		LocateTab: func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
 			var resp leapmuxv1.LocateTabResponse
 			if err := hubCallUnary(ctx, c, "LocateTab", &leapmuxv1.LocateTabRequest{TabType: tabType, TabId: tabID}, &resp); err != nil {
+				// The one failure the resolver must tell apart from every
+				// other: "the Hub has no placement for this id" rather than
+				// "the Hub could not be asked". A quake terminal is the id
+				// that reaches here -- it has no CRDT tab at all -- and a
+				// command needing only the worker must still run. See
+				// resolve.ErrTabNotLocatable.
+				//
+				// PermissionDenied comes along because the Hub deliberately
+				// conflates it with NotFound (see classifyHubError): a caller
+				// who may not see a tab learns nothing further by having the
+				// command fail here rather than at the worker.
+				if isNotFoundOrForbidden(err) {
+					return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+						fmt.Errorf("%w: %w", resolve.ErrTabNotLocatable, err)
+				}
 				return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", err
 			}
 			t := resp.GetTab()

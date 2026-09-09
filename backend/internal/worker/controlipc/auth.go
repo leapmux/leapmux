@@ -26,9 +26,22 @@ type TokenInfo struct {
 	// purely in-process record (no struct tags, never marshalled), so the
 	// string projections belong at its readers -- the Whoami proto field, the
 	// LEAPMUX_CONTROL_USER_ID env var, the local stream-id segment -- not here.
-	UserID            userid.UserID
-	WorkerID          string            // The spawning worker.
-	TabID             string            // The spawned tab (agent or terminal). Anchor for LocateTab-based derivations.
+	UserID   userid.UserID
+	WorkerID string // The spawning worker.
+	TabID    string // The spawned tab (agent or terminal). Anchor for LocateTab-based derivations.
+	// TerminalID is the terminal the process is running INSIDE, and it is set
+	// for every terminal spawn -- a tab or a quake shell -- and empty for an
+	// agent.
+	//
+	// It exists because those two are not always the same id. A terminal TAB
+	// advertises itself as TabID, so this merely repeats it. A QUAKE terminal
+	// cannot: it has no CRDT tab, so TabID names a neighbouring tab in the same
+	// working directory instead (see the Factory's TerminalSpawning), which is
+	// what keeps `leapmux control agent ...` and every workspace/tile
+	// derivation working inside the panel. Without this field the shell the
+	// user is actually typing in would have no name at all, so
+	// `terminal send` / `terminal get` could not address it.
+	TerminalID        string
 	TabType           leapmuxv1.TabType // Determines which inner-RPC the CLI uses to derive working_dir / etc.
 	IssuedAt          time.Time
 	DelegationTokenID string // Set lazily when a delegation token has been minted.
