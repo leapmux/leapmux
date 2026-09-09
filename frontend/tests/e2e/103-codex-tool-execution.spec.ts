@@ -26,6 +26,7 @@ codexTest.describe('codex tool execution', () => {
     await sendMessage(page, 'First run pwd. Then, in a separate shell call, run echo "codex-test-output". Compare the two results and report both. Do not modify files.')
     await waitForAgentIdle(page, 120_000)
 
+    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'codex-test-output' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-test-output' }).first()).toBeVisible()
     expect(await page.evaluate(() => (window as Window & { __codexReasoningSeen?: boolean }).__codexReasoningSeen)).toBe(true)
 
