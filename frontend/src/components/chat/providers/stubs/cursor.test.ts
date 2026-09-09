@@ -1,5 +1,8 @@
+import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { describeACPStubBasics } from './stubBasics'
 
@@ -35,6 +38,24 @@ describe('cursor provider', () => {
 
   it('renders the permissionMode group as the trigger mode segment', () => {
     expect(plugin.triggerModeGroupKey).toBe('permissionMode')
+  })
+
+  it('uses Oat small metrics for create-plan decisions', () => {
+    render(() => plugin.ControlActions!({
+      request: {
+        requestId: 'cursor-plan-1',
+        agentId: 'cursor-1',
+        payload: { method: 'cursor/create_plan', params: {} },
+      },
+      answerState: createControlAnswerState(),
+      onRespond: async () => {},
+      hasEditorContent: false,
+      onTriggerSend: () => {},
+    }))
+
+    expect(screen.getByTestId('control-deny-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-allow-btn')).toHaveClass(compactControl)
+    expect(screen.getByTestId('control-allow-btn')).not.toHaveClass('outline')
   })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-

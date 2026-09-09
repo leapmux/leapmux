@@ -5,7 +5,7 @@ import { spinner } from '~/styles/animations.css'
 import { Icon } from './Icon'
 
 export interface SpinnerProps {
-  /** Token-driven icon size. Defaults to `sm` (16px). */
+  /** Token-driven icon size. Defaults to `sm` (14px). */
   'size'?: IconSizeName
   /** Optional test id forwarded to the icon root. */
   'data-testid'?: string

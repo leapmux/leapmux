@@ -2,9 +2,10 @@ import type { PillOptions } from './PillGroup'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { Minus } from 'lucide-solid'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
-import { PillGroup } from './PillGroup'
+import { disambiguateLabels, PillGroup } from './PillGroup'
 import * as styles from './PillGroup.css'
 
 /**
@@ -668,5 +669,108 @@ describe('pill group icon option', () => {
     expect(copies[0]).not.toHaveTextContent('Unchanged')
     expect(copies[1]!.querySelector('svg')).toBeNull()
     expect(copies[1]).toHaveTextContent('Smart')
+  })
+})
+
+/**
+ * A group is `overflow: hidden`, so a row too narrow for its options cuts the
+ * last ones off. A clipped text option used to state no name at all: it carried
+ * no tooltip, so neither a reader nor a screen reader could recover it. The
+ * groups most likely to run out of room are the ones whose labels carry a
+ * distinguishing detail, such as a host or a command.
+ */
+describe('pill group clipped option', () => {
+  const options = [
+    { key: 'once', label: 'Once' },
+    { key: 'host', label: 'Host: a.example.com' },
+  ] as const satisfies PillOptions<string>
+
+  beforeEach(() => {
+    installControllableResizeObserver()
+    vi.useFakeTimers()
+  })
+  afterEach(() => vi.useRealTimers())
+
+  function renderClipGroup() {
+    render(() => (
+      <PillGroup label="Allow as" options={options} selectedKey="once" onSelect={vi.fn()} />
+    ))
+    return screen.getByRole('radio', { name: 'Host: a.example.com' })
+  }
+
+  it('names a text option that the group cuts off', () => {
+    const radio = renderClipGroup()
+    stubClipped(radio)
+    expect(hoverForTooltip(radio)).toHaveTextContent('Host: a.example.com')
+  })
+
+  it('opens no tooltip while the label fits', () => {
+    const radio = renderClipGroup()
+    stubFitting(radio)
+    expect(hoverForTooltip(radio)).toBeNull()
+  })
+
+  // The option's own TEXT is its accessible name. An `aria-label` that repeats
+  // it would make the pill answer a second by-label lookup, which collides with
+  // a real field of the same name (`LoginPage` has a `Password` pill beside a
+  // `Password` input).
+  it('adds no aria-label to an option that spells its own name', () => {
+    const radio = renderClipGroup()
+    expect(radio).not.toHaveAttribute('aria-label')
+    expect(radio).toHaveAccessibleName('Host: a.example.com')
+  })
+})
+
+/**
+ * `optionMap` throws on two options that share a KEY, and nothing catches two
+ * that share a LABEL: the user cannot tell them apart, a screen reader
+ * announces one name twice, and a by-name lookup matches both.
+ */
+describe('disambiguateLabels', () => {
+  const label = (item: { label: string }) => item.label
+  const distinct = (item: { label: string, detail: string }) => item.detail
+
+  it('keeps a label that no other item shares', () => {
+    expect(disambiguateLabels(
+      [{ label: 'Once', detail: 'a' }, { label: 'Session', detail: 'b' }],
+      label,
+      distinct,
+    )).toEqual(['Once', 'Session'])
+  })
+
+  it('replaces every member of a collision, not the later ones alone', () => {
+    expect(disambiguateLabels(
+      [{ label: 'Host rule', detail: 'Host: a' }, { label: 'Host rule', detail: 'Host: b' }],
+      label,
+      distinct,
+    )).toEqual(['Host: a', 'Host: b'])
+  })
+
+  it('leaves an uncolliding neighbour alone while it replaces a collision', () => {
+    expect(disambiguateLabels(
+      [
+        { label: 'Once', detail: 'Once' },
+        { label: 'Host rule', detail: 'Host: a' },
+        { label: 'Host rule', detail: 'Host: b' },
+      ],
+      label,
+      distinct,
+    )).toEqual(['Once', 'Host: a', 'Host: b'])
+  })
+
+  it('replaces all three of a three-way collision', () => {
+    expect(disambiguateLabels(
+      [
+        { label: 'Host rule', detail: 'Host: a' },
+        { label: 'Host rule', detail: 'Host: b' },
+        { label: 'Host rule', detail: 'Host: c' },
+      ],
+      label,
+      distinct,
+    )).toEqual(['Host: a', 'Host: b', 'Host: c'])
+  })
+
+  it('gives an empty list back unchanged', () => {
+    expect(disambiguateLabels([], label, distinct)).toEqual([])
   })
 })

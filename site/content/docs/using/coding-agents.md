@@ -263,16 +263,18 @@ The exact buttons depend on the provider.
 
 ### Codex
 
-Codex approval banners are titled by the kind of request: **Command Execution**, **File Change**, **Permission Request**, or **Approval Required**, and show the reason, command (collapsible), and working directory. The buttons come from the request itself; depending on the request you may see:
+Codex approval banners are titled by the kind of request: **Command Execution**, **File Change**, **Permission Request**, or **Approval Required**, and show the reason, command (collapsible), and working directory. The decisions come from the request itself, so which ones you see depends on it.
 
-- **Allow** — approve this one request.
-- **Allow for Session** — approve and stop asking for the same kind of request for the rest of the session.
-- **Reject** — deny the request.
-- **Cancel** — dismiss the request without approving it.
-- **Allow & Remember** — approve and remember the amended execution policy for similar commands.
-- **Apply Network Policy** — approve and apply the proposed network-access amendment.
+One **Allow** button approves the request, and an **Allow as** control beside it chooses how long the approval lasts:
 
-An **& Bypass Permissions** option is also available (it switches Codex to Full Auto). Codex's plan-mode prompt is titled **Implement the proposed plan?** with **Stay in Plan Mode** / **Send Feedback** and **Implement Plan**.
+- **Once** — this one request only.
+- **Session** — the same kind of request for the rest of the session.
+- **Command rule** — remember the amended execution policy for similar commands.
+- **Host rule** — apply the proposed network-access amendment.
+
+**Once** is always selected first, so a wider grant is one you choose rather than one you inherit. When the request offers two rules of one kind, each option names the command or the host it covers. A request that offers more than four choices keeps the extra ones as their own buttons beside **Allow**.
+
+**Reject** denies the request and **Cancel** dismisses it without approving it. An **& Bypass Permissions** option is also available (it switches Codex to Full Auto). Codex's plan-mode prompt is titled **Implement the proposed plan?** with **Stay in Plan Mode** / **Send Feedback** and **Implement Plan**.
 
 ### Pi
 

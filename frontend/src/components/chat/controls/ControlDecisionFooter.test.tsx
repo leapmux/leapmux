@@ -16,20 +16,20 @@ describe('controlDecisionFooter', () => {
         negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
         positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
         switches={() => [{
-          id: 'remember',
-          label: 'Remember',
+          id: 'clear-context',
+          label: 'Clear Context',
           checked: checked(),
           onChange: setChecked,
         }]}
       />
     ))
 
-    const input = screen.getByTestId('remember').querySelector('input')!
+    const input = screen.getByTestId('clear-context').querySelector('input')!
     input.focus()
     fireEvent.click(input)
 
     expect(input.checked).toBe(true)
-    expect(screen.getByTestId('remember').querySelector('input')).toBe(input)
+    expect(screen.getByTestId('clear-context').querySelector('input')).toBe(input)
     expect(document.activeElement).toBe(input)
   })
 
@@ -96,5 +96,61 @@ describe('controlDecisionFooter', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renders provider allow choices in the leading controls', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
+        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        allowChoicePill={() => ({
+          label: 'Allow as',
+          options: [
+            { key: 'once', label: 'Once' },
+            { key: 'session', label: 'Session' },
+          ],
+          selected: 'once',
+          onSelect,
+        })}
+      />
+    ))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Session' }))
+    expect(onSelect).toHaveBeenCalledWith('session')
+  })
+
+  // The order runs from what this request grants to what the session keeps. It
+  // lives in the JSX alone, so without this a reorder changes the reading order
+  // of every Codex and ACP approval row and nothing fails.
+  it('renders the leading cluster in one order', () => {
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
+        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        switches={() => [{ id: 'clear-context', label: 'Clear Context', checked: false, onChange: vi.fn() }]}
+        allowChoicePill={() => ({
+          label: 'Allow as',
+          options: [{ key: 'once', label: 'Once' }, { key: 'session', label: 'Session' }],
+          selected: 'once',
+          onSelect: vi.fn(),
+        })}
+        permissionPill={() => ({
+          options: [{ key: 'unspecified', label: 'Unchanged' }, { key: 'bypass', label: 'Bypass' }],
+          selected: 'unspecified',
+          onSelect: vi.fn(),
+        })}
+      />
+    ))
+
+    const switchEl = screen.getByTestId('clear-context')
+    const allowGroup = screen.getByTestId('control-allow-choice-pill-group')
+    const permissionGroup = screen.getByTestId('control-permissions-pill-group')
+    expect(switchEl.compareDocumentPosition(allowGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(allowGroup.compareDocumentPosition(permissionGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })

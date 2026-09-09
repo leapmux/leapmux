@@ -1,5 +1,5 @@
 import type { PillOptions } from '~/components/common/PillGroup'
-import { isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
+import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 
 export interface WirePermissionOption {
   optionId: string
@@ -14,9 +14,6 @@ const KIND_REJECT_ONCE = 'reject_once'
 const KIND_REJECT_ALWAYS = 'reject_always'
 
 const CANONICAL_KINDS = [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
-
-/** The answer-state key the allow-scope pill group's selection is stored under. */
-export const ALLOW_SCOPE_CHOICE_ID = 'control-allow-scope-pill'
 
 export function isRejectPermissionKind(kind: string): boolean {
   return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
@@ -229,13 +226,7 @@ export function allowScopeLabel(option: WirePermissionOption): string {
  * one group share a label the user cannot distinguish.
  */
 export function allowScopePillOptions(scope: readonly WirePermissionOption[]): PillOptions<string> | undefined {
-  const labels = scope.map(option => allowScopeLabel(option))
-  const counts = new Map<string, number>()
-  for (const label of labels)
-    counts.set(label, (counts.get(label) ?? 0) + 1)
-  const pills = scope.map((option, index) => ({
-    key: option.optionId,
-    label: (counts.get(labels[index]) ?? 0) > 1 ? permissionOptionLabel(option) : labels[index]!,
-  }))
+  const labels = disambiguateLabels(scope, allowScopeLabel, permissionOptionLabel)
+  const pills = scope.map((option, index) => ({ key: option.optionId, label: labels[index]! }))
   return isPillOptions(pills) ? pills : undefined
 }

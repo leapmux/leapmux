@@ -12,6 +12,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchRefActions } from '~/test-support/branchMenu'
 import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
 import { withPreferences } from '~/test-support/preferencesProvider'
+import * as iconButtonStyles from '../common/IconButton.css'
 import { label as workingTreeLabel } from '../common/WorkingTree.css'
 import { labelWithStats } from '../tree/sharedTree.css'
 import { WorkspaceTabTree } from './WorkspaceTabTree'
@@ -132,6 +133,28 @@ function reasonOf(el: Element): string {
 }
 
 describe('workspaceTabTree interactions', () => {
+  it('uses a 24px close button with a 14px icon', () => {
+    renderTree(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        tabItemOps={{ onClose: () => {} }}
+        isLocalWorkerFn={() => false}
+        workspaceId="ws-1"
+      />
+    ))
+
+    const button = screen.getByTestId('workspace-tab-close')
+    expect(button.classList).toContain(iconButtonStyles.sizeMd)
+    expect(button.classList).not.toContain(iconButtonStyles.sizeSm)
+
+    const icon = button.querySelector('svg')
+    expect(icon).toHaveAttribute('width', '14')
+    expect(icon).toHaveAttribute('height', '14')
+  })
+
   it('clicking the close button closes without selecting the tab', async () => {
     const onTabClick = vi.fn()
     const onTabClose = vi.fn()

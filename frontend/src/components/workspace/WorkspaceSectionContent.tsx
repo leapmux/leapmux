@@ -226,7 +226,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               const dragRow = createGuardedSortableRow(`ws-${id}`, {
                 sectionId: props.sectionId,
                 workspaceId: id,
-              })
+              }, 'y')
               const wsDroppable = createDroppable(`${WORKSPACE_DROP_PREFIX}${id}`)
               const isActive = () => id === props.activeWorkspaceId
               const isRenaming = () => props.renamingWorkspaceId === id

@@ -183,17 +183,36 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
       props.onMove(resolved.moved, resolved.beforeInputId)
   }
 
+  // ONE scan for the whole list, for the same reason as `anyItemIsEdited`: every
+  // row asks the same question, so a per-row scan costs the square of the queue
+  // length on every snapshot.
+  const movableCount = createMemo(
+    () => items().filter(candidate => candidate.state !== AgentInputState.DISPATCHING).length,
+  )
+
   /**
-   * Whether this key's row can be dragged, resolved through the LIVE lookup.
+   * Whether this key's row can be dragged, resolved through the LIVE queue.
    *
    * Read through `byKey()` and never from an item the row captured at mount.
    * The row keeps its identity now, so a captured item would freeze this at the
    * state the row started with, and a row that becomes DISPATCHING would keep a
    * live grip and live drag activators.
+   *
+   * The question is whether this row has a legal DESTINATION, which is what
+   * `resolveQueueMove` answers for the two arrow buttons. That function refuses
+   * a move onto the row itself and refuses a DISPATCHING row at either end, so a
+   * destination exists exactly when a second row that is not DISPATCHING does. A
+   * count of the whole queue is not the same test: a queue of one DISPATCHING
+   * row and one queued row has two rows and no legal move, and the queued row
+   * would lift and snap back with nothing saying why.
+   *
+   * Withholding the activators also removes the cursor and the visible touch
+   * grip, so the row does not offer an operation that cannot change its
+   * position.
    */
   const canDragKey = (key: string) => {
     const item = byKey().get(key)
-    return !!item && item.state !== AgentInputState.DISPATCHING
+    return !!item && item.state !== AgentInputState.DISPATCHING && movableCount() >= 2
   }
 
   /**
@@ -205,7 +224,8 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
    * at creation.
    */
   const setupRowDnd = (key: string) => {
-    const dragRow = createGuardedSortableRow(key)
+    // A vertical list: the row must not travel sideways past the queue.
+    const dragRow = createGuardedSortableRow(key, undefined, 'y')
     const [rowEl, setRowEl] = createSignal<HTMLElement>()
     // Fine-pointer presses on the row body drag it; touch presses do not, so a
     // swipe still scrolls the queue. The grip carries the raw activators, which

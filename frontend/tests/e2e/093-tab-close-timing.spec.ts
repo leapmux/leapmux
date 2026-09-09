@@ -43,6 +43,7 @@ import {
   createWorkspaceWithWorktreeViaAPI,
   waitForPathDeleted,
 } from './helpers/worktree'
+import { realAgentEnv } from './realAgentSettings'
 
 // ─── Browser instrumentation ──────────────────────────────────────────
 
@@ -221,8 +222,7 @@ test.describe('Tab close timing', () => {
     srv = await startTimingServer({
       dataDirPrefix: 'leapmux-close-timing-e2e',
       env: {
-        LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
-        LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
+        ...realAgentEnv(),
         LEAPMUX_WORKER_NAME: 'Local',
         LEAPMUX_TRACE_TAB_CLOSE: '1',
       },

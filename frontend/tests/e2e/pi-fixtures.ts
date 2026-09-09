@@ -16,6 +16,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
 
 interface WorkspaceFixture {
   workspaceId: string
@@ -49,6 +50,7 @@ export const piTest = base.extend<{
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, mkdtempSync(join(tmpdir(), 'pi-e2e-wd-')), {
       agentProvider: AgentProvider.PI,
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.PI)),
     })
     await use({ workspaceId })
 

@@ -6,9 +6,8 @@ import { createMemo, For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import * as styles from '../ControlRequestBanner.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
-import { ControlAllowScopePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
+import { ControlAllowChoicePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
 import {
-  ALLOW_SCOPE_CHOICE_ID,
   allowScopePillOptions,
   decisionLabel,
   isAllowPermissionKind,
@@ -18,7 +17,7 @@ import {
   resolvePermissionOption,
 } from './permissionOptions'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
-import { createControlChoice } from './types'
+import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from './types'
 
 /** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
 export type SendPermissionOption = (
@@ -44,7 +43,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options(props.request.payload)))
   const permissionChoice = createSessionPermissionPresetChoice(props)
-  const scopeChoice = createControlChoice(() => props.answerState, ALLOW_SCOPE_CHOICE_ID)
+  const scopeChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
 
   // The scope pills a payload with always options draws (Once / Always, or
   // Once / Session / Project). The stored selection is clamped to the offered
@@ -99,10 +98,13 @@ export const PermissionDecisionActions: Component<ActionsProps & {
           <div class={styles.controlRequestSwitches}>
             <Show when={scopeOptions()}>
               {options => (
-                <ControlAllowScopePillGroup
-                  options={options()}
-                  selected={selectedScope() ?? options()[0].key}
-                  onSelect={scopeChoice.setChoice}
+                <ControlAllowChoicePillGroup
+                  pill={{
+                    label: 'Allow scope',
+                    options: options(),
+                    selected: selectedScope() ?? options()[0].key,
+                    onSelect: scopeChoice.setChoice,
+                  }}
                 />
               )}
             </Show>

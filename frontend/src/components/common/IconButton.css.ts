@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { iconSize } from '~/styles/tokens'
 
 export const base = style({
   // Reset button defaults explicitly (avoid `all: unset` which breaks
@@ -62,9 +63,17 @@ export const active = style({
   },
 })
 
-// Size variants
+// Size variants, read from `iconSize.container` in `~/styles/tokens.ts`.
+//
+// That table is the scale, and other stylesheets already size against it, so a
+// literal here would let the two drift. `sharedTree.css.ts` reserves a sidebar
+// row's height from `container.md` to match the row-action button, which is the
+// pairing a second spelling would silently break.
+function square(size: string) {
+  return style({ width: size, height: size, minWidth: size })
+}
 
-export const sizeSm = style({ width: '20px', height: '20px', minWidth: '20px' })
-export const sizeMd = style({ width: '24px', height: '24px', minWidth: '24px' })
-export const sizeLg = style({ width: '28px', height: '28px', minWidth: '28px' })
-export const sizeXl = style({ width: '36px', height: '36px', minWidth: '36px' })
+export const sizeSm = square(iconSize.container.sm)
+export const sizeMd = square(iconSize.container.md)
+export const sizeLg = square(iconSize.container.lg)
+export const sizeXl = square(iconSize.container.xl)

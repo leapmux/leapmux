@@ -119,6 +119,7 @@ const TabLeaf: Component<{
       },
       type: props.tab.type,
     },
+    'y',
   )
   /* eslint-enable solid/reactivity */
   // Mouse-only activation on the row body; the grip carries the raw handlers,
@@ -217,7 +218,7 @@ const TabLeaf: Component<{
           <IconButton
             icon={X}
             iconSize="sm"
-            size="sm"
+            size="md"
             class={menuTrigger}
             state={props.isClosing ? IconButtonState.Loading : IconButtonState.Enabled}
             data-testid="workspace-tab-close"

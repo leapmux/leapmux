@@ -16,8 +16,8 @@ piTest.describe('Pi Agent Lifecycle', () => {
     const tabsBefore = await tabs.count()
     expect(tabsBefore).toBeGreaterThan(0)
 
-    // TabBar renders the close button as `tab-close`; this spec alone had the
-    // two words reversed, so it waited out the full timeout on every run.
+    // TabBar renders the close button as `tab-close`. Two lifecycle specs had
+    // the two words reversed, so each waited out the full timeout on every run.
     const closeBtn = page.locator('[data-testid="tab"] [data-testid="tab-close"]').first()
     await expect(closeBtn).toBeVisible()
     await closeBtn.click()

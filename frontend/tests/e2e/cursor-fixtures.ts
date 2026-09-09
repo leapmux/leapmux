@@ -7,7 +7,6 @@ const cursorConfig: ACPFixtureConfig = {
   cliBinary: 'agent',
   skipMessage: 'Cursor E2E requires an agent CLI on PATH',
   workspacePrefix: 'cursor-e2e',
-  model: 'auto',
 }
 
 export const CURSOR_E2E_SKIP_REASON = detectACPSkipReason(cursorConfig)

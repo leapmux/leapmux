@@ -1,6 +1,7 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
 import { createControlAnswerState } from '../../controls/types'
@@ -181,10 +182,11 @@ describe('pi confirm control requests', () => {
     expect(contentContainer.textContent ?? '').toContain('Continue?')
     expect(contentContainer.textContent ?? '').toContain('About to delete files.')
     // The action surface produces the Approve / Deny buttons referenced by
-    // the test name. queryByTestId-scoped to this render so the assertion
-    // doesn't accidentally pick up the content render above.
-    expect(container.querySelector('[data-testid="control-allow-btn"]')).toBeInTheDocument()
-    expect(container.querySelector('[data-testid="control-deny-btn"]')).toBeInTheDocument()
+    // the test name. Looked up through this render's own `container`, not
+    // through `screen`, so the assertion cannot pick up the content render
+    // above. A missing button then reads as `expected null to have class`.
+    expect(container.querySelector('[data-testid="control-allow-btn"]')).toHaveClass(compactControl)
+    expect(container.querySelector('[data-testid="control-deny-btn"]')).toHaveClass('outline', compactControl)
   })
 
   it('emits a confirm:true response on Approve', async () => {

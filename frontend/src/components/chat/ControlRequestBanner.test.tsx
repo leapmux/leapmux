@@ -2,6 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { createControlAnswerState } from './controls/types'
@@ -131,5 +132,26 @@ describe('controlRequestBanner reactive request removal', () => {
 
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-submit-btn')).toBeInTheDocument()
+  })
+
+  // Its own case, so a metrics regression names the metrics. Folded into the
+  // removal test above, it failed under a name that sent the reader to the
+  // request lifecycle instead.
+  it('uses Oat small metrics for question actions', () => {
+    render(() => (
+      <ControlRequestActions
+        request={questionRequest()}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+
+    expect(screen.getByTestId('control-stop-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-yolo-btn')).toHaveClass('outline', compactControl)
+    expect(screen.getByTestId('control-submit-btn')).toHaveClass(compactControl)
+    expect(screen.getByTestId('control-submit-btn')).not.toHaveClass('outline')
   })
 })

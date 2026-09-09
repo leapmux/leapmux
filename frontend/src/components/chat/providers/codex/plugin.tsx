@@ -22,20 +22,19 @@ import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
+import { CodexControlActions, CodexControlContent } from './CodexControlRequest'
 import {
-  CodexControlActions,
-  CodexControlContent,
+  CODEX_OPTION_COLLABORATION_MODE,
+  DEFAULT_CODEX_COLLABORATION_MODE,
+} from './constants'
+import {
+  codexControlResponseDisplay,
   codexRequestedPermissions,
   markCodexPlanPromptResponse,
   resolveCodexDecisions,
   sendCodexUserInputRejectResponse,
   sendCodexUserInputResponse,
-} from './CodexControlRequest'
-import {
-  CODEX_OPTION_COLLABORATION_MODE,
-  DEFAULT_CODEX_COLLABORATION_MODE,
-} from './constants'
-import { codexControlResponseDisplay } from './controlResponse'
+} from './controlResponse'
 import { CODEX_RENDERERS } from './defineRenderer'
 import { codexToolResultImages } from './extractors/image'
 import { codexNotificationThreadEntry } from './notifications'
@@ -554,7 +553,16 @@ const codexPlugin: Provider = {
       })
     }
     const decisions = resolveCodexDecisions(pickObject(payload, 'params')?.availableDecisions)
-    return buildJsonRpcResult(requestId, { decision: content ? decisions.negative : decisions.positive })
+    // This path MUST answer: the user sent a message while the request was
+    // pending, and an unanswered request blocks the agent forever. So it falls
+    // back to the canonical token of a polarity the request offered none of,
+    // where the banner instead draws no button. The two differ on purpose --
+    // the banner can decline to offer a decision, and this cannot decline to
+    // send one.
+    const decision = content
+      ? decisions.negative ?? 'cancel'
+      : decisions.positive ?? 'accept'
+    return buildJsonRpcResult(requestId, { decision })
   },
   // The worker already forwards synthetic plan feedback as a user message.
   controlFeedbackAsFollowUpMessage: payload => getToolName(payload) !== 'CodexPlanModePrompt',

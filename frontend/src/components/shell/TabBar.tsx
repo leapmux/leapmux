@@ -4,7 +4,7 @@ import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import type { GuardedDragRow } from '~/lib/dragRow'
+import type { DragAxis, GuardedDragRow } from '~/lib/dragRow'
 import type { Tab } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
@@ -390,13 +390,17 @@ export const TabBar: Component<TabBarProps> = (props) => {
     setRowEl: (el: HTMLElement) => void
   }
 
-  const setupTabRowDnd = (key: string): TabRowDnd => {
+  // ONE factory serves two surfaces of different axes: the desktop strip is a
+  // row and the mobile sheet is a column, so each passes its own. A row that
+  // travelled on both would reach past its container and raise the scrollbar of
+  // the other axis.
+  const setupTabRowDnd = (axis: DragAxis) => (key: string): TabRowDnd => {
     const [rowEl, setRowEl] = createContextMenuAnchor()
     // The key is the row's identity for the whole of its life now, so the
     // sortable id is fixed at creation rather than re-derived from a `Tab`
     // the row no longer owns. Created HERE, in the for-row owner, so it
     // outlives a tick where the lookup misses.
-    const row = createGuardedSortableRow(key)
+    const row = createGuardedSortableRow(key, undefined, axis)
     // Mouse-only activation on the row body; the grip carries the raw
     // handlers, so touch drags start there and nowhere else.
     attachDragActivators(rowEl, row.bodyActivators, { touch: 'block' })
@@ -655,7 +659,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                 // No sortable: this fallback exists to render the strip when the drag
                 // machinery is what threw, so it must not touch it. The menu
                 // anchor survives — setupTabRowDnd creates it unconditionally.
-                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd}>
+                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd('x')}>
                   {(tab, _key, dnd) => renderStripRow(tab, dnd)}
                 </KeyedFor>
               )}
@@ -664,7 +668,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                   <KeyedFor
                     each={ids()}
                     lookup={key => tabByKey().get(key)}
-                    rowSetup={setupTabRowDnd}
+                    rowSetup={setupTabRowDnd('x')}
                   >
                     {(tab, _key, dnd) => renderStripRow(tab, dnd)}
                   </KeyedFor>
@@ -880,7 +884,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               fallback={<div class={styles.sheetEmpty}>No tabs</div>}
             >
               <ErrorBoundary fallback={(
-                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd}>
+                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd('y')}>
                   {(tab, _key, dnd) => renderSheetRow(tab, dnd)}
                 </KeyedFor>
               )}
@@ -889,7 +893,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                   <KeyedFor
                     each={ids()}
                     lookup={key => tabByKey().get(key)}
-                    rowSetup={setupTabRowDnd}
+                    rowSetup={setupTabRowDnd('y')}
                   >
                     {(tab, _key, dnd) => renderSheetRow(tab, dnd)}
                   </KeyedFor>

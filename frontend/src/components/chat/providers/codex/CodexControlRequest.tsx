@@ -1,157 +1,28 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
-
+import type { ControlAllowChoicePill } from '../../controls/ControlPillGroups'
+import type { ActionsProps, ContentProps } from '../../controls/types'
 import type { CodexDecision } from './controlResponse'
+
 import { createMemo, Match, Show, Switch } from 'solid-js'
-import { isObject, pickObject } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
-import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
-import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
-
-/** Extract Codex approval params from the control request payload. */
-function getCodexParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
-  return pickObject(payload, 'params', undefined)
-}
-
-/**
- * Sends a Codex-native approval decision as a JSON-RPC response directly.
- */
-export function sendCodexDecision(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  requestId: string,
-  decision: CodexDecision,
-): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, { decision })
-}
-
-export function markCodexPlanPromptResponse(response: Record<string, unknown>): Record<string, unknown> {
-  return { ...response, codexPlanModePrompt: true }
-}
-
-function sendCodexPlanPromptResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  response: Record<string, unknown>,
-): Promise<void> {
-  return sendResponse(onRespond, markCodexPlanPromptResponse(response))
-}
-
-const CODEX_OTHER_OPTION_LABEL = 'None of the above'
-
-function hasCodexOtherOption(question: Question): boolean {
-  const raw = question as unknown as Record<string, unknown>
-  return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
-}
-
-function codexAnswerValues(question: Question, index: number, answerState: ControlAnswerState): string[] {
-  const selected = answerState.selections()[index] ?? []
-  const customText = answerState.customTexts()[index]?.trim()
-  const values = [...selected]
-
-  if (customText) {
-    if (values.length === 0 && hasCodexOtherOption(question)) {
-      // Codex marks its auto-added free-form option explicitly.
-      values.push(CODEX_OTHER_OPTION_LABEL)
-    }
-    // Codex's TUI appends free-form text as a user_note answer entry,
-    // even for questions without a selected option.
-    values.push(`user_note: ${customText}`)
-  }
-
-  return values
-}
-
-/**
- * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
- */
-export function sendCodexUserInputResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  requestId: string,
-  questions: Question[],
-  answerState: ControlAnswerState,
-): Promise<void> {
-  const answers: Record<string, { answers: string[] }> = {}
-  for (let i = 0; i < questions.length; i++) {
-    const values = codexAnswerValues(questions[i], i, answerState)
-    const key = questions[i].id || questions[i].header || `q${i}`
-    answers[key] = { answers: values }
-  }
-  return sendJsonRpcResult(onRespond, requestId, { answers })
-}
-
-export function sendCodexUserInputRejectResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  requestId: string,
-): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, { answers: {} })
-}
-
-export function sendCodexPermissionsResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  requestId: string,
-  permissions: Record<string, unknown>,
-  scope: 'turn' | 'session',
-): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, { permissions, scope })
-}
-
-function isNegativeDecision(decision: CodexDecision): boolean {
-  if (decision === 'decline' || decision === 'cancel')
-    return true
-  return typeof decision === 'object'
-    && 'applyNetworkPolicyAmendment' in decision
-    && decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'deny'
-}
-
-function remembersAllow(decision: CodexDecision): boolean {
-  if (decision === 'acceptForSession')
-    return true
-  if (typeof decision !== 'object')
-    return false
-  if ('acceptWithExecpolicyAmendment' in decision)
-    return true
-  return decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'allow'
-}
-
-export interface ResolvedCodexDecisions {
-  negative: CodexDecision
-  positive: CodexDecision
-  remembered?: CodexDecision
-  additional: CodexDecision[]
-}
-
-export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
-  const parsed = Array.isArray(raw)
-    ? raw.map(parseCodexDecision).filter((decision): decision is CodexDecision => decision !== null)
-    : []
-  const decisions: CodexDecision[] = parsed.length > 0 ? parsed : ['accept', 'cancel']
-  const negative = decisions.find(isNegativeDecision) ?? 'cancel'
-  const positive = decisions.find(decision => decision === 'accept')
-    ?? decisions.find(decision => !isNegativeDecision(decision))
-    ?? 'accept'
-  const remembered = positive === 'accept'
-    ? decisions.find(decision => typeof decision === 'object' && remembersAllow(decision))
-    ?? decisions.find(decision => decision === 'acceptForSession')
-    : undefined
-  const additional = decisions.filter(decision => decision !== negative && decision !== positive && decision !== remembered)
-  return { negative, positive, remembered, additional }
-}
-
-export function codexRequestedPermissions(payload: Record<string, unknown>): Record<string, unknown> {
-  const permissions = pickObject(getCodexParams(payload), 'permissions', undefined)
-  if (!permissions)
-    return {}
-  const granted: Record<string, unknown> = {}
-  if (isObject(permissions.network))
-    granted.network = permissions.network
-  if (isObject(permissions.fileSystem))
-    granted.fileSystem = permissions.fileSystem
-  return granted
-}
+import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from '../../controls/types'
+import {
+  ALLOW_AS_LABEL,
+  CODEX_PERMISSION_SCOPE_OPTIONS,
+  codexDecisionKey,
+  codexDecisionLabel,
+  codexRequestedPermissions,
+  getCodexParams,
+  resolveCodexDecisions,
+  sendCodexDecision,
+  sendCodexPermissionsResponse,
+  sendCodexPlanPromptResponse,
+} from './controlResponse'
 
 /** Codex-specific control request content. */
 export const CodexControlContent: Component<ContentProps> = (props) => {
@@ -204,14 +75,26 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 }
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
-  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
+  // A saved key the offered pair no longer holds clamps to Once, which is the
+  // narrowest grant. A wider one must be chosen, never inherited.
+  const selectedScope = (): 'turn' | 'session' =>
+    (allowChoice.choice() === 'session' ? 'session' : 'turn')
+  // A memo, like its sibling in `CodexControlActions`: the footer reads the
+  // accessor twice per pass (once for `leadingOptions`, once for the `Show`).
+  const allowChoicePill = createMemo<ControlAllowChoicePill>(() => ({
+    label: ALLOW_AS_LABEL,
+    options: CODEX_PERMISSION_SCOPE_OPTIONS,
+    selected: selectedScope(),
+    onSelect: allowChoice.setChoice,
+  }))
   const handleAllow = () => respondThenApplyPermissionPreset(
     sendCodexPermissionsResponse(
       props.onRespond,
       props.request.requestId,
       codexRequestedPermissions(props.request.payload),
-      rememberSwitch.checked() ? 'session' : 'turn',
+      selectedScope(),
     ),
     props.presets,
     permissionChoice.choice(),
@@ -226,9 +109,7 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
         onSelect: () => sendCodexPermissionsResponse(props.onRespond, props.request.requestId, {}, 'turn'),
       }}
       positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
-      switches={() => [
-        { id: 'control-remember-checkbox', label: 'Remember', checked: rememberSwitch.checked(), onChange: rememberSwitch.set },
-      ]}
+      allowChoicePill={allowChoicePill}
       permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
     />
   )
@@ -262,14 +143,51 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   )
 }
 
+/**
+ * One decision as a footer action, or nothing when Codex offered that polarity
+ * no decision at all. The footer then draws no button, rather than one that
+ * sends a token the request never carried.
+ */
+function codexAction(
+  decision: CodexDecision | undefined,
+  testId: string,
+  onSelect: (decision: CodexDecision) => void,
+) {
+  if (!decision)
+    return undefined
+  return { label: codexDecisionLabel(decision), testId, onSelect: () => onSelect(decision) }
+}
+
 /** Codex-specific control request action buttons. */
 export const CodexControlActions: Component<ActionsProps> = (props) => {
   const toolName = () => getToolName(props.request.payload)
   const method = () => props.request.payload.method as string | undefined
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
-  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
+
+  // A saved key the live payload no longer offers clamps to the first pill,
+  // which `codexAllowChoices` guarantees is Codex's one-turn `accept`. Never to
+  // a remembering decision: a grant that outlives the turn must be chosen.
+  const selectedAllowChoice = createMemo(() => {
+    const allow = decisions().allowChoices
+    if (!allow)
+      return undefined
+    return allow.choices.find(choice => choice.key === allowChoice.choice()) ?? allow.choices[0]
+  })
+
+  const allowChoicePill = createMemo<ControlAllowChoicePill | undefined>(() => {
+    const allow = decisions().allowChoices
+    if (!allow)
+      return undefined
+    return {
+      label: ALLOW_AS_LABEL,
+      options: allow.options,
+      selected: selectedAllowChoice()?.key ?? allow.options[0].key,
+      onSelect: allowChoice.setChoice,
+    }
+  })
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
     props.onRespond,
@@ -277,8 +195,11 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     decision,
   )
 
-  const handleAllow = () => respondThenApplyPermissionPreset(
-    handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive),
+  // The pill's decision when a group renders, else the one allow decision the
+  // request carried -- which `codexAction` already proved present, because it
+  // draws no button without it.
+  const handleAllow = (positive: CodexDecision) => respondThenApplyPermissionPreset(
+    handleDecision(selectedAllowChoice()?.decision ?? positive),
     props.presets,
     permissionChoice.choice(),
   )
@@ -289,18 +210,9 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
         <ControlDecisionFooter
           hasEditorContent={props.hasEditorContent}
           onSendFeedback={props.onTriggerSend}
-          negativeAction={{ label: codexDecisionLabel(decisions().negative), testId: 'control-deny-btn', onSelect: () => handleDecision(decisions().negative) }}
-          positiveAction={{ label: codexDecisionLabel(decisions().positive), testId: 'control-allow-btn', onSelect: handleAllow }}
-          switches={() => [
-            ...(decisions().remembered
-              ? [{
-                  id: 'control-remember-checkbox',
-                  label: 'Remember',
-                  checked: rememberSwitch.checked(),
-                  onChange: rememberSwitch.set,
-                }]
-              : []),
-          ]}
+          negativeAction={codexAction(decisions().negative, 'control-deny-btn', decision => handleDecision(decision))}
+          positiveAction={codexAction(decisions().positive, 'control-allow-btn', handleAllow)}
+          allowChoicePill={allowChoicePill}
           permissionPill={() => buildSessionPermissionPill(props.presets, permissionChoice)}
           additionalActions={() => decisions().additional.map(decision => ({
             label: codexDecisionLabel(decision),

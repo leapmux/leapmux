@@ -89,8 +89,7 @@ globalStyle(`:hover > ${sidebarActions} ${menuTrigger}`, {
  *
  * Without this, a touch user's only way into a row menu is the long press, and
  * nothing on screen says so. Revealing every row's kebab would say it, at the cost
- * of one button per row -- clutter in a phone-width sidebar, and a 20px target
- * besides.
+ * of one button per row and clutter in a phone-width sidebar.
  *
  * So the SELECTED row only. Exactly one kebab is visible at a time, on the row the
  * user just tapped and the one they are most likely to act on. It teaches the

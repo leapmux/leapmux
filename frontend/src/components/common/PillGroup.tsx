@@ -47,6 +47,29 @@ export function isPillOptions<K extends string>(options: readonly PillOptionSpec
   return options.length > 0 && options.length <= PILL_OPTION_LIMIT
 }
 
+/**
+ * The label for each item, replaced by its distinct form wherever two items
+ * would otherwise read the same.
+ *
+ * `optionMap` refuses two options that share a KEY, and nothing refuses two that
+ * share a LABEL. Two pills with one name let the user pick the wrong answer, give
+ * a screen reader the same name twice, and make `getByRole('radio', { name })`
+ * match more than one element. A group derives its labels from a small
+ * vocabulary, so a collision is normal rather than exceptional, and each caller
+ * supplies the detail that tells its own two items apart.
+ */
+export function disambiguateLabels<T>(
+  items: readonly T[],
+  label: (item: T) => string,
+  distinct: (item: T) => string,
+): string[] {
+  const counts = new Map<string, number>()
+  const labels = items.map(label)
+  for (const one of labels)
+    counts.set(one, (counts.get(one) ?? 0) + 1)
+  return items.map((item, index) => ((counts.get(labels[index]!) ?? 0) > 1 ? distinct(item) : labels[index]!))
+}
+
 type PillOptionState
   = | { kind: 'enabled' }
     | { kind: 'option-refused', reason: string }
@@ -85,20 +108,31 @@ function PillOption(props: {
   const optionRefused = () => props.state.kind === 'option-refused'
   const groupRefused = () => props.state.kind === 'group-refused'
   /**
-   * What the tooltip says: the reason this option refuses selection, or the
-   * name an icon-only option does not spell out. A named option with no reason
-   * needs no tooltip, because its own text already says what it is.
+   * What the tooltip says: the reason this option refuses selection, else the
+   * option's own name.
    */
-  const tooltipText = () => {
-    if (props.state.kind === 'option-refused')
-      return props.state.reason
-    return props.icon === undefined ? undefined : props.label
-  }
+  const tooltipText = () => (props.state.kind === 'option-refused' ? props.state.reason : props.label)
+  /**
+   * When it opens. A refusal reason and an icon-only option's name are never on
+   * screen, so both open on every hover. A text option repeats a label the
+   * reader can already read, so it opens only where the group CUTS THE PILL OFF
+   * -- `pillGroup` is `overflow: hidden`, and a row too narrow for its options
+   * clips the last ones. Without this a clipped option states no name at all,
+   * and a group whose labels carry a distinguishing detail (a host, a command)
+   * is exactly the one that runs out of room.
+   */
+  const tooltipShowWhen = (): 'always' | 'clipped' =>
+    (props.state.kind === 'option-refused' || props.icon !== undefined ? 'always' : 'clipped')
   /**
    * The name an icon-only option carries. Passed as a STRING rather than
    * `true`, so it stays the name even when the tooltip states a refusal reason
    * instead; `Tooltip` then publishes the reason as a description, because the
    * two strings differ.
+   *
+   * A TEXT option passes nothing. Its own text is already the accessible name,
+   * and an `aria-label` that repeats it only makes the button answer a second
+   * by-label lookup -- `LoginPage` has a `Password` field beside a `Password`
+   * pill, and the two then collide.
    */
   const tooltipName = () => (props.icon === undefined ? undefined : props.label)
   const pill = () => (
@@ -130,7 +164,7 @@ function PillOption(props: {
 
   return (
     <Show when={tooltipText()} fallback={pill()}>
-      {text => <Tooltip text={text()} ariaLabel={tooltipName()}>{pill()}</Tooltip>}
+      {text => <Tooltip text={text()} ariaLabel={tooltipName()} showWhen={tooltipShowWhen()}>{pill()}</Tooltip>}
     </Show>
   )
 }
