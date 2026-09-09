@@ -5,10 +5,13 @@ export const iconSize = {
   md: 16,
   lg: 18,
   xl: 24,
+  // The square an icon BUTTON occupies. `IconButton.css.ts` reads every one of
+  // these, and `sharedTree.css.ts` reserves a sidebar row's height from `md`.
   container: {
     sm: '20px',
     md: '24px',
     lg: '28px',
+    xl: '36px',
   },
 }
 

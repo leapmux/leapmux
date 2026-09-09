@@ -1,6 +1,10 @@
+import type { ControlAnswerState, Question } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { PillOptions } from '~/components/common/PillGroup'
+import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
+import { sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 
 export type CodexDecision
@@ -64,6 +68,265 @@ export function codexDecisionKey(value: unknown): string {
   if (typeof decision === 'string')
     return decision
   return Object.keys(decision)[0]
+}
+
+/** Extract Codex approval params from the control request payload. */
+export function getCodexParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return pickObject(payload, 'params', undefined)
+}
+
+/**
+ * Sends a Codex-native approval decision as a JSON-RPC response directly.
+ */
+export function sendCodexDecision(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+  decision: CodexDecision,
+): Promise<void> {
+  return sendJsonRpcResult(onRespond, requestId, { decision })
+}
+
+export function markCodexPlanPromptResponse(response: Record<string, unknown>): Record<string, unknown> {
+  return { ...response, codexPlanModePrompt: true }
+}
+
+export function sendCodexPlanPromptResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  response: Record<string, unknown>,
+): Promise<void> {
+  return sendResponse(onRespond, markCodexPlanPromptResponse(response))
+}
+
+const CODEX_OTHER_OPTION_LABEL = 'None of the above'
+
+function hasCodexOtherOption(question: Question): boolean {
+  const raw = question as unknown as Record<string, unknown>
+  return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
+}
+
+function codexAnswerValues(question: Question, index: number, answerState: ControlAnswerState): string[] {
+  const selected = answerState.selections()[index] ?? []
+  const customText = answerState.customTexts()[index]?.trim()
+  const values = [...selected]
+
+  if (customText) {
+    if (values.length === 0 && hasCodexOtherOption(question)) {
+      // Codex marks its auto-added free-form option explicitly.
+      values.push(CODEX_OTHER_OPTION_LABEL)
+    }
+    // Codex's TUI appends free-form text as a user_note answer entry,
+    // even for questions without a selected option.
+    values.push(`user_note: ${customText}`)
+  }
+
+  return values
+}
+
+/**
+ * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
+ */
+export function sendCodexUserInputResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+  questions: Question[],
+  answerState: ControlAnswerState,
+): Promise<void> {
+  const answers: Record<string, { answers: string[] }> = {}
+  for (let i = 0; i < questions.length; i++) {
+    const values = codexAnswerValues(questions[i], i, answerState)
+    const key = questions[i].id || questions[i].header || `q${i}`
+    answers[key] = { answers: values }
+  }
+  return sendJsonRpcResult(onRespond, requestId, { answers })
+}
+
+export function sendCodexUserInputRejectResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+): Promise<void> {
+  return sendJsonRpcResult(onRespond, requestId, { answers: {} })
+}
+
+export function sendCodexPermissionsResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+  permissions: Record<string, unknown>,
+  scope: 'turn' | 'session',
+): Promise<void> {
+  return sendJsonRpcResult(onRespond, requestId, { permissions, scope })
+}
+
+function isNegativeDecision(decision: CodexDecision): boolean {
+  if (decision === 'decline' || decision === 'cancel')
+    return true
+  return typeof decision === 'object'
+    && 'applyNetworkPolicyAmendment' in decision
+    && decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'deny'
+}
+
+interface CodexAllowChoice {
+  key: string
+  label: string
+  decision: CodexDecision
+}
+
+/**
+ * How each allow decision reads as a pill, strongest-lasting last.
+ *
+ * ONE ordered table, so a pill's label and its position come from one row. The
+ * two lived in separate cascades that a reader had to keep in step by hand, and
+ * neither was exhaustive: a decision that matched no branch still drew a pill,
+ * labelled as the branch that happened to be last. `detail` tells two decisions
+ * of the same row apart, because a payload may carry two host rules or two
+ * command rules.
+ */
+const CODEX_ALLOW_CHOICE_SPECS: ReadonlyArray<{
+  match: (decision: CodexDecision) => boolean
+  label: string
+  detail: (decision: CodexDecision) => string
+}> = [
+  { match: decision => decision === 'accept', label: 'Once', detail: () => 'Once' },
+  { match: decision => decision === 'acceptForSession', label: 'Session', detail: () => 'Session' },
+  {
+    match: decision => typeof decision === 'object' && 'acceptWithExecpolicyAmendment' in decision,
+    label: 'Command rule',
+    detail: decision => (typeof decision === 'object' && 'acceptWithExecpolicyAmendment' in decision
+      ? `Rule: ${decision.acceptWithExecpolicyAmendment.execpolicy_amendment.join(' ')}`
+      : 'Command rule'),
+  },
+  {
+    match: decision => typeof decision === 'object' && 'applyNetworkPolicyAmendment' in decision,
+    label: 'Host rule',
+    detail: decision => (typeof decision === 'object' && 'applyNetworkPolicyAmendment' in decision
+      ? `Host: ${decision.applyNetworkPolicyAmendment.network_policy_amendment.host}`
+      : 'Host rule'),
+  },
+]
+
+function codexAllowChoiceSpecIndex(decision: CodexDecision): number {
+  return CODEX_ALLOW_CHOICE_SPECS.findIndex(spec => spec.match(decision))
+}
+
+/**
+ * Builds the choices that qualify the shared Allow button. A group requires
+ * Codex's one-turn `accept` decision, so its first and default pill is Once.
+ *
+ * A decision that matches no row draws no pill. It stays in `additional`, where
+ * `codexDecisionLabel` gives it its own name on its own button.
+ */
+function codexAllowChoices(decisions: CodexDecision[]): PillChoices | undefined {
+  const candidates = decisions
+    .map((decision, sourceIndex) => ({ decision, sourceIndex, specIndex: codexAllowChoiceSpecIndex(decision) }))
+    // A repeated string decision draws two pills whose keys differ and whose
+    // names cannot: `detail` returns a constant for `accept` and
+    // `acceptForSession`, so `disambiguateLabels` has nothing to tell them
+    // apart. Answering either sends the same decision, so keep the first.
+    .filter((candidate, index, all) => typeof candidate.decision !== 'string'
+      || all.findIndex(other => other.decision === candidate.decision) === index)
+    .filter(candidate => candidate.specIndex >= 0 && !isNegativeDecision(candidate.decision))
+    .sort((a, b) => a.specIndex - b.specIndex)
+
+  if (candidates.length < 2 || candidates[0]?.decision !== 'accept')
+    return undefined
+
+  const drawn = candidates.slice(0, PILL_OPTION_LIMIT)
+  const labels = disambiguateLabels(
+    drawn,
+    candidate => CODEX_ALLOW_CHOICE_SPECS[candidate.specIndex]!.label,
+    candidate => CODEX_ALLOW_CHOICE_SPECS[candidate.specIndex]!.detail(candidate.decision),
+  )
+  const choices = drawn.map(({ decision, sourceIndex }, index) => ({
+    key: `codex-allow-${sourceIndex}`,
+    label: labels[index]!,
+    decision,
+  }))
+  // The slice already caps the count and the guard above sets the floor, so this
+  // narrows the tuple type rather than rejecting anything. Keeping the pills and
+  // the selection on ONE value is what matters: a group that vanished while
+  // `selectedAllowChoice` still answered would send a rule nothing offered.
+  const options = choices.map(choice => ({ key: choice.key, label: choice.label }))
+  return isPillOptions(options) ? { choices, options } : undefined
+}
+
+/** The allow choices and the exact pill options they draw, built together. */
+interface PillChoices {
+  choices: CodexAllowChoice[]
+  options: PillOptions<string>
+}
+
+/**
+ * The accessible name of the Codex allow-choice group.
+ *
+ * Both Codex action components draw the group, and the E2E specs and the
+ * `allowChoicePillGroup` test helper look it up by this name, so one spelling
+ * keeps a rename from reaching some of those and missing the rest.
+ */
+export const ALLOW_AS_LABEL = 'Allow as'
+
+/** How long a Codex permissions grant lasts. Fixed, unlike the decision pills. */
+export const CODEX_PERMISSION_SCOPE_OPTIONS = [
+  { key: 'turn', label: 'Once' },
+  { key: 'session', label: 'Session' },
+] as const satisfies PillOptions<string>
+
+export interface ResolvedCodexDecisions {
+  /** Absent when Codex offered no way to refuse. The banner then draws no Deny. */
+  negative?: CodexDecision
+  /** Absent when Codex offered no way to approve. The banner then draws no Allow. */
+  positive?: CodexDecision
+  allowChoices?: PillChoices
+  additional: CodexDecision[]
+}
+
+/**
+ * The decisions a Codex approval banner draws, from the request's own list.
+ *
+ * A polarity the list does not carry is ABSENT, and the banner draws no button
+ * for it. It must never be invented: a fabricated `accept` answers a request
+ * that offered no way to approve, and a fabricated `cancel` refuses one that
+ * offered no way to refuse. Codex then acts on a decision the user never had.
+ *
+ * One case does invent a token, and it is the opposite failure. `parseCodexDecision`
+ * DROPS a variant that this build does not know, so a list of one unknown allow
+ * decision beside a refusal parses to the refusal alone. Removing Allow there
+ * would leave the user unable to approve at all, for a request that Codex did
+ * offer an approval for. So a list the parser NARROWED keeps the canonical
+ * token of the missing polarity -- the same pair the empty-list branch below
+ * synthesizes -- and only a list that survived intact reports the polarity as
+ * genuinely absent.
+ */
+export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
+  const offered = Array.isArray(raw) ? raw : []
+  const parsed = offered
+    .map(parseCodexDecision)
+    .filter((decision): decision is CodexDecision => decision !== null)
+  const narrowed = parsed.length < offered.length
+  const decisions: CodexDecision[] = parsed.length > 0 ? parsed : ['accept', 'cancel']
+  const offeredNegative = decisions.find(isNegativeDecision)
+  const offeredPositive = decisions.find(decision => decision === 'accept')
+    ?? decisions.find(decision => !isNegativeDecision(decision))
+  const negative = offeredNegative ?? (narrowed ? 'cancel' : undefined)
+  const positive = offeredPositive ?? (narrowed ? 'accept' : undefined)
+  const allowChoices = codexAllowChoices(decisions)
+  const consumed = new Set<CodexDecision>(
+    allowChoices?.choices.map(choice => choice.decision) ?? (positive ? [positive] : []),
+  )
+  if (negative)
+    consumed.add(negative)
+  const additional = decisions.filter(decision => !consumed.has(decision))
+  return { negative, positive, allowChoices, additional }
+}
+
+export function codexRequestedPermissions(payload: Record<string, unknown>): Record<string, unknown> {
+  const permissions = pickObject(getCodexParams(payload), 'permissions', undefined)
+  if (!permissions)
+    return {}
+  const granted: Record<string, unknown> = {}
+  if (isObject(permissions.network))
+    granted.network = permissions.network
+  if (isObject(permissions.fileSystem))
+    granted.fileSystem = permissions.fileSystem
+  return granted
 }
 
 /**

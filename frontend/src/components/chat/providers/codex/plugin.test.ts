@@ -6,9 +6,9 @@ import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { sendCodexDecision, sendCodexUserInputResponse } from './CodexControlRequest'
-
 import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
+
+import { sendCodexDecision, sendCodexUserInputResponse } from './controlResponse'
 // Side-effect import to register the Codex plugin.
 import './plugin'
 

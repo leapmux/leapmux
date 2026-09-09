@@ -98,8 +98,11 @@ describe('agentInputQueue', () => {
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), '')
   })
 
+  // THREE rows, so two remain movable once the head dispatches. A two-row queue
+  // whose head dispatches leaves the other row no destination at all, which the
+  // case below covers.
   it('gives a dispatching row an inert grip, so it offers no drag it cannot do', () => {
-    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')] })
     const dispatching = screen.getByTestId('queue-drag-handle-one')
     const movable = screen.getByTestId('queue-drag-handle-two')
     // Hidden rather than REMOVED, so the grip keeps its flex slot and the row's
@@ -112,7 +115,7 @@ describe('agentInputQueue', () => {
   })
 
   it('withholds the drag activators from a dispatching row grip', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')] })
     await flush()
     // An affordance that cannot drag must not behave like one. Hiding the grip
     // is only half of it: without withholding the activators, a press that
@@ -122,6 +125,43 @@ describe('agentInputQueue', () => {
     document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 90, pointerType: 'touch' }))
     expect(handlers.onMove).not.toHaveBeenCalled()
     expect(screen.getByTestId('queued-input-one').className).not.toContain('itemDragging')
+  })
+
+  // The queue has two ROWS and one movable row, so no legal destination exists:
+  // `resolveQueueMove` refuses a DISPATCHING row at either end and refuses a
+  // move onto the row itself. A row count cannot see this, which is why the
+  // affordance follows the count of MOVABLE rows.
+  it('offers no drag when the only other row is dispatching', async () => {
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    await flush()
+    const row = screen.getByTestId('queued-input-two')
+    const grip = screen.getByTestId('queue-drag-handle-two')
+
+    expect(row.className).not.toContain('itemDraggable')
+    expect(grip.className).toContain('dragHandleInert')
+
+    grip.dispatchEvent(pointerEvent('pointerdown', { x: 10, y: 10, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 90, pointerType: 'touch' }))
+    await flush()
+    const dragStarted = row.className.includes('itemDragging')
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 90, pointerType: 'touch' }))
+
+    expect(dragStarted).toBe(false)
+    expect(handlers.onMove).not.toHaveBeenCalled()
+  })
+
+  // The head finishes dispatching, so a second movable row appears and the drag
+  // affordance must come back on its own.
+  it('restores the drag affordance once a dispatching head becomes queued', async () => {
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    await flush()
+    expect(screen.getByTestId('queued-input-two').className).not.toContain('itemDraggable')
+
+    handlers.push([item('one'), item('two')])
+    await flush()
+
+    expect(screen.getByTestId('queued-input-two').className).toContain('itemDraggable')
+    expect(screen.getByTestId('queue-drag-handle-two').className).not.toContain('dragHandleInert')
   })
 
   it('removes all drag wiring when the queue shrinks to one input', async () => {

@@ -119,6 +119,7 @@ const TabLeaf: Component<{
       },
       type: props.tab.type,
     },
+    'y',
   )
   /* eslint-enable solid/reactivity */
   // Mouse-only activation on the row body; the grip carries the raw handlers,

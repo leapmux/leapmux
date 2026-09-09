@@ -19,7 +19,7 @@ import {
 import { stopDevServer } from './helpers/devServer'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
+import { realAgentEnv } from './realAgentSettings'
 
 /**
  * Return the agent_id of the first handler_begin marker logged after
@@ -49,8 +49,7 @@ test.describe('Claude Code agent open timing', () => {
     srv = await startTimingServer({
       dataDirPrefix: 'leapmux-timing-e2e',
       env: {
-        LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model,
-        LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort,
+        ...realAgentEnv(),
         LEAPMUX_WORKER_NAME: 'Local',
         LEAPMUX_TRACE_AGENT_STARTUP: '1',
       },

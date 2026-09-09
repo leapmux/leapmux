@@ -76,21 +76,6 @@ describe('codex control request actions', () => {
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(hostDecision)
   })
 
-  it('restores the old Remember selection as its native Codex rule choice', async () => {
-    const commandRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }
-    const { onRespond } = renderActions(
-      makeRequest({ availableDecisions: ['accept', 'acceptForSession', commandRule, 'decline'] }),
-      false,
-      createControlAnswerState({ switches: { 'control-remember-checkbox': true } }),
-    )
-
-    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' })).toBeChecked()
-    await fireEvent.click(screen.getByTestId('control-allow-btn'))
-
-    const [bytes] = onRespond.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(commandRule)
-  })
-
   it('groups each supported allow decision and appends other decisions', () => {
     renderActions(makeRequest({ availableDecisions: ['accept', 'decline', 'cancel', 'acceptForSession', { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }] }))
 
@@ -102,6 +87,80 @@ describe('codex control request actions', () => {
     expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-accept')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-decline')).not.toBeInTheDocument()
+  })
+
+  // Two decisions of one family share a label, and a pill group refuses only
+  // duplicate KEYS. Two radios of one name let the user apply the wrong
+  // permanent rule and make a by-name lookup match both.
+  it('tells two host rules apart by their host', async () => {
+    const allowA = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'a.example.com', action: 'allow' } } }
+    const allowB = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'b.example.com', action: 'allow' } } }
+    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', allowA, allowB, 'decline'] }))
+
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.queryByRole('radio', { name: 'Host rule' })).not.toBeInTheDocument()
+    expect(allowChoices.getByRole('radio', { name: 'Host: a.example.com' })).toBeInTheDocument()
+    await fireEvent.click(allowChoices.getByRole('radio', { name: 'Host: b.example.com' }))
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(allowB)
+  })
+
+  it('tells two command rules apart by their command', () => {
+    const removeRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }
+    const moveRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['mv', '-f'] } }
+    renderActions(makeRequest({ availableDecisions: ['accept', removeRule, moveRule, 'decline'] }))
+
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getByRole('radio', { name: 'Rule: rm' })).toBeInTheDocument()
+    expect(allowChoices.getByRole('radio', { name: 'Rule: mv -f' })).toBeInTheDocument()
+  })
+
+  // `detail` is a constant for the two string decisions, so nothing could tell
+  // a repeat apart. Both would answer identically, so one pill is the truth.
+  it('draws one pill for a repeated string decision', () => {
+    renderActions(makeRequest({ availableDecisions: ['accept', 'accept', 'acceptForSession', 'decline'] }))
+
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getAllByRole('radio')).toHaveLength(2)
+    expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
+    expect(allowChoices.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
+  })
+
+  // One decision of a family keeps the plain label: the detail is what tells a
+  // COLLISION apart, and spelling it always would make every pill long.
+  it('keeps the plain label when a family has one decision', () => {
+    renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
+        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'a.example.com', action: 'allow' } } },
+        'decline',
+      ],
+    }))
+
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getByRole('radio', { name: 'Command rule' })).toBeInTheDocument()
+    expect(allowChoices.getByRole('radio', { name: 'Host rule' })).toBeInTheDocument()
+  })
+
+  // The truncation and the disambiguation meet: the collision must be judged
+  // over the pills the group DRAWS, not over every candidate, or a detail
+  // appears for a name no visible pill repeats.
+  it('disambiguates a collision that survives the four-pill cut', () => {
+    const host = (name: string) => ({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: name, action: 'allow' } } })
+    renderActions(makeRequest({
+      availableDecisions: ['accept', host('a.example.com'), host('b.example.com'), host('c.example.com'), host('d.example.com'), 'decline'],
+    }))
+
+    const allowChoices = allowChoicePillGroup('Allow as')
+    expect(allowChoices.getAllByRole('radio')).toHaveLength(4)
+    expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
+    for (const name of ['a', 'b', 'c'])
+      expect(allowChoices.getByRole('radio', { name: `Host: ${name}.example.com` })).toBeInTheDocument()
+    // The fourth host is past the cut, so it answers from its own button.
+    expect(screen.getByTestId('control-decision-applyNetworkPolicyAmendment')).toBeInTheDocument()
   })
 
   it('keeps allow decisions beyond the four-pill limit as buttons', async () => {
@@ -193,37 +252,38 @@ describe('codex control request actions', () => {
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
   })
 
-  it('restores the old Remember selection as Session for an in-flight permission request', () => {
+  // A saved key the offered pair no longer holds clamps to the narrowest grant.
+  it('clamps an obsolete saved permission scope to Once', async () => {
     const request = makeRequest()
     request.payload = {
       method: 'item/permissions/requestApproval',
       params: { permissions: { network: { enabled: true } } },
     }
-
-    renderActions(request, false, createControlAnswerState({
-      switches: { 'control-remember-checkbox': true },
-    }))
-
-    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' })).toBeChecked()
-  })
-
-  it('lets a new Once choice override a restored Remember selection', async () => {
-    const request = makeRequest()
-    request.payload = {
-      method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
-    }
-    const answerState = createControlAnswerState({
-      switches: { 'control-remember-checkbox': true },
-    })
+    const answerState = createControlAnswerState({ choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' } })
     const { onRespond } = renderActions(request, false, answerState)
 
-    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' }))
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('turn')
-    expect(answerState.choices()).toEqual({ [CONTROL_ALLOW_CHOICE_ID]: 'turn' })
+  })
+
+  it('writes the chosen permission scope into the shared answer record', async () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }
+    const answerState = createControlAnswerState()
+    const { onRespond } = renderActions(request, false, answerState)
+
+    fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' }))
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
+    expect(answerState.choices()).toEqual({ [CONTROL_ALLOW_CHOICE_ID]: 'session' })
   })
 
   it('denies a permission request with an empty grant', async () => {
@@ -255,6 +315,44 @@ describe('codex control request actions', () => {
     expect(allowChoices.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
     expect(allowChoices.getByRole('radio', { name: 'Command rule' })).toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
+  })
+
+  // Codex offered no way to approve, so the banner offers none either. A
+  // fabricated `accept` would answer a request that never carried it.
+  it('draws no Allow when every offered decision refuses', () => {
+    renderActions(makeRequest({ availableDecisions: ['decline', 'cancel'] }))
+
+    expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
+  })
+
+  it('draws no Deny when every offered decision approves', () => {
+    renderActions(makeRequest({ availableDecisions: ['accept', 'acceptForSession'] }))
+
+    expect(screen.queryByTestId('control-deny-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
+    expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
+  })
+
+  // The opposite case: OUR parser dropped the allow decision, so the request did
+  // offer one. Removing Allow would leave the user unable to approve at all.
+  it('keeps Allow when the parser dropped an unknown allow decision', async () => {
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: [{ acceptWithSandboxAmendment: { sandbox_amendment: ['/tmp'] } }, 'decline'],
+    }))
+
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('accept')
+  })
+
+  // Send feedback replaces the refusal, so the slot draws even where the request
+  // carried no negative decision.
+  it('still offers Send feedback when the request refuses nothing', () => {
+    renderActions(makeRequest({ availableDecisions: ['accept', 'acceptForSession'] }), true)
+
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')
   })
 
   it('ignores malformed available decisions', () => {

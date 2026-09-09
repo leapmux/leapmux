@@ -32,7 +32,7 @@ export interface Question {
  * field per switch, so a new switch needs no change here and cannot be the one
  * that a rebuild silently unchecks. `choices` is its one-of-N sibling, holding
  * a pill group's selection by the group's id (`control-permissions-pill`,
- * `control-allow-scope-pill`) — a string, because a pill picks a key, not a
+ * `control-allow-choice-pill`) — a string, because a pill picks a key, not a
  * boolean.
  */
 export interface ControlAnswerState {
@@ -128,11 +128,8 @@ export function createControlChoice(state: () => ControlAnswerState, id: string,
   }
 }
 
-/**
- * The saved choice key for a control request's allow behavior. The string stays
- * compatible with saved ACP request state from before Codex used the same pill.
- */
-export const CONTROL_ALLOW_CHOICE_ID = 'control-allow-scope-pill'
+/** The saved choice key for a control request's allow behavior. */
+export const CONTROL_ALLOW_CHOICE_ID = 'control-allow-choice-pill'
 
 /** Ref object for getting/setting editor content programmatically. */
 export interface EditorContentRef {

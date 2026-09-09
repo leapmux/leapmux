@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
+import { isMaybeVisible, messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
 codexTest.describe('codex approval UI', () => {
   codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {
@@ -23,19 +23,24 @@ codexTest.describe('codex approval UI', () => {
     const banner = page.locator('[data-testid="control-banner"]')
     await expect(banner).toBeVisible()
 
-    // The allow-choice pills expose Codex's native one-turn and command-rule
-    // decisions without the former Remember switch.
+    // The allow-choice pills expose Codex's own decisions without the former
+    // Remember switch. The group appears only when the CLI offers `accept` plus
+    // a second allow decision, and which second one it offers is the CLI's
+    // choice -- so the pills are checked ONLY when the group renders. The
+    // approval round-trip below is what this spec exists for, and it must fail
+    // on its own terms rather than on a missing radio.
     const allowChoices = page.getByRole('radiogroup', { name: 'Allow as' })
-    const once = allowChoices.getByRole('radio', { name: 'Once' })
-    await expect(once).toBeChecked()
-    const commandRule = allowChoices.getByRole('radio', { name: 'Command rule' })
-    await expect(commandRule).toBeVisible()
-    await commandRule.click()
-    await expect(commandRule).toBeChecked()
-    // Return to the one-turn decision before approval. A browser test must not
-    // persist a real Codex command rule in the developer's account state.
-    await once.click()
-    await expect(once).toBeChecked()
+    if (await isMaybeVisible(allowChoices)) {
+      const once = allowChoices.getByRole('radio', { name: 'Once' })
+      await expect(once).toBeChecked()
+      const remembering = allowChoices.getByRole('radio').nth(1)
+      await remembering.click()
+      await expect(remembering).toBeChecked()
+      // Return to the one-turn decision before approval. A browser test must not
+      // persist a real Codex command or host rule in the developer's account state.
+      await once.click()
+      await expect(once).toBeChecked()
+    }
 
     const allowBtn = page.locator('[data-testid="control-allow-btn"]')
     await expect(allowBtn).toBeVisible()

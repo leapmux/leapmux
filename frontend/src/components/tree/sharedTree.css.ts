@@ -1,10 +1,18 @@
 import { style } from '@vanilla-extract/css'
+import { iconSize } from '~/styles/tokens'
 
 export const node = style({
   'display': 'flex',
   'alignItems': 'center',
   'gap': 'var(--space-1)',
   'padding': '2px var(--space-2)',
+  // Every row reserves the height of a row-action button, whether or not it
+  // draws one. The row has no height of its own, so the tallest child sets it,
+  // and a 24px kebab is taller than the 21px label line box. Without this, a
+  // branch group with no branch name, a repo group on an archived workspace and
+  // a tab leaf that cannot close all sit 3px shorter than their neighbours, and
+  // the sidebar loses its rhythm wherever an action is conditional.
+  'minHeight': `calc(${iconSize.container.md} + 4px)`,
   'cursor': 'pointer',
   'fontSize': 'var(--text-7)',
   'color': 'var(--foreground)',

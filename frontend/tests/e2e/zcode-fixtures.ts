@@ -22,7 +22,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { REAL_AGENT_E2E_SETTINGS, realAgentOpenOptions } from './realAgentSettings'
+import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
 import { computeZCodeE2ESkipReason } from './zcode-install'
 
 interface WorkspaceFixture {
@@ -64,7 +64,7 @@ export const zcodeTest = base.extend<{
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, mkdtempSync(join(tmpdir(), 'zcode-e2e-wd-')), {
       agentProvider: AgentProvider.ZCODE,
-      ...realAgentOpenOptions(REAL_AGENT_E2E_SETTINGS.zcode),
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.ZCODE)),
     })
     await use({ workspaceId })
 

@@ -23,7 +23,8 @@ export interface MoreHorizontalTriggerOptions {
 // The trigger uses a 24px IconButton and keeps the default 14px icon.
 // It stops row events so the popover opens without selecting the row.
 // DropdownMenu owns the pointer-down and click state changes.
-// Its handlers capture the open state before light dismiss changes it.
+// Its `handleTriggerPointerDown` and `handleTriggerClick` capture the open
+// state before light dismiss changes it.
 // This helper forwards the trigger properties to those handlers.
 export function moreHorizontalTrigger(
   opts: MoreHorizontalTriggerOptions = {},
@@ -52,12 +53,12 @@ export function moreHorizontalTrigger(
 // Creates the standard three-dot trigger for each row context menu.
 // It supplies the sidebar's `menuTrigger` class to every row menu.
 // Thus, one visual change updates all row menus.
+// EVERY per-row context menu uses this trigger, and no other trigger belongs on
+// a sidebar row: the row height reserves this button's size, so a row menu that
+// picks a different one breaks the rhythm of the list.
 // A trigger outside a row uses `moreHorizontalTrigger` with its own class.
-// These components use this trigger:
-// - BranchContextMenu
-// - WorkspaceContextMenu
-// - WorkerContextMenu
-// - TunnelContextMenu
+// Run `rg 'rowContextMenuTrigger' frontend/src` for the current call sites,
+// rather than a list here that drifts as menus are added.
 export function rowContextMenuTrigger(
   opts: { 'data-testid'?: string } = {},
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {

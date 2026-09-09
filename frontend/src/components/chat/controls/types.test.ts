@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createControlAnswerState, createControlChoice, createControlSwitch, toRpcId } from './types'
+import { CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch, toRpcId } from './types'
 
 describe('toRpcId', () => {
   it('converts numeric string to number', () => {
@@ -106,7 +106,7 @@ describe('createControlChoice', () => {
 
   it('reads undefined before any selection when no fallback is passed', () => {
     const state = createControlAnswerState()
-    const scope = createControlChoice(() => state, 'control-allow-scope-pill')
+    const scope = createControlChoice(() => state, CONTROL_ALLOW_CHOICE_ID)
     expect(scope.choice()).toBeUndefined()
 
     scope.setChoice('always')

@@ -29,7 +29,7 @@ import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './help
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
+import { realAgentEnv } from './realAgentSettings'
 
 // Per-fixture PID registry written under `<dataDir>/pids.json`. The
 // global-teardown sweep reads this file and reaps any process that
@@ -173,7 +173,7 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model, LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort, LEAPMUX_WORKER_NAME: 'test-worker' },
+    env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
   })
   workerProc.unref()
   // Track immediately so the fixture teardown / global-teardown sweep still
@@ -252,7 +252,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model, LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort }),
+    env: hubSpawnEnv(realAgentEnv()),
   })
   hubProc.unref()
   // Track immediately so the fixture teardown / global-teardown sweep still
@@ -336,7 +336,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model, LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort }),
+      env: hubSpawnEnv(realAgentEnv()),
     })
     hubProc.unref()
     trackSpawnedPid(dataDir, hubProc.pid!)
@@ -386,7 +386,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS.claudeCode.model, LEAPMUX_CLAUDE_DEFAULT_EFFORT: REAL_AGENT_E2E_SETTINGS.claudeCode.effort, LEAPMUX_WORKER_NAME: 'test-worker' },
+      env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
     })
     workerProc.unref()
     trackSpawnedPid(dataDir, workerProc.pid!)

@@ -192,10 +192,11 @@ export const controlFooterRight = style({
 })
 
 // The leading options cluster of a decision row: the request's switches, then
-// the permission pill group, on ONE line ahead of the decision buttons. The pill
-// group is button-high, so nothing here needs the second line the switch COLUMN
-// used to occupy; the cluster keeps `minWidth: 0` so a narrow composer can
-// compress the pills (they clip inside their own box) before the buttons move.
+// the allow-choice pill group, then the permission pill group, on ONE line ahead
+// of the decision buttons. A pill group is button-high, so nothing here needs
+// the second line the switch COLUMN used to occupy; the cluster keeps
+// `minWidth: 0` so a narrow composer can compress the pills (they clip inside
+// their own box) before the buttons move.
 export const controlRequestSwitches = style({
   display: 'flex',
   flexDirection: 'row',

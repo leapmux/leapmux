@@ -4,16 +4,12 @@
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
 import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
-import { REAL_AGENT_E2E_SETTINGS } from './realAgentSettings'
 
 const kiloConfig: ACPFixtureConfig = {
   agentProvider: AgentProvider.KILO,
   cliBinary: 'kilo',
   skipMessage: 'Kilo E2E requires a kilo CLI on PATH',
   workspacePrefix: 'kilo-e2e',
-  // Kilo's default image model does not run agentic turns. Use a text-capable
-  // model so subagent spawns run.
-  ...REAL_AGENT_E2E_SETTINGS.kilo,
 }
 
 export const KILO_E2E_SKIP_REASON = detectACPSkipReason(kiloConfig)

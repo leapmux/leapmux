@@ -216,7 +216,14 @@ test.describe('agent input queue', () => {
       // centre in a second step so the collision detector sees the move.
       await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 20)
       await expect(source).toHaveClass(/itemDragging/)
-      await expect(page.getByTestId('agent-input-queue')).toHaveCSS('overflow-x', 'hidden')
+      // The dragged row travels on the queue's own axis alone, so it never
+      // widens the scrollable area. Assert the OUTCOME -- nothing to scroll
+      // sideways to -- rather than a declaration, so a row that starts drifting
+      // sideways again fails here whatever produces it.
+      await expect
+        .poll(() => page.getByTestId('agent-input-queue')
+          .evaluate(queue => queue.scrollWidth - queue.clientWidth))
+        .toBe(0)
       await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
     }
     finally {

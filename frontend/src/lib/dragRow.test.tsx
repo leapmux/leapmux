@@ -1,4 +1,4 @@
-import type { GuardedDragRow } from '~/lib/dragRow'
+import type { DragAxis, GuardedDragRow } from '~/lib/dragRow'
 import { cleanup, render } from '@solidjs/testing-library'
 import { DragDropProvider, SortableProvider } from '@thisbeyond/solid-dnd'
 import { createSignal } from 'solid-js'
@@ -25,7 +25,7 @@ describe('guarded drag rows', () => {
    * it: `.ref` registration, guarded body activators, a raw grip. `onDragStart`
    * records what activated, plus the row's observable state at that moment.
    */
-  function renderProbe(kind: 'sortable' | 'draggable') {
+  function renderProbe(kind: 'sortable' | 'draggable', axis: DragAxis = 'both') {
     let activeId: string | null = null
     let observed: { isActiveDraggable: boolean, transform: string | undefined } | undefined
     let row!: GuardedDragRow
@@ -34,8 +34,8 @@ describe('guarded drag rows', () => {
 
     function Row() {
       row = kind === 'sortable'
-        ? createGuardedSortableRow('row-1')
-        : createGuardedDraggableRow('row-1')
+        ? createGuardedSortableRow('row-1', undefined, axis)
+        : createGuardedDraggableRow('row-1', undefined, axis)
       const [body, setBody] = createSignal<HTMLDivElement>()
       const [grip, setGrip] = createSignal<HTMLSpanElement>()
       // eslint-disable-next-line solid/reactivity -- read inside attachDragActivators' effect
@@ -111,6 +111,31 @@ describe('guarded drag rows', () => {
     expect(p.observed()?.isActiveDraggable).toBe(true)
     expect(p.row().isActiveDraggable).toBe(true)
     expect(p.row().style().transform).toMatch(/translate3d/)
+  })
+
+  // The library transforms a dragged row on both axes. A row in a vertical list
+  // that follows the pointer sideways reaches past its container, and a
+  // container that scrolls vertically then raises a horizontal scrollbar.
+  it('pins the off-axis of a vertical row to zero', async () => {
+    const p = renderProbe('sortable', 'y')
+    await flush()
+
+    p.rowEl().dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 120, y: 90, pointerType: 'mouse' }))
+
+    expect(p.row().style().transform).toBe('translate3d(0px, 40px, 0)')
+  })
+
+  it('pins the off-axis of a horizontal row to zero', async () => {
+    const p = renderProbe('sortable', 'x')
+    await flush()
+
+    p.rowEl().dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 70, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 120, y: 90, pointerType: 'mouse' }))
+
+    expect(p.row().style().transform).toBe('translate3d(70px, 0px, 0)')
   })
 
   it('a touch press on the row body never starts a drag', async () => {

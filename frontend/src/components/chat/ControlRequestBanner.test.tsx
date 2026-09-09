@@ -131,6 +131,24 @@ describe('controlRequestBanner reactive request removal', () => {
     }).not.toThrow()
 
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('control-submit-btn')).toBeInTheDocument()
+  })
+
+  // Its own case, so a metrics regression names the metrics. Folded into the
+  // removal test above, it failed under a name that sent the reader to the
+  // request lifecycle instead.
+  it('uses Oat small metrics for question actions', () => {
+    render(() => (
+      <ControlRequestActions
+        request={questionRequest()}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+
     expect(screen.getByTestId('control-stop-btn')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('control-yolo-btn')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('control-submit-btn')).toHaveClass(compactControl)

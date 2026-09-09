@@ -49,12 +49,41 @@ export interface GuardedDragRow {
   readonly isActiveDraggable: boolean
 }
 
-function guardRow(primitive: DragPrimitive | undefined): GuardedDragRow {
+/**
+ * The axis a list reorders along, which is the axis its rows may move.
+ *
+ * The library transforms a dragged row on BOTH axes, so a row in a vertical
+ * list follows the pointer sideways as well. It then reaches past the
+ * container's content box, and a container that scrolls vertically computes
+ * `overflow-x` to `auto` and raises a horizontal scrollbar. Hiding that
+ * overflow per list treats the symptom and clips whatever else overflows the
+ * row; pinning the off-axis to zero removes the sideways travel at its source.
+ *
+ * `both` stays the default, for a surface that really does move on two axes.
+ */
+export type DragAxis = 'x' | 'y' | 'both'
+
+/**
+ * The transform with the off-axis pinned to zero.
+ *
+ * Passes the value through UNTOUCHED for `both`, and for anything that is not
+ * the pair the library documents. `maybeTransformStyle` already tolerates a
+ * primitive that carries no transform, so reading `.x` off one here would be
+ * the one place that does not.
+ */
+function axisTransform<T>(transform: T, axis: DragAxis): T | { x: number, y: number } {
+  const point = transform as { x?: number, y?: number } | undefined
+  if (axis === 'both' || typeof point?.x !== 'number' || typeof point?.y !== 'number')
+    return transform
+  return axis === 'y' ? { x: 0, y: point.y } : { x: point.x, y: 0 }
+}
+
+function guardRow(primitive: DragPrimitive | undefined, axis: DragAxis): GuardedDragRow {
   return {
     ref: el => primitive?.ref?.(el),
     bodyActivators: () => primitive?.dragActivators,
     gripActivators: () => primitive?.dragActivators,
-    style: () => (primitive ? maybeTransformStyle(primitive.transform) : {}),
+    style: () => (primitive ? maybeTransformStyle(axisTransform(primitive.transform, axis) as { x: number, y: number }) : {}),
     get isActiveDraggable() {
       return primitive?.isActiveDraggable ?? false
     },
@@ -66,21 +95,29 @@ function guardRow(primitive: DragPrimitive | undefined): GuardedDragRow {
  * the drag context is not available — the ErrorBoundary fallbacks rely on the
  * rest of the row (menu anchor, rendering) surviving that.
  */
-export function createGuardedSortableRow(key: string, data?: Record<string, unknown>): GuardedDragRow {
+export function createGuardedSortableRow(
+  key: string,
+  data?: Record<string, unknown>,
+  axis: DragAxis = 'both',
+): GuardedDragRow {
   let sortable: DragPrimitive | undefined
   try {
     sortable = data !== undefined ? createSortable(key, data) : createSortable(key)
   }
   catch { /* DnD context not ready */ }
-  return guardRow(sortable)
+  return guardRow(sortable, axis)
 }
 
 /** A draggable (non-sortable) row (`createDraggable` under the same guard). */
-export function createGuardedDraggableRow(key: string, data?: Record<string, unknown>): GuardedDragRow {
+export function createGuardedDraggableRow(
+  key: string,
+  data?: Record<string, unknown>,
+  axis: DragAxis = 'both',
+): GuardedDragRow {
   let draggable: DragPrimitive | undefined
   try {
     draggable = data !== undefined ? createDraggable(key, data) : createDraggable(key)
   }
   catch { /* DnD context not ready */ }
-  return guardRow(draggable)
+  return guardRow(draggable, axis)
 }

@@ -13,7 +13,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { REAL_AGENT_E2E_SETTINGS, realAgentOpenOptions } from './realAgentSettings'
+import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
 
 interface WorkspaceFixture {
   workspaceId: string
@@ -32,7 +32,7 @@ export const codexTest = base.extend<{
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, mkdtempSync(join(tmpdir(), 'codex-e2e-wd-')), {
       agentProvider: AgentProvider.CODEX,
-      ...realAgentOpenOptions(REAL_AGENT_E2E_SETTINGS.codex),
+      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CODEX)),
     })
     await use({ workspaceId })
 

@@ -182,8 +182,9 @@ describe('pi confirm control requests', () => {
     expect(contentContainer.textContent ?? '').toContain('Continue?')
     expect(contentContainer.textContent ?? '').toContain('About to delete files.')
     // The action surface produces the Approve / Deny buttons referenced by
-    // the test name. queryByTestId-scoped to this render so the assertion
-    // doesn't accidentally pick up the content render above.
+    // the test name. Looked up through this render's own `container`, not
+    // through `screen`, so the assertion cannot pick up the content render
+    // above. A missing button then reads as `expected null to have class`.
     expect(container.querySelector('[data-testid="control-allow-btn"]')).toHaveClass(compactControl)
     expect(container.querySelector('[data-testid="control-deny-btn"]')).toHaveClass('outline', compactControl)
   })
