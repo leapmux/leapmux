@@ -165,7 +165,7 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 | **Terminal renderer** | Auto | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
 | **Quake terminal position** | Top | Edge of the centre area the Quake terminal slides in from: **Top**, **Bottom**, **Left** or **Right**. A dual-tier setting. |
 | **Quake terminal size** | 65% | Share of the centre area the Quake terminal covers — height for top and bottom, width for left and right. A dual-tier setting. |
-| **Quake terminal animation** | 300 ms | How long the Quake terminal takes to slide in and out. The system reduced-motion setting overrides it. A dual-tier setting. |
+| **Quake terminal animation** | 200 ms | How long the Quake terminal takes to slide in and out. The system reduced-motion setting overrides it. A dual-tier setting. |
 | **Quake terminal background opacity** | 0.9 | Opacity of the Quake terminal's background. The terminal text stays fully opaque. A dual-tier setting. |
 
 See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) for what the panel is and how to open it.
@@ -338,7 +338,7 @@ Device override (if set)  →  Account default  →  built-in default
 | Turn-end volume | 100% |
 | Quake terminal position | Top |
 | Quake terminal size | 65% |
-| Quake terminal animation | 300 ms |
+| Quake terminal animation | 200 ms |
 | Quake terminal background opacity | 0.9 |
 | Debug logging | Off |
 | Tray / menu bar icon | Off |

@@ -124,3 +124,47 @@ export const compactActionLabelled = {
 // 1200px display kept rendering "Pause Queue / Interrupt / Send" in full and
 // crowded the `[+]` button.
 export const composerContainer = 'composer'
+
+// The scrollbar box, in pixels, and the single source of truth for it.
+//
+// Three places used to write this number: the `::-webkit-scrollbar` rules in
+// `~/styles/global.css.ts`, the xterm overview-ruler width in `~/lib/terminal`
+// (which sets the inline width of xterm's own `.slider`), and the inset and
+// radius of the slider rules in
+// `~/components/terminal/TerminalView.css.ts`. All three asserted in prose that
+// they had to match. They agree by construction now.
+//
+// For the terminal this ONE number does two jobs, because xterm 6 reads
+// `options.overviewRuler?.width` in two places and defaults both to 14.
+// `FitAddon` subtracts it from the width before dividing by the cell width, so
+// it is the gutter the last column stops at. The viewport passes it to the
+// vendored VS Code scrollable element as `verticalScrollbarSize`, which is the
+// inline width of the `.slider` that element draws -- xterm 6 renders its OWN
+// scrollbar rather than leaning on the browser's, so this is the real bar and
+// not a reservation for one.
+export const scrollbarWidthPx = 8
+
+// The transparent border that insets the thumb inside its box, so the visible
+// bar is thinner than the hit target.
+export const scrollbarThumbInsetPx = 2
+
+// The thumb itself, as a spreadable declaration.
+//
+// Shared so the terminal's slider and every other scrollbar in the app are ONE
+// shape. Lives here rather than in `~/styles/global.css.ts` because that module
+// registers global rules as a side effect, and a `.css.ts` file that imported
+// the object from there would pull the whole global stylesheet in with it.
+//
+// The colours are custom properties on purpose: they are relative-colour
+// functions that only a browser resolves, which is why xterm's own
+// `scrollbarSlider*` theme entries cannot carry them.
+export const scrollbarThumb = {
+  backgroundColor: 'var(--scrollbar-thumb)',
+  backgroundClip: 'content-box',
+  border: `${scrollbarThumbInsetPx}px solid transparent`,
+  borderRadius: `${scrollbarWidthPx / 2}px`,
+} as const
+
+export const scrollbarThumbHover = {
+  backgroundColor: 'var(--scrollbar-thumb-hover)',
+} as const

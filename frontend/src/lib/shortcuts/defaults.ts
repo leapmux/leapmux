@@ -120,5 +120,13 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   // that keycap is `^` on a German layout, `²` on French and `º` on Spanish,
   // and the browsers disagree about its `event.code` on a macOS ISO keyboard.
   // See PHYSICAL_KEY_ALIASES in `./keybindings` for what it expands to.
-  { key: 'Control+grave', command: 'terminal.toggleQuake', when: 'activeTabType == "agent" && !dialogOpen' },
+  //
+  // NO `activeTabType` conjunct, deliberately. A quake terminal belongs to a
+  // working DIRECTORY, and every tab kind carries one -- so the chord works
+  // over a terminal tab, a file viewer and an image viewer as well as over an
+  // agent tab, and over a terminal tab it reaches the SAME shell the agent tab
+  // beside it shows. Scoping this to `agent` was a restatement of an addressing
+  // rule that no longer exists. `focusedQuakeTarget` is the one place that
+  // still declines: a tab with no worker or no working directory has no panel.
+  { key: 'Control+grave', command: 'terminal.toggleQuake', when: '!dialogOpen' },
 ]

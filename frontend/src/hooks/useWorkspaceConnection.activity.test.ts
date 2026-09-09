@@ -97,6 +97,7 @@ function mountConnection() {
       agentActivityStore: activity,
       repoGitStore: createRepoGitStore(),
       quakeStore: createTestQuakeStore(),
+      getActiveQuakeKeyId: () => null,
       settingsLoading: createLoadingSignal(),
       getActiveWorkspaceId: () => WS,
       onAgentSettled: (id: string) => settled.push(id),

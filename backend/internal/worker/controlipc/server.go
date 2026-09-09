@@ -212,6 +212,23 @@ const (
 	SocketKindTerminal SocketKind = "terminal"
 )
 
+// logKey is the slog attribute name for the id of a spawn of this kind.
+//
+// Derived rather than passed alongside the kind, for the reason the spawn
+// derives TokenInfo.TerminalID the same way: the two cannot then disagree, and
+// an agent spawn cannot be logged under "terminal_id" by mistake. The default
+// arm returns a non-empty name so slog never receives an empty attribute key.
+func (k SocketKind) logKey() string {
+	switch k {
+	case SocketKindAgent:
+		return "agent_id"
+	case SocketKindTerminal:
+		return "terminal_id"
+	default:
+		return "spawn_id"
+	}
+}
+
 // shortPrefix returns the first n chars of s, or s if it's shorter.
 // Used to keep Unix socket paths under the 104-byte sun_path limit
 // on macOS / *BSD when the underlying IDs are 48-char nanoids.
@@ -395,6 +412,12 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 	}
 	if info.TabID != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TAB_ID="+info.TabID)
+	}
+	// The terminal the process is running INSIDE, which is not always TAB_ID:
+	// inside a quake panel TAB_ID identifies a neighbouring tab, because a quake
+	// terminal has none of its own. See TokenInfo.TerminalID.
+	if info.TerminalID != "" {
+		envs = append(envs, "LEAPMUX_CONTROL_TERMINAL_ID="+info.TerminalID)
 	}
 	if tt := tabTypeWireName(info.TabType); tt != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TAB_TYPE="+tt)

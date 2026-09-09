@@ -41,17 +41,18 @@ func (svc *Service) requireTerminalForRestart(sender channel.ResponseWriter, ter
 // error) is identical to requireAgent — use that one instead when the handler
 // body needs the row.
 //
-// It returns the archive flag rather than a bare bool, because the registrar
+// It returns the archive flag alongside the found/not-found answer, because the
+// registrar
 // refuses a write handler for an archived workspace and this probe is the only
 // row read a by-id handler does.
-func (svc *Service) requireAgentID(sender channel.ResponseWriter, agentID string) (int64, bool) {
+func (svc *Service) requireAgentID(sender channel.ResponseWriter, agentID string) (archived, ok bool) {
 	row, ok := requireExistingRow(sender, agentID, "agent", svc.Queries.GetAgentID)
 	return row.WorkspaceArchived, ok
 }
 
 // requireTerminalID is the terminal mirror of requireAgentID: a narrow lookup
 // that skips the screen BLOB a full GetTerminal would read.
-func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID string) (int64, bool) {
+func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID string) (archived, ok bool) {
 	row, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalID)
 	return row.WorkspaceArchived, ok
 }

@@ -201,6 +201,20 @@ enum SplitDirection {
 message TabRef {
   TabType tab_type = 1;
   string tab_id = 2;
+  // Owner of the tab, for the kinds whose id needs one.
+  //
+  // A FILE or IMAGE tab id is minted client-side and is unique only WITHIN one
+  // account, so the pair (tab_type, tab_id) does not identify such a tab on a
+  // worker that serves more than one. AGENT and TERMINAL ids are server-minted
+  // and globally unique, so a sender may leave this empty for them -- and every
+  // reader that matches those two ignores it.
+  //
+  // Mirrors WorkerTabState.user_id, which states the same rule for the Hub's
+  // owned-tab list. A sender that fills one and drops the other is where a
+  // payload-backed tab stops being addressable: worker_tab_payloads is keyed
+  // (user_id, tab_id), so a write with a blank owner matches no row, and a
+  // predicate with a blank owner matches ANOTHER account's row.
+  string user_id = 3;
 }
 
 // CleanupWorkspaceRequest names the tabs a just-deleted workspace held on

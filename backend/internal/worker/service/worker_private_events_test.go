@@ -88,11 +88,11 @@ func TestPrivateEventsBus_PublishesTheQuakePanelCommand(t *testing.T) {
 		got <- evt
 		return nil
 	})
-	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE)
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "/repo", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE)
 
 	select {
 	case evt := <-got:
-		assert.Equal(t, "agent-1", evt.GetQuakePanelCommand().GetAgentId())
+		assert.Equal(t, "/repo", evt.GetQuakePanelCommand().GetWorkingDir())
 		assert.Equal(t, leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE, evt.GetQuakePanelCommand().GetAction())
 	case <-time.After(10 * time.Second):
 		t.Fatal("subscriber did not receive the published command")
@@ -124,7 +124,7 @@ func TestTabPayloadStore_SnapshotReplaysFactsAndNoCommands(t *testing.T) {
 	}))
 	// A command published before the snapshot is taken, which is the state a
 	// reconnecting client arrives in.
-	bus.PublishQuakePanelCommand(owner, "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+	bus.PublishQuakePanelCommand(owner, "/repo", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
 
 	snapshot, err := store.SnapshotForOwner(ctx, owner)
 	require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestPrivateEventsBus_DoesNotReplayTheQuakePanelCommand(t *testing.T) {
 
 	// Published BEFORE anyone subscribes, which is the state a reconnecting
 	// client arrives in.
-	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "agent-1", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
+	bus.PublishQuakePanelCommand(userid.MustNew("user-1"), "/repo", leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN)
 
 	got := make(chan *leapmuxv1.WorkerPrivateEvent, 4)
 	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {

@@ -71,16 +71,22 @@ type TerminalSpawnInfo struct {
 	// UserID is already minted -- see AgentSpawnInfo.UserID.
 	UserID   userid.UserID
 	WorkerID string
-	TabID    string // The spawned terminal's id.
-	// OwnerAgentID is set for a COMPANION terminal -- the shell behind an agent
-	// tab's quake panel -- and empty for a terminal TAB.
+	TabID    string // The spawned terminal's id. Always the socket's name.
+	// IsQuake is true for the shell behind a quake panel, false for a terminal
+	// TAB.
 	//
-	// It decides the ambient tab the spawn advertises. A companion has no CRDT
-	// tab, so the hub answers NotFound for its id, while every `leapmux control`
-	// command resolves LEAPMUX_CONTROL_TAB_ID through the hub. A companion that
-	// advertised itself would therefore make every command typed into the quake
-	// panel fail. The tab it belongs to is its OWNER, and that is what the spawn
-	// advertises.
-	OwnerAgentID string
-	WorkingDir   string
+	// It decides whether the spawn advertises an ambient TAB at all. A terminal
+	// tab advertises itself. A quake terminal advertises NOTHING: it has no
+	// CRDT tab, so the hub answers NotFound for its id, and no other tab is
+	// honestly "the tab you are in" -- a shell keyed on a working directory can
+	// be reached from several tabs, and picking one of them would hand every
+	// `leapmux control` command in the panel a target the user did not choose.
+	//
+	// So LEAPMUX_CONTROL_TAB_ID and _TAB_TYPE are omitted for a quake terminal,
+	// and a command that acts on a tab asks for --tab-id. The shell itself is
+	// still nameable through LEAPMUX_CONTROL_TERMINAL_ID, and the commands that
+	// need only the worker and the directory -- `terminal quake ...` among them
+	// -- keep working with no flags at all.
+	IsQuake    bool
+	WorkingDir string
 }

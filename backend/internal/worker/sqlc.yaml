@@ -46,3 +46,26 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "MarkType"
+          # The INTEGER-as-bool columns, retyped so BOTH directions are a Go
+          # bool. Without these the write half needed a conversion helper and
+          # the read half was open-coded as `!= 0` at fourteen sites -- a
+          # polarity a reviewer had to check by eye, and one an inverted
+          # comparison could flip silently. database/sql converts an INTEGER
+          # 0/1 to *bool through driver.Bool, and a bool parameter back the
+          # same way, so the retype is correct in both directions.
+          - column: "terminals.is_quake"
+            go_type: "bool"
+          - column: "terminals.workspace_archived"
+            go_type: "bool"
+          - column: "agents.workspace_archived"
+            go_type: "bool"
+          - column: "worker_tab_payloads.workspace_archived"
+            go_type: "bool"
+          - column: "tab_locations.workspace_archived"
+            go_type: "bool"
+          - column: "tab_locations.is_quake"
+            go_type: "bool"
+          - column: "tab_locations.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"

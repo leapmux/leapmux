@@ -60,7 +60,7 @@ func RunTabClose(rawCtx any, args []string) error {
 	if err != nil {
 		return control.EmitError("invalid_request", err.Error())
 	}
-	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, WorkerID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
+	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, WorkerID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		if err := guardTabClose(got.TabID, force); err != nil {
 			return err
 		}

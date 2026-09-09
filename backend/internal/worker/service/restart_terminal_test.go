@@ -142,7 +142,7 @@ func TestRestartTerminal_RefusesArchivedTerminal(t *testing.T) {
 		Cols: 80, Rows: 25, Screen: []byte("preserved"),
 	}))
 	_, err := svc.Queries.SetTerminalWorkspaceArchived(t.Context(), db.SetTerminalWorkspaceArchivedParams{
-		WorkspaceArchived: 1,
+		WorkspaceArchived: true,
 		ID:                "terminal-archived",
 	})
 	require.NoError(t, err)

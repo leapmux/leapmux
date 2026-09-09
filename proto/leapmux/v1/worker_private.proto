@@ -45,9 +45,10 @@ service WorkerPrivateService {
   rpc RevokeTabPayload(RevokeTabPayloadRequest) returns (RevokeTabPayloadResponse);
 
   // SetQuakePanel asks every one of the caller's frontends to show or hide the
-  // quake panel of one agent tab. It stores nothing: the panel's open state is
-  // per-client, like which tab is active in a tile, and this RPC is a remote
-  // keystroke rather than a write. Emits QuakePanelCommand.
+  // quake panel of one WORKING DIRECTORY on this worker. It stores nothing:
+  // the panel's open state is per-client, like which tab is active in a tile,
+  // and this RPC is a remote keystroke rather than a write. Emits
+  // QuakePanelCommand.
   //
   // The Control CLI is the only caller. A frontend toggles its own panel
   // locally and never round-trips, so there is no echo to suppress.
@@ -87,9 +88,11 @@ enum QuakePanelAction {
 // states. That is correct rather than unfortunate: the open state is per-client
 // by design, exactly as the active tab in a tile is.
 message QuakePanelCommand {
-  // The agent tab whose panel this is about. A quake terminal belongs to one
-  // agent tab, so the agent id is the whole address.
-  string agent_id = 1;
+  // The working directory whose panel this is about. A quake terminal belongs
+  // to one directory on one worker, so the directory -- together with the
+  // worker this stream reaches -- is the whole address. Every tab that works in
+  // that directory shares the panel, so no tab id can address it.
+  string working_dir = 1;
   QuakePanelAction action = 2;
 }
 
@@ -208,7 +211,12 @@ message RevokeTabPayloadResponse {
 }
 
 message SetQuakePanelRequest {
-  string agent_id = 1;
+  // The directory whose panel to act on, exactly as the quake terminal is
+  // addressed everywhere else. The Control CLI defaults it to
+  // $LEAPMUX_CONTROL_WORKING_DIR, which is what makes
+  // `leapmux control terminal quake toggle` work with no flags from inside the
+  // panel it toggles, from an agent's own shell, and from a terminal tab alike.
+  string working_dir = 1;
   QuakePanelAction action = 2;
 }
 

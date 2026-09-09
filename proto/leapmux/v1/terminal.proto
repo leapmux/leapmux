@@ -39,19 +39,23 @@ message OpenTerminalRequest {
   // rule UpdateTerminalTitle applies. Mirrors OpenAgentRequest.title.
   string title = 15;
 
-  // When set, this terminal is a COMPANION of that agent rather than a tab of
-  // its own. Three consequences, all owned by the worker:
+  // When true, this terminal is the QUAKE terminal of `working_dir` rather than
+  // a tab of its own. `working_dir` is the whole address: a quake terminal
+  // belongs to a DIRECTORY on this worker, not to a tab, so every tab that
+  // works in that directory reaches the same shell. Three consequences, all
+  // owned by the worker:
   //
-  //   - closing the agent closes this terminal, on every close path;
-  //   - the orphan reconciler measures this row's liveness by the AGENT's tab
-  //     key, because a companion has no CRDT tab the hub could ever list;
-  //   - a second OpenTerminal naming the same owner returns the EXISTING
-  //     terminal instead of spawning a second shell, so every device that opens
-  //     the panel attaches to one PTY.
+  //   - closing the last tab that works in that directory closes this terminal;
+  //   - the orphan reconciler measures this row's liveness by whether any open
+  //     tab still works in that directory, because a quake terminal has no CRDT
+  //     tab the hub could ever list;
+  //   - a second OpenTerminal that specifies the same directory returns the EXISTING
+  //     terminal instead of spawning a second shell, so every device -- and
+  //     every tab in that directory -- attaches to one PTY.
   //
   // A unique partial index over the open rows enforces the last point, so the
   // guarantee survives two devices racing.
-  string owner_agent_id = 16;
+  bool quake = 16;
 }
 
 message OpenTerminalResponse {
@@ -121,11 +125,11 @@ message UpdateTerminalTitleResponse {
 
 message ListTerminalsRequest {
   repeated string tab_ids = 1;
-  // Resolve COMPANION terminals by their owner agent instead of by tab id.
-  // Unioned with tab_ids. `verdicts` still answers for tab_ids alone: an owner
-  // with no companion is an absence, not a failed hydration, so it needs no
-  // verdict to distinguish the two.
-  repeated string owner_agent_ids = 2;
+  // Resolve QUAKE terminals by their working directory instead of by tab id.
+  // Unioned with tab_ids. `verdicts` still answers for tab_ids alone: a
+  // directory with no quake terminal is an absence, not a failed hydration, so
+  // it needs no verdict to distinguish the two.
+  repeated string quake_working_dirs = 2;
 }
 
 message ListTerminalsResponse {
@@ -157,9 +161,9 @@ message TerminalInfo {
   // `after_offset` from this so a resubscribe picks up exactly where
   // the snapshot left off instead of replaying `screen`.
   int64 screen_end_offset = 13;
-  // Empty for an ordinary terminal tab. Set to the owning agent's id for a
-  // companion terminal — see OpenTerminalRequest.owner_agent_id.
-  string owner_agent_id = 14;
+  // False for an ordinary terminal tab. True for the quake terminal of
+  // `working_dir` — see OpenTerminalRequest.quake.
+  bool quake = 14;
 }
 
 message TerminalData {

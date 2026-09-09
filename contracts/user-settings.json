@@ -44,7 +44,7 @@
     "quakeAnimationMs": {
       "protoKey": "quake_animation_ms",
       "kind": "int",
-      "default": 300,
+      "default": 200,
       "min": 0,
       "max": 2000
     },

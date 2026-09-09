@@ -344,6 +344,16 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		svc.Queries = db.New(rewritingDBTX{inner: sqlDB, rewrite: cfg.rewriteQuery})
 	}
 
+	// The backstop for a case that spawns an agent and never defers
+	// drainAllInFlight. Registered AFTER the sqlDB.Close cleanup above, so LIFO
+	// runs it FIRST and the exit bookkeeping still has a database to write to.
+	//
+	// It is a backstop and not the mechanism: a t.TempDir the case takes after
+	// this point registers its own cleanup later still, so LIFO would remove
+	// the directory before this runs. Only the deferred drain is ordered ahead
+	// of every t.Cleanup -- see testutil.StopAllAgents.
+	t.Cleanup(func() { testutil.StopAllAgents(svc.Agents) })
+
 	d := channel.NewDispatcher()
 	// RegisterAll binds svc.Cleanup itself, so tracked handlers dispatched
 	// here make Shutdown wait exactly the way they do in production.
@@ -475,6 +485,15 @@ func drainAllInFlight(svc *Service) {
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
 	svc.Cleanup.Wait()
+	// AFTER the startup waits, so a spawn still in flight is registered in the
+	// manager by the time this looks -- stopping "every agent" before the last
+	// one exists would miss exactly the process a case just asked for.
+	//
+	// A spawned agent's cwd is its tab's working dir, which is a t.TempDir, and
+	// nothing else reaps it. See testutil.StopAllAgents for why that is a leak
+	// on every platform and a hard failure only on Windows, and for why this
+	// belongs in the deferred drain rather than in a t.Cleanup.
+	testutil.StopAllAgents(svc.Agents)
 }
 
 // dispatch is a helper that marshals a request proto and dispatches it as the

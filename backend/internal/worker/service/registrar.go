@@ -247,8 +247,8 @@ func decodeInto[T any, PT decodedRequest[T]](
 // create the row this guard reads, and a Worker stores no workspace id (see
 // OpenAgentRequest in agent.proto). The reconciler applies the Hub's
 // authoritative state to such a row on its next pass.
-func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, archived int64, subject string) bool {
-	if archived == 0 {
+func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, archived bool, subject string) bool {
+	if !archived {
 		return false
 	}
 	switch scope {

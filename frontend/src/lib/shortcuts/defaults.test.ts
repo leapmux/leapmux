@@ -37,12 +37,18 @@ describe('default keybindings', () => {
 
   // `Control` and not `$mod`: macOS reserves Command+` for its window cycler,
   // so the chord would never reach the page there.
-  it('gives Control+grave to the quake terminal inside agent tabs', () => {
+  //
+  // And no `activeTabType` conjunct, which is the part worth pinning: a quake
+  // terminal belongs to a working DIRECTORY, and every tab kind carries one, so
+  // the chord works over a terminal tab, a file viewer and an image viewer too.
+  // Scoping it back to `agent` would take the panel away from three tab kinds
+  // whose directory has a perfectly good shell.
+  it('gives Control+grave to the quake terminal in every tab kind', () => {
     expect(WORKSPACE_KEYBINDINGS.filter(b => b.command === 'terminal.toggleQuake')).toEqual([
       {
         key: 'Control+grave',
         command: 'terminal.toggleQuake',
-        when: 'activeTabType == "agent" && !dialogOpen',
+        when: '!dialogOpen',
       },
     ])
   })

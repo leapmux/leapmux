@@ -131,9 +131,9 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
-| Toggle Quake Terminal | ``⌃` `` | ``Ctrl+` `` | agent tab, no dialog open |
+| Toggle Quake Terminal | ``⌃` `` | ``Ctrl+` `` | no dialog open |
 
-The Quake terminal is a shell that slides over the centre of the app for one agent tab; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). It uses `Ctrl` on macOS too, because macOS reserves `Cmd` and that key for its own window cycler. The binding follows the key's POSITION, so it is the key under `Esc` whatever character your layout prints on it. `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
+The Quake terminal is a shell that slides over the centre of the app for one working directory, and the chord works in every tab kind because every tab has one; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). It uses `Ctrl` on macOS too, because macOS reserves `Cmd` and that key for its own window cycler. The binding follows the key's POSITION, so it is the key under `Esc` whatever character your layout prints on it. `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
 
 ### Terminal (macOS only)
 

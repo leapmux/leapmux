@@ -205,6 +205,7 @@ When a Worker spawns an agent or terminal (and remote control is enabled on that
 | `LEAPMUX_CONTROL_WORKER_ID` | always | The host Worker |
 | `LEAPMUX_CONTROL_TAB_ID` | when non-empty | The spawned tab's id |
 | `LEAPMUX_CONTROL_TAB_TYPE` | when non-empty | `agent` or `terminal` |
+| `LEAPMUX_CONTROL_TERMINAL_ID` | terminals only | The terminal you are running **inside**. Equals `TAB_ID` in a terminal tab; in a [Quake panel](/docs/using/terminals/#quake-mode-terminal) it is the only id you get, because a panel has no tab and therefore no `TAB_ID` / `TAB_TYPE` at all. |
 | `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | Working directory at spawn time |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider |
 
@@ -222,7 +223,7 @@ Almost every command needs to know which entity to act on. Rather than hand-roll
 
 | Flag | Env default | Notes |
 | --- | --- | --- |
-| `--tab-id` | `$LEAPMUX_CONTROL_TAB_ID` | The agent/terminal/file tab |
+| `--tab-id` | `$LEAPMUX_CONTROL_TAB_ID` | The agent/terminal/file tab. On `terminal ...` commands `$LEAPMUX_CONTROL_TERMINAL_ID` wins, so they address the terminal you are in rather than a neighbouring tab. |
 | `--tab-type` | (none) | `agent`, `terminal`, `file` or `image`; auto-detected when omitted. Not on `agent`/`terminal` commands, which pin the type; hidden on `tab list`, which reuses the flag as an output filter. |
 | `--tile-id` | (none) | Derivable from `--tab-id` |
 | `--workspace-id` | (none) | Derivable from `--tab-id` / `--tile-id` |
@@ -440,6 +441,8 @@ Several destructive commands refuse to destroy the very tab you're calling from.
 
 When triggered, the command returns code `self_target_refused` with a message ending "; pass `--force` to override". The guard is **skipped** for `--with-tabs=move` variants, because the tab and its PTY survive the migration. Pass `--force` on the relevant command to bypass it deliberately.
 
+It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), which gets no `LEAPMUX_CONTROL_TAB_ID` to anchor on. There is no tab there for the guard to protect — but note that closing the *last* tab in the panel's working directory ends the panel's shell too, including one you are typing this command into.
+
 ## Worker commands
 
 | Command | Key flags | Output |
@@ -492,28 +495,6 @@ Notes:
 - `agent get`/`agent list` report every provider setting as one unified `option_groups` array (each entry `{id, label, current_value, options:[...], ...}`); `model`/`effort`/`permission_mode` stay as top-level convenience keys. There is no separate `extra_settings`/`available_models`/`available_option_groups` field -- read a provider option from `option_groups`, e.g. `leapmux control agent get --tab-id "$T" | jq '.data.option_groups[] | select(.id=="sandbox_policy") | .current_value'`.
 - `agent send-control-response` forwards a raw `control_response` JSON payload for Claude-Code-style agents — the scripting equivalent of clicking an approval button in the UI.
 
-### Quake terminal commands
-
-The `agent quake` subgroup shows and hides an agent tab's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every frontend you have open.
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `agent quake open` | `--tab-id` | `{agent_id, action:"open"}` |
-| `agent quake close` | `--tab-id` | `{agent_id, action:"close"}` |
-| `agent quake toggle` | `--tab-id` | `{agent_id, action:"toggle"}` |
-
-```bash
-# From inside the agent's own terminal, the tab is ambient
-leapmux control agent quake toggle
-```
-
-Notes:
-
-- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that does not run never hears the request; there is no state waiting for it when it starts.
-- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is visible is per-device.
-- `--tab-id` takes an agent tab. You rarely pass it: inside an agent's own terminal, and inside its Quake terminal, the ambient tab is already that agent — a Quake shell reports the agent tab it belongs to, because it has no tab of its own. So `leapmux control agent quake close`, run inside the panel, hides the panel you typed it into.
-- Opening a panel that has no shell yet creates one. Hiding it never ends the shell — only closing the agent tab, or exiting the shell, does.
-
 ## Terminal commands
 
 The `terminal` group is the type-specific surface for terminal tabs; use `tab open`/`close`/`rename` for lifecycle.
@@ -531,6 +512,29 @@ leapmux control terminal get --tab-id "$T" --screen
 ```
 
 `terminal send` rejects an empty payload: pass `--data`, or `--stdin` with non-empty input. Use `--stdin` for binary, escape sequences, or pasted content. `terminal get` returns a metadata map by default (geometry, shell, working dir, git info, status); `--screen` prints the retained PTY window directly to stdout with ANSI intact. Terminals receive remote-control env vars automatically — see [Terminals](/docs/using/terminals/).
+
+### Quake terminal commands
+
+The `terminal quake` subgroup shows and hides a working directory's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every frontend you have open.
+
+| Command | Key flags | Output |
+| --- | --- | --- |
+| `terminal quake open` | `--working-dir`, `--worker-id` | `{working_dir, action:"open"}` |
+| `terminal quake close` | `--working-dir`, `--worker-id` | `{working_dir, action:"close"}` |
+| `terminal quake toggle` | `--working-dir`, `--worker-id` | `{working_dir, action:"toggle"}` |
+
+```bash
+# From inside any LeapMux shell, the directory and the Worker are both ambient
+leapmux control terminal quake toggle
+```
+
+Notes:
+
+- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that does not run never hears the request; there is no state waiting for it when it starts.
+- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is visible is per-device.
+- A Quake terminal is addressed by **(Worker, working directory)** rather than by a tab, which is why these live here rather than under `agent`. `--working-dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR` and the Worker to `$LEAPMUX_CONTROL_WORKER_ID`, both exported by every LeapMux shell — so you rarely pass either. Run inside the panel itself, `leapmux control terminal quake close` hides the panel you typed it into.
+- A frontend with no tab in that directory ignores the request: it has no workspace to open the panel in.
+- Opening a panel that has no shell yet creates one. Hiding it never ends the shell — only closing the last tab in the directory, or exiting the shell, does.
 
 ## File and git inspection
 

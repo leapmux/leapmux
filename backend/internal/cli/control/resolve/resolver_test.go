@@ -3,6 +3,8 @@ package resolve_test
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,18 +23,16 @@ import (
 // production wiring (each cmd handler passes only the deps it
 // actually needs).
 type stubDeps struct {
-	locateTab     func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error)
-	getWorkspace  func(ctx context.Context, workspaceID string) error
-	locateTile    func(ctx context.Context, tileID string) (string, error)
-	getWorkingDir func(ctx context.Context, workerID string, tabType leapmuxv1.TabType, tabID string) (string, error)
+	locateTab    func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error)
+	getWorkspace func(ctx context.Context, workspaceID string) error
+	locateTile   func(ctx context.Context, tileID string) (string, error)
 }
 
 func (s stubDeps) toDeps() resolve.Deps {
 	return resolve.Deps{
-		LocateTab:     s.locateTab,
-		GetWorkspace:  s.getWorkspace,
-		LocateTile:    s.locateTile,
-		GetWorkingDir: s.getWorkingDir,
+		LocateTab:    s.locateTab,
+		GetWorkspace: s.getWorkspace,
+		LocateTile:   s.locateTile,
 	}
 }
 
@@ -179,9 +179,15 @@ func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 	_, err := resolve.Resolve(context.Background(), deps,
 		resolve.Need{WorkspaceID: true},
 		resolve.Inputs{
-			TabID:        "tab-1",
-			WorkspaceID:  "ws-B",
-			FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			// BOTH explicit, as BindEntityFlags marks a typed flag. Two typed
+			// ids that disagree is the conflict a user can actually make, and
+			// the derivation runs for an explicit --tab-id whatever else is
+			// supplied -- see wantsTabPlacement.
+			TabID:               "tab-1",
+			ExplicitTabID:       true,
+			WorkspaceID:         "ws-B",
+			ExplicitWorkspaceID: true,
+			FixedTabType:        leapmuxv1.TabType_TAB_TYPE_AGENT,
 		},
 	)
 	require.Error(t, err)
@@ -358,53 +364,6 @@ func TestResolve_UnknownTabTypeIsInvalidArgument(t *testing.T) {
 	var re *resolve.ResolveError
 	require.ErrorAs(t, err, &re)
 	assert.Equal(t, "invalid_request", re.Code)
-}
-
-// TestResolve_WorkingDirIsBestEffort proves that a failed working-
-// dir lookup doesn't bring down the whole resolve. Orphan tabs
-// (worker gone) must still resolve workspace/tile/worker — the
-// caller decides what to do with the empty working_dir.
-func TestResolve_WorkingDirIsBestEffort(t *testing.T) {
-	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
-		},
-		getWorkingDir: func(_ context.Context, _ string, _ leapmuxv1.TabType, _ string) (string, error) {
-			return "", errors.New("worker unreachable")
-		},
-	}.toDeps()
-
-	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{WorkerID: true, WorkingDir: true},
-		resolve.Inputs{TabID: "tab-1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-	)
-	require.NoError(t, err)
-	assert.Equal(t, "worker-A", got.WorkerID)
-	assert.Empty(t, got.WorkingDir, "failed inner-RPC must leave WorkingDir empty, not error out")
-}
-
-// TestResolve_WorkingDirFetchedOnlyWhenNeeded confirms the
-// best-effort knob doesn't fire unless Need.WorkingDir is true. Run
-// it via a panic-on-call stub so a regression that always invoked
-// GetWorkingDir would crash here.
-func TestResolve_WorkingDirFetchedOnlyWhenNeeded(t *testing.T) {
-	calls := 0
-	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
-		},
-		getWorkingDir: func(_ context.Context, _ string, _ leapmuxv1.TabType, _ string) (string, error) {
-			calls++
-			return "/home/agent", nil
-		},
-	}.toDeps()
-
-	_, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{WorkerID: true}, // working dir NOT requested
-		resolve.Inputs{TabID: "tab-1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-	)
-	require.NoError(t, err)
-	assert.Zero(t, calls, "GetWorkingDir must only fire when Need.WorkingDir is true")
 }
 
 // TestResolve_RpcErrorPropagates ensures a transport / coding
@@ -649,4 +608,319 @@ func TestTabTypeVocabularyCoversEveryEnumValue(t *testing.T) {
 		require.True(t, ok, "%s must parse in its canonical spelling", name)
 		assert.Equal(t, kind, canonical)
 	}
+}
+
+// A QUAKE terminal has no CRDT tab, so LocateTab can never place its id. The
+// commands that address it -- `terminal send`, `terminal get` -- need only the
+// WORKER, which a worker-spawned CLI already has from its env, so the miss
+// costs them nothing and the command must run.
+//
+// This is the regression test for the whole class: LocateTab fires eagerly for
+// any supplied tab id, so a fatal miss made EVERY `leapmux control` command
+// typed inside a quake panel fail before reaching its own body -- including the
+// `terminal quake` commands that exist to be typed there.
+func TestResolve_UnlocatableTabIsToleratedWhenNothingNeedsIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{TabID: "quake-1", WorkerID: "w1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.NoError(t, err, "a tab the hub cannot place must not fail a command that only needs the worker")
+	assert.Equal(t, "quake-1", got.TabID)
+	assert.Equal(t, "w1", got.WorkerID, "the worker still comes from its own input")
+}
+
+// The other half of the rule: the miss becomes fatal the moment it is what
+// leaves a required field empty, and it says so rather than reporting a bare
+// "missing required ID(s)".
+func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{WorkspaceID: true},
+		resolve.Inputs{TabID: "quake-1", WorkerID: "w1"},
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resolve.ErrTabNotLocatable,
+		"the cause stays reachable, so a caller need not match on the message")
+	assert.Contains(t, err.Error(), "--workspace-id",
+		"and it still gives the flag that would satisfy what the miss left empty")
+}
+
+// A LocateTab failure that is NOT "no such tab" stays fatal. A transport error
+// or a 5xx means the Hub could not be ASKED, which says nothing about whether
+// the tab exists -- tolerating those would turn an outage into a confusing
+// worker-side failure much later.
+func TestResolve_LocateTabTransportFailureStaysFatal(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", errors.New("connection refused")
+		},
+	}.toDeps()
+
+	// The workspace is required and unsupplied, so only the hub can fill it and
+	// the call genuinely runs. A command that needed nothing from it skips the
+	// call outright -- see TestResolve_SkipsLocateTabWhenNothingItFillsIsRead.
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkspaceID: true},
+		resolve.Inputs{TabID: "t1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.Error(t, err, "an unreachable hub must not read as an absent tab")
+	assert.NotErrorIs(t, err, resolve.ErrTabNotLocatable)
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+// The `terminal ...` subgroup's --tab-id default, across the three spawn
+// shapes a `leapmux control` invocation can find itself in.
+//
+// The quake row is the one that needed the new source: there TAB_ID identifies a
+// NEIGHBOURING tab, so the old type gate refused it (agent != terminal) and a
+// bare `terminal send` had no target at all.
+func TestBindEntityFlags_TerminalTabIDDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tabID       string
+		tabType     string
+		terminalID  string
+		wantDefault string
+	}{
+		{
+			name: "inside a quake panel, the shell is the only id there is",
+			// What a quake spawn exports: NO ambient tab -- the panel belongs
+			// to a directory, and no tab in it is "the tab you are in" -- and
+			// the panel's own shell as the terminal.
+			tabID: "", tabType: "", terminalID: "quake-1",
+			wantDefault: "quake-1",
+		},
+		{
+			name:  "inside an ordinary terminal tab, both name the same id",
+			tabID: "term-1", tabType: "terminal", terminalID: "term-1",
+			wantDefault: "term-1",
+		},
+		{
+			name: "inside an agent, there is no terminal to default to",
+			// The type gate still decides here, and it refuses: an agent tab
+			// is not a terminal, so `terminal send` must ask for --tab-id
+			// rather than target the agent.
+			tabID: "agent-1", tabType: "agent", terminalID: "",
+			wantDefault: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
+			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
+			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", tc.terminalID)
+
+			var in resolve.Inputs
+			fs := flag.NewFlagSet("terminal send", flag.ContinueOnError)
+			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
+				FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+			})
+			require.NoError(t, fs.Parse(nil))
+
+			assert.Equal(t, tc.wantDefault, in.TabID)
+		})
+	}
+}
+
+// The AGENT subgroup never reads TERMINAL_ID: an agent command must not default
+// to a terminal id, whatever the surrounding spawn is.
+//
+// The two rows are the two spawns that set it. Inside an ordinary terminal TAB
+// the ambient tab is that terminal, so `agent send` still has no default and
+// asks for --tab-id. Inside a QUAKE panel there is no ambient tab at all, which
+// is the deliberate outcome: the panel belongs to a directory, so the user
+// names the agent they mean rather than having one picked for them.
+func TestBindEntityFlags_AgentTabIDDefaultIgnoresTheTerminalID(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tabID   string
+		tabType string
+	}{
+		{name: "inside an ordinary terminal tab", tabID: "term-1", tabType: "terminal"},
+		{name: "inside a quake panel", tabID: "", tabType: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
+			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
+			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", "quake-1")
+
+			var in resolve.Inputs
+			fs := flag.NewFlagSet("agent send", flag.ContinueOnError)
+			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
+				FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			})
+			require.NoError(t, fs.Parse(nil))
+
+			assert.Empty(t, in.TabID, "an agent command must never default to a terminal")
+		})
+	}
+}
+
+// The tolerance is for an AMBIENT tab id only. A tab id the user TYPED says
+// "act on this tab", so a hub that refuses it has refused the request they
+// made -- and continuing would run the command against whatever worker the
+// environment names, on the wrong machine, reporting success.
+//
+// The distinction matters because every `Need{WorkerID: true}` command
+// (`terminal quake`, `worker get`, `git status`, `file ...`, `agent providers`)
+// is already satisfied by $LEAPMUX_CONTROL_WORKER_ID inside any spawn, so
+// without it a foreign --tab-id was swallowed on all of them.
+func TestResolve_ExplicitUnlocatableTabIsFatalEvenWhenNothingNeedsIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{
+			TabID:         "tab-on-another-worker",
+			ExplicitTabID: true,
+			WorkerID:      "w1",
+			FixedTabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		},
+	)
+
+	require.Error(t, err, "a --tab-id the user typed and the hub refused must fail the command")
+	assert.ErrorIs(t, err, resolve.ErrTabNotLocatable,
+		"and it reports the hub's own refusal rather than a worker-side error later")
+}
+
+// The ambient counterpart of the case above, stated on the same inputs so the
+// pair reads as one rule: identical everywhere except who supplied the tab id.
+func TestResolve_AmbientUnlocatableTabStaysTolerated(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
+				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{
+			TabID:         "tab-on-another-worker",
+			ExplicitTabID: false,
+			WorkerID:      "w1",
+			FixedTabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		},
+	)
+
+	require.NoError(t, err, "the quake panel's inherited tab id must still resolve")
+	assert.Equal(t, "w1", got.WorkerID)
+}
+
+// The round trip is SKIPPED when the caller already holds everything it reads.
+//
+// Resolve used to fire LocateTab on the mere presence of a tab id, so every
+// command run inside a spawn -- where both TAB_ID and WORKER_ID are exported --
+// paid a hub call whose four outputs it discarded, and a transport failure on
+// it failed a command whose inputs were complete.
+func TestResolve_SkipsLocateTabWhenNothingItFillsIsRead(t *testing.T) {
+	calls := 0
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+			calls++
+			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-A", nil
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{TabID: "term-1", WorkerID: "w1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.NoError(t, err)
+	assert.Zero(t, calls, "the worker id was supplied, so nothing needed the tab's placement")
+	assert.Equal(t, "w1", got.WorkerID)
+}
+
+// The other side of the same rule: a field the caller READS but does not
+// require still fires the derivation, because an empty value would silently
+// widen what the command acts on. RunTabList and RunEvents both scope by
+// workspace this way.
+func TestResolve_WantedFieldStillFiresTheDerivation(t *testing.T) {
+	calls := 0
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+			calls++
+			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1", nil
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{WorkerID: true, Want: resolve.Wants{WorkspaceID: true}},
+		resolve.Inputs{TabID: "term-1", WorkerID: "w1", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "the workspace is read, and only the hub can supply it")
+	assert.Equal(t, "ws-1", got.WorkspaceID)
+}
+
+// A tab type the caller switches on comes ONLY from LocateTab, so a command
+// that reads it must still pay the call even with every id in hand. Without
+// this, `tab rename` fell to its default arm and reported not_found for a tab
+// that exists.
+func TestResolve_WantedTabTypeStillFiresTheDerivation(t *testing.T) {
+	calls := 0
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+			calls++
+			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1", nil
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+		resolve.Inputs{TabID: "term-1", WorkerID: "w1"},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, got.TabType)
+}
+
+// The cost of skipping the derivation, stated so it is a decision rather than a
+// surprise: two AMBIENT ids that disagree are no longer reported as conflicting.
+//
+// Inside a real spawn they cannot disagree -- one EnvVars call writes both, from
+// one spawn -- so this needs a hand-assembled or stale environment. A tab id the
+// user TYPED still fires the derivation and still conflicts, which is the case
+// they can actually produce.
+func TestResolve_AmbientIDsThatDisagreeAreNotCrossChecked(t *testing.T) {
+	calls := 0
+	deps := stubDeps{
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+			calls++
+			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-from-tab", nil
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{WorkerID: true},
+		// Both from the environment, and they disagree.
+		resolve.Inputs{TabID: "term-1", WorkerID: "worker-from-env", FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+	)
+
+	require.NoError(t, err)
+	assert.Zero(t, calls, "the worker id was already supplied, so the hub is not asked")
+	assert.Equal(t, "worker-from-env", got.WorkerID, "the ambient value stands")
 }

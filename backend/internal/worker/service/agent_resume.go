@@ -503,7 +503,7 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if dbAgent.StartupError != "" {
 		return resumeSkipStartupFailed
 	}
-	if dbAgent.WorkspaceArchived != 0 {
+	if dbAgent.WorkspaceArchived {
 		return resumeSkipArchived
 	}
 	if dbAgent.AgentSessionID == "" && dbAgent.Resumed == 0 {

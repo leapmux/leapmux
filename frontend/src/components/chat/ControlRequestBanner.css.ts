@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
 
 export const questionGroup = style({
   marginBottom: 'var(--space-3)',
@@ -256,9 +257,7 @@ export const controlRequestSwitches = style({
   touchAction: 'pan-x',
 })
 
-globalStyle(`${controlRequestSwitches}::-webkit-scrollbar`, {
-  display: 'none',
-})
+hideNativeScrollbar(controlRequestSwitches)
 
 // A pill group keeps its natural width and the cluster around it scrolls, so
 // `flexShrink: 0`. It used to shrink, and the group's own `max-width: 100%` then

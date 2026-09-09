@@ -1,4 +1,5 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
 
 export const strip = style({
   display: 'flex',
@@ -13,9 +14,7 @@ export const strip = style({
   flexShrink: 0,
 })
 
-globalStyle(`${strip}::-webkit-scrollbar`, {
-  display: 'none',
-})
+hideNativeScrollbar(strip)
 
 export const pill = style({
   display: 'inline-flex',

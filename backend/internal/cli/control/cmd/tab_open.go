@@ -93,7 +93,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 	// LocateTile fills workspace_id when only --tile-id is given;
 	// LocateTab fills the spawning tab's full context (workspace,
 	// tile, worker) when only --tab-id is given.
-	got, err := runResolve(ctx, c, resolve.Need{WorkspaceID: true}, in)
+	got, err := runResolve(ctx, c, resolve.Need{WorkspaceID: true, Want: resolve.Wants{TileID: true, WorkerID: true}}, in)
 	if err != nil {
 		return err
 	}

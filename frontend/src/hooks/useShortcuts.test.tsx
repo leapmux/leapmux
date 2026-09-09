@@ -492,7 +492,8 @@ describe('useShortcuts', () => {
       return props.quakePanel
     }
 
-    const agentTab = { type: TabType.AGENT, id: 'a1' }
+    const agentTab = { type: TabType.AGENT, id: 'a1', workerId: 'w1', workingDir: '/repo' }
+    const QUAKE_KEY = { workerId: 'w1', workingDir: '/repo' }
 
     it('toggles the panel of the focused agent tab', () => {
       const panel = run(quakeProps(agentTab), 'terminal.toggleQuake')
@@ -504,12 +505,35 @@ describe('useShortcuts', () => {
       expect(opened.open).toHaveBeenCalledWith(agentTab)
       cleanup()
       const closed = run(quakeProps(agentTab), 'terminal.closeQuake')
-      expect(closed.close).toHaveBeenCalledWith('a1')
+      expect(closed.close).toHaveBeenCalledWith(QUAKE_KEY)
     })
 
-    it('does nothing when the focused tab is not an agent', () => {
-      const panel = run(quakeProps({ type: TabType.TERMINAL, id: 't1' }), 'terminal.toggleQuake')
-      expect(panel.toggle).not.toHaveBeenCalled()
+    /**
+     * EVERY tab kind, and this is the invariant the commands exist to hold: a
+     * quake terminal belongs to a working DIRECTORY, and a terminal tab, a file
+     * viewer and an image viewer all carry one. Over a terminal tab the chord
+     * reaches the same shell the agent tab beside it shows.
+     *
+     * These used to be a single "does nothing when the focused tab is not an
+     * agent" case, which was a restatement of an addressing rule that no longer
+     * exists.
+     */
+    it.each([
+      ['a terminal tab', { type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo' }],
+      ['a file viewer', { type: TabType.FILE, id: 'f1', workerId: 'w1', workingDir: '/repo' }],
+      ['an image viewer', { type: TabType.IMAGE, id: 'i1', workerId: 'w1', workingDir: '/repo' }],
+    ])('toggles the panel from %s too', (_label, tab) => {
+      const panel = run(quakeProps(tab), 'terminal.toggleQuake')
+      expect(panel.toggle).toHaveBeenCalledWith(tab)
+    })
+
+    // A subagent inherits its root's working directory, so its panel IS the
+    // root's panel. That is the right answer rather than a special case, and it
+    // replaces the refusal this used to carry.
+    it('toggles the root panel from a subagent tab', () => {
+      const child = { type: TabType.AGENT, id: 'c1', parentAgentId: 'a1', workerId: 'w1', workingDir: '/repo' }
+      const panel = run(quakeProps(child), 'terminal.toggleQuake')
+      expect(panel.toggle).toHaveBeenCalledWith(child)
     })
 
     it('does nothing when no tab is focused', () => {
@@ -517,15 +541,13 @@ describe('useShortcuts', () => {
       expect(panel.toggle).not.toHaveBeenCalled()
     })
 
-    /**
-     * A subagent transcript owns no process, so it owns no companion shell.
-     *
-     * The worker refuses `SetQuakePanel` for one, and the keyboard must not be
-     * the one route around that: a companion owned by a child agent would also
-     * outlive its tab, because only a ROOT close tears one down.
-     */
-    it('does nothing for a subagent tab', () => {
-      const panel = run(quakeProps({ type: TabType.AGENT, id: 'c1', parentAgentId: 'a1' }), 'terminal.toggleQuake')
+    // The one refusal left, and it is about the DIRECTORY rather than the tab
+    // kind: a tab with no worker or no working directory has no panel.
+    it.each([
+      ['no worker', { type: TabType.AGENT, id: 'a1', workingDir: '/repo' }],
+      ['no working directory', { type: TabType.AGENT, id: 'a1', workerId: 'w1' }],
+    ])('does nothing for a tab with %s', (_label, tab) => {
+      const panel = run(quakeProps(tab), 'terminal.toggleQuake')
       expect(panel.toggle).not.toHaveBeenCalled()
     })
 

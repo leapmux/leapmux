@@ -39,7 +39,7 @@ import {
   markTerminalExited,
 } from './terminalEvents'
 import { useWatchEventsStreams } from './useWatchEventsStreams'
-import { buildWatchPlans, isTabOnScreen } from './watchPlan'
+import { buildWatchPlans } from './watchPlan'
 
 function warnChatHistoryLoadFailed(err: unknown): void {
   showWarnToastUnlessDisconnected('Failed to load chat history', err)
@@ -200,6 +200,15 @@ export interface WorkspaceConnectionParams {
   settingsLoading: ReturnType<typeof createLoadingSignal>
   repoGitStore: ReturnType<typeof createRepoGitStore>
   quakeStore: QuakeTerminalStore
+  /**
+   * The quake key the panel is CURRENTLY showing -- the focused tab's -- or
+   * null when the focused tab has none.
+   *
+   * The shell's own accessor, passed in rather than re-derived, so "is this
+   * shell on screen?" has one answer here and in `QuakeTerminalPanel`. See
+   * `isQuakeEntryOnScreen`.
+   */
+  getActiveQuakeKeyId: () => string | null
   getActiveWorkspaceId: () => string | null
   /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
   onAgentSettled?: (agentId: string, numToolUses?: number) => void
@@ -282,20 +291,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
-   * Whether one quake panel is on screen: it is open AND its owner agent tab is
-   * the tab the user looks at.
+   * Whether one quake panel is on screen: it is open AND its directory is the
+   * one the focused tab works in.
+   *
+   * This is the SAME question `QuakeTerminalPanel` answers to decide what to
+   * render -- it shows the entry for `activeQuakeKeyId` and nothing else -- and
+   * it reads the identical accessor rather than re-deriving it. A second
+   * derivation would let the FULL/NOTIFY watch decision disagree with what the
+   * user is looking at, which is how a visible shell stops receiving bytes.
    *
    * Declared above the watch-plan memo on purpose. `createMemo` runs its body
    * once at creation to collect dependencies, so a `const` declared below it
    * would be in its temporal dead zone and throw.
    */
-  const isQuakeEntryOnScreen = (entry: { ownerId: string, open: boolean }): boolean =>
-    entry.open
-    && isTabOnScreen(
-      view.getAgentTab(entry.ownerId),
-      params.getActiveWorkspaceId(),
-      tileId => selection.activeKeyForTile(tileId),
-    )
+  const isQuakeEntryOnScreen = (entry: { keyId: string, open: boolean }): boolean =>
+    entry.open && params.getActiveQuakeKeyId() === entry.keyId
 
   const watchPlans = createMemo(() =>
     buildWatchPlans(
@@ -315,9 +325,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // the plan on it would re-send a watch update per output chunk.
         terminalNeedsResync: terminalId => metadata.get(terminalId)?.needsResync === true,
         getAgentTab: (agentId: string) => view.getAgentTab(agentId),
-        // A companion terminal is FULL only while its panel is open AND its
-        // owner tab is on screen -- the same "does the user look at it?"
-        // question a placed terminal answers through its tile. NOTIFY
+        // A quake terminal is FULL only while its panel is open AND its
+        // directory is the focused tab's -- the same "does the user look at
+        // it?" question a placed terminal answers through its tile. NOTIFY
         // otherwise, which keeps the cursor moving so a reopen catches up from
         // the worker's ring instead of paying for a cold snapshot, and keeps
         // the bell and the title flowing for a shell the user cannot see,
@@ -488,7 +498,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
-   * Whether a companion terminal is on screen, by terminal id.
+   * Whether a quake terminal is on screen, by terminal id.
    *
    * The bell and notification helpers hold an id and nothing else, so this is
    * the id-keyed door onto the ONE rule above. Two copies of the rule would let
@@ -496,10 +506,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
    * notification?" decision disagree about the same shell.
    */
   const isQuakeTerminalOnScreen = (terminalId: string): boolean => {
-    const ownerId = params.quakeStore.ownerOf(terminalId)
-    if (ownerId === undefined)
-      return false
-    const entry = params.quakeStore.entryFor(ownerId)
+    const entry = params.quakeStore.entryForTerminal(terminalId)
     return entry !== undefined && isQuakeEntryOnScreen(entry)
   }
 
@@ -541,7 +548,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'closed':
-        // A companion terminal is TERMINATED by its shell exiting, not left in
+        // A quake terminal is TERMINATED by its shell exiting, not left in
         // an EXITED state that waits for Enter: there is no pane to leave behind,
         // and the next open spawns a fresh shell. Routed before
         // markTerminalExited so the panel never paints the exit notice.
@@ -569,7 +576,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           view,
           isDetachedOnScreen: isQuakeTerminalOnScreen,
-          detachedOwnerOf: params.quakeStore.ownerOf,
+          detachedOwnerOf: params.quakeStore.badgeTabFor,
         })
         break
       case 'notification':
@@ -579,7 +586,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           view,
           isDetachedOnScreen: isQuakeTerminalOnScreen,
-          detachedOwnerOf: params.quakeStore.ownerOf,
+          detachedOwnerOf: params.quakeStore.badgeTabFor,
         })
         break
       case 'titleChanged':
@@ -651,7 +658,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (offline.size === 0)
       return
     untrack(() => {
-      // `view.all()` holds PLACED tabs only, so a companion terminal is not in
+      // `view.all()` holds PLACED tabs only, so a quake terminal is not in
       // it and would stay reading READY for the whole outage. Its tab object
       // comes from the detached family instead.
       //

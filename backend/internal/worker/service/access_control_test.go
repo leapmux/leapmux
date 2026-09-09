@@ -322,8 +322,8 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		}},
 		ownerGuardedProbe{"SetQuakePanel", "SetQuakePanel", func() proto.Message {
 			return &leapmuxv1.SetQuakePanelRequest{
-				AgentId: "agent-1",
-				Action:  leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
+				WorkingDir: "/tmp",
+				Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 			}
 		}},
 		ownerGuardedProbe{"RegisterTabPayload", "RegisterTabPayload", func() proto.Message {

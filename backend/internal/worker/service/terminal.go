@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -64,7 +65,7 @@ const terminalProcessScanTimeout = 5 * time.Second
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d registrar, svc *Service) {
-	// InspectTerminalProcesses names what is running inside each terminal, so a
+	// InspectTerminalProcesses lists what runs inside each terminal, so a
 	// close guard can state the reason before it tears the tab down. Batched:
 	// closing a tile asks about every terminal it holds at once.
 	//
@@ -146,26 +147,46 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				return
 			}
 
-			// A COMPANION terminal belongs to an agent, so the owner is
-			// checked HERE, at the only write point of owner_agent_id.
-			// Every later consumer -- the reconciler's liveness key, the
-			// mint exclusion, closeAgentTabCommon's teardown -- reads the
-			// column and assumes it gives a live ROOT agent. A subagent
-			// owner is the worse case of the two: closeAgentTabCommon
-			// returns at its child branch BEFORE rootTeardown, so nothing
-			// would ever close that companion.
-			ownerAgentID := r.GetOwnerAgentId()
-			if ownerAgentID != "" && !svc.requireCompanionOwner(sender, ownerAgentID) {
+			// A QUAKE terminal is opened AT a directory; it never CREATES one.
+			//
+			// This is not a restriction on worktrees. A tab that lives in a
+			// worktree already carries that worktree's path as its working
+			// dir, so its panel opens there like any other -- the client
+			// simply sends that path. What is refused is asking this one call
+			// to do both: create or switch a worktree AND be the quake shell
+			// of the result.
+			//
+			// Refused HERE, at the only write point of is_quake, because every
+			// later consumer -- the adopt lookup, the unique index, the
+			// reconciler's liveness question, closeQuakeTerminalIfUnused --
+			// reads working_dir and assumes it is the address the CLIENT asked
+			// for. A worktree created mid-startup stores plan.PlannedWorkingDir
+			// instead, so the panel would key on the pre-worktree path, never
+			// adopt the shell it just started, and leak a fresh one per toggle.
+			isQuake := r.GetQuake()
+			if isQuake && plan.Mode != gitModeUseCurrent {
+				sendInvalidArgument(sender, "a quake terminal opens at a directory and cannot create or switch a worktree; open it with the worktree path as working_dir")
+				return
+			}
+			// The RAW field, before normalizeWorkingDir above resolved it. That
+			// call turns an empty path into the worker's home directory, which
+			// for a quake terminal is not a default but a different shell: the
+			// directory IS the address, so an unset field would silently claim
+			// the singleton row of $HOME and hold it against the real one.
+			// ListTerminals drops an empty quake directory for the same reason.
+			if isQuake && strings.TrimSpace(r.GetWorkingDir()) == "" {
+				sendInvalidArgument(sender, "a quake terminal needs a working_dir: it is the address of the shell, not a default")
 				return
 			}
 
-			// A COMPANION terminal is at most one per agent, so a second
-			// OpenTerminal that gives the same owner hands back the first
-			// one. This is what lets two devices -- or one device toggling
-			// the panel twice -- share a single shell instead of racing to
-			// spawn two. Answered before the id is minted, so the duplicate
-			// call creates no row, no startup entry and no goroutine.
-			if svc.adoptExistingCompanion(sender, ownerAgentID) {
+			// A QUAKE terminal is at most one per directory, so a second
+			// OpenTerminal that specifies the same directory hands back the first
+			// one. This is what lets two devices -- or two agent tabs that
+			// work in one directory, or one device toggling the panel twice
+			// -- share a single shell instead of racing to spawn two.
+			// Answered before the id is minted, so the duplicate call
+			// creates no row, no startup entry and no goroutine.
+			if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
 				return
 			}
 
@@ -203,21 +224,22 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Cols:          int64(cols),
 				Rows:          int64(rows),
 				Screen:        []byte{},
-				OwnerAgentID:  ownerAgentID,
+				IsQuake:       isQuake,
 			}); upsertErr != nil {
-				// Losing the companion race lands here: the check above found
-				// no companion, another client inserted one in the window, and
-				// the unique partial index refused this row. Re-read and answer
-				// with the winner's terminal, so both callers attach to one
-				// PTY. The index is what makes this decidable at all -- without
-				// it both inserts would succeed and the two clients would type
-				// into different shells.
+				// Losing the quake race lands here: the check above found no
+				// quake terminal for this directory, another client inserted
+				// one in the window, and the unique partial index refused this
+				// row. Re-read and answer with the winner's terminal, so both
+				// callers attach to one PTY. The index is what makes this
+				// decidable at all -- without it both inserts would succeed and
+				// the two clients would type into different shells.
 				//
 				// A lookup that still finds nothing means the failure was not
 				// the race, so report it. Deliberately not keyed on a SQLite
-				// error code: the question "does a companion exist now?" is the
-				// one that decides what to do, and it answers itself.
-				if svc.adoptExistingCompanion(sender, ownerAgentID) {
+				// error code: the question "does a quake terminal exist for
+				// this directory now?" is the one that decides what to do, and
+				// it answers itself.
+				if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
 					return
 				}
 				slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
@@ -255,11 +277,11 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// unusually slow factory doesn't stretch the synchronous RPC
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
-				UserID:       caller.UserID,
-				WorkerID:     svc.WorkerID,
-				TabID:        terminalID,
-				OwnerAgentID: ownerAgentID,
-				WorkingDir:   plan.PlannedWorkingDir,
+				UserID:     caller.UserID,
+				WorkerID:   svc.WorkerID,
+				TabID:      terminalID,
+				IsQuake:    isQuake,
+				WorkingDir: plan.PlannedWorkingDir,
 			}
 			go svc.runTerminalStartup(startupCtx, terminal.Options{
 				ID:            terminalID,
@@ -284,15 +306,15 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
 			}
-			// A COMPANION has no restart contract: its shell exiting ends it,
-			// and the next open of the panel spawns a fresh one. Refused here
-			// rather than only in the browser, so the rule holds for the
+			// A QUAKE terminal has no restart contract: its shell exiting ends
+			// it, and the next open of the panel spawns a fresh one. Refused
+			// here rather than only in the browser, so the rule holds for the
 			// Control CLI and for a second device too. Asked BEFORE the
 			// liveness checks, because "does this terminal restart at all?" is
 			// prior to "is it running right now". Without it a respawn
 			// resurrects a row the exit path already closed, and the unique
 			// index then refuses every replacement.
-			if dbTerm.OwnerAgentID != "" {
+			if dbTerm.IsQuake {
 				sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
 				return
 			}
@@ -361,7 +383,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if dbTerm.ScreenLength.Valid {
 				fallbackOffset = dbTerm.ScreenLength.Int64
 			}
-			// No OwnerAgentID: the refusal above means only a terminal TAB
+			// IsQuake stays false: the refusal above means only a terminal TAB
 			// reaches this line, and a tab is its own ambient tab.
 			spawnInfo := TerminalSpawnInfo{
 				UserID:     caller.UserID,
@@ -440,7 +462,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				// OpenTerminal request on its first TIOCGWINSZ query.
 				if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
 					// Benign TOCTOU: the PTY exited between the frontend's
-					// status check and this RPC arriving. The frontend gates
+					// status check and this RPC arriving. The frontend restricts
 					// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
 					// means READY at check time and gone now — no PTY to
 					// resize, but not actionable either.
@@ -530,50 +552,66 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// and been removed from the manager.
 	registerOwnerGuarded(d, "ListTerminals", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
 		// Verdicts answer for the ids the caller NAMED, so the requested set is
-		// captured before the companion lookup widens it. An owner with no
-		// companion is an absence, not a failed hydration -- the client asks
+		// captured before the quake lookup widens it. A directory with no quake
+		// terminal is an absence, not a failed hydration -- the client asks
 		// precisely to find out whether one exists -- so it gets no verdict.
 		requestedTabIDs := r.GetTabIds()
 		tabIDs := requestedTabIDs
 
-		// owner_agent_id is AGENT data on a terminal reply, so it takes
-		// agent:read on top of the terminal:read this handler is registered
-		// with. privateEventVisible applies the identical rule to the same
-		// datum on the event side -- a QuakePanelCommand needs both kinds --
-		// and the two gates would otherwise disagree: an app granted
-		// `worker:read terminal:read` could read the agent that owns each
-		// companion here, and probe by agent id through owner_agent_ids,
-		// while the event stream refuses it exactly that.
-		mayReadAgents := caller.Allows(leapmuxv1.Scope_SCOPE_AGENT_READ)
-
-		// An EMPTY owner id is dropped rather than passed through. Ordinary
-		// terminal rows store owner_agent_id = '' (the partial unique index
-		// covers only non-empty owners), so an unresolved id in this list
-		// would match every open terminal on the worker and the caller would
-		// read each one as the companion of an agent that does not exist.
-		var ownerAgentIDs []string
-		if mayReadAgents {
-			for _, ownerAgentID := range r.GetOwnerAgentIds() {
-				if ownerAgentID != "" {
-					ownerAgentIDs = append(ownerAgentIDs, ownerAgentID)
-				}
+		// Normalized with the SAME rule OpenTerminal applies to the directory it
+		// stores, because a lookup that spelled the path differently would miss
+		// the row it means. An entry that will not normalize is DROPPED rather
+		// than failing the call: this list is a lookup, and the rest of the
+		// request still has an answer.
+		//
+		// An EMPTY directory is dropped BEFORE that, and the order matters:
+		// normalizeWorkingDir resolves an empty path to the worker's home, so
+		// normalizing first would silently turn "I have no directory" into a
+		// probe of the home directory's panel.
+		//
+		// file:read IS required, on top of this handler's terminal:read.
+		//
+		// The owner_agent_id form this replaced needed agent:read, because the
+		// reply would have been an agent-id oracle. The directory form is not
+		// that, but it is a new REACH: a quake terminal has no CRDT tab, so its
+		// id never appears in the hub's tab list, and no worker RPC enumerates
+		// terminals -- so before this, a `terminal:read` caller could not name
+		// one at all. Keyed on a path it can simply guess, it can now ask
+		// whether any absolute directory has a live shell, and read that
+		// shell's screen.
+		//
+		// file:read is the scope that names a filesystem path, and
+		// WatchWorkerPrivateEvents already requires it to deliver this very
+		// working_dir in a QuakePanelCommand. Requiring it here is what stops
+		// the two surfaces answering the same question at different prices. The
+		// browser holds it already, so the first-party client loses nothing.
+		var quakeWorkingDirs []string
+		mayReadPaths := caller.Allows(leapmuxv1.Scope_SCOPE_FILE_READ)
+		for _, raw := range r.GetQuakeWorkingDirs() {
+			if raw == "" || !mayReadPaths {
+				continue
 			}
+			workingDir, dirErr := normalizeWorkingDir(raw, svc.HomeDir, svc.HomeDir)
+			if dirErr != nil {
+				continue
+			}
+			quakeWorkingDirs = append(quakeWorkingDirs, workingDir)
 		}
-		if len(tabIDs) == 0 && len(ownerAgentIDs) == 0 {
+		if len(tabIDs) == 0 && len(quakeWorkingDirs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
 			return
 		}
 
-		// Resolve companions to their terminal ids and fold them into the same
-		// id set the rest of this handler already walks. Widening the ids
-		// rather than building a second result list is what keeps companions on
-		// the live path: the manager pass below owns the in-memory ring, and a
-		// companion resolved straight from its DB row would hand the client a
-		// stale screen for a shell that is still running.
-		if len(ownerAgentIDs) > 0 {
-			ownerRows, ownerErr := svc.Queries.ListOpenTerminalsByOwners(ctx, ownerAgentIDs)
-			if ownerErr != nil {
-				slog.Error("failed to list companion terminals from DB", "owner_agent_ids", ownerAgentIDs, "error", ownerErr)
+		// Resolve quake terminals to their terminal ids and fold them into the
+		// same id set the rest of this handler already walks. Widening the ids
+		// rather than building a second result list is what keeps them on the
+		// live path: the manager pass below owns the in-memory ring, and a
+		// quake terminal resolved straight from its DB row would hand the
+		// client a stale screen for a shell that is still running.
+		if len(quakeWorkingDirs) > 0 {
+			quakeRows, quakeErr := svc.Queries.ListOpenQuakeTerminalsByWorkingDirs(ctx, quakeWorkingDirs)
+			if quakeErr != nil {
+				slog.Error("failed to list quake terminals from DB", "working_dirs", quakeWorkingDirs, "error", quakeErr)
 				sendInternalError(sender, "failed to list terminals")
 				return
 			}
@@ -582,8 +620,19 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			for _, tabID := range widened {
 				known[tabID] = struct{}{}
 			}
-			for _, row := range ownerRows {
+			for _, row := range quakeRows {
 				if _, dup := known[row.ID]; dup {
+					continue
+				}
+				// The SAME liveness rule adoptExistingQuakeTerminal applies,
+				// and it has to be here too: the browser LISTS before it opens,
+				// so a row this fold hands back is adopted without ever
+				// reaching the open path that would have reaped it. A dead row
+				// there gives the user a panel that paints nothing and swallows
+				// every keystroke, and it never recovers -- a quake terminal
+				// refuses the Enter that restarts a terminal tab.
+				if !svc.quakeShellIsLive(row.ID) {
+					svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
 					continue
 				}
 				known[row.ID] = struct{}{}
@@ -596,9 +645,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			return
 		}
 
-		// The DB pass is the ONE source of every terminal's owner, and it runs
-		// first so both passes below can read from it. The manager holds the
-		// live ring but nothing about ownership, so an owner map built beside
+		// The DB pass is the ONE source of every terminal's is_quake flag, and
+		// it runs first so both passes below can read from it. The manager
+		// holds the live ring but nothing about the flag, so a map built beside
 		// it needed a third loop afterwards to stamp the entries it had
 		// already produced -- three writers for one derived fact.
 		//
@@ -616,12 +665,10 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			sendInternalError(sender, "failed to list terminals")
 			return
 		}
-		ownerByTerminalID := make(map[string]string, len(dbTerminals))
-		if mayReadAgents {
-			for _, ts := range dbTerminals {
-				if ts.OwnerAgentID != "" {
-					ownerByTerminalID[ts.ID] = ts.OwnerAgentID
-				}
+		quakeByTerminalID := make(map[string]bool, len(dbTerminals))
+		for _, ts := range dbTerminals {
+			if ts.IsQuake {
+				quakeByTerminalID[ts.ID] = true
 			}
 		}
 
@@ -645,7 +692,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
 				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
-				OwnerAgentId:    ownerByTerminalID[e.ID],
+				Quake:           quakeByTerminalID[e.ID],
 			}
 			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
@@ -681,7 +728,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				OwnerAgentId:    ownerByTerminalID[ts.ID],
+				Quake:           quakeByTerminalID[ts.ID],
 			}
 			terminals = append(terminals, ti)
 			gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
@@ -698,6 +745,88 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			Verdicts:  tabHydrationVerdicts(requestedTabIDs, seen),
 		})
 	})
+
+	// SetQuakePanel relays a show/hide request for one WORKING DIRECTORY's quake
+	// panel to every frontend the caller has open on this worker.
+	//
+	// It writes nothing. The panel's open state is client-local -- the same line
+	// the active tab in a tile is on -- so this is a remote keystroke, not a
+	// setting. The Control CLI is the only caller; a frontend toggles its own
+	// panel in-process.
+	//
+	// Registered beside ListTerminals rather than with the agent handlers: the
+	// request carries a directory and no agent id, and its CLI verb is
+	// `terminal quake`.
+	//
+	// terminal:write and nothing else, because the request specifies a DIRECTORY
+	// and what it ultimately does is put a shell in front of the user. It used
+	// to take agent:read too, when the panel was addressed by agent id and the
+	// reply would have been an agent-id oracle; there is no agent id on this
+	// wire any more, and privateEventVisible drops the matching check for the
+	// same reason.
+	//
+	// It specifies no tab, so there is no row to load and no per-tab archive
+	// refusal to apply. The frontend refuses a cold open in an archived
+	// workspace on its own (see the quake store's isWorkspaceMutatable), which
+	// is the check that matters: this RPC stores nothing that an archived
+	// workspace could be harmed by.
+	registerOwnerGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
+			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
+				sendInvalidArgument(sender, "action must be open, close or toggle")
+				return
+			}
+			// Refused BEFORE the normalize below, and the order matters for the
+			// reason ListTerminals states at its own quake lookup:
+			// normalizeWorkingDir resolves an empty path to the worker's home
+			// directory, so normalizing first would silently turn "I have no
+			// directory" into a command against the home directory's panel --
+			// broadcast to every frontend the caller has open.
+			if strings.TrimSpace(r.GetWorkingDir()) == "" {
+				sendInvalidArgument(sender, "working_dir is required: it is the address of the panel")
+				return
+			}
+			// Normalized with the SAME rule OpenTerminal applies to the
+			// directory it stores, because the two must produce the identical
+			// string: the frontend matches this event against the working dir
+			// of the tab it has focused, which came from a worker row. A `~`
+			// or a relative path that reached a frontend unexpanded would
+			// address a panel that can never exist.
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+			// An OPENING command for a directory no tab works in is refused,
+			// because no client could act on it. Every frontend resolves the
+			// event back to a tab (`findTabInWorkingDir`) and needs one to
+			// decide the workspace a cold open is refused in -- so with no tab
+			// anywhere, this RPC answered success for a command that did
+			// nothing, and a typo'd --working-dir was indistinguishable from a
+			// working invocation.
+			//
+			// CLOSE is deliberately exempt. It needs only the key, and it is
+			// the one action that can act on a directory whose tabs the calling
+			// client cannot see -- on a phone it is the only way to dismiss a
+			// panel that covers the whole centre area.
+			//
+			// A read FAILURE publishes rather than refuses: a busy database
+			// must not cost the user a command they can otherwise act on.
+			if r.GetAction() != leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_CLOSE {
+				tabs, tabsErr := openTabsInWorkingDirs(ctx, svc.Queries, []string{workingDir})
+				if tabsErr != nil {
+					slog.Warn("failed to check the tabs of a quake panel directory",
+						"working_dir", workingDir, "error", tabsErr)
+				} else if len(tabs) == 0 {
+					sendFailedPrecondition(sender, "no tab works in that directory on this worker")
+					return
+				}
+			}
+			if svc.PrivateEvents != nil {
+				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, workingDir, r.GetAction())
+			}
+			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
+		})
 
 	// ListAvailableShells returns the shells installed on this worker.
 	// Owner-only: like sysinfo, it discloses machine-scoped state (which
@@ -810,7 +939,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// registering in-memory metadata. Single narrow query — avoids
 	// re-reading the screen BLOB the handler entry already fetched.
 	postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived != 0) {
+	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -923,7 +1052,7 @@ func (svc *Service) runTerminalRestart(
 	// same row is unused on the restart path (titles don't change
 	// across restart), so it's read-and-discarded.
 	postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	switch svc.TerminalStartup.interruptionOf(h, fetchErr == nil && postSpawn.ClosedAt.Valid, fetchErr == nil && postSpawn.WorkspaceArchived != 0) {
+	switch svc.TerminalStartup.interruptionOf(h, fetchErr == nil && postSpawn.ClosedAt.Valid, fetchErr == nil && postSpawn.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -1121,7 +1250,7 @@ func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandl
 		if svc.WakeLock != nil {
 			svc.WakeLock.RecordActivity()
 		}
-		// TerminalData is classContent, so BroadcastTerminalEvent self-gates:
+		// TerminalData is classContent, so BroadcastTerminalEvent restricts itself:
 		// when nobody watches this terminal in FULL it short-circuits before
 		// the snapshot/marshal, and NOTIFY-only watchers receive just signals.
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
@@ -1283,18 +1412,19 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 				},
 			},
 		})
-		svc.closeCompanionOnShellExit(tid)
+		svc.closeQuakeTerminalOnShellExit(tid)
 	}
 }
 
-// closeCompanionOnShellExit ends a COMPANION terminal whose shell exited.
+// closeQuakeTerminalOnShellExit ends a QUAKE terminal whose shell exited.
 //
 // A terminal TAB survives its shell: the row stays open, the exit notice sits in
-// the screen, and Enter respawns it. A companion has no such contract -- there
-// is no pane to leave behind, and the panel retracts -- so its exit IS its end.
+// the screen, and Enter respawns it. A quake terminal has no such contract --
+// there is no pane to leave behind, and the panel retracts -- so its exit IS
+// its end.
 //
 // Without this the row would stay open with a dead PTY, and the unique index
-// over live companions would then refuse a new one: the next toggle would adopt
+// over live quake rows would then refuse a new one: the next toggle would adopt
 // the corpse instead of starting a shell. It also stops the reconciler having to
 // reap a row nothing will ever use.
 //
@@ -1304,61 +1434,38 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 //
 // The read is NARROW for the reason GetTerminalExitCode gives: GetTerminal
 // answers the same question and reads the 100KB screen blob, and this runs on
-// every terminal exit rather than on a companion's alone.
-func (svc *Service) closeCompanionOnShellExit(terminalID string) {
-	row, err := svc.Queries.GetTerminalOwnerAndClosed(bgCtx(), terminalID)
+// every terminal exit rather than on a quake terminal's alone.
+func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
+	row, err := svc.Queries.GetTerminalQuakeAndClosed(bgCtx(), terminalID)
 	if err != nil {
-		// A failure here is NOT "this is not a companion". It leaves the row
-		// open with a dead PTY, which the unique index then reads as a live
-		// companion and which no later pass reclaims while the owner tab
-		// lives -- so it must be visible rather than silent. The worker boot
-		// sweep is the backstop that eventually closes it.
+		// A failure here is NOT "this is not a quake terminal". It leaves the
+		// row open with a dead PTY, which the unique index then reads as the
+		// directory's live shell and which no later pass reclaims while a tab
+		// still works there -- so it must be visible rather than silent. The
+		// worker boot sweep is the backstop that eventually closes it.
 		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Error("failed to read terminal owner on shell exit", "terminal_id", terminalID, "error", err)
+			slog.Error("failed to read terminal is_quake on shell exit", "terminal_id", terminalID, "error", err)
 		}
 		return
 	}
-	if row.OwnerAgentID == "" || row.ClosedAt.Valid {
+	if !row.IsQuake || row.ClosedAt.Valid {
 		return
 	}
 	go svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
 }
 
-// requireCompanionOwner answers the caller when owner_agent_id does not give a
-// live ROOT agent, and reports whether the id is usable.
-func (svc *Service) requireCompanionOwner(sender channel.ResponseWriter, ownerAgentID string) bool {
-	owner, err := svc.Queries.GetAgentByID(bgCtx(), ownerAgentID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			sendNotFoundError(sender, "owner agent not found")
-		} else {
-			slog.Error("failed to read companion owner agent", "agent_id", ownerAgentID, "error", err)
-			sendInternalError(sender, "failed to read the owner agent")
-		}
-		return false
-	}
-	if owner.ClosedAt.Valid {
-		sendFailedPrecondition(sender, "the owner agent tab is closed")
-		return false
-	}
-	if owner.ParentAgentID.Valid {
-		sendFailedPrecondition(sender, "a subagent tab has no quake panel")
-		return false
-	}
-	return true
-}
-
-// companionShellIsLive answers whether a COMPANION row still has a shell that
-// this process hosts.
+// quakeShellIsLive answers whether a QUAKE row still has a shell that this
+// process hosts.
 //
-// A companion row is valid only while its PTY lives here, and three states
-// break that link with the row left open. The worker restarted and lost every
-// PTY. The shell exited and the close is still on its goroutine. The spawn
-// failed, which persists a startup error and never stamps closed_at. A row in
-// any of them is dead, and handing one back gives the user a panel that paints
-// nothing and swallows every keystroke: a companion refuses the Enter that
-// restarts a terminal TAB, so there is no way out but to close the agent tab.
-func (svc *Service) companionShellIsLive(terminalID string) bool {
+// A quake row is valid only while its PTY lives here, and three states break
+// that link with the row left open. The worker restarted and lost every PTY.
+// The shell exited and the close is still on its goroutine. The spawn failed,
+// which persists a startup error and never stamps closed_at. A row in any of
+// them is dead, and handing one back gives the user a panel that paints nothing
+// and swallows every keystroke: a quake terminal refuses the Enter that restarts
+// a terminal TAB, so there is no way out but to close every tab in the
+// directory.
+func (svc *Service) quakeShellIsLive(terminalID string) bool {
 	if svc.Terminals.IsRunning(terminalID) {
 		return true
 	}
@@ -1366,27 +1473,29 @@ func (svc *Service) companionShellIsLive(terminalID string) bool {
 	return inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED
 }
 
-// adoptExistingCompanion answers the caller with the agent's existing companion
-// when that companion still has a live shell, and reports whether it answered.
+// adoptExistingQuakeTerminal answers the caller with the directory's existing
+// quake terminal when that terminal still has a live shell, and reports whether
+// it answered.
 //
 // Shared by OpenTerminal's pre-mint check and its lost-race retry, so the two
 // cannot answer with different fields.
 //
 // A row whose shell is gone is CLOSED here rather than handed back. The unique
-// partial index counts it as the agent's one live companion, so leaving it in
-// place refuses every replacement for the life of the agent tab.
-func (svc *Service) adoptExistingCompanion(sender channel.ResponseWriter, ownerAgentID string) bool {
-	if ownerAgentID == "" {
+// partial index counts it as the directory's one live quake terminal, so
+// leaving it in place refuses every replacement for as long as a tab works
+// there.
+func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, isQuake bool, workingDir string) bool {
+	if !isQuake {
 		return false
 	}
-	existing, err := svc.Queries.GetOpenTerminalIDByOwner(bgCtx(), ownerAgentID)
+	existing, err := svc.Queries.GetOpenQuakeTerminalByWorkingDir(bgCtx(), workingDir)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Error("failed to look up the existing companion terminal", "agent_id", ownerAgentID, "error", err)
+			slog.Error("failed to look up the existing quake terminal", "working_dir", workingDir, "error", err)
 		}
 		return false
 	}
-	if !svc.companionShellIsLive(existing.ID) {
+	if !svc.quakeShellIsLive(existing.ID) {
 		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", existing.ID)
 		return false
 	}
@@ -1397,22 +1506,22 @@ func (svc *Service) adoptExistingCompanion(sender channel.ResponseWriter, ownerA
 	return true
 }
 
-// CloseOrphanedCompanionTerminals closes every open COMPANION row whose shell
-// this process does not host. The worker runs it once at boot.
+// CloseOrphanedQuakeTerminals closes every open QUAKE row whose shell this
+// process does not host. The worker runs it once at boot.
 //
-// A companion is valid only while this process hosts its PTY, and a restart
-// breaks that link with the row still open. No other pass reclaims one: the
-// orphan reconciler measures a companion by its OWNER's tab key, so a live
-// owner agent keeps the dead row open for as long as its tab exists. The next
-// open would then adopt a terminal with no PTY.
-func (svc *Service) CloseOrphanedCompanionTerminals(ctx context.Context) {
-	ids, err := svc.Queries.ListOpenCompanionTerminalIDs(ctx)
+// A quake terminal is valid only while this process hosts its PTY, and a
+// restart breaks that link with the row still open. No other pass reclaims one:
+// the orphan reconciler measures a quake terminal by whether any open tab still
+// works in its DIRECTORY, so one live tab there keeps the dead row open for as
+// long as it exists. The next open would then adopt a terminal with no PTY.
+func (svc *Service) CloseOrphanedQuakeTerminals(ctx context.Context) {
+	ids, err := svc.Queries.ListOpenQuakeTerminalIDs(ctx)
 	if err != nil {
-		slog.Warn("failed to list companion terminals at startup", "error", err)
+		slog.Warn("failed to list quake terminals at startup", "error", err)
 		return
 	}
 	for _, terminalID := range ids {
-		if svc.companionShellIsLive(terminalID) {
+		if svc.quakeShellIsLive(terminalID) {
 			continue
 		}
 		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)

@@ -134,7 +134,7 @@ describe('buildWatchPlans', () => {
     expect(plan.agents.every(a => a.mode === WatchMode.FULL)).toBe(true)
   })
 
-  // A companion terminal -- the shell behind an agent tab's quake panel -- has
+  // A quake terminal -- the shell behind one working directory's panel -- has
   // no tab and therefore no placement, so nothing in `tabs` can carry it. It is
   // in no plan at all unless it is passed separately, and a terminal in no plan
   // receives no bytes: the panel stays blank while its shell runs.

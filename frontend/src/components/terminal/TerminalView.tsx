@@ -176,7 +176,7 @@ export function getTerminalInstance(id: string): TerminalInstance | undefined {
  *
  * Answers for EVERY mounted terminal, placed in a tile or not, because
  * `data-terminal-id` is on the wrapper this module renders. That is what a
- * caller needs for the quake panel's companion shell: it has no tab, so the
+ * caller needs for the quake panel's shell: it has no tab, so the
  * tab-shaped "which tab is focused?" lookups cannot reach it, yet the keybinding
  * layer's `terminalFocused` context is true whenever it holds focus.
  */
@@ -208,7 +208,7 @@ export function pageScrollTerminalInstance(id: string, direction: -1 | 1): void 
  *
  * The ONE resolver for "which terminal does a chord act on". It answers from
  * the DOM, so it reaches every mounted terminal -- one placed in a tile, and
- * the companion shell behind a quake panel, which has no tab and no tile for a
+ * the shell behind a quake panel, which has no tab and no tile for a
  * tab-shaped lookup to walk.
  *
  * This replaced a second, tile-shaped resolver that read the focused tile's
@@ -271,6 +271,26 @@ if (typeof window !== 'undefined') {
 
   ;(window as any).__getActiveTerminalText = () => {
     const instance = getActiveInstance()
+    if (!instance)
+      return ''
+    const buffer = instance.terminal.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line)
+        text += line.translateToString(true)
+    }
+    return text
+  }
+  // E2E hook: the same read, keyed by terminal ID.
+  //
+  // `__getActiveTerminalText` above resolves the module-global
+  // `lastActiveTerminalId`, which EVERY mounted view writes -- so with a tile
+  // terminal and the quake panel both up, last writer wins and a test asking
+  // about one can be answered about the other. A test that knows which shell it
+  // means asks for it.
+  ;(window as any).__getTerminalTextById = (id: string) => {
+    const instance = instances.get(id)
     if (!instance)
       return ''
     const buffer = instance.terminal.buffer.active

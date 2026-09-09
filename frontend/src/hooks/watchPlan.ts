@@ -91,13 +91,13 @@ export function agentWatchEntry(
 }
 
 /**
- * A terminal that has no tab and therefore no placement: the companion shell
- * behind an agent tab's quake panel.
+ * A terminal that has no tab and therefore no placement: the quake shell
+ * behind one working directory's panel.
  *
  * The MODE arrives already decided, because that decision needs the panel's own
- * open state and the owner tab's placement -- two things the caller holds and
- * this module has no business learning. `buildWatchPlans` stays a function of
- * tabs and cursors.
+ * open state and the focused tab's working directory -- two things the caller
+ * holds and this module has no business learning. `buildWatchPlans` stays a
+ * function of tabs and cursors.
  */
 export interface DetachedTerminalWatch {
   terminalId: string
@@ -133,8 +133,8 @@ export interface BuildWatchPlansOpts {
    */
   getAgentTab?: (agentId: string) => AgentTab | undefined
   /**
-   * The terminals that have no tab at all -- the companion shells behind the
-   * quake panels. Without them a quake terminal is in no plan, so the worker
+   * The terminals that have no tab at all -- the quake shells behind the
+   * panels. Without them a quake terminal is in no plan, so the worker
    * sends it nothing and the panel stays blank while its shell runs.
    */
   detachedTerminals?: readonly DetachedTerminalWatch[]
@@ -201,7 +201,7 @@ export function buildWatchPlans(
       pushTerminal(plan, tab.id, mode)
     }
   }
-  // Folded in AFTER the tab walk, and through the same push, so a companion
+  // Folded in AFTER the tab walk, and through the same push, so a quake shell
   // resubscribes on a hole exactly as a placed terminal does.
   for (const detached of detachedTerminals) {
     if (!detached.workerId || !detached.terminalId)
@@ -211,7 +211,7 @@ export function buildWatchPlans(
       plan = { agents: [], terminals: [], terminalResync: new Set() }
       plans.set(detached.workerId, plan)
     }
-    // A companion CAN already be in the plan: the caller's detached list and
+    // A quake shell CAN already be in the plan: the caller's detached list and
     // the tab walk are independent inputs.
     if (plan.terminals.some(t => t.terminalId === detached.terminalId))
       continue
@@ -225,7 +225,7 @@ export function buildWatchPlans(
    * ONE body for both loops. A flagged terminal subscribes cold (afterOffset
    * 0), which the worker answers with a full snapshot -- the only thing that
    * can rebuild a screen with a hole in it. Two copies of that rule would let a
-   * companion and a placed terminal recover from a hole differently, which is
+   * quake shell and a placed terminal recover from a hole differently, which is
    * exactly what the detached loop's comment promises they do not.
    */
   function pushTerminal(plan: WatchPlan, terminalId: string, mode: WatchMode): void {

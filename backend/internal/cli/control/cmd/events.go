@@ -44,7 +44,7 @@ func RunEvents(rawCtx any, args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	got, err := runResolve(ctx, c, resolve.Need{}, in)
+	got, err := runResolve(ctx, c, resolve.Need{Want: resolve.Wants{WorkspaceID: true}}, in)
 	if err != nil {
 		return err
 	}

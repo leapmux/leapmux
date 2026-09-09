@@ -95,17 +95,6 @@ var controlTree = cmdGroup{
 				{Name: "set", Summary: "Update agent settings (model/effort/permission-mode/extras)", Run: controlRun(cmdcontrol.RunAgentSet)},
 				{Name: "send-control-response", Summary: "Forward a raw control_response payload (Claude-Code-style)", Run: controlRun(cmdcontrol.RunAgentSendControlResponse)},
 			},
-			Subgroups: []cmdGroup{
-				{
-					Name:    "quake",
-					Summary: "Show or hide an agent tab's quake terminal panel in your open frontends",
-					Commands: []cmdLeaf{
-						{Name: "open", Summary: "Show the quake panel", Run: controlRun(cmdcontrol.RunAgentQuakeOpen)},
-						{Name: "close", Summary: "Hide the quake panel", Run: controlRun(cmdcontrol.RunAgentQuakeClose)},
-						{Name: "toggle", Summary: "Flip the quake panel between shown and hidden", Run: controlRun(cmdcontrol.RunAgentQuakeToggle)},
-					},
-				},
-			},
 		},
 		{
 			Name:    "tile",
@@ -155,6 +144,17 @@ var controlTree = cmdGroup{
 				{Name: "send", Summary: "Send input to a terminal", Run: controlRun(cmdcontrol.RunTerminalSend)},
 				{Name: "get", Summary: "Show one terminal (geometry, shell, working dir)", Run: controlRun(cmdcontrol.RunTerminalGet)},
 				{Name: "shells", Summary: "List available shells on a worker", Run: controlRun(cmdcontrol.RunTerminalShells)},
+			},
+			Subgroups: []cmdGroup{
+				{
+					Name:    "quake",
+					Summary: "Show or hide a working directory's quake terminal panel in your open frontends",
+					Commands: []cmdLeaf{
+						{Name: "open", Summary: "Show the quake panel", Run: controlRun(cmdcontrol.RunTerminalQuakeOpen)},
+						{Name: "close", Summary: "Hide the quake panel", Run: controlRun(cmdcontrol.RunTerminalQuakeClose)},
+						{Name: "toggle", Summary: "Flip the quake panel between shown and hidden", Run: controlRun(cmdcontrol.RunTerminalQuakeToggle)},
+					},
+				},
 			},
 		},
 		{

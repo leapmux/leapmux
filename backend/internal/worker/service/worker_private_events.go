@@ -157,12 +157,12 @@ func (b *PrivateEventsBus) PublishTabPayloadRevoked(owner userid.UserID, tabID s
 // open state is per-client, like which tab is active in a tile. This event is
 // therefore excluded from the bootstrap replay in SnapshotAndSubscribe -- see
 // the comment there.
-func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, agentID string, action leapmuxv1.QuakePanelAction) {
+func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, workingDir string, action leapmuxv1.QuakePanelAction) {
 	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
 		Event: &leapmuxv1.WorkerPrivateEvent_QuakePanelCommand{
 			QuakePanelCommand: &leapmuxv1.QuakePanelCommand{
-				AgentId: agentID,
-				Action:  action,
+				WorkingDir: workingDir,
+				Action:     action,
 			},
 		},
 	})

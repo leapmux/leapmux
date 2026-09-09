@@ -77,7 +77,7 @@ func TestEnsureAgentRunning_RefusesArchivedAgent(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
-		WorkspaceArchived: 1, ID: "agent-archived",
+		WorkspaceArchived: true, ID: "agent-archived",
 	})
 	require.NoError(t, err)
 	starts := 0

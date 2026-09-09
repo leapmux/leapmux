@@ -169,17 +169,17 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
 		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file"})
+		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file", UserId: "user-1"})
 
 	assert.False(t, svc.Agents.HasAgent(agentID))
 	assert.False(t, svc.Terminals.IsRunning(terminalID))
 	agentRow, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), agentRow.WorkspaceArchived)
+	assert.True(t, agentRow.WorkspaceArchived)
 	assert.False(t, agentRow.ClosedAt.Valid)
 	terminalRow, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), terminalRow.WorkspaceArchived)
+	assert.True(t, terminalRow.WorkspaceArchived)
 	assert.False(t, terminalRow.ClosedAt.Valid)
 	assert.Contains(t, string(terminalRow.Screen), "preserved terminal output")
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: agentID})
@@ -226,7 +226,7 @@ func TestWorkspaceArchive_StopsAnAgentThatOwnsNoProcess(t *testing.T) {
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), row.WorkspaceArchived)
+	assert.True(t, row.WorkspaceArchived)
 	assert.False(t, row.ClosedAt.Valid, "archival preserves the open row")
 	// The broadcast reaches a subscriber's stream asynchronously, so this waits
 	// for it rather than reading once: the DB write above is what the handler
@@ -284,13 +284,13 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 		assert.False(t, svc.Agents.HasAgent(agentID), "agent %s must stop", agentID)
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
 		require.NoError(t, err)
-		assert.Equal(t, int64(1), row.WorkspaceArchived, "agent %s must record the archive", agentID)
+		assert.True(t, row.WorkspaceArchived, "agent %s must record the archive", agentID)
 	}
 	for _, terminalID := range terminalIDs {
 		assert.False(t, svc.Terminals.IsRunning(terminalID), "terminal %s must stop", terminalID)
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
 		require.NoError(t, err)
-		assert.Equal(t, int64(1), row.WorkspaceArchived, "terminal %s must record the archive", terminalID)
+		assert.True(t, row.WorkspaceArchived, "terminal %s must record the archive", terminalID)
 	}
 }
 
@@ -332,7 +332,7 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	assert.Equal(t, firstQueue.Revision, secondQueue.Revision, "an unchanged archive must not mutate the queue")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), row.WorkspaceArchived)
+	assert.True(t, row.WorkspaceArchived)
 }
 
 func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
@@ -470,7 +470,7 @@ func TestWorkspaceArchive_CancelsAnInFlightStartup(t *testing.T) {
 	assert.False(t, closeRaced, "archival is not a tab close, so no worktree decision is recorded")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), row.WorkspaceArchived)
+	assert.True(t, row.WorkspaceArchived)
 	assert.False(t, row.ClosedAt.Valid)
 	assert.Empty(t, row.StartupError, "archival is not a startup failure, so the tab stays retryable")
 }
@@ -517,7 +517,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 			require.NoError(t, err)
 		}
 		_, err := svc.Queries.SetAgentWorkspaceArchived(ctx, db.SetAgentWorkspaceArchivedParams{
-			WorkspaceArchived: 1, ID: testAgent.id,
+			WorkspaceArchived: true, ID: testAgent.id,
 		})
 		require.NoError(t, err)
 	}
@@ -525,7 +525,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 		ID: "terminal-exited", Screen: []byte("screen"),
 	}))
 	_, err := svc.Queries.SetTerminalWorkspaceArchived(ctx, db.SetTerminalWorkspaceArchivedParams{
-		WorkspaceArchived: 1, ID: "terminal-exited",
+		WorkspaceArchived: true, ID: "terminal-exited",
 	})
 	require.NoError(t, err)
 
@@ -585,7 +585,7 @@ END`)
 		"a failed flag write must stop no process: the teardown runs only after the commit")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Zero(t, row.WorkspaceArchived)
+	assert.False(t, row.WorkspaceArchived)
 }
 
 func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
@@ -612,7 +612,7 @@ func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 
 	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Zero(t, row.WorkspaceArchived, "a refused request writes nothing")
+	assert.False(t, row.WorkspaceArchived, "a refused request writes nothing")
 }
 
 // TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab pins the rule that
@@ -732,10 +732,10 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 
 	closedRow, err := svc.Queries.GetAgentByID(ctx, closedAgent)
 	require.NoError(t, err)
-	assert.Zero(t, closedRow.WorkspaceArchived, "a closed row takes no archive flag and no teardown")
+	assert.False(t, closedRow.WorkspaceArchived, "a closed row takes no archive flag and no teardown")
 	openRow, err := svc.Queries.GetAgentByID(ctx, openAgent)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), openRow.WorkspaceArchived)
+	assert.True(t, openRow.WorkspaceArchived)
 
 	// The unarchive must not offer the closed row as a resume candidate.
 	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
@@ -791,7 +791,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	// The archive committed its flag and is now blocked in the drain.
 	testutil.AssertEventually(t, func() bool {
 		row, rowErr := svc.Queries.GetAgentByID(ctx, agentID)
-		return rowErr == nil && row.WorkspaceArchived == 1
+		return rowErr == nil && row.WorkspaceArchived
 	}, "the archive commits its flag before it drains")
 
 	unarchiveDone := make(chan []string, 1)
@@ -810,7 +810,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	}
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), row.WorkspaceArchived,
+	assert.True(t, row.WorkspaceArchived,
 		"the unarchive must not commit its flag while the archive still owns the tab")
 
 	// Let the drain finish; the unarchive then proceeds in full.
@@ -825,7 +825,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	}
 	settled, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Zero(t, settled.WorkspaceArchived)
+	assert.False(t, settled.WorkspaceArchived)
 	assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
 	assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
 }

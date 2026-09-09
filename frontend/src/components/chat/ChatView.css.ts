@@ -1,5 +1,6 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
 import { chipBase } from '~/styles/shared.css'
 import { breakpoints, composerContainer, motion } from '~/styles/tokens'
 import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
@@ -206,13 +207,7 @@ export const messageList = style({
 // The WebKit half of the coarse-pointer rule above. `::-webkit-scrollbar` is not
 // `&`-anchored, so it cannot be a `selectors` entry and needs its own globalStyle --
 // the same shape as messageListRailActive's below.
-globalStyle(`${messageList}::-webkit-scrollbar`, {
-  '@media': {
-    '(pointer: coarse)': {
-      display: 'none',
-    },
-  },
-})
+hideNativeScrollbar(messageList, '(pointer: coarse)')
 
 /**
  * Hides the native scrollbar so ONLY the seq-space ChatScrollRail overlay shows (the
@@ -229,9 +224,7 @@ globalStyle(`${messageList}::-webkit-scrollbar`, {
 export const messageListRailActive = style({
   scrollbarWidth: 'none',
 })
-globalStyle(`${messageListRailActive}::-webkit-scrollbar`, {
-  display: 'none',
-})
+hideNativeScrollbar(messageListRailActive)
 
 /**
  * Shared look of the "Loading older/newer messages..." indicators. Each is an absolute

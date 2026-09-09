@@ -55,14 +55,14 @@ interface OpenStreamOpts {
    */
   onTabPayloadRevoked?: (evt: { tabId: string }) => void
   /**
-   * The Control CLI asked this account's frontends to show or hide one agent
-   * tab's quake panel.
+   * The Control CLI asked this account's frontends to show or hide one working
+   * DIRECTORY's quake panel on this worker.
    *
    * A COMMAND, not a fact: it carries no state, the worker stores none, and it
    * is excluded from the subscribe-time replay -- so nothing here has to guard
    * against a reconnect reopening a panel the user closed.
    */
-  onQuakePanelCommand?: (evt: { agentId: string, action: QuakePanelAction }) => void
+  onQuakePanelCommand?: (evt: { workingDir: string, action: QuakePanelAction }) => void
 }
 
 /**
@@ -150,7 +150,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 }
                 case 'quakePanelCommand': {
                   const r = evt.event.value
-                  opts.onQuakePanelCommand?.({ agentId: r.agentId, action: r.action })
+                  opts.onQuakePanelCommand?.({ workingDir: r.workingDir, action: r.action })
                   break
                 }
               }

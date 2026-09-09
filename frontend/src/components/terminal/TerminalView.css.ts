@@ -1,4 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
+import { scrollbarThumb, scrollbarThumbHover } from '~/styles/tokens'
 
 export const terminalInner = style({
   flex: 1,
@@ -102,13 +104,60 @@ globalStyle(`${terminalWrapper} .xterm`, {
 })
 
 // Override xterm.css default background (#000) so the themed wrapper background
-// shows through.
+// shows through, and suppress the viewport's own scrollbar.
 //
-// This is NOT the theme colour: xterm writes that inline onto
+// The background is NOT the theme colour: xterm writes that inline onto
 // `.xterm-scrollable-element` (Viewport.ts), which no rule here can or should
 // reach. This rule exists only for the opaque `#000` xterm.css declares on the
 // viewport itself, which would otherwise sit above the wrapper's palette
 // background -- and, for a transparent terminal, above the panel's.
+//
+// The SCROLLBAR is redundant, and was a second bar beside xterm's own. xterm 6
+// draws its scrollbar itself -- the `.slider` of the vendored VS Code
+// scrollable element, styled below -- while xterm.css still declares
+// `overflow-y: scroll` on this viewport, which asks the browser for a native
+// bar on the same edge. Both were painted, a few px apart, in every terminal.
+// Hiding it takes two properties because the engines split: Chromium honours
+// `scrollbar-width` and then ignores the pseudo-element, Safari has only the
+// pseudo-element. Neither stops the viewport SCROLLING -- the wheel and the
+// keyboard reach the scrollback exactly as before.
 globalStyle(`${terminalWrapper} .xterm .xterm-viewport`, {
   backgroundColor: 'transparent',
+  scrollbarWidth: 'none',
 })
+
+hideNativeScrollbar(`${terminalWrapper} .xterm .xterm-viewport`)
+
+/**
+ * xterm's own slider, shaped like every other scrollbar in the app.
+ *
+ * Its WIDTH is not set here -- xterm writes that inline from
+ * `overviewRuler.width`, which `~/lib/terminal` sets from `scrollbarWidthPx` in
+ * `~/styles/tokens`, the same token the `::-webkit-scrollbar` rules in
+ * `~/styles/global.css.ts` size their box with. The rest of the shape is the
+ * shared `scrollbarThumb` declaration: a transparent border with
+ * `background-clip: content-box` leaves the thumb floating inside that lane,
+ * which is exactly what the chat's scrollbar beside it looks like.
+ *
+ * The selectors carry `.xterm` on purpose. xterm injects a stylesheet of its
+ * own INTO the terminal element for these three states, at four classes of
+ * specificity; matching that exactly would tie, and a tie goes to whichever
+ * rule comes later in the document -- always xterm's, because its style element
+ * sits further down the tree than this file's.
+ *
+ * The colours come from the palette rather than from xterm's theme, which has
+ * `scrollbarSlider*` entries for exactly this: those take a colour xterm must
+ * PARSE, and these tokens are relative-colour functions
+ * (`rgb(from var(--muted-foreground) r g b / 0.35)`) that only a browser
+ * resolves. The shared declaration keeps one definition of "thumb" for the
+ * whole app.
+ */
+globalStyle(`${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider`, {
+  ...scrollbarThumb,
+})
+
+globalStyle(
+  `${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider:hover,
+   ${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider.active`,
+  { ...scrollbarThumbHover },
+)

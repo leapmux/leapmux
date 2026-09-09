@@ -116,6 +116,7 @@ function mountConnection() {
       selection,
       controlStore: createControlStore(),
       quakeStore: createTestQuakeStore(),
+      getActiveQuakeKeyId: () => null,
       agentSessionStore: createAgentSessionStore(),
       agentActivityStore: createAgentActivityStore(),
       repoGitStore,

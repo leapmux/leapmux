@@ -126,30 +126,43 @@ func envValue(t *testing.T, envs []string, key string) string {
 	return ""
 }
 
-// A COMPANION terminal advertises its OWNER AGENT as the ambient tab, and an
-// ordinary terminal advertises itself.
+// A QUAKE terminal advertises NO TAB, and an ordinary terminal advertises
+// itself.
 //
-// This is the whole reason `leapmux control` works inside a Quake panel.
-// LEAPMUX_CONTROL_TAB_ID exists to be resolved through the hub's LocateTab, and
-// a companion has NO CRDT tab -- so a companion that advertised its own id made
-// the hub answer `not_found` and every command typed into the panel failed
-// before it reached its own body.
-func TestFactory_CompanionTerminalAdvertisesItsOwnerAgentTab(t *testing.T) {
+// Two reasons the panel advertises none, and the second is what decides it. Its own
+// id has no CRDT tab, so LocateTab answers `not_found`. And no OTHER tab is
+// honestly "the tab you are in": a shell keyed on a working directory is
+// reachable from every tab in that directory, so advertising one of them would
+// hand every `leapmux control` command in the panel a target the user never
+// chose -- a bare `agent send` reaching whichever agent happened to be oldest.
+//
+// What the panel keeps is its own identity, under TERMINAL_ID, plus the worker
+// and working dir that `terminal quake ...` runs on.
+func TestFactory_QuakeTerminalAdvertisesNoTab(t *testing.T) {
 	withTempSocketRoot(t)
 	f := &controlipc.Factory{WorkerID: "worker-A"}
 
-	companionEnvs, companionCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
-		UserID:       userid.MustNew("user-1"),
-		WorkerID:     "worker-A",
-		TabID:        "quake-1",
-		OwnerAgentID: "agent-1",
+	quakeEnvs, quakeCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:     userid.MustNew("user-1"),
+		WorkerID:   "worker-A",
+		TabID:      "quake-1",
+		IsQuake:    true,
+		WorkingDir: "/repo",
 	})
 	require.NoError(t, err)
-	t.Cleanup(companionCleanup)
-	assert.Equal(t, "agent-1", envValue(t, companionEnvs, "LEAPMUX_CONTROL_TAB_ID"),
-		"a companion must advertise the agent tab it belongs to, not its own id")
-	assert.Equal(t, "agent", envValue(t, companionEnvs, "LEAPMUX_CONTROL_TAB_TYPE"),
-		"the type must match the id, or the agent commands' env default never fires")
+	t.Cleanup(quakeCleanup)
+	assert.Empty(t, envValue(t, quakeEnvs, "LEAPMUX_CONTROL_TAB_ID"),
+		"no tab is better than one the user did not choose")
+	assert.Empty(t, envValue(t, quakeEnvs, "LEAPMUX_CONTROL_TAB_TYPE"),
+		"a type with no id would only make the tab-scoped defaults miss twice")
+	// The shell the user IS typing in still has to be nameable, or
+	// `terminal send` / `terminal get` inside the panel would have no target.
+	assert.Equal(t, "quake-1", envValue(t, quakeEnvs, "LEAPMUX_CONTROL_TERMINAL_ID"),
+		"the panel's own shell is what TERMINAL_ID identifies")
+	// The pair `terminal quake ...` resolves from, which is what keeps toggling
+	// and closing the panel working with no flags and no tab.
+	assert.Equal(t, "worker-A", envValue(t, quakeEnvs, "LEAPMUX_CONTROL_WORKER_ID"))
+	assert.Equal(t, "/repo", envValue(t, quakeEnvs, "LEAPMUX_CONTROL_WORKING_DIR"))
 
 	tabEnvs, tabCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
 		UserID:   userid.MustNew("user-1"),
@@ -161,6 +174,57 @@ func TestFactory_CompanionTerminalAdvertisesItsOwnerAgentTab(t *testing.T) {
 	assert.Equal(t, "term-1", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TAB_ID"),
 		"a terminal TAB is its own ambient tab and must be unaffected")
 	assert.Equal(t, "terminal", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TAB_TYPE"))
+	assert.Equal(t, "term-1", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TERMINAL_ID"),
+		"a terminal tab gives the same id twice, which is what makes one command line work in both")
+}
+
+// The SOCKET is keyed on the terminal's own id, never on anything else. A quake
+// terminal and a terminal tab in the same directory are two live shells, and
+// two live shells must not fight over one listener.
+func TestFactory_QuakeTerminalSocketIsKeyedOnItsOwnID(t *testing.T) {
+	withTempSocketRoot(t)
+	f := &controlipc.Factory{WorkerID: "worker-A"}
+
+	tabEnvs, tabCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(tabCleanup)
+
+	quakeEnvs, quakeCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "quake-1",
+		IsQuake:  true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(quakeCleanup)
+
+	assert.NotEqual(t,
+		envValue(t, tabEnvs, "LEAPMUX_CONTROL_SOCK"),
+		envValue(t, quakeEnvs, "LEAPMUX_CONTROL_SOCK"),
+		"two live shells must not share one socket")
+}
+
+// An AGENT spawn is not inside a terminal, so it carries none. Without this the
+// `terminal ...` subgroup would default its --tab-id to the agent's own id and
+// send keystrokes to a tab that has no PTY.
+func TestFactory_AgentSpawnNamesNoTerminal(t *testing.T) {
+	withTempSocketRoot(t)
+	f := &controlipc.Factory{WorkerID: "worker-A"}
+
+	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	assert.Equal(t, "agent-1", envValue(t, envs, "LEAPMUX_CONTROL_TAB_ID"))
+	assert.Empty(t, envValue(t, envs, "LEAPMUX_CONTROL_TERMINAL_ID"))
 }
 
 func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {

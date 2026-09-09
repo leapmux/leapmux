@@ -1069,26 +1069,26 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	// of reach of DeleteClosedTerminalsBefore. A read error leaves the field
 	// zero, which is the pre-close state and the same answer as before.
 	//
-	// The owner comes back on the same read, because the notice below depends
-	// on it and a second query for one column would run on every terminal exit.
+	// is_quake comes back on the same read, because the notice below depends on
+	// it and a second query for one column would run on every terminal exit.
 	var (
-		closedAt     sqltime.SQLiteNullTime
-		ownerAgentID string
+		closedAt sqltime.SQLiteNullTime
+		isQuake  bool
 	)
-	if row, err := svc.Queries.GetTerminalOwnerAndClosed(bgCtx(), tid); err == nil {
-		closedAt, ownerAgentID = row.ClosedAt, row.OwnerAgentID
+	if row, err := svc.Queries.GetTerminalQuakeAndClosed(bgCtx(), tid); err == nil {
+		closedAt, isQuake = row.ClosedAt, row.IsQuake
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("failed to read terminal closed_at before persisting exit",
 			"terminal_id", tid, "error", err)
 	}
-	// A COMPANION terminal gets NO exit notice, and the reason is that the
-	// notice offers an action the companion refuses. "Press Enter to restart"
+	// A QUAKE terminal gets NO exit notice, and the reason is that the notice
+	// offers an action the quake terminal refuses. "Press Enter to restart"
 	// reaches an open quake panel as ordinary terminal data -- AppendOutput is
 	// the PTY reader's own handler, so every FULL watcher receives it -- and
 	// both the browser and RestartTerminal then decline the Enter it invites,
-	// because a companion's exit IS its end. Suppressing the text is what lets
-	// the panel retract on a clean screen rather than on a dead offer.
-	if !hasNotice && ownerAgentID == "" {
+	// because a quake terminal's exit IS its end. Suppressing the text is what
+	// lets the panel retract on a clean screen rather than on a dead offer.
+	if !hasNotice && !isQuake {
 		notice := formatTerminalExitedNotice(exitCode)
 		_ = svc.Terminals.AppendOutput(tid, notice)
 		// SnapshotTerminal returns a freshly-allocated slice (tailBytesLocked),
@@ -1097,7 +1097,7 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	}
 	// `screen` is NOT NULL, and it is nil whenever the metadata-only fallback
 	// above ran (no live buffer) and no notice was appended -- which is every
-	// COMPANION exit. An empty buffer is the column's "no screen content"
+	// QUAKE exit. An empty buffer is the column's "no screen content"
 	// value; nil is a constraint violation that costs the row its exit code.
 	if screen == nil {
 		screen = []byte{}

@@ -45,9 +45,9 @@ export interface CreateTabViewOpts {
   state: () => UserCrdtState | null
   metadata: TabMetadataStore
   /**
-   * Terminals that exist on a WORKER but not in the CRDT: the companion shells
-   * behind an agent tab's quake panel. They belong to an agent tab rather than
-   * to a tile, so the projection has nothing to render them from.
+   * Terminals that exist on a WORKER but not in the CRDT: the shells behind the
+   * quake panels. They belong to a working DIRECTORY rather than to a tile, so
+   * the projection has nothing to render them from.
    *
    * They are reachable through `getTerminalTab` and `detachedTerminalTabs`, and
    * NOTHING ELSE. `byKey`, `byWorkspace`, `byTile`, `all`, `mruOrder`, `get`
@@ -60,21 +60,30 @@ export interface CreateTabViewOpts {
    * That asymmetry is the design, not an oversight. `getTerminalTab` is the
    * narrowed lookup the terminal data path uses -- the event router, the input
    * drain, the resize handler, the bell and notification helpers -- and every
-   * one of them must resolve a companion or the panel receives no bytes and
+   * one of them must resolve a quake terminal or the panel receives no bytes and
    * swallows every keystroke. `detachedTerminalTabs` is the same family as a
    * LIST, for the callers that must sweep it: the hydrators, whose retry keeps
-   * a companion's status moving, and the worker-offline sweep. `get`/`getById`
+   * a quake terminal's status moving, and the worker-offline sweep. `get`/`getById`
    * are the PLACEMENT-shaped lookups that selection, tile drag and tile move
-   * read, and a companion must stay invisible to all of those. Do not "fix"
+   * read, and a quake terminal must stay invisible to all of those. Do not "fix"
    * the inconsistency by widening one of THOSE.
    */
   detachedTerminals?: () => readonly DetachedTerminal[]
+
+  /**
+   * Whether a workspace accepts writes, for `findTabInWorkingDir`'s ranking.
+   *
+   * Injected rather than derived here, because archive state is workspace
+   * policy and this projection holds none of it. Absent means "every workspace
+   * is reachable", which is what a test that does not care should get.
+   */
+  isWorkspaceMutatable?: (workspaceId: string) => boolean
 }
 
 /**
  * A worker-hosted terminal with no CRDT record. Placement fields are absent
- * because there is no placement: the owning agent tab supplies the workspace,
- * and nothing supplies a tile.
+ * because there is no placement: a tab in its working directory supplies the
+ * workspace, and nothing supplies a tile.
  */
 export interface DetachedTerminal {
   id: string
@@ -519,9 +528,9 @@ export function createTabView(opts: CreateTabViewOpts) {
    * Also through the SAME `mapArray` + per-item `createMemo` + `equals:
    * shallowEqual` shape as `assembled`, and for the reasons that memo's own
    * note gives. One computation over the whole family would re-assemble every
-   * companion whenever any ONE of them took a metadata patch -- an OSC title,
+   * quake terminal whenever any ONE of them took a metadata patch -- an OSC title,
    * an OSC 9;4 progress frame, a status change -- and it would hand out a fresh
-   * `TerminalTab` on each run, which falsifies for a companion the identity
+   * `TerminalTab` on each run, which falsifies for a quake terminal the identity
    * stability `TerminalView` relies on to stop propagating.
    */
   const detachedAssembled = createMemo(mapArray(
@@ -598,7 +607,7 @@ export function createTabView(opts: CreateTabViewOpts) {
     },
     /**
      * A terminal by id, placed or detached. See `detachedTerminals` for why
-     * this lookup resolves a companion and the placement-shaped ones do not.
+     * this lookup resolves a quake terminal and the placement-shaped ones do not.
      */
     getTerminalTab(id: string): TerminalTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.TERMINAL, id }))
@@ -607,7 +616,7 @@ export function createTabView(opts: CreateTabViewOpts) {
       return detachedById().get(id)
     },
     /**
-     * Every companion terminal, assembled. See `detachedTerminals` for why this
+     * Every quake terminal, assembled. See `detachedTerminals` for why this
      * family is reachable here and not through the placement-shaped lookups.
      */
     detachedTerminalTabs(): TerminalTab[] {
@@ -624,6 +633,57 @@ export function createTabView(opts: CreateTabViewOpts) {
     /** Every tab across every workspace — for worker-scoped sweeps. */
     all(): Tab[] {
       return [...byKey().values()]
+    },
+    /**
+     * One PLACED tab that works in (workerId, workingDir), most recently
+     * activated first, or undefined when none does.
+     *
+     * The quake store's whole view of the tab set. A quake terminal belongs to
+     * a directory rather than to a tab, so three questions it must answer -- in
+     * which workspace is a cold open refused, on which row does a background
+     * shell's badge go, and does this directory still have any reason to hold a
+     * shell -- all reduce to "name a tab that works here".
+     *
+     * A REACHABLE tab first, then MRU order: the badge needs ONE row and the
+     * user should find it on the tab they last worked in, but only among the
+     * tabs they can actually open. Ties fall back to insertion order, which is
+     * the projection's own stable order. An archived tab still wins when it is
+     * the only one -- see the ranking below for why that is the point.
+     *
+     * Derives from `placedTabs` like every other lookup on this side, so a
+     * quake terminal can never be ITSELF the reference that keeps it
+     * alive: the detached family is deliberately unreachable from here (see
+     * `detachedTerminals`).
+     */
+    findTabInWorkingDir(workerId: string, workingDir: string): Tab | undefined {
+      if (!workerId || !workingDir)
+        return undefined
+      const reachable = (tab: Tab): boolean =>
+        opts.isWorkspaceMutatable === undefined || opts.isWorkspaceMutatable(tab.workspaceId)
+      let best: Tab | undefined
+      let bestReachable = false
+      for (const tab of byKey().values()) {
+        if (tab.workerId !== workerId || tab.workingDir !== workingDir)
+          continue
+        const tabReachable = reachable(tab)
+        // Reachability outranks MRU, and MRU breaks the tie within each half.
+        //
+        // A PREFERENCE rather than a filter, which is why the archived tab
+        // still wins when it is the only one: the cold open must resolve it so
+        // the refusal happens in the workspace the user is actually in.
+        //
+        // Ranking by MRU alone put the badge of a background shell on a row
+        // inside a collapsed archived section, and refused a cold open that a
+        // live tab in the same directory allows. Both need a tab the user can
+        // REACH, not merely the most recent one -- and archiving a workspace
+        // rooted at a checkout makes its tab the MRU winner immediately.
+        if (best === undefined || (tabReachable && !bestReachable)
+          || (tabReachable === bestReachable && (tab.mru ?? 0) > (best.mru ?? 0))) {
+          best = tab
+          bestReachable = tabReachable
+        }
+      }
+      return best
     },
     /** Most-recently-used first, within one workspace. */
     mruOrder(workspaceId: string): Tab[] {

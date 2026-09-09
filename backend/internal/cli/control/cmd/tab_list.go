@@ -43,7 +43,7 @@ func RunTabList(rawCtx any, args []string) error {
 			return control.EmitError("invalid_request", `--tab-type must be "agent", "terminal", or "file"`)
 		}
 	}
-	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
+	return resolveAndEmit(hub, resolve.Need{Want: resolve.Wants{WorkspaceID: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		req := &leapmuxv1.ListTabsRequest{}
 		if got.WorkspaceID != "" {
 			req.WorkspaceIds = []string{got.WorkspaceID}
@@ -70,7 +70,7 @@ func RunTabGet(rawCtx any, args []string) error {
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
-	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
+	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		req := &leapmuxv1.GetTabRequest{
 			WorkspaceId: got.WorkspaceID,
 			TabId:       got.TabID,

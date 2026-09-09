@@ -1158,6 +1158,23 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return tab.id
   })
 
+  /**
+   * The focused tab, whatever its type, for the quake panel.
+   *
+   * Deliberately NOT `focusedAgentId`. A quake terminal belongs to a working
+   * DIRECTORY, and every tab type carries one -- so the panel is available over
+   * a terminal tab, a file viewer and an image viewer exactly as it is over an
+   * agent tab. Narrowing this to agents would put the shortcut's availability
+   * back on the tab TYPE, which is the thing that stopped addressing the panel.
+   *
+   * The memo OF `resolveFocusedTab` (which is a plain function, for callers
+   * that read it inside an event handler): the panel and the watch plan both
+   * track it, and both must re-render when the focus moves. Wrapping the same
+   * function rather than restating its body is what stops the two answering
+   * differently.
+   */
+  const focusedQuakeTab = createMemo<Tab | null>(resolveFocusedTab)
+
   // The composer's queue commands. This module composes tiles and sends no
   // Worker RPC of its own, so the request shapes, the failure toasts and the
   // snapshot apply live in `agentInputQueueOperations`.
@@ -1311,6 +1328,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     tabBarElement,
     renderTileContent,
     focusedAgentId,
+    focusedQuakeTab,
     splitFocusedTile(direction: SplitOrientation) {
       const tileId = layoutStore.focusedTileId()
       if (tileId)
@@ -1320,7 +1338,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
      * Page-scroll whatever holds the caret.
      *
      * A focused TERMINAL answers first, and from the DOM: `pageScrollFocusedTerminal`
-     * reaches every mounted terminal, including a quake companion, which has no
+     * reaches every mounted terminal, including a quake terminal, which has no
      * tab for the tile-shaped lookup below to walk. Only when no terminal holds
      * focus does this fall through to the focused tile's tab, which is what a
      * chat transcript needs -- it has no terminal of its own.

@@ -12,7 +12,6 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -1002,49 +1001,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			)
 		})
 
-	// SetQuakePanel relays a show/hide request for one agent tab's quake panel
-	// to every frontend the caller has open on this worker.
-	//
-	// It writes nothing. The panel's open state is client-local -- the same line
-	// the active tab in a tile is on -- so this is a remote keystroke, not a
-	// setting. The Control CLI is the only caller; a frontend toggles its own
-	// panel in-process.
-	//
-	// terminal:write, because what the request ultimately does is put a shell in
-	// front of the user. It also takes agent:read, because the request NAMES an
-	// agent tab and the reply distinguishes an unknown id from a known one:
-	// privateEventVisible refuses the matching event to a caller that reads only
-	// one of the two kinds, and a handler that answered "agent not found" to
-	// that same caller would be the agent-id oracle the event gate exists to
-	// deny.
-	//
-	// registerAgentGuarded is what loads the row: it maps sql.ErrNoRows to
-	// NOT_FOUND and every other failure to INTERNAL, so a locked database no
-	// longer reports a live agent as missing, and it applies the
-	// archived-workspace refusal that every other terminal:write handler gets.
-	registerAgentGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, row db.Agent, sender channel.ResponseWriter) {
-			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
-				sendInvalidArgument(sender, "action must be open, close or toggle")
-				return
-			}
-			if !callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_AGENT) {
-				sendPermissionDenied(sender, authscope.NotGrantedDenial(leapmuxv1.Scope_SCOPE_AGENT_READ))
-				return
-			}
-			// A subagent transcript owns no process and no companion terminal,
-			// so it can own no panel either. Refused rather than ignored, so the
-			// CLI reports it instead of appearing to succeed.
-			if row.ParentAgentID.Valid {
-				sendFailedPrecondition(sender, "a subagent tab has no quake panel")
-				return
-			}
-			if svc.PrivateEvents != nil {
-				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, row.ID, r.GetAction())
-			}
-			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
-		})
-
 	// RegisterTabPayload writes the (tab_id -> payload) registry row. The
 	// write must survive a client disconnect, otherwise a subsequent
 	// GetTabPayload from a sibling client would see a stale "not found".
@@ -1760,7 +1716,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if fetchErr == nil {
 		dbAgent = latest
 	}
-	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
@@ -1851,7 +1807,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
 		activeDbAgent = latest
 	}
-	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived != 0) {
+	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived) {
 	case interruptionClosed:
 		if running {
 			svc.Agents.StopAndWaitAgent(agentID)
@@ -3056,7 +3012,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if dbAgent.ClosedAt.Valid {
 		return fmt.Errorf("agent %s is closed; it takes no new process", agentID)
 	}
-	if dbAgent.WorkspaceArchived != 0 {
+	if dbAgent.WorkspaceArchived {
 		return fmt.Errorf("agent %s belongs to an archived workspace; it takes no new process", agentID)
 	}
 
@@ -3677,13 +3633,13 @@ func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEven
 		}
 		return callerReadsTabType(caller, tabType)
 	}
-	if quake := evt.GetQuakePanelCommand(); quake != nil {
-		// Both kinds, because the event spans both: it gives an AGENT tab, and
-		// acting on it shows that tab's TERMINAL. A caller that may read only
-		// one of the two would either learn an agent id it cannot see or be
-		// asked to reveal a shell it cannot read.
-		return callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_AGENT) &&
-			callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
+	if evt.GetQuakePanelCommand() != nil {
+		// TERMINAL alone, because that is all the event now spans: it gives a
+		// working DIRECTORY, and acting on it shows a shell. It used to give an
+		// AGENT id and so needed agent:read as well; a directory is already
+		// terminal data -- every TerminalInfo a terminal:read caller receives
+		// carries one.
+		return callerReadsTabType(caller, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 	}
 	return true
 }

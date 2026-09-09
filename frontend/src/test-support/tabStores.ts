@@ -57,7 +57,7 @@ export function projectionMemo() {
 export function createTestTabStores(
   workspaceId: string,
   /**
-   * The companion shells behind the quake panels, for a test that must drive
+   * The shells behind the quake panels, for a test that must drive
    * one. They exist on a worker but not in the CRDT, so no `emitAddTab` can
    * produce one and a caller supplies them directly.
    */
@@ -120,7 +120,7 @@ export function createTestFloatingWindowStore(workspaceId?: string) {
 export function createTestQuakeStore(view?: TabView): QuakeTerminalStore {
   return createQuakeTerminalStore({
     metadata: createTabMetadataStore(),
-    getAgentTab: agentId => view?.getAgentTab(agentId),
+    tabForKey: key => view?.findTabInWorkingDir(key.workerId, key.workingDir),
     closeDelayMs: () => 0,
     isWorkspaceMutatable: () => true,
   })

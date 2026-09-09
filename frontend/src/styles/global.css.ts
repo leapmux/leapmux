@@ -21,7 +21,7 @@ import { DIFF_TINT } from '~/styles/diffTint'
 import { declareAppLayers } from '~/styles/layers'
 import { ALL_VARIANTS, DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
-import { bodyHeight, bodySafeAreaTop, breakpoints } from '~/styles/tokens'
+import { bodyHeight, bodySafeAreaTop, breakpoints, scrollbarThumb, scrollbarThumbHover, scrollbarWidthPx } from '~/styles/tokens'
 import { darkVariantSelector, lightVariantSelector } from '~/styles/variantSelectors'
 
 globalFontFace('Hack NF', {
@@ -590,32 +590,42 @@ globalStyle('button, [role="button"]', {
   },
 })
 
-// Consistent thin scrollbars across browsers (standard CSS — Firefox & Chrome 121+).
+// Consistent narrow scrollbars across browsers. TWO mechanisms, and they are
+// mutually exclusive rather than complementary: Chromium IGNORES every
+// `::-webkit-scrollbar` rule below for any element that specifies
+// `scrollbar-width` or `scrollbar-color`. Declared on `*`, as this was, the
+// standard pair therefore threw away the whole styled scrollbar -- the 8px box,
+// the rounded thumb, the transparent inset border -- in the browser most of
+// this app's users are in, and left Chrome's own `thin` bar, which is wider
+// than the 8px asked for here and square.
+//
+// So the standard pair is scoped to the one engine that has no other route.
+// Firefox does not implement the pseudo-elements and never will; Chrome and
+// Safari both do. `-moz-appearance` is the feature query for "this is Gecko":
+// Chromium and WebKit dropped the prefix, so it is false in both.
 globalStyle('*', {
-  scrollbarWidth: 'thin',
-  scrollbarColor: 'var(--scrollbar-thumb) var(--scrollbar-track)',
+  '@supports': {
+    '(-moz-appearance: none)': {
+      scrollbarWidth: 'thin',
+      scrollbarColor: 'var(--scrollbar-thumb) var(--scrollbar-track)',
+    },
+  },
 })
 
-// WebKit scrollbar styling (Safari & older Chrome).
+// WebKit scrollbar styling (Chrome and Safari; see above for why it is not
+// dead code in Chrome any more).
 globalStyle('*::-webkit-scrollbar', {
-  width: '8px',
-  height: '8px',
+  width: `${scrollbarWidthPx}px`,
+  height: `${scrollbarWidthPx}px`,
 })
 
 globalStyle('*::-webkit-scrollbar-track', {
   background: 'transparent',
 })
 
-globalStyle('*::-webkit-scrollbar-thumb', {
-  backgroundColor: 'var(--scrollbar-thumb)',
-  borderRadius: '4px',
-  border: '2px solid transparent',
-  backgroundClip: 'content-box',
-})
+globalStyle('*::-webkit-scrollbar-thumb', { ...scrollbarThumb })
 
-globalStyle('*::-webkit-scrollbar-thumb:hover', {
-  backgroundColor: 'var(--scrollbar-thumb-hover)',
-})
+globalStyle('*::-webkit-scrollbar-thumb:hover', { ...scrollbarThumbHover })
 
 globalStyle('*::-webkit-scrollbar-corner', {
   background: 'transparent',

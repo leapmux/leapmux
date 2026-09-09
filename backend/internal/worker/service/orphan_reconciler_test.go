@@ -341,63 +341,92 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 	assert.Empty(t, teardown.agents, "live agent must NOT receive a stop signal")
 }
 
-// A COMPANION terminal -- the shell behind an agent tab's quake panel -- has no
-// CRDT tab, so the hub can never list it. Keyed on its own id it would look
-// absent on every single pass and be reaped the moment the grace expired,
-// which kills a live shell that the user types in. Its liveness is its OWNER's.
+// A QUAKE terminal -- the shell behind the quake panel -- has no CRDT tab, so
+// the hub can never list it. Compared against the hub like any other terminal
+// it would look absent on every single pass and be reaped the moment the grace
+// expired, which kills a live shell that the user types in. Its liveness is a
+// question about its working DIRECTORY, which only this worker's own tables can
+// answer.
 //
-// This is the regression test for that: it is the whole reason the agent->
-// terminal link lives on the worker rather than in the browser.
-func TestOrphanReconciler_CompanionTerminal_OwnerPresentOnHub_Survives(t *testing.T) {
+// This is the regression test for that: it is the whole reason the
+// directory->shell link lives on the worker rather than in the browser.
+func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testing.T) {
 	t.Parallel()
 
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ID: "live-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "companion", Screen: []byte{}, OwnerAgentID: "live-agent",
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
-	// The hub lists the OWNER and knows nothing of the companion, which is the
-	// steady state for every quake panel the user ever opened.
+	// The hub lists the agent tab and knows nothing of the quake terminal,
+	// which is the steady state for every quake panel the user ever opened.
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	term, err := q.GetTerminal(ctx, "companion")
+	term, err := q.GetTerminal(ctx, "quake")
 	require.NoError(t, err)
-	assert.False(t, term.ClosedAt.Valid, "a companion whose owner is live must survive")
-	assert.Empty(t, teardown.terminals, "a live companion must NOT be handed to the teardown")
+	assert.False(t, term.ClosedAt.Valid, "a directory with a live tab keeps its shell")
+	assert.Empty(t, teardown.terminals, "a live quake terminal must NOT be handed to the teardown")
 }
 
-// The opposite case: an owner the hub no longer lists takes its companion
-// with it.
-func TestOrphanReconciler_CompanionTerminal_OwnerMissingOnHub_Closed(t *testing.T) {
+// The opposite case: the last tab in a directory going away takes the shell
+// with it. The agent pass of the SAME pass is what closes that tab, which is why
+// the quake pass runs after it -- run earlier it would still read the row as
+// open and leave the shell alive for a whole interval.
+func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing.T) {
 	t.Parallel()
 
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "ghost-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ID: "ghost-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "companion", Screen: []byte{}, OwnerAgentID: "ghost-agent",
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	setFake("user-1", nil, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	term, err := q.GetTerminal(ctx, "companion")
+	term, err := q.GetTerminal(ctx, "quake")
 	require.NoError(t, err)
-	assert.True(t, term.ClosedAt.Valid, "a companion whose owner is gone must be closed")
-	// The close targets the TERMINAL id; only the liveness question was asked
-	// about the agent.
-	assert.Contains(t, teardown.terminals, "companion")
+	assert.True(t, term.ClosedAt.Valid, "a directory with no tabs left loses its shell")
+	assert.Contains(t, teardown.terminals, "quake")
+}
+
+// A tab in ANOTHER directory is not a reference. Without the per-directory
+// grouping the reap would ask "are there any tabs at all?" and one unrelated
+// agent anywhere on the worker would keep every quake shell alive.
+func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *testing.T) {
+	t.Parallel()
+
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "elsewhere", WorkingDir: "/other", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
+	}))
+	setFake("user-1", []*leapmuxv1.WorkerTabState{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"},
+	}, nil)
+
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
+
+	term, err := q.GetTerminal(ctx, "quake")
+	require.NoError(t, err)
+	assert.True(t, term.ClosedAt.Valid, "/other does not keep /repo's shell alive")
+	assert.Contains(t, teardown.terminals, "quake")
 }
 
 func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {

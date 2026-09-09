@@ -60,7 +60,7 @@ func RunTabMove(rawCtx any, args []string) error {
 	}
 	ctx, cancel := rpcDeadline(context.Background())
 	defer cancel()
-	got, err := runResolve(ctx, c, resolve.Need{TabID: true, WorkspaceID: true}, in)
+	got, err := runResolve(ctx, c, resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}}, in)
 	if err != nil {
 		return err
 	}

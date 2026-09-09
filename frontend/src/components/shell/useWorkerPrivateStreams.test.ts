@@ -14,7 +14,7 @@ interface OpenedStream {
   workerId: string
   onTabRenamed: (evt: { tabId: string, title: string }) => void
   onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
-  onQuakePanelCommand: (evt: { agentId: string, action: QuakePanelAction }) => void
+  onQuakePanelCommand: (evt: { workingDir: string, action: QuakePanelAction }) => void
   closed: boolean
 }
 
@@ -44,6 +44,9 @@ beforeEach(() => {
 afterEach(() => setCRDTBridge(null))
 
 const WS = 'ws-active'
+// The directory the quake panel commands address. A quake terminal belongs to
+// one, so a tab without it addresses no panel at all.
+const QUAKE_DIR = '/repo'
 
 const flush = () => new Promise<void>(queueMicrotask)
 
@@ -300,10 +303,14 @@ describe('useWorkerPrivateStreams', () => {
   // that does not run simply never hears it -- which is the right outcome for
   // what is effectively a remote keystroke.
   describe('the quake panel command', () => {
+    // The command addresses a DIRECTORY, so the tab needs one: the hook resolves
+    // it back to a tab, which is what supplies the workspace a cold open is
+    // refused in.
     async function withCommand(fn: (s: ReturnType<typeof mount>) => void) {
       await createRoot(async (dispose) => {
         const s = mount()
         emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+        s.metadata.patch('a1', { workingDir: QUAKE_DIR })
         s.run()
         await flush()
         fn(s)
@@ -311,37 +318,49 @@ describe('useWorkerPrivateStreams', () => {
       })
     }
 
-    it('opens the panel of the agent it gives', async () => {
+    it('opens the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const open = vi.spyOn(s.quakeStore, 'open')
-        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.OPEN })
+        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.OPEN })
         expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
       })
     })
 
-    it('closes the panel of the agent it gives', async () => {
+    it('closes the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const close = vi.spyOn(s.quakeStore, 'close')
-        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.CLOSE })
-        expect(close).toHaveBeenCalledWith('a1')
+        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.CLOSE })
+        expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: QUAKE_DIR })
       })
     })
 
-    it('toggles the panel of the agent it gives', async () => {
+    it('toggles the panel of the directory it gives', async () => {
       await withCommand((s) => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
-        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.TOGGLE })
+        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.TOGGLE })
         expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }))
       })
     })
 
     // The command reaches every frontend of the account, and another one may be
     // looking at a workspace this client is not.
-    it('ignores an agent this client cannot see', async () => {
+    it('ignores a directory this client has no tab in', async () => {
       await withCommand((s) => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
-        opened[0].onQuakePanelCommand({ agentId: 'somewhere-else', action: QuakePanelAction.TOGGLE })
+        opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.TOGGLE })
         expect(toggle).not.toHaveBeenCalled()
+      })
+    })
+
+    // CLOSE is the one of the three that needs only the KEY, so it must not be
+    // refused for want of a tab. It is also the only route to dismissing a
+    // panel on a phone, where there is no chord -- and the panel covers the
+    // whole centre area, so a refused close strands the user until a reload.
+    it('closes the panel of a directory this client has no tab in', async () => {
+      await withCommand((s) => {
+        const close = vi.spyOn(s.quakeStore, 'close')
+        opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.CLOSE })
+        expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: '/somewhere-else' })
       })
     })
 
@@ -352,7 +371,7 @@ describe('useWorkerPrivateStreams', () => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
         const open = vi.spyOn(s.quakeStore, 'open')
         const close = vi.spyOn(s.quakeStore, 'close')
-        opened[0].onQuakePanelCommand({ agentId: 'a1', action: QuakePanelAction.UNSPECIFIED })
+        opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.UNSPECIFIED })
         expect(toggle).not.toHaveBeenCalled()
         expect(open).not.toHaveBeenCalled()
         expect(close).not.toHaveBeenCalled()

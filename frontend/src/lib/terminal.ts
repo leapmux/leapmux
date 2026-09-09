@@ -14,6 +14,7 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, resolveVariant, themeById } from '~/styles/themes'
+import { scrollbarWidthPx } from '~/styles/tokens'
 import { loadBrowserPrefs } from './browserPreferences'
 import { copyTextToClipboard } from './clipboard'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
@@ -431,6 +432,20 @@ export function createTerminalInstance(
   let confirmLink = refuseLinkWithoutPrompt
   const terminal = new Terminal({
     cursorBlink: true,
+    // Read by `FitAddon` as the gutter to keep clear, and by the viewport as
+    // the slider's own width; see `scrollbarWidthPx` in `~/styles/tokens`,
+    // which is also what sizes every other scrollbar in the app. The ruler's
+    // borders stay off, so it draws nothing.
+    //
+    // Setting `width` is also what turns the overview ruler ON. That costs an
+    // empty canvas per terminal and nothing else: this app registers no
+    // decorations, so the ruler has nothing to paint, and xterm gives the
+    // element `pointer-events: none` -- it cannot swallow a drag meant for the
+    // slider underneath it. It does make a 2D canvas context load-bearing,
+    // though: the ruler's constructor THROWS on a null one, so a terminal
+    // cannot be built without it -- which is why the canvas stub in
+    // `vitest.setup.ts` answers `2d`.
+    overviewRuler: { width: scrollbarWidthPx },
     fontSize,
     fontFamily,
     theme,
