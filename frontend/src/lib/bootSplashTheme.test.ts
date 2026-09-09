@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { bodyContentHeight, bodyHeight, bodySafeAreaTop } from '~/styles/tokens'
 import {
   BOOT_PHASE_READY,
   BOOT_SPLASH_ENTER_MS,
@@ -31,6 +32,27 @@ import {
   setBootShell,
 } from './bootSplashTheme'
 
+/**
+ * The declarations of the rule with this exact selector text.
+ *
+ * The selector must start the rule, so `body` cannot match inside
+ * `html,body{...}`, and a `[data-testid=...]:not(...)` selector needs no
+ * hand-escaping at the call site.
+ */
+function cssRule(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`(?:^|[}\\n])${escaped}\\{([^}]*)\\}`).exec(css)
+  expect(match, `bootSplashDocumentCss states no ${selector} rule`).not.toBeNull()
+  return match![1]!
+}
+
+/** One declared value out of a rule body, or a failure naming the property. */
+function cssValue(rule: string, property: string): string {
+  const match = new RegExp(`(?:^|[;\\s])${property}\\s*:\\s*([^;]+)`).exec(rule)
+  expect(match, `the rule declares no ${property}`).not.toBeNull()
+  return match![1]!.trim()
+}
+
 describe('boot splash palette', () => {
   it('uses Default theme backgrounds that disagree by polarity', () => {
     expect(bootSplashLight.background).not.toBe(bootSplashDark.background)
@@ -54,14 +76,24 @@ describe('bootSplashDocumentCss', () => {
     expect(css).toContain(bootSplashLight.background)
     expect(css).toContain(bootSplashDark.background)
     expect(css).toContain('html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}')
-    expect(css).toContain('padding-top:env(safe-area-inset-top,0px)')
+    // The body's box, from the same two expressions `~/styles/global.css.ts`
+    // states, so the app stylesheet cannot land on a different one.
+    expect(css).toContain(`height:${bodyHeight}`)
+    expect(css).toContain(`padding-top:${bodySafeAreaTop}`)
     expect(css).toContain('position:fixed')
     expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100%}`)
+    // The Solid splash floor is the body's CONTENT box, never the raw
+    // viewport. `100dvh` overflows `#app` by `env(safe-area-inset-top)`, and
+    // the centred column then sits half the inset lower than the static
+    // splash it replaced — 23.5px in the iOS standalone PWA, 0 anywhere the
+    // inset is 0. `186-boot-splash-handoff.spec.ts` measures both trees under
+    // a real inset; this pins the rule that makes them agree.
     expect(css).toContain(
-      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){min-height:100dvh}`,
+      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){min-height:${bodyContentHeight}}`,
     )
-    // Static splash must not pick up the Solid-only 100dvh floor.
-    expect(css).not.toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100dvh}`)
+    expect(css).not.toContain('min-height:100dvh')
+    // Static splash must not pick up the Solid-only viewport floor.
+    expect(css).not.toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:${bodyContentHeight}}`)
     expect(css).toContain(`html[data-theme="dark"]`)
     expect(css).toContain(`[data-testid="${BOOT_SPLASH_TEST_ID}"]`)
     expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}[data-boot-failed]`)
@@ -436,6 +468,40 @@ describe('boot splash lockstep sources', () => {
   it('does not ship a BootSplash.css.ts twin', () => {
     const path = resolve(here, '../components/common/BootSplash.css.ts')
     expect(() => readFileSync(path, 'utf8')).toThrow()
+  })
+
+  // Two stylesheets paint the body: this one until the app bundle lands, and
+  // `~/styles/global.css.ts` afterwards. A literal restated in either file can
+  // disagree with the other, and the disagreement is invisible until
+  // `env(safe-area-inset-top)` is non-zero -- the iOS standalone PWA, where the
+  // page then moves at the handoff. Both read `~/styles/tokens.ts`, and this
+  // fails when one of them stops.
+  it('takes the body box from the same tokens as the app stylesheet', () => {
+    const global = readFileSync(resolve(here, '../styles/global.css.ts'), 'utf8')
+
+    expect(global).toContain('height: bodyHeight')
+    expect(global).toContain('paddingTop: bodySafeAreaTop')
+    expect(global).toContain('from \'~/styles/tokens\'')
+  })
+
+  // The relation the emitted stylesheet must hold, read back out of it rather
+  // than restated: the Solid floor is the body's height MINUS the padding the
+  // body reserves. Asserting `bodyContentHeight` against its own definition
+  // would pass whatever either rule says. This fails when a rule changes and
+  // the other two do not follow.
+  it('derives the Solid splash floor from the body rule it emits', () => {
+    const css = bootSplashDocumentCss()
+    const body = cssRule(css, 'body')
+    const solidSplash = cssRule(
+      css,
+      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID})`,
+    )
+
+    expect(cssValue(solidSplash, 'min-height')).toBe(
+      `calc(${cssValue(body, 'height')} - ${cssValue(body, 'padding-top')})`,
+    )
+    // The static tree needs no viewport length: `#app` already IS that box.
+    expect(cssValue(cssRule(css, `#${BOOT_SPLASH_STATIC_ID}`), 'min-height')).toBe('100%')
   })
 })
 

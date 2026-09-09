@@ -21,7 +21,7 @@ import { DIFF_TINT } from '~/styles/diffTint'
 import { declareAppLayers } from '~/styles/layers'
 import { ALL_VARIANTS, DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
-import { breakpoints } from '~/styles/tokens'
+import { bodyHeight, bodySafeAreaTop, breakpoints } from '~/styles/tokens'
 import { darkVariantSelector, lightVariantSelector } from '~/styles/variantSelectors'
 
 globalFontFace('Hack NF', {
@@ -129,8 +129,12 @@ globalStyle('body', {
   top: 0,
   left: 0,
   width: '100%',
-  height: 'var(--vvh, 100dvh)',
-  paddingTop: 'env(safe-area-inset-top)',
+  // Both from `~/styles/tokens.ts`, because the inline boot stylesheet in
+  // `~/lib/bootSplashTheme.ts` states the same box and derives the splash
+  // floor from it. A literal restated here can disagree with that one, and
+  // the disagreement shows up as the page moving when the bundle lands.
+  height: bodyHeight,
+  paddingTop: bodySafeAreaTop,
   // NO padding-bottom: keep KakaoTalk-style intrusion (composer flush
   // with screen bottom, home-indicator translucently overlaying it).
   boxSizing: 'border-box',

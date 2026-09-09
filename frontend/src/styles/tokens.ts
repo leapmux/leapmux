@@ -18,6 +18,30 @@ export const iconSize = {
 export const headerHeightPx = 34
 export const headerHeight = `${headerHeightPx}px`
 
+// The body's box, stated once for the TWO stylesheets that paint it: the
+// inline boot stylesheet in `~/lib/bootSplashTheme.ts`, which owns the
+// document until the app bundle lands, and `~/styles/global.css.ts`, which
+// owns it afterwards. The two must agree, or the handoff moves the page.
+//
+//   bodyHeight         The region the browser shows. `--vvh` is the
+//                      keyboard-aware height `~/hooks/useVisualViewportInset`
+//                      publishes on `<html>`; `100dvh` answers until then,
+//                      which covers the whole pre-JS window.
+//   bodySafeAreaTop    The band the body reserves for the system status bar.
+//                      Non-zero in the iOS standalone PWA (47px on the iPhone
+//                      the E2E fixture emulates) and 0 in a browser tab, on
+//                      Android and on a desktop — which is why a disagreement
+//                      about it is invisible off that one platform.
+//   bodyContentHeight  The body's CONTENT box, because the body pairs the
+//                      padding above with `box-sizing: border-box`. `#app`
+//                      fills exactly this. A box that states `100dvh` instead
+//                      is TALLER than `#app` by the inset: `#app` clips the
+//                      overflow at the bottom, and a centred column inside it
+//                      sits half the inset too low.
+export const bodyHeight = 'var(--vvh, 100dvh)'
+export const bodySafeAreaTop = 'env(safe-area-inset-top,0px)'
+export const bodyContentHeight = `calc(${bodyHeight} - ${bodySafeAreaTop})`
+
 // Motion durations in milliseconds. Use `motion.X` in JS (timers,
 // tests) and `${motion.X}ms` in vanilla-extract CSS template strings,
 // so the JS timeout and the CSS animation can never drift apart.

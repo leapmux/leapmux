@@ -16,7 +16,28 @@ import {
   bootSplashDocumentCss,
 } from '../../src/lib/bootSplashTheme'
 import { expect, test } from './fixtures'
+import { applySimulatedSafeArea, IPHONE_PORTRAIT, ZERO_INSETS } from './helpers/safeArea'
 import { appMenuTrigger, loginViaToken } from './helpers/ui'
+
+// Geometry only: a rect, not the artwork. `BootSplashIcon`'s paths are held
+// against `public/icons/leapmux-icon.svg` in the unit suite.
+const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
+
+// Both trees, because the two carry different selectors and different
+// nesting: the static node matches on `#boot-splash` and wraps its children
+// in `.boot-splash-loading`, and Solid's matches on `data-testid` alone.
+// A rule that reaches only one of them is the drift this file exists to stop.
+const TREES: Record<string, string> = {
+  static: `<div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status">
+    <div class="boot-splash-loading">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>
+    <div class="boot-splash-error" hidden>
+      <p data-boot-fail-title>Could not start LeapMux</p>
+      <pre data-boot-fail-detail>Failed to load</pre>
+      <button type="button" data-boot-reload>Reload</button>
+    </div>
+  </div>`,
+  solid: `<div data-testid="${BOOT_SPLASH_TEST_ID}" role="status">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>`,
+}
 
 // The app stylesheet the splash must survive, read from the exact artifact
 // `src/app.tsx` imports. Shared by the geometry describes below.
@@ -89,26 +110,6 @@ test.describe('static boot splash handoff', () => {
  * shipped markup and adds the shipped oat sheet, which is the whole transition.
  */
 test.describe('boot splash layout across the app stylesheet', () => {
-  // Geometry only: a rect, not the artwork. `BootSplashIcon`'s paths are held
-  // against `public/icons/leapmux-icon.svg` in the unit suite.
-  const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
-
-  // Both trees, because the two carry different selectors and different
-  // nesting: the static node matches on `#boot-splash` and wraps its children
-  // in `.boot-splash-loading`, and Solid's matches on `data-testid` alone.
-  // A rule that reaches only one of them is the drift this file exists to stop.
-  const TREES: Record<string, string> = {
-    static: `<div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status">
-      <div class="boot-splash-loading">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>
-      <div class="boot-splash-error" hidden>
-        <p data-boot-fail-title>Could not start LeapMux</p>
-        <pre data-boot-fail-detail>Failed to load</pre>
-        <button type="button" data-boot-reload>Reload</button>
-      </div>
-    </div>`,
-    solid: `<div data-testid="${BOOT_SPLASH_TEST_ID}" role="status">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>`,
-  }
-
   interface Geometry {
     /** Icon bottom to text-box top: the flex gap, and what visibly grew. */
     gap: number
@@ -184,6 +185,159 @@ test.describe('boot splash layout across the app stylesheet', () => {
     await page.addStyleTag({ content: oatCss })
     expect(await read()).toEqual(beforeAppCss)
     expect(beforeAppCss.detail.h).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * The two trees must occupy the same box under a safe-area inset.
+ *
+ * The body reserves `env(safe-area-inset-top)` as padding under
+ * `box-sizing: border-box`, so `#app` is the viewport MINUS that inset. The
+ * static splash says `min-height: 100%` and lands on it. The Solid splash
+ * cannot count on a definite-height ancestor, so it states a viewport length —
+ * and a bare `100dvh` there is the inset too tall: `#app` clips the overflow at
+ * the bottom, and the flex-centred column sits half the inset too low. The
+ * client entry swaps one tree for the other right after `mount()`, so the logo
+ * and the label dropped 23.5px the moment the bundle finished loading.
+ *
+ * The inset is 0 in a browser tab and on Android, which is why the whole class
+ * is invisible outside the iOS standalone PWA, and why the describes above —
+ * which measure each tree against ITSELF — could not catch it. These compare
+ * the two trees against EACH OTHER, with the inset switched on.
+ *
+ * No server: the shipped stylesheet against the shipped markup, plus the
+ * shipped oat sheet, which is the whole transition.
+ */
+test.describe('boot splash geometry under a safe-area inset', () => {
+  // Phone-sized, so the numbers below read like the device this affects.
+  const VIEWPORT = { width: 390, height: 844 }
+
+  interface Box {
+    /** Where the column starts. The value that moved. */
+    iconTop: number
+    /** The splash's own box. It must equal `#app`, never exceed it. */
+    splashHeight: number
+    /** The body's content box, which the safe-area padding shortens. */
+    appHeight: number
+  }
+
+  /**
+   * `wrapper` is the ancestor between `#app` and the splash:
+   *   'none'         the served document's static splash, a direct child.
+   *   'height-full'  the Solid splash as `app.tsx` renders it, inside
+   *                  `heightFull`.
+   *   'overlay'      as `AppShell` renders it: absolute, `inset: 0`, over the
+   *                  shell it holds back until the tabs land.
+   *   'auto'         no definite height anywhere above the splash — the case
+   *                  the viewport floor exists for, where a percentage would
+   *                  resolve to auto and collapse the splash to its content.
+   *
+   * `vvh` publishes the custom property `~/hooks/useVisualViewportInset` sets
+   * while the soft keyboard is up, which shortens the body.
+   */
+  interface Options {
+    insetTop: number
+    wrapper: 'none' | 'height-full' | 'overlay' | 'auto'
+    withAppStylesheet: boolean
+    vvh?: string
+  }
+
+  async function measure(page: Page, markup: string, opts: Options): Promise<Box> {
+    await page.setViewportSize(VIEWPORT)
+    await applySimulatedSafeArea(page, { ...ZERO_INSETS, top: opts.insetTop })
+    const wrappers: Record<Options['wrapper'], string> = {
+      'none': markup,
+      'height-full': `<div style="height:100%">${markup}</div>`,
+      'overlay': `<div style="position:relative;height:100%"><div style="position:absolute;inset:0">${markup}</div></div>`,
+      'auto': `<div>${markup}</div>`,
+    }
+    const vvh = opts.vvh ? `<style>html{--vvh:${opts.vvh}}</style>` : ''
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style>${vvh}<div id="app">${wrappers[opts.wrapper]}</div>`)
+    if (opts.withAppStylesheet)
+      await page.addStyleTag({ content: oatCss })
+
+    return page.evaluate(() => {
+      const round = (n: number) => Math.round(n * 100) / 100
+      const splash = document.querySelector('[data-testid="boot-splash"]')!
+      return {
+        iconTop: round(splash.querySelector('svg')!.getBoundingClientRect().top),
+        splashHeight: round(splash.getBoundingClientRect().height),
+        appHeight: round(document.getElementById('app')!.getBoundingClientRect().height),
+      }
+    })
+  }
+
+  for (const withAppStylesheet of [false, true]) {
+    const when = withAppStylesheet ? 'with the app stylesheet' : 'before the app stylesheet'
+
+    // `IPHONE_PORTRAIT.top` is the iOS standalone PWA, and the bug scaled with
+    // it: the column moved by exactly half the inset. 0 is a browser tab,
+    // Android and the desktop, and it is here so a fix that merely subtracts a
+    // constant fails the zero case.
+    for (const insetTop of [0, IPHONE_PORTRAIT.top]) {
+      test(`the handoff holds the column still under a ${insetTop}px top inset, ${when}`, async ({ page }) => {
+        const staticTree = await measure(page, TREES.static!, { insetTop, wrapper: 'none', withAppStylesheet })
+        const solidTree = await measure(page, TREES.solid!, { insetTop, wrapper: 'height-full', withAppStylesheet })
+
+        // The regression: the static node leaves and the Solid one arrives in
+        // the same paint, so any difference here is a visible jump.
+        expect(solidTree.iconTop - staticTree.iconTop, 'the column must not move at the handoff').toBe(0)
+        expect(solidTree).toEqual(staticTree)
+
+        // Not two identical wrong answers: the body must have reserved the
+        // inset, and neither tree may exceed the box that reservation leaves.
+        expect(staticTree.appHeight).toBe(VIEWPORT.height - insetTop)
+        expect(staticTree.splashHeight).toBe(staticTree.appHeight)
+        expect(solidTree.splashHeight).toBe(solidTree.appHeight)
+        expect(staticTree.iconTop).toBeGreaterThanOrEqual(insetTop)
+      })
+    }
+  }
+
+  // Why the Solid rule states a viewport length rather than `100%`: percentages
+  // resolve against nothing here, and the splash would shrink to its content —
+  // an unpainted band under a 64px logo instead of a full-screen splash.
+  test('the Solid splash fills the content box with no definite-height ancestor', async ({ page }) => {
+    const box = await measure(page, TREES.solid!, {
+      insetTop: IPHONE_PORTRAIT.top,
+      wrapper: 'auto',
+      withAppStylesheet: true,
+    })
+
+    expect(box.appHeight).toBe(VIEWPORT.height - IPHONE_PORTRAIT.top)
+    expect(box.splashHeight).toBe(box.appHeight)
+  })
+
+  // The third nesting the same rule has to serve, and the one that outlives the
+  // handoff: AppShell keeps this splash over the shell until the workspaces and
+  // the tabs land, so a floor that overflows here moves the column for the
+  // whole shell wait, not just for one paint.
+  test('the AppShell overlay puts the column where the static splash had it', async ({ page }) => {
+    const opts = { insetTop: IPHONE_PORTRAIT.top, withAppStylesheet: true } as const
+    const staticTree = await measure(page, TREES.static!, { ...opts, wrapper: 'none' })
+    const overlay = await measure(page, TREES.solid!, { ...opts, wrapper: 'overlay' })
+
+    expect(overlay.iconTop).toBe(staticTree.iconTop)
+    expect(overlay.splashHeight).toBe(VIEWPORT.height - IPHONE_PORTRAIT.top)
+  })
+
+  // The floor reads `var(--vvh, 100dvh)` — the SAME expression as the body
+  // height — so a soft keyboard that shortens the body shortens the splash with
+  // it. A bare `100dvh` floor would keep the splash at full height behind the
+  // keyboard and push the column down again, this time by half the keyboard.
+  test('both trees follow --vvh when the soft keyboard shortens the body', async ({ page }) => {
+    const opts = { insetTop: IPHONE_PORTRAIT.top, withAppStylesheet: true, vvh: '500px' } as const
+    const staticTree = await measure(page, TREES.static!, { ...opts, wrapper: 'none' })
+    const solidTree = await measure(page, TREES.solid!, { ...opts, wrapper: 'height-full' })
+
+    // 500px of visible region, less the status bar the body still reserves.
+    const content = 500 - IPHONE_PORTRAIT.top
+    expect(staticTree.appHeight).toBe(content)
+    expect(staticTree.splashHeight).toBe(content)
+    expect(solidTree.splashHeight).toBe(content)
+    expect(solidTree.iconTop).toBe(staticTree.iconTop)
+    // Not the no-keyboard answer by accident: the body really did shrink.
+    expect(content).toBeLessThan(VIEWPORT.height - IPHONE_PORTRAIT.top)
   })
 })
 

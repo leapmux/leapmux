@@ -1,15 +1,19 @@
+import type { SafeInsets } from './helpers/safeArea'
 import { expect, test } from './fixtures'
+import {
+  applySimulatedSafeArea,
+  IPHONE_LANDSCAPE_NOTCH_RIGHT,
+  IPHONE_PORTRAIT,
+  ZERO_INSETS,
+} from './helpers/safeArea'
 import { openSettingsAt } from './helpers/ui'
 
 /**
  * Runtime geometry for modal safe-area insets.
  *
- * Desktop Chromium reports `env(safe-area-inset-*)` as 0 by default. These
- * specs inject real device insets via the experimental CDP command
- * `Emulation.setSafeAreaInsetsOverride`, which overrides Blink's CSS
- * environment variables (the same `env()` path production uses) — not a
- * custom-property shim. Chromium-only; this suite's Playwright project is
- * chromium. No screenshots — bounding boxes only.
+ * Desktop Chromium reports `env(safe-area-inset-*)` as 0 by default, so these
+ * specs inject real device insets through `helpers/safeArea.ts`. No
+ * screenshots — bounding boxes only.
  *
  * Coverage:
  *   - Portrait (standard): status bar + home indicator (top/bottom).
@@ -23,62 +27,6 @@ import { openSettingsAt } from './helpers/ui'
  *     when safe-area insets are 0 (SAFE_MAX_WIDTH_STANDARD must not become
  *     a bare 100dvw).
  */
-
-interface SafeInsets {
-  top: number
-  right: number
-  bottom: number
-  left: number
-}
-
-/** iPhone 14 Pro portrait — Dynamic Island + home indicator. */
-const IPHONE_PORTRAIT: SafeInsets = {
-  top: 47,
-  right: 0,
-  bottom: 34,
-  left: 0,
-}
-
-/**
- * iPhone 14 Pro landscape with the notch on the RIGHT.
- * CSS width 844 ≥ breakpoints.sm, so this also exercises the desktop-band
- * dialog path (not the phone full-bleed rules) with non-zero horizontal insets.
- */
-const IPHONE_LANDSCAPE_NOTCH_RIGHT: SafeInsets = {
-  top: 0,
-  right: 59,
-  bottom: 21,
-  left: 59,
-}
-
-const ZERO_INSETS: SafeInsets = {
-  top: 0,
-  right: 0,
-  bottom: 0,
-  left: 0,
-}
-
-/**
- * Inject real `env(safe-area-inset-*)` values through CDP.
- *
- * Pass every edge, including 0: an omitted key makes that variable undefined
- * even if a previous override set it
- * (https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setSafeAreaInsetsOverride).
- */
-async function applySimulatedSafeArea(
-  page: import('@playwright/test').Page,
-  insets: SafeInsets,
-) {
-  const session = await page.context().newCDPSession(page)
-  await session.send('Emulation.setSafeAreaInsetsOverride', {
-    insets: {
-      top: insets.top,
-      right: insets.right,
-      bottom: insets.bottom,
-      left: insets.left,
-    },
-  })
-}
 
 /**
  * Open New Workspace.

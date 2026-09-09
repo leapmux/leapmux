@@ -9,6 +9,7 @@
  */
 import { paletteColorToHex, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
+import { bodyContentHeight, bodyHeight, bodySafeAreaTop } from '~/styles/tokens'
 
 function hex(polarity: 'light' | 'dark', token: '--background' | '--foreground'): string {
   return paletteColorToHex(resolveVariant(defaultTheme, undefined, polarity).palette[token]!)
@@ -284,6 +285,8 @@ function bootProgressPhaseCss(): string {
  * padding, `#app` fill) so first paint already uses the geometry that lands
  * when the app stylesheet loads. Without that lockstep the flex-centered
  * splash jumped down when `padding-top: env(safe-area-inset-top)` arrived.
+ * The height and the inset are one expression each, in `~/styles/tokens.ts`,
+ * so neither stylesheet can restate the box a different way.
  *
  * Being unlayered buys this stylesheet nothing on a property it does not
  * DECLARE. An unlayered declaration outranks a layered one, so oat cannot take
@@ -304,12 +307,19 @@ function bootProgressPhaseCss(): string {
  * source for a colour the themes own. Where a literal must match oat,
  * `bootSplashTheme.test.ts` reads oat's own stylesheet and compares.
  *
- * Sizing is split on purpose:
- * - `#boot-splash` fills `#app` (`min-height: 100%`) and must not use
- *   `100dvh`, or safe-area padding on body re-centers it downward.
- * - `[data-testid]:not(#boot-splash)` (Solid Suspense/AuthGuard) also sets
- *   `min-height: 100dvh` so a missing definite-height ancestor cannot collapse
- *   it to content size. The `:not(#id)` keeps the static node on `%` only.
+ * Sizing is split on purpose, and both branches resolve to the SAME box:
+ * - `#boot-splash` is a child of `#app`, so `min-height: 100%` already states
+ *   the body's content box.
+ * - `[data-testid]:not(#boot-splash)` (Solid Suspense/AuthGuard, and AppShell's
+ *   overlay) cannot count on a definite-height ancestor, so it states a
+ *   viewport length instead — `bodyContentHeight`, which is the same box
+ *   written the long way. A bare `100dvh` there is the bug this split exists
+ *   to prevent: the body reserves `env(safe-area-inset-top)` under
+ *   `box-sizing: border-box`, so `100dvh` overflows `#app` by the inset, `#app`
+ *   clips the bottom, and the centred column lands half the inset too low.
+ *   It measured 0px off in a browser tab and on Android, where the inset is 0,
+ *   and 23.5px off in the iOS standalone PWA, where it is 47px — so the static
+ *   splash and the Solid one that replaced it did not line up.
  *
  * It also owns `color-scheme` for the PRE-HYDRATION WINDOW ONLY, which is why
  * `bootThemeScript` may not write one inline. Two properties make that exact:
@@ -357,8 +367,8 @@ html[data-theme="dark"],html[data-theme="dark"] body{background:${darkBg}}
 html[data-theme="light"]:not([data-ui-theme]){color-scheme:light}
 html[data-theme="dark"]:not([data-ui-theme]){color-scheme:dark}
 body{
-  position:fixed;top:0;left:0;width:100%;height:100dvh;
-  padding-top:env(safe-area-inset-top,0px);box-sizing:border-box;
+  position:fixed;top:0;left:0;width:100%;height:${bodyHeight};
+  padding-top:${bodySafeAreaTop};box-sizing:border-box;
 }
 #${id},[data-testid="${testId}"]{
   --space-4:${BOOT_SPLASH_SPACE_4};
@@ -381,7 +391,7 @@ body{
 html[${BOOT_SPLASH_PHASE_ATTRIBUTE}]:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}="initializing"]) [data-testid="${testId}"]:not(#${id}){animation:none}
 @keyframes boot-splash-enter{from{opacity:0}to{opacity:1}}
 #${id}{min-height:100%}
-[data-testid="${testId}"]:not(#${id}){min-height:100dvh}
+[data-testid="${testId}"]:not(#${id}){min-height:${bodyContentHeight}}
 @media (prefers-color-scheme: dark){
   #${id},[data-testid="${testId}"]{
     --boot-splash-lo:${darkLo};
