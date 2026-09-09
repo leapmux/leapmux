@@ -55,9 +55,9 @@ export interface ComposerStatusBarProps {
    * A FUNCTION, not a rendered element. Solid turns a JSX prop VALUE into a
    * getter, so an element built inside one is discarded and rebuilt whenever the
    * getter's dependencies change — and the panel's `agent` prop takes a new
-   * identity on every tab update, several times per streaming turn. The insert
+   * identity on every tab update, several times per active turn. The insert
    * effect would then swap the live node, disposing the popover the user is
-   * reading mid-stream. A stable function reference cannot churn: `Show`'s
+   * reading. A stable function reference cannot churn: `Show`'s
    * truthiness memo below absorbs everything except an actual appear/disappear.
    */
   infoTrigger?: () => JSX.Element

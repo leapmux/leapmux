@@ -774,10 +774,68 @@ func TestHandleACPOutput_NilResultPersistsInterruptedToolOutput(t *testing.T) {
 	assert.JSONEq(t, `{
 		"sessionUpdate":"tool_call_update",
 		"toolCallId":"tc-1",
+		"title":"command",
+		"kind":"execute",
 		"status":"in_progress",
 		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}],
 		"_leapmux":{"completion":"interrupted"}
 	}`, string(result.Content))
+}
+
+func TestHandleACPOutput_NilResultClosesAToolWithoutAnUpdate(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending","rawInput":{"command":"printf partial"}}}}`))
+	agent.handleACPPromptResponse(nil)
+
+	require.Len(t, sink.Messages(), 2)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.Equal(t, "tc-1", result.SpanID)
+	assert.JSONEq(t, `{
+		"sessionUpdate":"tool_call_update",
+		"toolCallId":"tc-1",
+		"title":"command",
+		"kind":"execute",
+		"status":"in_progress",
+		"rawInput":{"command":"printf partial"},
+		"_leapmux":{"completion":"interrupted"}
+	}`, string(result.Content))
+}
+
+func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
+
+	require.Len(t, sink.Messages(), 3)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.Contains(t, string(result.Content), `"completion":"error"`)
+	assert.True(t, sink.Messages()[2].TurnEnd)
+}
+
+func TestHandleACPOutput_FinalToolCallClosesItsEarlierSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+	pending := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`)
+	completed := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"completed"}}}`)
+	agent.HandleOutput(pending)
+	agent.HandleOutput(completed)
+
+	assert.Equal(t, []string{"tc-1"}, sink.ClosedSpans())
+	assert.Equal(t, 1, agent.turnToolUses)
+	agent.handleACPPromptResponse(nil)
+	require.Len(t, sink.Messages(), 2, "the final tool call must remove incomplete state")
 }
 
 // persistedACPAssistantText returns the text of the single persisted

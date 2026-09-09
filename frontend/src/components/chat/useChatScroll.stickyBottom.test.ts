@@ -41,8 +41,7 @@ describe('usechatscroll auto-scroll signature', () => {
           // Simulate the inline AgentStartupBanner appearing: scrollHeight
           // grows because the banner is rendered after the message list.
           // The auto-scroll effect must re-run because agentStatus changed,
-          // even though messages.length / messageVersion / streamingText did
-          // not.
+          // even though messages.length and messageVersion did not.
           div.setScrollHeight(1100)
           setAgentStatus(AgentStatus.STARTING)
           await Promise.resolve()

@@ -493,8 +493,8 @@ type zcodeToolUpdated struct {
 	InputOmitted bool            `json:"inputOmitted"`
 	InputRef     string          `json:"inputRef"`
 
-	// progress. OutputBytes is the COMBINED total; the two per-stream counters are what
-	// the tails are measured against, because each tail holds one stream only.
+	// progress. OutputBytes is the combined native total. The per-stream totals
+	// supply the fallback when a provider omits it.
 	OutputBytes int64  `json:"outputBytes"`
 	StdoutBytes int64  `json:"stdoutBytes"`
 	StderrBytes int64  `json:"stderrBytes"`

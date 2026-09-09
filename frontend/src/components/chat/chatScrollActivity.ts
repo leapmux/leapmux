@@ -10,7 +10,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
 // different windows AND different event sets, which is why it is a unit rather than two
 // near-identical setTimeout debounces inline:
 //   - the syntax-highlight pause (short window) takes EVERY scroll, our own programmatic
-//     writes included -- a streaming stick-to-bottom is exactly when the highlighter and the
+//     writes included -- frequent stick-to-bottom writes are when the highlighter and the
 //     premeasure warm-up must stay out of the way.
 //   - the floating scroll rail (long window) takes USER INPUT only. A rail that lit up for
 //     our own scrollTop writes would stay lit for a whole streaming response, which defeats
@@ -20,7 +20,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
 // window ONLY within `momentumGraceMs` of the last `noteInput`. That is the momentum latch:
 // after a touch flick no touch or pointer event fires while the content coasts -- only
 // `scroll` -- so without it the rail would fade mid-fling. Measuring the grace from the last
-// INPUT, and never letting `noteScroll` re-base it, is what stops a streaming turn's
+// INPUT, and never letting `noteScroll` re-base it, stops an active turn's
 // continuous programmatic writes from holding the window open forever.
 //
 // `now` is injected for determinism (mirroring createScrollVelocity); the idle timer is a

@@ -234,8 +234,10 @@ func (a *CodexAgent) childSinkForItem(itemID string) OutputSink {
 // condensed summary stream and/or the raw reasoning stream, both under one
 // itemId; observeReasoningText counts only the first-seen kind per item.
 const (
-	codexReasoningKindSummary = "summary"
-	codexReasoningKindRaw     = "raw"
+	codexReasoningKindSummary   = "summary"
+	codexReasoningKindRaw       = "raw"
+	codexAssistantFallbackScope = "codex:assistant"
+	codexPlanFallbackScope      = "codex:plan"
 )
 
 type codexIncompleteTool struct {
@@ -298,7 +300,7 @@ func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
 		if delta.ItemID == "" {
-			delta.ItemID = "codex:assistant"
+			delta.ItemID = codexAssistantFallbackScope
 		}
 		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindText)
 	}
@@ -313,7 +315,7 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
 		if delta.ItemID == "" {
-			delta.ItemID = "codex:plan"
+			delta.ItemID = codexPlanFallbackScope
 		}
 		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindPlan)
 	}
@@ -473,7 +475,7 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 	delete(a.incompleteTools, itemID)
 	a.mu.Unlock()
 	if a.isMainThreadID(threadID) {
-		_, _, _ = a.generationBuffer.Finish(itemID, MessageCompletionComplete)
+		discardCompletedCodexGeneration(&a.generationBuffer, itemType, itemID)
 	}
 
 	// subAgentActivity (v2) is registry-only: never persist. Consume it here
@@ -1312,12 +1314,22 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 		a.mu.Unlock()
 	}
 	childSink := a.sink.ChildSink(childID)
-	_, _, _ = a.childGenerationBuffer(childID).Finish(itemID, MessageCompletionComplete)
+	discardCompletedCodexGeneration(a.childGenerationBuffer(childID), itemType, itemID)
 	if itemType == "reasoning" {
 		a.persistCompletedReasoningItem(childSink, params, itemID, childID)
 		return
 	}
 	persistSharedItemCompleted(childSink, params, itemType, itemID, childID)
+}
+
+func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID string) {
+	buffer.Discard(itemID)
+	switch itemType {
+	case "agentMessage":
+		buffer.Discard(codexAssistantFallbackScope)
+	case "plan":
+		buffer.Discard(codexPlanFallbackScope)
+	}
 }
 
 // persistSharedItemStarted applies item starts that share parent and child behavior.

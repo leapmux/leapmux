@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageCategory } from './messageClassification'
 import type { MessageRenderCache } from './messageRenderCache'
-import type { MessageUiWriteOptions, RenderContext } from './messageRenderers'
+import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -161,7 +161,7 @@ export interface MessageBubbleHost {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
   /** Debug: this row's measured DOM height, for the raw-JSON surface. */
   getHeightDebug?: () => { measured?: number }
   /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */
@@ -484,8 +484,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
     // injected buttons). A one-shot injection raced that swap -- inject before it and the
     // button is wiped; after it and the button lands -- so a code block "sometimes" had no
-    // copy button. Observing contentRef re-injects after the swap (and after streaming
-    // re-renders / expand-collapse) regardless of timing.
+    // copy button. Observing contentRef re-injects after the swap and after an
+    // expand-collapse change, regardless of timing.
     //
     // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
     // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on

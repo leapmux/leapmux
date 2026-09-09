@@ -786,7 +786,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * sticky band. Used to gate RE-ENGAGING tail-follow from an anchored (scrolled-up)
    * state: a small downward scroll toward a freshly-trimmed, now-shorter bottom must
    * not snap to the live tail. Staying sticky while ALREADY following keeps using the
-   * looser isAtBottom, so a sub-pixel gap mid-stream can't drop the follow.
+   * looser isAtBottom, so a sub-pixel gap during a turn cannot drop the follow.
    */
   const isAtClampedBottom = () =>
     !!messageListRef && distFromBottom(messageListRef) <= REPIN_MIN_DELTA_PX

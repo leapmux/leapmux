@@ -979,6 +979,19 @@ func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
 	assert.Equal(t, int64(230), sink.LastSessionInfo()["thinking_tokens"])
 }
 
+func TestClaudeWaitClearsNativeProgress(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.processDone = make(chan struct{})
+	close(agent.processDone)
+	sink.ReportProgress(NativeTokenProgress("claude:thinking", 42))
+
+	require.NoError(t, agent.Wait())
+	assert.Equal(t, ProgressSnapshot{}, sink.progressCount.Snapshot())
+}
+
 func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
 	t.Parallel()
 

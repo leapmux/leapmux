@@ -1177,6 +1177,28 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	}`, string(result.Content))
 }
 
+func TestHandleCodexOutput_CompletedItemDiscardsTheIdlessDeltaFallback(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","delta":"complete answer"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"message-1","text":"complete answer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[]}}}`)))
+
+	assembledRows := 0
+	for _, message := range sink.Messages() {
+		var value struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(message.Content, &value) == nil && value.Type == contracts.AssembledMessageType {
+			assembledRows++
+		}
+	}
+	assert.Zero(t, assembledRows, "the completed provider item must remain the only assistant row")
+}
+
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
 	t.Parallel()
 

@@ -73,7 +73,7 @@ export const RAIL_VISIBLE_IDLE_MS = 1200
  * the reader's own momentum rather than our stick-to-bottom echoing back (see
  * `onMomentumScroll`). This bound is the belt to that classifier's braces:
  * echo detection can miss when the browser delivers an echo after the guard's
- * marker expires, and without a cap one missed echo during a streaming turn
+ * marker expires, and without a cap one missed echo during an active turn
  * would relight the rail commit after commit. Measured from the last INPUT and
  * never re-based by a scroll, so a turn with no reader input can never reach
  * it at all.
@@ -528,7 +528,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // shared function called twice with two height sources (the rail formerly read its own
   // padding-box clientHeight) could hide both bars over content overflowing by the container's
   // vertical padding. railRowSeqs is memoized on the item list so the O(n) row-seq scan reruns
-  // only when rows change -- not on every scroll frame or streaming-height commit.
+  // only when rows change, and not on every scroll or footer-height commit.
   //
   // Gate the scan on a STABLE presence boolean, NOT props.rail's object reference: the host
   // rebuilds the rail prop object on every marks / live-tail / window change (TileRenderer's
@@ -603,11 +603,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Two scroll-activity windows over the SAME gesture stream, differing in length AND in
   // which events feed them (see createScrollActivity):
   //   - highlightActivity takes EVERY scroll, our own programmatic writes included -- a
-  //     streaming stick-to-bottom is exactly when the highlighter and the premeasure
+  //     frequent stick-to-bottom writes are exactly when the highlighter and premeasure
   //     warm-up must stay out of the way.
   //   - railActivity takes MOVEMENT only: a scroll input that actually moved, plus the
   //     scrolls the hook classifies as the reader's own momentum. A rail lit by our own
-  //     scrollTop writes would stay lit for a whole streaming response, defeating its
+  //     scrollTop writes would stay lit for a whole response, defeating its
   //     auto-hide when it matters most, and one lit by a bare press put a scrollbar on
   //     screen every time the reader touched the transcript.
   const highlightActivity = createScrollActivity({ idleMs: SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS })
@@ -636,18 +636,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // Armed ONLY when the write will actually CHANGE state (mirroring the store's own
     // setIfChanged dedupe): a same-value write causes no resize, so arming would leave a
     // stale hold with nothing to release it until the next geometry commit yanks the
-    // viewport back to the toggle-time line. And only for USER gestures: a programmatic
-    // write (opts.programmatic -- e.g. a stream-start auto-expand re-asserted per chunk)
-    // is not the reader's focus, so the default midpoint anchor -- which keeps what they
-    // are READING stationary -- must win over pinning the written row.
+    // viewport back to the toggle-time line.
     onSetLocalDiffView: (view) => {
       if (getLocalDiffView(entry.msg.id) !== view)
         anchorRowForResize(entry.msg.id)
       setLocalDiffView(entry.msg.id, view)
     },
     getMessageUiState: key => getMessageUiBool(entry.msg.id, key),
-    setMessageUiState: (key, value, opts) => {
-      if (!opts?.programmatic && getMessageUiBool(entry.msg.id, key) !== value)
+    setMessageUiState: (key, value) => {
+      if (getMessageUiBool(entry.msg.id, key) !== value)
         anchorRowForResize(entry.msg.id)
       setMessageUiBool(entry.msg.id, key, value)
     },
@@ -658,8 +655,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     rowOffscreen: () => !isRowNearViewport(entry.msg.id),
   })
 
-  // Derived lookups over the visible window, shared by the premeasure facade, the
-  // streaming-tail machine, and the hide-until-measured logic below.
+  // Derived lookups over the visible window, shared by the premeasure facade
+  // and the hide-until-measured logic below.
   const visibleEntryById = createMemo(() => {
     const result = new Map<string, ClassifiedEntry>()
     for (const entry of visibleEntries())
@@ -670,7 +667,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // rows, fed into the coherence queue that de-dupes / collapses / settles them (see
   // createChatPremeasureBands). ChatView renders ChatHiddenPremeasure from
   // premeasureCandidates and hides in-range unmeasured rows via collapsedPremeasureIds.
-  // The warm-up enable policy stays here (it reads ChatView-level scroll/stream state):
+  // The warm-up enable policy stays here because it reads ChatView scroll state:
   // while the pane is visible, sized, and quiet. syntaxHighlightingPaused doubles as the
   // "scroll recently active" gate -- see highlightActivity (createScrollActivity), which
   // opens on EVERY scroll and closes after its idle window.
@@ -890,7 +887,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   const scrollHandlers = {
     // The one asymmetric handler. A `scroll` event alone is NOT user intent -- the
-    // stick-to-bottom writes scrollTop on every streaming commit. The highlight pause
+    // stick-to-bottom writes scrollTop for footer and row commits. The highlight pause
     // WANTS those (that churn is exactly when highlighting and the premeasure warm-up must
     // not run), so it keeps taking noteInput. The RAIL takes none of them here: it
     // relights from `onMomentumScroll` below, which fires only for the scrolls the
@@ -1238,7 +1235,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       }}
                     />
                     {/*
-                    The startup banner is tail-anchored like the streaming/thinking
+                    The startup banner is tail-anchored like the progress
                     UI above: while windowed away from the live tail (hasNewerMessages)
                     the in-memory bottom isn't the real bottom, so it stays gated --
                     otherwise a STARTING restart would paint the banner mid-history.
@@ -1312,7 +1309,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               hidden={railOwner() !== 'rail'}
               // Paint-only auto-hide; never an unmount (see the rail's scrollActive prop).
               // Driven by railActivity, which takes user input plus a momentum-gated scroll, so
-              // a streaming turn's stick-to-bottom writes cannot light it. Every viewport and
+              // an active turn's stick-to-bottom writes cannot light it. Every viewport and
               // pointer fades the idle rail the same way -- only the `pointer-events` half of
               // railIdle is coarse-only -- so there is no JS branch here.
               scrollActive={railActivity.active()}

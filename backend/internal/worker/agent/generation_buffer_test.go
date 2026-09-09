@@ -41,3 +41,17 @@ func TestGenerationBufferFinishesScopesInFirstSeenOrder(t *testing.T) {
 	assert.Equal(t, "first", first["text"])
 	assert.Equal(t, "second", second["text"])
 }
+
+func TestGenerationBufferDiscardsOnlyTheSelectedScope(t *testing.T) {
+	t.Parallel()
+
+	var buffer GenerationBuffer
+	buffer.Append("completed", AssembledMessageKindText, "provider owns this")
+	buffer.Append("retained", AssembledMessageKindReasoning, "worker owns this")
+	buffer.Discard("completed")
+
+	rows, err := buffer.FinishAll(MessageCompletionInterrupted)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Contains(t, string(rows[0]), "worker owns this")
+}

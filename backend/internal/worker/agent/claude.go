@@ -675,6 +675,17 @@ func (r effortResolver) reconcileOmittedLaunch(model, effort string) map[string]
 	return r.reconciledEffortFlags(model, effort, "")
 }
 
+func (a *ClaudeCodeAgent) Stop() {
+	a.processBase.Stop()
+	a.sink.ReportProgress(ResetProgress())
+}
+
+func (a *ClaudeCodeAgent) Wait() error {
+	err := a.processBase.Wait()
+	a.sink.ReportProgress(ResetProgress())
+	return err
+}
+
 // Interrupt aborts the current turn by sending the Claude Code
 // interrupt control_request. This matches the wire format the
 // frontend's buildInterruptRequest produced before the dedicated RPC,

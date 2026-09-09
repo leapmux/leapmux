@@ -146,7 +146,7 @@ export function CommandResultBody(props: {
   )
 
   // Keep the status branch under <Show> so it re-runs when isError or
-  // exitCode changes mid-stream.
+  // exitCode changes.
   return (
     <Show
       when={showStatusHeader()}

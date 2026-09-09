@@ -31,7 +31,7 @@ export interface ThinkingIndicatorProps {
    * Stable identifier (typically the agent id) used to persist the
    * randomly-chosen verb across re-mounts of this component. Without
    * it, every mount picks a fresh verb — so a tile split / make-grid
-   * / close-grid that re-mounts ChatView mid-stream would flip the
+   * / close-grid that re-mounts ChatView during a turn would flip the
    * verb visibly. When supplied, the verb persists across re-mounts
    * during a continuous thinking session and only refreshes on
    * genuine idle→thinking transitions inside a live component (and
@@ -129,7 +129,7 @@ function createFadingValue<T>(
 // radians). Survives ThinkingIndicator re-mounts caused by
 // layout-tree restructures (tile split / make-grid / close-grid) so
 // neither the verb nor the pendulum visibly snaps when the
-// indicator's DOM re-mounts mid-stream.
+// indicator's DOM re-mounts during a turn.
 //
 // Entries are written on mount (when seeding the verb), on
 // invisible→visible transitions inside a live component, on each 60s
@@ -402,7 +402,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
 
   // Initiallly-visible mount path: skip the height-expand animation
   // (it would look like a disappear/reappear when ChatView re-mounts
-  // mid-stream via a tile split), but still tick onExpandTick so the
+  // during a turn via a tile split), but still tick onExpandTick so the
   // parent re-pins to bottom as the indicator's content lays out.
   onMount(() => {
     if (initiallyVisible)

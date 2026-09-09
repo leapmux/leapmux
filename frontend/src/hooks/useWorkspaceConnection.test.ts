@@ -2253,9 +2253,8 @@ describe('wireSessionInfoToUpdates', () => {
 /**
  * The worker-offline sweep walks `view.all()` -- every tab in the ACCOUNT, not
  * one workspace. Both arms must therefore filter on `workerId`: a tab hosted by
- * any other worker still has its transport, and clearing an agent's
- * `streamingText` throws away deltas that are never resent while flipping it
- * INACTIVE hides a thinking indicator for a turn that is still running.
+ * any other worker still has its transport. Flipping that agent to INACTIVE
+ * hides a thinking indicator for a turn that still runs.
  *
  * The agent branch was missing that filter. Before every workspace became live it
  * was a one-workspace bug; the widening made it account-wide.

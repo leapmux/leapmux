@@ -137,9 +137,15 @@ describe('handleAgentSessionInfo running_tool', () => {
   it('never adds the payload to the message window', () => {
     createRoot((dispose) => {
       const s = stores()
-      const msg = sessionInfoMessage({ running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } })
+      const msg = sessionInfoMessage({
+        thinking_tokens: 42,
+        output_bytes: 2048,
+        output_bytes_minimum: true,
+        running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 },
+      })
       handleAgentSessionInfo('a1', parseMessageContent(msg), s)
       expect(s.chatStore.getMessages('a1')).toHaveLength(0)
+      expect(s.chatStore.getMessageVersion('a1')).toBe(0)
       dispose()
     })
   })

@@ -303,9 +303,10 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	// Flush the final segment before the result divider.
 	b.flushThoughtBuffer()
 	b.flushAssistantBuffer()
+	incompleteToolUses := b.persistIncompleteACPTools(MessageCompletionError)
 
 	b.mu.Lock()
-	numToolUses := b.turnToolUses
+	numToolUses := b.turnToolUses + incompleteToolUses
 	b.turnToolUses = 0
 	b.mu.Unlock()
 
@@ -350,12 +351,15 @@ func (b *acpBase) persistIncompleteACPText(kind AssembledMessageKind, text strin
 	}
 }
 
-func (b *acpBase) persistIncompleteACPTools(completion MessageCompletion) {
+func (b *acpBase) persistIncompleteACPTools(completion MessageCompletion) int {
 	b.mu.Lock()
 	toolCallIDs := make([]string, 0, len(b.toolUpdateState))
 	updates := make(map[string][]byte, len(b.toolUpdateState))
 	orders := make(map[string]uint64, len(b.toolUpdateState))
 	for toolCallID, fields := range b.toolUpdateState {
+		if _, present := fields["status"]; !present {
+			fields["status"] = json.RawMessage(`"in_progress"`)
+		}
 		encoded, err := json.Marshal(fields)
 		if err != nil {
 			slog.Warn("marshal incomplete acp tool", "agent_id", b.agentID, "tool_call_id", toolCallID, "error", err)
@@ -400,6 +404,7 @@ func (b *acpBase) persistIncompleteACPTools(completion MessageCompletion) {
 		}
 		b.forgetSpawnSpanReleased(toolCallID)
 	}
+	return len(toolCallIDs)
 }
 
 // acpSessionUpdateHandler is called for session update types not handled by
@@ -1844,17 +1849,32 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		obs = b.subagentFromToolCall(tc)
 	}
 
-	// Tool calls that arrive already final (completed/failed/cancelled)
-	// are persisted as closing spans immediately — no open/close cycle.
+	// Persist a final tool call as a closing row. It closes an earlier pending
+	// call when one exists. A call that first arrives final opens no span.
 	if acpStatusIsFinal(tc.Status) {
+		opened := b.sink.GetSpanType(tc.ToolCallID) != ""
+		b.mu.Lock()
+		b.turnToolUses++
+		b.mu.Unlock()
+		b.forgetIncompleteACPTool(tc.ToolCallID)
+		b.clearCumulativeOutput(tc.ToolCallID)
+		b.sink.ReportProgress(CompleteOutputProgress(tc.ToolCallID))
+		if b.toolOutputComplete != nil {
+			b.toolOutputComplete(tc.ToolCallID)
+		}
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist final acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
+		if opened {
+			b.sink.CloseSpan(tc.ToolCallID)
+		}
+		b.forgetSpawnSpanReleased(tc.ToolCallID)
 		b.applySubagentObservation(obs)
 		return
 	}
+	b.rememberIncompleteACPTool(tc.ToolCallID, update)
 
 	// A subagent spawn owns no span: its output lands in its own child
 	// transcript, so a rail held open for the whole subagent run only pushes
@@ -1864,6 +1884,43 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
 	}
 	b.applySubagentObservation(obs)
+}
+
+func (b *acpBase) rememberIncompleteACPTool(toolCallID string, update json.RawMessage) {
+	var incoming map[string]json.RawMessage
+	if json.Unmarshal(update, &incoming) != nil {
+		return
+	}
+	delete(incoming, "status")
+	incoming["sessionUpdate"] = json.RawMessage(`"tool_call_update"`)
+
+	b.mu.Lock()
+	if b.toolUpdateState == nil {
+		b.toolUpdateState = make(map[string]map[string]json.RawMessage)
+	}
+	state := b.toolUpdateState[toolCallID]
+	if state == nil {
+		state = make(map[string]json.RawMessage, len(incoming))
+		b.toolUpdateState[toolCallID] = state
+		if b.toolUpdateOrder == nil {
+			b.toolUpdateOrder = make(map[string]uint64)
+		}
+		b.toolUpdateOrder[toolCallID] = b.nextToolUpdateOrder
+		b.nextToolUpdateOrder++
+	}
+	for key, value := range incoming {
+		if _, exists := state[key]; !exists {
+			state[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	b.mu.Unlock()
+}
+
+func (b *acpBase) forgetIncompleteACPTool(toolCallID string) {
+	b.mu.Lock()
+	delete(b.toolUpdateState, toolCallID)
+	delete(b.toolUpdateOrder, toolCallID)
+	b.mu.Unlock()
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {

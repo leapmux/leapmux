@@ -49,6 +49,15 @@ func (b *GenerationBuffer) Finish(scopeID string, completion MessageCompletion) 
 	return raw, true, err
 }
 
+func (b *GenerationBuffer) Discard(scopeID string) {
+	if scopeID == "" {
+		return
+	}
+	b.mu.Lock()
+	delete(b.segments, scopeID)
+	b.mu.Unlock()
+}
+
 func (b *GenerationBuffer) FinishAll(completion MessageCompletion) ([][]byte, error) {
 	return b.finishMatching(completion, func(generationSegment) bool { return true })
 }

@@ -15,10 +15,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// piMessageUpdateEnvelope captures the bits of a `message_update` event we
-// need to drive UI streaming. Pi's full envelope contains the entire partial
-// message which is large; we unmarshal lazily into this small shape so the
-// hot delta path is cheap.
+// piMessageUpdateEnvelope captures the fields that model progress needs.
+// Pi's full envelope contains the large partial message, so this small shape
+// keeps delta processing cheap.
 type piMessageUpdateEnvelope struct {
 	AssistantMessageEvent struct {
 		Type         string `json:"type"`
@@ -38,9 +37,8 @@ type piToolExecutionEnvelope struct {
 	Result     json.RawMessage `json:"result"`
 }
 
-// piToolUpdateEnvelope adds the partialResult content blocks consumed when
-// computing the streaming delta for `tool_execution_update`, plus the Details
-// json.RawMessage the pi-subagents extension carries (subagent status/activity).
+// piToolUpdateEnvelope adds the cumulative output and the structured details
+// that the pi-subagents extension carries.
 type piToolUpdateEnvelope struct {
 	ToolCallID    string `json:"toolCallId"`
 	PartialResult struct {
@@ -426,13 +424,7 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	}
 }
 
-// handlePiToolExecutionUpdate ships only the new text added since the
-// previous update. Pi's partialResult is cumulative — broadcasting the
-// raw envelope would let the frontend concatenate the same growing text
-// into one quadratically-bloating buffer. The handler walks content
-// blocks once to compute total length, records it, then walks once more
-// building only the tail bytes — avoiding the O(N) full-string
-// allocation per update that would itself be quadratic over a stream.
+// handlePiToolExecutionUpdate counts Pi's cumulative partial result.
 func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 	var env piToolUpdateEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil || env.ToolCallID == "" {
