@@ -5,8 +5,10 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { classifyMessage } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { input } from './providers/testUtils'
 import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
@@ -244,6 +246,67 @@ describe('renderMessageContent provider resolution', () => {
     const { container } = render(() => result)
     expect(container.textContent).toContain('partial output')
     expect(container.textContent).toContain('Text truncated by interruption.')
+  })
+
+  it('renders retained output and completion markers for each provider shape', () => {
+    const cases: Array<{
+      provider: AgentProvider
+      parsed: Record<string, unknown>
+      output: string
+    }> = [
+      {
+        provider: AgentProvider.CODEX,
+        parsed: {
+          item: {
+            type: 'commandExecution',
+            id: 'command-1',
+            status: 'inProgress',
+            command: 'printf partial',
+            aggregatedOutput: 'partial codex output',
+          },
+          _leapmux: { completion: 'interrupted' },
+        },
+        output: 'partial codex output',
+      },
+      {
+        provider: AgentProvider.PI,
+        parsed: {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-1',
+          toolName: 'bash',
+          args: { command: 'printf partial' },
+          result: { content: [{ type: 'text', text: 'partial pi output' }] },
+          isError: true,
+          _leapmux: { completion: 'error' },
+        },
+        output: 'partial pi output',
+      },
+      {
+        provider: AgentProvider.ZCODE,
+        parsed: {
+          type: 'tool.updated',
+          payload: {
+            kind: 'result',
+            toolCallId: 'tool-1',
+            toolName: 'Bash',
+            result: { success: false, content: 'partial zcode output' },
+          },
+          _leapmux: { completion: 'interrupted' },
+        },
+        output: 'partial zcode output',
+      },
+    ]
+
+    for (const testCase of cases) {
+      const category = classifyMessage(input(testCase.parsed, null, testCase.provider))
+      const { container, unmount } = render(() =>
+        renderMessageContent(testCase.parsed, {
+          getMessageUiState: () => true,
+        }, category, testCase.provider))
+      expect(container.textContent).toContain(testCase.output)
+      expect(container.textContent).toMatch(/Text truncated by (?:an error|interruption)\./)
+      unmount()
+    }
   })
 })
 

@@ -406,6 +406,7 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 // running it on a goroutine instead would race the stopped-check inside
 // sendPiCommand and drop the abort in the common case.
 func (a *PiAgent) Stop() {
+	a.noteIntentionalStop()
 	a.mu.Lock()
 	stopped := a.stopped
 	turnActive := a.currentTurnActive
@@ -424,8 +425,9 @@ func (a *PiAgent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *PiAgent) Wait() error {
 	err := a.processBase.Wait()
-	a.flushPiGeneration(MessageCompletionError)
-	a.persistIncompletePiTools(MessageCompletionError)
+	completion := a.processExitCompletion()
+	a.flushPiGeneration(completion)
+	a.persistIncompletePiTools(completion)
 	a.sink.ReportProgress(ResetProgress())
 	return err
 }

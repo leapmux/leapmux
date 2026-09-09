@@ -1551,6 +1551,7 @@ func (b *acpBase) steerAdvertised(content string, attachments []*leapmuxv1.Attac
 // Stop clears prompt state, tears down host terminals, and terminates the
 // agent process.
 func (b *acpBase) Stop() {
+	b.noteIntentionalStop()
 	b.clearActivePrompt()
 	b.releaseAllTerminals()
 	b.processBase.Stop()
@@ -1563,7 +1564,7 @@ func (b *acpBase) Stop() {
 func (b *acpBase) Wait() error {
 	err := b.processBase.Wait()
 	b.releaseAllTerminals()
-	b.finishIncompleteACPPrompt(MessageCompletionError)
+	b.finishIncompleteACPPrompt(b.processExitCompletion())
 	return err
 }
 

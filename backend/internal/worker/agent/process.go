@@ -40,6 +40,9 @@ type processBase struct {
 
 	mu      sync.Mutex
 	stopped bool
+	// intentionalStop is set before a provider sends its graceful stop request.
+	// Wait can then classify retained content while Stop still owns that request.
+	intentionalStop atomic.Bool
 
 	// turnSeqSource issues the ordering token that rides every publish of this
 	// provider's turn flag. It lives here so all five providers get it from one
@@ -146,6 +149,7 @@ func (p *processBase) SendRawInput(data []byte) error {
 // (kills orphaned grandchildren too), then via context cancellation as a
 // fallback (SIGTERM + WaitDelay).
 func (p *processBase) Stop() {
+	p.noteIntentionalStop()
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
@@ -174,6 +178,17 @@ func (p *processBase) IsStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stopped
+}
+
+func (p *processBase) processExitCompletion() MessageCompletion {
+	if p.intentionalStop.Load() || p.IsStopped() {
+		return MessageCompletionInterrupted
+	}
+	return MessageCompletionError
+}
+
+func (p *processBase) noteIntentionalStop() {
+	p.intentionalStop.Store(true)
 }
 
 // Interrupt is a default no-op implementation. Providers that have a

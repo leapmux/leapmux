@@ -665,6 +665,7 @@ func (a *zcodeAgent) Interrupt() error {
 // The stop is issued SYNCHRONOUSLY before processBase.Stop sets stopped and closes
 // stdin: on a goroutine it would race that flag and be dropped in the common case.
 func (a *zcodeAgent) Stop() {
+	a.noteIntentionalStop()
 	a.mu.Lock()
 	stopped, turnActive, sessionID := a.stopped, a.turnActive, a.sessionID
 	a.mu.Unlock()
@@ -681,8 +682,9 @@ func (a *zcodeAgent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *zcodeAgent) Wait() error {
 	err := a.processBase.Wait()
-	a.flushZCodeGeneration(MessageCompletionError)
-	a.persistIncompleteZCodeTools(MessageCompletionError)
+	completion := a.processExitCompletion()
+	a.flushZCodeGeneration(completion)
+	a.persistIncompleteZCodeTools(completion)
 	a.sink.ReportProgress(ResetProgress())
 	return err
 }

@@ -560,8 +560,9 @@ func (a *CodexAgent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *CodexAgent) Wait() error {
 	err := a.processBase.Wait()
-	a.flushAllCodexGeneration(MessageCompletionError)
-	a.persistIncompleteCodexTools("", true, MessageCompletionError)
+	completion := a.processExitCompletion()
+	a.flushAllCodexGeneration(completion)
+	a.persistIncompleteCodexTools("", true, completion)
 	a.sink.ReportProgress(ResetProgress())
 	return err
 }

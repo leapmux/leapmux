@@ -1156,6 +1156,23 @@ func TestFlushCodexGenerationHonorsDiscardOutput(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 }
 
+func TestCodexWaitMarksAnIntentionalStopAsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.processDone = make(chan struct{})
+	close(agent.processDone)
+	agent.mu.Lock()
+	agent.stopped = true
+	agent.mu.Unlock()
+	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "partial answer")
+
+	require.NoError(t, agent.Wait())
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"completion":"interrupted"`)
+}
+
 func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *testing.T) {
 	t.Parallel()
 
