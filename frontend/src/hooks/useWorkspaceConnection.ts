@@ -202,7 +202,7 @@ export interface WorkspaceConnectionParams {
   quakeStore: QuakeTerminalStore
   /**
    * The quake key the panel is CURRENTLY showing -- the focused tab's -- or
-   * null when the focused tab names none.
+   * null when the focused tab has none.
    *
    * The shell's own accessor, passed in rather than re-derived, so "is this
    * shell on screen?" has one answer here and in `QuakeTerminalPanel`. See
@@ -506,10 +506,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
    * notification?" decision disagree about the same shell.
    */
   const isQuakeTerminalOnScreen = (terminalId: string): boolean => {
-    const keyId = params.quakeStore.keyOf(terminalId)
-    if (keyId === undefined)
-      return false
-    const entry = params.quakeStore.entryFor(keyId)
+    const entry = params.quakeStore.entryForTerminal(terminalId)
     return entry !== undefined && isQuakeEntryOnScreen(entry)
   }
 

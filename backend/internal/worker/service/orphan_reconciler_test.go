@@ -360,7 +360,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 		ID: "live-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: 1,
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	// The hub lists the agent tab and knows nothing of the quake terminal,
 	// which is the steady state for every quake panel the user ever opened.
@@ -377,8 +377,8 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 }
 
 // The opposite case: the last tab in a directory going away takes the shell
-// with it. The agent leg of the SAME pass is what closes that tab, which is why
-// the quake leg runs after it -- run earlier it would still read the row as
+// with it. The agent pass of the SAME pass is what closes that tab, which is why
+// the quake pass runs after it -- run earlier it would still read the row as
 // open and leave the shell alive for a whole interval.
 func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing.T) {
 	t.Parallel()
@@ -390,7 +390,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing
 		ID: "ghost-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: 1,
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	setFake("user-1", nil, nil)
 
@@ -415,7 +415,7 @@ func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *t
 		ID: "elsewhere", WorkingDir: "/other", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: 1,
+		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"},

@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
 import { clippedText } from '~/styles/shared.css'
 import { headerHeightPx, motion } from '~/styles/tokens'
 
@@ -32,9 +33,7 @@ export const tabList = style({
   borderRadius: 0,
 })
 
-globalStyle(`${tabList}::-webkit-scrollbar`, {
-  display: 'none',
-})
+hideNativeScrollbar(tabList)
 
 export const tab = style({
   'all': 'unset',

@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
-import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
@@ -46,7 +45,7 @@ afterEach(() => setCRDTBridge(null))
 
 const WS = 'ws-active'
 // The directory the quake panel commands address. A quake terminal belongs to
-// one, so a tab without it names no panel at all.
+// one, so a tab without it addresses no panel at all.
 const QUAKE_DIR = '/repo'
 
 const flush = () => new Promise<void>(queueMicrotask)
@@ -331,7 +330,7 @@ describe('useWorkerPrivateStreams', () => {
       await withCommand((s) => {
         const close = vi.spyOn(s.quakeStore, 'close')
         opened[0].onQuakePanelCommand({ workingDir: QUAKE_DIR, action: QuakePanelAction.CLOSE })
-        expect(close).toHaveBeenCalledWith(quakeKeyId({ workerId: 'w1', workingDir: QUAKE_DIR }))
+        expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: QUAKE_DIR })
       })
     })
 
@@ -350,6 +349,18 @@ describe('useWorkerPrivateStreams', () => {
         const toggle = vi.spyOn(s.quakeStore, 'toggle')
         opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.TOGGLE })
         expect(toggle).not.toHaveBeenCalled()
+      })
+    })
+
+    // CLOSE is the one of the three that needs only the KEY, so it must not be
+    // refused for want of a tab. It is also the only route to dismissing a
+    // panel on a phone, where there is no chord -- and the panel covers the
+    // whole centre area, so a refused close strands the user until a reload.
+    it('closes the panel of a directory this client has no tab in', async () => {
+      await withCommand((s) => {
+        const close = vi.spyOn(s.quakeStore, 'close')
+        opened[0].onQuakePanelCommand({ workingDir: '/somewhere-else', action: QuakePanelAction.CLOSE })
+        expect(close).toHaveBeenCalledWith({ workerId: 'w1', workingDir: '/somewhere-else' })
       })
     })
 

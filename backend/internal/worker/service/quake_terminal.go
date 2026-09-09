@@ -1,3 +1,17 @@
+// The LIFETIME of a quake terminal: the reference count that decides when one
+// ends, and the reapers that share it.
+//
+// A quake terminal belongs to a (worker, working directory) pair rather than to
+// a tab, so nothing owns it and nothing closes it explicitly. It ends when its
+// directory has no live tab left, and THAT question is what this file owns --
+// `dirHasLiveTab` is the one predicate, and the close paths, the archive sweep
+// and the orphan reconciler all ask it here.
+//
+// The rest of the quake terminal's behaviour deliberately stays with the
+// terminal handlers in `terminal.go`, beside the code it decides for: the
+// open-time refusals and the adopt, the restart refusal, and the shell-exit
+// hook. Splitting a helper from its only caller to group it by topic would
+// trade one kind of locality for another.
 package service
 
 import (
@@ -5,45 +19,55 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strconv"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// boolToInt64 spells a Go bool as the INTEGER SQLite stores. Every boolean
-// column in this schema is an INTEGER, so the conversion lives in one place
-// rather than as a conditional at each write site.
-func boolToInt64(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
 // dirTabRef is one OPEN tab that works in some directory.
 //
-// A record rather than a bare id, because the reference count needs all three
-// fields: the directory to group by, the id to exclude a tab that is closing
+// A record rather than a bare id, because the reference count needs all of it:
+// the directory to group by, the identity to exclude a tab that is closing
 // right now, and the archive flag because an ARCHIVED tab is not a reference.
 // A user cannot reach the panel from a tab in an archived workspace -- the
 // frontend refuses a cold open there -- so a directory whose every tab is
 // archived has nobody left to type into its shell.
+//
+// The identity is (Kind, ID) and NOT the id alone. An agent or terminal id is a
+// server-minted nanoid and globally unique, but a payload-backed tab id is
+// minted client-side and is unique only within ONE account -- the same reason
+// worktree_tab_liveness and collectTabDirs both match on the pair. Keyed on the
+// id alone, a viewer closing in one account would exclude a second account's
+// still-open viewer of the same directory and take a shell it is using.
 type dirTabRef struct {
+	Kind              leapmuxv1.TabType
 	ID                string
 	WorkingDir        string
 	WorkspaceArchived bool
 }
 
+// tabRefKey identifies one tab across the kinds whose id spaces can overlap.
+// The separator is a NUL, which no tab id and no tab type can contain.
+func tabRefKey(kind leapmuxv1.TabType, id string) string {
+	return strconv.Itoa(int(kind)) + "\x00" + id
+}
+
+// key is this tab's identity. See dirTabRef for why the kind is part of it.
+func (t dirTabRef) key() string { return tabRefKey(t.Kind, t.ID) }
+
 // dirHasLiveTab reports whether any tab in `tabs` is a live reference: open,
 // not archived, and not the one whose close is running right now.
+//
+// `excludeKey` is a tabRefKey, or "" when nothing is closing.
 //
 // THE rule, in one function. The synchronous close paths, the archive apply and
 // the orphan reconciler all reap a quake terminal, and three spellings of "is
 // this directory still in use?" is how they would come to disagree about a
 // shell the user is typing into.
-func dirHasLiveTab(tabs []dirTabRef, excludeTabID string) bool {
+func dirHasLiveTab(tabs []dirTabRef, excludeKey string) bool {
 	for _, tab := range tabs {
-		if tab.ID != excludeTabID && !tab.WorkspaceArchived {
+		if tab.key() != excludeKey && !tab.WorkspaceArchived {
 			return true
 		}
 	}
@@ -52,16 +76,18 @@ func dirHasLiveTab(tabs []dirTabRef, excludeTabID string) bool {
 
 // openTabsInWorkingDirs lists every open TAB that works in one of `dirs`.
 //
-// Two queries because the two tables are the two kinds of tab that own a
-// working directory, and merging them here rather than in SQL keeps each query
-// readable and each `sqlc.slice` unambiguous. Root agents only, and quake rows
-// excluded -- see the note on each query for why a subagent and a quake
-// terminal must not count as references.
+// ONE query, over the `tab_locations` view. That view already owns which tables
+// hold tabs, what OPEN means for each of them, and which kinds carry an owner --
+// and its own doc says it exists so no reader restates those rules. Three
+// hand-written per-type SELECTs here had to agree with it by hand, and a fifth
+// tab kind would have needed a fourth of them.
 //
-// FILE and IMAGE tabs are deliberately absent. Their working directory lives in
-// a worker-stored TabPayload the hub can never see, and they own no process, so
-// a viewer left open in a directory is not a reason to keep a shell running
-// there.
+// FILE and IMAGE tabs COUNT, and that is what makes the worker agree with the
+// panel the user sees. `quakeKeyForTab` in the browser accepts any tab that
+// carries a worker and a working directory, so Ctrl+` opens the panel over a
+// file viewer exactly as it does over an agent. A count that left those tabs
+// out reported "nobody works here" for a directory the user is looking at, and
+// the reap closed the shell under them.
 //
 // A free function rather than a Service method, because the ORPHAN RECONCILER
 // asks the same question and holds only `queries` -- see reconcileQuakeTerminals.
@@ -71,20 +97,18 @@ func openTabsInWorkingDirs(ctx context.Context, q *db.Queries, dirs []string) ([
 	if len(dirs) == 0 {
 		return nil, nil
 	}
-	agentRows, err := q.ListOpenRootAgentsByWorkingDirs(ctx, dirs)
+	rows, err := q.ListOpenTabsByWorkingDirs(ctx, dirs)
 	if err != nil {
 		return nil, err
 	}
-	terminalRows, err := q.ListOpenTerminalTabsByWorkingDirs(ctx, dirs)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]dirTabRef, 0, len(agentRows)+len(terminalRows))
-	for _, row := range agentRows {
-		out = append(out, dirTabRef{ID: row.ID, WorkingDir: row.WorkingDir, WorkspaceArchived: row.WorkspaceArchived != 0})
-	}
-	for _, row := range terminalRows {
-		out = append(out, dirTabRef{ID: row.ID, WorkingDir: row.WorkingDir, WorkspaceArchived: row.WorkspaceArchived != 0})
+	out := make([]dirTabRef, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, dirTabRef{
+			Kind:              row.TabType,
+			ID:                row.TabID,
+			WorkingDir:        row.WorkingDir,
+			WorkspaceArchived: row.WorkspaceArchived,
+		})
 	}
 	return out, nil
 }
@@ -104,10 +128,17 @@ func openTabsInWorkingDirs(ctx context.Context, q *db.Queries, dirs []string) ([
 // orphan reconciler's own pass is the backstop for the close this never sees
 // (a row the hub forgot, a worker that died mid-close).
 //
-// The action is pinned to UNSPECIFIED rather than forwarded: a quake terminal
-// holds no worktree link of its own, so the user's choice about the closing
-// tab's worktree is not a choice about the shell.
-func (svc *Service) closeQuakeTerminalIfUnused(userID, workingDir, closingTabID string, linkPolicy worktreeLinkPolicy) {
+// The action is pinned to UNSPECIFIED rather than forwarded: the user's choice
+// about the CLOSING TAB's worktree is not a choice about the shell, so a REMOVE
+// there must not reach this close.
+//
+// A quake terminal CAN hold a worktree link of its own, despite what that
+// pinning might suggest. OpenTerminal refuses only a git-mode MUTATION, so a
+// panel opened inside an existing linked worktree runs the use-current path,
+// attaches to it, and gets a worktree_tabs row like any tab. `linkPolicy` is
+// therefore still forwarded: it decides whether that row is dropped or left as
+// a strand for the reconciler, and a deleted workspace wants the strand.
+func (svc *Service) closeQuakeTerminalIfUnused(userID, workingDir string, closingKind leapmuxv1.TabType, closingTabID string, linkPolicy worktreeLinkPolicy) {
 	if workingDir == "" {
 		return
 	}
@@ -123,73 +154,128 @@ func (svc *Service) closeQuakeTerminalIfUnused(userID, workingDir, closingTabID 
 		}
 		return
 	}
-	if svc.workingDirStillHasTab(workingDir, closingTabID) {
+	if svc.workingDirStillHasTab(workingDir, tabRefKey(closingKind, closingTabID)) {
 		return
 	}
 	svc.closeTerminalTabCommon(userID, quake.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, linkPolicy)
 }
 
-// workingDirStillHasTab reports whether any LIVE tab other than `excludeTabID`
-// works in `workingDir`. See dirHasLiveTab for what "live" means.
+// workingDirStillHasTab reports whether any LIVE tab other than the one
+// `excludeKey` identifies works in `workingDir`. See dirHasLiveTab for what
+// "live" means, and dirTabRef for why the key is a (kind, id) pair.
 //
 // A read failure answers TRUE, which keeps the shell. The alternative is to
 // kill a terminal the user may be typing in because one query failed, and the
 // orphan reconciler re-asks the same question on its next pass -- so the
 // conservative answer costs a delay, and the other one costs work.
-func (svc *Service) workingDirStillHasTab(workingDir, excludeTabID string) bool {
+func (svc *Service) workingDirStillHasTab(workingDir, excludeKey string) bool {
 	tabs, err := openTabsInWorkingDirs(bgCtx(), svc.Queries, []string{workingDir})
 	if err != nil {
 		slog.Error("failed to list the tabs of a working directory", "working_dir", workingDir, "error", err)
 		return true
 	}
-	return dirHasLiveTab(tabs, excludeTabID)
+	return dirHasLiveTab(tabs, excludeKey)
 }
 
-// closeUnusedQuakeTerminals closes every open quake terminal whose directory
-// has no live tab left.
+// unusedQuakeTerminals returns every open quake terminal whose directory has no
+// live tab left, and the tabs of each quake directory that it read on the way.
 //
-// The sweep the ARCHIVE path runs, and it takes no tab list: an archive changes
-// which tabs count as references, not which directories exist, so asking the
-// question of every open quake row is both simpler and complete. There is one
-// row per directory a user opened a panel in, so the pass is small.
-//
-// `excludeTabID` is the tab whose close is running right now, or "" when
-// nothing is closing -- see closeQuakeTerminalIfUnused for why the exclusion
-// exists at all.
-func (svc *Service) closeUnusedQuakeTerminals(ctx context.Context, excludeTabID string) {
-	rows, err := svc.Queries.ListOpenQuakeTerminals(ctx)
+// THE sweep, in one function, for the same reason dirHasLiveTab is THE
+// predicate: the archive path and the orphan reconciler both ask this, and two
+// spellings of "which shells have nobody left?" is how they would come to reap
+// different rows. Each caller keeps only what genuinely differs -- the archive
+// path filters by what its request changed and closes at once, the reconciler
+// waits out a grace window first.
+func unusedQuakeTerminals(ctx context.Context, q *db.Queries) (rows []db.ListOpenQuakeTerminalsRow, byDir map[string][]dirTabRef, err error) {
+	all, err := q.ListOpenQuakeTerminals(ctx)
 	if err != nil {
-		slog.Warn("failed to list the quake terminals for the unused sweep", "error", err)
-		return
+		return nil, nil, err
 	}
-	if len(rows) == 0 {
-		return
+	if len(all) == 0 {
+		return nil, nil, nil
 	}
-	dirs := make([]string, 0, len(rows))
-	seen := make(map[string]struct{}, len(rows))
-	for _, row := range rows {
+	dirs := make([]string, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, row := range all {
 		if _, dup := seen[row.WorkingDir]; dup {
 			continue
 		}
 		seen[row.WorkingDir] = struct{}{}
 		dirs = append(dirs, row.WorkingDir)
 	}
-	// ONE query for every directory at once: asking per row would run two
+	// ONE query for every directory at once: asking per row would run three
 	// statements per open quake terminal, and the answer has the same shape
 	// either way.
-	tabs, err := openTabsInWorkingDirs(ctx, svc.Queries, dirs)
+	tabs, err := openTabsInWorkingDirs(ctx, q, dirs)
 	if err != nil {
-		slog.Warn("failed to list the tabs of the quake directories", "error", err)
-		return
+		return nil, nil, err
 	}
-	byDir := make(map[string][]dirTabRef, len(dirs))
+	byDir = make(map[string][]dirTabRef, len(dirs))
 	for _, tab := range tabs {
 		byDir[tab.WorkingDir] = append(byDir[tab.WorkingDir], tab)
 	}
+	unused := make([]db.ListOpenQuakeTerminalsRow, 0, len(all))
+	for _, row := range all {
+		if dirHasLiveTab(byDir[row.WorkingDir], "") {
+			continue
+		}
+		unused = append(unused, row)
+	}
+	return unused, byDir, nil
+}
+
+// closeUnusedQuakeTerminals closes the quake terminal of every directory that
+// `changed` emptied of live tabs.
+//
+// The sweep the ARCHIVE path runs. `changed` holds the tabs whose archive flag
+// actually MOVED, and a row is closed only when one of them worked in its
+// directory: an archive changes which tabs count as references, so a directory
+// this request did not touch cannot have become unused because of it. Sweeping
+// every open quake row instead closed a shell in an unrelated directory --
+// immediately, ahead of the grace window that reconcileQuakeTerminals gives the
+// same row, because a tab close and its quake reap arrive as two separate
+// writes.
+func (svc *Service) closeUnusedQuakeTerminals(ctx context.Context, changed archiveTabSet) {
+	touched := make(map[string]struct{}, len(changed.agents)+len(changed.terminals)+len(changed.payloads))
+	for _, id := range changed.agents {
+		touched[tabRefKey(leapmuxv1.TabType_TAB_TYPE_AGENT, id)] = struct{}{}
+	}
+	for _, id := range changed.terminals {
+		touched[tabRefKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, id)] = struct{}{}
+	}
+	// A payload row's kind comes back from the view as FILE or IMAGE, and the
+	// archive set does not record which. Both spellings go in: the two share one
+	// id space, so at most one of them can match a real row.
+	for _, ref := range changed.payloads {
+		touched[tabRefKey(leapmuxv1.TabType_TAB_TYPE_FILE, ref.tabID)] = struct{}{}
+		touched[tabRefKey(leapmuxv1.TabType_TAB_TYPE_IMAGE, ref.tabID)] = struct{}{}
+	}
+	if len(touched) == 0 {
+		return
+	}
+	rows, byDir, err := unusedQuakeTerminals(ctx, svc.Queries)
+	if err != nil {
+		slog.Warn("failed to list the quake terminals for the unused sweep", "error", err)
+		return
+	}
 	for _, row := range rows {
-		if dirHasLiveTab(byDir[row.WorkingDir], excludeTabID) {
+		// byDir holds every tab of this directory, archived ones included, so a
+		// tab this request just archived is still here to match. That is the
+		// case the sweep exists for: the directory is unused BECAUSE of it.
+		if !anyTabIn(byDir[row.WorkingDir], touched) {
 			continue
 		}
 		svc.closeTerminalTabCommon("", row.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
 	}
+}
+
+// anyTabIn reports whether any tab of one directory is in `keys`, a set of
+// tabRefKey values.
+func anyTabIn(tabs []dirTabRef, keys map[string]struct{}) bool {
+	for _, tab := range tabs {
+		if _, hit := keys[tab.key()]; hit {
+			return true
+		}
+	}
+	return false
 }

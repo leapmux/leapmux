@@ -8,6 +8,7 @@ import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/prot
 import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
+import type { QuakeKey } from '~/stores/quakeTerminal.store'
 import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -25,7 +26,7 @@ import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/k
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { isTypingContext } from '~/lib/textInputBehavior'
 import { getActiveChatPanel, getFocusedChatPanel } from '~/stores/focusedChatPanel.store'
-import { quakeKeyForTab, quakeKeyId } from '~/stores/quakeTerminal.store'
+import { quakeKeyForTab } from '~/stores/quakeTerminal.store'
 import { canCloseTab, tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
@@ -91,7 +92,7 @@ interface UseShortcutsProps {
    */
   quakePanel: {
     open: (tab: Tab) => void
-    close: (keyId: string) => void
+    close: (key: QuakeKey) => void
     toggle: (tab: Tab) => void
   }
 }
@@ -312,28 +313,33 @@ export function useShortcuts(props: UseShortcutsProps): void {
    * CLOSE half of the toggle, stranding a user whose workspace was archived
    * while the panel was up.
    */
-  function focusedTabForQuake(): Tab | null {
+  function focusedQuakeTarget(): { tab: Tab, key: QuakeKey } | null {
     const tab = resolveFocusedTab()
-    return tab && quakeKeyForTab(tab) !== undefined ? tab : null
+    if (!tab)
+      return null
+    const key = quakeKeyForTab(tab)
+    return key === undefined ? null : { tab, key }
   }
 
-  /** Run one quake action on the focused tab, or nothing when there is not one. */
-  function withQuakeTab(act: (tab: Tab) => void): void {
-    const tab = focusedTabForQuake()
-    if (tab)
-      act(tab)
+  /**
+   * Run one quake action on the focused tab, or nothing when there is not one.
+   *
+   * Hands the KEY to the action alongside the tab, because the close command
+   * needs it and deriving it a second time there would guard a branch that
+   * cannot be false -- the target exists only because the key was defined.
+   */
+  function withQuakeTarget(act: (target: { tab: Tab, key: QuakeKey }) => void): void {
+    const target = focusedQuakeTarget()
+    if (target)
+      act(target)
   }
 
-  cmd('terminal.toggleQuake', 'Toggle Quake Terminal', () => withQuakeTab(tab => props.quakePanel.toggle(tab)), 'Terminal')
+  cmd('terminal.toggleQuake', 'Toggle Quake Terminal', () => withQuakeTarget(({ tab }) => props.quakePanel.toggle(tab)), 'Terminal')
   // Registered without a default chord, so Preferences lists them with proper
   // titles and a user can bind either one. A caller that wants a key that only
   // ever opens -- or only ever closes -- should not have to write a toggle.
-  cmd('terminal.openQuake', 'Open Quake Terminal', () => withQuakeTab(tab => props.quakePanel.open(tab)), 'Terminal')
-  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTab((tab) => {
-    const key = quakeKeyForTab(tab)
-    if (key)
-      props.quakePanel.close(quakeKeyId(key))
-  }), 'Terminal')
+  cmd('terminal.openQuake', 'Open Quake Terminal', () => withQuakeTarget(({ tab }) => props.quakePanel.open(tab)), 'Terminal')
+  cmd('terminal.closeQuake', 'Close Quake Terminal', () => withQuakeTarget(({ key }) => props.quakePanel.close(key)), 'Terminal')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')

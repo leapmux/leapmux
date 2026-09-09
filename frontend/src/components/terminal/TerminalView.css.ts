@@ -1,4 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { hideNativeScrollbar } from '~/styles/scrollbar'
+import { scrollbarThumb, scrollbarThumbHover } from '~/styles/tokens'
 
 export const terminalInner = style({
   flex: 1,
@@ -124,18 +126,17 @@ globalStyle(`${terminalWrapper} .xterm .xterm-viewport`, {
   scrollbarWidth: 'none',
 })
 
-globalStyle(`${terminalWrapper} .xterm .xterm-viewport::-webkit-scrollbar`, {
-  display: 'none',
-})
+hideNativeScrollbar(`${terminalWrapper} .xterm .xterm-viewport`)
 
 /**
  * xterm's own slider, shaped like every other scrollbar in the app.
  *
  * Its WIDTH is not set here -- xterm writes that inline from
- * `overviewRuler.width`, which `~/lib/terminal` sets to the same 8px box the
- * `::-webkit-scrollbar` rules in `~/styles/global.css.ts` ask for. These rules
- * supply the rest of that shape: a 2px transparent border with
- * `background-clip: content-box` leaves a 4px thumb floating in the 8px lane,
+ * `overviewRuler.width`, which `~/lib/terminal` sets from `scrollbarWidthPx` in
+ * `~/styles/tokens`, the same token the `::-webkit-scrollbar` rules in
+ * `~/styles/global.css.ts` size their box with. The rest of the shape is the
+ * shared `scrollbarThumb` declaration: a transparent border with
+ * `background-clip: content-box` leaves the thumb floating inside that lane,
  * which is exactly what the chat's scrollbar beside it looks like.
  *
  * The selectors carry `.xterm` on purpose. xterm injects a stylesheet of its
@@ -148,19 +149,15 @@ globalStyle(`${terminalWrapper} .xterm .xterm-viewport::-webkit-scrollbar`, {
  * `scrollbarSlider*` entries for exactly this: those take a colour xterm must
  * PARSE, and these tokens are relative-colour functions
  * (`rgb(from var(--muted-foreground) r g b / 0.35)`) that only a browser
- * resolves. Naming the token keeps one definition of "thumb" for the whole app.
+ * resolves. The shared declaration keeps one definition of "thumb" for the
+ * whole app.
  */
 globalStyle(`${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider`, {
-  backgroundColor: 'var(--scrollbar-thumb)',
-  backgroundClip: 'content-box',
-  border: '2px solid transparent',
-  borderRadius: '4px',
+  ...scrollbarThumb,
 })
 
 globalStyle(
   `${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider:hover,
    ${terminalWrapper} .xterm .xterm-scrollable-element > .scrollbar > .slider.active`,
-  {
-    backgroundColor: 'var(--scrollbar-thumb-hover)',
-  },
+  { ...scrollbarThumbHover },
 )

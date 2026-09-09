@@ -32,15 +32,22 @@ func workingDirEnv() string {
 
 const gitDirPathUsage = "directory inside a git working tree (defaults to $LEAPMUX_CONTROL_WORKING_DIR)"
 
-// emitMissingPathErr returns the canonical empty-path error.
-// Differentiates between "no flag and no env var" (give the user
-// both options) and "explicit empty --path".
-func emitMissingPathErr() error {
+// emitMissingDirFlagErr returns the canonical empty-directory error for the
+// flag that carries one. It takes the flag NAME because three commands bind
+// that flag under two spellings -- `--path` for the git and file verbs,
+// `--working-dir` for the quake verbs -- and the two arms below are the whole
+// value of sharing it.
+//
+// Differentiates between "no flag and no env var" (give the user both options)
+// and "explicit empty flag". A single message for both told a user who typed
+// `--working-dir=` inside a spawn that $LEAPMUX_CONTROL_WORKING_DIR was not
+// set, which is false there and sends them to look at the wrong thing.
+func emitMissingDirFlagErr(flagName string) error {
 	if workingDirEnv() == "" {
 		return control.EmitError("invalid_request",
-			"--path is required (and $LEAPMUX_CONTROL_WORKING_DIR is not set, so there's no default)")
+			flagName+" is required (and $LEAPMUX_CONTROL_WORKING_DIR is not set, so there's no default)")
 	}
-	return control.EmitError("invalid_request", "--path must not be empty")
+	return control.EmitError("invalid_request", flagName+" must not be empty")
 }
 
 func RunGitStatus(rawCtx any, args []string) error {
@@ -50,7 +57,7 @@ func RunGitStatus(rawCtx any, args []string) error {
 		return err
 	}
 	if f.Path == "" {
-		return emitMissingPathErr()
+		return emitMissingDirFlagErr("--path")
 	}
 	return resolveAndEmit(f.Hub, resolve.Need{WorkerID: true}, f.In, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		if err := maybePreflightWorker(ctx, c, got.WorkerID); err != nil {
@@ -89,7 +96,7 @@ func RunGitBranches(rawCtx any, args []string) error {
 		return err
 	}
 	if f.Path == "" {
-		return emitMissingPathErr()
+		return emitMissingDirFlagErr("--path")
 	}
 	c, workerID, err := resolveWorker(f.Hub, f.In)
 	if err != nil {
@@ -108,7 +115,7 @@ func RunGitWorktrees(rawCtx any, args []string) error {
 		return err
 	}
 	if f.Path == "" {
-		return emitMissingPathErr()
+		return emitMissingDirFlagErr("--path")
 	}
 	c, workerID, err := resolveWorker(f.Hub, f.In)
 	if err != nil {

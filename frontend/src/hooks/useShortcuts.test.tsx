@@ -5,7 +5,6 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen, getContext } from '~/lib/shortcuts/context'
 import { registerChatPanel, unregisterChatPanel } from '~/stores/focusedChatPanel.store'
-import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import { useShortcuts } from './useShortcuts'
 
@@ -494,7 +493,7 @@ describe('useShortcuts', () => {
     }
 
     const agentTab = { type: TabType.AGENT, id: 'a1', workerId: 'w1', workingDir: '/repo' }
-    const QUAKE_KEY = quakeKeyId({ workerId: 'w1', workingDir: '/repo' })
+    const QUAKE_KEY = { workerId: 'w1', workingDir: '/repo' }
 
     it('toggles the panel of the focused agent tab', () => {
       const panel = run(quakeProps(agentTab), 'terminal.toggleQuake')
@@ -543,7 +542,7 @@ describe('useShortcuts', () => {
     })
 
     // The one refusal left, and it is about the DIRECTORY rather than the tab
-    // kind: a tab with no worker or no working directory names no panel.
+    // kind: a tab with no worker or no working directory has no panel.
     it.each([
       ['no worker', { type: TabType.AGENT, id: 'a1', workingDir: '/repo' }],
       ['no working directory', { type: TabType.AGENT, id: 'a1', workerId: 'w1' }],

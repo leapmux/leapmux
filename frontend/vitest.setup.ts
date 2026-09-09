@@ -106,7 +106,7 @@ if (typeof globalThis.sessionStorage?.getItem !== 'function' && typeof jsdom !==
 // `2d` is the one context that answers, because xterm's overview ruler THROWS
 // on a null one ("Ctx cannot be null") in its constructor -- and every terminal
 // asks for that ruler now, since its width is what `FitAddon` reserves for the
-// scrollbar (see `SCROLLBAR_GUTTER_PX` in `~/lib/terminal`). A null answer
+// scrollbar (see `scrollbarWidthPx` in `~/styles/tokens`). A null answer
 // there is not a degraded ruler, it is a terminal that cannot be constructed at
 // all. The stub carries only the calls the ruler makes on an empty decoration
 // set; anything else would be inventing a canvas nobody asserts on.

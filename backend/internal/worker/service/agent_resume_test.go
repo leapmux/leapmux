@@ -166,7 +166,7 @@ func TestAgentResume_SkipsArchivedAgents(t *testing.T) {
 	recorder.install(svc)
 	seedOpenAgent(t, svc, "agent-archived", true)
 	_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
-		WorkspaceArchived: 1,
+		WorkspaceArchived: true,
 		ID:                "agent-archived",
 	})
 	require.NoError(t, err)

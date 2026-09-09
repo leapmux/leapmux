@@ -1076,7 +1076,7 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 		isQuake  bool
 	)
 	if row, err := svc.Queries.GetTerminalQuakeAndClosed(bgCtx(), tid); err == nil {
-		closedAt, isQuake = row.ClosedAt, row.IsQuake != 0
+		closedAt, isQuake = row.ClosedAt, row.IsQuake
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("failed to read terminal closed_at before persisting exit",
 			"terminal_id", tid, "error", err)

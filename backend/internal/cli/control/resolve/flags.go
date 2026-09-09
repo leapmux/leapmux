@@ -101,7 +101,7 @@ func tabIDEnvDefault(fixed leapmuxv1.TabType) string {
 	}
 	// The `terminal ...` subgroup prefers the terminal the caller is running
 	// INSIDE over the ambient tab, and the difference only shows up in a quake
-	// panel: there TAB_ID names a neighbouring tab (a quake terminal has none
+	// panel: there TAB_ID identifies a neighbouring tab (a quake terminal has none
 	// of its own), so without this a bare `terminal send` would either target
 	// that neighbour or, once the type gate below refused it, nothing at all.
 	//

@@ -114,7 +114,7 @@ func TestPrivateEventVisibleRequiresTerminalReadForQuakeCommands(t *testing.T) {
 	assert.False(t, privateEventVisible(agentOnly, quake),
 		"agent:read alone must not open a shell the caller cannot read")
 	assert.True(t, privateEventVisible(terminalOnly, quake),
-		"terminal:read is the whole gate: the command names a directory, not a tab")
+		"terminal:read is the whole check: the command specifies a directory, not a tab")
 }
 
 // A payload this binary cannot parse states no kind, so it states no scope

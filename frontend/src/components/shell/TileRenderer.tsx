@@ -1167,14 +1167,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
    * agent tab. Narrowing this to agents would put the shortcut's availability
    * back on the tab TYPE, which is the thing that stopped addressing the panel.
    *
-   * A memo rather than `resolveFocusedTab` (which is a plain function, for
-   * callers that read it inside an event handler): the panel and the watch plan
-   * both track it, and both must re-render when the focus moves.
+   * The memo OF `resolveFocusedTab` (which is a plain function, for callers
+   * that read it inside an event handler): the panel and the watch plan both
+   * track it, and both must re-render when the focus moves. Wrapping the same
+   * function rather than restating its body is what stops the two answering
+   * differently.
    */
-  const focusedQuakeTab = createMemo<Tab | null>(() => {
-    const tileId = layoutStore.focusedTileId()
-    return getActiveTabForTile(tileId) ?? null
-  })
+  const focusedQuakeTab = createMemo<Tab | null>(resolveFocusedTab)
 
   // The composer's queue commands. This module composes tiles and sends no
   // Worker RPC of its own, so the request shapes, the failure toasts and the

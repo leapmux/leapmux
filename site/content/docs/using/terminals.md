@@ -213,12 +213,12 @@ tab, so it is given no `LEAPMUX_CONTROL_TAB_ID` and no `LEAPMUX_CONTROL_TAB_TYPE
 
 That is deliberate rather than a gap. The panel belongs to a *directory*, and
 every tab in that directory can reach it — so no one of them is "the tab you are
-in". Naming one anyway would hand every command a target you never chose, and
+in". Picking one anyway would hand every command a target you never chose, and
 which agent you got would depend on the order the tabs happened to be opened in.
 
-What the panel does get is enough to name **itself**:
+What the panel does get is enough to identify **itself**:
 
-| Inside the panel | Names |
+| Inside the panel | Identifies |
 | --- | --- |
 | `LEAPMUX_CONTROL_TERMINAL_ID` | the panel's own shell |
 | `LEAPMUX_CONTROL_WORKING_DIR` | the directory that addresses the panel |
@@ -283,7 +283,7 @@ override on one device.
 | --- | --- | --- |
 | **Quake terminal position** | Top | Edge the panel slides in from: **Top**, **Bottom**, **Left**, or **Right**. |
 | **Quake terminal size** | 65% | Share of the centre area the panel covers. Height for top and bottom, width for left and right. |
-| **Quake terminal animation** | 300 ms | How long the slide takes. |
+| **Quake terminal animation** | 200 ms | How long the slide takes. |
 | **Quake terminal background opacity** | 0.9 | Opacity of the panel background. The terminal text stays fully opaque. |
 
 If your system asks for reduced motion, the panel appears and disappears without

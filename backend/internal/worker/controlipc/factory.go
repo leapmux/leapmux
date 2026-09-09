@@ -95,7 +95,7 @@ type HubBridge interface {
 type spawnCommon struct {
 	UserID   userid.UserID
 	WorkerID string
-	// SocketID names the SOCKET, and it is always the spawned entity's own id.
+	// SocketID identifies the SOCKET, and it is always the spawned entity's own id.
 	// Kept apart from TabID because a quake terminal advertises ANOTHER tab:
 	// keyed on that tab the socket path would collide with the tab's own spawn
 	// -- with the agent's socket in the best case (different SocketKind, so
@@ -111,7 +111,7 @@ type spawnCommon struct {
 	AgentProvider string
 }
 
-func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) ([]string, func(), error) {
+func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func(), error) {
 	// The identity is typed all the way from the channel session, so a blank one
 	// is already a compile-time impossibility at every call site. This is the
 	// residual zero-value guard, and it is FATAL rather than degrading: a spawn
@@ -149,13 +149,13 @@ func (f *Factory) spawn(socketKind SocketKind, spawnKey string, sc spawnCommon) 
 	if f.Delegation != nil {
 		f.Delegation.Acquire(sc.UserID)
 	}
-	cleanup := f.makeCleanup(spawnKey, sc, srv)
+	cleanup := f.makeCleanup(socketKind, sc, srv)
 	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
 }
 
 // AgentSpawning satisfies service.ControlIPCFactory.
 func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), error) {
-	return f.spawn(SocketKindAgent, "agent_id", spawnCommon{
+	return f.spawn(SocketKindAgent, spawnCommon{
 		UserID:        info.UserID,
 		WorkerID:      info.WorkerID,
 		SocketID:      info.TabID,
@@ -175,7 +175,7 @@ func (f *Factory) AgentSpawning(info service.AgentSpawnInfo) ([]string, func(), 
 // directory would be a target the user never chose. Both env vars are simply
 // omitted, and a command that acts on a tab asks for --tab-id.
 //
-// What the panel keeps is its own identity: LEAPMUX_CONTROL_TERMINAL_ID names
+// What the panel keeps is its own identity: LEAPMUX_CONTROL_TERMINAL_ID gives
 // the shell (see TokenInfo.TerminalID), and WORKER_ID + WORKING_DIR are what
 // `terminal quake ...` needs, so those still run with no flags.
 //
@@ -186,7 +186,7 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 	if info.IsQuake {
 		tabID, tabType = "", leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
 	}
-	return f.spawn(SocketKindTerminal, "terminal_id", spawnCommon{
+	return f.spawn(SocketKindTerminal, spawnCommon{
 		UserID:     info.UserID,
 		WorkerID:   info.WorkerID,
 		SocketID:   info.TabID,
@@ -207,21 +207,21 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // It closes over the whole spawnCommon rather than the two fields it reads:
 // they both come from the same spawn, and re-listing them as bare parameters
 // invites a caller to pass one spawn's user with another's tab.
-// spawnKey stays separate -- it is the slog attribute NAME ("agent_id" /
-// "terminal_id"), not spawn data. Its VALUE is SocketID, the spawn's own
-// entity: a quake terminal's advertised TabID names a different tab, and
-// logging that under "terminal_id" would attribute the teardown to a tab that
-// is still running.
-func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func() {
+// The attribute NAME comes from the socket kind (see SocketKind.logKey), so an
+// agent spawn cannot be logged under "terminal_id". Its VALUE is SocketID, the
+// spawn's own entity: a quake terminal's advertised TabID identifies a
+// different tab, and logging that under "terminal_id" would attribute the
+// teardown to a tab that is still running.
+func (f *Factory) makeCleanup(socketKind SocketKind, sc spawnCommon, srv *Server) func() {
 	return func() {
 		if err := srv.Close(); err != nil {
-			slog.Warn("remote IPC close failed", spawnKey, sc.SocketID, "error", err)
+			slog.Warn("remote IPC close failed", socketKind.logKey(), sc.SocketID, "error", err)
 		}
 		if f.Delegation != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
 			defer cancel()
 			if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
-				slog.Warn("delegation release failed", spawnKey, sc.SocketID, "user_id", sc.UserID, "error", err)
+				slog.Warn("delegation release failed", socketKind.logKey(), sc.SocketID, "user_id", sc.UserID, "error", err)
 			}
 		}
 	}

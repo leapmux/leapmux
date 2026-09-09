@@ -91,7 +91,7 @@ message QuakePanelCommand {
   // The working directory whose panel this is about. A quake terminal belongs
   // to one directory on one worker, so the directory -- together with the
   // worker this stream reaches -- is the whole address. Every tab that works in
-  // that directory shares the panel, so no tab id can name it.
+  // that directory shares the panel, so no tab id can address it.
   string working_dir = 1;
   QuakePanelAction action = 2;
 }

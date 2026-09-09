@@ -331,11 +331,11 @@ func newOwnedTabKey(tabType leapmuxv1.TabType, tabID, userID string) ownedTabKey
 // reconcileOnce runs one pass and reports whether EVERY leg it attempted
 // actually completed. False means the pass learned less than it set out to --
 // the hub RPC failed, its response declared no owner scope, or a local SQLite
-// read errored -- so the caller retries on a backoff instead of leaving the
+// read failed -- so the caller retries on a backoff instead of leaving the
 // drift until the next interval tick. Having nothing to reconcile is not a
 // failure: an absent listFn and an idle worker both report true.
 //
-// The local legs count, not just the hub one. A read that errors is
+// The local passes count, not just the hub one. A read that fails is
 // indistinguishable at the row level from a table that is empty, so reporting
 // convergence on it would tell the caller "idle, all good" for a worker whose
 // DB was merely busy -- and busy is exactly the state the concurrency that
@@ -398,7 +398,16 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 				"tab_id", tab.GetTabId(), "tab_type", tab.GetTabType())
 			continue
 		}
-		ref := &leapmuxv1.TabRef{TabType: tab.GetTabType(), TabId: tab.GetTabId()}
+		// The owner rides along, and dropping it here is what used to make a
+		// payload-backed tab unaddressable: worker_tab_payloads is keyed
+		// (user_id, tab_id), and a client-minted id is unique only within one
+		// account. AGENT and TERMINAL ids are globally unique, so the field is
+		// simply unused for them.
+		ref := &leapmuxv1.TabRef{
+			TabType: tab.GetTabType(),
+			TabId:   tab.GetTabId(),
+			UserId:  tab.GetUserId(),
+		}
 		switch tab.GetArchiveState() {
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
 			archivedTabs = append(archivedTabs, ref)
@@ -433,14 +442,16 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// mint gate above.
 	now := r.now()
 	next := make(map[ownedTabKey]time.Time)
-	// Four named results, not an accumulator: every leg must RUN, so the
-	// conjunction cannot short-circuit, and naming them keeps that visible.
+	// Four named results, not an accumulator: every pass must RUN, so the
+	// conjunction cannot short-circuit, and separate results keep that visible.
 	//
-	// The quake leg is LAST, and that is an ordering requirement rather than a
+	// The quake pass is LAST, and that is an ordering requirement rather than a
 	// style: it asks whether any open tab still works in a quake terminal's
-	// directory, and the two legs above it are what close the tabs the hub no
-	// longer lists. Run earlier it would read those rows as still open and
-	// leave the shell alive for a whole reconcile interval.
+	// directory, and the three passes above it are what close the tabs the hub
+	// no longer lists. Run earlier it would read those rows as still open and
+	// leave the shell alive for a whole reconcile interval. The payload pass
+	// counts here for the same reason the other two do -- a FILE or IMAGE tab
+	// is a reference to its directory, so its close can be what empties one.
 	okPayloads := r.reconcileTabPayloads(ctx, hubByKey, owner, now, next)
 	okAgents := r.reconcileAgents(ctx, hubByKey, now, next)
 	okTerminals := r.reconcileTerminals(ctx, hubByKey, now, next)
@@ -448,7 +459,7 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	if localReconciled := okPayloads && okAgents && okTerminals && okQuake; !localReconciled {
 		converged = false
 	} else {
-		// Replace the clock map only after all three local reads succeed. A
+		// Replace the clock map only after all FOUR local reads succeed. A
 		// partial read cannot prove that an omitted clock should reset.
 		r.prevOrphanTabs = next
 		if len(next) > 0 {
@@ -766,7 +777,7 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 		// which the hub cannot answer and this worker's own tables can --
 		// see reconcileQuakeTerminals, which runs after this pass so it reads
 		// the rows this one just closed.
-		if row.IsQuake != 0 {
+		if row.IsQuake {
 			continue
 		}
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row.ID, "")
@@ -813,44 +824,28 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 // key. Unlike the hub comparison there is no in-flight RPC to wait out here,
 // but a tab close and its quake reap arrive as two separate writes, so the
 // grace still absorbs a pass that lands between them.
+//
+// KNOWN LIMIT, and it is a trade rather than an oversight. Although the
+// question is local, this pass sits BELOW the hub gates, so a hub outage stops
+// it for as long as the outage lasts and an orphaned shell survives it.
+// Hoisting it beside reconcileWorktrees needs its own clock map -- `next`
+// reaches prevOrphanTabs only after those gates, so a hoisted pass's grace
+// entries would be discarded and reapDue would never fire -- and it would then
+// read the rows the agent and terminal passes have not closed yet, costing an
+// extra pass on every ordinary reap. The synchronous close path covers every
+// ordinary close whatever the hub does, so what leaks is the case where THAT
+// path already failed.
 func (r *OrphanReconciler) reconcileQuakeTerminals(ctx context.Context, now time.Time, next map[ownedTabKey]time.Time) bool {
-	rows, err := r.queries.ListOpenQuakeTerminals(ctx)
+	// The SAME sweep the archive path runs -- an archived tab is not a
+	// reference, so a directory whose every tab is archived loses its shell
+	// here too. Sharing it is what stops the backstop and the synchronous path
+	// reaping different rows.
+	rows, _, err := unusedQuakeTerminals(ctx, r.queries)
 	if err != nil {
-		r.logger.Warn("orphan reconciler: list quake terminals", "err", err)
+		r.logger.Warn("orphan reconciler: list the unused quake terminals", "err", err)
 		return false
 	}
-	if len(rows) == 0 {
-		return true
-	}
-	dirs := make([]string, 0, len(rows))
-	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		if _, dup := seen[row.WorkingDir]; dup {
-			continue
-		}
-		seen[row.WorkingDir] = struct{}{}
-		dirs = append(dirs, row.WorkingDir)
-	}
-	// ONE query for every directory at once. Asking per row would run two
-	// statements per open quake terminal on every pass, and the answer is the
-	// same shape either way.
-	tabs, err := openTabsInWorkingDirs(ctx, r.queries, dirs)
-	if err != nil {
-		r.logger.Warn("orphan reconciler: list the tabs of the quake directories", "err", err)
-		return false
-	}
-	byDir := make(map[string][]dirTabRef, len(dirs))
-	for _, tab := range tabs {
-		byDir[tab.WorkingDir] = append(byDir[tab.WorkingDir], tab)
-	}
-	for _, row := range rows {
-		// The SAME rule the close paths and the archive sweep apply -- an
-		// archived tab is not a reference, so a directory whose every tab is
-		// archived loses its shell here too. Nothing is closing during a
-		// reconcile pass, hence the empty exclusion.
-		if dirHasLiveTab(byDir[row.WorkingDir], "") {
-			continue
-		}
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row.ID, "")
 		if !r.reapDue(k, now, next) {
 			continue

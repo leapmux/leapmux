@@ -69,6 +69,15 @@ export interface CreateTabViewOpts {
    * the inconsistency by widening one of THOSE.
    */
   detachedTerminals?: () => readonly DetachedTerminal[]
+
+  /**
+   * Whether a workspace accepts writes, for `findTabInWorkingDir`'s ranking.
+   *
+   * Injected rather than derived here, because archive state is workspace
+   * policy and this projection holds none of it. Absent means "every workspace
+   * is reachable", which is what a test that does not care should get.
+   */
+  isWorkspaceMutatable?: (workspaceId: string) => boolean
 }
 
 /**
@@ -635,24 +644,44 @@ export function createTabView(opts: CreateTabViewOpts) {
      * shell's badge go, and does this directory still have any reason to hold a
      * shell -- all reduce to "name a tab that works here".
      *
-     * MRU order because the badge needs ONE row and the user should find it on
-     * the tab they last worked in. Ties fall back to insertion order, which is
-     * the projection's own stable order.
+     * A REACHABLE tab first, then MRU order: the badge needs ONE row and the
+     * user should find it on the tab they last worked in, but only among the
+     * tabs they can actually open. Ties fall back to insertion order, which is
+     * the projection's own stable order. An archived tab still wins when it is
+     * the only one -- see the ranking below for why that is the point.
      *
      * Derives from `placedTabs` like every other lookup on this side, so a
-     * quake terminal can never name ITSELF as the reference that keeps it
+     * quake terminal can never be ITSELF the reference that keeps it
      * alive: the detached family is deliberately unreachable from here (see
      * `detachedTerminals`).
      */
     findTabInWorkingDir(workerId: string, workingDir: string): Tab | undefined {
       if (!workerId || !workingDir)
         return undefined
+      const reachable = (tab: Tab): boolean =>
+        opts.isWorkspaceMutatable === undefined || opts.isWorkspaceMutatable(tab.workspaceId)
       let best: Tab | undefined
+      let bestReachable = false
       for (const tab of byKey().values()) {
         if (tab.workerId !== workerId || tab.workingDir !== workingDir)
           continue
-        if (best === undefined || (tab.mru ?? 0) > (best.mru ?? 0))
+        const tabReachable = reachable(tab)
+        // Reachability outranks MRU, and MRU breaks the tie within each half.
+        //
+        // A PREFERENCE rather than a filter, which is why the archived tab
+        // still wins when it is the only one: the cold open must resolve it so
+        // the refusal happens in the workspace the user is actually in.
+        //
+        // Ranking by MRU alone put the badge of a background shell on a row
+        // inside a collapsed archived section, and refused a cold open that a
+        // live tab in the same directory allows. Both need a tab the user can
+        // REACH, not merely the most recent one -- and archiving a workspace
+        // rooted at a checkout makes its tab the MRU winner immediately.
+        if (best === undefined || (tabReachable && !bestReachable)
+          || (tabReachable === bestReachable && (tab.mru ?? 0) > (best.mru ?? 0))) {
           best = tab
+          bestReachable = tabReachable
+        }
       }
       return best
     },

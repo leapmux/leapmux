@@ -57,8 +57,10 @@ const FILE_TAB: Tab = {
   workingDir: '/other',
 }
 
-const KEY = quakeKeyId({ workerId: 'w1', workingDir: '/repo' })
-const OTHER_KEY = quakeKeyId({ workerId: 'w1', workingDir: '/other' })
+const REPO_KEY = { workerId: 'w1', workingDir: '/repo' }
+const OTHER_REPO_KEY = { workerId: 'w1', workingDir: '/other' }
+const KEY = quakeKeyId(REPO_KEY)
+const OTHER_KEY = quakeKeyId(OTHER_REPO_KEY)
 
 function setup(closeDelayMs = 0, mutatable = true) {
   const metadata = createTabMetadataStore()
@@ -98,7 +100,7 @@ describe('quakeKeyForTab', () => {
   // DIRECTORY rather than the tab type. Pinned because the shortcut, the panel
   // and the watch plan all route through it: narrowing it back to agent tabs
   // would silently take the panel away from three tab kinds.
-  it('names a key for every tab type that carries a worker and a directory', () => {
+  it('gives a key for every tab type that carries a worker and a directory', () => {
     for (const tab of [AGENT, TERMINAL_TAB, FILE_TAB]) {
       expect(quakeKeyForTab(tab), `${TabType[tab.type]} tabs have a quake panel`).toEqual({
         workerId: tab.workerId,
@@ -107,7 +109,7 @@ describe('quakeKeyForTab', () => {
     }
   })
 
-  it('names no key for a tab with no worker or no directory', () => {
+  it('gives no key for a tab with no worker or no directory', () => {
     expect(quakeKeyForTab({ ...AGENT, workerId: undefined })).toBeUndefined()
     expect(quakeKeyForTab({ ...AGENT, workingDir: undefined })).toBeUndefined()
     expect(quakeKeyForTab(undefined)).toBeUndefined()
@@ -222,7 +224,7 @@ describe('createQuakeTerminalStore', () => {
   it('issues no RPC when a panel that already exists is opened again', async () => {
     const { store, dispose } = setup()
     await store.open(AGENT)
-    store.close(KEY)
+    store.close(REPO_KEY)
     vi.clearAllMocks()
 
     await store.open(AGENT)
@@ -270,7 +272,7 @@ describe('createQuakeTerminalStore', () => {
     focusComposer.mockImplementation(() => {
       openAtRestore = store.entryFor(KEY)?.open
     })
-    store.close(KEY)
+    store.close(REPO_KEY)
 
     expect(openAtRestore).toBe(true)
     expect(store.entryFor(KEY)?.open).toBe(false)
@@ -282,11 +284,11 @@ describe('createQuakeTerminalStore', () => {
   it('asks for no focus restore when the panel is already closed', async () => {
     const { store, focusComposer, dispose } = setup()
     await store.open(AGENT)
-    store.close(KEY)
+    store.close(REPO_KEY)
     focusComposer.mockClear()
 
-    store.close(KEY)
-    store.close('never-opened')
+    store.close(REPO_KEY)
+    store.close({ workerId: 'w1', workingDir: '/never-opened' })
 
     expect(focusComposer).not.toHaveBeenCalled()
     dispose()
@@ -314,13 +316,13 @@ describe('createQuakeTerminalStore', () => {
 
     expect(store.detachedTerminals()).toEqual([{ id: 'quake-1', workerId: 'w1', workspaceId: 'ws1' }])
     expect(store.isQuakeTerminal('quake-1')).toBe(true)
-    expect(store.keyOf('quake-1')).toBe(KEY)
+    expect(store.entryForTerminal('quake-1')?.keyId).toBe(KEY)
     dispose()
   })
 
   // A quake terminal has no row any surface renders, so a background shell's
   // notification badge goes on a TAB in its directory instead.
-  it('names a tab in the directory as the badge target', async () => {
+  it('gives a tab in the directory as the badge target', async () => {
     const { store, dispose } = setup()
     await store.open(AGENT)
 
@@ -401,6 +403,24 @@ describe('createQuakeTerminalStore', () => {
       expect(disposeInstance).toHaveBeenCalledWith('quake-1', { captureScreen: false })
       expect(metadata.get('quake-1')).toBeUndefined()
       dispose()
+    })
+
+    // AppShell really does unmount inside one page lifetime -- logging out
+    // navigates to /login and back through AuthGuard -- so a retract timer left
+    // running past that reaches `finishShellExit` for a store nobody owns. Its
+    // reopen-during-retract branch sends an openTerminal RPC, which would spawn
+    // a PTY for a shell that is already gone.
+    it('cancels a pending retract when the owner is disposed', async () => {
+      vi.useFakeTimers()
+      const { store, dispose } = setup(300)
+      await store.open(AGENT)
+      store.handleShellExit('quake-1')
+      disposeInstance.mockClear()
+
+      dispose()
+      vi.advanceTimersByTime(300)
+
+      expect(disposeInstance, 'the timer must not fire after the owner is gone').not.toHaveBeenCalled()
     })
 
     it('releases at once when there is no animation to wait out', async () => {
@@ -533,7 +553,7 @@ describe('createQuakeTerminalStore', () => {
   it('asks for no focus restore when the shell of an already-closed panel exits', async () => {
     const { store, focusComposer, dispose } = setup()
     await store.open(AGENT)
-    store.close(KEY)
+    store.close(REPO_KEY)
     focusComposer.mockClear()
 
     store.handleShellExit('quake-1')
@@ -598,7 +618,7 @@ describe('createQuakeTerminalStore', () => {
     const { store, focusComposer, dispose } = setup()
     await store.open(AGENT)
 
-    store.close(KEY)
+    store.close(REPO_KEY)
 
     expect(focusComposer).toHaveBeenCalledWith(KEY, 'quake-1')
     dispose()
@@ -612,7 +632,7 @@ describe('createQuakeTerminalStore', () => {
     }))
     const opening = store.open(AGENT)
 
-    store.close(KEY)
+    store.close(REPO_KEY)
     expect(focusComposer).toHaveBeenCalledWith(KEY, undefined)
 
     resolveOpen({ terminalId: 'quake-1', title: 'Terminal Alpha' })
@@ -620,9 +640,9 @@ describe('createQuakeTerminalStore', () => {
     dispose()
   })
 
-  // A tab with no worker or no working directory names no panel, and every
+  // A tab with no worker or no working directory has no panel, and every
   // entry point must decline rather than key an entry on an empty string.
-  it('opens nothing for a tab that names no key', async () => {
+  it('opens nothing for a tab that has no key', async () => {
     const { store, dispose } = setup()
 
     await store.open({ ...AGENT, workingDir: undefined })

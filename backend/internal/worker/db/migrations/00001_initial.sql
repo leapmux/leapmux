@@ -89,6 +89,12 @@ CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id 
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.
 CREATE INDEX idx_agents_provider_working_dir ON agents(agent_provider, working_dir);
+-- Serves the agents leg of tab_locations, which the quake reference count
+-- reads on every agent close and every reconcile pass. The pair index above
+-- cannot: working_dir is not its leftmost column, so that lookup scanned the
+-- whole table. Partial over the open rows, because the view's agents leg
+-- selects only those and closed rows stay for the retention window.
+CREATE INDEX idx_agents_open_working_dir ON agents(working_dir) WHERE closed_at IS NULL;
 -- One child row per spawning tool_use: makes EnsureChildAgent replay
 -- idempotency a constraint (worker restart mid-spawn), not a convention.
 CREATE UNIQUE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
@@ -310,6 +316,12 @@ CREATE TABLE terminals (
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
+-- Serves the terminals leg of tab_locations, which the quake reference count
+-- reads on every terminal close and every reconcile pass. The quake index below
+-- covers only is_quake = 1 rows, so the TAB half of the count had no index and
+-- scanned the table -- walking every closed row's 100KB screen blob to reach
+-- the filter columns that sit after it.
+CREATE INDEX idx_terminals_open_working_dir ON terminals(working_dir) WHERE closed_at IS NULL;
 -- UNIQUE, and that is the whole guarantee that every device -- and every tab in
 -- the directory -- shares one shell: a directory can have at most one OPEN
 -- quake terminal, so two devices racing to open the panel cannot end up on two
@@ -441,9 +453,22 @@ CREATE TABLE worker_tab_payloads (
     -- write time in TabPayloadStore.Register so every reader can just read the
     -- column. It is duplicated out of the blob for that reason: SQL reads it.
     working_dir  TEXT NOT NULL DEFAULT '',
+    -- Mirrors agents.workspace_archived and terminals.workspace_archived, and
+    -- exists for one reason: such a tab is a live reference to its working
+    -- directory, so the quake terminal there ends only when no such tab is
+    -- left. An ARCHIVED tab is not a live reference -- nobody can reach the
+    -- panel from it -- so the count needs the flag, not only the row.
+    --
+    -- The tab owns no process, so unlike the other two tables nothing here
+    -- pauses or stops on the flag. It is read, never acted on.
+    workspace_archived INTEGER NOT NULL DEFAULT 0,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (user_id, tab_id)
 );
+-- The quake reference count reads every payload tab of a set of directories,
+-- through the tab_locations view. Same shape as the agents and terminals
+-- lookups it is unioned with there.
+CREATE INDEX idx_worker_tab_payloads_working_dir ON worker_tab_payloads(working_dir);
 
 -- Provider-neutral to-do rows. Populated incrementally by the worker
 -- output handler in response to Claude TodoWrite/Task*, Codex
@@ -532,14 +557,21 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 --
 -- The projection covers every payload-backed kind, FILE and IMAGE alike: the
 -- view reads tab_type from the row rather than stating a constant.
+--
+-- workspace_archived and is_quake ride along so the QUAKE REFERENCE COUNT can
+-- read this one relation too, rather than restating the per-type rule a fourth
+-- and fifth time. is_quake is 0 on the legs whose table has no such column,
+-- which is honest rather than a placeholder: only a terminal can BE a quake
+-- terminal, and a reader that excludes them wants every other row.
 CREATE VIEW tab_locations AS
-SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir
+SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir,
+       workspace_archived AS workspace_archived, 0 AS is_quake
 FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL
 UNION ALL
-SELECT 2, id, '', working_dir
+SELECT 2, id, '', working_dir, workspace_archived, is_quake
 FROM terminals WHERE closed_at IS NULL
 UNION ALL
-SELECT tab_type, tab_id, user_id, working_dir
+SELECT tab_type, tab_id, user_id, working_dir, workspace_archived, 0
 FROM worker_tab_payloads;
 
 -- +goose Down

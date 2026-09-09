@@ -282,6 +282,26 @@ if (typeof window !== 'undefined') {
     }
     return text
   }
+  // E2E hook: the same read, keyed by terminal ID.
+  //
+  // `__getActiveTerminalText` above resolves the module-global
+  // `lastActiveTerminalId`, which EVERY mounted view writes -- so with a tile
+  // terminal and the quake panel both up, last writer wins and a test asking
+  // about one can be answered about the other. A test that knows which shell it
+  // means asks for it.
+  ;(window as any).__getTerminalTextById = (id: string) => {
+    const instance = instances.get(id)
+    if (!instance)
+      return ''
+    const buffer = instance.terminal.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line)
+        text += line.translateToString(true)
+    }
+    return text
+  }
   ;(window as any).__getActiveTerminalRows = () => getActiveInstance()?.terminal.rows ?? 0
   ;(window as any).__getActiveTerminalBufferType = () => getActiveInstance()?.terminal.buffer.active.type ?? 'normal'
   // E2E hook: the input the active terminal's gate FORWARDED, in order —

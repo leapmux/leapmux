@@ -1,6 +1,7 @@
 import type { DetachedTerminal } from './tabView'
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import { onCleanup } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
@@ -41,7 +42,7 @@ export function quakeKeyId(key: QuakeKey): string {
 }
 
 /**
- * The key of a tab, or undefined when that tab names no quake terminal.
+ * The key of a tab, or undefined when that tab has no quake terminal.
  *
  * A tab with no worker (not hydrated yet) or no working directory has no
  * directory to put a shell in. Every OTHER tab type does: this is deliberately
@@ -154,6 +155,23 @@ export interface QuakeTerminalDeps {
  * client-local.
  */
 export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
+  /**
+   * The retract timers still to fire, keyed by entry. Held so an unmount can
+   * cancel them -- see the note where one is armed.
+   */
+  const pendingExits = new Map<string, ReturnType<typeof setTimeout>>()
+  const clearPendingExit = (keyId: string) => {
+    const pending = pendingExits.get(keyId)
+    if (pending !== undefined) {
+      clearTimeout(pending)
+      pendingExits.delete(keyId)
+    }
+  }
+  onCleanup(() => {
+    for (const pending of pendingExits.values())
+      clearTimeout(pending)
+    pendingExits.clear()
+  })
   const [entries, setEntries] = createStore<Record<string, QuakeEntry>>({})
 
   const entryFor = (keyId: string): QuakeEntry | undefined => entries[keyId]
@@ -161,7 +179,8 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
   /**
    * Every panel this client holds whose shell is resolved.
    *
-   * The watch plan reads this rather than mapping ids back through `keyOf`:
+   * The watch plan reads this rather than mapping ids back through
+   * `entryForTerminal`:
    * it needs the key and the open state together, and both are right here.
    */
   const liveEntries = (): ResolvedQuakeEntry[] =>
@@ -175,10 +194,18 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     return out
   }
 
-  const keyOf = (terminalId: string): string | undefined =>
-    Object.values(entries).find(e => e.terminalId === terminalId)?.keyId
+  /**
+   * The entry whose shell is `terminalId`, or undefined when none is.
+   *
+   * Returns the ENTRY rather than its key, because every caller wants the
+   * record: handing back the key alone made each of them look the same row up a
+   * second time, and made two of them know the key encoding for no other
+   * reason.
+   */
+  const entryForTerminal = (terminalId: string): QuakeEntry | undefined =>
+    Object.values(entries).find(e => e.terminalId === terminalId)
 
-  const isQuakeTerminal = (terminalId: string): boolean => keyOf(terminalId) !== undefined
+  const isQuakeTerminal = (terminalId: string): boolean => entryForTerminal(terminalId) !== undefined
 
   /**
    * The tab a background shell's notification badge belongs on.
@@ -189,10 +216,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    * panel.
    */
   const badgeTabFor = (terminalId: string): string | undefined => {
-    const keyId = keyOf(terminalId)
-    if (keyId === undefined)
-      return undefined
-    const entry = entries[keyId]
+    const entry = entryForTerminal(terminalId)
     return entry === undefined ? undefined : deps.tabForKey(entry)?.id
   }
 
@@ -341,7 +365,15 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     }
   }
 
-  const close = (keyId: string) => {
+  /**
+   * Hide the panel of one directory.
+   *
+   * Takes the KEY RECORD rather than the encoded string, so a caller cannot
+   * hand it a terminal id, and so the two modules that only ever wanted to
+   * close a panel stop importing `quakeKeyId` to build one.
+   */
+  const close = (key: QuakeKey) => {
+    const keyId = quakeKeyId(key)
     if (!entries[keyId]?.open)
       return
     // Asked BEFORE the panel retracts, and the order is load-bearing. Closing
@@ -359,7 +391,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       return
     const keyId = quakeKeyId(key)
     if (entries[keyId]?.open)
-      close(keyId)
+      close(key)
     else
       void open(tab)
   }
@@ -369,7 +401,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    *
    * The user can toggle the panel back on DURING the retract, and that decides
    * which of two things happens here. It is a real window -- the animation is
-   * 300 ms by default -- and getting it wrong strands the user in front of a
+   * 200 ms by default -- and getting it wrong strands the user in front of a
    * panel that unmounts itself a moment after they asked for it.
    */
   const finishShellExit = (keyId: string, deadTerminalId: string) => {
@@ -413,19 +445,32 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    * quake terminal the user ended should not leave a dead pane in front of them.
    */
   const handleShellExit = (terminalId: string) => {
-    const keyId = keyOf(terminalId)
-    if (keyId === undefined)
+    const entry = entryForTerminal(terminalId)
+    if (entry === undefined)
       return
+    const keyId = entry.keyId
     // The same retract the user's own close performs, including the focus
-    // restore it asks for first. `keyOf` matched this entry on `terminalId`,
-    // so `close` reports the identical shell.
-    close(keyId)
+    // restore it asks for first. `entryForTerminal` matched this entry on
+    // `terminalId`, so `close` reports the identical shell.
+    close(entry)
     const wait = deps.closeDelayMs()
     if (wait <= 0) {
       finishShellExit(keyId, terminalId)
       return
     }
-    setTimeout(finishShellExit, wait, keyId, terminalId)
+    // The handle is KEPT, keyed by the entry it belongs to. AppShell really
+    // does unmount inside one page lifetime -- logging out navigates to /login
+    // and back through AuthGuard -- and a timer left running past that reaches
+    // `finishShellExit`, whose reopen-during-retract branch sends an
+    // openTerminal RPC and spawns a PTY for a shell nobody is watching.
+    //
+    // Replacing any timer already pending for this key also covers the case the
+    // reopen branch handles defensively: a later exit overtaking an earlier one.
+    clearPendingExit(keyId)
+    pendingExits.set(keyId, setTimeout(() => {
+      pendingExits.delete(keyId)
+      finishShellExit(keyId, terminalId)
+    }, wait))
   }
 
   /**
@@ -459,7 +504,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
     entryFor,
     liveEntries,
     detachedTerminals,
-    keyOf,
+    entryForTerminal,
     badgeTabFor,
     isQuakeTerminal,
     open,

@@ -1001,49 +1001,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			)
 		})
 
-	// SetQuakePanel relays a show/hide request for one WORKING DIRECTORY's quake
-	// panel to every frontend the caller has open on this worker.
-	//
-	// It writes nothing. The panel's open state is client-local -- the same line
-	// the active tab in a tile is on -- so this is a remote keystroke, not a
-	// setting. The Control CLI is the only caller; a frontend toggles its own
-	// panel in-process.
-	//
-	// terminal:write and nothing else, because the request names a DIRECTORY
-	// and what it ultimately does is put a shell in front of the user. It used
-	// to take agent:read too, when the panel was addressed by agent id and the
-	// reply would have been an agent-id oracle; there is no agent id on this
-	// wire any more, and privateEventVisible drops the matching gate for the
-	// same reason.
-	//
-	// It NAMES no tab, so there is no row to load and no per-tab archive
-	// refusal to apply. The frontend refuses a cold open in an archived
-	// workspace on its own (see the quake store's isWorkspaceMutatable), which
-	// is the check that matters: this RPC stores nothing that an archived
-	// workspace could be harmed by.
-	registerOwnerGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
-			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
-				sendInvalidArgument(sender, "action must be open, close or toggle")
-				return
-			}
-			// Normalized with the SAME rule OpenTerminal applies to the
-			// directory it stores, because the two must produce the identical
-			// string: the frontend matches this event against the working dir
-			// of the tab it has focused, which came from a worker row. A `~`
-			// or a relative path that reached a frontend unexpanded would
-			// address a panel that can never exist.
-			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
-			if err != nil {
-				sendInvalidArgument(sender, err.Error())
-				return
-			}
-			if svc.PrivateEvents != nil {
-				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, workingDir, r.GetAction())
-			}
-			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
-		})
-
 	// RegisterTabPayload writes the (tab_id -> payload) registry row. The
 	// write must survive a client disconnect, otherwise a subsequent
 	// GetTabPayload from a sibling client would see a stale "not found".
@@ -1759,7 +1716,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if fetchErr == nil {
 		dbAgent = latest
 	}
-	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
@@ -1850,7 +1807,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
 		activeDbAgent = latest
 	}
-	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived != 0) {
+	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived) {
 	case interruptionClosed:
 		if running {
 			svc.Agents.StopAndWaitAgent(agentID)
@@ -3055,7 +3012,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if dbAgent.ClosedAt.Valid {
 		return fmt.Errorf("agent %s is closed; it takes no new process", agentID)
 	}
-	if dbAgent.WorkspaceArchived != 0 {
+	if dbAgent.WorkspaceArchived {
 		return fmt.Errorf("agent %s belongs to an archived workspace; it takes no new process", agentID)
 	}
 

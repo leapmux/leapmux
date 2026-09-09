@@ -8,7 +8,7 @@ import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { hubDataDir } from './helpers/server'
 import { getTerminalText, waitForTerminalReady } from './helpers/terminal'
-import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref } from './helpers/ui'
+import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref, waitForActiveTabContext } from './helpers/ui'
 
 /**
  * The Quake terminal: a shell that slides over the centre area for one working
@@ -28,6 +28,16 @@ const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 // `~/lib/shortcuts/keybindings`.
 
 async function toggleQuake(page: Page) {
+  // The chord addresses the ACTIVE TAB'S working directory, and a projected tab
+  // carries none until the worker's ListAgents / ListTerminals answer lands --
+  // `workingDir` comes from tab metadata, not from the CRDT. In that window
+  // `quakeKeyForTab` returns undefined, `withQuakeTarget` returns without
+  // acting, and the press is LOST: there is no retry and no message, so the
+  // panel simply never appears.
+  //
+  // Hydration takes ~300-400 ms and the press used to land ~45 ms after load,
+  // which is why the failing set moved between runs.
+  await waitForActiveTabContext(page)
   await page.keyboard.press('Control+Backquote')
 }
 
@@ -108,20 +118,46 @@ async function centreBox(page: Page) {
  */
 const quakeXterm = (page: Page) => page.locator(`${PANEL} [data-terminal-id][data-active="true"] .xterm`)
 
+/**
+ * The text of the QUAKE panel's own shell.
+ *
+ * Scoped to the panel, unlike `getTerminalText`, which resolves the module-wide
+ * "last active terminal". With a terminal TAB open behind the panel two views
+ * are mounted and either may have written that global last, so the unscoped
+ * read answers about whichever mounted most recently.
+ */
+async function getQuakeTerminalText(page: Page): Promise<string> {
+  const id = await page.locator(`${PANEL} [data-terminal-id][data-active="true"]`)
+    .first()
+    .getAttribute('data-terminal-id')
+  if (!id)
+    return ''
+  return page.evaluate(terminalId => (window as any).__getTerminalTextById(terminalId) as string, id)
+}
+
 /** Run one command in the quake shell and wait for its output. */
 async function runInQuake(page: Page, command: string, expected: string) {
   await quakeXterm(page).click()
   await page.keyboard.type(command)
   await page.keyboard.press('Enter')
-  await expect.poll(async () => (await getTerminalText(page)).includes(expected)).toBe(true)
+  await expect.poll(async () => (await getQuakeTerminalText(page)).includes(expected)).toBe(true)
 }
 
 test.describe('Quake-mode terminal', () => {
   test('nothing exists until the shortcut is pressed', async ({ page, leapmuxServer }) => {
     await openAgentTab(page, leapmuxServer, 'Quake Lazy')
+    // The tab is fully hydrated, so the chord WOULD work from here. Without
+    // this the absence below is satisfied by a page that has not finished
+    // loading, which is true with the feature deleted.
+    await waitForActiveTabContext(page)
 
     // Lazy: no panel, no xterm, no RPC for a user who never opens it.
     await expect(panel(page)).toHaveCount(0)
+
+    // And the same page DOES produce one on the chord, which is what makes the
+    // absence above a statement about laziness rather than about timing.
+    await toggleQuake(page)
+    await expect(panel(page)).toBeInViewport()
   })
 
   test('opens a shell over the centre area and runs a command', async ({ page, leapmuxServer }) => {
@@ -230,13 +266,18 @@ test.describe('Quake-mode terminal', () => {
     // The default: the top edge, covering 65% of the centre area.
     await expect(panel(page)).toHaveAttribute('data-quake-orientation', 'top')
 
-    const centre = await centreBox(page)
-    const panelBox = (await panel(page).boundingBox())!
-    // Anchored to the top of the centre band, not to the window, and spanning
-    // it sideways.
-    expect(Math.abs(panelBox.y - centre.y)).toBeLessThan(4)
-    expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
-    expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
+    // RETRIED as a whole, because the panel slides by transform and
+    // `toBeInViewport` is satisfied by the first intersecting pixel. A single
+    // `boundingBox()` after it samples an arbitrary frame of the transition.
+    await expect(async () => {
+      const centre = await centreBox(page)
+      const panelBox = (await panel(page).boundingBox())!
+      // Anchored to the top of the centre band, not to the window, and spanning
+      // it sideways.
+      expect(Math.abs(panelBox.y - centre.y)).toBeLessThan(4)
+      expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
+      expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
+    }).toPass()
   })
 
   /**
@@ -261,25 +302,28 @@ test.describe('Quake-mode terminal', () => {
 
       await expect(panel(page)).toHaveAttribute('data-quake-orientation', orientation)
 
-      const centre = await centreBox(page)
-      const panelBox = (await panel(page).boundingBox())!
-      if (axis === 'y') {
-        // Bottom-anchored: flush with the bottom of the centre band, full
-        // width, and 65% of its height.
-        expect(Math.abs((panelBox.y + panelBox.height) - (centre.y + centre.height))).toBeLessThan(4)
-        expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
-        expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
-      }
-      else {
-        // Side-anchored: full height, 65% of the width, and flush with the edge
-        // it gives.
-        expect(Math.abs(panelBox.height - centre.height)).toBeLessThan(4)
-        expect(Math.abs(panelBox.width - centre.width * 0.65)).toBeLessThan(4)
-        if (orientation === 'left')
-          expect(Math.abs(panelBox.x - centre.x)).toBeLessThan(4)
-        else
-          expect(Math.abs((panelBox.x + panelBox.width) - (centre.x + centre.width))).toBeLessThan(4)
-      }
+      // Retried as a whole -- see the note on the default-edge case above.
+      await expect(async () => {
+        const centre = await centreBox(page)
+        const panelBox = (await panel(page).boundingBox())!
+        if (axis === 'y') {
+          // Bottom-anchored: flush with the bottom of the centre band, full
+          // width, and 65% of its height.
+          expect(Math.abs((panelBox.y + panelBox.height) - (centre.y + centre.height))).toBeLessThan(4)
+          expect(Math.abs(panelBox.width - centre.width)).toBeLessThan(4)
+          expect(Math.abs(panelBox.height - centre.height * 0.65)).toBeLessThan(4)
+        }
+        else {
+          // Side-anchored: full height, 65% of the width, and flush with the edge
+          // it gives.
+          expect(Math.abs(panelBox.height - centre.height)).toBeLessThan(4)
+          expect(Math.abs(panelBox.width - centre.width * 0.65)).toBeLessThan(4)
+          if (orientation === 'left')
+            expect(Math.abs(panelBox.x - centre.x)).toBeLessThan(4)
+          else
+            expect(Math.abs((panelBox.x + panelBox.width) - (centre.x + centre.width))).toBeLessThan(4)
+        }
+      }).toPass()
     })
   }
 
@@ -437,7 +481,7 @@ test.describe('Quake-mode terminal', () => {
     // demanded an agent tab -- and the shell it shows is the agent tab's.
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
-    await expect.poll(async () => (await getTerminalText(page)).includes('from-the-agent-tab')).toBe(true)
+    await expect.poll(async () => (await getQuakeTerminalText(page)).includes('from-the-agent-tab')).toBe(true)
   })
 
   /**
@@ -504,6 +548,12 @@ test.describe('Quake-mode terminal', () => {
       await loginViaToken(second, leapmuxServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
+      // The CLI addresses a DIRECTORY, and each browser maps it back through
+      // `findTabInWorkingDir`, which compares `tab.workingDir`. An unhydrated
+      // tab matches nothing, and the command is a transient event with no
+      // retry -- so both pages must have their directory before it is sent.
+      await waitForActiveTabContext(page)
+      await waitForActiveTabContext(second)
 
       await runCLI(cli, ['terminal', 'quake', 'open', '--worker-id', leapmuxServer.workerId, '--working-dir', workingDir])
       await expect(panel(page)).toBeInViewport()

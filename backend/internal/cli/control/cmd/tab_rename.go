@@ -32,7 +32,7 @@ func RunTabRename(rawCtx any, args []string) error {
 	if title == "" {
 		return control.EmitError("invalid_request", "--title is required")
 	}
-	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkerID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
+	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		switch got.TabType {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
 			// Report the worker's title, not the one this command sent. The

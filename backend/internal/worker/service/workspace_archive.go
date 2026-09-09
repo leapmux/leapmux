@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -20,6 +21,23 @@ import (
 type archiveTabSet struct {
 	agents    []string
 	terminals []string
+	// payloads holds the FILE and IMAGE tabs, as (owner, id) pairs.
+	//
+	// A PAIR, unlike the other two: a payload-backed tab id is minted
+	// client-side and unique only within one account, so worker_tab_payloads is
+	// keyed (user_id, tab_id) and the id alone would match another account's
+	// row. Agent and terminal ids are server-minted and globally unique.
+	//
+	// Such a tab owns no process, so nothing pauses or stops for it. The flag
+	// exists only so the quake reference count can tell a viewer the user can
+	// still reach from one nobody can open the panel from.
+	payloads []payloadTabRef
+}
+
+// payloadTabRef addresses one payload-backed tab. See archiveTabSet.payloads.
+type payloadTabRef struct {
+	userID string
+	tabID  string
 }
 
 // ApplyTabArchiveState applies the Hub's authoritative archive state to this
@@ -45,12 +63,7 @@ func (svc *Service) ApplyTabArchiveState(
 		return nil, err
 	}
 
-	// Held across the flag write AND the teardown below: see archiveTabLocks
-	// for why the pair must be atomic per tab.
-	unlock := svc.lockArchiveTabs(requested)
-	defer unlock()
-
-	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
+	changed, err := svc.writeArchiveFlagsAndTearDown(ctx, state, flag, requested)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +89,44 @@ func (svc *Service) ApplyTabArchiveState(
 	// terminal has no restart contract, so there is no state an unarchive could
 	// restore. The next open in that directory spawns a fresh shell, which is
 	// what an unarchived workspace wants anyway.
-	svc.closeUnusedQuakeTerminals(ctx, "")
+	//
+	// Scoped to the tabs whose flag actually MOVED, and skipped entirely when
+	// none did. This pass runs on every reconcile that reports any archived or
+	// any active tab, which is nearly every pass of a busy worker -- and an
+	// unscoped sweep there closed a shell in a directory this request never
+	// named, immediately, ahead of the grace window that reconcileQuakeTerminals
+	// exists to give it.
+	//
+	// Released the locks first: the rows this sweep closes are OTHER tabs than
+	// the ones the request names, so holding their locks through a PTY teardown
+	// buys nothing.
+	svc.closeUnusedQuakeTerminals(ctx, changed)
 
+	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		return nil, nil
+	}
+	return changed.agents, nil
+}
+
+// writeArchiveFlagsAndTearDown writes the flags and runs the per-tab teardown
+// with this request's locks held, then releases them.
+//
+// One function because the pair must be atomic per tab: see archiveTabLocks. It
+// exists so the quake sweep its caller runs next is OUTSIDE the locks, which it
+// can be because that sweep acts on rows this request does not name.
+func (svc *Service) writeArchiveFlagsAndTearDown(
+	ctx context.Context,
+	state leapmuxv1.WorkspaceArchiveState,
+	flag bool,
+	requested archiveTabSet,
+) (archiveTabSet, error) {
+	unlock := svc.lockArchiveTabs(requested)
+	defer unlock()
+
+	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
+	if err != nil {
+		return archiveTabSet{}, err
+	}
 	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
 		// The Hub lists root tabs only. A subagent owns no tab, so the pause
 		// must walk the subtree, exactly as the process-exit path does.
@@ -89,7 +138,7 @@ func (svc *Service) ApplyTabArchiveState(
 			}
 		}
 		svc.stopArchivedTabs(changed)
-		return nil, nil
+		return changed, nil
 	}
 	for _, agentID := range requested.agents {
 		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
@@ -98,7 +147,7 @@ func (svc *Service) ApplyTabArchiveState(
 			}
 		}
 	}
-	return changed.agents, nil
+	return changed, nil
 }
 
 // lockArchiveTabs takes every lock this request needs and returns their
@@ -106,12 +155,15 @@ func (svc *Service) ApplyTabArchiveState(
 // requests over intersecting tab sets unable to deadlock: both walk the same
 // global order, so neither can hold a lock the other wants next.
 func (svc *Service) lockArchiveTabs(tabs archiveTabSet) func() {
-	keys := make([]string, 0, len(tabs.agents)+len(tabs.terminals))
+	keys := make([]string, 0, len(tabs.agents)+len(tabs.terminals)+len(tabs.payloads))
 	for _, id := range tabs.agents {
 		keys = append(keys, "agent:"+id)
 	}
 	for _, id := range tabs.terminals {
 		keys = append(keys, "terminal:"+id)
+	}
+	for _, ref := range tabs.payloads {
+		keys = append(keys, "payload:"+ref.userID+"\x00"+ref.tabID)
 	}
 	sort.Strings(keys)
 	locks := make([]*sync.Mutex, 0, len(keys))
@@ -133,7 +185,7 @@ func (svc *Service) lockArchiveTabs(tabs archiveTabSet) func() {
 //
 // The caller holds this request's per-tab locks, so no other archive operation
 // can write these rows between the read and the write.
-func (svc *Service) persistArchiveFlags(ctx context.Context, flag int64, requested archiveTabSet) (archiveTabSet, error) {
+func (svc *Service) persistArchiveFlags(ctx context.Context, flag bool, requested archiveTabSet) (archiveTabSet, error) {
 	tx, err := svc.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return archiveTabSet{}, fmt.Errorf("start archive-state transaction: %w", err)
@@ -164,11 +216,33 @@ func (svc *Service) persistArchiveFlags(ctx context.Context, flag int64, request
 	if err != nil {
 		return archiveTabSet{}, err
 	}
+	changedPayloads := make([]payloadTabRef, 0, len(requested.payloads))
+	for _, ref := range requested.payloads {
+		// Through userid.New, with an early return on the miss: a zero id
+		// unwraps to "", which MATCHES every blank-owner row instead of none.
+		// archiveTabIDs already refuses an empty owner, so reaching this is a
+		// caller that built an archiveTabSet by hand.
+		owner, ok := userid.New(ref.userID)
+		if !ok {
+			return archiveTabSet{}, fmt.Errorf("payload tab %s has an unmintable owner", ref.tabID)
+		}
+		rows, setErr := queries.SetPayloadTabWorkspaceArchived(ctx, db.SetPayloadTabWorkspaceArchivedParams{
+			WorkspaceArchived: flag,
+			UserID:            owner.String(),
+			TabID:             ref.tabID,
+		})
+		if setErr != nil {
+			return archiveTabSet{}, fmt.Errorf("set payload tab %s archive state: %w", ref.tabID, setErr)
+		}
+		if rows > 0 {
+			changedPayloads = append(changedPayloads, ref)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return archiveTabSet{}, fmt.Errorf("commit archive state: %w", err)
 	}
 	committed = true
-	return archiveTabSet{agents: changedAgents, terminals: changedTerminals}, nil
+	return archiveTabSet{agents: changedAgents, terminals: changedTerminals, payloads: changedPayloads}, nil
 }
 
 // applyArchiveFlag runs one table's update loop and returns the ids whose row
@@ -188,14 +262,14 @@ func applyArchiveFlag(ctx context.Context, ids []string, kind string, set func(c
 	return changed, nil
 }
 
-func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (int64, error) {
+func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (bool, error) {
 	switch state {
 	case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:
-		return 0, nil
+		return false, nil
 	case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
-		return 1, nil
+		return true, nil
 	default:
-		return 0, fmt.Errorf("archive_state must be ACTIVE or ARCHIVED")
+		return false, fmt.Errorf("archive_state must be ACTIVE or ARCHIVED")
 	}
 }
 
@@ -210,6 +284,7 @@ func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (int64, error) 
 func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 	agentSeen := make(map[string]struct{})
 	terminalSeen := make(map[string]struct{})
+	payloadSeen := make(map[payloadTabRef]struct{})
 	var set archiveTabSet
 	for _, tab := range tabs {
 		if tab == nil || tab.GetTabId() == "" {
@@ -227,7 +302,22 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 				set.terminals = append(set.terminals, tab.GetTabId())
 			}
 		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
-			// Payload-backed tabs own no process and have no archive-state row.
+			// Payload-backed tabs own no process, so they take no teardown --
+			// but they DO take the flag, because they are references for the
+			// quake reference count and an archived tab is not a live one.
+			//
+			// REFUSED without an owner, rather than written with a blank one: a
+			// blank user_id matches no row on a write and another account's row
+			// on a read, so a sender that forgot the field must hear about it
+			// rather than have its request half-applied.
+			if tab.GetUserId() == "" {
+				return archiveTabSet{}, fmt.Errorf("tab %q is payload-backed and needs a user_id", tab.GetTabId())
+			}
+			key := payloadTabRef{userID: tab.GetUserId(), tabID: tab.GetTabId()}
+			if _, exists := payloadSeen[key]; !exists {
+				payloadSeen[key] = struct{}{}
+				set.payloads = append(set.payloads, key)
+			}
 		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 			return archiveTabSet{}, fmt.Errorf("tab %q has an unspecified type", tab.GetTabId())
 		default:

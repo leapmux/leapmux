@@ -208,6 +208,9 @@ export const AppShell: Component = () => {
     state: crdtState,
     metadata: tabMetadata,
     detachedTerminals: () => quakeStore.detachedTerminals(),
+    // A hoisted function declaration, which its own definition keeps hoisted
+    // for exactly this kind of earlier caller.
+    isWorkspaceMutatable: isWorkspaceMutatableById,
   })
   tabViewRef = tabView
   // Which tab is selected, per workspace and per tile. Client-local and
@@ -1524,7 +1527,7 @@ export const AppShell: Component = () => {
     steerQueueItem: item => tileRenderer.queueOps.steerQueueItem(item),
     quakePanel: {
       open: tab => void quakeStore.open(tab),
-      close: keyId => quakeStore.close(keyId),
+      close: key => quakeStore.close(key),
       toggle: tab => quakeStore.toggle(tab),
     },
   })
@@ -1636,7 +1639,7 @@ export const AppShell: Component = () => {
       view={tabView}
       metadata={tabMetadata}
       activeQuakeKeyId={activeQuakeKeyId}
-      onClose={keyId => quakeStore.close(keyId)}
+      onClose={key => quakeStore.close(key)}
       onInput={termOps.handleTerminalInput}
       onResize={termOps.handleTerminalResize}
       onContentReady={id => tabMetadata.patch(id, { contentReady: true })}

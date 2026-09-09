@@ -191,6 +191,64 @@ describe('tabView', () => {
     })
   })
 
+  // A quake terminal belongs to a DIRECTORY, so `findTabInWorkingDir` answers
+  // three questions with one tab: which workspace refuses a cold open, which
+  // row carries a background shell's badge, and whether the directory is still
+  // in use. Two of those need a tab the user can REACH.
+  //
+  // Ranking by MRU alone put the badge inside a collapsed archived section and
+  // refused a cold open that a live tab in the same directory allows -- and
+  // archiving a workspace rooted at a checkout makes its tab the MRU winner
+  // straight away, so this is the state the archive action itself produces.
+  it('prefers a tab in a reachable workspace over a more recent archived one', () => {
+    withTestBridge((harness) => {
+      createRoot((dispose) => {
+        seedWorkspace(harness, 'ws-archived', 'archived-root')
+        const metadata = createTabMetadataStore()
+        const { state, projection } = projectionMemo()
+        const view = createTabView({
+          projection,
+          state,
+          metadata,
+          isWorkspaceMutatable: workspaceId => workspaceId !== 'ws-archived',
+        })
+        emitAddTab({ type: TabType.AGENT, id: 'a-live', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        emitAddTab({ type: TabType.AGENT, id: 'a-archived', tileId: 'archived-root', position: 'M', workerId: 'wkr-1' })
+        metadata.patch('a-live', { workingDir: '/repo', mru: 1 })
+        // The MORE recent of the two, which is what makes this a preference
+        // rather than a tie-break.
+        metadata.patch('a-archived', { workingDir: '/repo', mru: 99 })
+
+        expect(view.findTabInWorkingDir('wkr-1', '/repo')?.id).toBe('a-live')
+        dispose()
+      })
+    })
+  })
+
+  // The other half, and why this is a preference and not a filter: with no
+  // reachable tab the archived one must still resolve, so the cold open is
+  // refused in the workspace the user is actually in rather than silently
+  // doing nothing.
+  it('still answers with an archived tab when it is the only one', () => {
+    withTestBridge((harness) => {
+      createRoot((dispose) => {
+        const metadata = createTabMetadataStore()
+        const { state, projection } = projectionMemo()
+        const view = createTabView({
+          projection,
+          state,
+          metadata,
+          isWorkspaceMutatable: () => false,
+        })
+        emitAddTab({ type: TabType.AGENT, id: 'a-archived', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        metadata.patch('a-archived', { workingDir: '/repo', mru: 1 })
+
+        expect(view.findTabInWorkingDir('wkr-1', '/repo')?.id).toBe('a-archived')
+        dispose()
+      })
+    })
+  })
+
   it('carries worker metadata that the CRDT does not have', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {

@@ -58,8 +58,7 @@ func runTerminalQuake(rawCtx any, args []string, action leapmuxv1.QuakePanelActi
 		return err
 	}
 	if workingDir == "" {
-		return control.EmitError("invalid_request",
-			"--working-dir is required (and $LEAPMUX_CONTROL_WORKING_DIR is not set, so there's no default)")
+		return emitMissingDirFlagErr("--working-dir")
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkerID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		if err := maybePreflightWorker(ctx, c, got.WorkerID); err != nil {

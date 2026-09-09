@@ -58,7 +58,7 @@ func TestOpenTerminal_RecordsTheQuakeFlag(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, row.IsQuake)
+	assert.True(t, row.IsQuake)
 	assert.Equal(t, dir, row.WorkingDir, "the directory is the address, so it must be stored verbatim")
 }
 
@@ -72,7 +72,7 @@ func TestOpenTerminal_WithoutQuakeIsUnchanged(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, row.IsQuake, "an ordinary terminal tab is not a quake terminal")
+	assert.False(t, row.IsQuake, "an ordinary terminal tab is not a quake terminal")
 }
 
 // The second toggle, and the second DEVICE. Both must land on one PTY.
@@ -110,7 +110,7 @@ func TestOpenTerminal_TwoAgentsInOneDirectoryShareOneQuakeTerminal(t *testing.T)
 	createAgentForPath(t, svc, "agent-1", dir)
 	createAgentForPath(t, svc, "agent-2", dir)
 
-	// Nothing in either call names an agent, which IS the change: the request
+	// Neither call mentions an agent, which IS the change: the request
 	// carries the directory and nothing else.
 	first, _ := openQuakeTerminal(t, svc, d, dir)
 	second, _ := openQuakeTerminal(t, svc, d, dir)
@@ -284,10 +284,41 @@ func TestListTerminals_ADirectoryWithNoQuakeTerminalAnswersEmpty(t *testing.T) {
 	assert.Empty(t, resp.GetVerdicts())
 }
 
-// A quake terminal is TERMINAL data now, so terminal:read alone resolves one.
-// It used to carry the owning agent's id, which is why the lookup took
-// agent:read as well; there is no agent id on this reply any more.
-func TestListTerminals_ResolvesAQuakeTerminalWithTerminalReadAlone(t *testing.T) {
+// A directory-keyed lookup needs file:read ON TOP of this handler's
+// terminal:read, and the browser holds both.
+//
+// A quake terminal has no CRDT tab, so its id never reaches the hub's tab list
+// and no worker RPC enumerates terminals -- before this, a terminal:read caller
+// could not name one at all. Keyed on a path it can guess, it could ask whether
+// any absolute directory has a live shell and read that shell's screen.
+// WatchWorkerPrivateEvents already requires file:read to deliver the same
+// working_dir, so this is what stops the two surfaces pricing it differently.
+func TestListTerminals_ResolvesAQuakeTerminalWithFileReadAndTerminalRead(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	w := newTestWriter()
+	dispatchScoped(d, mustScopes("worker:read terminal:read file:read"), "ListTerminals",
+		&leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	require.Len(t, resp.GetTerminals(), 1)
+	assert.Equal(t, terminalID, resp.GetTerminals()[0].GetTerminalId())
+	assert.True(t, resp.GetTerminals()[0].GetQuake())
+}
+
+// The refusal half: terminal:read alone must not answer whether an arbitrary
+// absolute path has a live shell.
+func TestListTerminals_RefusesADirectoryProbeWithoutFileRead(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
@@ -300,14 +331,13 @@ func TestListTerminals_ResolvesAQuakeTerminalWithTerminalReadAlone(t *testing.T)
 	w := newTestWriter()
 	dispatchScoped(d, mustScopes("worker:read terminal:read"), "ListTerminals",
 		&leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
-	require.Empty(t, w.errors)
+	require.Empty(t, w.errors, "the request is answered, with the probe simply unanswered")
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListTerminalsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	require.Len(t, resp.GetTerminals(), 1)
-	assert.Equal(t, terminalID, resp.GetTerminals()[0].GetTerminalId())
-	assert.True(t, resp.GetTerminals()[0].GetQuake())
+	assert.Empty(t, resp.GetTerminals(),
+		"a caller with no file:read learns nothing about the directory")
 }
 
 // Closing the last tab in a directory ends its quake terminal, and it happens
@@ -485,7 +515,7 @@ func TestOpenTerminal_DoesNotAdoptAQuakeTerminalWhoseShellIsGone(t *testing.T) {
 		Shell:      testutil.TestShell(),
 		Title:      "Terminal Ghost",
 		Screen:     []byte{},
-		IsQuake:    1,
+		IsQuake:    true,
 	}))
 
 	fresh, _ := openQuakeTerminal(t, svc, d, dir)
@@ -519,7 +549,7 @@ func TestCloseOrphanedQuakeTerminals_ClosesARowWithNoLiveShell(t *testing.T) {
 		HomeDir:    orphanDir,
 		Shell:      testutil.TestShell(),
 		Screen:     []byte{},
-		IsQuake:    1,
+		IsQuake:    true,
 	}))
 	live, _ := openQuakeTerminal(t, svc, d, liveDir)
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(live) }, "spawn")
@@ -558,7 +588,7 @@ func TestRestartTerminal_RefusesAQuakeTerminal(t *testing.T) {
 		HomeDir:    dir,
 		Shell:      testutil.TestShell(),
 		Screen:     []byte{},
-		IsQuake:    1,
+		IsQuake:    true,
 	}))
 
 	w := newTestWriter()
@@ -685,10 +715,10 @@ func TestListTerminals_IgnoresAnEmptyQuakeWorkingDir(t *testing.T) {
 	require.Len(t, reply.responses, 1)
 	var resp leapmuxv1.ListTerminalsResponse
 	require.NoError(t, proto.Unmarshal(reply.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetTerminals(), "an empty directory names no quake terminal")
+	assert.Empty(t, resp.GetTerminals(), "an empty directory addresses no quake terminal")
 }
 
-// SetQuakePanel names a DIRECTORY, not a tab, so terminal:write is the whole
+// SetQuakePanel specifies a DIRECTORY, not a tab, so terminal:write is the whole
 // gate. It used to take agent:read too, because the request carried an agent id
 // and the reply told a known one from an unknown one.
 func TestSetQuakePanel_IsServedWithTerminalWriteAlone(t *testing.T) {
@@ -696,9 +726,13 @@ func TestSetQuakePanel_IsServedWithTerminalWriteAlone(t *testing.T) {
 
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	// A real tab there, because an OPENING command for a directory no tab works
+	// in is refused on its own merits -- see the refusal test below.
+	createAgentForPath(t, svc, "agent-1", dir)
 
 	req := &leapmuxv1.SetQuakePanelRequest{
-		WorkingDir: t.TempDir(),
+		WorkingDir: dir,
 		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 	}
 
@@ -736,4 +770,313 @@ func TestSetQuakePanel_RefusesAnUnspecifiedAction(t *testing.T) {
 
 	require.Len(t, w.errors, 1)
 	assert.Contains(t, w.errors[0].message, "open, close or toggle")
+}
+
+// A FILE tab is a reference to its directory exactly as an agent or a terminal
+// tab is: the panel opens over one, so the shell must outlive the agent that
+// started it while a viewer is still open there.
+//
+// The worker used to count root agents and terminal tabs only, which made it
+// disagree with the browser -- `quakeKeyForTab` accepts any tab carrying a
+// worker and a directory -- and the reap closed a shell the user was typing in.
+func TestCloseAgent_KeepsTheQuakeTerminalWhileAFileTabWorksInTheDirectory(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	w := newTestWriter()
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	require.Empty(t, w.errors)
+
+	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "the file tab still works here, so the shell stays")
+	assert.True(t, svc.Terminals.HasTerminal(terminalID), "and its PTY stays with it")
+}
+
+// The other half: closing the LAST viewer is what ends the shell. The payload
+// close path had no reap at all, so this case waited for the orphan
+// reconciler -- an hour by default.
+func TestRevokeTabPayload_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	closeAgent := newTestWriter()
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, closeAgent)
+	require.Empty(t, closeAgent.errors)
+	kept, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	require.False(t, kept.ClosedAt.Valid, "the file tab still references the directory")
+
+	revoke := newTestWriter()
+	dispatch(d, "RevokeTabPayload", &leapmuxv1.RevokeTabPayloadRequest{TabId: "file-1"}, revoke)
+	require.Empty(t, revoke.errors)
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "the last reference is gone, so the shell goes")
+	assert.False(t, svc.Terminals.HasTerminal(terminalID), "the PTY is reaped, not merely marked")
+}
+
+// An ARCHIVED viewer is not a live reference, exactly as an archived agent tab
+// is not. Nobody can reach the panel from a tab in an archived workspace, so a
+// directory whose every tab is archived has nobody left to type into its shell.
+//
+// This is what worker_tab_payloads.workspace_archived buys, and the flag needs
+// an OWNER: the table is keyed (user_id, tab_id) because a payload-backed tab
+// id is minted client-side and unique only within one account. TabRef.user_id
+// is what carries it.
+func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	_, err := svc.ApplyTabArchiveState(ctx,
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{
+			{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			{TabId: "file-1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, UserId: "user-1"},
+		},
+	)
+	require.NoError(t, err)
+
+	payload, err := svc.Queries.GetWorkerTabPayload(ctx, db.GetWorkerTabPayloadParams{UserID: "user-1", TabID: "file-1"})
+	require.NoError(t, err)
+	assert.True(t, payload.WorkspaceArchived, "the flag is what makes the viewer stop counting")
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "every tab in the directory is archived, so the shell ends")
+}
+
+// A payload-backed tab id is unique only within one account, so the archive
+// REFUSES one with no owner rather than writing a blank user_id -- which would
+// match no row on a write and another account's row on a read.
+func TestApplyTabArchiveState_RefusesAPayloadTabWithNoOwner(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	_, err := svc.ApplyTabArchiveState(context.Background(),
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{{TabId: "file-1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE}},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user_id")
+}
+
+// The archive sweep must act on the directories THIS request changed and no
+// others. An unscoped whole-worker sweep closed a shell in a directory the
+// request never mentioned -- immediately, ahead of the grace window the orphan
+// reconciler gives the same row.
+func TestApplyTabArchiveState_LeavesAQuakeTerminalInAnUnrelatedDirectory(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	archivedDir := t.TempDir()
+	otherDir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", archivedDir)
+	// The other directory holds a quake terminal and NO counted tab, which is
+	// exactly the shape the unscoped sweep reaped. The reconciler reaps it
+	// later, after its grace window; this RPC must not.
+	otherQuake, _ := openQuakeTerminal(t, svc, d, otherDir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(otherQuake) }, "spawn")
+
+	_, err := svc.ApplyTabArchiveState(ctx,
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+	)
+	require.NoError(t, err)
+
+	row, err := svc.Queries.GetTerminal(ctx, otherQuake)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid,
+		"this request said nothing about that directory, so it must not reap its shell")
+}
+
+// A pass that flips no flag must do no work at all. The reconciler calls
+// ApplyTabArchiveState on nearly every pass of a busy worker, so a sweep that
+// ran regardless was both wasted and, before it was scoped, destructive.
+func TestApplyTabArchiveState_NoFlagChangeSweepsNothing(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	dir := t.TempDir()
+	quakeID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(quakeID) }, "spawn")
+
+	// A tab id no row matches: persistArchiveFlags reports zero changes.
+	_, err := svc.ApplyTabArchiveState(ctx,
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{{TabId: "agent-absent", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+	)
+	require.NoError(t, err)
+
+	row, err := svc.Queries.GetTerminal(ctx, quakeID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "nothing changed, so nothing is reaped")
+}
+
+// working_dir is the ADDRESS of a quake terminal, not a field with a sensible
+// default. normalizeWorkingDir resolves an empty path to the worker's home
+// directory, so an unset field silently claimed the singleton row of $HOME and
+// held it against the real one.
+func TestOpenTerminal_RefusesAQuakeTerminalWithNoWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	w := newTestWriter()
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		Shell: testutil.TestShell(),
+		Quake: true,
+		Cols:  200,
+		Rows:  24,
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Contains(t, w.errors[0].message, "working_dir")
+	assert.Empty(t, w.responses, "no terminal is minted for an address that names nothing")
+}
+
+// The sibling refusal, and the reason ListTerminals drops an empty entry
+// too: an unset directory must not become a command against $HOME's panel,
+// broadcast to every frontend of the account.
+func TestSetQuakePanel_RefusesAnEmptyWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	w := newTestWriter()
+	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+		Action: leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Contains(t, w.errors[0].message, "working_dir")
+}
+
+// dirHasLiveTab keys on (kind, id), not on the id alone.
+//
+// An agent or terminal id is a server-minted nanoid and globally unique, but a
+// payload-backed tab id is minted client-side and unique only within ONE
+// account. Keyed on the id alone, a viewer closing in one account excluded a
+// second account's still-open viewer of the same directory -- and the reap then
+// took a shell that account was using.
+func TestDirHasLiveTab_ExcludesOneTabRatherThanEveryTabSharingItsID(t *testing.T) {
+	t.Parallel()
+
+	// The same client-minted id in two accounts, plus the agent that happens to
+	// carry it too. Only the closing one may be excluded.
+	tabs := []dirTabRef{
+		{Kind: leapmuxv1.TabType_TAB_TYPE_FILE, ID: "file-1", WorkingDir: "/repo"},
+		{Kind: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "file-1", WorkingDir: "/repo"},
+	}
+
+	closing := tabRefKey(leapmuxv1.TabType_TAB_TYPE_FILE, "file-1")
+	assert.True(t, dirHasLiveTab(tabs, closing),
+		"the agent row shares the id but is a different tab, so the directory is still in use")
+
+	assert.False(t, dirHasLiveTab(tabs[:1], closing),
+		"and the closing tab itself is still excluded")
+}
+
+// An archived tab is not a live reference, whatever its kind.
+func TestDirHasLiveTab_AnArchivedTabIsNotAReference(t *testing.T) {
+	t.Parallel()
+
+	tabs := []dirTabRef{
+		{Kind: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "a1", WorkingDir: "/repo", WorkspaceArchived: true},
+	}
+	assert.False(t, dirHasLiveTab(tabs, ""), "nobody can reach the panel from an archived tab")
+
+	tabs = append(tabs, dirTabRef{Kind: leapmuxv1.TabType_TAB_TYPE_FILE, ID: "f1", WorkingDir: "/repo"})
+	assert.True(t, dirHasLiveTab(tabs, ""), "the live viewer beside it still counts")
+}
+
+// An OPENING command for a directory no tab works in is refused, because no
+// client could act on it: every frontend resolves the event back to a tab and
+// needs one to decide the workspace a cold open is refused in. Reporting
+// success made a typo'd --working-dir indistinguishable from a real invocation.
+func TestSetQuakePanel_RefusesAnOpeningCommandForADirectoryWithNoTab(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	w := newTestWriter()
+	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+		WorkingDir: t.TempDir(),
+		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN,
+	}, w)
+
+	require.Len(t, w.errors, 1)
+	assert.Contains(t, w.errors[0].message, "no tab works in that directory")
+}
+
+// CLOSE is exempt, and deliberately: it needs only the key, and it is the one
+// action that can act on a directory whose tabs the calling client cannot see.
+// On a phone it is the only way to dismiss a panel covering the centre area.
+func TestSetQuakePanel_AllowsACloseForADirectoryWithNoTab(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	w := newTestWriter()
+	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+		WorkingDir: t.TempDir(),
+		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_CLOSE,
+	}, w)
+
+	assert.Empty(t, w.errors, "a close must never be refused for want of a tab")
+}
+
+// The payload row read is owner-guarded, and the miss returns EARLY.
+//
+// worker_tab_payloads is keyed (user_id, tab_id), so a zero owner unwraps to ""
+// and would MATCH every blank-owner row instead of none. "" is the honest
+// answer here: the quake reap treats it as "no directory to ask about", and the
+// orphan reconciler re-asks on its next pass.
+func TestPayloadTabWorkingDir_RefusesAnUnmintableOwner(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
+
+	assert.Equal(t, dir, svc.payloadTabWorkingDir("user-1", "file-1"),
+		"the owner that holds the row reads it")
+	assert.Empty(t, svc.payloadTabWorkingDir("", "file-1"),
+		"a blank owner must match nothing, not every blank-owner row")
 }

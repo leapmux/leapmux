@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
-import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
+import type { QuakeKey, QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
@@ -16,7 +16,7 @@ export interface QuakeTerminalPanelProps {
   view: TabView
   metadata: TabMetadataStore
   /**
-   * The quake key of the FOCUSED tab, or null when it names none.
+   * The quake key of the FOCUSED tab, or null when it has none.
    *
    * A key, not a tab id, because the panel belongs to a working directory: two
    * tabs in one directory show the same panel, and switching between them must
@@ -25,13 +25,13 @@ export interface QuakeTerminalPanelProps {
    */
   activeQuakeKeyId: () => string | null
   /** Hide the panel of one directory. Wired to the store's `close`. */
-  onClose: (keyId: string) => void
+  onClose: (key: QuakeKey) => void
   onInput: (terminalId: string, data: Uint8Array) => void
   onResize: (terminalId: string, cols: number, rows: number) => void
   onContentReady: (terminalId: string) => void
   /** Whether a tab rename is open anywhere; see TerminalViewProps.tabEditing. */
   tabEditing?: () => boolean
-  /** See TerminalViewProps.confirmLink. A companion's links raise the same dialog. */
+  /** See TerminalViewProps.confirmLink. A quake terminal's links raise the same dialog. */
   confirmLink: UntrustedLinkConfirm
 }
 
@@ -107,10 +107,10 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
       void el.offsetHeight
       setFirstSlideArmed(true)
     })
-    // Re-armed for the NEXT element. The panel unmounts once the last companion
-    // is released -- the owner's tab closed, or its shell exited -- and the
-    // reopen after that builds a new element, which needs the same two painted
-    // values the first one did.
+    // Re-armed for the NEXT element. The panel unmounts once the last quake
+    // terminal is released -- the last tab in its directory closed, or its shell
+    // exited -- and the reopen after that builds a new element, which needs the
+    // same two painted values the first one did.
     onCleanup(() => setFirstSlideArmed(false))
     createEffect(() => {
       if (open())
@@ -161,15 +161,15 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
               whole centre area and a touch device has no chord at all -- a
               panel the Control CLI opened on a phone was otherwise impossible
               to dismiss without a page reload. */}
-          <Show when={entry()?.keyId}>
-            {keyId => (
+          <Show when={entry()}>
+            {shown => (
               <IconButton
                 class={styles.quakeClose}
                 icon={X}
                 iconSize="xs"
                 title="Hide the quake terminal"
                 aria-label="Hide the quake terminal"
-                onClick={() => props.onClose(keyId())}
+                onClick={() => props.onClose(shown())}
               />
             )}
           </Show>

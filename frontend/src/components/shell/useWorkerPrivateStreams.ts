@@ -5,7 +5,6 @@ import { createEffect, createMemo, onCleanup } from 'solid-js'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
-import { quakeKeyId } from '~/stores/quakeTerminal.store'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
 /**
@@ -100,24 +99,30 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           opts.metadata.patch(evt.tabId, { title: evt.title })
         },
         onQuakePanelCommand: (evt) => {
-          // The event names a DIRECTORY, and the stream names the worker, so
-          // together they are the whole address. The tab is resolved from that
-          // key because the store needs one: a cold open is refused in the
-          // tab's workspace, and `open` takes a tab for exactly that.
+          // The event carries a DIRECTORY, and the stream identifies the worker,
+          // so together they are the whole address.
           //
           // A directory this client has no tab in is not an error: the command
           // reaches every frontend of the account, and another one may be on a
           // workspace this one does not display.
           const key = { workerId, workingDir: evt.workingDir }
+          // CLOSE is answered BEFORE the tab lookup, because it needs only the
+          // key. It is the one of the three that can act on a directory whose
+          // tabs this client cannot see, and refusing it there left a panel
+          // that covers the whole centre area with no way to dismiss it -- on a
+          // phone there is no chord, and the CLI is the only other route.
+          if (evt.action === QuakePanelAction.CLOSE) {
+            opts.quakeStore.close(key)
+            return
+          }
+          // OPEN and TOGGLE do need one: a cold open is refused in the tab's
+          // workspace, and both take a tab for exactly that.
           const tab = opts.view.findTabInWorkingDir(workerId, evt.workingDir)
           if (!tab)
             return
           switch (evt.action) {
             case QuakePanelAction.OPEN:
               void opts.quakeStore.open(tab)
-              break
-            case QuakePanelAction.CLOSE:
-              opts.quakeStore.close(quakeKeyId(key))
               break
             case QuakePanelAction.TOGGLE:
               opts.quakeStore.toggle(tab)

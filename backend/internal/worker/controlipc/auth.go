@@ -35,7 +35,7 @@ type TokenInfo struct {
 	//
 	// It exists because those two are not always the same id. A terminal TAB
 	// advertises itself as TabID, so this merely repeats it. A QUAKE terminal
-	// cannot: it has no CRDT tab, so TabID names a neighbouring tab in the same
+	// cannot: it has no CRDT tab, so TabID identifies a neighbouring tab in the same
 	// working directory instead (see the Factory's TerminalSpawning), which is
 	// what keeps `leapmux control agent ...` and every workspace/tile
 	// derivation working inside the panel. Without this field the shell the

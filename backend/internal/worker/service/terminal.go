@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -64,7 +65,7 @@ const terminalProcessScanTimeout = 5 * time.Second
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d registrar, svc *Service) {
-	// InspectTerminalProcesses names what is running inside each terminal, so a
+	// InspectTerminalProcesses lists what runs inside each terminal, so a
 	// close guard can state the reason before it tears the tab down. Batched:
 	// closing a tile asks about every terminal it holds at once.
 	//
@@ -167,9 +168,19 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				sendInvalidArgument(sender, "a quake terminal opens at a directory and cannot create or switch a worktree; open it with the worktree path as working_dir")
 				return
 			}
+			// The RAW field, before normalizeWorkingDir above resolved it. That
+			// call turns an empty path into the worker's home directory, which
+			// for a quake terminal is not a default but a different shell: the
+			// directory IS the address, so an unset field would silently claim
+			// the singleton row of $HOME and hold it against the real one.
+			// ListTerminals drops an empty quake directory for the same reason.
+			if isQuake && strings.TrimSpace(r.GetWorkingDir()) == "" {
+				sendInvalidArgument(sender, "a quake terminal needs a working_dir: it is the address of the shell, not a default")
+				return
+			}
 
 			// A QUAKE terminal is at most one per directory, so a second
-			// OpenTerminal naming the same directory hands back the first
+			// OpenTerminal that specifies the same directory hands back the first
 			// one. This is what lets two devices -- or two agent tabs that
 			// work in one directory, or one device toggling the panel twice
 			// -- share a single shell instead of racing to spawn two.
@@ -213,7 +224,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Cols:          int64(cols),
 				Rows:          int64(rows),
 				Screen:        []byte{},
-				IsQuake:       boolToInt64(isQuake),
+				IsQuake:       isQuake,
 			}); upsertErr != nil {
 				// Losing the quake race lands here: the check above found no
 				// quake terminal for this directory, another client inserted
@@ -303,7 +314,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// prior to "is it running right now". Without it a respawn
 			// resurrects a row the exit path already closed, and the unique
 			// index then refuses every replacement.
-			if dbTerm.IsQuake != 0 {
+			if dbTerm.IsQuake {
 				sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
 				return
 			}
@@ -372,7 +383,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if dbTerm.ScreenLength.Valid {
 				fallbackOffset = dbTerm.ScreenLength.Int64
 			}
-			// No OwnerAgentID: the refusal above means only a terminal TAB
+			// IsQuake stays false: the refusal above means only a terminal TAB
 			// reaches this line, and a tab is its own ambient tab.
 			spawnInfo := TerminalSpawnInfo{
 				UserID:     caller.UserID,
@@ -451,7 +462,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				// OpenTerminal request on its first TIOCGWINSZ query.
 				if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
 					// Benign TOCTOU: the PTY exited between the frontend's
-					// status check and this RPC arriving. The frontend gates
+					// status check and this RPC arriving. The frontend restricts
 					// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
 					// means READY at check time and gone now — no PTY to
 					// resize, but not actionable either.
@@ -558,13 +569,26 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		// normalizing first would silently turn "I have no directory" into a
 		// probe of the home directory's panel.
 		//
-		// No agent:read gate here any more, unlike the owner_agent_id this
-		// replaced: a quake terminal is addressed by a DIRECTORY, and
-		// working_dir is already terminal data that every TerminalInfo in this
-		// very reply carries.
+		// file:read IS required, on top of this handler's terminal:read.
+		//
+		// The owner_agent_id form this replaced needed agent:read, because the
+		// reply would have been an agent-id oracle. The directory form is not
+		// that, but it is a new REACH: a quake terminal has no CRDT tab, so its
+		// id never appears in the hub's tab list, and no worker RPC enumerates
+		// terminals -- so before this, a `terminal:read` caller could not name
+		// one at all. Keyed on a path it can simply guess, it can now ask
+		// whether any absolute directory has a live shell, and read that
+		// shell's screen.
+		//
+		// file:read is the scope that names a filesystem path, and
+		// WatchWorkerPrivateEvents already requires it to deliver this very
+		// working_dir in a QuakePanelCommand. Requiring it here is what stops
+		// the two surfaces answering the same question at different prices. The
+		// browser holds it already, so the first-party client loses nothing.
 		var quakeWorkingDirs []string
+		mayReadPaths := caller.Allows(leapmuxv1.Scope_SCOPE_FILE_READ)
 		for _, raw := range r.GetQuakeWorkingDirs() {
-			if raw == "" {
+			if raw == "" || !mayReadPaths {
 				continue
 			}
 			workingDir, dirErr := normalizeWorkingDir(raw, svc.HomeDir, svc.HomeDir)
@@ -600,6 +624,17 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				if _, dup := known[row.ID]; dup {
 					continue
 				}
+				// The SAME liveness rule adoptExistingQuakeTerminal applies,
+				// and it has to be here too: the browser LISTS before it opens,
+				// so a row this fold hands back is adopted without ever
+				// reaching the open path that would have reaped it. A dead row
+				// there gives the user a panel that paints nothing and swallows
+				// every keystroke, and it never recovers -- a quake terminal
+				// refuses the Enter that restarts a terminal tab.
+				if !svc.quakeShellIsLive(row.ID) {
+					svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
+					continue
+				}
 				known[row.ID] = struct{}{}
 				widened = append(widened, row.ID)
 			}
@@ -632,7 +667,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		}
 		quakeByTerminalID := make(map[string]bool, len(dbTerminals))
 		for _, ts := range dbTerminals {
-			if ts.IsQuake != 0 {
+			if ts.IsQuake {
 				quakeByTerminalID[ts.ID] = true
 			}
 		}
@@ -710,6 +745,88 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			Verdicts:  tabHydrationVerdicts(requestedTabIDs, seen),
 		})
 	})
+
+	// SetQuakePanel relays a show/hide request for one WORKING DIRECTORY's quake
+	// panel to every frontend the caller has open on this worker.
+	//
+	// It writes nothing. The panel's open state is client-local -- the same line
+	// the active tab in a tile is on -- so this is a remote keystroke, not a
+	// setting. The Control CLI is the only caller; a frontend toggles its own
+	// panel in-process.
+	//
+	// Registered beside ListTerminals rather than with the agent handlers: the
+	// request carries a directory and no agent id, and its CLI verb is
+	// `terminal quake`.
+	//
+	// terminal:write and nothing else, because the request specifies a DIRECTORY
+	// and what it ultimately does is put a shell in front of the user. It used
+	// to take agent:read too, when the panel was addressed by agent id and the
+	// reply would have been an agent-id oracle; there is no agent id on this
+	// wire any more, and privateEventVisible drops the matching check for the
+	// same reason.
+	//
+	// It specifies no tab, so there is no row to load and no per-tab archive
+	// refusal to apply. The frontend refuses a cold open in an archived
+	// workspace on its own (see the quake store's isWorkspaceMutatable), which
+	// is the check that matters: this RPC stores nothing that an archived
+	// workspace could be harmed by.
+	registerOwnerGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
+			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
+				sendInvalidArgument(sender, "action must be open, close or toggle")
+				return
+			}
+			// Refused BEFORE the normalize below, and the order matters for the
+			// reason ListTerminals states at its own quake lookup:
+			// normalizeWorkingDir resolves an empty path to the worker's home
+			// directory, so normalizing first would silently turn "I have no
+			// directory" into a command against the home directory's panel --
+			// broadcast to every frontend the caller has open.
+			if strings.TrimSpace(r.GetWorkingDir()) == "" {
+				sendInvalidArgument(sender, "working_dir is required: it is the address of the panel")
+				return
+			}
+			// Normalized with the SAME rule OpenTerminal applies to the
+			// directory it stores, because the two must produce the identical
+			// string: the frontend matches this event against the working dir
+			// of the tab it has focused, which came from a worker row. A `~`
+			// or a relative path that reached a frontend unexpanded would
+			// address a panel that can never exist.
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+			// An OPENING command for a directory no tab works in is refused,
+			// because no client could act on it. Every frontend resolves the
+			// event back to a tab (`findTabInWorkingDir`) and needs one to
+			// decide the workspace a cold open is refused in -- so with no tab
+			// anywhere, this RPC answered success for a command that did
+			// nothing, and a typo'd --working-dir was indistinguishable from a
+			// working invocation.
+			//
+			// CLOSE is deliberately exempt. It needs only the key, and it is
+			// the one action that can act on a directory whose tabs the calling
+			// client cannot see -- on a phone it is the only way to dismiss a
+			// panel that covers the whole centre area.
+			//
+			// A read FAILURE publishes rather than refuses: a busy database
+			// must not cost the user a command they can otherwise act on.
+			if r.GetAction() != leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_CLOSE {
+				tabs, tabsErr := openTabsInWorkingDirs(ctx, svc.Queries, []string{workingDir})
+				if tabsErr != nil {
+					slog.Warn("failed to check the tabs of a quake panel directory",
+						"working_dir", workingDir, "error", tabsErr)
+				} else if len(tabs) == 0 {
+					sendFailedPrecondition(sender, "no tab works in that directory on this worker")
+					return
+				}
+			}
+			if svc.PrivateEvents != nil {
+				svc.PrivateEvents.PublishQuakePanelCommand(caller.UserID, workingDir, r.GetAction())
+			}
+			sendProtoResponse(sender, &leapmuxv1.SetQuakePanelResponse{})
+		})
 
 	// ListAvailableShells returns the shells installed on this worker.
 	// Owner-only: like sysinfo, it discloses machine-scoped state (which
@@ -822,7 +939,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// registering in-memory metadata. Single narrow query — avoids
 	// re-reading the screen BLOB the handler entry already fetched.
 	postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived != 0) {
+	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -935,7 +1052,7 @@ func (svc *Service) runTerminalRestart(
 	// same row is unused on the restart path (titles don't change
 	// across restart), so it's read-and-discarded.
 	postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	switch svc.TerminalStartup.interruptionOf(h, fetchErr == nil && postSpawn.ClosedAt.Valid, fetchErr == nil && postSpawn.WorkspaceArchived != 0) {
+	switch svc.TerminalStartup.interruptionOf(h, fetchErr == nil && postSpawn.ClosedAt.Valid, fetchErr == nil && postSpawn.WorkspaceArchived) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -1133,7 +1250,7 @@ func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandl
 		if svc.WakeLock != nil {
 			svc.WakeLock.RecordActivity()
 		}
-		// TerminalData is classContent, so BroadcastTerminalEvent self-gates:
+		// TerminalData is classContent, so BroadcastTerminalEvent restricts itself:
 		// when nobody watches this terminal in FULL it short-circuits before
 		// the snapshot/marshal, and NOTIFY-only watchers receive just signals.
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
@@ -1331,7 +1448,7 @@ func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
 		}
 		return
 	}
-	if row.IsQuake == 0 || row.ClosedAt.Valid {
+	if !row.IsQuake || row.ClosedAt.Valid {
 		return
 	}
 	go svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)

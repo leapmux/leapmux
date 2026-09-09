@@ -25,3 +25,17 @@ SELECT * FROM worker_tab_payloads WHERE user_id = ? ORDER BY tab_id;
 -- a concurrent revoke could make the probe succeed and this delete a no-op that
 -- still reported success and published a duplicate TabPayloadRevoked.
 DELETE FROM worker_tab_payloads WHERE user_id = ? AND tab_id = ?;
+
+-- name: SetPayloadTabWorkspaceArchived :execrows
+-- Mirrors SetAgentWorkspaceArchived / SetTerminalWorkspaceArchived.
+--
+-- BINDS user_id, which those two do not need: a payload-backed tab id is minted
+-- client-side and unique only within one account, so tab_id alone can match
+-- ANOTHER account's row. TabRef.user_id is what carries the owner here.
+--
+-- The no-op guard is what makes the caller's "changed" set honest, so an
+-- archive pass that flips nothing schedules no work. There is no closed_at to
+-- test: the row exists only while the tab is open.
+UPDATE worker_tab_payloads SET workspace_archived = sqlc.arg(workspace_archived)
+WHERE user_id = sqlc.arg(user_id) AND tab_id = sqlc.arg(tab_id)
+  AND workspace_archived <> sqlc.arg(workspace_archived);

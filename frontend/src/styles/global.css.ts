@@ -21,7 +21,7 @@ import { DIFF_TINT } from '~/styles/diffTint'
 import { declareAppLayers } from '~/styles/layers'
 import { ALL_VARIANTS, DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
-import { bodyHeight, bodySafeAreaTop, breakpoints } from '~/styles/tokens'
+import { bodyHeight, bodySafeAreaTop, breakpoints, scrollbarThumb, scrollbarThumbHover, scrollbarWidthPx } from '~/styles/tokens'
 import { darkVariantSelector, lightVariantSelector } from '~/styles/variantSelectors'
 
 globalFontFace('Hack NF', {
@@ -615,24 +615,17 @@ globalStyle('*', {
 // WebKit scrollbar styling (Chrome and Safari; see above for why it is not
 // dead code in Chrome any more).
 globalStyle('*::-webkit-scrollbar', {
-  width: '8px',
-  height: '8px',
+  width: `${scrollbarWidthPx}px`,
+  height: `${scrollbarWidthPx}px`,
 })
 
 globalStyle('*::-webkit-scrollbar-track', {
   background: 'transparent',
 })
 
-globalStyle('*::-webkit-scrollbar-thumb', {
-  backgroundColor: 'var(--scrollbar-thumb)',
-  borderRadius: '4px',
-  border: '2px solid transparent',
-  backgroundClip: 'content-box',
-})
+globalStyle('*::-webkit-scrollbar-thumb', { ...scrollbarThumb })
 
-globalStyle('*::-webkit-scrollbar-thumb:hover', {
-  backgroundColor: 'var(--scrollbar-thumb-hover)',
-})
+globalStyle('*::-webkit-scrollbar-thumb:hover', { ...scrollbarThumbHover })
 
 globalStyle('*::-webkit-scrollbar-corner', {
   background: 'transparent',

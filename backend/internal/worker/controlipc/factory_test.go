@@ -129,7 +129,7 @@ func envValue(t *testing.T, envs []string, key string) string {
 // A QUAKE terminal advertises NO TAB, and an ordinary terminal advertises
 // itself.
 //
-// Two reasons the panel names none, and the second is what decides it. Its own
+// Two reasons the panel advertises none, and the second is what decides it. Its own
 // id has no CRDT tab, so LocateTab answers `not_found`. And no OTHER tab is
 // honestly "the tab you are in": a shell keyed on a working directory is
 // reachable from every tab in that directory, so advertising one of them would
@@ -158,7 +158,7 @@ func TestFactory_QuakeTerminalAdvertisesNoTab(t *testing.T) {
 	// The shell the user IS typing in still has to be nameable, or
 	// `terminal send` / `terminal get` inside the panel would have no target.
 	assert.Equal(t, "quake-1", envValue(t, quakeEnvs, "LEAPMUX_CONTROL_TERMINAL_ID"),
-		"the panel's own shell is what TERMINAL_ID names")
+		"the panel's own shell is what TERMINAL_ID identifies")
 	// The pair `terminal quake ...` resolves from, which is what keeps toggling
 	// and closing the panel working with no flags and no tab.
 	assert.Equal(t, "worker-A", envValue(t, quakeEnvs, "LEAPMUX_CONTROL_WORKER_ID"))
@@ -175,7 +175,7 @@ func TestFactory_QuakeTerminalAdvertisesNoTab(t *testing.T) {
 		"a terminal TAB is its own ambient tab and must be unaffected")
 	assert.Equal(t, "terminal", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TAB_TYPE"))
 	assert.Equal(t, "term-1", envValue(t, tabEnvs, "LEAPMUX_CONTROL_TERMINAL_ID"),
-		"a terminal tab names the same id twice, which is what makes one command line work in both")
+		"a terminal tab gives the same id twice, which is what makes one command line work in both")
 }
 
 // The SOCKET is keyed on the terminal's own id, never on anything else. A quake
@@ -208,7 +208,7 @@ func TestFactory_QuakeTerminalSocketIsKeyedOnItsOwnID(t *testing.T) {
 		"two live shells must not share one socket")
 }
 
-// An AGENT spawn is not inside a terminal, so it names none. Without this the
+// An AGENT spawn is not inside a terminal, so it carries none. Without this the
 // `terminal ...` subgroup would default its --tab-id to the agent's own id and
 // send keystrokes to a tab that has no PTY.
 func TestFactory_AgentSpawnNamesNoTerminal(t *testing.T) {

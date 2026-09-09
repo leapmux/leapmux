@@ -160,16 +160,6 @@ LIMIT 1;
 -- and dropped it.
 SELECT id, working_dir FROM terminals
 WHERE working_dir IN (sqlc.slice('working_dirs')) AND is_quake = 1 AND closed_at IS NULL;
-
--- name: ListOpenTerminalTabsByWorkingDirs :many
--- Open terminal TABS in a set of directories, with the archive flag. Half of
--- the answer to "does any open tab still work in this directory?" -- the other
--- half is ListOpenRootAgentsByWorkingDirs. Quake rows are excluded on purpose:
--- a quake terminal must never count as a reference to its own directory, or it
--- would keep itself alive for ever.
-SELECT id, working_dir, workspace_archived FROM terminals
-WHERE working_dir IN (sqlc.slice('working_dirs')) AND is_quake = 0 AND closed_at IS NULL;
-
 -- name: ListTerminalsByIDs :many
 SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
@@ -204,3 +194,24 @@ WHERE id = sqlc.arg(id) AND closed_at IS NULL
 -- every terminal close.
 -- name: GetTerminalQuakeAndWorkingDir :one
 SELECT is_quake, working_dir FROM terminals WHERE id = ?;
+
+-- ListOpenTabsByWorkingDirs is the WHOLE answer to "does any open tab still
+-- work in this directory?", which is the entire liveness question for a quake
+-- terminal.
+--
+-- Reads tab_locations rather than restating the per-type rule a fourth time.
+-- That view already encodes which tables hold tabs, what OPEN means for each
+-- (agents and terminals stamp closed_at; a payload-backed tab is hard deleted,
+-- so its presence IS its openness), and which kinds carry an owner. A count
+-- built from three hand-written SELECTs had to agree with it by hand.
+--
+-- is_quake = 0 excludes the quake terminal itself: a shell must never be the
+-- reference that keeps it alive, or it would live for ever. The view reports 0
+-- for every non-terminal leg, so this filter costs those legs nothing.
+--
+-- tab_type comes back because the identity is the PAIR. A payload-backed tab id
+-- is minted client-side and unique only within one account, so the id alone
+-- cannot say whether two rows are the same tab -- see dirTabRef.
+-- name: ListOpenTabsByWorkingDirs :many
+SELECT tab_type, tab_id, working_dir, workspace_archived FROM tab_locations
+WHERE is_quake = 0 AND working_dir IN (sqlc.slice('working_dirs'));

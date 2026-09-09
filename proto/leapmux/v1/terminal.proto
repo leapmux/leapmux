@@ -49,7 +49,7 @@ message OpenTerminalRequest {
   //   - the orphan reconciler measures this row's liveness by whether any open
   //     tab still works in that directory, because a quake terminal has no CRDT
   //     tab the hub could ever list;
-  //   - a second OpenTerminal naming the same directory returns the EXISTING
+  //   - a second OpenTerminal that specifies the same directory returns the EXISTING
   //     terminal instead of spawning a second shell, so every device -- and
   //     every tab in that directory -- attaches to one PTY.
   //

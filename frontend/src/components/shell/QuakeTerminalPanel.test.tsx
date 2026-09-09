@@ -129,8 +129,9 @@ describe('quakeTerminalPanel', () => {
   })
 
   /**
-   * The panel unmounts once the LAST companion is released -- the owner's tab
-   * closed, or its shell exited -- and the next open builds a new element.
+   * The panel unmounts once the LAST quake terminal is released -- the last tab
+   * in its directory closed, or its shell exited -- and the next open builds a
+   * new element.
    *
    * That element needs the same two painted values the first one did, so the
    * armed flag has to be released with the old element rather than staying true

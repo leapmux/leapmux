@@ -113,6 +113,7 @@ var unguardedOwnerFilterQueries = map[string]string{
 // repo-wide, and an exemption table that size is a rubber stamp rather than a
 // reviewed list.
 var unscopedOwnerKeyedQueries = map[string]string{
+
 	// ---- deliberately cross-owner sweeps ----
 	//
 	// Each of these exists to walk EVERY owner's rows; naming the owner column
