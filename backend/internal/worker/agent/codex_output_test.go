@@ -1140,6 +1140,8 @@ func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T
 		"text":"partial child answer",
 		"completion":"interrupted"
 	}`, string(child.Messages()[0].Content))
+	assert.Equal(t, ProgressSnapshot{}, child.progressCount.Snapshot(),
+		"the completed child turn must not replay an active token count")
 }
 
 func TestFlushCodexGenerationHonorsDiscardOutput(t *testing.T) {

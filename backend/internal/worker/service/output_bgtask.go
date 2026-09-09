@@ -951,6 +951,10 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		s.h.broadcastAgentSessionInfo(childAgentID, info)
 	})
+	if s.progressClosed {
+		child.progress.close()
+		return child
+	}
 	if s.childSinks == nil {
 		s.childSinks = make(map[string]*agentOutputSink)
 	}
@@ -1165,14 +1169,9 @@ func (h *OutputHandler) closingChildTracker(childAgentID string) *SpanTracker {
 // Idempotent; a no-op when the child was never cached.
 func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 	s.h.cleanupChildMaps(childAgentID)
-	s.childMu.Lock()
-	if s.childSinks != nil {
-		if child := s.childSinks[childAgentID]; child != nil && child.progress != nil {
-			child.progress.close()
-		}
-		delete(s.childSinks, childAgentID)
+	if child := s.detachChildSink(childAgentID); child != nil {
+		s.h.clearProgressFor(child.closeProgressTree())
 	}
-	s.childMu.Unlock()
 }
 
 // --- Registry write primitives on the sink ---

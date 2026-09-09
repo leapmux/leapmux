@@ -119,6 +119,69 @@ func TestSessionInfoReplay_UsesTheChildProgressPublisher(t *testing.T) {
 	assert.EqualValues(t, 7, info[contracts.SessionInfoKeyThinkingTokens])
 }
 
+func TestSessionInfoReplay_SurvivesControlRequestCleanup(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, _ := newSessionInfoServiceFixture(t)
+	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
+	svc.deleteControlRequest("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		controlResponseRequestMetadata{RequestID: "request-1"}, false)
+
+	event := svc.Output.SessionInfoReplayEvent("agent-1")
+	require.NotNil(t, event)
+	info := replayedSessionInfo(t, event)
+	assert.EqualValues(t, 42, info[contracts.SessionInfoKeyThinkingTokens])
+}
+
+func TestNewSinkClosesTheReplacedProgressTree(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, broadcasts := newSessionInfoServiceFixture(t)
+	root := sink.(*agentOutputSink)
+	child := sink.ChildSink("child-1").(*agentOutputSink)
+	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
+	child.ReportProgress(agent.OutputDeltaProgress("tool", 512))
+
+	replacement := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	require.NotSame(t, sink, replacement)
+
+	for _, publisher := range []*generationProgressPublisher{root.progress, child.progress} {
+		publisher.mu.Lock()
+		closed := publisher.closed
+		publisher.mu.Unlock()
+		assert.True(t, closed, "a replaced process must stop every old progress publisher")
+	}
+	infos := broadcasts.snapshot()
+	require.NotEmpty(t, infos)
+	last := infos[len(infos)-1]
+	assert.EqualValues(t, 0, last[contracts.SessionInfoKeyThinkingTokens])
+	assert.EqualValues(t, 0, last[contracts.SessionInfoKeyOutputBytes])
+}
+
+func TestCleanupAgentClosesNestedProgressPublishers(t *testing.T) {
+	t.Parallel()
+
+	for _, cleanupID := range []string{"agent-1", "child-1"} {
+		cleanupID := cleanupID
+		t.Run(cleanupID, func(t *testing.T) {
+			t.Parallel()
+			svc, sink, _ := newSessionInfoServiceFixture(t)
+			child := sink.ChildSink("child-1").(*agentOutputSink)
+			grandchild := child.ChildSink("grandchild-1").(*agentOutputSink)
+			grandchild.ReportProgress(agent.NativeTokenProgress("model", 9))
+
+			svc.Output.CleanupAgent(cleanupID)
+
+			for _, publisher := range []*generationProgressPublisher{child.progress, grandchild.progress} {
+				publisher.mu.Lock()
+				closed := publisher.closed
+				publisher.mu.Unlock()
+				assert.True(t, closed, "cleanup must stop each publisher below its target")
+			}
+		})
+	}
+}
+
 // The whole path, not only the builder: a client that subscribes must receive
 // the counters in its catch-up burst. Pins the wiring in replayAgentCatchUp,
 // which is what a browser reload actually exercises -- the unit tests above

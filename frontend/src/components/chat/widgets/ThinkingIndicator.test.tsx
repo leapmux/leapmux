@@ -67,6 +67,13 @@ describe('thinking indicator token count', () => {
     expect(queryByText(/tokens/)).toBeNull()
   })
 
+  it('renders no output count when the byte count is absent or zero', () => {
+    const { queryByText: queryAbsent } = renderVisible(undefined, undefined)
+    expect(queryAbsent(/\b(?:B|KB|MB|GB)\b/)).toBeNull()
+    const { queryByText: queryZero } = renderVisible(undefined, 0)
+    expect(queryZero(/\b(?:B|KB|MB|GB)\b/)).toBeNull()
+  })
+
   it('renders token and output counters together', () => {
     const { getByText } = renderVisible(230, 1536)
     expect(getByText('230 tokens')).toBeInTheDocument()
@@ -85,18 +92,21 @@ describe('thinking indicator token count', () => {
     try {
       const [visible, setVisible] = createSignal(true)
       const { queryByText } = render(() => (
-        <ThinkingIndicator visible={visible()} paused={true} thinkingTokens={500} />
+        <ThinkingIndicator visible={visible()} paused={true} thinkingTokens={500} outputBytes={1536} />
       ))
       expect(queryByText('500 tokens')).toBeInTheDocument()
+      expect(queryByText('1.5 KB')).toBeInTheDocument()
 
       // The indicator hides (turn end). The count must NOT pop — it stays
       // mounted (frozen on its last value) to fade out with the collapsing row.
       setVisible(false)
       expect(queryByText('500 tokens')).toBeInTheDocument()
+      expect(queryByText('1.5 KB')).toBeInTheDocument()
 
       // Once the wrapper's opacity fade (ROW_FADE_MS) elapses, it unmounts.
       vi.advanceTimersByTime(motion.medium)
       expect(queryByText('500 tokens')).toBeNull()
+      expect(queryByText('1.5 KB')).toBeNull()
     }
     finally {
       globalThis.requestAnimationFrame = realRaf

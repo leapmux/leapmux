@@ -249,7 +249,12 @@ func (svc *Service) deleteControlRequest(agentID string, provider leapmuxv1.Agen
 	if requestMeta.RequestID == "" {
 		return
 	}
-	sink := svc.Output.NewSink(agentID, provider)
+	var sink agent.OutputSink
+	if current := svc.Output.sinkForAgent(agentID); current != nil {
+		sink = current
+	} else {
+		sink = svc.Output.NewSink(agentID, provider)
+	}
 	if requestMeta.ToolUseID != "" && selfDisplayed {
 		sink.SetSpanType(requestMeta.ToolUseID, requestMeta.ToolName)
 	}

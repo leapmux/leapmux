@@ -24,8 +24,12 @@ func newGenerationProgressPublisher(publish func(map[string]interface{})) *gener
 
 func (p *generationProgressPublisher) report(update agent.ProgressUpdate) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	snapshot, changed := p.counter.Apply(update)
-	if !changed || p.closed {
+	if !changed {
 		p.mu.Unlock()
 		return
 	}

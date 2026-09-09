@@ -32,7 +32,7 @@ codexTest.describe('generation progress', () => {
     await sendMessage(page, 'This is a protocol test. Run this exact harmless command once and wait for it to finish: for word in one two three four five six seven eight; do python3 -c \'import math; math.factorial(300000)\'; echo LEAPMUX OUTPUT $word; done. Do not use another tool. Then report that the command finished.')
 
     await expect.poll(async () => page.evaluate(() =>
-      (window as Window & { __generationOutputSeen?: boolean }).__generationOutputSeen), { timeout: 120_000 }).toBe(true)
+      (window as Window & { __generationOutputSeen?: boolean }).__generationOutputSeen)).toBe(true)
     expect(await page.evaluate(() =>
       (window as Window & { __generationPartialOutputSeen?: boolean }).__generationPartialOutputSeen)).toBe(false)
 
@@ -47,7 +47,7 @@ codexTest.describe('generation progress', () => {
     await sendMessage(page, 'Write a detailed 3000-word explanation of sorting algorithms. Use no tools and start the answer immediately.')
 
     const indicator = page.locator('[data-testid="thinking-indicator"]:visible')
-    await expect(indicator).toContainText('tokens', { timeout: 120_000 })
+    await expect(indicator).toContainText('tokens')
     await page.locator('[data-testid="interrupt-button"]:visible').click()
     await waitForAgentIdle(page, 120_000)
 

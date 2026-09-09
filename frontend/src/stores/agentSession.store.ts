@@ -196,9 +196,8 @@ export function createAgentSessionStore() {
       setState('infoByAgent', agentId, (prev = {}) => {
         const merged = { ...prev }
         let changed = false
-        // Tracks whether a *persisted* (non-ephemeral) key changed. A
-        // A live-counter update mutates the reactive store but must not reach
-        // storage.
+        // Tracks whether a persisted key changed. A live-counter update
+        // mutates the reactive store but must not reach storage.
         let persistedChanged = false
         for (const [key, value] of Object.entries(partial)) {
           if (value === undefined || value === null)

@@ -331,9 +331,8 @@ const zcodePlugin: Provider = {
           content: [],
         }
       }
-      // `started` and `progress` are broadcast as stream chunks, not persisted. One
-      // reaching a transcript means a build changed; hiding it is better than a raw
-      // JSON bubble mid-span.
+      // The Worker consumes `started` and `progress` for live counters. One
+      // reaching a transcript means a provider changed its protocol.
       return { kind: 'hidden' }
     }
 

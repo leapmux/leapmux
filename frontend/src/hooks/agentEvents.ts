@@ -321,10 +321,8 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     agentSessionStore.clearContextUsage(agentId)
     chatStore.todos.clear(agentId)
     // The conversation was wiped, so every live indicator on it goes too. The
-    // backend resets its own thinking estimator on a context clear, but that reset
-    // is in-memory only (no broadcast); and the rows the running-tool badges were
-    // attached to are gone. Both would otherwise linger frozen on their last value
-    // until the next turn produces a delta or a clear of its own.
+    // Worker also publishes counter clears. This local clear covers a lost or
+    // delayed frame, and the tool rows that held the running badges are gone.
     clearPerTurnLiveState(agentId, stores)
   }
 

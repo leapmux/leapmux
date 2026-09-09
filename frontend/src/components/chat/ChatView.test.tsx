@@ -1067,7 +1067,7 @@ describe('chatView', () => {
     expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
   })
 
-  it('re-sticks to the bottom when the thinking-token count grows while pinned at the tail', async () => {
+  it('re-sticks to the bottom when a progress counter grows at the tail', async () => {
     // The thinking indicator is a tail sibling no ResizeObserver here watches; its
     // height growth (a climbing token count wrapping the verb row) does NOT move the
     // auto-scroll signature, so a dedicated effect must re-stick on the token count.
@@ -1076,14 +1076,23 @@ describe('chatView', () => {
     // the effect is keyed on the thinkingTokens prop regardless, and the indicator's
     // jsdom-absent layout growth is simulated by growing scrollHeight below.)
     let setTokens!: (n: number) => void
+    let setOutputBytes!: (n: number) => void
     const messages = [{ ...makeMessage('assistant', 'Working on it', 'msg-1'), seq: 1n }]
 
     const view = render(() => {
       const [tokens, updateTokens] = createSignal(0)
+      const [outputBytes, updateOutputBytes] = createSignal(0)
       setTokens = updateTokens
+      setOutputBytes = updateOutputBytes
       return (
         <PreferencesProvider>
-          <ChatView messages={messages} agentLifecycle={{ thinkingTokens: tokens() }} />
+          <ChatView
+            messages={messages}
+            agentLifecycle={{
+              thinkingTokens: tokens(),
+              outputBytes: outputBytes(),
+            }}
+          />
         </PreferencesProvider>
       )
     })
@@ -1111,8 +1120,7 @@ describe('chatView', () => {
     fireEvent.scroll(messageList)
     await flushAnimationFrame()
 
-    // The indicator grows: scrollHeight climbs while the message list, streamingText,
-    // and agentWorking all stay put -- only the token count changed.
+    // The token count grows while the message list and agentWorking stay put.
     scrollHeight = 1300
     setTokens(842)
     await flushAnimationFrame()
@@ -1120,6 +1128,14 @@ describe('chatView', () => {
 
     // The dedicated thinkingTokens re-stick effect snapped the view to the new bottom.
     await waitFor(() => expect(scrollTop).toBe(scrollHeight - clientHeight)) // 800
+
+    // The output count uses its own reactive effect because it can change while
+    // the token count stays fixed.
+    scrollHeight = 1600
+    setOutputBytes(1536)
+    await flushAnimationFrame()
+    await Promise.resolve()
+    await waitFor(() => expect(scrollTop).toBe(scrollHeight - clientHeight)) // 1100
     view.unmount()
   })
 

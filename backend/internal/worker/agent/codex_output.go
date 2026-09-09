@@ -720,13 +720,18 @@ func (a *CodexAgent) flushAllCodexGeneration(completion MessageCompletion) {
 func (a *CodexAgent) persistCodexGeneration(buffer *GenerationBuffer, sink OutputSink, completion MessageCompletion) {
 	if a.isDiscardingOutput() {
 		buffer.Reset()
+		sink.ReportProgress(ResetModelProgress())
 		return
 	}
 	rows, err := buffer.FinishAll(completion)
 	if err != nil {
 		slog.Warn("codex marshal partial generation", "agent_id", a.agentID, "error", err)
+		sink.ReportProgress(ResetModelProgress())
 		return
 	}
+	// A child sink has no provider decorator to clear its model counter when a
+	// turn ends. Clear the scope before the completed rows reach the transcript.
+	sink.ReportProgress(ResetModelProgress())
 	for _, raw := range rows {
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
 			slog.Error("codex persist partial generation", "agent_id", a.agentID, "error", err)

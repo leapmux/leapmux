@@ -399,31 +399,14 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// not retained for the parent's lifetime. A root id is its own root: clear
 	// its whole childSinks map (every child dies with the root). A child id is
 	// pruned from whichever root sink cached it.
-	if root, ok := h.rootSinks.Load(agentID); ok {
-		rootSink := root.(*agentOutputSink)
-		if rootSink.progress != nil {
-			rootSink.progress.close()
-		}
-		rootSink.childMu.Lock()
-		for _, child := range rootSink.childSinks {
-			if child.progress != nil {
-				child.progress.close()
-			}
-		}
-		rootSink.childSinks = nil
-		rootSink.childMu.Unlock()
-		h.rootSinks.Delete(agentID)
+	if root, ok := h.rootSinks.LoadAndDelete(agentID); ok {
+		h.clearProgressFor(root.(*agentOutputSink).closeProgressTree())
 	} else {
 		h.rootSinks.Range(func(_, v any) bool {
-			rootSink := v.(*agentOutputSink)
-			rootSink.childMu.Lock()
-			if rootSink.childSinks != nil {
-				if child := rootSink.childSinks[agentID]; child != nil && child.progress != nil {
-					child.progress.close()
-				}
-				delete(rootSink.childSinks, agentID)
+			if child := v.(*agentOutputSink).detachChildSink(agentID); child != nil {
+				h.clearProgressFor(child.closeProgressTree())
+				return false
 			}
-			rootSink.childMu.Unlock()
 			return true
 		})
 	}
@@ -470,13 +453,15 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	if root, ok := h.rootSinks.Load(rootID); ok {
 		rootSink := root.(*agentOutputSink)
 		rootSink.childMu.Lock()
+		children := make([]*agentOutputSink, 0, len(rootSink.childSinks))
 		for _, child := range rootSink.childSinks {
-			if child.progress != nil {
-				child.progress.close()
-			}
+			children = append(children, child)
 		}
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
+		for _, child := range children {
+			h.clearProgressFor(child.closeProgressTree())
+		}
 	}
 }
 
@@ -674,8 +659,61 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	})
-	h.rootSinks.Store(agentID, s)
+	if previous, replaced := h.rootSinks.Swap(agentID, s); replaced {
+		h.clearProgressFor(previous.(*agentOutputSink).closeProgressTree())
+	}
 	return s
+}
+
+func (h *OutputHandler) clearProgressFor(agentIDs []string) {
+	for _, agentID := range agentIDs {
+		h.broadcastAgentSessionInfo(agentID, progressInfo(agent.ProgressSnapshot{}))
+	}
+}
+
+// closeProgressTree stops this sink and every cached descendant from
+// publishing counters after a process replacement.
+func (s *agentOutputSink) closeProgressTree() []string {
+	if s == nil {
+		return nil
+	}
+	s.childMu.Lock()
+	children := make([]*agentOutputSink, 0, len(s.childSinks))
+	for _, child := range s.childSinks {
+		children = append(children, child)
+	}
+	s.childSinks = nil
+	s.progressClosed = true
+	s.childMu.Unlock()
+
+	if s.progress != nil {
+		s.progress.close()
+	}
+	agentIDs := []string{s.agentID}
+	for _, child := range children {
+		agentIDs = append(agentIDs, child.closeProgressTree()...)
+	}
+	return agentIDs
+}
+
+func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
+	s.childMu.Lock()
+	if child := s.childSinks[agentID]; child != nil {
+		delete(s.childSinks, agentID)
+		s.childMu.Unlock()
+		return child
+	}
+	children := make([]*agentOutputSink, 0, len(s.childSinks))
+	for _, child := range s.childSinks {
+		children = append(children, child)
+	}
+	s.childMu.Unlock()
+	for _, child := range children {
+		if found := child.detachChildSink(agentID); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // agentOutputSink implements agent.OutputSink for a single agent.
@@ -701,6 +739,9 @@ type agentOutputSink struct {
 	// span tracker). Guarded by childMu.
 	childMu    sync.Mutex
 	childSinks map[string]*agentOutputSink
+	// progressClosed prevents a replaced process from caching a new child
+	// publisher after closeProgressTree detached its old children.
+	progressClosed bool
 
 	// sessionInfoMu guards lastSessionInfo against concurrent
 	// BroadcastSessionInfo calls. Agent handlers may broadcast from

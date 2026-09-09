@@ -17,9 +17,8 @@ interface Props {
  * because the app-server's part projection is not what a desktop-continuous
  * subscription delivers.
  *
- * There is no sibling reasoning renderer, and `classify` never answers
- * `assistant_thinking`. Reasoning reaches LeapMux only as a live `reasoning_delta`
- * stream, which the worker broadcasts and never persists as a row of its own.
+ * There is no provider-specific reasoning renderer. The Worker persists
+ * assembled reasoning through the shared Thinking renderer.
  */
 export function ZCodeAssistantMessage(props: Props): JSX.Element {
   const text = createMemo(() => zcodeAssistantText(props.parsed))

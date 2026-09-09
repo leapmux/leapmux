@@ -259,6 +259,24 @@ func TestHandleZCodeOutput_ReasoningPersistsAtTextBoundary(t *testing.T) {
 	}`, string(sink.Messages()[0].Content))
 }
 
+func TestHandleZCodeOutput_ToolInputKeepsTextForTheCompletedResponse(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer before tool"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"tool_input_start","toolCallId":"tool-1","toolName":"Bash"}`))
+
+	assert.Empty(t, sink.Messages(), "the completed response remains the source of assistant text")
+
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"content":"answer before tool","stopReason":"tool_calls"}`))
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), `"content":"answer before tool"`)
+}
+
 func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t *testing.T) {
 	t.Parallel()
 

@@ -100,3 +100,18 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 	assert.Equal(t, int64(2), <-updates)
 	assert.Equal(t, int64(0), <-updates)
 }
+
+func TestGenerationProgressPublisherIgnoresReportsAfterClose(t *testing.T) {
+	t.Parallel()
+
+	publisher := newGenerationProgressPublisher(func(map[string]interface{}) {
+		t.Fatal("a closed publisher must not send")
+	})
+	publisher.close()
+	publisher.report(agent.NativeTokenProgress("late-model", 42))
+
+	publisher.mu.Lock()
+	snapshot := publisher.counter.Snapshot()
+	publisher.mu.Unlock()
+	assert.Equal(t, agent.ProgressSnapshot{}, snapshot)
+}

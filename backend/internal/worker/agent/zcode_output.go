@@ -385,8 +385,7 @@ type zcodeModelStreaming struct {
 	ToolName           string          `json:"toolName"`
 }
 
-// handleZCodeModelStreaming streams assistant text and reasoning, and caches what
-// the stream says about a tool call.
+// handleZCodeModelStreaming counts model deltas and caches streamed tool input.
 //
 // The app-server filters this event before it leaves: only text_delta and
 // reasoning_delta (with a non-empty delta) and the four tool_input kinds are ever
@@ -417,14 +416,14 @@ func (a *zcodeAgent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		a.sink.ReportProgress(ModelTextProgress(reasoningScope, payload.Delta))
 
 	case ZCodeStreamToolInputStart:
-		a.flushZCodeGeneration(MessageCompletionComplete)
+		// The completed model response supplies assistant text after this event.
+		// Persist only reasoning, which that response omits.
+		a.flushZCodeGenerationKind(AssembledMessageKindReasoning, MessageCompletionComplete)
 		if payload.ToolCallID == "" {
 			return
 		}
 		a.mu.Lock()
 		tc := a.zcodeToolCallLocked(payload.ToolCallID)
-		tc.order = a.nextToolOrder
-		a.nextToolOrder++
 		if payload.ToolName != "" {
 			tc.name = payload.ToolName
 		}
