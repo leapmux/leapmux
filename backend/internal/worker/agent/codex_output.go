@@ -211,6 +211,14 @@ func (a *CodexAgent) childSinkForThread(threadID string) OutputSink {
 	return nil
 }
 
+// reasoningSink returns the transcript that owns a reasoning notification.
+func (a *CodexAgent) reasoningSink(threadID string) OutputSink {
+	if sink := a.childSinkForThread(threadID); sink != nil {
+		return sink
+	}
+	return a.sink
+}
+
 // childSinkForItem resolves the child OutputSink that owns a streamed item
 // (commandExecution/fileChange), or nil when the item belongs to the parent.
 // Output-delta notifications carry only an itemID (no threadId), so this map --
@@ -322,21 +330,20 @@ func (a *CodexAgent) handleReasoningSummaryTextDelta(params json.RawMessage) {
 		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
-		if sink := a.childSinkForThread(notif.ThreadID); sink != nil {
-			sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/summaryTextDelta")
-		} else {
-			a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/summaryTextDelta")
-		}
+		a.reasoningSink(notif.ThreadID).BroadcastStreamChunk(
+			[]byte(notif.Delta), notif.ItemID, "item/reasoning/summaryTextDelta")
 		a.observeReasoningText(notif.ItemID, codexReasoningKindSummary, notif.ThreadID, notif.Delta)
 	}
 }
 
 func (a *CodexAgent) handleReasoningSummaryPartAdded(params json.RawMessage) {
 	var notif struct {
-		ItemID string `json:"itemId"`
+		ItemID   string `json:"itemId"`
+		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" {
-		a.sink.BroadcastStreamChunk(nil, notif.ItemID, "item/reasoning/summaryPartAdded")
+		a.reasoningSink(notif.ThreadID).BroadcastStreamChunk(
+			nil, notif.ItemID, "item/reasoning/summaryPartAdded")
 	}
 }
 
@@ -347,11 +354,8 @@ func (a *CodexAgent) handleReasoningTextDelta(params json.RawMessage) {
 		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
-		if sink := a.childSinkForThread(notif.ThreadID); sink != nil {
-			sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/textDelta")
-		} else {
-			a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/textDelta")
-		}
+		a.reasoningSink(notif.ThreadID).BroadcastStreamChunk(
+			[]byte(notif.Delta), notif.ItemID, "item/reasoning/textDelta")
 		a.observeReasoningText(notif.ItemID, codexReasoningKindRaw, notif.ThreadID, notif.Delta)
 	}
 }
@@ -439,8 +443,8 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
-		persistToolItemStarted(a.sink, params, itemType, itemID, a.agentID)
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView", "reasoning":
+		persistSharedItemStarted(a.sink, params, itemType, itemID, a.agentID)
 	case "collabAgentToolCall":
 		// Every collab tool_call stays in the parent transcript as a flat tool
 		// span (children no longer nest under it) -- EXCEPT spawnAgent, which
@@ -461,8 +465,6 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 		}
-	case "reasoning":
-		// No-op for started — wait for completed.
 	}
 }
 
@@ -489,7 +491,7 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 
 	switch itemType {
 	case "agentMessage":
-		persistToolItemCompleted(a.sink, params, itemType, itemID, a.agentID)
+		persistSharedItemCompleted(a.sink, params, itemType, itemID, a.agentID)
 	case "plan":
 		a.mu.Lock()
 		a.turnSawPlan = true
@@ -519,7 +521,7 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()
-		persistToolItemCompleted(a.sink, params, itemType, itemID, a.agentID)
+		persistSharedItemCompleted(a.sink, params, itemType, itemID, a.agentID)
 	case "collabAgentToolCall":
 		// wait, sendInput, resumeAgent and closeAgent are flat tool spans in the
 		// parent transcript that CLOSE at completion. Children no longer nest
@@ -551,15 +553,7 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 			a.collabAgentsStatesToRegistry(collab)
 		}
 	case "reasoning":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType,
-		}); err != nil {
-			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
-		}
-		a.mu.Lock()
-		delete(a.reasoningStreamKind, itemID)
-		a.mu.Unlock()
-		a.sink.BroadcastStreamEnd(itemID)
+		a.persistCompletedReasoningItem(a.sink, params, itemID, a.agentID)
 	case "contextCompaction":
 		// Persist the raw `item/completed` JSON-RPC notification verbatim as
 		// AGENT, the same way the `item/started` arm above does. It must join
@@ -1122,8 +1116,7 @@ func (a *CodexAgent) rememberedChildAgent(threadID string) string {
 	return a.collabChildAgents[threadID]
 }
 
-// persistItemStartedChild runs the item/started per-type persist/span logic
-// against the child sink (started opens a span on the child transcript).
+// persistItemStartedChild applies item/started to the child transcript.
 func (a *CodexAgent) persistItemStartedChild(childID string, params json.RawMessage, itemType, itemID string) {
 	// Record the itemID -> childID mapping so output-delta handlers (which
 	// carry only an itemID) can route streaming chunks to the child.
@@ -1136,11 +1129,10 @@ func (a *CodexAgent) persistItemStartedChild(childID string, params json.RawMess
 		a.mu.Unlock()
 	}
 	childSink := a.sink.ChildSink(childID)
-	persistToolItemStarted(childSink, params, itemType, itemID, childID)
+	persistSharedItemStarted(childSink, params, itemType, itemID, childID)
 }
 
-// persistItemCompletedChild runs the item/completed per-type persist/span logic
-// against the child sink (completed closes the span on the child transcript).
+// persistItemCompletedChild applies item/completed to the child transcript.
 func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMessage, itemType, itemID string) {
 	// The item is done streaming; drop it from the itemID -> child index so the
 	// map doesn't grow unbounded across turns.
@@ -1150,28 +1142,31 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 		a.mu.Unlock()
 	}
 	childSink := a.sink.ChildSink(childID)
-	persistToolItemCompleted(childSink, params, itemType, itemID, childID)
+	if itemType == "reasoning" {
+		a.persistCompletedReasoningItem(childSink, params, itemID, childID)
+		return
+	}
+	persistSharedItemCompleted(childSink, params, itemType, itemID, childID)
 }
 
-// persistToolItemStarted runs the shared per-type item/started logic for a tool
-// span (commandExecution/fileChange/mcpToolCall/dynamicToolCall/imageGeneration/
-// imageView) against the given sink. Used by both the parent path (a.sink) and the child path
-// (childSink). Non-tool item types are no-ops here (the parent handles its own
-// agentMessage/contextCompaction/collabAgentToolCall/reasoning cases inline).
-func persistToolItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
+// persistSharedItemStarted applies item starts that share parent and child behavior.
+func persistSharedItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
+	case "reasoning":
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+			SpanID: itemID, SpanType: itemType,
+		}); err != nil {
+			slog.Error("codex persist reasoning/started", "agent_id", agentID, "error", err)
+		}
 	}
 }
 
-// persistToolItemCompleted runs the shared per-type item/completed logic for
-// tool and message spans against the given sink. Used by both the parent path
-// and the child path. The parent keeps its own collabAgentToolCall/contextCompaction
-// handling inline (they carry parent-only orchestration the child never sees).
-func persistToolItemCompleted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
+// persistSharedItemCompleted applies item completions that need no agent state.
+func persistSharedItemCompleted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "agentMessage", "plan":
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
@@ -1189,14 +1184,22 @@ func persistToolItemCompleted(sink OutputSink, params json.RawMessage, itemType,
 			sink.BroadcastStreamEnd(itemID)
 		}
 		sink.CloseSpan(itemID)
-	case "reasoning":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType,
-		}); err != nil {
-			slog.Error("codex persist reasoning", "agent_id", agentID, "error", err)
-		}
-		sink.BroadcastStreamEnd(itemID)
 	}
+}
+
+// persistCompletedReasoningItem replaces the live stream with the authoritative item.
+func (a *CodexAgent) persistCompletedReasoningItem(sink OutputSink, params json.RawMessage, itemID, agentID string) {
+	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		SpanID: itemID, SpanType: "reasoning",
+	})
+	a.mu.Lock()
+	delete(a.reasoningStreamKind, itemID)
+	a.mu.Unlock()
+	if err != nil {
+		slog.Error("codex persist reasoning/completed", "agent_id", agentID, "error", err)
+		return
+	}
+	sink.BroadcastStreamEnd(itemID)
 }
 
 // extractCodexItem extracts the item type, ID, and threadId from item/started

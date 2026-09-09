@@ -325,6 +325,8 @@ func (a *CodexAgent) startOrResumeThread(
 ) (codexThreadResult, error) {
 	if resumeSessionID != "" {
 		threadParams["threadId"] = resumeSessionID
+		// LeapMux reads transcript history from its own database.
+		threadParams["excludeTurns"] = true
 		return a.resumeThread(threadParams, resumeSessionID, timeout)
 	}
 	thread, err := a.startThread(threadParams, timeout)
@@ -1037,6 +1039,10 @@ func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier st
 		"cwd":            cwd,
 		"approvalPolicy": approvalPolicy,
 		"sandbox":        sandboxPolicy,
+		// Request detailed summaries so app-server emits reasoning summary items.
+		"config": map[string]interface{}{
+			"model_reasoning_summary": "detailed",
+		},
 	}
 	if !UsesAccountDefaultModel(model) {
 		params["model"] = model

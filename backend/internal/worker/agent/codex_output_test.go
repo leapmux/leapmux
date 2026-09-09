@@ -985,6 +985,128 @@ func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
 	require.Equal(t, 0, sink.MessageCount())
 }
 
+func TestHandleCodexOutput_ReasoningLifecycleStreamsAndPersists(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	startedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":`+startedParams+`}`)))
+
+	require.Len(t, sink.Messages(), 1)
+	started := sink.Messages()[0]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, started.Source)
+	assert.Equal(t, "reason-1", started.SpanID)
+	assert.Equal(t, "reasoning", started.SpanType)
+	assert.Equal(t, startedParams, string(started.Content), "item/started params must persist without transformation")
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"first summary","summaryIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"main-thread","turnId":"turn1"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"second summary","summaryIndex":1,"threadId":"main-thread","turnId":"turn1"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw reasoning","contentIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
+
+	assert.Equal(t, []testSinkStreamChunk{
+		{SpanID: "reason-1", Method: "item/reasoning/summaryPartAdded"},
+		{Content: []byte("first summary"), SpanID: "reason-1", Method: "item/reasoning/summaryTextDelta"},
+		{SpanID: "reason-1", Method: "item/reasoning/summaryPartAdded"},
+		{Content: []byte("second summary"), SpanID: "reason-1", Method: "item/reasoning/summaryTextDelta"},
+		{Content: []byte("raw reasoning"), SpanID: "reason-1", Method: "item/reasoning/textDelta"},
+	}, sink.StreamChunks())
+
+	completedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":["first summary","second summary"],"content":["raw reasoning"]}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
+
+	require.Len(t, sink.Messages(), 2)
+	completed := sink.Messages()[1]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, completed.Source)
+	assert.Equal(t, "reason-1", completed.SpanID)
+	assert.Equal(t, "reasoning", completed.SpanType)
+	assert.Equal(t, completedParams, string(completed.Content), "item/completed params must persist without transformation")
+	assert.Equal(t, 1, sink.StreamEndCount())
+	assert.Equal(t, "reason-1", sink.LastStreamEnd())
+	assert.Equal(t, []string{
+		"persist:reason-1",
+		"persist:reason-1",
+		"stream_end:reason-1",
+	}, sink.OutputLifecycle(), "the completed row must persist before its live stream ends")
+
+	agent.mu.Lock()
+	_, stillLocked := agent.reasoningStreamKind["reason-1"]
+	agent.mu.Unlock()
+	assert.False(t, stillLocked, "a completed main reasoning item must release its stream-kind lock")
+}
+
+func TestHandleCodexOutput_ChildReasoningUsesChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"inspect","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+
+	startedParams := `{"threadId":"child-1","turnId":"child-turn","item":{"type":"reasoning","id":"child-reason-1","summary":[],"content":[]}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":`+startedParams+`}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"child-reason-1","summaryIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"child-reason-1","delta":"child summary","summaryIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"child-reason-1","delta":"child raw","contentIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
+
+	completedParams := `{"threadId":"child-1","turnId":"child-turn","item":{"type":"reasoning","id":"child-reason-1","summary":["child summary"],"content":["child raw"]}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
+
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	require.Len(t, child.Messages(), 2)
+	childStarted := child.Messages()[0]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, childStarted.Source)
+	assert.Equal(t, "child-reason-1", childStarted.SpanID)
+	assert.Equal(t, "reasoning", childStarted.SpanType)
+	assert.Equal(t, startedParams, string(childStarted.Content), "child item/started params must persist without transformation")
+	childCompleted := child.Messages()[1]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, childCompleted.Source)
+	assert.Equal(t, "child-reason-1", childCompleted.SpanID)
+	assert.Equal(t, "reasoning", childCompleted.SpanType)
+	assert.Equal(t, completedParams, string(childCompleted.Content), "child item/completed params must persist without transformation")
+	assert.Equal(t, []testSinkStreamChunk{
+		{SpanID: "child-reason-1", Method: "item/reasoning/summaryPartAdded"},
+		{Content: []byte("child summary"), SpanID: "child-reason-1", Method: "item/reasoning/summaryTextDelta"},
+		{Content: []byte("child raw"), SpanID: "child-reason-1", Method: "item/reasoning/textDelta"},
+	}, child.StreamChunks())
+	assert.Equal(t, 1, child.StreamEndCount())
+	assert.Equal(t, "child-reason-1", child.LastStreamEnd())
+	assert.Equal(t, []string{
+		"persist:child-reason-1",
+		"persist:child-reason-1",
+		"stream_end:child-reason-1",
+	}, child.OutputLifecycle(), "the child completed row must persist before its live stream ends")
+	assert.Empty(t, sink.StreamChunks())
+
+	agent.mu.Lock()
+	_, stillLocked := agent.reasoningStreamKind["child-reason-1"]
+	_, stillRouted := agent.collabChildItems["child-reason-1"]
+	agent.mu.Unlock()
+	assert.False(t, stillLocked, "a completed child reasoning item must release its stream-kind lock")
+	assert.False(t, stillRouted, "a completed child reasoning item must release its child route")
+}
+
+func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{persistErr: fmt.Errorf("database unavailable")}
+	agent := newCodexAgentWithSink(sink)
+	agent.reasoningStreamKind = map[string]string{"reason-1": codexReasoningKindSummary}
+
+	completedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":["durable summary"],"content":[]}}`
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
+
+	assert.Zero(t, sink.StreamEndCount(), "a failed persist must not discard the only visible reasoning text")
+	agent.mu.Lock()
+	_, stillLocked := agent.reasoningStreamKind["reason-1"]
+	agent.mu.Unlock()
+	assert.False(t, stillLocked, "a completed reasoning item must release bookkeeping after a persist error")
+}
+
 func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
 	t.Parallel()
 

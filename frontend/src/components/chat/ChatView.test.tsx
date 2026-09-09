@@ -2050,9 +2050,11 @@ describe('chatView', () => {
       makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' }),
     ]
     const reasoningStream: CommandStreamSegment[] = [
+      { kind: 'reasoning_summary_break', text: '' },
       { kind: 'reasoning_summary', text: 'first summary' },
       { kind: 'reasoning_summary_break', text: '' },
       { kind: 'reasoning_summary', text: 'second summary' },
+      { kind: 'reasoning_content', text: 'duplicate raw reasoning' },
     ]
 
     render(() => (
@@ -2070,6 +2072,49 @@ describe('chatView', () => {
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
     expect(screen.getByText('Thinking')).toBeInTheDocument()
+    expect(screen.getByText('first summary')).toBeInTheDocument()
+    expect(screen.getByText('second summary')).toBeInTheDocument()
+    expect(screen.queryByText('duplicate raw reasoning')).not.toBeInTheDocument()
+  })
+
+  it('renders persisted codex raw reasoning when no summary exists', () => {
+    const messages = [
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        content: ['persisted raw reasoning'],
+      }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('persisted raw reasoning')).toBeInTheDocument()
+  })
+
+  it('prefers a persisted codex summary to duplicate raw reasoning', () => {
+    const messages = [
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        summary: ['persisted summary'],
+        content: ['duplicate persisted raw reasoning'],
+      }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('persisted summary')).toBeInTheDocument()
+    expect(screen.queryByText('duplicate persisted raw reasoning')).not.toBeInTheDocument()
   })
 
   it('starts codex reasoning collapsed when expandAgentThoughts is disabled', () => {
@@ -2106,6 +2151,53 @@ describe('chatView', () => {
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
     expect(screen.getByText('Thinking')).toBeInTheDocument()
+  })
+
+  it('replaces a completed codex reasoning stream with persisted summary text', async () => {
+    let completeReasoning!: () => void
+
+    render(() => {
+      const started = makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' })
+      const completed = makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 2n,
+        spanId: 'reason-1',
+        summary: ['persisted replacement'],
+        content: ['duplicate persisted raw reasoning'],
+      })
+      const [messages, setMessages] = createSignal([started])
+      const [stream, setStream] = createSignal<CommandStreamSegment[]>([
+        { kind: 'reasoning_summary_break', text: '' },
+        { kind: 'reasoning_summary', text: 'live summary' },
+        { kind: 'reasoning_content', text: 'duplicate live raw reasoning' },
+      ])
+      completeReasoning = () => batch(() => {
+        setMessages([started, completed])
+        setStream([])
+      })
+      return (
+        <PreferencesProvider>
+          <ChatView
+            messages={messages()}
+            streamingText=""
+            lookups={{
+              getCommandStreamBySpanId: () => stream(),
+              hasRenderableCommandStreamBySpanId: () => stream().some(segment => segment.text.length > 0),
+            }}
+          />
+        </PreferencesProvider>
+      )
+    })
+
+    expect(screen.getByText('live summary')).toBeInTheDocument()
+    expect(screen.queryByText('duplicate live raw reasoning')).not.toBeInTheDocument()
+
+    completeReasoning()
+
+    await waitFor(() => expect(screen.getByText('persisted replacement')).toBeInTheDocument())
+    expect(screen.queryByText('live summary')).not.toBeInTheDocument()
+    expect(screen.queryByText('duplicate persisted raw reasoning')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Thinking')).toHaveLength(1)
   })
 
   it('renders turn/plan/updated with the TodoWrite-style todo list UI', () => {

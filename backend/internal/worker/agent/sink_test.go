@@ -46,12 +46,15 @@ type childSpawnSpanTable struct {
 type testSink struct {
 	// persistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
-	persistErr        error
-	mu                sync.Mutex
-	messages          []testSinkMessage
-	notifications     []testSinkMessage
-	streamChunks      []testSinkStreamChunk
-	streamEnds        []string
+	persistErr    error
+	mu            sync.Mutex
+	messages      []testSinkMessage
+	notifications []testSinkMessage
+	streamChunks  []testSinkStreamChunk
+	streamEnds    []string
+	// outputLifecycle interleaves message persistence with stream-end broadcasts.
+	// Separate slices cannot prove that durable content replaced a live stream first.
+	outputLifecycle   []string
 	sessionIDs        []string
 	permissionModes   []string
 	modeChanges       []testSinkModeChange
@@ -201,6 +204,7 @@ func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
+	s.outputLifecycle = append(s.outputLifecycle, "persist:"+span.SpanID)
 	return s.persistErr
 }
 
@@ -377,6 +381,7 @@ func (s *testSink) BroadcastStreamEnd(spanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.streamEnds = append(s.streamEnds, spanID)
+	s.outputLifecycle = append(s.outputLifecycle, "stream_end:"+spanID)
 }
 
 func (s *testSink) PersistControlRequest(string, []byte) string    { return "" }
@@ -1057,6 +1062,13 @@ func (s *testSink) LastStreamEnd() string {
 		return ""
 	}
 	return s.streamEnds[len(s.streamEnds)-1]
+}
+
+// OutputLifecycle returns message persistence and stream-end calls in order.
+func (s *testSink) OutputLifecycle() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.outputLifecycle...)
 }
 
 // SessionIDCount returns the number of UpdateSessionID calls.

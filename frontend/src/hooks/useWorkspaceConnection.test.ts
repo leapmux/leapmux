@@ -1586,6 +1586,26 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
+  it('clearCompletedSpanStream replaces a live reasoning stream only after completed content arrives', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.appendCommandStream('a1', 'span1', 'reasoning_summary', 'live summary')
+
+      const started = spanMessage({ type: 'reasoning', summary: [], content: [] }, 'reasoning')
+      clearCompletedSpanStream('a1', started, parseMessageContent(started), chatStore)
+      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
+
+      const completed = spanMessage({
+        type: 'reasoning',
+        summary: ['persisted summary'],
+        content: ['persisted raw reasoning'],
+      }, 'reasoning')
+      clearCompletedSpanStream('a1', completed, parseMessageContent(completed), chatStore)
+      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
   it('clearCompletedSpanStream leaves an IN-PROGRESS span stream buffered', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
