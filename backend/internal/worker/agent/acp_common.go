@@ -3714,4 +3714,7 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 // PublishTurnActive satisfies Agent for every ACP provider. The base already
 // republishes promptActive from one place, so this only gives that place the
 // interface's name.
-func (b *acpBase) PublishTurnActive() { b.notePromptActive() }
+func (b *acpBase) PublishTurnActive() leapmuxv1.AgentInputKind {
+	b.notePromptActive()
+	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+}

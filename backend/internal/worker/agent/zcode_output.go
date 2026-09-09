@@ -183,12 +183,12 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
-func (a *zcodeAgent) PublishTurnActive() {
+func (a *zcodeAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishTurnActiveTo(a.sink, active, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.

@@ -158,7 +158,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 				// The child's own turn. publishTurnActive covers the MAIN thread
 				// alone, so the child's flag is published against the child's
 				// sink -- which is what its own input queue follows.
-				publishTurnActiveTo(a.sink.ChildSink(childID), true, a.childTurnSeq())
+				publishSteerableTurnActiveTo(a.sink.ChildSink(childID), true, a.childTurnSeq())
 			}
 			return
 		}
@@ -591,7 +591,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", notif.ThreadID, "error", err)
 			}
 			a.clearChildTurnID(notif.ThreadID)
-			publishTurnActiveTo(a.sink.ChildSink(childID), false, a.childTurnSeq())
+			publishSteerableTurnActiveTo(a.sink.ChildSink(childID), false, a.childTurnSeq())
 			return
 		}
 		a.clearChildTurnID(notif.ThreadID)

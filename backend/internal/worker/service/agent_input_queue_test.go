@@ -481,6 +481,19 @@ func TestClassifyQueueSteerErrorPreservesUncertainDelivery(t *testing.T) {
 	assert.Equal(t, inputqueue.DispatchUncertain, dispatchOutcomeOf(t, err))
 }
 
+func TestClassifyQueueDeliveryErrorPreservesTheBusyTurnKind(t *testing.T) {
+	t.Parallel()
+
+	err := classifyQueueDeliveryError(&agent.AgentBusyError{
+		Err:            agent.ErrAgentBusy,
+		ActiveTurnKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	var deliveryErr *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &deliveryErr)
+	assert.Equal(t, inputqueue.DispatchBusy, deliveryErr.Outcome)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, deliveryErr.ActiveTurnKind)
+}
+
 // dispatchOutcomeOf reads the outcome a classified refusal carries. Every case
 // goes through it rather than through errors.Is on a sentinel: the outcome is
 // the queue's whole answer, so a test that matched only the CAUSE would pass

@@ -244,7 +244,7 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 	})
 }
 
-// publishTurnActiveTo reports a provider's turn flag to its sink.
+// publishTurnActiveTo reports an unclassified provider turn to its sink.
 //
 // A NIL sink publishes nowhere. This package's tests construct bare agents by
 // long-standing convention -- `&ClaudeCodeAgent{turnActive: true}` and its like
@@ -252,11 +252,28 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 // The jsonrpcBase hook takes the same stance for the same reason: nobody is
 // listening, so there is nothing to say. Every agent the Worker builds has a
 // sink, so this is never nil in production.
-func publishTurnActiveTo(sink OutputSink, active bool, seq uint64) {
-	if sink == nil {
-		return
+func publishTurnActiveTo(sink OutputSink, active bool, seq uint64) leapmuxv1.AgentInputKind {
+	return publishClassifiedTurnActiveTo(sink, active, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, seq)
+}
+
+// publishSteerableTurnActiveTo reports a turn that accepts steering. Codex
+// uses this for turn/started because its app-server accepts turn/steer for each
+// active turn, including a turn that a goal continuation starts. Other
+// providers use publishTurnActiveTo until their protocols supply the same
+// guarantee.
+func publishSteerableTurnActiveTo(sink OutputSink, active bool, seq uint64) leapmuxv1.AgentInputKind {
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+	if active {
+		kind = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
 	}
-	sink.SetTurnActive(active, seq)
+	return publishClassifiedTurnActiveTo(sink, active, kind, seq)
+}
+
+func publishClassifiedTurnActiveTo(sink OutputSink, active bool, kind leapmuxv1.AgentInputKind, seq uint64) leapmuxv1.AgentInputKind {
+	if sink != nil {
+		sink.SetTurnActive(active, kind, seq)
+	}
+	return kind
 }
 
 // OutputSink provides generic primitives for persisting and broadcasting
@@ -277,11 +294,12 @@ type OutputSink interface {
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
 	// SetTurnActive publishes whether a turn is in flight, and it is the ONE
-	// signal for that fact. The Worker derives two answers from it. The first is
-	// "is this agent busy", which a client renders without re-deriving it from
-	// the transcript. The second is the input queue's dispatch guard, which
-	// holds a message until the running turn ends. Providers already keep this
-	// flag for their own control flow, and SendInput refuses input from the same
+	// signal for that fact. The kind classifies a turn when the provider knows
+	// that the turn accepts steering. The Worker derives two answers from it.
+	// The first answer states whether the agent is busy. A client renders it
+	// without scanning the transcript. The second answer controls the input
+	// queue, which holds a message until the running turn ends. Providers keep
+	// this flag for their own control flow. SendInput refuses input from the same
 	// value. Call this from the SAME site that mutates the flag, and the three
 	// cannot drift.
 	//
@@ -303,7 +321,7 @@ type OutputSink interface {
 	// which is not always the same as "between one envelope and the next": a
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
-	SetTurnActive(active bool, seq uint64)
+	SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64)
 	OpenSpan(spanID string, parentSpanID string)
 	// CloseSpan frees a span's column. The recorded span type SURVIVES it (only
 	// ResetSpans clears types), because a provider's closing message reads that
@@ -648,8 +666,8 @@ type Agent interface {
 	// provider's own error notification -- not by holding this call open.
 	SendInput(content string, attachments []*leapmuxv1.Attachment) error
 	// PublishTurnActive republishes this provider's turn flag through its sink.
-	// It re-reads the flag, so a caller states nothing: it only asks the
-	// provider to say again what it already holds.
+	// It re-reads the flag, so a caller states nothing. The return value is the
+	// turn kind that it published, or UNSPECIFIED when it cannot classify it.
 	//
 	// Manager.SendInput calls it on ErrAgentBusy. That refusal is PROOF that the
 	// Worker's view of the turn was wrong -- the Worker dispatched into a turn
@@ -657,7 +675,7 @@ type Agent interface {
 	// state and the input queue's dispatch guard are known to need repair. It
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
-	PublishTurnActive()
+	PublishTurnActive() leapmuxv1.AgentInputKind
 	SendRawInput(data []byte) error
 	Stop()
 	IsStopped() bool
@@ -709,6 +727,16 @@ type InputSteerer interface {
 	SupportsSteering() bool
 }
 
+// ClassifyTurnForSteering preserves a known input kind. For an unclassified
+// active turn, a live steering capability supplies the missing fact that the
+// queue needs. USER_MESSAGE is the regular-turn class that CanSteer accepts.
+func ClassifyTurnForSteering(kind leapmuxv1.AgentInputKind, supportsSteering bool) leapmuxv1.AgentInputKind {
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED && supportsSteering {
+		return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+	}
+	return kind
+}
+
 var (
 	ErrCompactionUnsupported = errors.New("agent provider does not support native context compaction")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
@@ -725,6 +753,28 @@ var (
 	ErrAgentBusy = errors.New("agent is already running a turn")
 )
 
+// AgentBusyError adds the provider's current turn classification to an
+// ErrAgentBusy refusal. The input queue uses it after it releases the dispatch
+// identity that collided with the provider's existing turn.
+type AgentBusyError struct {
+	Err            error
+	ActiveTurnKind leapmuxv1.AgentInputKind
+}
+
+func (e *AgentBusyError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrAgentBusy.Error()
+	}
+	return e.Err.Error()
+}
+
+func (e *AgentBusyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // ChildSteerer lets a provider address a child conversation in its process.
 // Queue dispatch resolves the child registry row and drives the owner process.
 // Providers that cannot steer a child do not implement this interface.
@@ -735,6 +785,10 @@ type ChildSteerer interface {
 	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
 	// SteerChildInput adds input to the child's active turn.
 	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	// ActiveChildTurnKind classifies the child's current turn after
+	// SendChildInput returns ErrAgentBusy. It returns UNSPECIFIED when the
+	// provider cannot prove that the turn accepts steering.
+	ActiveChildTurnKind(childKey string) leapmuxv1.AgentInputKind
 	// InterruptChild stops the child's current turn inside the owner process.
 	InterruptChild(childKey string) error
 }

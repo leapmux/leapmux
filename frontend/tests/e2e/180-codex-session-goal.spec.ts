@@ -24,6 +24,36 @@ import {
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
+  codexTest('offers Steer for input queued during a goal turn', async ({
+    authenticatedCodexWorkspace,
+    page,
+  }) => {
+    void authenticatedCodexWorkspace
+
+    // Start the process before the side-band goal command asks Codex to start
+    // its own turn. That turn has no queue input to supply its classification.
+    await sendMessage(page, 'Reply with the single word: ready')
+    await waitForAgentIdle(page)
+    await expandGoalsAndTodosSection(page)
+    await goalAction(page, 'set').click()
+    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(
+      'Inspect this repository until I send a steering message. Do not stop before that message.',
+    )
+    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+
+    // The Interrupt button proves that the provider-started goal turn runs.
+    // Send while that condition still holds, so the message enters the queue.
+    await expect(page.getByTestId('interrupt-button')).toBeVisible()
+    await sendMessage(page, 'Stop now, mark the goal complete, and reply with STEERED.')
+    const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop now' })
+    await expect(queued).toBeVisible()
+
+    const steer = queued.getByRole('button', { name: 'Steer' })
+    await expect(steer).toBeVisible()
+    await steer.click()
+    await expect(queued).toHaveCount(0)
+  })
+
   codexTest('set a goal from the panel, pause it, resume it, and clear it', async ({
     authenticatedCodexWorkspace,
     page,

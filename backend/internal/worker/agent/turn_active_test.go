@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 
 	"github.com/stretchr/testify/assert"
@@ -127,10 +128,16 @@ func TestCodexTurnActive_StartedOpensAndCompletedCloses(t *testing.T) {
 
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
 	assert.Equal(t, []bool{true}, sink.TurnActives())
+	assert.Equal(t, []leapmuxv1.AgentInputKind{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, sink.TurnKinds(),
+		"Codex accepts turn/steer for a provider-started turn, so the queue must classify it as steerable")
 
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
 
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+	assert.Equal(t, []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+	}, sink.TurnKinds(), "the turn end must clear the steering classification")
 }
 
 func TestCodexTurnActive_ReadsTurnIDNotTheInheritedPromptActive(t *testing.T) {
@@ -280,7 +287,7 @@ type swallowingSink struct {
 	OutputSink
 }
 
-func (s *swallowingSink) SetTurnActive(bool, uint64) {}
+func (s *swallowingSink) SetTurnActive(bool, leapmuxv1.AgentInputKind, uint64) {}
 
 func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	t.Parallel()

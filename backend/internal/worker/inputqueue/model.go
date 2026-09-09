@@ -203,11 +203,12 @@ type DispatchResult struct {
 	AfterAccept func()
 }
 
-// DeliveryError carries a refused dispatch: the provider's own error, and what
-// the queue must do about it.
+// DeliveryError carries a refused dispatch and what the queue must do. A busy
+// refusal also carries the provider's turn classification when one exists.
 type DeliveryError struct {
-	Err     error
-	Outcome DispatchOutcome
+	Err            error
+	Outcome        DispatchOutcome
+	ActiveTurnKind leapmuxv1.AgentInputKind
 }
 
 func (e *DeliveryError) Error() string {

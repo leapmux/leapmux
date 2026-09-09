@@ -324,6 +324,13 @@ func (a *CodexAgent) SteerChildInput(childKey, content string, attachments []*le
 	return nil
 }
 
+func (a *CodexAgent) ActiveChildTurnKind(childKey string) leapmuxv1.AgentInputKind {
+	if a.childTurnID(childKey) == "" {
+		return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+	}
+	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+}
+
 func codexChildInput(content string, attachments []*leapmuxv1.Attachment) string {
 	// Codex child turns accept only string input. Preserve each attachment name
 	// so the child can ask the user for content that it cannot receive directly.

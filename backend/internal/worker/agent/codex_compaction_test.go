@@ -190,14 +190,14 @@ type blockingTurnFlagSink struct {
 	once    sync.Once
 }
 
-func (s *blockingTurnFlagSink) SetTurnActive(active bool, seq uint64) {
+func (s *blockingTurnFlagSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
 	if !active {
 		s.once.Do(func() {
 			close(s.entered)
 			<-s.release
 		})
 	}
-	s.testSink.SetTurnActive(active, seq)
+	s.testSink.SetTurnActive(active, kind, seq)
 }
 
 func TestHandleCodexOutput_TurnCompletionPublishesTheClearBeforeItReturns(t *testing.T) {

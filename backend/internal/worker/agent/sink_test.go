@@ -67,6 +67,9 @@ type testSink struct {
 	// it publishes the turn-end envelope, or that never clears it on a path the
 	// happy case does not reach, latches the agent busy forever.
 	TurnActiveCalls []bool
+	// turnKinds records the queue classification that accompanied each turn
+	// state.
+	turnKinds []leapmuxv1.AgentInputKind
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -229,12 +232,22 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 
 // SetTurnActive records the provider's turn flag transitions in order, so a
 // provider test can assert the exact sequence it published.
-func (s *testSink) SetTurnActive(active bool, seq uint64) {
+func (s *testSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
+	s.turnKinds = append(s.turnKinds, kind)
 	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", active))
+}
+
+// TurnKinds returns the queue classification of each publish, in arrival
+// order. A provider that can classify its turn must not lose that fact before
+// the queue computes CanSteer.
+func (s *testSink) TurnKinds() []leapmuxv1.AgentInputKind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]leapmuxv1.AgentInputKind(nil), s.turnKinds...)
 }
 
 // TurnSeqs returns the ordering token of each publish, in arrival order. A
@@ -1197,7 +1210,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error 
 	return nil
 }
 func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
-func (noopSink) SetTurnActive(bool, uint64)                                        {}
+func (noopSink) SetTurnActive(bool, leapmuxv1.AgentInputKind, uint64)              {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}

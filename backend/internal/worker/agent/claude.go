@@ -710,17 +710,18 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 // It re-reads rather than taking a value, so a caller cannot publish something
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block on
-// a slow transport.//
+// a slow transport.
+//
 // seq comes from the SAME critical section that reads the flag. Two goroutines
 // reach the sink unordered -- the reader that ends a turn, and the drain that a
 // refusal answers -- so without it the older value can land second and latch a
 // turn that is over.
-func (a *ClaudeCodeAgent) PublishTurnActive() {
+func (a *ClaudeCodeAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishTurnActiveTo(a.sink, active, seq)
 }
 
 // armTurn records a turn that the CLI runs and this Worker did not start. The
@@ -831,7 +832,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	// across a broadcast. It re-reads the flag, so the error paths below -- and a
 	// steer, which opens no turn -- publish the unchanged value, and the Worker
 	// reconciles rather than moves. That covers the busy refusal for this
-	// provider, which the other four publish explicitly.
+	// provider, which the other providers publish explicitly.
 	defer a.PublishTurnActive()
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -18,6 +18,7 @@ type steerableStub struct {
 	stubProvider
 	sendInputErr    error
 	interruptErr    error
+	activeTurnKind  leapmuxv1.AgentInputKind
 	sendInputCalls  []sendInputCall
 	steerInputCalls []sendInputCall
 	interruptCalls  []string
@@ -48,6 +49,10 @@ func (s *steerableStub) SteerChildInput(childKey, content string, attachments []
 func (s *steerableStub) InterruptChild(childKey string) error {
 	s.interruptCalls = append(s.interruptCalls, childKey)
 	return s.interruptErr
+}
+
+func (s *steerableStub) ActiveChildTurnKind(string) leapmuxv1.AgentInputKind {
+	return s.activeTurnKind
 }
 
 // Ensure stubProvider stays compatible (this catches an interface drift at
@@ -88,6 +93,23 @@ func TestManager_SendChildInputDispatch(t *testing.T) {
 	assert.Equal(t, "child-1", st.sendInputCalls[0].childKey)
 	assert.Equal(t, "hello", st.sendInputCalls[0].content)
 	assert.Equal(t, 1, st.sendInputCalls[0].attachments)
+}
+
+func TestManager_SendChildInputPreservesABusyTurnKind(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil)
+	st := &steerableStub{
+		sendInputErr:   ErrAgentBusy,
+		activeTurnKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}
+	m.mu.Lock()
+	m.agents["root"] = st
+	m.mu.Unlock()
+
+	err := m.SendChildInput("root", "child-1", "hello", nil)
+	var busyErr *AgentBusyError
+	require.ErrorAs(t, err, &busyErr)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, busyErr.ActiveTurnKind)
 }
 
 func TestManager_SteerChildInputDispatch(t *testing.T) {

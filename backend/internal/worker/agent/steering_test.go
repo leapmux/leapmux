@@ -391,10 +391,19 @@ type busyProvider struct {
 	idleAgent
 	refuse    error
 	republish int
+	turnKind  leapmuxv1.AgentInputKind
+	supports  bool
 }
 
 func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) error { return p.refuse }
-func (p *busyProvider) PublishTurnActive()                              { p.republish++ }
+func (p *busyProvider) SteerInput(string, []*leapmuxv1.Attachment) error {
+	return nil
+}
+func (p *busyProvider) SupportsSteering() bool { return p.supports }
+func (p *busyProvider) PublishTurnActive() leapmuxv1.AgentInputKind {
+	p.republish++
+	return p.turnKind
+}
 
 func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 	t.Parallel()
@@ -409,15 +418,30 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 		name      string
 		refuse    error
 		republish int
+		turnKind  leapmuxv1.AgentInputKind
+		supports  bool
+		wantKind  leapmuxv1.AgentInputKind
 	}{
-		{name: "busy", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1},
+		{
+			name: "busy steering provider", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			supports: true, wantKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		},
+		{
+			name: "busy classified compaction", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			turnKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, supports: true,
+			wantKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT,
+		},
+		{
+			name: "busy non-steering provider", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			wantKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+		},
 		{name: "delivered", refuse: nil, republish: 0},
 		{name: "other failure", refuse: errors.New("broken pipe"), republish: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			provider := &busyProvider{refuse: tc.refuse}
+			provider := &busyProvider{refuse: tc.refuse, turnKind: tc.turnKind, supports: tc.supports}
 			m := NewManager(nil)
 			m.mu.Lock()
 			m.agents["agent-1"] = provider
@@ -427,6 +451,11 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 			assert.Equal(t, tc.refuse != nil, err != nil)
 			assert.Equal(t, tc.republish, provider.republish,
 				"only a busy refusal disproves the Worker's view of the turn")
+			if tc.republish > 0 {
+				var busyErr *AgentBusyError
+				require.ErrorAs(t, err, &busyErr)
+				assert.Equal(t, tc.wantKind, busyErr.ActiveTurnKind)
+			}
 		})
 	}
 }

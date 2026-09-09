@@ -31,11 +31,16 @@ import (
 type turnPublisher struct {
 	sink agent.OutputSink
 	seq  uint64
+	kind leapmuxv1.AgentInputKind
 }
 
 func (p *turnPublisher) publish(active bool) {
 	p.seq++
-	p.sink.SetTurnActive(active, p.seq)
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+	if active {
+		kind = p.kind
+	}
+	p.sink.SetTurnActive(active, kind, p.seq)
 }
 
 // launchTurnPublisher registers a sink and runs the two things startAgent runs
@@ -73,8 +78,12 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && snapshot.ActiveTurn
 	}, time.Second, 10*time.Millisecond)
+	providerTurn, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, providerTurn.ActiveTurnKind,
+		"a provider without steering support must remain unclassified")
 
-	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: newTestAgentInputID(), AgentID: agentID, Text: "hello",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
@@ -89,6 +98,61 @@ func TestProviderReportedTurnHoldsQueuedInputUntilItEnds(t *testing.T) {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
 	}, time.Second, 10*time.Millisecond)
+}
+
+func TestClassifiedProviderTurnMarksAQueuedInputSteerable(t *testing.T) {
+	t.Parallel()
+
+	// Codex can start a goal-continuation turn without a queue dispatch. Its
+	// turn signal classifies that turn, so the queue head must not lose Steer.
+	ctx := context.Background()
+	svc, agentID := newTurnSignalFixture(t)
+	sink := launchTurnPublisher(svc, agentID)
+	sink.kind = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+	sink.publish(true)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.ActiveTurn &&
+			snapshot.ActiveTurnKind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+	}, time.Second, 10*time.Millisecond)
+
+	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: newTestAgentInputID(), AgentID: agentID, Text: "steer this turn",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.True(t, snapshot.Items[0].CanSteer)
+}
+
+func TestSteeringProviderClassifiesAnUnclassifiedTurn(t *testing.T) {
+	t.Parallel()
+
+	// Claude can report a turn that the queue did not dispatch. Its provider
+	// signal cannot identify the input kind, but its steering capability proves
+	// that the active turn accepts an explicit steer.
+	ctx := context.Background()
+	svc, agentID := newTurnSignalFixture(t)
+	sink := launchTurnPublisher(svc, agentID)
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID: agentID, WorkingDir: dbAgent.WorkingDir,
+	}, sink.sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+
+	sink.publish(true)
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		return snapshotErr == nil && snapshot.ActiveTurn
+	}, time.Second, 10*time.Millisecond)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.ActiveTurnKind,
+		"a steering provider's active turn must not stay unclassified")
 }
 
 func TestProviderReportedTurnRepeatsWithoutChurningTheQueueRevision(t *testing.T) {
@@ -228,15 +292,15 @@ func TestAStalePublishFromTheSameProcessLosesToTheOneItOvertook(t *testing.T) {
 	svc, agentID := newTurnSignalFixture(t)
 	sink := launchTurnPublisher(svc, agentID)
 
-	sink.sink.SetTurnActive(true, 1)
-	sink.sink.SetTurnActive(false, 2)
+	sink.sink.SetTurnActive(true, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, 1)
+	sink.sink.SetTurnActive(false, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, 2)
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 		return err == nil && !snapshot.ActiveTurn
 	}, time.Second, 10*time.Millisecond)
 
 	// The refusal read its flag BEFORE the clear did, so its token is lower.
-	sink.sink.SetTurnActive(true, 1)
+	sink.sink.SetTurnActive(true, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, 1)
 
 	assert.Never(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)

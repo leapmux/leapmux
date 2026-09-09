@@ -26,7 +26,9 @@ type idleAgent struct{}
 
 func (idleAgent) AgentID() string                                 { return "idle" }
 func (idleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (idleAgent) PublishTurnActive()                              {}
+func (idleAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
+	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+}
 func (idleAgent) SendRawInput([]byte) error                       { return nil }
 func (idleAgent) Stop()                                           {}
 func (idleAgent) IsStopped() bool                                 { return false }

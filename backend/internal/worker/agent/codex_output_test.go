@@ -1438,6 +1438,10 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	// own input queue follows.
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's own turn opens and releases the child input queue")
+	assert.Equal(t, []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+	}, child.TurnKinds(), "a Codex child turn accepts steering until it ends")
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {

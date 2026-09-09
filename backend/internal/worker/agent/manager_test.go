@@ -29,7 +29,9 @@ func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
 // Manager.SendInput calls it only after a refusal this stub never returns.
-func (s *stubProvider) PublishTurnActive()        {}
+func (s *stubProvider) PublishTurnActive() leapmuxv1.AgentInputKind {
+	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+}
 func (s *stubProvider) SendRawInput([]byte) error { return nil }
 func (s *stubProvider) Stop()                     {}
 func (s *stubProvider) IsStopped() bool           { return false }

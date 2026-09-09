@@ -196,7 +196,12 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 //     that has no problem, and hold it stopped until the user resumed it by
 //     hand.
 func classifyQueueDeliveryError(err error) error {
-	return &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
+	deliveryErr := &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
+	var busyErr *agent.AgentBusyError
+	if errors.As(err, &busyErr) {
+		deliveryErr.ActiveTurnKind = busyErr.ActiveTurnKind
+	}
+	return deliveryErr
 }
 
 func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {

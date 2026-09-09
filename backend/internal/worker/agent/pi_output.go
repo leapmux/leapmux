@@ -171,12 +171,12 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 // nothing streams and no envelope arrives, and where a client that inferred
 // idleness would drop the spinner and hide the Interrupt button on a run that is
 // still going.
-func (a *PiAgent) PublishTurnActive() {
+func (a *PiAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
 	a.mu.Lock()
 	active := a.currentTurnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishTurnActiveTo(a.sink, active, seq)
 }
 
 func (a *PiAgent) handlePiAgentStart() {

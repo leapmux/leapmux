@@ -266,6 +266,24 @@ test.describe('agent input queue', () => {
     await expect(rows.last()).toContainText('typed then sent')
   })
 
+  test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+
+    // Keep the first turn active long enough to put the next message in the
+    // durable queue. The Interrupt button is the Worker's turn-state signal.
+    await sendMessage(page, 'Write a 2,000-word technical report about Go concurrency. Do not use tools or stop early.')
+    await expect(page.getByTestId('interrupt-button')).toBeVisible()
+
+    await sendMessage(page, 'Stop the report now and reply with the single word STEERED.')
+    const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop the report' })
+    await expect(queued).toBeVisible()
+    const steer = queued.getByRole('button', { name: 'Steer' })
+    await expect(steer).toBeVisible()
+
+    await steer.click()
+    await expect(queued).toHaveCount(0)
+  })
+
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()

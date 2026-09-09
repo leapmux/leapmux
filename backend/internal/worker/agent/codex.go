@@ -664,7 +664,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 //
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block
 // on a slow transport.
-func (a *CodexAgent) PublishTurnActive() {
+func (a *CodexAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
 	a.mu.Lock()
 	active := a.turnID != ""
 	seq := a.nextTurnSeq()
@@ -672,7 +672,7 @@ func (a *CodexAgent) PublishTurnActive() {
 	// Codex tracks collab child turns in childTurnIDs, deliberately not here: a
 	// child's own run is its background-task registry row, and the Worker reads
 	// that for the child tab. This is the MAIN thread's turn only.
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // SendInput starts a new turn with the current settings. It refuses an active

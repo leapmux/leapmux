@@ -272,12 +272,12 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
-	// turnActive carries the provider's turn flag to the input queue. It takes
-	// the flag itself, not one callback for each edge: the queue's dispatch
-	// guard must follow the SAME signal that the provider's own SendInput
+	// turnActive carries the provider's turn state to the input queue. It takes
+	// the flag and the provider's optional kind, not one callback for each edge.
+	// The queue's dispatch guard must follow the SAME signal that SendInput
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
-	turnActive func(agentID string, active bool)
+	turnActive func(agentID string, active bool, kind leapmuxv1.AgentInputKind)
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -369,7 +369,7 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 
 // SetTurnActiveFunc wires the input queue's turn state to the turn flag every
 // provider publishes. Call it before any agent output is processed.
-func (h *OutputHandler) SetTurnActiveFunc(fn func(agentID string, active bool)) {
+func (h *OutputHandler) SetTurnActiveFunc(fn func(agentID string, active bool, kind leapmuxv1.AgentInputKind)) {
 	h.turnActive = fn
 }
 
@@ -775,18 +775,18 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 // it from the same site that mutates their private flag, so the two cannot
 // drift.
 //
-// Both consumers are here, because one flag answers both: the activity latch
-// that a client renders, and the input queue that holds a message until the
-// running turn ends. The queue used to have a signal of its own, which only a
-// turn the queue itself dispatched ever raised -- so a turn the agent process
-// started on its own was invisible to it, and the next message the user sent
-// went into that turn instead of waiting behind it.
+// Both consumers are here, because one state answers both: the activity latch
+// that a client renders, and the input queue that holds a message. The queue
+// uses kind to offer steering only when the provider classifies the turn. The
+// queue used to have a signal of its own. Only a queue dispatch raised it.
+// Thus, the queue did not see a turn that the agent process started. The next
+// user message then entered that turn instead of waiting behind it.
 //
 // The queue call does NOT depend on the latch's edge. The latch resets its
 // record at every process boundary, and a reconciliation that the reset drops
 // leaves the queue on a turn state the provider no longer reports. The queue
 // answers idempotently instead, and reports its own change.
-func (s *agentOutputSink) SetTurnActive(active bool, seq uint64) {
+func (s *agentOutputSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
 	// Both consumers are downstream of ONE ordering test, because both latch: a
 	// stale value that reaches either one is never corrected by a later publish
 	// of the same state. A child publishes through its own sink, so the test
@@ -797,7 +797,7 @@ func (s *agentOutputSink) SetTurnActive(active bool, seq uint64) {
 	}
 	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
 	if s.h.turnActive != nil {
-		s.h.turnActive(s.agentID, active)
+		s.h.turnActive(s.agentID, active, kind)
 	}
 }
 

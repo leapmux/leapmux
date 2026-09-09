@@ -414,10 +414,13 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		// The refusal disproves the Worker's view of the turn, and both consumers
 		// of the turn flag -- the activity state and the input queue's dispatch
 		// guard -- are wrong at exactly this moment. Repairing here rather than
-		// in each provider's SendInput is what stops a sixth provider from
+		// in each provider's SendInput stops another provider from
 		// leaving it out. SendChildInput does NOT do this: a collab child's
 		// activity comes from its background-task registry row.
-		p.PublishTurnActive()
+		kind := p.PublishTurnActive()
+		steerer, supportsSteering := p.(InputSteerer)
+		kind = ClassifyTurnForSteering(kind, supportsSteering && steerer.SupportsSteering())
+		return &AgentBusyError{Err: err, ActiveTurnKind: kind}
 	}
 	if err == nil {
 		observeGoalCommand(p, GoalDeliverySend, content)
@@ -549,7 +552,11 @@ func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachme
 	if !ok {
 		return ErrChildSteeringUnsupported
 	}
-	return steerer.SendChildInput(childKey, content, attachments)
+	err = steerer.SendChildInput(childKey, content, attachments)
+	if errors.Is(err, ErrAgentBusy) {
+		return &AgentBusyError{Err: err, ActiveTurnKind: steerer.ActiveChildTurnKind(childKey)}
+	}
+	return err
 }
 
 func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {

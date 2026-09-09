@@ -117,7 +117,7 @@ func TestManagerWaitsForExternallyStartedChildTurn(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
 	manager := NewManager(store, dispatcher, &recordingObserver{})
 	ctx := context.Background()
-	_, err := manager.TurnStarted(ctx, "agent-1")
+	_, err := manager.TurnStarted(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	_, err = manager.Enqueue(ctx, NewItem{ID: "next", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "next"})
 	require.NoError(t, err)
@@ -477,7 +477,7 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 			_, store := newStoreFixture(t)
 			manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 			ctx := context.Background()
-			_, err := manager.TurnStarted(ctx, "agent-1")
+			_, err := manager.TurnStarted(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 			require.NoError(t, err)
 			if test.manualPause {
 				_, err = manager.SetPaused(ctx, "agent-1", true)
@@ -699,11 +699,11 @@ func TestManagerTurnSignalIsIdempotentInBothDirections(t *testing.T) {
 	manager := NewManager(store, &recordingDispatcher{}, observer)
 	ctx := context.Background()
 
-	started, err := manager.TurnStarted(ctx, "agent-1")
+	started, err := manager.TurnStarted(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	require.True(t, started.ActiveTurn)
 
-	repeated, err := manager.TurnStarted(ctx, "agent-1")
+	repeated, err := manager.TurnStarted(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	assert.Equal(t, started.Revision, repeated.Revision)
 
@@ -739,7 +739,7 @@ func TestManagerTurnStartedKeepsTheTurnADispatchAlreadyOwns(t *testing.T) {
 	require.NoError(t, err)
 	<-dispatcher.dispatchStarted
 
-	_, err = manager.TurnStarted(ctx, "agent-1")
+	_, err = manager.TurnStarted(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	close(release)
 
@@ -821,10 +821,11 @@ func TestManagerBusyRefusalReleasesTheTurnIdentityItClaimed(t *testing.T) {
 
 	// PrepareDispatch records the item's kind and id as the running turn's
 	// BEFORE the provider call. A busy refusal means that dispatch never
-	// happened, so the turn that stands is the provider's own -- and it carries
-	// neither. A claim left behind makes CanSteer and PrepareSteer judge the
-	// running turn by the refused item's kind: a bounced /compact hides Steer
-	// for a plain reply, and a bounced plain message offers it for a compaction.
+	// happened, so the turn that stands is the provider's own. This refusal
+	// supplies no classification. A claim left behind makes CanSteer and
+	// PrepareSteer judge the running turn by the refused item's kind. A bounced
+	// /compact hides Steer for a plain reply. A bounced plain message offers it
+	// for a compaction.
 	_, store := newStoreFixture(t)
 	dispatcher := &onceDispatcher{firstErr: busyRefusal()}
 	manager := NewManager(store, dispatcher, &recordingObserver{})
@@ -857,6 +858,38 @@ func TestManagerBusyRefusalReleasesTheTurnIdentityItClaimed(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, snapshot.Items[0].CanSteer,
 		"a turn the queue did not dispatch states no kind, so no steer is offered")
+}
+
+func TestManagerBusyRefusalKeepsTheProviderTurnClassification(t *testing.T) {
+	t.Parallel()
+
+	// A dispatch can collide during the short interval before the queue sees the
+	// provider's turn start. The refused item temporarily owns the turn columns.
+	// RequeueBusy must replace that identity with the provider's classification.
+	_, store := newStoreFixture(t)
+	dispatcher := &onceDispatcher{firstErr: &DeliveryError{
+		Err:            errors.New("turn-1"),
+		Outcome:        DispatchBusy,
+		ActiveTurnKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{
+		ID: "reply", AgentID: "agent-1", Text: "steer this turn",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	var snapshot Snapshot
+	require.Eventually(t, func() bool {
+		snapshot, err = manager.Snapshot(ctx, "agent-1")
+		return err == nil && len(dispatcher.dispatches()) == 1 && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
+	}, time.Second, 10*time.Millisecond)
+	assert.True(t, snapshot.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.ActiveTurnKind)
+	assert.True(t, snapshot.Items[0].CanSteer,
+		"the classified provider turn must keep Steer after the collided dispatch returns to the queue")
 }
 
 func TestManagerRetryBusyRefusalDrainsWhenTheTurnEndsInsideIt(t *testing.T) {

@@ -596,12 +596,21 @@ func New(cfg Config) *Service {
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
-	svc.Output.SetTurnActiveFunc(func(agentID string, active bool) {
-		reconcile, what := svc.InputQueue.TurnEnded, "turn end"
+	svc.Output.SetTurnActiveFunc(func(agentID string, active bool, kind leapmuxv1.AgentInputKind) {
+		var err error
+		what := "turn end"
 		if active {
-			reconcile, what = svc.InputQueue.TurnStarted, "turn start"
+			what = "turn start"
+			// A provider-reported turn can lack an input kind. The live steering
+			// capability supplies the missing fact: such a provider accepts an
+			// explicit steer during any active turn. A known kind still wins, so a
+			// queue-dispatched compaction stays non-steerable.
+			kind = agent.ClassifyTurnForSteering(kind, queueAdapter.SupportsSteering(agentID))
+			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, kind)
+		} else {
+			_, err = svc.InputQueue.TurnEnded(bgCtx(), agentID)
 		}
-		if _, err := reconcile(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+		if err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("reconcile agent input queue with the provider's turn flag failed",
 				"agent_id", agentID, "edge", what, "error", err)
 		}

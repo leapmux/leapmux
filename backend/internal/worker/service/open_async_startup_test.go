@@ -257,7 +257,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	}, sink)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
-	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "startup-relaunch-queued", AgentID: agentID, Text: "after startup relaunch",
@@ -1471,7 +1471,7 @@ func TestRelaunchForStartupSettingsChange_AFailedLaunchReportsNoProcess(t *testi
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
-	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
@@ -1498,7 +1498,7 @@ func TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess(t *testi
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
-	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)

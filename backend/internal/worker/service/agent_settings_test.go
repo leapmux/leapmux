@@ -1088,7 +1088,7 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 
-	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "after-restart", AgentID: agentID, Text: "continue after restart",

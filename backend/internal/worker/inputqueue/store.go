@@ -59,6 +59,13 @@ func validKind(kind leapmuxv1.AgentInputKind) bool {
 		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
+func normalizedTurnKind(kind leapmuxv1.AgentInputKind) leapmuxv1.AgentInputKind {
+	if !validKind(kind) {
+		return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+	}
+	return kind
+}
+
 func validateIdentity(value string) bool {
 	return value != "" && len(value) <= maxQueueIdentityByteCount && !strings.ContainsRune(value, '\x00')
 }
@@ -725,7 +732,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 // RequeuePrepared returns a prepared item to the queue. The steer path uses it,
 // and PrepareSteer claims no turn identity, so there is none to release.
 func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, false)
+	return s.requeuePrepared(ctx, agentID, inputID, false, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 }
 
 // RequeueBusy returns a prepared item to the queue after the provider refused
@@ -734,20 +741,20 @@ func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (S
 //
 // It also releases the turn identity that PrepareDispatch claimed. That claim
 // describes THIS dispatch, and this dispatch never reached the provider, so the
-// turn that stands is the provider's own -- which carries no input id, and no
-// kind that the queue can know. A claim left behind makes Snapshot.CanSteer and
-// PrepareSteer judge the running turn by the refused item's kind, and each of
-// them then answers a steer request for the wrong turn.
+// turn that stands is the provider's own. activeTurnKind carries its
+// classification when the provider supplies one. A claim left behind makes
+// Snapshot.CanSteer and PrepareSteer judge the running turn by the refused
+// item's kind, and each then answers for the wrong turn.
 //
 // active_turn itself stays as it is. The refusal proves that a turn ran when
 // the provider read its flag, and the same refusal publishes that flag. But a
 // turn that ended inside the provider call already committed its clear, and a
 // write here would restore a turn that no envelope ever ends again.
-func (s *Store) RequeueBusy(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, true)
+func (s *Store) RequeueBusy(ctx context.Context, agentID, inputID string, activeTurnKind leapmuxv1.AgentInputKind) (Snapshot, error) {
+	return s.requeuePrepared(ctx, agentID, inputID, true, activeTurnKind)
 }
 
-func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, releaseTurnIdentity bool) (Snapshot, error) {
+func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, releaseTurnIdentity bool, activeTurnKind leapmuxv1.AgentInputKind) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, err
@@ -763,7 +770,8 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, re
 		return Snapshot{}, ErrConflict
 	}
 	if releaseTurnIdentity {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, nowText(), agentID, inputID); err != nil {
+		activeTurnKind = normalizedTurnKind(activeTurnKind)
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnKind, nowText(), agentID, inputID); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -942,16 +950,17 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 // provider's turn flag reaches here, and a provider republishes the unchanged
 // value freely, so a call that changes nothing must leave the revision alone.
 func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, bool, error) {
-	return s.setTurnState(ctx, agentID, false)
+	return s.setTurnState(ctx, agentID, false, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
 }
 
 // TurnStarted records a turn that the agent process began on its own. It keeps
-// the turn that a dispatch already recorded: that one identifies its input, and
-// this call carries no identity to replace it with.
+// the turn that a dispatch already recorded: that one identifies its input.
+// kind classifies the turn only when the provider knows that it accepts
+// steering. An unclassified provider passes UNSPECIFIED.
 //
 // The Boolean reports whether the durable state moved. See TurnEnded.
-func (s *Store) TurnStarted(ctx context.Context, agentID string) (Snapshot, bool, error) {
-	return s.setTurnState(ctx, agentID, true)
+func (s *Store) TurnStarted(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind) (Snapshot, bool, error) {
+	return s.setTurnState(ctx, agentID, true, kind)
 }
 
 // AbandonUnownedTurn clears a turn that no dispatch owns. A process boundary
@@ -981,18 +990,18 @@ func (s *Store) AbandonUnownedTurn(ctx context.Context, agentID string) (Snapsho
 // reports. It is idempotent in both directions, so the caller may report the
 // same state as often as the provider publishes it.
 //
-// The rising edge records the turn with NO kind and NO input id, because the
-// signal supplies neither. AGENT_INPUT_KIND_UNSPECIFIED is what the queue
-// really knows, and regularTurnKind refuses it, so Snapshot.CanSteer and
-// PrepareSteer both refuse a steer into a turn that the queue did not dispatch.
-// A concrete kind here would be an invention: the store cannot tell an ordinary
-// reply from an auto-compaction, and both predicates trust the column.
-func (s *Store) setTurnState(ctx context.Context, agentID string, active bool) (Snapshot, bool, error) {
+// A rising edge records no input id. It records a kind only when the provider
+// classifies the turn. An unclassified provider supplies UNSPECIFIED, which
+// makes Snapshot.CanSteer and PrepareSteer refuse the operation. A later
+// classified publish can replace UNSPECIFIED, but it cannot replace a kind
+// that a queue dispatch already recorded.
+func (s *Store) setTurnState(ctx context.Context, agentID string, active bool, kind leapmuxv1.AgentInputKind) (Snapshot, bool, error) {
 	statement := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR active_turn_kind <> 0 OR active_input_id <> '')`
 	args := []any{nowText(), agentID}
 	if active {
-		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_turn = 0`
-		args = []any{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, nowText(), agentID}
+		kind = normalizedTurnKind(kind)
+		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 0 OR (active_turn_kind = 0 AND ? <> 0))`
+		args = []any{kind, nowText(), agentID, kind}
 	}
 	return s.execTurnState(ctx, agentID, statement, args)
 }
