@@ -15,12 +15,18 @@ import { ThinkingIndicator } from './ThinkingIndicator'
 // synchronous test rAF stub would recurse into forever; `renderVisible` stubs
 // rAF to a no-op for the render and passes paused=true so the compass sim and
 // verb-rotation interval stay idle. Hidden cases render visible=false directly.
-function renderVisible(thinkingTokens?: number) {
+function renderVisible(thinkingTokens?: number, outputBytes?: number, outputBytesMinimum?: boolean) {
   const realRaf = globalThis.requestAnimationFrame
   globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
   try {
     return render(() => (
-      <ThinkingIndicator visible={true} paused={true} thinkingTokens={thinkingTokens} />
+      <ThinkingIndicator
+        visible={true}
+        paused={true}
+        thinkingTokens={thinkingTokens}
+        outputBytes={outputBytes}
+        outputBytesMinimum={outputBytesMinimum}
+      />
     ))
   }
   finally {
@@ -59,6 +65,17 @@ describe('thinking indicator token count', () => {
   it('renders nothing when the estimate is zero', () => {
     const { queryByText } = renderVisible(0)
     expect(queryByText(/tokens/)).toBeNull()
+  })
+
+  it('renders token and output counters together', () => {
+    const { getByText } = renderVisible(230, 1536)
+    expect(getByText('230 tokens')).toBeInTheDocument()
+    expect(getByText('1.5 KB')).toBeInTheDocument()
+  })
+
+  it('marks provider-limited output as a minimum', () => {
+    const { getByText } = renderVisible(undefined, 1536, true)
+    expect(getByText('≥1.5 KB')).toBeInTheDocument()
   })
 
   it('keeps the count mounted through the row fade after hiding, then unmounts it', () => {

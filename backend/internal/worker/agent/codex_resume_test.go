@@ -177,7 +177,6 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	a.turnSawPlan = true
 	a.turnPlanText = "old plan"
 	a.turnAssistantText = "old answer"
-	a.streamingPlan = true
 	a.model = "gpt-5.6-sol"
 	a.approvalPolicy = "never"
 	a.sandboxPolicy = CodexSandboxDangerFullAccess
@@ -192,7 +191,6 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.False(t, a.turnSawPlan)
 	assert.Empty(t, a.turnPlanText)
 	assert.Empty(t, a.turnAssistantText)
-	assert.False(t, a.streamingPlan)
 	assert.Equal(t, CodexSandboxDangerFullAccess, a.sandboxPolicy)
 	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
 	assert.Equal(t, "thread-new", sink.LastSessionID())

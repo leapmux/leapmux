@@ -12,21 +12,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// streamChunkDeltas returns every stream-chunk delta broadcast on the watcher
-// stream, in order.
-func streamChunkDeltas(t *testing.T, w *testResponseWriter) []string {
-	t.Helper()
-	var deltas []string
-	for _, stream := range w.streamsSnapshot() {
-		chunk := decodeWatchAgentEvent(t, stream).GetStreamChunk()
-		if chunk == nil {
-			continue
-		}
-		deltas = append(deltas, string(chunk.GetDelta()))
-	}
-	return deltas
-}
-
 // A subagent spawn owns no span, so both of its rows persist at root depth with
 // no span lines at all. This is the first shape in the design: the spawn card
 // and its result sit flush against the left edge.
@@ -158,47 +143,4 @@ func TestSpawnRowUnderAnOpenParentKeepsTheNeutralColor(t *testing.T) {
 		"the spawn card takes the neutral border although its parent span is open")
 	assert.Equal(t, int64(readColor), rows[2].SpanColor,
 		"a row that does own its span still inherits the connector colour")
-}
-
-// Live deltas are suppressed while any span is open. A spawn opens none, so the
-// parent keeps streaming for the whole subagent run.
-func TestStreamChunksFlowWhileASpawnRunsAndStopWhileASpanIsOpen(t *testing.T) {
-	t.Parallel()
-
-	svc, _, w := setupTestService(t)
-	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-
-	// A spawn runs: nothing is open, so the delta reaches the watcher.
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
-		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent"}))
-	sink.BroadcastStreamChunk([]byte("while the subagent runs"), "", "")
-
-	// An ordinary tool span opens: the agent's free-form text waits for it.
-	sink.OpenSpan("tu-read", "")
-	sink.BroadcastStreamChunk([]byte("while a tool runs"), "", "")
-
-	assert.Equal(t, []string{"while the subagent runs"}, streamChunkDeltas(t, w))
-}
-
-// A tool's OWN output streams while that tool runs. It is emitted while its span
-// is open by construction, so gating it on "any span open" dropped every one:
-// per-tool live output never reached the UI, for any provider.
-func TestStreamChunksOfARunningToolReachTheWatcher(t *testing.T) {
-	t.Parallel()
-
-	svc, _, w := setupTestService(t)
-	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-
-	sink.OpenSpan("tu-bash", "")
-	sink.BroadcastStreamChunk([]byte("bash output"), "tu-bash", "")
-	// A second concurrent tool streams its own output too.
-	sink.OpenSpan("tu-grep", "")
-	sink.BroadcastStreamChunk([]byte("grep output"), "tu-grep", "")
-	// The agent's free-form text still waits while a tool runs.
-	sink.BroadcastStreamChunk([]byte("agent prose"), "", "")
-	// So does a chunk naming a span that never opened.
-	sink.BroadcastStreamChunk([]byte("spawn output"), "tu-spawn", "")
-
-	assert.Equal(t, []string{"bash output", "grep output"}, streamChunkDeltas(t, w))
 }

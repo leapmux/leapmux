@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ type piMessageUpdateEnvelope struct {
 type piToolExecutionEnvelope struct {
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
+	Args       json.RawMessage `json:"args"`
 	Input      json.RawMessage `json:"input"`
 	Result     json.RawMessage `json:"result"`
 }
@@ -51,6 +53,13 @@ type piToolUpdateEnvelope struct {
 		// running subagent, parsed by shape in handlePiToolExecutionUpdate.
 		Details json.RawMessage `json:"details"`
 	} `json:"partialResult"`
+}
+
+type piIncompleteTool struct {
+	ToolName      string
+	Args          json.RawMessage
+	PartialResult json.RawMessage
+	Order         uint64
 }
 
 // piExtensionUIRequestHeader captures the routing fields of an
@@ -192,8 +201,8 @@ func (a *PiAgent) handlePiAgentStart() {
 	}
 	a.mu.Unlock()
 	a.PublishTurnActive()
-	// A fresh turn begins: start the thinking-token estimate from zero.
-	a.thinkingTokens.reset()
+	// A fresh turn begins with empty progress counters.
+	a.sink.ReportProgress(ResetModelProgress())
 }
 
 func (a *PiAgent) handlePiAgentEnd(raw []byte) {
@@ -228,10 +237,19 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// (https://github.com/leapmux/leapmux/issues/435), which is exactly why the
 	// order has to be right before it does.
 	defer a.PublishTurnActive()
+	if env.WillRetry {
+		a.generationBuffer.Reset()
+		a.discardIncompletePiTools()
+		a.sink.ReportProgress(ResetProgress())
+	} else {
+		completion := env.retainedCompletion()
+		a.flushPiGeneration(completion)
+		a.persistIncompletePiTools(completion)
+	}
 	// Recover from any tool calls that didn't get a matching
 	// tool_execution_end (e.g. aborted turn). Otherwise the map retains the
 	// cumulative result text indefinitely across sessions.
-	a.resetCumulativeDeltas()
+	a.resetCumulativeOutput()
 
 	// Persist the divider immediately with the latest locally observed usage so
 	// chat ordering stays stable even if the user sends the next prompt right
@@ -284,7 +302,21 @@ func (env piAgentEndEnvelope) isRetryableFailure() bool {
 	return false
 }
 
+func (env piAgentEndEnvelope) retainedCompletion() MessageCompletion {
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role != PiRoleAssistant {
+			continue
+		}
+		if env.Messages[i].StopReason == PiStopReasonError {
+			return MessageCompletionError
+		}
+		break
+	}
+	return MessageCompletionInterrupted
+}
+
 func (a *PiAgent) handlePiMessageEnd(raw []byte) {
+	a.generationBuffer.Reset()
 	augmented := a.augmentPiMessageEnd(raw)
 	// The pi-subagents extension emits a customType:"subagent-notification"
 	// message carrying registry details (status / activity / agentId, and
@@ -306,21 +338,36 @@ func (a *PiAgent) handlePiMessageUpdate(raw []byte) {
 
 	switch env.AssistantMessageEvent.Type {
 	case contracts.PiAssistantEventTextDelta, contracts.PiAssistantEventThinkingDelta:
-		// Text and thinking deltas are handled identically: stream the chunk under
-		// its own event type, then feed it to the live token estimate. Pi persists
-		// both as one message_end with no per-phase split, so a thinking->text
-		// transition inside a single message shares one thinking-token phase by
-		// design. The broadcast method is taken from the event type so the frontend
-		// still distinguishes the two stream kinds.
 		if env.AssistantMessageEvent.Delta == "" {
 			return
 		}
-		a.sink.BroadcastStreamChunk([]byte(env.AssistantMessageEvent.Delta), "", env.AssistantMessageEvent.Type)
-		a.thinkingTokens.observe(a.sink, env.AssistantMessageEvent.Delta)
+		a.sink.ReportProgress(ModelTextProgress("pi:model", env.AssistantMessageEvent.Delta))
+		kind := AssembledMessageKindText
+		if env.AssistantMessageEvent.Type == contracts.PiAssistantEventThinkingDelta {
+			kind = AssembledMessageKindReasoning
+		}
+		a.generationBuffer.Append("pi:"+env.AssistantMessageEvent.Type, kind, env.AssistantMessageEvent.Delta)
 	default:
 		// All other delta sub-types (text_start/end, thinking_start/end,
 		// toolcall_*, start, done, error) are handled via message_end and
 		// tool_execution_* events; ignore here to avoid double-rendering.
+	}
+}
+
+func (a *PiAgent) flushPiGeneration(completion MessageCompletion) {
+	if a.isDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	rows, err := a.generationBuffer.FinishAll(completion)
+	if err != nil {
+		slog.Warn("pi marshal partial generation", "agent_id", a.agentID, "error", err)
+		return
+	}
+	for _, raw := range rows {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+			slog.Error("pi persist partial generation", "agent_id", a.agentID, "error", err)
+		}
 	}
 }
 
@@ -332,9 +379,24 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 		return
 	}
 
+	input := env.Args
+	if len(input) == 0 {
+		input = env.Input
+	}
+	a.mu.Lock()
+	if a.incompleteTools == nil {
+		a.incompleteTools = make(map[string]*piIncompleteTool)
+	}
+	a.incompleteTools[env.ToolCallID] = &piIncompleteTool{
+		ToolName: env.ToolName,
+		Args:     append(json.RawMessage(nil), input...),
+		Order:    a.incompleteToolOrder,
+	}
+	a.incompleteToolOrder++
+	a.mu.Unlock()
 	// Record the tool's input description (the pi-subagents extension carries
 	// the spawn prompt here) for the background-task registry title.
-	if desc := piExtractDescription(env.Input, env.ToolName); desc != "" {
+	if desc := piExtractDescription(input, env.ToolName); desc != "" {
 		a.mu.Lock()
 		if a.toolCallDescriptions == nil {
 			a.toolCallDescriptions = make(map[string]string)
@@ -345,7 +407,7 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	// The spawn prompt, kept whole for the child transcript's first message.
 	// pi-subagents declares it `prompt` on the nested-agent tool
 	// (src/nested-tools.ts); a non-subagent tool simply has none.
-	if prompt := piExtractPrompt(env.Input); prompt != "" {
+	if prompt := piExtractPrompt(input); prompt != "" {
 		a.mu.Lock()
 		a.toolCallPrompts.remember(env.ToolCallID, prompt)
 		a.mu.Unlock()
@@ -376,42 +438,41 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 	if err := json.Unmarshal(raw, &env); err != nil || env.ToolCallID == "" {
 		return
 	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil && len(fields["partialResult"]) > 0 {
+		a.mu.Lock()
+		if a.incompleteTools == nil {
+			a.incompleteTools = make(map[string]*piIncompleteTool)
+		}
+		tool := a.incompleteTools[env.ToolCallID]
+		if tool == nil {
+			tool = &piIncompleteTool{Order: a.incompleteToolOrder}
+			a.incompleteToolOrder++
+			a.incompleteTools[env.ToolCallID] = tool
+		}
+		tool.PartialResult = append(json.RawMessage(nil), fields["partialResult"]...)
+		a.mu.Unlock()
+	}
 
-	totalLen := 0
+	var full strings.Builder
 	for _, c := range env.PartialResult.Content {
 		if c.Type == PiContentBlockText {
-			totalLen += len(c.Text)
+			full.WriteString(c.Text)
 		}
 	}
-
-	prevLen, reset := a.recordCumulativeLength(env.ToolCallID, totalLen)
-	if !reset && totalLen <= prevLen {
-		return
+	var details struct {
+		Truncation *struct {
+			TotalBytes int64 `json:"totalBytes"`
+			Truncated  bool  `json:"truncated"`
+		} `json:"truncation"`
 	}
-
-	var delta strings.Builder
-	delta.Grow(totalLen - prevLen)
-	seen := 0
-	for _, c := range env.PartialResult.Content {
-		if c.Type != PiContentBlockText {
-			continue
-		}
-		blockLen := len(c.Text)
-		if seen+blockLen <= prevLen {
-			seen += blockLen
-			continue
-		}
-		if seen >= prevLen {
-			delta.WriteString(c.Text)
-		} else {
-			delta.WriteString(c.Text[prevLen-seen:])
-		}
-		seen += blockLen
+	if json.Unmarshal(env.PartialResult.Details, &details) == nil && details.Truncation != nil && details.Truncation.TotalBytes > 0 {
+		// totalBytes counts the full output even when the retained content is truncated.
+		a.sink.ReportProgress(OutputExactTotalProgress(env.ToolCallID, details.Truncation.TotalBytes))
+	} else if full.Len() > 0 {
+		observed := a.observeCumulativeOutput(env.ToolCallID, full.String(), false)
+		a.sink.ReportProgress(OutputTotalProgress(env.ToolCallID, observed.Total, observed.Minimum))
 	}
-	if delta.Len() == 0 {
-		return
-	}
-	a.sink.BroadcastStreamChunk([]byte(delta.String()), env.ToolCallID, contracts.PiEventToolExecutionUpdate)
 
 	// pi-subagents extension: when partialResult.details parses to the
 	// subagent shape {status, activity} (shape detection), upsert a running
@@ -433,8 +494,10 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 
 	a.mu.Lock()
 	a.turnToolUses++
+	delete(a.incompleteTools, env.ToolCallID)
 	a.mu.Unlock()
-	a.clearCumulativeDelta(env.ToolCallID)
+	a.clearCumulativeOutput(env.ToolCallID)
+	a.sink.ReportProgress(CompleteOutputProgress(env.ToolCallID))
 
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
 		SpanID:   env.ToolCallID,
@@ -443,7 +506,6 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	}); err != nil {
 		slog.Error("pi persist tool_execution_end", "agent_id", a.agentID, "error", err)
 	}
-	a.sink.BroadcastStreamEnd(env.ToolCallID)
 	a.sink.CloseSpan(env.ToolCallID)
 
 	// pi-subagents extension: parse the result details for final status, or
@@ -453,6 +515,74 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	a.mu.Lock()
 	delete(a.toolCallDescriptions, env.ToolCallID)
 	a.mu.Unlock()
+}
+
+func (a *PiAgent) discardIncompletePiTools() {
+	a.mu.Lock()
+	a.incompleteTools = nil
+	a.incompleteToolOrder = 0
+	clear(a.toolCallDescriptions)
+	a.mu.Unlock()
+	a.toolCallPrompts.clear()
+}
+
+func (a *PiAgent) persistIncompletePiTools(completion MessageCompletion) {
+	a.mu.Lock()
+	toolCallIDs := make([]string, 0, len(a.incompleteTools))
+	allToolCallIDs := make([]string, 0, len(a.incompleteTools))
+	tools := make(map[string]piIncompleteTool, len(a.incompleteTools))
+	for toolCallID, tool := range a.incompleteTools {
+		allToolCallIDs = append(allToolCallIDs, toolCallID)
+		delete(a.toolCallDescriptions, toolCallID)
+		if tool == nil || len(tool.PartialResult) == 0 {
+			continue
+		}
+		toolCallIDs = append(toolCallIDs, toolCallID)
+		tools[toolCallID] = *tool
+	}
+	a.incompleteTools = nil
+	a.incompleteToolOrder = 0
+	a.mu.Unlock()
+	for _, toolCallID := range allToolCallIDs {
+		a.toolCallPrompts.take(toolCallID)
+	}
+	sort.Slice(toolCallIDs, func(left, right int) bool {
+		leftTool, rightTool := tools[toolCallIDs[left]], tools[toolCallIDs[right]]
+		if leftTool.Order != rightTool.Order {
+			return leftTool.Order < rightTool.Order
+		}
+		return toolCallIDs[left] < toolCallIDs[right]
+	})
+
+	for _, toolCallID := range toolCallIDs {
+		tool := tools[toolCallID]
+		value := map[string]interface{}{
+			"type":       contracts.PiEventToolExecutionEnd,
+			"toolCallId": toolCallID,
+			"toolName":   tool.ToolName,
+			"result":     tool.PartialResult,
+			"isError":    true,
+		}
+		if len(tool.Args) > 0 {
+			value["args"] = tool.Args
+		}
+		raw, err := json.Marshal(value)
+		if err == nil {
+			raw, err = AnnotateMessageCompletion(raw, completion)
+		}
+		if err != nil {
+			slog.Warn("marshal incomplete pi tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+			continue
+		}
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
+		}); err != nil {
+			slog.Error("persist incomplete pi tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+		}
+		a.sink.CloseSpan(toolCallID)
+		a.clearCumulativeOutput(toolCallID)
+		a.sink.ReportProgress(CompleteOutputProgress(toolCallID))
+	}
 }
 
 func (a *PiAgent) handlePiQueueUpdate(raw []byte) {

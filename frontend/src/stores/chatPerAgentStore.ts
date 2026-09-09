@@ -6,16 +6,15 @@ import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 //
 // The shared backbone of the simple chat sub-stores: a single
 // `{ byAgent: Record<string, T> }` reactive store with get / set / clear over a
-// configured empty value. Extracted so chatStreamingText and chatTodoStore do
-// not repeat the same createStore and
+// configured empty value. Extracted so the chat stores do not repeat createStore and
 // `byAgent[agentId] ?? empty` accessors; each slice layers its own domain methods
 // (such as todos.replace) on top. The saved-viewport-scroll
 // slice has no domain logic, so the window store uses this spine directly for it.
 // chatLiveTail layers its sequence reconcilers on a `bigint` value.
 // This matches the chatMessageOrder extraction: a small,
 // independently tested unit the slices compose. NOT for the two-level
-// agentId -> spanId slices -- chatCommandStreams and chatToolProgress -- whose
-// nesting is a different shape; each keeps its own vivify/collapse spine.
+// agentId -> spanId slices such as chatToolProgress. Their nesting is a
+// different shape, so each keeps its own create/remove logic.
 // ---------------------------------------------------------------------------
 
 export interface PerAgentStore<T> {
@@ -95,9 +94,8 @@ function createSpine<T>(empty: T) {
     // AND defeats Solid's identical-value early return (`if (!deleting &&
     // state[property] === value) return`), because the delete step always
     // passes it. On a primitive leaf that would turn free no-op writes into
-    // full invalidations on the hottest path in the app: streaming text writes
-    // once per delta chunk, and the live tail re-writes a sequence number that
-    // is usually already equal.
+    // full invalidations on a hot path. The live tail often writes a sequence
+    // number that is already equal.
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
       // `batch`, so a reader never observes the intermediate absent leaf.
       batch(() => {

@@ -579,6 +579,9 @@ export function checkWorkerVocab(v) {
   mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the agents row stores "" for "no goal", and every reader tests for it')
   const transitions = Object.values(v.goalTransitions)
   mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
+  const assembledTokens = Object.values(v.assembledMessage ?? {})
+  mustBe(assembledTokens.length > 0, 'worker-vocab.json', 'assembledMessage must hold at least one entry')
+  mustBe(new Set(assembledTokens).size === assembledTokens.length, 'worker-vocab.json', 'two assembled-message entries share one wire token')
   return {}
 }
 
@@ -589,6 +592,8 @@ export function emitGoWorkerVocab(v) {
     .map(([key, token]) => ({ name: `GoalStatusToken${key}`, value: jsonString(token) })))
   const goalTransitionBlock = goConstBlock(Object.entries(v.goalTransitions)
     .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
+  const assembledMessageBlock = goConstBlock(Object.entries(v.assembledMessage)
+    .map(([key, token]) => ({ name: `AssembledMessage${key}`, value: jsonString(token) })))
   return `${GO_HEADER('worker-vocab.json')}package contracts
 
 // The worker's wire vocabulary: notification-type tokens persisted inside
@@ -624,6 +629,11 @@ const (
 ${goalTransitionBlock}
 )
 
+// AssembledMessage* are the fields and values of Worker-assembled text rows.
+const (
+${assembledMessageBlock}
+)
+
 // Model sentinels: the account-default model resolves to a different concrete
 // model on relaunch; "auto" is the effort a catalog default falls back to.
 const (
@@ -646,6 +656,9 @@ export function emitTsWorkerVocab(v) {
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   const goalTransitionEntries = Object.entries(v.goalTransitions)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
+  const assembledMessageEntries = Object.entries(v.assembledMessage)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   return `${TS_HEADER('worker-vocab.json')}
@@ -687,6 +700,11 @@ ${goalTransitionEntries}
 } as const
 
 export type GoalTransitionToken = typeof GOAL_TRANSITION[keyof typeof GOAL_TRANSITION]
+
+/** Fields and values of Worker-assembled text rows. */
+export const ASSEMBLED_MESSAGE = {
+${assembledMessageEntries}
+} as const
 
 /** Model sentinels: the account-default model, and the auto effort. */
 export const ACCOUNT_DEFAULT_MODEL = ${jsonString(v.modelSentinels.accountDefaultModel)} as const

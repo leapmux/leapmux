@@ -10,16 +10,15 @@ import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTypes'
+import type { SpanMessageRevision } from '~/stores/chatTypes'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
-import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
@@ -30,22 +29,19 @@ import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
-import { kindScopedLayoutKey, messageBandKind } from './chatRowGeometry'
+import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
 import { createScrollActivity } from './chatScrollActivity'
 import { ChatScrollRail } from './ChatScrollRail'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
-import { createStreamingTail } from './chatStreamingTail'
 import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
-import { markdownContent } from './markdownEditor/markdownContent.css'
 import { MessageBubble } from './MessageBubble'
-import { messageBubbleClass, messageRowChrome } from './messageClassification'
+import { messageRowChrome } from './messageClassification'
 import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
-import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
@@ -139,8 +135,6 @@ export interface ChatMessageLookups {
   getToolResultContentVersionBySpanId?: (spanId: string) => number
   /** Full paired tool_result revision token (id + seq + content version). */
   getToolResultRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
-  /** Look up live Codex span stream segments by span id, for the bubble renderers. */
-  getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
   /**
    * Look up a still-running tool's live progress by span id. Read ONLY by the
    * leaf badge in the tool card's header, never by the classified-entry cache:
@@ -148,16 +142,6 @@ export interface ChatMessageLookups {
    * re-rendering) the row would drop a text selection held across it.
    */
   getToolProgressBySpanId?: (spanId: string) => ToolProgressEntry | undefined
-  /**
-   * Whether a span's command stream has renderable content to show. MUST read
-   * REACTIVELY (e.g. the command-stream store's `hasRenderableContent`): the
-   * classified-entry cache subscribes to it to flip a row hidden<->visible the
-   * moment its span first has renderable stream content OR is cleared. A non-reactive
-   * snapshot would type-check but freeze a Codex reasoning row on its first (hidden)
-   * classification. Backed by a presence bit that flips only on those two events, so
-   * subscribing doesn't re-classify per delta. NOT "actively streaming right now".
-   */
-  hasRenderableCommandStreamBySpanId?: (spanId: string) => boolean
   /**
    * The row's content version (the store's getMessageContentVersion), bumped when a
    * message's body is replaced in place under a stable id+seq. The classified-entry
@@ -204,6 +188,10 @@ export interface AgentLifecycleProps {
    * the thinking indicator. Broadcast-only telemetry, cleared at turn boundaries.
    */
   thinkingTokens?: number
+  /** Live bytes from process and tool output. */
+  outputBytes?: number
+  /** True when outputBytes is a minimum because the provider limits output. */
+  outputBytesMinimum?: boolean
   /**
    * Agent status. STARTING shows a loader with the provider name in the empty-state
    * area; STARTUP_FAILED shows the server error in --danger. The editor beneath remains
@@ -264,7 +252,6 @@ interface ChatViewProps {
    */
   isChildTranscript?: boolean
   messages: AgentChatMessage[]
-  streamingText: string
   /**
    * Whether this ChatView is the active tab in its tile. Forwarded to the
    * thinking indicator so it can suspend its compass simulation when the
@@ -305,8 +292,6 @@ interface ChatViewProps {
   onQuote?: (text: string) => void
   /** Called when the user clicks the reply button on an assistant message. */
   onReply?: (quotedText: string) => void
-  /** When "plan", streaming text is rendered with plan styling. */
-  streamingType?: string
   /**
    * The per-agent reactive lookups the bubble renderers, the classified-entry cache,
    * and the measured-height cache keys read by spanId / message id. Bundled into one stable
@@ -397,11 +382,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // Classify + cache the window's messages by id so <For> receives stable object
   // references for unchanged rows. createClassifiedEntryCache owns the cache, the
-  // freshness rule (reuse only when seq AND command-stream presence are
-  // unchanged), and the incremental prune.
+  // freshness rule and the incremental prune.
   const entries = createClassifiedEntryCache({
     messages: () => props.messages,
-    hasRenderableStreamBySpanId: spanId => props.lookups?.hasRenderableCommandStreamBySpanId?.(spanId) ?? false,
     // A tool_result's rendered content reads its paired tool_use; re-classify
     // the moment that opener is indexed so a late opener doesn't leave the row
     // frozen at its no-sibling shape.
@@ -511,10 +494,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         // resize -- so a global toggle re-measures just those, not the whole window.
         // Reading getUiVersion HERE subscribes this memo to the row's per-message UI
         // toggle, so stale premeasured heights are ignored the moment visible state
-        // changes. DELIBERATELY EXCLUDED: live command-stream TEXT -- it grows on
-        // every delta and is measured at the tail instead. The stream PRESENCE bit is
-        // folded in (a classifier can change rendered structure from presence),
-        // see EntryFreshness.
+        // changes.
         heightKey: `${heightKeyForEntry(e, getUiVersion(e.msg.id))}|${globalEpochKey()}${kindScopedLayoutKey(
           e.category.kind,
           () => effectiveDiffView(e.msg.id),
@@ -640,8 +620,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   /**
    * The per-row bindings a MessageBubble needs from ChatView, bundled into one
    * typed object: the agent-stable lookups (hostLookups) spread with the bindings
-   * that genuinely vary per message -- the row's live command stream (keyed on its
-   * spanId), its lifted diff-view / UI state (keyed on its id), and its
+   * that vary per message: tool progress, the diff view, UI state, and the
    * height-debug readout (keyed on its id, off `virt`). Built per row in the
    * <For>; the split documents exactly which bindings are message-scoped.
    * Defined after `virt` so getHeightDebug can read it without a
@@ -649,7 +628,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
    */
   const buildMessageHost = (entry: ClassifiedEntry): MessageBubbleHost => ({
     ...hostLookups(),
-    commandStream: () => props.lookups?.getCommandStreamBySpanId?.(entry.msg.spanId),
     toolProgress: () => props.lookups?.getToolProgressBySpanId?.(entry.msg.spanId),
     localDiffView: getLocalDiffView(entry.msg.id),
     // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
@@ -688,11 +666,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       result.set(entry.msg.id, entry)
     return result
   })
-  const tailVisibleEntry = createMemo(() => {
-    const all = visibleEntries()
-    return all[all.length - 1]
-  })
-
   // Premeasure bands: hidden-DOM premeasure of the ranged + look-ahead + idle warm-up
   // rows, fed into the coherence queue that de-dupes / collapses / settles them (see
   // createChatPremeasureBands). ChatView renders ChatHiddenPremeasure from
@@ -709,23 +682,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     visibleEntryById,
     warmupEnabled: () => (props.tabActive ?? true)
       && contentWidth() > 0
-      && !props.streamingText
       && !syntaxHighlightingPaused(),
   })
   const { premeasureCandidates, collapsedPremeasureIds } = premeasure
-
-  // Streaming-tail lifecycle: throttle the streaming markdown render, and when streaming
-  // ends keep the in-flow bubble covering the persisted replacement row until it measures
-  // (so the estimate->real swap doesn't blink). Owns the intricate stream->row handoff;
-  // see createStreamingTail.
-  const { renderedStreamHtml, streamingTailRender, streamReplacementTailId, isCoveredByInFlowTail }
-    = createStreamingTail({
-      streamingText: () => props.streamingText,
-      streamingType: () => props.streamingType,
-      hasNewerMessages: () => !!props.pagination?.hasNewerMessages,
-      tailVisibleId: () => tailVisibleEntry()?.msg.id,
-      hasMeasuredHeight: virt.hasMeasuredHeight,
-    })
 
   // The rendered window: only the rows in/near the viewport.
   const visibleSlice = createMemo(() => {
@@ -737,14 +696,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // An actively premeasured unknown-height row awaiting its OWN DOM height commit.
   // While true the row renders INVISIBLE (see rowHiddenUntilMeasured) and its
   // reserved slot is painted by the loading-skeleton overlay instead of blank
-  // space. The live tail is included -- its unmeasured content would otherwise
-  // overflow its estimated slot onto the trailing thinking indicator / streaming
-  // UI -- EXCEPT the stream-covered tail, whose content is already painted by the
-  // in-flow streaming bubble (a skeleton there would double-paint over live text).
+  // space. The live tail follows the same rule because its unmeasured content
+  // could overlap the thinking indicator.
   const rowAwaitingMeasurement = (id: string): boolean => (
     !virt.hasMeasuredHeight(id)
     && collapsedPremeasureIds().has(id)
-    && streamReplacementTailId() !== id
   )
 
   // In-order reveal of an append burst: a measured tail row is held hidden until
@@ -758,13 +714,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   )
 
   // A row is hidden pending reveal when it is awaiting its OWN measurement OR being held
-  // so an earlier appended sibling reveals first -- but NEVER while the in-flow streaming
-  // bubble already covers it (the order gate can pick up a stream-replacement tail, whose
-  // content the bubble paints; a skeleton there would double-paint over live text). The
-  // row hides IMMEDIATELY (so it can't overflow its slot); its loading skeleton is
+  // so an earlier appended sibling reveals first. The row hides immediately so
+  // it cannot overflow its slot. Its loading skeleton is
   // deferred separately (see skeletonSlice) so fast re-measures don't flash a shimmer.
   const rowHiddenPendingReveal = (id: string): boolean =>
-    !isCoveredByInFlowTail(id) && (rowAwaitingMeasurement(id) || orderedRevealHeld().has(id))
+    rowAwaitingMeasurement(id) || orderedRevealHeld().has(id)
 
   // Hide-until-measured, shared by the row itself and its gap-bridge overlay
   // entry: a premeasure-hidden (or order-held) row stays invisible until it is
@@ -772,22 +726,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // overlap what follows (a later row, or the in-flow tail UI). Rows with no
   // active premeasure stay visible so a zero attach read cannot hide content
   // forever.
-  const rowHiddenUntilMeasured = (id: string): boolean => (
-    isCoveredByInFlowTail(id) || rowHiddenPendingReveal(id)
-  )
-
-  // The streaming tail paints a band, and so does the last virtual row above it in
-  // the common case (a thought, then the streamed reply). The virtualizer merges
-  // two adjacent bands in its offset map, but the tail has no offset-map entry, so
-  // it must cancel its own flow gap. Requires the row above to be PAINTING: a row
-  // held invisible until it measures shows no band, and merging against it would
-  // pull the tail up over blank space.
-  const tailMergesWithRowAbove = createMemo(() => {
-    const above = tailVisibleEntry()
-    return above !== undefined
-      && messageBandKind(above.category.kind) !== undefined
-      && !rowHiddenUntilMeasured(above.msg.id)
-  })
+  const rowHiddenUntilMeasured = (id: string): boolean => rowHiddenPendingReveal(id)
 
   // Fling-skeleton phases for the rendered rows, collected into one reactive set so the
   // gap-bridge overlay (rendered outside the rows) can see which rows are skeletons.
@@ -878,7 +817,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const scroll = useChatScroll({
     messages: () => props.messages,
     messageVersion: () => props.messageVersion,
-    streamingText: () => props.streamingText,
     agentWorking: () => props.agentLifecycle?.agentWorking,
     agentStatus: () => props.agentLifecycle?.agentStatus,
     hasOlderMessages: () => props.pagination?.hasOlderMessages,
@@ -1019,11 +957,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // its growth trigger to `createEffect(on(trigger, restickAfterCommit))`.
   const restickAfterCommit = () => queueMicrotask(() => scroll.restickIfAtBottom())
 
-  // Streaming markdown: renderedStreamHtml updates a frame after the streaming text
-  // changes, AFTER the auto-scroll effect already read scrollHeight at the pre-render
-  // size -- so re-stick once the markdown has actually rendered.
-  createEffect(on(renderedStreamHtml, restickAfterCommit))
-
   // Startup banner (AgentStartupBanner phase labels + error text): a late phase-label
   // or error change does NOT move the auto-scroll signature (agentStatus stays
   // STARTING/STARTUP_FAILED across phases, and the banner text isn't in the signature).
@@ -1034,6 +967,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // can wrap the verb row to a taller line -- growth that does NOT move the auto-scroll
   // signature and that onExpandTick only catches during the expand/mount animation.
   createEffect(on(() => props.agentLifecycle?.thinkingTokens, restickAfterCommit))
+  createEffect(on(() => props.agentLifecycle?.outputBytes, restickAfterCommit))
 
   onMount(() => {
     props.onScrollApiReady?.({
@@ -1070,7 +1004,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   return (
     <div class={styles.container} data-testid="chat-container">
-      {/* One shared menu for every row below, including the streaming tail. The
+      {/* One shared menu for every row below. The
           host renders a trigger-less popover, so it adds no box to this column --
           see `data-headless` in ~/components/common/DropdownMenu.tsx. */}
       <MessageContextMenuHostProvider>
@@ -1098,7 +1032,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             a time, so at most one banner is in the DOM for any given state.
           */}
             <Show
-              when={hasVisibleEntries() || props.streamingText || props.agentLifecycle?.agentWorking
+              when={hasVisibleEntries() || props.agentLifecycle?.agentWorking
                 || props.pagination?.hasOlderMessages || props.pagination?.hasNewerMessages
                 || props.pagination?.fetchingOlder || props.pagination?.fetchingNewer}
               fallback={(
@@ -1281,62 +1215,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     </For>
                   </div>
                   {/*
-                  Streaming text and the thinking indicator belong at the live
-                  tail. While windowed away from the tail (hasNewerMessages) the
+                  The thinking indicator belongs at the live tail. While
+                  windowed away from the tail (hasNewerMessages), the
                   bottom of the in-memory list isn't the real bottom, so hide
                   them — the scroll-to-bottom button jumps back to the tail.
                 */}
                   <Show when={!props.pagination?.hasNewerMessages}>
-                    <Show when={streamingTailRender()}>
-                      {streamingTail => (
-                        <Show
-                          when={streamingTail().type === 'plan'}
-                          fallback={(() => {
-                          // The live tail wears the SAME chrome as the persisted
-                          // assistant row that replaces it, so the band does not
-                          // appear only after the message lands. Derived from the
-                          // kind it will become, never hardcoded: this is a row
-                          // mount site like the other three, and a hand-written
-                          // copy is what lets them drift.
-                            const chrome = messageRowChrome('', 'assistant_text', MessageSource.AGENT)
-                            return (
-                              <div
-                              // The tail sits in FLOW, not in the offset map, so the
-                              // virtualizer's band overlap cannot reach it. Cancel
-                              // the flow gap and one border here instead, or the
-                              // reader sees two lines and a gap that snap into one
-                              // line the instant the message lands.
-                                class={tailMergesWithRowAbove() ? `${chrome.class} ${styles.bandTailMerged}` : chrome.class}
-                                data-band={chrome.band}
-                              >
-                                <div class={messageBubbleClass('assistant_text', MessageSource.AGENT)}>
-                                  {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                                  <div class={markdownContent} innerHTML={streamingTail().html} />
-                                </div>
-                              </div>
-                            )
-                          })()}
-                        >
-                          <ToolUseLayout
-                            icon={PlaneTakeoff}
-                            toolName="Plan"
-                            title="Proposed Plan"
-                            alwaysVisible={true}
-                            bordered={false}
-                          >
-                            <>
-                              <hr />
-                              {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                              <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={streamingTail().html} />
-                            </>
-                          </ToolUseLayout>
-                        </Show>
-                      )}
-                    </Show>
                     <ThinkingIndicator
                       id={props.agentId}
                       visible={props.agentLifecycle?.agentWorking ?? false}
                       thinkingTokens={props.agentLifecycle?.thinkingTokens}
+                      outputBytes={props.agentLifecycle?.outputBytes}
+                      outputBytesMinimum={props.agentLifecycle?.outputBytesMinimum}
                       paused={props.tabActive === false}
                       backgroundTasks={props.agentLifecycle?.backgroundTasks}
                       onOpenSubagent={props.agentLifecycle?.onOpenSubagent}

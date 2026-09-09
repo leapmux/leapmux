@@ -32,7 +32,7 @@ func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 		sink:     sink,
 		threadID: "main-thread",
 	}
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 
@@ -163,40 +163,6 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 
 	rec := sink.LastPersistedControl()
 	assert.Equal(t, "9", rec.RequestID)
-}
-
-func TestHandleCodexOutput_PlanDelta(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "item/plan/delta", got.Method)
-	require.Equal(t, "", got.SpanID)
-	require.Equal(t, "# Plan\n", string(got.Content))
-
-	// Verify the streaming_type session info was broadcast with "plan". (The
-	// plan delta also broadcasts a thinking_tokens estimate, so assert on the
-	// streaming_type key rather than the total broadcast count.)
-	streamingType, ok := lastSessionInfoValue(sink, "streaming_type")
-	require.True(t, ok)
-	assert.Equal(t, "plan", streamingType)
-	require.Equal(t, 1, countSessionInfoWithKey(sink, "streaming_type"))
-
-	// Second delta should NOT broadcast streaming_type again.
-	input2 := `{"method":"item/plan/delta","params":{"delta":"Step 1\n"}}`
-	handleCodexOutput(agent, parseLine([]byte(input2)))
-
-	require.Equal(t, 2, sink.StreamChunkCount())
-	assert.Equal(t, 1, countSessionInfoWithKey(sink, "streaming_type"))
-
-	// Should NOT be persisted as a regular message.
-	assert.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T) {
@@ -926,168 +892,12 @@ func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	input := `{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"hello\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "cmd-1", got.SpanID)
-	require.Equal(t, "item/commandExecution/outputDelta", got.Method)
-	require.Equal(t, "hello\n", string(got.Content))
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1)
+	require.Equal(t, ProgressOutputDelta, updates[0].Operation)
+	require.Equal(t, "cmd-1", updates[0].ScopeID)
+	require.Equal(t, int64(6), updates[0].Value)
 	require.Equal(t, 0, sink.MessageCount())
-}
-
-func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"thinking...","summaryIndex":0,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "reason-1", got.SpanID)
-	require.Equal(t, "item/reasoning/summaryTextDelta", got.Method)
-	require.Equal(t, "thinking...", string(got.Content))
-	require.Equal(t, 0, sink.MessageCount())
-}
-
-func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "reason-1", got.SpanID)
-	require.Equal(t, "item/reasoning/summaryPartAdded", got.Method)
-	require.Empty(t, got.Content)
-	require.Equal(t, 0, sink.MessageCount())
-}
-
-func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw chain","contentIndex":0,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "reason-1", got.SpanID)
-	require.Equal(t, "item/reasoning/textDelta", got.Method)
-	require.Equal(t, "raw chain", string(got.Content))
-	require.Equal(t, 0, sink.MessageCount())
-}
-
-func TestHandleCodexOutput_ReasoningLifecycleStreamsAndPersists(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	startedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":[],"content":[]}}`
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":`+startedParams+`}`)))
-
-	require.Len(t, sink.Messages(), 1)
-	started := sink.Messages()[0]
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, started.Source)
-	assert.Equal(t, "reason-1", started.SpanID)
-	assert.Equal(t, "reasoning", started.SpanType)
-	assert.Equal(t, startedParams, string(started.Content), "item/started params must persist without transformation")
-
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"first summary","summaryIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"main-thread","turnId":"turn1"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"second summary","summaryIndex":1,"threadId":"main-thread","turnId":"turn1"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw reasoning","contentIndex":0,"threadId":"main-thread","turnId":"turn1"}}`)))
-
-	assert.Equal(t, []testSinkStreamChunk{
-		{SpanID: "reason-1", Method: "item/reasoning/summaryPartAdded"},
-		{Content: []byte("first summary"), SpanID: "reason-1", Method: "item/reasoning/summaryTextDelta"},
-		{SpanID: "reason-1", Method: "item/reasoning/summaryPartAdded"},
-		{Content: []byte("second summary"), SpanID: "reason-1", Method: "item/reasoning/summaryTextDelta"},
-		{Content: []byte("raw reasoning"), SpanID: "reason-1", Method: "item/reasoning/textDelta"},
-	}, sink.StreamChunks())
-
-	completedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":["first summary","second summary"],"content":["raw reasoning"]}}`
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
-
-	require.Len(t, sink.Messages(), 2)
-	completed := sink.Messages()[1]
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, completed.Source)
-	assert.Equal(t, "reason-1", completed.SpanID)
-	assert.Equal(t, "reasoning", completed.SpanType)
-	assert.Equal(t, completedParams, string(completed.Content), "item/completed params must persist without transformation")
-	assert.Equal(t, 1, sink.StreamEndCount())
-	assert.Equal(t, "reason-1", sink.LastStreamEnd())
-	assert.Equal(t, []string{
-		"persist:reason-1",
-		"persist:reason-1",
-		"stream_end:reason-1",
-	}, sink.OutputLifecycle(), "the completed row must persist before its live stream ends")
-
-	agent.mu.Lock()
-	_, stillLocked := agent.reasoningStreamKind["reason-1"]
-	agent.mu.Unlock()
-	assert.False(t, stillLocked, "a completed main reasoning item must release its stream-kind lock")
-}
-
-func TestHandleCodexOutput_ChildReasoningUsesChildTranscript(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"inspect","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
-	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
-
-	startedParams := `{"threadId":"child-1","turnId":"child-turn","item":{"type":"reasoning","id":"child-reason-1","summary":[],"content":[]}}`
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":`+startedParams+`}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"child-reason-1","summaryIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"child-reason-1","delta":"child summary","summaryIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"child-reason-1","delta":"child raw","contentIndex":0,"threadId":"child-1","turnId":"child-turn"}}`)))
-
-	completedParams := `{"threadId":"child-1","turnId":"child-turn","item":{"type":"reasoning","id":"child-reason-1","summary":["child summary"],"content":["child raw"]}}`
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
-
-	child := sink.ChildSink("child-of-call-1").(*testSink)
-	require.Len(t, child.Messages(), 2)
-	childStarted := child.Messages()[0]
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, childStarted.Source)
-	assert.Equal(t, "child-reason-1", childStarted.SpanID)
-	assert.Equal(t, "reasoning", childStarted.SpanType)
-	assert.Equal(t, startedParams, string(childStarted.Content), "child item/started params must persist without transformation")
-	childCompleted := child.Messages()[1]
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, childCompleted.Source)
-	assert.Equal(t, "child-reason-1", childCompleted.SpanID)
-	assert.Equal(t, "reasoning", childCompleted.SpanType)
-	assert.Equal(t, completedParams, string(childCompleted.Content), "child item/completed params must persist without transformation")
-	assert.Equal(t, []testSinkStreamChunk{
-		{SpanID: "child-reason-1", Method: "item/reasoning/summaryPartAdded"},
-		{Content: []byte("child summary"), SpanID: "child-reason-1", Method: "item/reasoning/summaryTextDelta"},
-		{Content: []byte("child raw"), SpanID: "child-reason-1", Method: "item/reasoning/textDelta"},
-	}, child.StreamChunks())
-	assert.Equal(t, 1, child.StreamEndCount())
-	assert.Equal(t, "child-reason-1", child.LastStreamEnd())
-	assert.Equal(t, []string{
-		"persist:child-reason-1",
-		"persist:child-reason-1",
-		"stream_end:child-reason-1",
-	}, child.OutputLifecycle(), "the child completed row must persist before its live stream ends")
-	assert.Empty(t, sink.StreamChunks())
-
-	agent.mu.Lock()
-	_, stillLocked := agent.reasoningStreamKind["child-reason-1"]
-	_, stillRouted := agent.collabChildItems["child-reason-1"]
-	agent.mu.Unlock()
-	assert.False(t, stillLocked, "a completed child reasoning item must release its stream-kind lock")
-	assert.False(t, stillRouted, "a completed child reasoning item must release its child route")
 }
 
 func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) {
@@ -1100,28 +910,10 @@ func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) 
 	completedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":["durable summary"],"content":[]}}`
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
 
-	assert.Zero(t, sink.StreamEndCount(), "a failed persist must not discard the only visible reasoning text")
 	agent.mu.Lock()
 	_, stillLocked := agent.reasoningStreamKind["reason-1"]
 	agent.mu.Unlock()
 	assert.False(t, stillLocked, "a completed reasoning item must release bookkeeping after a persist error")
-}
-
-func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"item/commandExecution/terminalInteraction","params":{"itemId":"cmd-1","processId":"123","stdin":"y\n","threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "cmd-1", got.SpanID)
-	require.Equal(t, "item/commandExecution/terminalInteraction", got.Method)
-	require.Equal(t, "y\n", string(got.Content))
-	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
@@ -1133,126 +925,10 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	input := `{"method":"item/fileChange/outputDelta","params":{"itemId":"fc-1","delta":"diff --git a.txt b.txt\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "fc-1", got.SpanID)
-	require.Equal(t, "item/fileChange/outputDelta", got.Method)
-	require.Equal(t, "diff --git a.txt b.txt\n", string(got.Content))
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1)
+	require.Equal(t, OutputDeltaProgress("fc-1", 23), updates[0])
 	require.Equal(t, 0, sink.MessageCount())
-}
-
-func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	// Send a plan delta first. (It also broadcasts a thinking_tokens estimate on
-	// the same channel, so assert on the streaming_type key specifically rather
-	// than on raw broadcast counts / the last payload.)
-	delta := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
-	handleCodexOutput(agent, parseLine([]byte(delta)))
-
-	streamingType, ok := lastSessionInfoValue(sink, "streaming_type")
-	require.True(t, ok)
-	assert.Equal(t, "plan", streamingType)
-
-	// Send item/completed with plan type.
-	completed := `{"method":"item/completed","params":{"item":{"type":"plan","id":"plan1","text":"# Plan\nStep 1"}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	// Session info should now have streaming_type "" to clear the plan streaming.
-	streamingType, ok = lastSessionInfoValue(sink, "streaming_type")
-	require.True(t, ok)
-	assert.Equal(t, "", streamingType)
-
-	// Plan message should be persisted.
-	require.Equal(t, 1, sink.MessageCount())
-
-	// Verify streamingPlan flag was cleared (next delta should re-broadcast).
-	delta2 := `{"method":"item/plan/delta","params":{"delta":"New plan\n"}}`
-	handleCodexOutput(agent, parseLine([]byte(delta2)))
-
-	streamingType, ok = lastSessionInfoValue(sink, "streaming_type")
-	require.True(t, ok)
-	assert.Equal(t, "plan", streamingType)
-
-	// The exact streaming_type lifecycle: "plan" on the first delta, "" exactly
-	// once when the plan item completes, then "plan" again because item/completed
-	// cleared the streamingPlan flag. (Guards against a regression where
-	// item/completed double-broadcasts "" or the second delta fails to re-arm.)
-	assert.Equal(t, []interface{}{"plan", "", "plan"}, sessionInfoValues(sink, "streaming_type"))
-}
-
-func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"commandExecution","id":"cmd-1","status":"completed","aggregatedOutput":"done"}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	require.Equal(t, 1, sink.MessageCount())
-	require.Equal(t, 1, sink.StreamEndCount())
-	require.Equal(t, "cmd-1", sink.LastStreamEnd())
-}
-
-func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"fileChange","id":"fc-1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@\n-old\n+new"}]}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	require.Equal(t, 1, sink.MessageCount())
-	require.Equal(t, 1, sink.StreamEndCount())
-	require.Equal(t, "fc-1", sink.LastStreamEnd())
-}
-
-func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"reasoning","id":"reason-1","summary":["done"]}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	require.Equal(t, 1, sink.MessageCount())
-	require.Equal(t, 1, sink.StreamEndCount())
-	require.Equal(t, "reason-1", sink.LastStreamEnd())
-}
-
-func TestHandleCodexOutput_McpToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
-	t.Parallel()
-
-	// Only commandExecution and fileChange stream output deltas keyed by itemID, so only
-	// they end a live stream on completion. mcpToolCall (and dynamicToolCall) never stream,
-	// so a completion must NOT emit a stream-end -- a phantom end for a never-started stream.
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"mcpToolCall","id":"mcp-1","status":"completed","result":{"content":[{"type":"text","text":"ok"}]}}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	require.Equal(t, 1, sink.MessageCount())
-	require.Equal(t, 0, sink.StreamEndCount())
-}
-
-func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"dynamicToolCall","id":"dyn-1","status":"completed"}}}`
-	handleCodexOutput(agent, parseLine([]byte(completed)))
-
-	require.Equal(t, 1, sink.MessageCount())
-	require.Equal(t, 0, sink.StreamEndCount())
 }
 
 // Both image items are ordinary tool items and take the ordinary tool path.
@@ -1309,7 +985,6 @@ func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 			assert.Equal(t, tc.id, messages[1].SpansOpenAtPersist[0].SpanID)
 			// Neither item streams deltas keyed by its item id, so a stream-end
 			// would end a stream that never started.
-			assert.Equal(t, 0, sink.StreamEndCount())
 		})
 	}
 }
@@ -1444,6 +1119,62 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	}, child.TurnKinds(), "a Codex child turn accepts steering until it ends")
 }
 
+func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","agentsStates":{}}}}`
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-1"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"child-1","itemId":"message-1","delta":"partial child answer"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`)))
+
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	require.NotEmpty(t, child.Messages())
+	assert.JSONEq(t, `{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"partial child answer",
+		"completion":"interrupted"
+	}`, string(child.Messages()[0].Content))
+}
+
+func TestFlushCodexGenerationHonorsDiscardOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "restart noise")
+	agent.DiscardOutput()
+	agent.flushCodexGeneration(MessageCompletionInterrupted)
+
+	assert.Empty(t, sink.Messages())
+}
+
+func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/commandExecution/outputDelta","params":{"itemId":"command-1","delta":"partial output"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`)))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 3)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.JSONEq(t, `{
+		"threadId":"main-thread",
+		"turnId":"turn-1",
+		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"},
+		"_leapmux":{"completion":"interrupted"}
+	}`, string(result.Content))
+}
+
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
 	t.Parallel()
 
@@ -1524,10 +1255,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	require.Equal(t, 0, sink.BroadcastControlCount())
 }
 
-// lastSessionInfoValue returns the value of the most recent BroadcastSessionInfo
-// payload that carried key, and whether any did. Used to assert on one key while
-// ignoring unrelated broadcasts (e.g. streaming_type vs thinking_tokens) that may
-// interleave on the same channel.
+// lastSessionInfoValue returns the most recent value for a session-info key.
 func lastSessionInfoValue(sink *testSink, key string) (interface{}, bool) {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
@@ -1539,34 +1267,17 @@ func lastSessionInfoValue(sink *testSink, key string) (interface{}, bool) {
 	return nil, false
 }
 
-// countSessionInfoWithKey counts how many BroadcastSessionInfo payloads carried
-// key. Used to assert a key was broadcast exactly N times while other keys
-// (e.g. thinking_tokens) interleave on the same channel.
-func countSessionInfoWithKey(sink *testSink, key string) int {
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	n := 0
-	for _, info := range sink.sessionInfos {
-		if _, ok := info[key]; ok {
-			n++
-		}
-	}
-	return n
-}
-
-// sessionInfoValues returns, in broadcast order, every value carried under key.
-// Lets a test assert the exact sequence (and therefore count) of a key's
-// broadcasts while other keys interleave on the same channel.
+// sessionInfoValues returns all values for a session-info key in send order.
 func sessionInfoValues(sink *testSink, key string) []interface{} {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	var out []interface{}
+	var values []interface{}
 	for _, info := range sink.sessionInfos {
-		if v, ok := info[key]; ok {
-			out = append(out, v)
+		if value, ok := info[key]; ok {
+			values = append(values, value)
 		}
 	}
-	return out
+	return values
 }
 
 // lastThinkingTokens returns the most recently broadcast thinking_tokens value,
@@ -1690,41 +1401,6 @@ func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T
 	_, stillLocked := agent.reasoningStreamKind["r1"]
 	agent.mu.Unlock()
 	assert.False(t, stillLocked, "the completed item's stream-kind lock is released")
-}
-
-func TestHandleCodexOutput_ChildThreadDeltasDoNotCountThinkingTokens(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink) // threadID = "main-thread"
-
-	// A main-thread delta counts (explicit main threadId).
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh","threadId":"main-thread"}}`)))
-	require.Equal(t, int64(2), lastThinkingTokens(sink))
-
-	// A collab subagent (child thread) delta is still broadcast as a stream chunk
-	// but must NOT inflate the primary agent's estimate.
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"r1","delta":"ignoredchildtext","threadId":"child-1"}}`)))
-	assert.Equal(t, int64(2), lastThinkingTokens(sink), "child-thread text must not count")
-
-	// A subsequent main-thread delta (empty threadId == main) resumes from the
-	// main total, unaffected by the child text in between.
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"ijklmnop"}}`)))
-	assert.Equal(t, int64(4), lastThinkingTokens(sink))
-}
-
-func TestHandleCodexOutput_CommandAndFileOutputDeltasDoNotCountThinkingTokens(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	// Tool output (shell stdout, file diffs) is not model generation, so it must
-	// NOT inflate the thinking-token estimate.
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/commandExecution/outputDelta","params":{"itemId":"c1","delta":"lots of stdout here"}}`)))
-	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/fileChange/outputDelta","params":{"itemId":"f1","delta":"@@ -1 +1 @@ big diff"}}`)))
-
-	assert.Equal(t, int64(-1), lastThinkingTokens(sink), "tool output must not broadcast thinking_tokens")
 }
 
 func TestHandleCodexOutput_ItemCompletedResetsThinkingTokens(t *testing.T) {

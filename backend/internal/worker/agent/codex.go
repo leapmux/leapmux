@@ -111,19 +111,19 @@ type CodexAgent struct {
 	turnSawPlan       bool   // whether the current turn produced a plan item
 	turnPlanText      string // final text of the current turn's plan item
 	turnAssistantText string // final assistant message text for the current turn
-	streamingPlan     bool   // whether we've sent streamingType session info for the current plan stream
-	// thinkingTokens is the per-phase generated-token estimate driving the
-	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
-	thinkingTokens thinkingTokenEstimator
 	// reasoningStreamKind records, per reasoning itemId, which reasoning sub-stream
-	// ("summary" or "raw") was seen first, so the thinking-token estimate counts
+	// ("summary" or "raw") was seen first, so the token counter counts
 	// only one of them. Codex can emit both summaryTextDelta and textDelta for the
 	// SAME reasoning item (they are the same generation surfaced two ways), which
 	// would otherwise double-count. Locking onto whichever arrives first keeps the
 	// counter moving for models that stream only one of the two.
-	reasoningStreamKind map[string]string
-	availableModels     []*ModelInfo
-	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID (child index)
+	reasoningStreamKind    map[string]string
+	generationBuffer       GenerationBuffer
+	childGenerationBuffers map[string]*GenerationBuffer
+	incompleteTools        map[string]*codexIncompleteTool
+	incompleteToolOrder    uint64
+	availableModels        []*ModelInfo
+	collabThreadSpans      map[string]string // child thread ID -> owning spawnAgent span ID (child index)
 	// collabChildAgents remembers the child AGENT id each thread resolved to.
 	// The span index above answers the same question, but it is torn down on a
 	// ClearContext and a registry write can fail, and a thread whose id cannot
@@ -131,11 +131,11 @@ type CodexAgent struct {
 	// queue with a turn that nothing will ever clear. The agent id does not
 	// change once assigned, so remembering it makes the clear survive both.
 	collabChildAgents map[string]string // child thread ID -> child agent ID
-	// collabChildItems records the child agent id that owns a streamed item
+	// collabChildItems records the child agent ID that owns an item
 	// (commandExecution/fileChange itemID -> childID). Populated when
 	// persistItemStartedChild routes the item/started to a child; consulted by
 	// the output-delta handlers (which carry only an itemID, no threadID) so a
-	// subagent's command output streams to its own transcript, not the parent's.
+	// subagent's command output contributes to its own counter.
 	// Guarded by mu.
 	collabChildItems map[string]string
 	// collabChildTitles records the spawn prompt's first line per child thread
@@ -205,8 +205,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		workingDir:  opts.WorkingDir,
 		sink:        sink,
 	}
-	// Reset the thinking-token estimate centrally at every frontend-clear boundary.
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -550,6 +549,23 @@ func (a *CodexAgent) Interrupt() error {
 	return a.interruptCodexTurn(threadID, turnID)
 }
 
+// Stop retains unfinished model output before it stops the process.
+func (a *CodexAgent) Stop() {
+	a.processBase.Stop()
+	a.flushAllCodexGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
+	a.sink.ReportProgress(ResetProgress())
+}
+
+// Wait retains unfinished model output after an unexpected process exit.
+func (a *CodexAgent) Wait() error {
+	err := a.processBase.Wait()
+	a.flushAllCodexGeneration(MessageCompletionError)
+	a.persistIncompleteCodexTools("", true, MessageCompletionError)
+	a.sink.ReportProgress(ResetProgress())
+	return err
+}
+
 func (a *CodexAgent) interruptCodexTurn(threadID, turnID string) error {
 	if threadID == "" || turnID == "" {
 		return nil
@@ -618,6 +634,8 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
+	a.flushAllCodexGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
 
 	a.mu.Lock()
 	a.applyThreadResult(thread)
@@ -626,7 +644,6 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.turnAssistantText = ""
-	a.streamingPlan = false
 	clear(a.reasoningStreamKind)
 	// Clear the collab child index: a new thread means prior child threads are
 	// gone. Entries are otherwise only removed on a final collab status.
@@ -636,13 +653,15 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
 	clear(a.childTurnStartAcks)
+	clear(a.incompleteTools)
+	a.incompleteToolOrder = 0
+	a.mu.Unlock()
+	a.generationBuffer.Reset()
+	a.mu.Lock()
+	clear(a.childGenerationBuffers)
 	a.mu.Unlock()
 	a.PublishTurnActive()
-	// The thread was replaced; drop any in-flight thinking-token estimate so it
-	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
-	// turn/started also resets, but resetting here keeps every provider's context
-	// clear consistent rather than relying on that follow-up.
-	a.thinkingTokens.reset()
+	a.sink.ReportProgress(ResetProgress())
 
 	// A goal belongs to a THREAD, and this call replaced the thread. Codex
 	// sends thread/goal/cleared only after a real removal and on a resume, so a

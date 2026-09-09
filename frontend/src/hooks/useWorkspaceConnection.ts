@@ -27,8 +27,6 @@ import {
   handleAgentMessage,
   handleAgentStatusChange,
   handleControlRequest,
-  handleStreamChunk,
-  handleStreamEnd,
 } from './agentEvents'
 import {
   applyTerminalStatusChange,
@@ -126,8 +124,7 @@ export function collectWorkerOfflineTargets(
  * divider and no INACTIVE status change. Every OTHER site that reclaims this
  * state runs off one of those events, so this sweep is the only thing standing
  * between an outage and a chat that reads as busy for as long as it lasts --
- * streaming text half-written, a command stream mid-line, a thinking counter and
- * a running-tool badge frozen on their last value.
+ * a thinking counter and a running-tool badge frozen on their last value.
  *
  * Exported for its own test: the effect that calls it fires on an internal
  * offline signal a test cannot drive.
@@ -144,9 +141,6 @@ export function clearOfflineAgentState(
   // flag would pin the spinner and keep the Interrupt button on an agent that
   // nothing can interrupt.
   stores.agentActivityStore?.forget(agentId)
-  stores.chatStore.streamingText.clear(agentId)
-  for (const spanId of Object.keys(stores.chatStore.getAgentCommandStreams(agentId)))
-    stores.chatStore.clearCommandStream(agentId, spanId)
   clearPerTurnLiveState(agentId, stores)
 }
 
@@ -376,14 +370,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           catchUpPhase,
         )
         break
-      case 'streamChunk':
-        markLiveAgentActive()
-        handleStreamChunk(agentId, inner.value, chatStore)
-        break
-      case 'streamEnd':
-        markLiveAgentActive()
-        handleStreamEnd(agentId, inner.value, { chatStore })
-        break
       case 'statusChange':
         handleAgentStatusChange(
           agentId,
@@ -492,7 +478,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           abortSignalFor(view.getAgentTab(agentId)?.workerId ?? '') ?? undefined,
         )
-        chatStore.sweepOrphanedBufferedSpans(agentId)
         break
     }
   }

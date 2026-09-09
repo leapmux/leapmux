@@ -101,9 +101,8 @@ function isHiddenZCodeNotification(msg: unknown): boolean {
 /**
  * The tool.updated kinds that OPEN a span rather than close it.
  *
- * `scheduled` is the opener; `result`, `error` and `batch` are final. `started` and
- * `progress` are never persisted -- the worker broadcasts them as stream chunks --
- * so they are not classified here.
+ * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * The Worker consumes `started` and `progress` for live counters.
  */
 function zcodeToolSpanRole(kind: string): SpanRole {
   if (kind === ZCODE_TOOL_KIND.Scheduled)

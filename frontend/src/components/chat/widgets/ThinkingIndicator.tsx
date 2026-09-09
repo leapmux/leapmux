@@ -1,4 +1,4 @@
-import type { Component, JSX } from 'solid-js'
+import type { Accessor, Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
@@ -14,6 +14,7 @@ import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
+import { ThinkingOutputCount } from './ThinkingOutputCount'
 import { ThinkingTokenCount } from './ThinkingTokenCount'
 
 export interface ThinkingIndicatorProps {
@@ -44,6 +45,10 @@ export interface ThinkingIndicatorProps {
    * indicator shows nothing.
    */
   thinkingTokens?: number
+  /** Bytes produced by live process and tool output. */
+  outputBytes?: number
+  /** True when outputBytes is a provider-limited minimum. */
+  outputBytesMinimum?: boolean
   /**
    * The background-task registry rows (active AND past) for THIS tab's own
    * work: every descendant for a root, and only what it spawned for a subagent
@@ -87,6 +92,37 @@ const ROW_FADE_MS = motion.medium
 // the wrapper must remain in flow for both phases. After that, `display: none`
 // releases the parent flex gap; a zero-height flex item still creates a gap.
 const ROW_COLLAPSE_TOTAL_MS = ROW_FADE_MS * 2
+
+function createFadingValue<T>(
+  visible: Accessor<boolean>,
+  value: Accessor<T | undefined>,
+  present: (value: T | undefined) => value is T,
+): Accessor<T | undefined> {
+  const [mounted, setMounted] = createSignal<T | undefined>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const next = value()
+    if (visible() && present(next)) {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      setMounted(() => next)
+      return
+    }
+    if (untrack(mounted) !== undefined && timer === undefined) {
+      timer = setTimeout(() => {
+        timer = undefined
+        setMounted(undefined)
+      }, ROW_FADE_MS)
+    }
+  })
+  onCleanup(() => {
+    if (timer !== undefined)
+      clearTimeout(timer)
+  })
+  return mounted
+}
 
 // Module-level cache of the indicator's persistent state per id —
 // the verb currently displayed and the last compass angle (in
@@ -252,28 +288,18 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // the gate closes it freezes the last value mounted for ROW_FADE_MS (the
   // wrapper's opacity fade) and then unmounts. The frozen value means no roll
   // effects fire during the fade.
-  const [countTokens, setCountTokens] = createSignal<number | undefined>(undefined)
-  let countFadeTimer: ReturnType<typeof setTimeout> | undefined
-  createEffect(() => {
-    const tokens = props.thinkingTokens
-    if (props.visible && (tokens ?? 0) > 0) {
-      if (countFadeTimer !== undefined) {
-        clearTimeout(countFadeTimer)
-        countFadeTimer = undefined
-      }
-      setCountTokens(tokens)
-      return
-    }
-    // Gate closed: keep the last value mounted through the wrapper's opacity
-    // fade, then unmount. untrack the read so this effect doesn't depend on its
-    // own write (it tracks only props.visible / props.thinkingTokens).
-    if (untrack(countTokens) !== undefined && countFadeTimer === undefined) {
-      countFadeTimer = setTimeout(() => {
-        countFadeTimer = undefined
-        setCountTokens(undefined)
-      }, ROW_FADE_MS)
-    }
-  })
+  const countTokens = createFadingValue(
+    () => props.visible,
+    () => props.thinkingTokens,
+    (value): value is number => (value ?? 0) > 0,
+  )
+  const countOutput = createFadingValue(
+    () => props.visible,
+    () => (props.outputBytes ?? 0) > 0
+      ? { bytes: props.outputBytes!, minimum: props.outputBytesMinimum === true }
+      : undefined,
+    (value): value is { bytes: number, minimum: boolean } => value !== undefined,
+  )
 
   // {done, total} for the to-dos counter, recomputed only when the todo list
   // changes. Deleted todos are excluded from both counts (todoProgress).
@@ -301,6 +327,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // Which counters the verb row shows. Named because each one is also read by
   // its successor to decide whether to draw a leading `·`.
   const showTokens = () => countTokens() !== undefined
+  const showOutput = () => countOutput() !== undefined
   const showBgTasks = () => activeBgTaskCount() > 0
   // The chip opens the Goals & To-dos popover, so EITHER half can open it. A
   // to-do count alone left an agent with a goal and no list with no goal
@@ -451,8 +478,6 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     for (const t of pendingClearTimers)
       clearTimeout(t)
     pendingClearTimers.clear()
-    if (countFadeTimer !== undefined)
-      clearTimeout(countFadeTimer)
     clearPresenceTimer()
   })
 
@@ -579,7 +604,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       // popping -- and unmounts after, so a stale estimate can't keep it (or
       // its roll effects) alive in a collapsed row.
       show: showTokens,
-      render: () => <ThinkingTokenCount tokens={countTokens()!} />,
+      render: () => <ThinkingTokenCount tokens={countTokens()!} paused={props.paused} />,
+    },
+    {
+      show: showOutput,
+      render: () => {
+        const output = countOutput()!
+        return <ThinkingOutputCount bytes={output.bytes} minimum={output.minimum} paused={props.paused} />
+      },
     },
   ]
 
@@ -650,7 +682,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
           </svg>
           <span class={styles.verbRow}>
             {/* The verb LEADS the row and the counters trail it, so it reads
-                "<verb>… <background tasks> · <to-dos> · <tokens>". Every counter
+                "<verb>… <background tasks> · <to-dos> · <tokens> · <output>". Every counter
                 is optional, so each one draws its own leading `·` only when
                 another counter already precedes it — a separator included in a
                 counter's own text would dangle whenever its neighbour is gone.

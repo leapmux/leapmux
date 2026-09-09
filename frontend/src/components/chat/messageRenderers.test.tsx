@@ -229,6 +229,22 @@ describe('renderMessageContent provider resolution', () => {
     expect(container.textContent).toContain('"duration_ms"')
     expect(container.textContent).not.toContain('Took 1.1s')
   })
+
+  it('renders the durable interruption marker after retained provider output', () => {
+    const parsed = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-1',
+      status: 'in_progress',
+      kind: 'execute',
+      content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
+      _leapmux: { completion: 'interrupted' },
+    }
+    const category = { kind: 'tool_use', toolName: 'execute', toolUse: parsed, content: [] } as MessageCategory
+    const result = renderMessageContent(parsed, undefined, category, AgentProvider.OPENCODE)
+    const { container } = render(() => result)
+    expect(container.textContent).toContain('partial output')
+    expect(container.textContent).toContain('Text truncated by interruption.')
+  })
 })
 
 describe('thinking renderer honors context.expandUiKey', () => {

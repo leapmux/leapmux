@@ -34,12 +34,10 @@ describe('usechatscroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(0)
       const [messages] = createSignal(mkMsgs([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
-      const [streamingText] = createSignal('')
       const onJumpToSeq = vi.fn()
       const hook = useChatScroll({
         virtualizer: seekVirt(),
         messages,
-        streamingText,
         hasOlderMessages: () => false,
         hasNewerMessages: () => false,
         onJumpToSeq,
@@ -64,11 +62,9 @@ describe('usechatscroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal(mkMsgs([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: seekVirt(),
             messages,
-            streamingText,
             hasOlderMessages: () => false,
             hasNewerMessages: () => false,
           })
@@ -102,7 +98,6 @@ describe('usechatscroll jump to seq', () => {
           div.setScrollTop(2500)
           // The loaded window is seqs 100..110; the target (5) is far below it.
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          const [streamingText] = createSignal('')
           const onJumpToSeq = vi.fn(async (_seq: bigint) => {
             // The paginator swaps the window to a page around the target.
             setMessages(mkMsgs([3, 4, 5, 6, 7]))
@@ -110,7 +105,6 @@ describe('usechatscroll jump to seq', () => {
           const hook = useChatScroll({
             virtualizer: seekVirt(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -145,7 +139,6 @@ describe('usechatscroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          const [streamingText] = createSignal('')
           let releaseFetch: (() => void) | undefined
           const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
             releaseFetch = r
@@ -153,7 +146,6 @@ describe('usechatscroll jump to seq', () => {
           const hook = useChatScroll({
             virtualizer: seekVirt(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -194,7 +186,6 @@ describe('usechatscroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          const [streamingText] = createSignal('')
           let releaseFetch: (() => void) | undefined
           const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
             releaseFetch = r
@@ -202,7 +193,6 @@ describe('usechatscroll jump to seq', () => {
           const hook = useChatScroll({
             virtualizer: seekVirt(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -240,7 +230,6 @@ describe('usechatscroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          const [streamingText] = createSignal('')
           let releaseFetch: (() => void) | undefined
           const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
             releaseFetch = r
@@ -248,7 +237,6 @@ describe('usechatscroll jump to seq', () => {
           const hook = useChatScroll({
             virtualizer: seekVirt(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -292,7 +280,6 @@ describe('usechatscroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(2500)
       const [messages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-      const [streamingText] = createSignal('')
       const signals: (AbortSignal | undefined)[] = []
       const onJumpToSeq = vi.fn((_seq: bigint, signal?: AbortSignal) => {
         signals.push(signal)
@@ -301,7 +288,6 @@ describe('usechatscroll jump to seq', () => {
       const hook = useChatScroll({
         virtualizer: seekVirt(),
         messages,
-        streamingText,
         hasOlderMessages: () => true,
         hasNewerMessages: () => false,
         onJumpToSeq,
@@ -351,8 +337,7 @@ describe('usechatscroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(0)
       const [messages] = createSignal(mkMsgs([1, 2, 3]))
-      const [streamingText] = createSignal('')
-      const hook = useChatScroll({ virtualizer: seekVirt(), messages, streamingText })
+      const hook = useChatScroll({ virtualizer: seekVirt(), messages })
       hook.attachListRef(div.el)
 
       hook.previewScrollTo(1200)

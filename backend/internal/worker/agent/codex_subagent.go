@@ -231,6 +231,7 @@ func (a *CodexAgent) collabSpanForThread(threadID string) string {
 func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	childID := a.collabChildAgents[threadID]
 	if a.collabThreadSpans != nil {
 		delete(a.collabThreadSpans, threadID)
 	}
@@ -239,6 +240,9 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	}
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
+	}
+	if childID != "" {
+		delete(a.childGenerationBuffers, childID)
 	}
 	a.collabChildPrompts.forget(threadID)
 }

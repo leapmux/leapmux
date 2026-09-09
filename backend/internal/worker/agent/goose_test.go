@@ -28,6 +28,23 @@ func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest
 	)
 }
 
+func TestGooseToolOutputProgressCountsSequencedMetadata(t *testing.T) {
+	t.Parallel()
+
+	a := &GooseCLIAgent{}
+	update := acpToolCallUpdateEnvelope{ToolCallID: "tool-1", Meta: json.RawMessage(`{
+		"toolNotification":{"type":"live_output","params":{"sequence":1,"truncated":false,
+		"chunks":[{"stream":"stdout","output":"hello"},{"stream":"stderr","output":"error"}]}}
+	}`)}
+	total, minimum, ok := a.gooseToolOutputProgress(update)
+	require.True(t, ok)
+	assert.Equal(t, int64(10), total)
+	assert.False(t, minimum)
+
+	_, _, ok = a.gooseToolOutputProgress(update)
+	assert.False(t, ok, "a repeated sequence must not count twice")
+}
+
 func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *GooseCLIAgent {

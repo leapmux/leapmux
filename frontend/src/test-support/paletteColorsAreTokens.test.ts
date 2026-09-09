@@ -32,7 +32,7 @@ const ROLE_COLOR_LITERAL = /(?:^|[^\w-])(color|backgroundColor|borderColor)\s*:\
  * never uses elsewhere.
  */
 const NOT_PALETTE_ROLES = new Set([
-  join(srcRoot, 'components', 'chat', 'widgets', 'ThinkingTokenCount.css.ts'),
+  join(srcRoot, 'components', 'chat', 'widgets', 'AnimatedCount.css.ts'),
 ])
 
 describe('palette role colours come from the palette', () => {

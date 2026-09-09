@@ -150,16 +150,12 @@ describe('createAgentSessionStore', () => {
     })
   })
 
-  it('should allow a field to be reset to an empty string', () => {
+  it('should keep a false output minimum value', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      // An empty string is a VALUE, not an absent field: a lifecycle patch
-      // clears streamingType by writing one, and a store that dropped empties
-      // would leave the previous marker standing.
-      store.updateInfo('agent-1', { streamingType: 'plan' })
-      store.updateInfo('agent-1', { streamingType: '' })
+      store.updateInfo('agent-1', { outputBytes: 2048, outputBytesMinimum: false })
       const info = store.getInfo('agent-1')
-      expect(info.streamingType).toBe('')
+      expect(info.outputBytesMinimum).toBe(false)
       dispose()
     })
   })
@@ -200,6 +196,27 @@ describe('agentSessionStore thinkingTokens', () => {
 
       const info = store.getInfo('a-clear')
       expect(info.thinkingTokens).toBeUndefined()
+      expect(info.totalCostUsd).toBe(0.5)
+      dispose()
+    })
+  })
+
+  it('clearOutputBytes drops both output fields and keeps other state', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('a-output', {
+        totalCostUsd: 0.5,
+        thinkingTokens: 20,
+        outputBytes: 2048,
+        outputBytesMinimum: true,
+      })
+
+      store.clearOutputBytes('a-output')
+
+      const info = store.getInfo('a-output')
+      expect(info.outputBytes).toBeUndefined()
+      expect(info.outputBytesMinimum).toBeUndefined()
+      expect(info.thinkingTokens).toBe(20)
       expect(info.totalCostUsd).toBe(0.5)
       dispose()
     })
@@ -246,14 +263,15 @@ describe('agentSessionStore thinkingTokens', () => {
   it('writes nothing at all for an estimate-only update', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-eph-only', { thinkingTokens: 500 })
+      store.updateInfo('a-eph-only', { thinkingTokens: 500, outputBytes: 2048, outputBytesMinimum: true })
 
       // The estimate is live in the reactive store...
       expect(store.getInfo('a-eph-only').thinkingTokens).toBe(500)
+      expect(store.getInfo('a-eph-only').outputBytes).toBe(2048)
       dispose()
     })
     // ...but an estimate-only update skips the write entirely (no entry is even
-    // created), so the per-delta stream never thrashes storage.
+    // created), so live progress never causes a storage write.
     expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-eph-only`)).toBeUndefined()
   })
 

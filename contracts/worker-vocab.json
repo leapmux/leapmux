@@ -36,6 +36,16 @@
     "GoalUpdated",
     "GoalCleared"
   ],
+  "assembledMessage": {
+    "Type": "assembled_message",
+    "KindText": "text",
+    "KindReasoning": "reasoning",
+    "KindPlan": "plan",
+    "CompletionComplete": "complete",
+    "CompletionInterrupted": "interrupted",
+    "CompletionError": "error",
+    "MetadataKey": "_leapmux"
+  },
   "notificationThreadWrapperType": "notification_thread",
   "codexRateLimitReachedTimeWindow": "rate_limit_reached",
   "modelSentinels": {

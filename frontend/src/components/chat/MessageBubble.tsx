@@ -10,7 +10,6 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -28,6 +27,7 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
+import { appendCompletionMarker, assembledMessageDisplayText, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
@@ -150,15 +150,8 @@ export interface MessageBubbleHost {
    */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /**
-   * Live command stream for this message's span, as a thunk so the host
-   * literal stays cheap to construct: callers do the lookup only when a
-   * renderer reads it.
-   */
-  commandStream?: () => CommandStreamSegment[] | undefined
-  /**
-   * Live tool progress for this message's span, as a thunk for the same reason
-   * commandStream is one -- and additionally so no reader above the badge
-   * subscribes to it. See RenderContext.toolProgress.
+   * Live tool progress for this message's span. The thunk restricts the
+   * reactive subscription to the badge. See RenderContext.toolProgress.
    */
   toolProgress?: () => ToolProgressEntry | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
@@ -349,7 +342,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
-    commandStream: () => props.host?.commandStream?.(),
     toolProgress: () => props.host?.toolProgress?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
@@ -360,8 +352,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Quotable text dispatch: each provider plugin reads its own wire format
   // (Codex: parent.item.text, ACP: parent.content.text, Claude: message.content[]).
   const extractQuotableText = createMemo(() => {
+    const assembled = parseAssembledMessage(parsed().parentObject)
+    if (assembled)
+      return assembledMessageDisplayText(assembled)
     const plugin = providerFor(props.message.agentProvider)
-    return plugin?.extractQuotableText?.(category(), parsed()) ?? null
+    const text = plugin?.extractQuotableText?.(category(), parsed()) ?? null
+    if (text === null)
+      return null
+    return appendCompletionMarker(text, parseProviderMessageCompletion(parsed().parentObject))
   })
 
   const handleReply = () => {

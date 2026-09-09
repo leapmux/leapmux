@@ -8,7 +8,6 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { MessageBubble } from '../MessageBubble'
-import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { claudeToolResultMeta } from './claude/toolResult'
 import { codexToolResultMeta } from './codex/toolResult'
 import './claude'
@@ -782,42 +781,6 @@ describe('command result scroll-critical rendering', () => {
     expect(renderAnsiCalls).not.toHaveBeenCalled()
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
     expect(stripToolUseHeaderFromOutputCalls).toHaveBeenCalled()
-  })
-
-  it('does not auto-expand live Codex command UI state during premeasure', async () => {
-    const setMessageUiState = vi.fn()
-    renderCodexMessageBubble({
-      type: 'commandExecution',
-      command: 'printf live-output',
-      status: 'running',
-    }, {
-      commandStream: () => [{ kind: 'output', text: 'live-output' }],
-      getMessageUiState: () => false,
-      setMessageUiState,
-    }, { premeasureMode: true })
-
-    await Promise.resolve()
-
-    expect(setMessageUiState).not.toHaveBeenCalled()
-  })
-
-  it('still auto-expands live Codex command UI state during visible rendering', async () => {
-    const setMessageUiState = vi.fn()
-    renderCodexMessageBubble({
-      type: 'commandExecution',
-      command: 'printf live-output',
-      status: 'running',
-    }, {
-      commandStream: () => [{ kind: 'output', text: 'live-output' }],
-      getMessageUiState: () => false,
-      setMessageUiState,
-    })
-
-    await Promise.resolve()
-
-    // PROGRAMMATIC: the stream-start auto-expand is not a user toggle, so the host
-    // must not arm the row-top scroll pin for it (see ChatView's setMessageUiState).
-    expect(setMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION, true, { programmatic: true })
   })
 })
 

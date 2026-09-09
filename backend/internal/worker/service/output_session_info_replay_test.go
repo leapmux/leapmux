@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,22 +75,20 @@ func TestSessionInfoReplay_CarriesTheLatestValueOfEachKey(t *testing.T) {
 	assert.EqualValues(t, 0.20, info[contracts.SessionInfoKeyTotalCostUsd])
 }
 
-// A dedup-exempt key is never cached, and the replay must not resurrect one.
-// Both are per-turn state that the frontend drops at boundaries the worker
-// cannot all observe, so a replayed value restores a counter, or a tool badge,
-// for work that ended.
-func TestSessionInfoReplay_OmitsTheDedupExemptKeys(t *testing.T) {
+// A running-tool update is never cached, so replay cannot restore a badge for
+// a tool that already ended. The progress publisher supplies active counters.
+func TestSessionInfoReplay_OmitsRunningToolsAndIncludesActiveProgress(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, _ := newSessionInfoServiceFixture(t)
 	sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyThinkingTokens: 42,
-		contracts.SessionInfoKeyRunningTool:    map[string]interface{}{"span_id": "s-1"},
-		contracts.SessionInfoKeyTotalCostUsd:   7.5,
+		contracts.SessionInfoKeyRunningTool:  map[string]interface{}{"span_id": "s-1"},
+		contracts.SessionInfoKeyTotalCostUsd: 7.5,
 	})
+	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
 
 	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvent("agent-1"))
-	assert.NotContains(t, info, contracts.SessionInfoKeyThinkingTokens)
+	assert.EqualValues(t, 42, info[contracts.SessionInfoKeyThinkingTokens])
 	assert.NotContains(t, info, contracts.SessionInfoKeyRunningTool)
 	assert.EqualValues(t, 7.5, info[contracts.SessionInfoKeyTotalCostUsd], "a cached key still replays")
 }
@@ -103,6 +102,21 @@ func TestSessionInfoReplay_IsNilWithNothingToRestore(t *testing.T) {
 	svc, _, _ := newSessionInfoServiceFixture(t)
 	assert.Nil(t, svc.Output.SessionInfoReplayEvent("no-such-agent"), "no process, no counters")
 	assert.Nil(t, svc.Output.SessionInfoReplayEvent("agent-1"), "a silent sink has nothing to replay")
+}
+
+func TestSessionInfoReplay_UsesTheChildProgressPublisher(t *testing.T) {
+	t.Parallel()
+
+	svc, root, _ := newSessionInfoServiceFixture(t)
+	child := root.ChildSink("child-1")
+	root.ReportProgress(agent.NativeTokenProgress("root-model", 40))
+	child.ReportProgress(agent.NativeTokenProgress("child-model", 7))
+
+	event := svc.Output.SessionInfoReplayEvent("child-1")
+	require.NotNil(t, event)
+	assert.Equal(t, "child-1", event.GetAgentId())
+	info := replayedSessionInfo(t, event)
+	assert.EqualValues(t, 7, info[contracts.SessionInfoKeyThinkingTokens])
 }
 
 // The whole path, not only the builder: a client that subscribes must receive

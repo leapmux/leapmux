@@ -22,25 +22,8 @@ func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 	}
 	a.modeChannel = modeChannelPrimaryAgent
 	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
-}
-
-func TestHandleOpenCodeOutput_AgentMessageChunk(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newOpenCodeAgentWithSink(sink)
-
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello world"}}}}`
-	agent.HandleOutput([]byte(input))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "agent_message_chunk", got.Method)
-	require.Equal(t, "Hello world", string(got.Content))
-	require.Equal(t, "", got.SpanID)
-	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
@@ -53,7 +36,6 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 	// once an interrupting event (here: end-of-turn) arrives does it flush.
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
-	require.Equal(t, 0, sink.StreamChunkCount())
 	require.Equal(t, 0, sink.MessageCount(), "thought chunk should buffer, not persist immediately")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn"}`)
@@ -188,6 +170,22 @@ func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
 	require.Equal(t, "read", sink.Messages()[1].SpanType)
 }
 
+func TestHandleOpenCodeOutput_AssistantTextThenToolCallPreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+	agent.HandleOutput(acpMessageChunk("I will inspect the file."))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
+
+	require.Len(t, sink.Messages(), 2)
+	var assistant map[string]interface{}
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &assistant))
+	assert.Equal(t, "agent_message_chunk", assistant["sessionUpdate"])
+	assert.Equal(t, "I will inspect the file.", assistant["content"].(map[string]interface{})["text"])
+	assert.Equal(t, "tc-1", sink.Messages()[1].SpanID)
+}
+
 // Trailing thoughts (no interrupting event before end-of-turn) must flush
 // before the assistant text + result divider, otherwise they would either
 // be lost or persisted out of order after the reply.
@@ -278,7 +276,6 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	// concatenate it into the command-stream buffer.
 	statusOnly := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
 	agent.HandleOutput([]byte(statusOnly))
-	require.Equal(t, 0, sink.StreamChunkCount(), "in_progress without content must not broadcast")
 	require.Equal(t, 0, sink.MessageCount())
 
 	// in_progress with cumulative text content — broadcast just the new
@@ -287,11 +284,10 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\nline2\n"}}]}}}`
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
-	chunks := sink.StreamChunks()
-	require.Equal(t, 2, len(chunks))
-	require.Equal(t, "line1\n", string(chunks[0].Content))
-	require.Equal(t, "line2\n", string(chunks[1].Content))
-	require.Equal(t, "tool_call_update", chunks[0].Method)
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	require.Equal(t, int64(6), updates[0].Value)
+	require.Equal(t, int64(12), updates[1].Value)
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
@@ -308,8 +304,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
 	require.Equal(t, "tc-1", msg.SpanID)
 	require.True(t, msg.Closing)
 
-	require.Equal(t, 1, sink.StreamEndCount())
-	require.Equal(t, "tc-1", sink.LastStreamEnd())
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("tc-1"))
 
 	closed := sink.ClosedSpans()
 	require.Len(t, closed, 1)
@@ -329,7 +324,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateFailed(t *testing.T) {
 	msg := sink.Messages()[0]
 	require.True(t, msg.Closing)
 
-	require.Equal(t, 1, sink.StreamEndCount())
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("tc-1"))
 	closed := sink.ClosedSpans()
 	require.Len(t, closed, 1)
 	require.Equal(t, "tc-1", closed[0])
@@ -446,7 +441,6 @@ func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 0, sink.MessageCount())
-	require.Equal(t, 0, sink.StreamChunkCount())
 }
 
 func TestHandleOpenCodeOutput_AvailableCommandsUpdateIgnored(t *testing.T) {
@@ -763,30 +757,27 @@ func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
 		"the aborted turn's buffered assistant text does not leak into the next reply")
 }
 
-func TestHandleACPOutput_ReasoningAfterCommittedToolDoesNotReclear(t *testing.T) {
+func TestHandleACPOutput_NilResultPersistsInterruptedToolOutput(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	// Assistant text streams (buffered), then a reasoning segment opens -> a real
-	// hand-off clear (the assistant chars were never committed).
-	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop")) // 16 -> 4
-	agent.HandleOutput(acpThoughtChunk("abcdefgh"))         // hand-off 0, then 2
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"partial output"}}]}}}`))
+	agent.handleACPPromptResponse(nil)
 
-	// A tool call commits an AGENT message: the estimator resets and the frontend
-	// clears.
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
-
-	// The next reasoning segment must NOT re-fire the hand-off clear: the tool call
-	// already cleared the frontend, so a second 0 would be redundant wire traffic.
-	// The hand-off gates on the estimator's pending chars (now 0), not the
-	// turn-scoped assistant builder (still non-empty), so it stays quiet and the
-	// reasoning just climbs from the post-tool reset.
-	agent.HandleOutput(acpThoughtChunk("abcdefgh")) // 8 -> 2
-
-	assert.Equal(t, []interface{}{int64(4), int64(0), int64(2), int64(2)}, sessionInfoValues(sink, "thinking_tokens"),
-		"no redundant clear after a committed tool call between assistant text and later reasoning")
+	require.Len(t, sink.Messages(), 2)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.Equal(t, "tc-1", result.SpanID)
+	assert.JSONEq(t, `{
+		"sessionUpdate":"tool_call_update",
+		"toolCallId":"tc-1",
+		"status":"in_progress",
+		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}],
+		"_leapmux":{"completion":"interrupted"}
+	}`, string(result.Content))
 }
 
 // persistedACPAssistantText returns the text of the single persisted

@@ -258,8 +258,6 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 	// comes forward loses nothing.
 	case *leapmuxv1.AgentEvent_InputQueueChanged,
 		*leapmuxv1.AgentEvent_AgentMessage,
-		*leapmuxv1.AgentEvent_StreamChunk,
-		*leapmuxv1.AgentEvent_StreamEnd,
 		*leapmuxv1.AgentEvent_CatchUpStart,
 		*leapmuxv1.AgentEvent_CatchUpComplete:
 		return classContent

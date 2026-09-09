@@ -28,13 +28,16 @@ export interface AgentSessionInfo {
   contextUsage?: ContextUsageInfo
   rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
   planFilePath?: string
-  streamingType?: string // "plan" when streaming plan text, "" otherwise
   /**
    * Running estimate of the in-flight turn's thinking (reasoning) tokens.
    * Broadcast-only telemetry (never persisted as a timeline message); cleared
    * at each turn boundary so a stale per-turn count never lingers.
    */
   thinkingTokens?: number
+  /** Bytes produced by live tool and process output. */
+  outputBytes?: number
+  /** True when the provider limits its live output and the count is a minimum. */
+  outputBytesMinimum?: boolean
 }
 
 /**
@@ -59,14 +62,14 @@ export function compactionContextUsage(
   }
 }
 
-// Keys that live in the reactive store for the UI but must never be persisted.
-// thinkingTokens is a per-turn running estimate that streams many deltas per
-// turn: persisting it would thrash storage with a write per
-// delta AND rehydrate a stale count on reload (the indicator would show the
-// pre-reload total until a fresh broadcast or turn-end clear corrects it).
-// Stripped from every write, so the store mutates reactively but the value
-// never reaches disk.
-const EPHEMERAL_KEYS = ['thinkingTokens'] as const satisfies readonly (keyof AgentSessionInfo)[]
+// The Worker sends these live counters at a fixed maximum rate. Persisting
+// them would cause needless storage writes and restore stale values after a
+// reload. The store removes them from each storage write.
+const EPHEMERAL_KEYS = [
+  'thinkingTokens',
+  'outputBytes',
+  'outputBytesMinimum',
+] as const satisfies readonly (keyof AgentSessionInfo)[]
 
 async function loadFromStorage(agentId: string): Promise<AgentSessionInfo> {
   return (await localStorageLoad<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`)) ?? {}
@@ -194,9 +197,8 @@ export function createAgentSessionStore() {
         const merged = { ...prev }
         let changed = false
         // Tracks whether a *persisted* (non-ephemeral) key changed. A
-        // thinkingTokens-only update mutates the reactive store but must not
-        // hit storage -- it streams many deltas per turn, so writing on
-        // each would thrash disk for a value that is never persisted anyway.
+        // A live-counter update mutates the reactive store but must not reach
+        // storage.
         let persistedChanged = false
         for (const [key, value] of Object.entries(partial)) {
           if (value === undefined || value === null)
@@ -269,6 +271,15 @@ export function createAgentSessionStore() {
       if (state.infoByAgent[agentId]?.thinkingTokens === undefined)
         return
       setState('infoByAgent', agentId, 'thinkingTokens', undefined)
+    },
+
+    clearOutputBytes(agentId: string) {
+      if (state.infoByAgent[agentId]?.outputBytes === undefined
+        && state.infoByAgent[agentId]?.outputBytesMinimum === undefined) {
+        return
+      }
+      setState('infoByAgent', agentId, 'outputBytes', undefined)
+      setState('infoByAgent', agentId, 'outputBytesMinimum', undefined)
     },
   }
 }

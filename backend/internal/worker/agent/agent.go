@@ -307,7 +307,7 @@ type OutputSink interface {
 	// repeat it freely: the Worker deduplicates it, and the queue reconciles
 	// idempotently and moves no revision. It is not free -- the queue answers
 	// from one small write transaction -- so publish on a turn boundary or a
-	// refusal, not once per streamed message block. A MISSING publish is the
+	// refusal, not once per provider event. A MISSING publish is the
 	// only failure, and it hands the queue a turn it cannot see.
 	//
 	// seq ORDERS the publishes. A provider reads its flag under a lock and then
@@ -334,8 +334,9 @@ type OutputSink interface {
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
 	ReserveSpanColor(spanID, parentSpanID string) int32
-	BroadcastStreamChunk(content []byte, spanID string, method string)
-	BroadcastStreamEnd(spanID string)
+	// ReportProgress sends one provider observation to the Worker's live counter.
+	// The sink calculates aggregates and publication timing.
+	ReportProgress(update ProgressUpdate)
 	// PersistControlRequest stores the pending control request and returns the fresh per-instance
 	// claim_token it minted for it. The caller threads that token straight into the paired
 	// BroadcastControlRequest so the live broadcast carries the SAME token that was persisted --
@@ -806,8 +807,8 @@ var ErrChildSteeringUnsupported = errors.New("agent provider does not support st
 
 // ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process
 // runs but does not yet know the child thread. A worker restart empties the
-// in-memory spawn index, so the registry row resolves while the live stream did
-// not report the spawn again. The condition is transient: the same call
+// in-memory spawn index, so the registry row resolves before the provider
+// reports the spawn again. The condition is transient: the same call
 // succeeds after the owner process reports the spawn.
 //
 // ErrChildSteeringUnsupported is the opposite condition. That provider cannot

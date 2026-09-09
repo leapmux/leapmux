@@ -61,7 +61,6 @@ func TestHandleOutput_ToolProgressHeartbeatBroadcastsTheRunningTool(t *testing.T
 	// text tail.
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Equal(t, 0, sink.NotificationCount())
-	assert.Equal(t, 0, sink.StreamChunkCount())
 }
 
 // The leak this handler closes: before it existed, tool_progress fell to the
@@ -79,8 +78,6 @@ func TestHandleOutput_ToolProgressNeverReachesTheStreamingText(t *testing.T) {
 	agent.HandleOutput([]byte(claudeHeartbeatFrame))
 	agent.HandleOutput([]byte(claudeSubagentRetryFrame))
 
-	assert.Equal(t, 0, sink.StreamChunkCount(),
-		"a tool_progress frame must never be broadcast as a stream chunk")
 }
 
 func TestHandleOutput_ToolProgressHeartbeatsRaiseTheElapsedTime(t *testing.T) {
@@ -206,7 +203,6 @@ func TestHandleOutput_ToolProgressDropsWhatNoCardCanCarry(t *testing.T) {
 
 			_, ok := lastSessionInfoValue(&sink.testSink, contracts.SessionInfoKeyRunningTool)
 			assert.False(t, ok, "nothing to show, so nothing is broadcast")
-			assert.Equal(t, 0, sink.StreamChunkCount())
 			assert.Equal(t, 0, sink.MessageCount())
 		})
 	}
@@ -236,7 +232,6 @@ func TestHandleOutput_ToolProgressDropsAnUndecodableRetry(t *testing.T) {
 
 			_, ok := lastSessionInfoValue(&sink.testSink, contracts.SessionInfoKeyRunningTool)
 			assert.False(t, ok)
-			assert.Equal(t, 0, sink.StreamChunkCount(), "and it still never reaches the chat tail")
 		})
 	}
 }
@@ -411,7 +406,6 @@ func TestHandleOutput_NoUnhandledTypeReachesTheStreamingText(t *testing.T) {
 	} {
 		agent.HandleOutput([]byte(line))
 	}
-	assert.Equal(t, 0, sink.StreamChunkCount(), "an unhandled type is dropped, not printed")
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Equal(t, 0, sink.NotificationCount())
 }

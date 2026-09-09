@@ -1,9 +1,8 @@
 import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { batch, createEffect, createSignal, For } from 'solid-js'
+import { createEffect, createSignal, For } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -11,9 +10,9 @@ import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
 import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
-import { bandTailMerged, messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
+import { messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
-import { bandMessage, bandRow, bandRowThought, bleedRow } from './messageStyles.css'
+import { bandRow, bleedRow } from './messageStyles.css'
 import { sameVirtualItems } from './useChatVirtualizer'
 import { ROW_BLEED_LEFT_VAR, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 
@@ -583,7 +582,7 @@ describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" />
+        <ChatView messages={[]} />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
@@ -592,7 +591,7 @@ describe('chatView', () => {
   it('renders the older-loading indicator as an overlay OUTSIDE the scroll container', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
+        <ChatView messages={[]} pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
       </PreferencesProvider>
     ))
     const indicator = screen.getByText('Loading older messages...')
@@ -610,7 +609,7 @@ describe('chatView', () => {
   it('gates the older-loading indicator on the top-edge stall, not the raw fetchingOlder flag', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
+        <ChatView messages={[]} pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
       </PreferencesProvider>
     ))
     // jsdom computes no layout, so give the scroll container real geometry: content
@@ -641,7 +640,7 @@ describe('chatView', () => {
   it('shows the newer-loading indicator and hides the scroll-to-bottom button while stalled at the bottom', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" pagination={{ hasNewerMessages: true, fetchingNewer: true }} />
+        <ChatView messages={[]} pagination={{ hasNewerMessages: true, fetchingNewer: true }} />
       </PreferencesProvider>
     ))
     const indicator = screen.getByText('Loading newer messages...')
@@ -658,7 +657,7 @@ describe('chatView', () => {
   it('shows the scroll-to-bottom button (no newer indicator) when newer messages exist but no fetch is stalling', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" pagination={{ hasNewerMessages: true }} />
+        <ChatView messages={[]} pagination={{ hasNewerMessages: true }} />
       </PreferencesProvider>
     ))
     expect(screen.queryByText('Loading newer messages...')).not.toBeInTheDocument()
@@ -674,7 +673,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
         />
       </PreferencesProvider>
@@ -688,7 +687,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code', startupMessage: 'Checking Git status…' }}
         />
       </PreferencesProvider>
@@ -703,7 +702,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code', startupMessage: '' }}
         />
       </PreferencesProvider>
@@ -716,7 +715,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTUP_FAILED, providerLabel: 'Claude Code', startupError: 'exec: claude: not found' }}
         />
       </PreferencesProvider>
@@ -734,7 +733,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[makeMessage('user', 'hello', 'm1')]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
           pagination={{ hasNewerMessages: true }}
         />
@@ -748,7 +747,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={[makeMessage('user', 'hello', 'm1')]}
-          streamingText=""
+
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
           pagination={{ hasNewerMessages: false }}
         />
@@ -760,7 +759,7 @@ describe('chatView', () => {
   it('renders empty state when all messages are hidden', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" />
+        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
@@ -772,7 +771,7 @@ describe('chatView', () => {
     // would be the mid-history blank-page bug.
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" pagination={{ hasOlderMessages: true }} />
+        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} pagination={{ hasOlderMessages: true }} />
       </PreferencesProvider>
     ))
     expect(screen.queryByText('Send a message to start')).not.toBeInTheDocument()
@@ -781,7 +780,7 @@ describe('chatView', () => {
   it('hides EnterPlanMode tool_result messages in chat history', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeClaudeEnterPlanModeResultMessage()]} streamingText="" />
+        <ChatView messages={[makeClaudeEnterPlanModeResultMessage()]} />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
@@ -795,7 +794,7 @@ describe('chatView', () => {
     ]
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Hello')).toBeInTheDocument()
@@ -819,7 +818,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -847,7 +846,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -879,7 +878,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -891,85 +890,13 @@ describe('chatView', () => {
     expect(view.container.querySelector('[data-testid="result-divider"]')).not.toBeNull()
   })
 
-  it('renders streaming text', async () => {
-    render(() => (
-      <PreferencesProvider>
-        <ChatView messages={[]} streamingText="Thinking..." />
-      </PreferencesProvider>
-    ))
-    // Streaming text rendering is throttled via requestAnimationFrame
-    await waitFor(() => expect(screen.getByText('Thinking...')).toBeInTheDocument())
-  })
-
   it('renders chat container', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[]} streamingText="" />
+        <ChatView messages={[]} />
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('chat-container')).toBeInTheDocument()
-  })
-
-  it('renders live command stream inside the matching codex command bubble', () => {
-    const messages = [
-      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'in_progress' }),
-    ]
-    const commandStream: CommandStreamSegment[] = [
-      { kind: 'output', text: 'building...\n' },
-      { kind: 'interaction', text: 'y\n' },
-    ]
-
-    render(() => (
-      <PreferencesProvider>
-        <ChatView
-          messages={messages}
-          streamingText=""
-          lookups={{ getCommandStreamBySpanId: () => commandStream }}
-        />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getByText('building...')).toBeInTheDocument()
-    expect(screen.getByText('> y')).toBeInTheDocument()
-  })
-
-  it('reveals an empty codex reasoning row once its command stream starts streaming', async () => {
-    // An empty reasoning envelope (no summary/content) classifies as hidden
-    // until its span streams — then it becomes a visible row. The entry cache
-    // keys on seq, so without ALSO re-checking command-stream presence the row
-    // would freeze on its first (hidden) classification and never appear. A
-    // visible anchor message keeps the list rendered so only the reasoning row's
-    // own classification decides whether it shows.
-    const messages = [
-      { ...makeMessage('assistant', 'anchor', 'anchor-1'), seq: 1n },
-      makeCodexReasoningMessage({ id: 'reasoning-1', seq: 2n, spanId: 'reasoning-span-1' }),
-    ]
-    let setStream!: (s: CommandStreamSegment[]) => void
-
-    const view = render(() => {
-      const [stream, updateStream] = createSignal<CommandStreamSegment[]>([])
-      setStream = updateStream
-      return (
-        <PreferencesProvider>
-          <ChatView
-            messages={messages}
-            streamingText=""
-            lookups={{
-              getCommandStreamBySpanId: () => stream(),
-              hasRenderableCommandStreamBySpanId: () => stream().length > 0,
-            }}
-          />
-        </PreferencesProvider>
-      )
-    })
-
-    // No command stream yet -> the empty reasoning row (seq 2) is hidden.
-    expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
-    expect(view.container.querySelector('[data-seq="1"]')).not.toBeNull() // anchor renders
-
-    // The span starts streaming -> the reasoning row must flip to visible.
-    setStream([{ kind: 'reasoning_content', text: 'pondering...' }])
-    await waitFor(() => expect(view.container.querySelector('[data-seq="2"]')).not.toBeNull())
   })
 
   it('keeps unmeasured interior and tail rows invisible while reserving their estimated space', async () => {
@@ -980,7 +907,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1026,183 +953,6 @@ describe('chatView', () => {
     expect(spacer!.style.height).toBe('532px')
   })
 
-  it('wears the assistant band on the streaming tail, so the strip does not appear only once the row lands', async () => {
-    // The tail is NOT a virtual row -- it sits in flow beside the spacer -- so it
-    // carries the band classes itself. Without them the gray strip would pop into
-    // existence at the moment streaming text is replaced by the persisted row.
-    const view = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={[]} streamingText="Streaming answer" />
-      </PreferencesProvider>
-    ))
-
-    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
-
-    const tail = view.container.querySelector('[data-band="text"]') as HTMLElement | null
-    expect(tail).not.toBeNull()
-    expect(tail!.classList.contains(bandRow)).toBe(true)
-    expect(tail!.classList.contains(bandRowThought)).toBe(false)
-    expect(tail!.querySelector(`.${bandMessage}`)).not.toBeNull()
-    expect(tail!.textContent).toContain('Streaming answer')
-    // Nothing above it, so there is no band to merge into and the gap stays.
-    expect(tail!.classList.contains(bandTailMerged)).toBe(false)
-  })
-
-  it('merges the streaming tail into the band above it, so the seam does not close when the row lands', async () => {
-    // The tail is in FLOW, not in the offset map, so the virtualizer's band overlap cannot
-    // reach it. Without its own merge the reader watches a gap and two border lines for the
-    // whole of a streamed reply, which snap into one line the instant the message lands --
-    // and the transcript above the seam jumps by that gap plus a border.
-    const withContent = (id: string, inner: unknown): AgentChatMessage => ({
-      ...makeMessage('assistant', '', id),
-      seq: 1n,
-      content: new TextEncoder().encode(JSON.stringify(inner)),
-    })
-    const thought = withContent('m1', { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'pondering' }] } })
-    const toolUse = withContent('m1', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } })
-
-    // The tail is the LAST band in flow; a virtual row comes before it.
-    const tailOf = (container: HTMLElement) => {
-      const bands = [...container.querySelectorAll('[data-band="text"]')] as HTMLElement[]
-      return bands[bands.length - 1]
-    }
-
-    // A visible thought above the tail: two bands that must read as one surface, so the
-    // tail cancels the flow gap it would otherwise keep.
-    const withThought = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={[thought]} streamingText="Streaming answer" />
-      </PreferencesProvider>
-    ))
-    await waitFor(() => expect(withThought.container.querySelector('[data-band="thought"]')).not.toBeNull())
-    expect(tailOf(withThought.container).classList.contains(bandTailMerged)).toBe(true)
-    withThought.unmount()
-
-    // A tool row above it is not a band, so the tail keeps the ordinary flow gap.
-    const withTool = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={[toolUse]} streamingText="Streaming answer" />
-      </PreferencesProvider>
-    ))
-    await waitFor(() => expect(tailOf(withTool.container)).toBeDefined())
-    expect(withTool.container.querySelector('[data-band="thought"]')).toBeNull()
-    expect(tailOf(withTool.container).classList.contains(bandTailMerged)).toBe(false)
-  })
-
-  it('keeps streaming text visible until its replacement row is measured', async () => {
-    const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText, setStreamingText] = createSignal('Streaming answer')
-    const view = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={messages()} streamingText={streamingText()} />
-      </PreferencesProvider>
-    ))
-
-    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
-
-    await reportChatViewportSize(view)
-
-    batch(() => {
-      setMessages([{ ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 1n }])
-      setStreamingText('')
-    })
-
-    const row = await waitFor(() => {
-      const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
-      expect(el).not.toBeNull()
-      return el!
-    })
-
-    expect(row.style.visibility).toBe('hidden')
-    expect(row.style.opacity).toBe('0')
-
-    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
-    await triggerResizeObserverFor(row)
-
-    await waitFor(() => expect(row.style.visibility).toBe(''))
-    expect(row.style.opacity).toBe('1')
-  })
-
-  it('keeps streaming text visible when its replacement row appears before streaming clears', async () => {
-    const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText, setStreamingText] = createSignal('Streaming answer')
-    const view = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={messages()} streamingText={streamingText()} />
-      </PreferencesProvider>
-    ))
-
-    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
-
-    await reportChatViewportSize(view)
-
-    setMessages([{ ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 1n }])
-
-    const row = await waitFor(() => {
-      const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
-      expect(el).not.toBeNull()
-      return el!
-    })
-    expect(row.style.visibility).toBe('hidden')
-    expect(row.style.opacity).toBe('0')
-
-    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
-    await triggerResizeObserverFor(row)
-    expect(row.style.visibility).toBe('hidden')
-    expect(row.style.opacity).toBe('0')
-
-    setStreamingText('')
-
-    await waitFor(() => expect(row.style.visibility).toBe(''))
-    expect(row.style.opacity).toBe('1')
-  })
-
-  it('keeps streaming text visible until a post-hidden replacement row is measured', async () => {
-    const prior = { ...makeMessage('assistant', 'Prior answer', 'prior-1'), seq: 1n }
-    const hidden = { ...makeCodexHiddenLifecycleMessage('hidden-1'), seq: 2n }
-    const final = { ...makeMessage('assistant', 'Streaming answer', 'final-1'), seq: 3n }
-    const [messages, setMessages] = createSignal<AgentChatMessage[]>([prior])
-    const [streamingText, setStreamingText] = createSignal('Streaming answer')
-    const view = render(() => (
-      <PreferencesProvider>
-        <ChatView messages={messages()} streamingText={streamingText()} />
-      </PreferencesProvider>
-    ))
-
-    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
-
-    await reportChatViewportSize(view)
-
-    // Measure the prior row so the ordered-reveal gate doesn't hold the replacement
-    // tail behind it -- in the running app an existing message is already measured, so
-    // this isolates the stream->row handoff (the tail reveals on its OWN measurement).
-    const priorRow = view.container.querySelector('[data-seq="1"]') as HTMLElement
-    vi.spyOn(priorRow, 'getBoundingClientRect').mockImplementation(() => ({ height: 40 }) as DOMRect)
-    await triggerResizeObserverFor(priorRow)
-
-    batch(() => {
-      setStreamingText('')
-      setMessages([prior, hidden])
-    })
-    expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
-
-    setMessages([prior, hidden, final])
-
-    const row = await waitFor(() => {
-      const el = view.container.querySelector('[data-seq="3"]') as HTMLElement | null
-      expect(el).not.toBeNull()
-      return el!
-    })
-    expect(row.style.visibility).toBe('hidden')
-    expect(row.style.opacity).toBe('0')
-
-    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => ({ height: 48 }) as DOMRect)
-    await triggerResizeObserverFor(row)
-
-    await waitFor(() => expect(row.style.visibility).toBe(''))
-    expect(row.style.opacity).toBe('1')
-  })
-
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
     localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
@@ -1221,7 +971,7 @@ describe('chatView', () => {
       setMessages = updateMessages
       return (
         <PreferencesProvider>
-          <ChatView messages={messages()} streamingText="" />
+          <ChatView messages={messages()} />
         </PreferencesProvider>
       )
     })
@@ -1256,7 +1006,7 @@ describe('chatView', () => {
       setMessages = updateMessages
       return (
         <PreferencesProvider>
-          <ChatView messages={messages()} streamingText="" pagination={{ hasOlderMessages: true }} />
+          <ChatView messages={messages()} pagination={{ hasOlderMessages: true }} />
         </PreferencesProvider>
       )
     })
@@ -1333,7 +1083,7 @@ describe('chatView', () => {
       setTokens = updateTokens
       return (
         <PreferencesProvider>
-          <ChatView messages={messages} streamingText="" agentLifecycle={{ thinkingTokens: tokens() }} />
+          <ChatView messages={messages} agentLifecycle={{ thinkingTokens: tokens() }} />
         </PreferencesProvider>
       )
     })
@@ -1385,7 +1135,7 @@ describe('chatView', () => {
       setMessages = updateMessages
       return (
         <PreferencesProvider>
-          <ChatView messages={messages()} streamingText="" pagination={{ hasOlderMessages: true }} />
+          <ChatView messages={messages()} pagination={{ hasOlderMessages: true }} />
         </PreferencesProvider>
       )
     })
@@ -1448,7 +1198,7 @@ describe('chatView', () => {
         <PreferencesProvider>
           <ChatView
             messages={messages()}
-            streamingText=""
+
             pagination={{ hasOlderMessages: true, fetchingOlder: fetchingOlder() }}
           />
         </PreferencesProvider>
@@ -1520,7 +1270,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={messages}
-          streamingText=""
+
           pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
           savedViewportScroll={{ atBottom: false, hasMoreNewer: false }}
           onClearSavedViewportScroll={onClearSavedViewportScroll}
@@ -1571,7 +1321,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={messages}
-          streamingText=""
+
           pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
@@ -1597,7 +1347,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={messages}
-          streamingText=""
+
           pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
@@ -1625,7 +1375,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={messages}
-          streamingText=""
+
           onScrollApiReady={(api) => { pageScroll = api.pageScroll }}
         />
       </PreferencesProvider>
@@ -1655,14 +1405,14 @@ describe('chatView', () => {
           <div style={{ display: 'none' }}>
             <ChatView
               messages={messages}
-              streamingText=""
+
               onScrollApiReady={(api) => { hiddenPageScroll = api.pageScroll }}
             />
           </div>
           <div>
             <ChatView
               messages={messages}
-              streamingText=""
+
               onScrollApiReady={(api) => { visiblePageScroll = api.pageScroll }}
             />
           </div>
@@ -1702,7 +1452,7 @@ describe('chatView', () => {
       <PreferencesProvider>
         <ChatView
           messages={messages}
-          streamingText=""
+
           pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
@@ -1729,7 +1479,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1751,7 +1501,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1782,7 +1532,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1805,32 +1555,11 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
     expect(view.container).toHaveTextContent('Error (exit 1)')
-  })
-
-  it('renders live fileChange stream inside the matching codex fileChange bubble', () => {
-    const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'in_progress' }),
-    ]
-    const fileStream: CommandStreamSegment[] = [
-      { kind: 'output', text: 'updating a.txt\n' },
-    ]
-
-    render(() => (
-      <PreferencesProvider>
-        <ChatView
-          messages={messages}
-          streamingText=""
-          lookups={{ getCommandStreamBySpanId: () => fileStream }}
-        />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getByText('updating a.txt')).toBeInTheDocument()
   })
 
   it('keeps both codex fileChange start and completed messages in history', () => {
@@ -1841,7 +1570,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1863,7 +1592,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1879,7 +1608,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1903,7 +1632,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1924,7 +1653,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1945,7 +1674,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1966,7 +1695,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -1991,7 +1720,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2010,7 +1739,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2036,45 +1765,13 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
     expect(screen.getByText('2 files changed')).toBeInTheDocument()
     expect(screen.queryByText(A_TXT_RE)).not.toBeInTheDocument()
     expect(screen.queryByText(B_TXT_RE)).not.toBeInTheDocument()
-  })
-
-  it('renders live reasoning stream inside the matching codex reasoning bubble', () => {
-    const messages = [
-      makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' }),
-    ]
-    const reasoningStream: CommandStreamSegment[] = [
-      { kind: 'reasoning_summary_break', text: '' },
-      { kind: 'reasoning_summary', text: 'first summary' },
-      { kind: 'reasoning_summary_break', text: '' },
-      { kind: 'reasoning_summary', text: 'second summary' },
-      { kind: 'reasoning_content', text: 'duplicate raw reasoning' },
-    ]
-
-    render(() => (
-      <PreferencesProvider>
-        <ChatView
-          messages={messages}
-          streamingText=""
-          lookups={{
-            getCommandStreamBySpanId: () => reasoningStream,
-            hasRenderableCommandStreamBySpanId: () => reasoningStream.length > 0,
-          }}
-        />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
-    expect(screen.getByText('Thinking')).toBeInTheDocument()
-    expect(screen.getByText('first summary')).toBeInTheDocument()
-    expect(screen.getByText('second summary')).toBeInTheDocument()
-    expect(screen.queryByText('duplicate raw reasoning')).not.toBeInTheDocument()
   })
 
   it('renders persisted codex raw reasoning when no summary exists', () => {
@@ -2089,7 +1786,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2109,7 +1806,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2126,7 +1823,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2145,59 +1842,12 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
     expect(screen.getByText('Thinking')).toBeInTheDocument()
-  })
-
-  it('replaces a completed codex reasoning stream with persisted summary text', async () => {
-    let completeReasoning!: () => void
-
-    render(() => {
-      const started = makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' })
-      const completed = makeCodexReasoningMessage({
-        id: 'reason-done',
-        seq: 2n,
-        spanId: 'reason-1',
-        summary: ['persisted replacement'],
-        content: ['duplicate persisted raw reasoning'],
-      })
-      const [messages, setMessages] = createSignal([started])
-      const [stream, setStream] = createSignal<CommandStreamSegment[]>([
-        { kind: 'reasoning_summary_break', text: '' },
-        { kind: 'reasoning_summary', text: 'live summary' },
-        { kind: 'reasoning_content', text: 'duplicate live raw reasoning' },
-      ])
-      completeReasoning = () => batch(() => {
-        setMessages([started, completed])
-        setStream([])
-      })
-      return (
-        <PreferencesProvider>
-          <ChatView
-            messages={messages()}
-            streamingText=""
-            lookups={{
-              getCommandStreamBySpanId: () => stream(),
-              hasRenderableCommandStreamBySpanId: () => stream().some(segment => segment.text.length > 0),
-            }}
-          />
-        </PreferencesProvider>
-      )
-    })
-
-    expect(screen.getByText('live summary')).toBeInTheDocument()
-    expect(screen.queryByText('duplicate live raw reasoning')).not.toBeInTheDocument()
-
-    completeReasoning()
-
-    await waitFor(() => expect(screen.getByText('persisted replacement')).toBeInTheDocument())
-    expect(screen.queryByText('live summary')).not.toBeInTheDocument()
-    expect(screen.queryByText('duplicate persisted raw reasoning')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Thinking')).toHaveLength(1)
   })
 
   it('renders turn/plan/updated with the TodoWrite-style todo list UI', () => {
@@ -2215,7 +1865,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2240,7 +1890,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2270,7 +1920,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2303,7 +1953,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2330,7 +1980,7 @@ describe('chatView', () => {
 
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2353,7 +2003,7 @@ describe('chatView', () => {
 
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" />
+        <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
@@ -2393,7 +2043,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages}
-          streamingText=""
+
         />
       ))
 
@@ -2418,7 +2068,7 @@ describe('chat view virtualized with stubbed deps', () => {
       render(() => (
         <ChatView
           messages={[message('m0', 1)]}
-          streamingText=""
+
         />
       ))
 
@@ -2450,7 +2100,7 @@ describe('chat view virtualized with stubbed deps', () => {
       render(() => (
         <ChatView
           messages={[message('m0', 1)]}
-          streamingText=""
+
         />
       ))
 
@@ -2486,7 +2136,7 @@ describe('chat view virtualized with stubbed deps', () => {
       render(() => (
         <ChatView
           messages={[message('m0', 1)]}
-          streamingText=""
+
         />
       ))
 
@@ -2526,7 +2176,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages()}
-          streamingText=""
+
         />
       ))
 
@@ -2556,49 +2206,6 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
     })
 
-    it('keeps streaming text in flow until its replacement row is measured', async () => {
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set()
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
-      const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
-      const [streamingText, setStreamingText] = createSignal('Streaming answer')
-      const { container } = render(() => (
-        <ChatView
-          messages={messages()}
-          streamingText={streamingText()}
-        />
-      ))
-
-      batch(() => {
-        setMessages([message('m0', 1)])
-        setStreamingText('')
-      })
-
-      const row = await waitFor(() => {
-        const el = container.querySelector('[data-seq="1"]') as HTMLElement | null
-        expect(el).not.toBeNull()
-        return el!
-      })
-      await waitFor(() => expect(container).toHaveTextContent('Streaming answer'))
-      expect(row.style.visibility).toBe('hidden')
-      expect(row.style.opacity).toBe('0')
-
-      await waitFor(() => {
-        expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m0'])
-      })
-      const heightKey = hiddenPremeasureState.candidates[0].item.heightKey
-      const onMeasure = hiddenPremeasureState.onMeasure as unknown as HiddenPremeasureOnMeasure
-      onMeasure('m0', 64, heightKey, 0, true)
-      virtualizerState.setRange?.({ start: 0, end: 1 })
-
-      await waitFor(() => expect(container).not.toHaveTextContent('Streaming answer'))
-      expect(row.style.visibility).toBe('')
-      expect(row.style.opacity).toBe('1')
-    })
-
     it('renders newly appended interior AND live-tail rows invisible until measured', () => {
       virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
@@ -2610,7 +2217,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages()}
-          streamingText=""
+
         />
       ))
 
@@ -2653,7 +2260,7 @@ describe('chat view virtualized with stubbed deps', () => {
       })
       const [messages, setMessages] = createSignal([assistantText('m0', 1n, 'first')])
       const { container } = render(() => (
-        <ChatView messages={messages()} streamingText="" />
+        <ChatView messages={messages()} />
       ))
 
       virtualizerState.setRange?.({ start: 0, end: 2 })
@@ -2682,7 +2289,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages()}
-          streamingText=""
+
         />
       ))
 
@@ -2739,7 +2346,7 @@ describe('chat view virtualized with stubbed deps', () => {
       render(() => (
         <ChatView
           messages={messages}
-          streamingText=""
+
         />
       ))
 
@@ -2773,7 +2380,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages()}
-          streamingText=""
+
         />
       ))
 
@@ -2800,47 +2407,6 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(tail().style.visibility).not.toBe('hidden')
     })
 
-    it('does not skeletonise a stream-covered tail even when an earlier appended row is loading', () => {
-      // The order gate can pick up the stream-replacement tail (it is "ready" -- its
-      // content is painted by the in-flow streaming bubble, not a skeleton). Holding it
-      // behind an earlier still-loading row must NOT paint a skeleton over its slot, or
-      // the row double-paints with the bubble.
-      vi.useFakeTimers()
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 3 })
-      const [messages, setMessages] = createSignal([message('m0', 1)])
-      const [streamingText, setStreamingText] = createSignal('Streaming answer')
-      const { container } = render(() => (
-        <ChatView
-          messages={messages()}
-          streamingText={streamingText()}
-        />
-      ))
-
-      // Streaming ends: the persisted assistant row m2 becomes the (stream-covered) tail,
-      // with an earlier tool row m1 appended alongside it and still premeasuring.
-      batch(() => {
-        setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
-        setStreamingText('')
-      })
-
-      expect(container).toHaveTextContent('Streaming answer')
-      // Past the show-delay, exactly one skeleton appears -- the interior loading row m1's
-      // overlay (offset 100px). The stream-covered tail m2 (offset 200px) gets NONE even
-      // as its earlier sibling skeletonises; it is covered by the bubble.
-      vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
-      const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
-      expect(skeletons).toHaveLength(1)
-      expect(skeletons[0].parentElement!.style.transform).toBe('translateY(100px)')
-      // The tail row itself is hidden (covered by the in-flow streaming bubble).
-      expect((container.querySelector('[data-seq="3"]') as HTMLElement).style.visibility).toBe('hidden')
-    })
-
     it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {
       virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
@@ -2852,7 +2418,7 @@ describe('chat view virtualized with stubbed deps', () => {
       render(() => (
         <ChatView
           messages={messages()}
-          streamingText=""
+
         />
       ))
 
@@ -2875,7 +2441,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={messages}
-          streamingText=""
+
         />
       ))
       await Promise.resolve()
@@ -2944,7 +2510,7 @@ describe('chat view virtualized with stubbed deps', () => {
         const { container } = render(() => (
           <ChatView
             messages={[message('m0', 1)]}
-            streamingText=""
+
           />
         ))
         const scroller = container.querySelector('[data-chat-scroll-container]')
@@ -2971,7 +2537,7 @@ describe('chat view virtualized with stubbed deps', () => {
     const renderChat = () => render(() => (
       <ChatView
         messages={[message('m0', 1)]}
-        streamingText=""
+
       />
     ))
 
@@ -3055,21 +2621,21 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('hides the native scrollbar when the rail is loaded AND has a server row to anchor', () => {
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} streamingText="" rail={railBase} />
+        <ChatView messages={[message('m0', 1)]} rail={railBase} />
       ))
       expect(scroller(container).className).toContain(messageListRailActive)
     })
 
     it('hides the native scrollbar for an empty seeded rail because there is no native overflow to preserve', () => {
       const { container } = render(() => (
-        <ChatView messages={[]} streamingText="" rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
+        <ChatView messages={[]} rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
       ))
       expect(scroller(container).className).toContain(messageListRailActive)
     })
 
     it('keeps the native scrollbar while the rail is unseeded (marks RPC failed / slow)', () => {
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} streamingText="" rail={{ ...railBase, loaded: false }} />
+        <ChatView messages={[message('m0', 1)]} rail={{ ...railBase, loaded: false }} />
       ))
       expect(scroller(container).className).not.toContain(messageListRailActive)
     })
@@ -3088,7 +2654,7 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <ChatView
           messages={[unsafeMessage]}
-          streamingText=""
+
           rail={{
             ...railBase,
             minSeq: unsafe,
@@ -3117,7 +2683,7 @@ describe('chat view virtualized with stubbed deps', () => {
       windowLastSeq: 5n,
     }
     const renderWithRail = () => render(() => (
-      <ChatView messages={[message('m0', 1)]} streamingText="" rail={railBase} />
+      <ChatView messages={[message('m0', 1)]} rail={railBase} />
     ))
     const scroller = (container: HTMLElement) => container.querySelector('[data-chat-scroll-container]') as HTMLElement
     const rail = (container: HTMLElement) => container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
@@ -3250,7 +2816,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // then mount one and confirm the now-fed window lights on the next scroll.
       vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} streamingText="" />
+        <ChatView messages={[message('m0', 1)]} />
       ))
 
       // No rail mounted, so no rail element to fade or light.
@@ -3277,7 +2843,7 @@ describe('chat view virtualized with stubbed deps', () => {
     it('reports 0 for a row that draws no rail', () => {
       const { container } = render(() => (
         <PreferencesProvider>
-          <ChatView messages={[withSpanLines('m1', [])]} streamingText="" />
+          <ChatView messages={[withSpanLines('m1', [])]} />
         </PreferencesProvider>
       ))
       const rows = container.querySelectorAll('[data-span-columns]')
@@ -3293,7 +2859,7 @@ describe('chat view virtualized with stubbed deps', () => {
               { span_id: 'span-A', color: 1, type: 'active' },
               { span_id: 'span-B', color: 2, type: 'connector_end' },
             ])]}
-            streamingText=""
+
           />
         </PreferencesProvider>
       ))

@@ -20,7 +20,7 @@ async function sendAndSettle(page: Page, prompt = ARITHMETIC_PROMPT) {
  * in `src/components/chat/MessageBubble.test.tsx` (over 30 cases covering
  * thinking, todos, tools, attachments, edits, etc.). This e2e exercises the
  * remaining integration: the editor send path, the WebSocket/RPC delivery
- * to a real Claude agent, the streaming-to-rendered transition, and the
+ * to a real Claude agent, completed-message delivery, and the
  * markdown HTML output that only Shiki + jsdom-incompatible CSS can verify.
  */
 
@@ -91,14 +91,11 @@ test.describe('Chat Message Rendering', () => {
     // upper one by the band border width so the pair reads as one line. Walk the rows in
     // DOM order and compare only true neighbours -- comparing every pair of BANDS instead
     // would fail whenever a tool row sits between two of them, on a layout the code got
-    // right. The in-flow streaming tail is a neighbour like any other, which is what
-    // covers its own merge (bandTailMerged) here.
-    //
-    // `data-seq` marks every virtual row; the tail has no seq but does carry `data-band`.
+    // right. `data-seq` marks every virtual row.
     // Scoped to the scroll container, which excludes the hidden premeasure copies (they
     // mount outside it) and the rail's dots (which reuse data-seq).
     const seams = await readAttached(
-      chatScrollContainer(page).locator('[data-seq], [data-band]'),
+      chatScrollContainer(page).locator('[data-seq]'),
       'the band seams',
       matches => matches
         .filter(candidate => candidate.isConnected)

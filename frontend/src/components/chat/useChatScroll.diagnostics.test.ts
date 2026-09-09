@@ -26,13 +26,11 @@ describe('useChatScroll stall indicators', () => {
     div.setClientHeight(500)
     div.setScrollTop(opts.scrollTop)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     const [fetchingOlder, setFetchingOlder] = createSignal(opts.fetchingOlder ?? false)
     const [fetchingNewer, setFetchingNewer] = createSignal(opts.fetchingNewer ?? false)
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       hasOlderMessages: () => opts.hasOlder ?? true,
       hasNewerMessages: () => opts.hasNewer ?? true,
       fetchingOlder,
@@ -166,9 +164,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(100)
           const { virt, moveRowTop } = makeAnchorVirtualizer(90)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [hasOlder] = createSignal<boolean | undefined>(true)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({ virtualizer: virt, messages, hasOlderMessages: hasOlder })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -225,9 +222,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
             takeMeasurementBatch: () => ({ commits: ++batchCalls, deltaSum: -7, totalHeightDelta: -300 }),
           }
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [hasOlder] = createSignal<boolean | undefined>(true)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({ virtualizer: virt, messages, hasOlderMessages: hasOlder })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -270,13 +266,12 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const { virt: base, setTotal } = makeGrowableVirtualizer()
           const virt: ChatScrollVirtualizer = {
             ...base,
             takeMeasurementBatch: () => ({ commits: 9, deltaSum: -68, totalHeightDelta: -74 }),
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -331,9 +326,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(100)
           const { virt, moveRowTop } = makeAnchorVirtualizer(90)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [hasOlder] = createSignal<boolean | undefined>(false) // top edge exhausted
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({ virtualizer: virt, messages, hasOlderMessages: hasOlder })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -374,8 +368,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -431,8 +424,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(1000)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -479,8 +471,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -520,8 +511,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -576,7 +566,6 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // The scroll-triggered render cascade stalls the main thread 60ms -- over the 50ms
           // budget -- simulated by advancing the clock inside updateViewport (the synchronous
           // mount of entering rows + the premeasure computed run here in the real code).
@@ -585,7 +574,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 60 },
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -625,14 +614,13 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // A normal (fast, sub-budget) render cascade: 10ms, under the 50ms threshold.
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 10 },
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -671,8 +659,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -714,9 +701,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(1000)
           const { virt, moveRowTop } = makeAnchorVirtualizer(90)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [hasOlder] = createSignal<boolean | undefined>(true)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({ virtualizer: virt, messages, hasOlderMessages: hasOlder })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -765,9 +751,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(733)
           div.setScrollTop(5123) // at the bottom (maxScrollTop 5856 - 733)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [hasOlder] = createSignal<boolean | undefined>(true)
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, hasOlderMessages: hasOlder })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -810,9 +795,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const { virt, setTotal } = makeGrowableVirtualizer()
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -904,9 +888,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const { virt, arm } = makeRepeatingShiftVirtualizer(6) // 6px: inside the absorb cap
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -962,9 +945,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const { virt, arm } = makeShiftingVirtualizer(100, { reanchorWhenShifted: true }) // a 100px correction
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1012,11 +994,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // 6px: inside the absorb cap, so the re-pin still declines to fight the native
           // scroll event -- and the shift stays under the drift floor, so it stays silent.
           const { virt, arm } = makeShiftingVirtualizer(6, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1060,8 +1041,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(1000)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1107,8 +1087,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1164,8 +1143,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(1000)
           const { virt } = makeAnchorVirtualizer(990)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1220,8 +1198,7 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, streamingText })
+          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1272,9 +1249,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const { virt, arm } = makeShiftingVirtualizer(100, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()

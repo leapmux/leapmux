@@ -97,7 +97,7 @@ func newZCodeTestAgentWithStdin(t *testing.T, sink OutputSink, stdin *zcodeRecor
 		toolCalls:       map[string]*zcodeToolCall{},
 		pendingControls: map[string]json.RawMessage{},
 	}
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 

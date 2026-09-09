@@ -6,8 +6,7 @@
  * `agentMessage` independently testable, and what let this move out of a
  * 1700-line module without changing a line of behaviour.
  */
-import type { Provider } from '~/components/chat/providers/registry'
-import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -21,8 +20,8 @@ import type { AgentTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
-import { pluginFor, providerFor } from '~/components/chat/providers/registry'
+import { classifyAgentMessage } from '~/components/chat/messageClassification'
+import { providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
@@ -41,7 +40,7 @@ import { deriveOptionGroupTabFields, tabKey } from '~/stores/tab.helpers'
 
 const log = createLogger('agentEvents')
 
-/** Shared across the stream-chunk and control-request decoders. */
+/** Shared by control-request decoding. */
 const TEXT_DECODER = new TextDecoder()
 
 /**
@@ -115,9 +114,6 @@ export function wireSessionInfoToUpdates(
   const rateLimits = info[SESSION_INFO_KEY.RateLimits]
   if (rateLimits !== undefined)
     updates.rateLimits = wireRateLimitsToCamel(rateLimits)
-  const streamingType = info[SESSION_INFO_KEY.StreamingType]
-  if (streamingType !== undefined)
-    updates.streamingType = streamingType as string
   // Only positive estimates: `> 0` rejects both the zero-estimate first delta
   // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
   // false), so the indicator never has to defend against "0 tokens" or a NaN
@@ -125,6 +121,13 @@ export function wireSessionInfoToUpdates(
   const thinkingTokens = info[SESSION_INFO_KEY.ThinkingTokens]
   if (typeof thinkingTokens === 'number' && thinkingTokens > 0)
     updates.thinkingTokens = thinkingTokens
+  const outputBytes = info[SESSION_INFO_KEY.OutputBytes]
+  if (typeof outputBytes === 'number' && outputBytes > 0) {
+    updates.outputBytes = outputBytes
+    const outputBytesMinimum = info[SESSION_INFO_KEY.OutputBytesMinimum]
+    if (typeof outputBytesMinimum === 'boolean')
+      updates.outputBytesMinimum = outputBytesMinimum
+  }
   return updates
 }
 
@@ -135,7 +138,7 @@ export function wireSessionInfoToUpdates(
  *
  * It deliberately does NOT go through wireSessionInfoToUpdates: that function
  * returns scalar `AgentSessionInfo` fields, and this is span-keyed accumulating
- * state that lives in the chat store beside the command streams.
+ * state that lives in the chat store.
  *
  * Every field but `span_id` is optional, because the worker forwards two
  * families that report disjoint facts (see chatToolProgress). `retry` keeps its
@@ -222,26 +225,6 @@ function wireRunningToolRetry(value: unknown): ToolProgressRetry | null | undefi
   }
 }
 
-// shouldClearThinkingTokensForMessage decides whether a persisted message should
-// drop the live thinking-token estimate. Non-AGENT entries (user echoes such as
-// queued input or tool_result, and LeapMux notifications) can land mid-think and
-// must never clear a climbing counter, so they are rejected here universally. For
-// AGENT messages the per-provider policy is delegated to the provider plugin's
-// clearsThinkingTokensForMessage hook; the default (no hook) is "main-scope only"
-// -- clear when parentSpanId === '' -- so a collab subagent's nested commit does
-// not reset the primary counter (Claude overrides to always clear). The resolved
-// plugin is passed in so this stays a pure, registry-free unit.
-export function shouldClearThinkingTokensForMessage(
-  msg: { source: MessageSource, parentSpanId: string },
-  plugin: Pick<Provider, 'clearsThinkingTokensForMessage'> | undefined,
-): boolean {
-  if (msg.source !== MessageSource.AGENT)
-    return false
-  if (plugin?.clearsThinkingTokensForMessage)
-    return plugin.clearsThinkingTokensForMessage(msg)
-  return msg.parentSpanId === ''
-}
-
 /**
  * The hook-scoped stores the agentMessage sub-handlers below write to. Passed
  * explicitly so each handler is a module-level unit (no closure over the hook), which
@@ -274,16 +257,16 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
-  // A zero (or, defensively, negative) thinking-token estimate is the backend's
-  // per-phase reset signal -- the first delta of a thinking phase reports 0. Honor it
-  // as a clear so a stale count from a prior phase/turn can't linger; the positive path
-  // keeps streaming via `updates`. wireSessionInfoToUpdates only forwards positive
-  // estimates, so a 0 never arrives as an update and must be handled here.
+  // A non-positive value is the Worker's explicit lifecycle clear.
+  // wireSessionInfoToUpdates forwards positive values only.
   const thinkingTokens = info?.[SESSION_INFO_KEY.ThinkingTokens]
   if (typeof thinkingTokens === 'number' && thinkingTokens <= 0)
     agentSessionStore.clearThinkingTokens(agentId)
+  const outputBytes = info?.[SESSION_INFO_KEY.OutputBytes]
+  if (typeof outputBytes === 'number' && outputBytes <= 0)
+    agentSessionStore.clearOutputBytes(agentId)
   // running_tool is span-keyed accumulating state, not an AgentSessionInfo field,
-  // so it goes to the chat store beside the command streams rather than through
+  // so it goes to the chat store rather than through
   // wireSessionInfoToUpdates.
   const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
   if (runningTool)
@@ -419,7 +402,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
 
 /**
  * Handle a turn-end result divider (the caller gates on category.kind ===
- * 'result_divider'). Clears the per-turn thinking-token estimate and rehydrates
+ * 'result_divider'). Clears live per-turn state and rehydrates
  * contextWindow / total_cost_usd. Turn-end sound and tab badging are owned by
  * the worker's busy -> idle edge (`handleAgentSettled`), not this divider — leaving
  * both would ring a visible tab twice.
@@ -435,7 +418,7 @@ export function handleResultDivider(
   stores: AgentMessageStores,
   catchUpPhase: CatchUpPhase,
 ): void {
-  const { agentSessionStore, chatStore, view } = stores
+  const { agentSessionStore, view } = stores
   // Clear every live indicator on the turn-end divider itself, not just via the
   // per-message clear above. The divider is the structural turn boundary for every
   // provider; a clear that depended on message source or status would miss a FINAL envelope
@@ -458,7 +441,6 @@ export function handleResultDivider(
     // No alert here. The Worker owns it, from its busy -> idle edge
     // (handleAgentSettled) -- a divider is a turn boundary, and a turn that
     // leaves a subagent running has not settled the agent.
-    chatStore.sweepOrphanedBufferedSpans(agentId)
   }
   if (meta.contextUsage) {
     agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage })
@@ -473,32 +455,6 @@ export function handleResultDivider(
   }
   if (meta.totalCostUsd !== undefined) {
     agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd })
-  }
-}
-
-/**
- * Reclaim a span's buffered command stream once its persisted row reports the span
- * COMPLETED: a finished commandExecution/fileChange, or a reasoning block that now
- * carries summary/content. The persisted row supersedes the in-flight stream, so its
- * buffered segments are no longer needed. No-op for a non-span row, a non-AGENT
- * source, or a still-in-progress span (its stream stays live).
- */
-export function clearCompletedSpanStream(
-  agentId: string,
-  msg: AgentChatMessage,
-  parsed: ParsedMessageContent,
-  chatStore: AgentMessageStores['chatStore'],
-): void {
-  // The neutral gate is just "an AGENT-source span row"; the provider plugin owns whether the row's
-  // item shape marks the span COMPLETED (Codex: a commandExecution/fileChange with completed status,
-  // or a reasoning item that now carries summary/content). Delegating the span-type vocabulary to the
-  // hook -- rather than duplicating Codex's commandExecution/fileChange/reasoning names here -- means a
-  // future provider that gains command streams needs only its own commandSpanSuperseded, not an edit
-  // to a shared allowlist that would silently skip it. commandSpanSuperseded already returns true only
-  // for those item shapes, so the removed allowlist was redundant with the hook's own check.
-  if (msg.spanId && msg.source === MessageSource.AGENT) {
-    if (providerFor(msg.agentProvider)?.commandSpanSuperseded?.(parsed))
-      chatStore.clearCommandStream(agentId, msg.spanId)
   }
 }
 
@@ -530,65 +486,23 @@ export function dropFinishedToolProgress(
 }
 
 /**
- * Drop every live per-turn indicator for an agent: the thinking-token estimate
- * and every running-tool badge.
- *
- * The two share one property, which is why they share one function. Each is
- * ephemeral state that the WORKER broadcasts but cannot see the end of -- it
- * observes no turn-end divider, no user prompt and no dropped link -- so the
- * frontend owns every removal, and each removal has to happen at EVERY boundary
- * or the indicator freezes on its last value for the rest of the session.
- *
- * Call this from each boundary that ENDS the turn. A third live indicator then
- * reaches all of them by construction, instead of reaching three and missing the
- * fourth.
- *
- * Two kinds of site deliberately do NOT call it, and both clear the estimate
- * alone:
- *
- *   - The two per-PHASE thinking clears (a zero-estimate reset, and a main-agent
- *     message that ends a thinking phase). They fire many times inside one turn,
- *     while a tool of that turn still runs.
- *   - A control request. The agent pauses, but the tool that raised the prompt
- *     never started, so every entry belongs to a sibling that is still running.
- *     See handleControlRequest.
+ * Drop live per-turn state after a lifecycle event or a lost connection.
+ * The Worker normally sends explicit counter clears. This cleanup also handles
+ * a connection that ends before those clears arrive.
  */
 export function clearPerTurnLiveState(
   agentId: string,
   stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
 ): void {
   stores.agentSessionStore.clearThinkingTokens(agentId)
+  stores.agentSessionStore.clearOutputBytes(agentId)
   stores.chatStore.clearToolProgress(agentId)
 }
 
 /**
- * Method-specific lifecycle handling for a persisted message. Gated on AGENT source rather than
- * category because some lifecycle items (e.g. Codex `thread/started`) classify as `hidden` -- a
- * category-only gate would silently skip them. Clears a stale Codex turn id on thread/started and
- * dismisses the plan streaming UI on a plan item (the general streaming-clear already dropped the
- * text buffer). Usage/cost extraction is NOT here -- it runs once for every message in
- * applyNotificationMetadata (extractContextUsage), the single home for session usage metadata.
- */
-export function applyAgentLifecycle(
-  agentId: string,
-  msg: AgentChatMessage,
-  parsed: ParsedMessageContent,
-  agentSessionStore: AgentMessageStores['agentSessionStore'],
-): void {
-  if (msg.source !== MessageSource.AGENT)
-    return
-  // The provider plugin owns the lifecycle frames (Codex clears its live turn id on thread/started
-  // and the plan streaming indicator on a plan item); the service just applies the returned patch.
-  const lifecyclePatch = providerFor(msg.agentProvider)?.lifecycleSessionInfo?.(parsed)
-  if (lifecyclePatch)
-    agentSessionStore.updateInfo(agentId, lifecyclePatch)
-}
-
-/**
  * Process one persisted `agentMessage` frame as a sequence of named steps: the ephemeral
- * session-info short-circuit, notification metadata, the windowed append + thinking-token
- * / streaming-text clears + background trim, the completed-span stream reclaim, the
- * method-specific lifecycle, and the turn-end result divider. Extracted from the
+ * session-info short-circuit, notification metadata, the windowed append,
+ * background trim, tool-progress cleanup, and the turn-end result divider. Extracted from the
  * switch case so the pipeline matches the sibling extractions (handleAgentSessionInfo /
  * applyNotificationMetadata / handleResultDivider) instead of one case that dwarfs the rest.
  * The caller marks the agent live BEFORE this (that step is shared with the other cases).
@@ -599,7 +513,7 @@ export function handleAgentMessage(
   stores: AgentMessageStores,
   catchUpPhase: CatchUpPhase,
 ): void {
-  const { agentSessionStore, chatStore, view, selection } = stores
+  const { chatStore, view, selection } = stores
 
   // Single decompress-and-parse pass shared across the metadata, span-cleanup,
   // assistant-usage, and result-divider branches below. parseMessageContent never throws
@@ -615,24 +529,9 @@ export function handleAgentMessage(
   // / settings_changed / plan), independent of the persisted-message handling.
   applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase)
 
-  const messageInWindow = chatStore.addMessage(agentId, msg)
+  chatStore.addMessage(agentId, msg)
   // A tool's result row means it stopped running, so its badge goes with it.
   dropFinishedToolProgress(agentId, msg, parsed, chatStore)
-  // Main-agent output means the current thinking phase produced something,
-  // so drop the live thinking-token estimate — otherwise the counter lingers
-  // beside the indicator (frozen on its last value) until turn end, and the
-  // next thinking phase would briefly flash the stale total before its own
-  // deltas arrive. No-op when no estimate is set.
-  //
-  // INTENTIONAL per-phase reset: this also fires on an intermediate persisted
-  // reasoning block (Claude `assistant_thinking`) during interleaved thinking
-  // (think -> tool -> think), so the counter restarts from each new phase's
-  // first delta rather than accumulating across a whole turn. That per-phase
-  // semantics is the desired behavior — do not "fix" it to only clear at true
-  // turn boundaries. See shouldClearThinkingTokensForMessage for the
-  // source/subagent/Claude gating rationale.
-  if (shouldClearThinkingTokensForMessage(msg, providerFor(msg.agentProvider)))
-    agentSessionStore.clearThinkingTokens(agentId)
   // Trim only tabs the user is NOT looking at. This must compare against THIS
   // agent's own key: `activeKeyForTile` returns whichever tab the tile has
   // active, so a bare truthiness test is true for any tile holding any tab —
@@ -646,27 +545,6 @@ export function handleAgentMessage(
   }
   // Classify once and reuse across the per-message gates below.
   const category = classifyAgentMessage(msg)
-
-  // Any persisted assistant text, tool use/result, thinking block,
-  // or turn-end divider ends the in-flight streaming text. The
-  // streamed deltas have either been promoted to a persisted text
-  // block (Codex agentMessage, Pi message_end, ACP text) or the
-  // agent has transitioned to a tool/span message that implicitly
-  // closes the prior text block — without clearing here,
-  // subsequent text deltas concatenate onto the previous block
-  // into one wall of text. Notification-thread rows and meta
-  // categories never close the streaming buffer.
-  if (shouldClearStreamingText(msg, parsed, category))
-    chatStore.streamingText.clear(agentId)
-
-  // A completed span's persisted row supersedes its in-flight command stream;
-  // reclaim the buffered segments (no-op while the span is still in progress).
-  if (messageInWindow)
-    clearCompletedSpanStream(agentId, msg, parsed, chatStore)
-
-  // Method-specific lifecycle handling (it restricts itself to AGENT source, so a lifecycle item that
-  // classifies as `hidden` isn't skipped). Usage/cost already folded in applyNotificationMetadata.
-  applyAgentLifecycle(agentId, msg, parsed, agentSessionStore)
 
   // Play turn-end sound when a result divider (with subtype) arrives, and
   // rehydrate contextWindow / total_cost_usd. Each provider plugin classifies its
@@ -784,12 +662,8 @@ export function buildAgentStatusTabUpdate(
 /**
  * INACTIVE cleanup: the agent subprocess stopped. Clear stale control requests (so the
  * user can send a regular message that auto-starts the agent instead of being stuck on
- * an unanswerable prompt) and the per-turn thinking estimate. While LIVE, the turn is
- * definitively over -- reclaim any command-stream buffer a mid-stream trim spared as
- * orphaned (an agent that exits mid-turn emits INACTIVE but no result divider, so the
- * divider's turn-end sweep never fires for it, leaking the buffer) and signal turn-end.
- * Both restricted to the 'live' phase like the result-divider sweep; the catch-up phase is reclaimed by
- * the catchUpComplete sweep instead.
+ * an unanswerable prompt) and clear the live per-turn state. A live event also signals
+ * the turn end.
  */
 export function handleAgentInactive(
   agentId: string,
@@ -801,8 +675,6 @@ export function handleAgentInactive(
 ): void {
   stores.controlStore.clearAgent(agentId)
   clearPerTurnLiveState(agentId, stores)
-  if (catchUpPhase === 'live')
-    stores.chatStore.sweepOrphanedBufferedSpans(agentId)
   // No alert here: a process exit drives the Worker's busy state to false, and
   // handleAgentSettled owns every settle. See its doc comment.
   //
@@ -812,42 +684,6 @@ export function handleAgentInactive(
   // startup relaunch, and both pass a nil gitStatus (see
   // broadcastAgentInactive). Neither ran the agent, so neither changed the
   // working tree.
-}
-
-/**
- * The `streamChunk` case of handleAgentEvent: route a streaming-text delta to its
- * command-stream buffer (when it carries a spanId) or the agent's free-form streaming
- * text. Extracted as a module-level handler -- with the sibling handlers below -- so the
- * dispatcher reads as a routing table and each case is independently unit-testable (the
- * dispatcher closure itself is driven only by gRPC streams). The caller marks the agent
- * live BEFORE this (mirrors the other live cases).
- */
-export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chatStore: ReturnType<typeof createChatStore>): void {
-  const text = TEXT_DECODER.decode(value.delta)
-  if (value.spanId) {
-    // The provider plugin maps its delta method to a segment kind (Codex `item/...` methods);
-    // unknown methods default to plain output. Dispatch on the chunk's OWN authoritative provider
-    // (the backend stamps AgentStreamChunk.agentProvider on every chunk) -- never a tab lookup,
-    // which can still be undefined while a tab is bare from the reconciler, silently degrading
-    // every Codex delta to `output`.
-    const segmentKind = pluginFor(value.agentProvider)?.commandStreamSegmentKind?.(value.method) ?? 'output'
-    chatStore.appendCommandStream(agentId, value.spanId, segmentKind, text)
-  }
-  else {
-    chatStore.streamingText.set(agentId, chatStore.streamingText.get(agentId) + text)
-  }
-}
-
-/**
- * The `streamEnd` case: close the streaming buffer (command stream or free-form
- * text). Tab badging for a finished turn is owned by `handleAgentSettled`.
- */
-export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore'>): void {
-  const { chatStore } = stores
-  if (value.spanId)
-    chatStore.clearCommandStream(agentId, value.spanId)
-  else
-    chatStore.streamingText.clear(agentId)
 }
 
 /**
@@ -890,22 +726,6 @@ export function handleControlRequest(
     // agent is now waiting on them. Match FULL's on-screen rule (tile-active).
     if (!isAgentTabOnScreen(cr.agentId, view, selection, getActiveWorkspaceId))
       metadata.patch(cr.agentId, { hasNotification: true })
-    // The agent paused mid-turn to wait on the user, so it no longer thinks. The
-    // pause may produce no agent message and no INACTIVE, so the estimate is
-    // dropped here -- otherwise it stays frozen until the next turn.
-    //
-    // The running-tool badges STAY, and this is the one boundary that keeps them.
-    // Claude Code starts a tool's heartbeat only AFTER the permission decision, so
-    // the tool that raised this prompt reports no progress and owns no entry --
-    // tests/e2e/193-tool-running-badge.spec.ts rests on the same rule, because a
-    // Bash call held at a prompt sends no heartbeat and the spec has to bypass
-    // permissions to see a badge at all. So every entry that exists here belongs
-    // to a SIBLING tool that is still running, and clearing blanks that live card
-    // until its next heartbeat, up to 30 seconds later.
-    //
-    // Nothing leaks: the result divider, agent-inactive, context-cleared, the
-    // worker-offline sweep and forgetAgent all still reclaim every span.
-    stores.agentSessionStore.clearThinkingTokens(agentId)
     // No alert here. A pending control request drives the Worker's busy state to
     // false, so handleAgentSettled raises it from the one edge -- and raising it
     // in both places rang twice for one pause.

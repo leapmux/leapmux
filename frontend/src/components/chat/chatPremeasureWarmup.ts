@@ -12,15 +12,15 @@ import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
  * territory — the estimate->real corrections there are what shift the
  * offset map mid-scroll. This unit drains the REST of the window during
  * idle: while the user isn't scrolling (and the pane is visible, sized, and
- * not streaming), it feeds small batches of unmeasured rows — nearest to
+ * no syntax-highlight work is active), it feeds small batches of unmeasured rows — nearest to
  * the viewport first — into the premeasure queue as a third candidate band.
  * After a few idle seconds every loaded row has real geometry and scrolling
  * anywhere in the window is measurement-free.
  *
  * Yielding model: batches are small (WARMUP_BATCH_ROWS per tick) so each
  * hidden render+measure fits comfortably in a frame's slack, and the
- * `enabled` gate drops the band to empty the moment the user scrolls or a
- * stream starts — in-flight hidden rows unmount and their premeasure frame
+ * `enabled` condition drops the band to empty when the user scrolls. Active
+ * hidden rows then unmount and their premeasure frame
  * entries cancel.
  */
 
@@ -33,7 +33,7 @@ export const WARMUP_TICK_MS = 300
 
 export interface PremeasureWarmupDeps {
   /**
-   * Master gate: pane visible + sized, no active scroll, no live stream.
+   * Master condition: pane visible, sized, and without active scroll work.
    * While false the band is empty and the ticker is parked.
    */
   enabled: Accessor<boolean>

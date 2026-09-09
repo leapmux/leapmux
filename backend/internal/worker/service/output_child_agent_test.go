@@ -447,6 +447,10 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	assert.False(t, closedPresent, "closed child's cached sink pruned from the parent")
 	require.True(t, survivingPresent, "surviving sibling stays cached")
 	assert.Same(t, survivingSink, surviving, "surviving sink is the same pointer the parent cached")
+	closedSink.progress.mu.Lock()
+	progressClosed := closedSink.progress.closed
+	closedSink.progress.mu.Unlock()
+	assert.True(t, progressClosed, "closed child's progress timer is stopped")
 
 	// The closed child's per-agent state is reclaimed; the sibling's survives.
 	_, _, closedTracked := svc.Output.trackers.get(closedID)

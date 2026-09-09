@@ -11,6 +11,7 @@
     "goalStatusTokens",
     "goalTransitions",
     "workerAuthoredNotificationTypes",
+    "assembledMessage",
     "notificationThreadWrapperType",
     "codexRateLimitReachedTimeWindow",
     "modelSentinels"
@@ -60,6 +61,30 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
+    },
+    "assembledMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Type",
+        "KindText",
+        "KindReasoning",
+        "KindPlan",
+        "CompletionComplete",
+        "CompletionInterrupted",
+        "CompletionError",
+        "MetadataKey"
+      ],
+      "properties": {
+        "Type": { "type": "string", "const": "assembled_message" },
+        "KindText": { "type": "string", "const": "text" },
+        "KindReasoning": { "type": "string", "const": "reasoning" },
+        "KindPlan": { "type": "string", "const": "plan" },
+        "CompletionComplete": { "type": "string", "const": "complete" },
+        "CompletionInterrupted": { "type": "string", "const": "interrupted" },
+        "CompletionError": { "type": "string", "const": "error" },
+        "MetadataKey": { "type": "string", "const": "_leapmux" }
       }
     },
     "notificationThreadWrapperType": {

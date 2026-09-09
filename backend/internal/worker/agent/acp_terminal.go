@@ -78,6 +78,13 @@ type acpTerminalSession struct {
 	done chan struct{}
 }
 
+type acpTerminalResult struct {
+	Output    string  `json:"output"`
+	Truncated bool    `json:"truncated"`
+	ExitCode  *int    `json:"exitCode,omitempty"`
+	Signal    *string `json:"signal,omitempty"`
+}
+
 func (s *acpTerminalSession) appendOutput(p []byte) {
 	if len(p) == 0 {
 		return
@@ -431,10 +438,31 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 		// terminal/wait_for_exit replies off done, so the opposite order lets
 		// the client read its own terminal's row and still see RUNNING.
 		b.closeTerminalRegistry(sess)
+		b.rememberCompletedTerminal(sess)
 		close(sess.done)
 	}()
 
 	b.terminalOK(id, map[string]interface{}{"terminalId": termID})
+}
+
+func (b *acpBase) rememberCompletedTerminal(sess *acpTerminalSession) {
+	output, truncated, exitCode, signal, _ := sess.snapshot()
+	b.terminalsMu.Lock()
+	if b.completedTerminals == nil {
+		b.completedTerminals = make(map[string]acpTerminalResult)
+	}
+	b.completedTerminals[sess.id] = acpTerminalResult{
+		Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal,
+	}
+	b.terminalsMu.Unlock()
+}
+
+func (b *acpBase) takeCompletedTerminal(terminalID string) (acpTerminalResult, bool) {
+	b.terminalsMu.Lock()
+	defer b.terminalsMu.Unlock()
+	result, ok := b.completedTerminals[terminalID]
+	delete(b.completedTerminals, terminalID)
+	return result, ok
 }
 
 func (b *acpBase) copyTerminalOutput(sess *acpTerminalSession, r io.Reader) {
@@ -443,6 +471,7 @@ func (b *acpBase) copyTerminalOutput(sess *acpTerminalSession, r io.Reader) {
 		n, err := r.Read(buf)
 		if n > 0 {
 			sess.appendOutput(buf[:n])
+			b.sink.ReportProgress(OutputDeltaProgress("terminal:"+sess.id, int64(n)))
 		}
 		if err != nil {
 			return
@@ -578,6 +607,7 @@ func (b *acpBase) terminalRelease(id json.RawMessage, rawParams json.RawMessage)
 		sess.kill()
 		sess.waitDone(acpTerminalReleaseWait)
 		b.closeTerminalRegistry(sess)
+		b.sink.ReportProgress(CompleteOutputProgress("terminal:" + sess.id))
 		b.terminalOK(id, map[string]interface{}{})
 	}()
 }
@@ -612,6 +642,7 @@ func (b *acpBase) releaseTerminals(closeLatch bool) {
 		s.kill()
 		s.waitDone(acpTerminalReleaseWait)
 		b.closeTerminalRegistry(s)
+		b.sink.ReportProgress(CompleteOutputProgress("terminal:" + s.id))
 	}
 }
 

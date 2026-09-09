@@ -24,7 +24,7 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 	a.modelIDNormalizer = normalizeCursorModelID
 	a.modeChannel = modeChannelPermissionMode
 	a.extraMethod = a.handleExtraMethod
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 

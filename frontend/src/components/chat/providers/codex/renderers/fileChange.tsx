@@ -1,7 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { FileChangeShape } from '../extractors/fileChange'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 import File from 'lucide-solid/icons/file'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import FilePlus from 'lucide-solid/icons/file-plus'
@@ -28,14 +27,10 @@ import {
   codexChangeKind,
   completedFileChangeEntries,
 } from '../extractors/fileChange'
-import { LiveStreamOutput } from '../renderHelpers'
-import { readLiveStream } from '../status'
 
 interface FileChangeRenderArgs {
   shape: FileChangeShape
   context: RenderContext | undefined
-  liveStream: () => CommandStreamSegment[]
-  hasLiveStream: () => boolean
 }
 
 function renderCompletedFileChange(args: FileChangeRenderArgs): JSX.Element {
@@ -117,18 +112,14 @@ function inProgressSimpleHeader(
 }
 
 function renderInProgressFileChange(args: FileChangeRenderArgs): JSX.Element {
-  const { shape, context, liveStream, hasLiveStream } = args
+  const { shape, context } = args
   const header = inProgressSimpleHeader(shape, context)
   if (header) {
     const title = header.title || (
       <span class={toolInputPath}>{relativizePath(header.path, context?.workingDir, context?.homeDir)}</span>
     )
     return (
-      <ToolUseLayout icon={header.icon} toolName="File Change" title={title} context={context} alwaysVisible>
-        <Show when={hasLiveStream()}>
-          <LiveStreamOutput stream={liveStream} />
-        </Show>
-      </ToolUseLayout>
+      <ToolUseLayout icon={header.icon} toolName="File Change" title={title} context={context} alwaysVisible />
     )
   }
 
@@ -143,9 +134,6 @@ function renderInProgressFileChange(args: FileChangeRenderArgs): JSX.Element {
 
   return (
     <ToolUseLayout icon={FileEdit} toolName="File Change" title={titleEl} context={context} alwaysVisible>
-      <Show when={hasLiveStream()}>
-        <LiveStreamOutput stream={liveStream} />
-      </Show>
       <Show when={changes.length > 1}>
         <For each={changes}>
           {(change) => {
@@ -179,13 +167,9 @@ defineCodexRenderer({
     // Re-runs only when `props.item` reference changes.
     const shape = createMemo(() => buildFileChangeShape(props.item))
     const isCompleted = (): boolean => pickString(props.item, 'status') === CODEX_STATUS.COMPLETED
-    const liveStream = () => readLiveStream(props.context)
-    const hasLiveStream = (): boolean => liveStream().length > 0
     const renderArgs = (): FileChangeRenderArgs => ({
       shape: shape(),
       context: props.context,
-      liveStream,
-      hasLiveStream,
     })
     return (
       <Show

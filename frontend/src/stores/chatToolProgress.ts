@@ -5,8 +5,7 @@ import { createStore } from 'solid-js/store'
 //
 // Live per-span progress for a tool that still runs (keyed
 // agentId -> spanId -> entry), fed by the ephemeral `running_tool`
-// agent_session_info key. A self-contained sub-store, shaped like the
-// command-stream slice beside it.
+// agent_session_info key.
 //
 // An entry holds ONLY what the badge renders. A field that no component reads
 // does not belong here: the wire carries it, the store merges it, and nothing

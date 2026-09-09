@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -29,6 +30,38 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 	assert.Equal(t, false, fs["readTextFile"])
 	assert.Equal(t, false, fs["writeTextFile"])
 }
+
+func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{completedTerminals: map[string]acpTerminalResult{
+		"term-1": {Output: "stdout\nstderr\n", ExitCode: ptrTo(0)},
+	}}
+	raw := b.expandACPTerminalResult(json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`))
+	assert.Contains(t, string(raw), "stdout\\nstderr")
+	_, present := b.takeCompletedTerminal("term-1")
+	assert.False(t, present)
+}
+
+func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{sink: sink}
+	session := &acpTerminalSession{id: "term-1", byteLimit: 0}
+	b.copyTerminalOutput(session, strings.NewReader("éx"))
+
+	output, truncated, _, _, _ := session.snapshot()
+	assert.Empty(t, output)
+	assert.True(t, truncated)
+	require.Len(t, sink.ProgressUpdates(), 1)
+	assert.Equal(t, int64(3), sink.ProgressUpdates()[0].Value)
+}
+
+func ptrTo[T any](value T) *T { return &value }
 
 func TestTruncateACPTerminalOutput_AllGOOS(t *testing.T) {
 	// "xy" + "é" (2-byte UTF-8) + "abc". Keeping the last 4 bytes starts on

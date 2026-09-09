@@ -401,7 +401,15 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// pruned from whichever root sink cached it.
 	if root, ok := h.rootSinks.Load(agentID); ok {
 		rootSink := root.(*agentOutputSink)
+		if rootSink.progress != nil {
+			rootSink.progress.close()
+		}
 		rootSink.childMu.Lock()
+		for _, child := range rootSink.childSinks {
+			if child.progress != nil {
+				child.progress.close()
+			}
+		}
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
 		h.rootSinks.Delete(agentID)
@@ -410,6 +418,9 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 			rootSink := v.(*agentOutputSink)
 			rootSink.childMu.Lock()
 			if rootSink.childSinks != nil {
+				if child := rootSink.childSinks[agentID]; child != nil && child.progress != nil {
+					child.progress.close()
+				}
 				delete(rootSink.childSinks, agentID)
 			}
 			rootSink.childMu.Unlock()
@@ -459,6 +470,11 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	if root, ok := h.rootSinks.Load(rootID); ok {
 		rootSink := root.(*agentOutputSink)
 		rootSink.childMu.Lock()
+		for _, child := range rootSink.childSinks {
+			if child.progress != nil {
+				child.progress.close()
+			}
+		}
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
 	}
@@ -655,6 +671,9 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		plugin:        agent.ProviderFor(agentProvider),
 		tracker:       h.rootTracker(agentID),
 	}
+	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+		h.broadcastAgentSessionInfo(agentID, info)
+	})
 	h.rootSinks.Store(agentID, s)
 	return s
 }
@@ -695,6 +714,7 @@ type agentOutputSink struct {
 	// frontend would observe.
 	sessionInfoMu   sync.Mutex
 	lastSessionInfo map[string][]byte
+	progress        *generationProgressPublisher
 
 	// catalogMu serializes the read-build-persist of the option-group catalog in
 	// BroadcastStatusActive. Every BroadcastStatusActive for an agent runs on this one
@@ -847,34 +867,8 @@ func (s *agentOutputSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
 	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
 }
 
-func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
-	if !s.tracker.ShouldBroadcastStreamChunk(spanID) {
-		return
-	}
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event: &leapmuxv1.AgentEvent_StreamChunk{
-			StreamChunk: &leapmuxv1.AgentStreamChunk{
-				MessageId:     s.agentID,
-				Delta:         content,
-				AgentProvider: s.agentProvider,
-				SpanId:        spanID,
-				Method:        method,
-			},
-		},
-	})
-}
-
-func (s *agentOutputSink) BroadcastStreamEnd(spanID string) {
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event: &leapmuxv1.AgentEvent_StreamEnd{
-			StreamEnd: &leapmuxv1.AgentStreamEnd{
-				MessageId: s.agentID,
-				SpanId:    spanID,
-			},
-		},
-	})
+func (s *agentOutputSink) ReportProgress(update agent.ProgressUpdate) {
+	s.progress.report(update)
 }
 
 func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte) string {
@@ -1504,18 +1498,9 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 // BroadcastSessionInfo broadcasts unconditionally -- always broadcast, never
 // cache.
 //
-// The rest of the vocabulary (cost, rate limits, context usage) carries
-// meaningfully across turns and benefits from the dedup. These two do not. They
-// are live per-turn state, and the FRONTEND drops them at boundaries the worker
-// cannot all observe.
-//
-//   - thinking_tokens: a per-turn running count the frontend drops at the
-//     turn-end divider, at each interleaved thinking phase, and when the agent
-//     pauses for input.
-//   - running_tool: a per-span record the frontend drops when the tool's result
-//     row lands, and at every turn boundary and agent boundary.
-//
-// A dedup on either one suppresses a re-broadcast of a value that the frontend
+// The rest of the vocabulary carries across turns and benefits from the dedup.
+// Running-tool progress is live state that the frontend drops when its result
+// row arrives. A dedup suppresses a repeat of a value that the frontend
 // already dropped, and the counter or the badge then stays hidden until a
 // strictly different value arrives. Both carry unique values in normal
 // operation, and the frontend stores drop an identical update themselves, so
@@ -1525,8 +1510,7 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 // strings that the handlers broadcast. Hand-copied literals could drift and
 // re-enable the dedup without a word.
 var dedupExemptSessionInfoKeys = map[string]struct{}{
-	contracts.SessionInfoKeyThinkingTokens: {},
-	contracts.SessionInfoKeyRunningTool:    {},
+	contracts.SessionInfoKeyRunningTool: {},
 }
 
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
@@ -1586,10 +1570,8 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 // bytes unchanged, so the replayed frame carries the exact encoding the live
 // one did.
 //
-// A dedup-exempt key is absent by construction, and that is what a replay
-// wants. `thinking_tokens` and `running_tool` are per-turn state that the
-// frontend drops at boundaries the worker cannot all observe, so replaying
-// either one restores a counter or a tool badge that already ended.
+// A dedup-exempt key is absent by construction. The separate progress
+// publisher supplies active counter snapshots during replay.
 func (s *agentOutputSink) sessionInfoSnapshot() map[string]interface{} {
 	s.sessionInfoMu.Lock()
 	defer s.sessionInfoMu.Unlock()
@@ -2244,8 +2226,8 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 	// If a flapping ProviderScoped notification (e.g.
 	// remoteControl/status/changed) collapses into the existing tail and
 	// produces a byte-identical slice, skip the DB write + broadcast. The
-	// false return tells the reset decorator no frontend clear fired, so it must
-	// not reset the thinking-token estimate for this collapsed notification.
+	// The false return tells the reset decorator that no visible row arrived.
+	// It must not reset the live progress counters in that case.
 	oldMessages := wrapper.Messages
 	nextMessages := append(slices.Clone(oldMessages), contentJSON)
 	nextMessages = consolidateNotificationThread(nextMessages, plugin)
@@ -2423,16 +2405,53 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 //
 // The sink already keeps the last value of each key for the dedup, so this
 // costs one map copy and adds no new state to keep in step.
-func (h *OutputHandler) SessionInfoReplayEvent(rootID string) *leapmuxv1.AgentEvent {
-	sink, ok := h.rootSinks.Load(rootID)
-	if !ok {
+func (h *OutputHandler) SessionInfoReplayEvent(agentID string) *leapmuxv1.AgentEvent {
+	sink := h.sinkForAgent(agentID)
+	if sink == nil {
 		return nil
 	}
-	info := sink.(*agentOutputSink).sessionInfoSnapshot()
+	info := sink.sessionInfoSnapshot()
+	if info == nil {
+		info = make(map[string]interface{})
+	}
+	for key, value := range sink.progress.snapshotInfo() {
+		info[key] = value
+	}
 	if len(info) == 0 {
 		return nil
 	}
-	return sessionInfoEvent(rootID, info)
+	return sessionInfoEvent(agentID, info)
+}
+
+func (h *OutputHandler) sinkForAgent(agentID string) *agentOutputSink {
+	if root, ok := h.rootSinks.Load(agentID); ok {
+		return root.(*agentOutputSink)
+	}
+	var found *agentOutputSink
+	h.rootSinks.Range(func(_, value any) bool {
+		found = findChildSink(value.(*agentOutputSink), agentID)
+		return found == nil
+	})
+	return found
+}
+
+func findChildSink(parent *agentOutputSink, agentID string) *agentOutputSink {
+	parent.childMu.Lock()
+	if child := parent.childSinks[agentID]; child != nil {
+		parent.childMu.Unlock()
+		return child
+	}
+	children := make([]*agentOutputSink, 0, len(parent.childSinks))
+	for _, child := range parent.childSinks {
+		children = append(children, child)
+	}
+	parent.childMu.Unlock()
+	for _, child := range children {
+		if found := findChildSink(child, agentID); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.

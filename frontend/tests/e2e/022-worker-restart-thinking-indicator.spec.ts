@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
@@ -22,10 +22,9 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      // Wait for thinking indicator or streaming to appear (agent is processing)
+      // Wait for the thinking indicator while the agent works.
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      const streamingText = assistantBubbles(page)
-      await expectAnyVisible(thinkingIndicator, streamingText)
+      await expect(thinkingIndicator).toBeVisible()
 
       // Stop the worker while agent is working
       await stopWorker()

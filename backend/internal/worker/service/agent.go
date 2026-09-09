@@ -1415,11 +1415,9 @@ func (svc *Service) replayAgentCatchUp(
 	// its progress row measures the goal the event above just restored, and
 	// Codex advances those numbers only after a completed tool call.
 	//
-	// It ships under the ROOT id for the reason the goal does -- a child owns no
-	// goal, and the sink that caches these counters is the root's. Nil when no
-	// process runs, which is the correct answer: an inactive agent has no live
-	// counters to restore.
-	if event := svc.Output.SessionInfoReplayEvent(rootID); event != nil {
+	// Each child sink owns its own generation counters. Replay the sink for the
+	// subscribed agent; the goal above remains root-owned.
+	if event := svc.Output.SessionInfoReplayEvent(agentID); event != nil {
 		broadcastReplayAgentEvent(sink, event)
 		if !sink.alive() {
 			return

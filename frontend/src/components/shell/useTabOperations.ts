@@ -321,7 +321,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // request no longer carries -- and the duplicate had already drifted into a
     // leak: it skipped the agent-side `clearAgent` / `clearAttachments` /
     // `chatStore.forgetAgent`, so closing an agent tab in an inactive workspace
-    // stranded its loaded window, live tail, command streams and span index,
+    // stranded its loaded window, live tail, and span index,
     // and it skipped `disposeTerminalInstance`, which is the last chance to
     // reclaim a terminal's pooled WebGL slot after a cross-workspace move.
     // The shared handlers resolve a cross-workspace tab fine on their own:

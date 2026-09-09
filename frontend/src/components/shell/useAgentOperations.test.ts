@@ -112,7 +112,6 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     getMessages: vi.fn().mockReturnValue([]),
     forgetAgent: vi.fn(),
     clearToolProgress: vi.fn(),
-    streamingText: { clear: vi.fn() },
   } as any
 
   const repoGitStore = createRepoGitStore()
@@ -533,7 +532,6 @@ describe('useAgentOperations', () => {
             agentId: 'codex-1',
           })
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
-          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
         }
         finally {
@@ -559,7 +557,6 @@ describe('useAgentOperations', () => {
           await ops.handleInterrupt('codex-1')
 
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
-          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
         }
         finally {

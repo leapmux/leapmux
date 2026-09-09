@@ -2,6 +2,7 @@ import type { MessageCategory } from './messageClassification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { pickString } from '~/lib/jsonPick'
 import { truncatePreview } from '~/lib/textTruncate'
+import { assembledMessageDisplayText, parseAssembledMessage } from './assembledMessage'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail mark preview -- shared, provider-neutral extraction
@@ -33,6 +34,10 @@ export function defaultMarkPreview(_category: MessageCategory, parsed: ParsedMes
   const obj = parsed.parentObject
   if (!obj)
     return null
+
+  const assembled = parseAssembledMessage(obj)
+  if (assembled)
+    return truncatePreview(assembledMessageDisplayText(assembled))
 
   // User-typed input: the LeapMux-neutral `{content:"..."}` shape (every provider).
   // Assistant messages store `content` as a block array, so a string test here

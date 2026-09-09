@@ -28,11 +28,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800) // viewport [800,1300], midpoint at 1050 (row 10)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -75,11 +73,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800) // same mid-list park as the bug case above
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -126,11 +122,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800) // viewport top sits at row 8's top (offset 800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -175,11 +169,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800) // viewport [800,1300], midpoint 1050 (row 10)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -234,11 +226,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -294,11 +284,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -358,11 +346,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -409,11 +395,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -459,11 +443,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -515,11 +497,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setScrollTop(800)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -571,11 +551,9 @@ describe('usechatscroll toggle row stability', () => {
           div.setClientHeight(500)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -626,11 +604,9 @@ describe('usechatscroll edge-aware bottom anchoring', () => {
           div.setScrollTop(1500) // loaded bottom: 2000px content, maxScrollTop 1500
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true, // windowed away from the live tail
             hasOlderMessages: () => false,
           })
@@ -672,13 +648,11 @@ describe('usechatscroll explicit edge-intent tolerance', () => {
     div.setClientHeight(500)
     div.setScrollTop(scrollTop)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     let olderLoads = 0
     let newerLoads = 0
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       hasOlderMessages: () => true,
       hasNewerMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
@@ -728,12 +702,10 @@ describe('usechatscroll overscroll-at-top drag', () => {
     div.setClientHeight(500)
     div.setScrollTop(scrollTop)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     let olderLoads = 0
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       hasOlderMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
     })

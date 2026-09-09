@@ -247,39 +247,6 @@ func TestBroadcastSessionInfo_ValueTypeChangeShips(t *testing.T) {
 	assert.Equal(t, "one", infos[1]["a"])
 }
 
-// TestBroadcastSessionInfo_ThinkingTokensNeverDeduped: the per-turn
-// thinking_tokens estimate is exempt from the per-key dedup. The frontend clears
-// its counter at several boundaries the worker can't all observe (turn end, each
-// interleaved thinking phase, a pause for input), so a re-broadcast of an
-// unchanged estimate must still ship -- otherwise the cleared counter would stay
-// hidden until a strictly different value arrived. Other keys stay deduped.
-func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
-	t.Parallel()
-
-	sink, mock := newSessionInfoFixture(t)
-
-	// Two byte-identical thinking_tokens broadcasts both ship -- no dedup.
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230)})
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230)})
-	require.Len(t, mock.snapshot(), 2, "an equal thinking_tokens repeat re-ships (exempt from dedup)")
-
-	// A non-thinking key is still deduped: an unchanged repeat is dropped.
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
-	assert.Len(t, mock.snapshot(), 3, "a non-thinking key remains deduped")
-
-	// In a mixed payload, only the non-thinking key dedups: an unchanged
-	// thinking_tokens alongside an unchanged cost still ships (carrying just the
-	// estimate), and the cost is filtered out as a no-op delta.
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230), contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
-	infos := mock.snapshot()
-	require.Len(t, infos, 4, "a mixed payload re-ships because thinking_tokens is never deduped")
-	// The capturing writer round-trips through JSON, so the count returns as float64.
-	assert.Equal(t, float64(230), infos[3][contracts.SessionInfoKeyThinkingTokens])
-	_, hasCost := infos[3][contracts.SessionInfoKeyTotalCostUsd]
-	assert.False(t, hasCost, "the unchanged cost is still deduped out of the mixed payload")
-}
-
 // TestBroadcastSessionInfo_RunningToolNeverDeduped: running_tool joins
 // thinking_tokens in the exemption, and for the same reason. The frontend drops
 // a span's entry when the tool's result row lands and at every turn/agent
@@ -342,13 +309,8 @@ func TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree(t *testing.T) {
 
 // TestSessionInfoKeysStateTheirDedupPolicy pins the seam between
 // contracts/session-info.json and dedupExemptSessionInfoKeys. The contract owns
-// the top-level agent_session_info vocabulary; this file owns which of those keys
-// skip the per-key dedup. Nothing else compiles the two together, so a key added
-// to the contract and forgotten in the exemption set takes the dedup in silence --
-// the exact failure the exemption exists to prevent, where a counter or a badge
-// stays hidden until a strictly different value arrives. Every contract key must
-// appear in exactly one of the two sets, and every exempt key must still be a
-// contract key, so a rename cannot leave a stale exemption behind.
+// the top-level agent_session_info vocabulary. This file separates durable
+// session values, live tool progress, and generation-progress values.
 //
 // The contract holds the keys the BROWSER reads. A Go-only ephemeral key (the
 // pi_* family, zcode_api_retry) is outside it and outside this guard, which is
@@ -360,10 +322,9 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 	// The keys that carry meaningfully across turns, so the dedup is correct for
 	// them. A new contract key belongs here or in dedupExemptSessionInfoKeys.
 	deduped := map[string]struct{}{
-		contracts.SessionInfoKeyTotalCostUsd:  {},
-		contracts.SessionInfoKeyContextUsage:  {},
-		contracts.SessionInfoKeyRateLimits:    {},
-		contracts.SessionInfoKeyStreamingType: {},
+		contracts.SessionInfoKeyTotalCostUsd: {},
+		contracts.SessionInfoKeyContextUsage: {},
+		contracts.SessionInfoKeyRateLimits:   {},
 		// The goal counters are CUMULATIVE spend against a standing objective,
 		// not per-turn state the frontend drops at a turn boundary, so they
 		// carry across turns and the dedup is right for them. It is also load
@@ -371,6 +332,11 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		// and the dedup is what makes a report whose numbers did not move cost
 		// nothing.
 		contracts.SessionInfoKeyGoalProgress: {},
+	}
+	progress := map[string]struct{}{
+		contracts.SessionInfoKeyThinkingTokens:     {},
+		contracts.SessionInfoKeyOutputBytes:        {},
+		contracts.SessionInfoKeyOutputBytesMinimum: {},
 	}
 
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -391,8 +357,15 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		tokens[token] = struct{}{}
 		_, exempt := dedupExemptSessionInfoKeys[token]
 		_, dedup := deduped[token]
-		assert.True(t, exempt != dedup,
-			"session-info key %s (%q) must be listed exactly once: in dedupExemptSessionInfoKeys, for live per-turn state the frontend drops, or in this test's deduped set, for state that carries across turns",
+		_, generated := progress[token]
+		categories := 0
+		for _, member := range []bool{exempt, dedup, generated} {
+			if member {
+				categories++
+			}
+		}
+		assert.Equal(t, 1, categories,
+			"session-info key %s (%q) must have exactly one publication policy",
 			name, token)
 	}
 	for token := range dedupExemptSessionInfoKeys {

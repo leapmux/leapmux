@@ -5,8 +5,7 @@ import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
+import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import { buildJsonRpcResult } from '~/components/chat/controls/types'
 import { buildPlanMode } from '~/components/chat/settingsGroups'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
@@ -240,11 +239,11 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
       return { kind: 'hidden' }
     return { kind: 'tool_use', toolName: CODEX_ITEM.WEB_SEARCH, toolUse: item, content: [] }
   },
-  [CODEX_ITEM.REASONING]: (item, context) => {
+  [CODEX_ITEM.REASONING]: (item) => {
     const summary = item.summary as unknown[] | undefined
     const content = item.content as unknown[] | undefined
     if ((!summary || summary.length === 0) && (!content || content.length === 0))
-      return context?.hasCommandStream ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
+      return { kind: 'hidden' }
     return { kind: 'assistant_thinking' }
   },
   [CODEX_ITEM.USER_MESSAGE]: () => ({ kind: 'hidden' }),
@@ -309,40 +308,6 @@ function codexContextUsageFromNotification(parsed: ParsedMessageContent): Contex
   if (typeof tokenUsage?.modelContextWindow === 'number')
     contextUsage.contextWindow = tokenUsage.modelContextWindow as number
   return contextUsage
-}
-
-/**
- * Codex lifecycle → session-info patch: clear the plan streaming indicator on a
- * `plan` item.
- */
-function codexLifecycleSessionInfo(parsed: ParsedMessageContent): Partial<AgentSessionInfo> | null {
-  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-  const patch: Partial<AgentSessionInfo> = {}
-  if (item?.type === 'plan')
-    patch.streamingType = ''
-  return Object.keys(patch).length > 0 ? patch : null
-}
-
-/**
- * Codex: a persisted span row supersedes its command stream when a commandExecution/fileChange
- * item is completed, or a reasoning item now carries summary/content.
- */
-function codexCommandSpanSuperseded(parsed: ParsedMessageContent): boolean {
-  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-  if (!item)
-    return false
-  if ((item.type === 'commandExecution' || item.type === 'fileChange') && item.status === 'completed')
-    return true
-  return item.type === 'reasoning'
-    && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
-}
-
-// Map a Codex command-stream delta method to its segment kind; unknown methods are plain output.
-const CODEX_METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
-  'item/commandExecution/terminalInteraction': 'interaction',
-  'item/reasoning/summaryTextDelta': 'reasoning_summary',
-  'item/reasoning/textDelta': 'reasoning_content',
-  'item/reasoning/summaryPartAdded': 'reasoning_summary_break',
 }
 
 const codexPlugin: Provider = {
@@ -501,9 +466,6 @@ const codexPlugin: Provider = {
     const turn = getInnerMessage(parsed)?.turn as Record<string, unknown> | undefined
     return turn && typeof turn === 'object' && typeof turn.status === 'string' ? 'turn_completed' : undefined
   },
-  lifecycleSessionInfo: codexLifecycleSessionInfo,
-  commandSpanSuperseded: codexCommandSpanSuperseded,
-  commandStreamSegmentKind: method => CODEX_METHOD_TO_SEGMENT_KIND[method] ?? null,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

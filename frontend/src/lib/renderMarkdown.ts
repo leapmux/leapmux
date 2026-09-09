@@ -238,7 +238,7 @@ export function _getPlaceholderCacheSize(): number {
   return placeholderCache.size
 }
 
-/** Raw plain (no-Shiki) render, NOT cached -- for transient/streaming text that never repeats. */
+/** Render plain Markdown without Shiki. The caller decides whether to cache it. */
 function plainRender(text: string): string {
   return String(plainMarkdownProcessor.processSync(text))
 }

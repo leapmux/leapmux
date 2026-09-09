@@ -390,10 +390,10 @@ message AgentEvent {
   // badge, a plan-title update and an INACTIVE sweep whenever they raced a
   // replay. broadcastReplayAgentEvent is the one writer that sets this.
   bool replay = 18;
+  reserved 3, 4;
+  reserved "stream_chunk", "stream_end";
   oneof event {
     AgentChatMessage agent_message = 2;
-    AgentStreamChunk stream_chunk = 3;
-    AgentStreamEnd stream_end = 4;
     AgentStatusChange status_change = 5;
     AgentControlRequest control_request = 6;
     AgentControlCancelRequest control_cancel = 7;

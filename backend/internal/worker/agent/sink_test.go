@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -46,15 +47,12 @@ type childSpawnSpanTable struct {
 type testSink struct {
 	// persistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
-	persistErr    error
-	mu            sync.Mutex
-	messages      []testSinkMessage
-	notifications []testSinkMessage
-	streamChunks  []testSinkStreamChunk
-	streamEnds    []string
-	// outputLifecycle interleaves message persistence with stream-end broadcasts.
-	// Separate slices cannot prove that durable content replaced a live stream first.
-	outputLifecycle   []string
+	persistErr        error
+	mu                sync.Mutex
+	messages          []testSinkMessage
+	notifications     []testSinkMessage
+	progress          []ProgressUpdate
+	progressCount     ProgressCounter
 	sessionIDs        []string
 	permissionModes   []string
 	modeChanges       []testSinkModeChange
@@ -173,12 +171,6 @@ type testSinkMessage struct {
 	SpansOpenAtPersist []testSinkSpanOpen
 }
 
-type testSinkStreamChunk struct {
-	Content []byte
-	SpanID  string
-	Method  string
-}
-
 type testSinkSpanOpen struct {
 	SpanID       string
 	ParentSpanID string
@@ -207,7 +199,6 @@ func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
-	s.outputLifecycle = append(s.outputLifecycle, "persist:"+span.SpanID)
 	return s.persistErr
 }
 
@@ -380,21 +371,24 @@ func (s *testSink) ReservedColors() []testSinkSpanOpen {
 	return append([]testSinkSpanOpen(nil), s.reservedColorSpans...)
 }
 
-func (s *testSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
+func (s *testSink) ReportProgress(update ProgressUpdate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streamChunks = append(s.streamChunks, testSinkStreamChunk{
-		Content: append([]byte(nil), content...),
-		SpanID:  spanID,
-		Method:  method,
-	})
+	s.progress = append(s.progress, update)
+	snapshot, changed := s.progressCount.Apply(update)
+	if changed {
+		s.sessionInfos = append(s.sessionInfos, map[string]interface{}{
+			contracts.SessionInfoKeyThinkingTokens:     snapshot.ThinkingTokens,
+			contracts.SessionInfoKeyOutputBytes:        snapshot.OutputBytes,
+			contracts.SessionInfoKeyOutputBytesMinimum: snapshot.OutputBytesMinimum,
+		})
+	}
 }
 
-func (s *testSink) BroadcastStreamEnd(spanID string) {
+func (s *testSink) ProgressUpdates() []ProgressUpdate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streamEnds = append(s.streamEnds, spanID)
-	s.outputLifecycle = append(s.outputLifecycle, "stream_end:"+spanID)
+	return append([]ProgressUpdate(nil), s.progress...)
 }
 
 func (s *testSink) PersistControlRequest(string, []byte) string    { return "" }
@@ -1042,48 +1036,6 @@ func (s *testSink) Messages() []testSinkMessage {
 	return append([]testSinkMessage(nil), s.messages...)
 }
 
-// StreamChunkCount returns the number of broadcast stream chunks.
-func (s *testSink) StreamChunkCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.streamChunks)
-}
-
-func (s *testSink) LastStreamChunk() testSinkStreamChunk {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.streamChunks[len(s.streamChunks)-1]
-}
-
-// StreamChunks returns a copy of all broadcast stream chunks in order.
-func (s *testSink) StreamChunks() []testSinkStreamChunk {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]testSinkStreamChunk(nil), s.streamChunks...)
-}
-
-func (s *testSink) StreamEndCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.streamEnds)
-}
-
-func (s *testSink) LastStreamEnd() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.streamEnds) == 0 {
-		return ""
-	}
-	return s.streamEnds[len(s.streamEnds)-1]
-}
-
-// OutputLifecycle returns message persistence and stream-end calls in order.
-func (s *testSink) OutputLifecycle() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.outputLifecycle...)
-}
-
 // SessionIDCount returns the number of UpdateSessionID calls.
 func (s *testSink) SessionIDCount() int {
 	s.mu.Lock()
@@ -1218,8 +1170,7 @@ func (noopSink) ResetSpans()                                                    
 func (noopSink) SetSpanType(string, string)                                        {}
 func (noopSink) GetSpanType(string) string                                         { return "" }
 func (noopSink) ReserveSpanColor(string, string) int32                             { return 0 }
-func (noopSink) BroadcastStreamChunk([]byte, string, string)                       {}
-func (noopSink) BroadcastStreamEnd(string)                                         {}
+func (noopSink) ReportProgress(ProgressUpdate)                                     {}
 func (noopSink) PersistControlRequest(string, []byte) string                       { return "" }
 func (noopSink) DeleteControlRequest(string)                                       {}
 func (noopSink) BroadcastControlRequest(string, []byte, string)                    {}

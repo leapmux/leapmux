@@ -302,6 +302,10 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink OutputSink, event zcodeEventEnve
 	if toolName == "" {
 		toolName = tc.name
 	} else {
+		if tc.name == "" {
+			tc.order = a.nextToolOrder
+			a.nextToolOrder++
+		}
 		tc.name = toolName
 	}
 	input := payload.Input
@@ -361,8 +365,8 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnv
 	tc.name = ""
 	tc.input = nil
 	a.mu.Unlock()
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStdout))
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStderr))
+	a.clearCumulativeOutput(payload.ToolCallID)
+	sink.ReportProgress(CompleteOutputProgress(payload.ToolCallID))
 
 	content := event.persistBytes()
 	if content != nil {
@@ -374,7 +378,6 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnv
 			slog.Error("zcode persist tool result", "agent_id", a.agentID, "error", err)
 		}
 	}
-	sink.BroadcastStreamEnd(payload.ToolCallID)
 	sink.CloseSpan(payload.ToolCallID)
 
 	a.applyZCodeSubagentEnd(payload)

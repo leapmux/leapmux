@@ -232,7 +232,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     // The thinking counter is the OTHER live per-turn indicator, and it has to
     // go at exactly the same boundaries. Seeded here so each case below can
     // assert the pair, not just the badges.
-    agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+    agentSessionStore.updateInfo('a1', { thinkingTokens: 500, outputBytes: 2048, outputBytesMinimum: true })
     return {
       agentSessionStore,
       chatStore,
@@ -253,8 +253,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   /**
    * Every TURN-ENDING boundary drops both live per-turn indicators, or neither.
    *
-   * They are one concept -- state the worker broadcasts but cannot see the end
-   * of -- so a boundary that clears one and forgets the other leaves an
+   * A lost connection can omit the Worker's explicit counter clear. The
+   * frontend lifecycle cleanup must clear every live field, or it leaves an
    * indicator frozen for the rest of the session. That is the failure mode
    * clearPerTurnLiveState exists to make impossible, and this is what pins it:
    * a future boundary that calls only `clearToolProgress` fails here.
@@ -264,6 +264,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   function expectNothingLive(s: ReturnType<typeof boundaryStores>) {
     expect(running(s.chatStore)).toHaveLength(0)
     expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
+    expect(s.agentSessionStore.getInfo('a1').outputBytes).toBeUndefined()
+    expect(s.agentSessionStore.getInfo('a1').outputBytesMinimum).toBeUndefined()
   }
 
   it('the turn-end result divider clears every live indicator', () => {
@@ -297,16 +299,10 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   })
 
   /**
-   * A control request is the ONE boundary that keeps the badges.
-   *
-   * Claude Code starts a tool's heartbeat only after the permission decision, so
-   * the tool that raised this prompt has reported nothing and owns no entry. The
-   * e2e spec rests on the same rule: it has to bypass permissions, because a Bash
-   * call held at a prompt never sends a heartbeat. Every entry that exists here
-   * therefore belongs to a SIBLING tool that is still running, and clearing
-   * blanks that live card until its next heartbeat, up to 30 seconds later.
+   * A control request does not infer a counter lifecycle. The Worker sends the
+   * progress reset before it sends the request.
    */
-  it('a control request clears the estimate but keeps a still-running sibling\'s badge', () => {
+  it('a control request keeps live state until the Worker reset arrives', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       const req = {
@@ -317,7 +313,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       handleControlRequest('a1', req, 'live', s)
       expect(running(s.chatStore)).toHaveLength(2)
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
-      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
+      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBe(500)
+      expect(s.agentSessionStore.getInfo('a1').outputBytes).toBe(2048)
       dispose()
     })
   })

@@ -1,6 +1,6 @@
 /**
  * Shared chat types used by BOTH the windowing store (`chat.store` and its
- * per-concern slices -- command streams, saved viewport, ...) AND the UI
+ * related stores such as the saved viewport store) and the UI
  * scroll/virtualizer (`useChatScroll`, `useChatVirtualizer`). A true LEAF: it
  * imports nothing chat-specific, so the dependency points one way
  * (consumer -> chatTypes). This is what lets the store and the virtualizer share a
@@ -8,11 +8,6 @@
  * PERSISTS inside `SavedViewportScroll` -- WITHOUT the store reaching up into the
  * components layer (which a type defined in the virtualizer would force).
  */
-
-export interface CommandStreamSegment {
-  kind: 'output' | 'interaction' | 'reasoning_summary' | 'reasoning_content' | 'reasoning_summary_break'
-  text: string
-}
 
 /**
  * Version token for a span-linked sibling message. A row can render from its paired

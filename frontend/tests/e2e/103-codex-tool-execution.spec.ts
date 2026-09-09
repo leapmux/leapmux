@@ -2,7 +2,7 @@ import { codexTest, expect } from './codex-fixtures'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('codex tool execution', () => {
-  codexTest('streams and persists reasoning during shell command execution', async ({ authenticatedCodexWorkspace, page }) => {
+  codexTest('persists completed reasoning during shell command execution', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
     await page.evaluate(() => {
       const state = window as Window & { __codexReasoningSeen?: boolean }

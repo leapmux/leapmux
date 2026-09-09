@@ -1,6 +1,6 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
-import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } from './chatTypes'
+import type { SavedViewportScroll, SpanMessageRevision } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { toBinary } from '@bufbuild/protobuf'
@@ -14,17 +14,15 @@ import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/a
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
-import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
 import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
-import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, prunableDroppedSpanIds } from './chatMessageOrder'
+import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { createSpanIndex } from './chatSpanIndex'
-import { createStreamingTextStore } from './chatStreamingText'
 import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
 
@@ -74,9 +72,8 @@ function sameAgentMessage(a: AgentChatMessage, b: AgentChatMessage): boolean {
   return true
 }
 /**
- * The windowing core's reactive state. Orthogonal per-concern slices (streaming
- * text, command streams, to-dos, and saved
- * viewport scroll) live in their own composed sub-stores -- this holds only the
+ * The windowing core's reactive state. Orthogonal state such as to-dos and the
+ * saved viewport scroll lives in composed stores. This interface holds only the
  * loaded message window and the pagination bookkeeping its invariants depend on.
  */
 export interface ChatStoreState {
@@ -135,11 +132,8 @@ export function createChatStore() {
 
   // Orthogonal per-concern slices, each its own composed sub-store.
   // The window core reaches into them only for shared window mutations.
-  const streaming = createStreamingTextStore()
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
-  const commandStreams = createCommandStreamStore({ onMutate: bumpMessageVersion })
-  // No onMutate: unlike a command-stream delta, a tool-progress update changes
-  // only a badge inside an already-laid-out header, so it must NOT bump the
+  // A tool-progress update changes only a badge inside an existing header. It must not bump the
   // message version. That bump wakes the auto-scroll effect and the
   // classified-entry cache, which would re-render the row -- the exact thing the
   // badge is built to avoid, since replacing a row's nodes drops a text
@@ -295,11 +289,10 @@ export function createChatStore() {
     contentVersions.forget(ids)
   }
 
-  /** Remove content versions and streams for rows that left the window. */
-  function reclaimDroppedRows(agentId: string, prev: AgentChatMessage[], kept: AgentChatMessage[]) {
+  /** Remove content versions for rows that left the window. */
+  function reclaimDroppedRows(prev: AgentChatMessage[], kept: AgentChatMessage[]) {
     const keptIds = new Set(kept.map(m => m.id))
     forgetContentVersions(prev.filter(m => !keptIds.has(m.id)).map(m => m.id))
-    commandStreams.pruneSpans(agentId, prunableSpanIdsSparingBuffered(agentId, prev, kept))
   }
 
   /**
@@ -307,8 +300,7 @@ export function createChatStore() {
    * core and every composed sub-store only ever trim WITHIN a window or reclaim a
    * row as it leaves -- none of them reclaims on agent close, so without this a
    * long session that opens and closes many agents leaks one entry per agent
-   * across messagesByAgent, the pagination flags, the live tail, the command
-   * streams (incl. the non-reactive orphan set), the span index, and the four
+   * across messagesByAgent, the pagination flags, the live tail, the span index, and the
    * per-agent sub-stores. Mirrors useAgentOperations.handleAgentClose's existing
    * controlStore/attachment cleanup for the chat slice it omitted.
    */
@@ -321,10 +313,9 @@ export function createChatStore() {
     fetchWatchCleanup.delete(agentId)
     catchUpAbort.get(agentId)?.abort()
     catchUpAbort.delete(agentId)
-    // Remove content versions, streams, and span indexes for the agent.
+    // Remove content versions, tool progress, and span indexes for the agent.
     const rows = state.messagesByAgent[agentId] ?? []
     forgetContentVersions(rows.map(m => m.id))
-    commandStreams.forgetAgent(agentId)
     toolProgress.clearAgent(agentId)
     spanIdx.reindex(agentId, [])
     // Delete (not blank) every per-agent key in the window core's records so a
@@ -348,7 +339,6 @@ export function createChatStore() {
     // must be pruned explicitly here or it leaks -- and a stale entry would outlive a
     // close/reopen of the same agentId. See chatMarkPreview.forgetMarkPreview.
     forgetMarkPreview(agentId)
-    streaming.remove(agentId)
     todos.remove(agentId)
     backgroundTasks.remove(agentId)
     goal.remove(agentId)
@@ -358,8 +348,8 @@ export function createChatStore() {
   /**
    * Drop loaded transcript rows in the phantom band -- seq > latestSeq, except live arrivals
    * exempted above reapCeilingSeq (broadcast during catch-up, so post-replay, not a
-   * deletion the client missed) -- reclaiming their per-id side-state and command
-   * streams and re-indexing the smaller window, exactly as a trim / delete does, then
+   * deletion the client missed) -- reclaiming their per-id state and re-indexing
+   * the smaller window, exactly as a trim or delete does. It then
    * recompute hasMoreNewer against the surviving tail. The "drop rows past the
    * authoritative tail" half of reconcileAuthoritativeTail, split out so it can be
    * reasoned about and tested apart from the indeterminate-probe / setAuthoritative
@@ -383,7 +373,7 @@ export function createChatStore() {
       if (isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
         messageMarks.remove(agentId, m.seq)
     }
-    reclaimDroppedRows(agentId, prev, survivors)
+    reclaimDroppedRows(prev, survivors)
     spanIdx.reindex(agentId, survivors)
     setState('messagesByAgent', agentId, survivors)
     // After the reap the window holds rows <= latestSeq PLUS any live arrivals
@@ -471,37 +461,6 @@ export function createChatStore() {
     return true
   }
 
-  /** Whether any row currently in the window carries `spanId`. */
-  function spanStillReferenced(agentId: string, spanId: string): boolean {
-    return state.messagesByAgent[agentId]?.some(m => m.spanId === spanId) ?? false
-  }
-
-  /**
-   * Clear a dropped row's live command stream, sparing + recording it as orphaned
-   * when still mid-flight. The single-row analogue of prunableSpanIdsSparingBuffered;
-   * the survivor check (does a surviving row still carry the span?) lives here
-   * because it reads the window, and the spare-vs-clear policy lives in the
-   * command-stream slice. A sequence change beyond the window uses this helper.
-   */
-  function clearDroppedSpanStreamIfUnreferenced(agentId: string, droppedSpanId: string | undefined) {
-    if (!droppedSpanId)
-      return
-    commandStreams.spareOrClearDroppedSpan(agentId, droppedSpanId, spanStillReferenced(agentId, droppedSpanId))
-  }
-
-  /**
-   * The span ids a structural drop may safely prune, given the dropped rows and the
-   * survivors that remain. Applies the survivor rule (prunableDroppedSpanIds spares
-   * any span a SURVIVING row still references -- e.g. a tool_use/tool_result pair
-   * split across the boundary), then hands the survivor-filtered candidates to the
-   * command-stream slice, which spares + records any still-buffered span (the
-   * spare-vs-record policy lives next to the buffers it governs). Shared by both
-   * trims, the merge, and the full-window replace so the rule has ONE home.
-   */
-  function prunableSpanIdsSparingBuffered(agentId: string, dropped: AgentChatMessage[], survivors: AgentChatMessage[]): string[] {
-    return commandStreams.prunableSparingBuffered(agentId, prunableDroppedSpanIds(dropped, survivors))
-  }
-
   /**
    * A reseq (notification consolidation assigns the next monotonic seq,
    * message_seq_hwm+1) moved an existing row to a seq beyond the scrolled-away
@@ -519,11 +478,6 @@ export function createChatStore() {
     // Reclaim the content version when the row leaves the window. A notification
     // can receive an in-place update before it moves to a new sequence.
     forgetContentVersions([dropped.id])
-    // The reseq'd row left the loaded window (it's re-fetched on return), so
-    // prune its command stream to stay window-bounded -- subject to the shared
-    // survivor rule, sparing AND recording a still-streaming span so its
-    // mid-flight buffer survives but can't leak if the stream never ends.
-    clearDroppedSpanStreamIfUnreferenced(agentId, dropped.spanId)
   }
 
   /** Return the window when it holds more than `maxCount` messages, else null. */
@@ -536,21 +490,16 @@ export function createChatStore() {
 
   /**
    * Commit a trimmed window: install the kept rows, flag the side that now has
-   * more beyond the window, re-index spans to the (smaller) window, and prune the
-   * command streams of the dropped spans. The shared tail of trimNewestEnd /
-   * trimOldestEnd; each computes its own kept rows + droppedSpanIds first (the
-   * parts that genuinely differ) and hands them here.
+   * more beyond the window, and re-index spans to the smaller window.
    */
   function commitTrim(
     agentId: string,
     survivors: AgentChatMessage[],
     hasMoreField: 'hasMoreOlder' | 'hasMoreNewer',
-    droppedSpanIds: string[],
   ) {
     setState('messagesByAgent', agentId, survivors)
     setState(hasMoreField, agentId, true)
     reindexSpans(agentId)
-    commandStreams.pruneSpans(agentId, droppedSpanIds)
   }
 
   /**
@@ -562,7 +511,7 @@ export function createChatStore() {
   function mergeFetchedMessages(agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') {
     if (fetched.length === 0)
       return
-    // Snapshot the pre-merge window so the merge can prune dropped streams.
+    // Snapshot the previous window so the merge can reclaim dropped row state.
     const prevWindow = state.messagesByAgent[agentId] ?? []
     // The pure window-merge (dedup / reseq-collision / seq-ordered insert / older
     // prepend vs newer splice) lives in chatMessageOrder.mergeWindow so its rules are
@@ -574,13 +523,9 @@ export function createChatStore() {
     // result is already in the window would otherwise be misfiled, and the
     // 'older' prepend never re-establishes opener-first ordering on its own.
     reindexSpans(agentId)
-    // Prune the command streams of spans the pre-merge window carried that the
-    // merged window no longer uses. A same-id reseq swaps a row's spanId in place,
-    // which a diff by id alone misses.
-    // The survivor filter keeps a span that any merged row still uses.
     const merged = state.messagesByAgent[agentId] ?? []
-    // Reclaim content versions and command streams for rows that left the window.
-    reclaimDroppedRows(agentId, prevWindow, merged)
+    // Reclaim content versions for rows that left the window.
+    reclaimDroppedRows(prevWindow, merged)
     if (side === 'newer') {
       for (const msg of fetched)
         liveTail.bump(agentId, msg.seq)
@@ -591,9 +536,8 @@ export function createChatStore() {
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
     const prevRows = state.messagesByAgent[agentId] ?? []
     const finalMessages = messages
-    // Reclaim content versions and command streams for rows that leave the window.
-    // The survivor filter keeps a stream that a final row still uses.
-    reclaimDroppedRows(agentId, prevRows, finalMessages)
+    // Reclaim content versions for rows that leave the window.
+    reclaimDroppedRows(prevRows, finalMessages)
     // Rebuild the span index before the update wakes reactive computations.
     spanIdx.reindex(agentId, finalMessages)
     setState('messagesByAgent', agentId, finalMessages)
@@ -849,32 +793,6 @@ export function createChatStore() {
       return lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
     },
 
-    appendCommandStream(agentId: string, spanId: string, segmentKind: CommandStreamSegment['kind'], text: string) {
-      commandStreams.append(agentId, spanId, segmentKind, text)
-    },
-
-    getCommandStream(agentId: string, spanId: string): CommandStreamSegment[] {
-      return commandStreams.get(agentId, spanId)
-    },
-
-    /** Every span's live segments for an agent ({} when none). */
-    getAgentCommandStreams(agentId: string): Record<string, CommandStreamSegment[]> {
-      return commandStreams.getByAgent(agentId)
-    },
-
-    /**
-     * Whether `spanId`'s command stream has renderable content to show (reactive).
-     * The classified-entry cache reads it to flip a row hidden<->visible the moment
-     * its span first has renderable stream content OR is cleared -- a presence bit
-     * that changes only on those two events, so subscribing to it (unlike the
-     * per-delta segment array) doesn't re-classify the window on every chunk. NOT
-     * "actively streaming right now": a span stays renderable after its producer
-     * goes quiet, until its stream ends or its buffer is pruned.
-     */
-    hasRenderableCommandStream(agentId: string, spanId: string): boolean {
-      return commandStreams.hasRenderableContent(agentId, spanId)
-    },
-
     /**
      * The row's content version (see messageContentVersions): 0 until its first
      * in-place same-seq body replacement, then incremented per replacement. Read
@@ -884,12 +802,6 @@ export function createChatStore() {
      */
     getMessageContentVersion(id: string): number {
       return contentVersions.get(id)
-    },
-
-    clearCommandStream(agentId: string, spanId: string) {
-      // clear forgets any orphan record in lockstep (via the slice's dropSpan), so a
-      // normal stream-end reclaims an orphaned-on-drop span without a separate call.
-      commandStreams.clear(agentId, spanId)
     },
 
     /** Merge one `running_tool` broadcast into its span's live progress. */
@@ -920,18 +832,6 @@ export function createChatStore() {
       toolProgress.clearAgent(agentId)
     },
 
-    /**
-     * Reclaim command streams orphaned by a spared mid-stream drop (delete /
-     * beyond-window reseq / trim) that never received their own stream-end. Called
-     * at a turn boundary (and the catch-up -> live transition). Delegates to the
-     * command-stream slice, supplying the window-state predicate it needs (a span a
-     * surviving row still carries is left both buffered and recorded for a later
-     * sweep).
-     */
-    sweepOrphanedBufferedSpans(agentId: string) {
-      commandStreams.sweepOrphans(agentId, spanId => spanStillReferenced(agentId, spanId))
-    },
-
     setLoading(loading: boolean) {
       setState('loading', loading)
     },
@@ -946,28 +846,9 @@ export function createChatStore() {
         return
       const survivors = prev.slice(0, maxCount)
       const dropped = prev.slice(maxCount)
-      // Prune the dropped NEWEST spans' command streams so the window limits the
-      // size of the segment buffers. The PRIMARY guard is hasBufferedSegments: a
-      // newest-end trim (scroll-up while the agent works) is the one trim that can
-      // drop the live tail span, whose buffer is mid-flight -- clearing it would
-      // lose the in-progress segments and re-vivify from empty. Buffered (not just
-      // renderable) so a span holding only a content-less reasoning_summary_break -- a
-      // recorded part boundary that hasRenderableContent deliberately ignores -- is spared too.
-      // prunableDroppedSpanIds additionally spares any span that a SURVIVING row
-      // still refers to (a tool_use/tool_result pair sharing one spanId, split across
-      // the boundary by a sequence change). Both trim paths apply this guard.
-      //
-      // Record every spared span as orphaned (exactly like trimOldestEnd): the live
-      // tail span normally re-fetches and ends on scroll-back, clearing its own
-      // record -- but a buffered span that NEVER ends (a content-less
-      // reasoning_summary_break for a reasoning item abandoned before completion)
-      // would otherwise leak for the session, since no stream-end clears it and the
-      // sweep only touches RECORDED orphans. Recording it lets the turn-end /
-      // catch-up sweep reclaim it once no surviving row references it.
-      const droppedSpanIds = prunableSpanIdsSparingBuffered(agentId, dropped, survivors)
       // Reclaim the content versions of the dropped rows.
       forgetContentVersions(dropped.map(m => m.id))
-      commitTrim(agentId, survivors, 'hasMoreNewer', droppedSpanIds)
+      commitTrim(agentId, survivors, 'hasMoreNewer')
     },
 
     /**
@@ -981,24 +862,9 @@ export function createChatStore() {
       // The slice start is positive because the window length exceeds maxCount.
       const survivors = prev.slice(prev.length - maxCount)
       const droppedOldest = prev.slice(0, prev.length - maxCount)
-      // These oldest messages are historical. Thus, prune their live command
-      // streams, so the window limits the size of the segment buffers. But SPARE
-      // any span that a surviving row still refers to: a tool_use opener (oldest,
-      // dropped) and its tool_result (kept) can share one spanId, and wiping the
-      // dropped opener's stream would blank the kept result's output. A buffered
-      // span among the OLDEST rows is usually stale (a still-streaming span
-      // normally lives at the tail), but that is NOT an enforced invariant: a
-      // long-running tool whose whole exchange is the oldest content while it still
-      // streams would lose its in-flight segments if cleared. So mirror
-      // trimNewestEnd -- spare any span with buffered segments (renderable or a
-      // content-less reasoning_summary_break alike) -- and record it as orphaned so
-      // the turn-end or catch-up sweep reclaims a genuinely-stale buffer instead of
-      // leaking it, while a real mid-flight stream keeps its segments until it
-      // ends.
-      const droppedSpanIds = prunableSpanIdsSparingBuffered(agentId, droppedOldest, survivors)
       // Reclaim the content versions of the dropped oldest rows.
       forgetContentVersions(droppedOldest.map(m => m.id))
-      commitTrim(agentId, survivors, 'hasMoreOlder', droppedSpanIds)
+      commitTrim(agentId, survivors, 'hasMoreOlder')
     },
 
     /**
@@ -1153,7 +1019,7 @@ export function createChatStore() {
   })
 
   // Expose the composed sub-stores directly so consumers reach a slice's own
-  // methods (chatStore.todos.replace, chatStore.streamingText.set, ...) instead of
+  // methods (chatStore.todos.replace, chatStore.goal.replace, ...) instead of
   // a wall of one-line forwarders re-spelling each slice's API on the window store.
   // liveTail is exposed the same way for the recorded-tail reads the store and its
   // tests need. The window core still owns message CRUD / windowing / annotations.
@@ -1165,7 +1031,6 @@ export function createChatStore() {
     todos,
     backgroundTasks,
     goal,
-    streamingText: streaming,
     viewportScroll,
     /**
      * Reactive scroll-rail data for an agent: the marked seqs, the window-aware whole-history

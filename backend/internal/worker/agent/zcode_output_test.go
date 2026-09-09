@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -197,14 +196,67 @@ func TestHandleZCodeOutput_ModelStreaming_TextAndReasoningDeltas(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","delta":"Hello "}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","delta":"thinking"}`))
 
-	require.Equal(t, 2, sink.StreamChunkCount())
-	chunks := sink.StreamChunks()
-	assert.Equal(t, "Hello ", string(chunks[0].Content))
-	assert.Equal(t, ZCodeStreamTextDelta, chunks[0].Method)
-	assert.Equal(t, "", chunks[0].SpanID, "assistant text belongs to no tool span")
-	assert.Equal(t, "thinking", string(chunks[1].Content))
-	assert.Equal(t, ZCodeStreamReasoningDelta, chunks[1].Method)
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	assert.Equal(t, ProgressModelText, updates[0].Operation)
+	assert.Equal(t, "Hello ", updates[0].Text)
+	assert.Equal(t, ProgressModelText, updates[1].Operation)
+	assert.Equal(t, "thinking", updates[1].Text)
 	assert.Equal(t, 0, sink.MessageCount(), "a delta persists nothing")
+}
+
+func TestHandleZCodeOutput_TextDeltaPersistsWhenTurnFails(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"partial answer"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 2)
+	assert.JSONEq(t, `{
+		"type":"assembled_message","kind":"text","text":"partial answer","completion":"error"
+	}`, string(sink.Messages()[0].Content))
+}
+
+func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 3)
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(sink.Messages()[1].Content, &result))
+	assert.Equal(t, map[string]interface{}{"completion": "error"}, result["_leapmux"])
+	payload := result["payload"].(map[string]interface{})
+	assert.Equal(t, "result", payload["kind"])
+	assert.Equal(t, "partial output", payload["result"].(map[string]interface{})["content"])
+	assert.True(t, sink.Messages()[1].Closing)
+}
+
+func TestHandleZCodeOutput_ReasoningPersistsAtTextBoundary(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"reasoning"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"answer"}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.JSONEq(t, `{
+		"type":"assembled_message","kind":"reasoning","text":"reasoning","completion":"complete"
+	}`, string(sink.Messages()[0].Content))
 }
 
 func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t *testing.T) {
@@ -228,7 +280,6 @@ func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t
 		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, payload))
 	}
 
-	assert.Equal(t, 0, sink.StreamChunkCount())
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
@@ -340,212 +391,60 @@ func TestZCodeCompleteToolInput_LeavesAnExistingInputAlone(t *testing.T) {
 
 // --- tool progress ---
 
-// The app-server sends a byte TOTAL plus a size-limited tail, not a delta, so the growth
-// is computed from the total and cut from the end of the tail.
-func TestHandleZCodeOutput_ToolProgress_StreamsOnlyTheGrowth(t *testing.T) {
+func TestHandleZCodeOutput_ToolProgress_UsesNativeTotal(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"started","toolCallId":"c1"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"c1","outputBytes":5,"stdoutTail":"line1"}`))
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"c1","outputBytes":11,"stdoutTail":"line1\nline2"}`))
 
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "line1", string(chunks[0].Content))
-	assert.Equal(t, "\nline2", string(chunks[1].Content), "only the six new bytes ship the second time")
-	for _, c := range chunks {
-		assert.Equal(t, "c1", c.SpanID)
-		assert.Equal(t, contracts.ZCodeToolKindProgress, c.Method)
-	}
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	assert.Equal(t, ProgressOutputTotal, updates[0].Operation)
+	assert.Equal(t, int64(5), updates[0].Value)
+	assert.Equal(t, int64(11), updates[1].Value)
+	assert.False(t, updates[1].Minimum)
 }
 
-// When the output grew by more than the tail holds, the tail ships whole. The middle
-// is lost at the source too -- the app-server keeps only a tail.
-func TestHandleZCodeOutput_ToolProgress_GrowthLargerThanTheTailShipsTheWholeTail(t *testing.T) {
+func TestHandleZCodeOutput_ToolProgress_MarksTailOnlyCountAsMinimum(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":4,"stdoutTail":"abcd"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":10000,"stdoutTail":"wxyz"}`))
+		`{"kind":"progress","toolCallId":"c1","stdoutTail":"tail"}`))
 
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "wxyz", string(chunks[1].Content))
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1)
+	assert.Equal(t, int64(4), updates[0].Value)
+	assert.True(t, updates[0].Minimum)
 }
 
-func TestHandleZCodeOutput_ToolProgress_NoCounterFallsBackToTheTailsOwnGrowth(t *testing.T) {
+func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"progress","toolCallId":"c1","stdoutTail":"abc"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, `{"kind":"progress","toolCallId":"c1","stdoutTail":"abcdef"}`))
-	// A tail that did not grow ships nothing.
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, `{"kind":"progress","toolCallId":"c1","stdoutTail":"abcdef"}`))
-
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "abc", string(chunks[0].Content))
-	assert.Equal(t, "def", string(chunks[1].Content))
-}
-
-func TestHandleZCodeOutput_ToolProgress_UsesStderrWhenStdoutIsEmpty(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","stderrTail":"boom","stdoutBytes":4}`))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	assert.Equal(t, "boom", string(sink.LastStreamChunk().Content))
-}
-
-// Each stream is measured against its OWN counter. Measuring one tail against the
-// other's total -- or against the combined `outputBytes` -- makes either stream's growth
-// look like both: the quiet stream's tail is re-broadcast while the busy stream's new
-// bytes never appear. Every compiler, `git` and `npm` invocation writes on both.
-func TestHandleZCodeOutput_ToolProgress_StreamsStdoutAndStderrIndependently(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"started","toolCallId":"c1"}`))
-	// stdout writes 10 bytes.
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","stdoutBytes":10,"stderrBytes":0,
-		  "outputBytes":10,"stdoutTail":"0123456789"}`))
-	// stderr writes 5 while stdout stays quiet.
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","stdoutBytes":10,"stderrBytes":5,
-		  "outputBytes":15,"stdoutTail":"0123456789","stderrTail":"boom!"}`))
-
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "0123456789", string(chunks[0].Content))
-	assert.Equal(t, "boom!", string(chunks[1].Content),
-		"the stderr bytes ship, and the quiet stdout tail is not re-broadcast")
-}
-
-// A build that sends only the COMBINED counter is still served, and the attribution is
-// unambiguous while exactly one tail is present.
-func TestHandleZCodeOutput_ToolProgress_TheCombinedCounterServesASingleStream(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":5,"stderrTail":"line1"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":11,"stderrTail":"line1\nline2"}`))
-
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "line1", string(chunks[0].Content))
-	assert.Equal(t, "\nline2", string(chunks[1].Content))
-}
-
-// The counter is a BYTE count and the tail is UTF-8, so the cut can land inside a
-// multi-byte rune. The browser decodes each chunk on its own, so an orphan continuation
-// byte renders as U+FFFD at the seam of every update on a non-ASCII line.
-func TestHandleZCodeOutput_ToolProgress_CutsOnlyAtARuneBoundary(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
-	// "한글" is six bytes. The second update grows the total by 4 -- a cut two bytes into
-	// the first rune.
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","stdoutBytes":2,"stdoutTail":"ab"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","stdoutBytes":6,"stdoutTail":"한글"}`))
-
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.True(t, utf8.Valid(chunks[1].Content), "a chunk must never start mid-rune")
-	assert.Equal(t, "글", string(chunks[1].Content),
-		"the cut moves FORWARD to the next rune start; moving back would repeat shipped bytes")
-}
-
-// A subagent's tool call opened its span in a CHILD transcript, so every chunk of that
-// call must go there -- including on the counterless fallback path, which used to
-// broadcast on the parent and orphan the output in a transcript with no such span.
-func TestHandleZCodeOutput_ToolProgress_ASubagentsOutputStaysInItsChildTranscript(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash","source":"subagent",
 		  "parentToolCallId":"spawn-1","input":{"command":"ls"}}`))
-	// No counter of any kind: the fallback path.
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
 		`{"kind":"progress","toolCallId":"sub-1","source":"subagent",
-		  "parentToolCallId":"spawn-1","stdoutTail":"one"}`))
+		  "parentToolCallId":"spawn-1","outputBytes":3,"stdoutTail":"one"}`))
 
-	assert.Equal(t, 0, sink.StreamChunkCount(),
-		"the parent transcript never opened this span, so no chunk may land there")
+	assert.Empty(t, sink.ProgressUpdates())
 	childIDs := sink.ChildAgentIDs()
 	require.Len(t, childIDs, 1)
 	child, ok := sink.ChildSink(childIDs[0]).(*testSink)
 	require.True(t, ok)
-	require.Equal(t, 1, child.StreamChunkCount())
-	assert.Equal(t, "one", string(child.LastStreamChunk().Content))
-	assert.Equal(t, "sub-1", child.LastStreamChunk().SpanID)
-}
-
-func TestHandleZCodeOutput_ToolProgress_IgnoresAnIdlessOrEmptyUpdate(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"progress","stdoutTail":"orphan"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, `{"kind":"progress","toolCallId":"c1"}`))
-
-	assert.Equal(t, 0, sink.StreamChunkCount())
-}
-
-// A re-started call must not read its predecessor's byte total as already broadcast.
-func TestHandleZCodeOutput_ToolStarted_ResetsTheProgressCounter(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newZCodeTestAgent(t, sink)
-	a.toolCalls["c1"] = &zcodeToolCall{name: "Bash"}
-
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":100,"stdoutTail":"old"}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, `{"kind":"started","toolCallId":"c1"}`))
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"c1","outputBytes":3,"stdoutTail":"new"}`))
-
-	chunks := sink.StreamChunks()
-	require.Len(t, chunks, 2)
-	assert.Equal(t, "new", string(chunks[1].Content))
-
-	// `started` broadcasts no session info AT ALL. It used to ship a
-	// zcode_running_tool key that no browser code read; recordZCodeToolStarted
-	// says what ZCode must report before it broadcasts the shared running_tool key
-	// instead. Asserting the whole payload is absent (not just the key) is the
-	// stronger statement, and it does not pass vacuously the way NotContains does
-	// against a nil map.
-	assert.Nil(t, sink.LastSessionInfo())
+	updates := child.ProgressUpdates()
+	require.Len(t, updates, 1)
+	assert.Equal(t, int64(3), updates[0].Value)
 }
 
 // --- tool completion ---
@@ -565,8 +464,9 @@ func TestHandleZCodeOutput_ToolResult_PersistsClosesAndCountsTheCall(t *testing.
 	assert.Equal(t, "c1", msg.SpanID)
 	assert.Equal(t, "Bash", msg.SpanType, "the span carries the tool name a result payload omits")
 	assert.True(t, msg.Closing)
-	assert.Equal(t, 1, sink.StreamEndCount())
-	assert.Equal(t, "c1", sink.LastStreamEnd())
+	updates := sink.ProgressUpdates()
+	require.NotEmpty(t, updates)
+	assert.Contains(t, updates, CompleteOutputProgress("c1"))
 	assert.Equal(t, 1, sink.ClosedSpanCount())
 
 	a.mu.Lock()
@@ -1040,7 +940,6 @@ func TestHandleZCodeOutput_IgnoredEventTypesProduceNothing(t *testing.T) {
 
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Equal(t, 0, sink.NotificationCount())
-	assert.Equal(t, 0, sink.StreamChunkCount())
 	assert.Equal(t, 0, len(sink.BackgroundTasks()))
 }
 

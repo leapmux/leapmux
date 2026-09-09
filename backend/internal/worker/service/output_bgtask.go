@@ -948,6 +948,9 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 		plugin:        s.plugin,
 		tracker:       s.h.childTracker(childAgentID),
 	}
+	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+		s.h.broadcastAgentSessionInfo(childAgentID, info)
+	})
 	if s.childSinks == nil {
 		s.childSinks = make(map[string]*agentOutputSink)
 	}
@@ -1164,6 +1167,9 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 	s.h.cleanupChildMaps(childAgentID)
 	s.childMu.Lock()
 	if s.childSinks != nil {
+		if child := s.childSinks[childAgentID]; child != nil && child.progress != nil {
+			child.progress.close()
+		}
 		delete(s.childSinks, childAgentID)
 	}
 	s.childMu.Unlock()

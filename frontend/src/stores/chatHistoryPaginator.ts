@@ -601,9 +601,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // prematurely by appendNewerAtTail) so a beyond-window live frame is recorded
       // rather than appended into the gap as a hole. Mark the gap exhaustion-forced so
       // the continuous tail-reconcile RESUMES the fill (resumeDeferredTailFill) -- a
-      // FOLLOWING reader's gap self-heals as the storm drains, instead of stranding the
-      // streaming tail behind the scroll-to-bottom affordance until a user scroll/jump or
-      // a reconnect. A user fetch (incl. a scroll-up) clears the flag via beginHistoryFetch.
+      // FOLLOWING reader's gap self-heals as the storm drains. A user fetch
+      // (including a scroll-up) clears the flag through beginHistoryFetch.
       setState('hasMoreNewer', agentId, true)
       setState('tailFillDeferred', agentId, true)
     }

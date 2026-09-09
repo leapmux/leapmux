@@ -18,7 +18,7 @@ func newPiAgentWithSink(sink OutputSink) *PiAgent {
 		sink:        sink,
 		sessionFile: "/tmp/pi-session.jsonl",
 	}
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 
@@ -223,6 +223,59 @@ func TestHandlePiOutput_AgentEnd_WillRetryDoesNotEndTurn(t *testing.T) {
 	assert.Equal(t, 3, toolUses, "a retried run keeps the turn's tool-use count")
 }
 
+func TestHandlePiOutput_AgentEnd_DiscardsBufferedTextBeforeProviderRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abandoned attempt"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}],"willRetry":true}`)))
+
+	for _, message := range sink.Messages() {
+		assert.NotContains(t, string(message.Content), "abandoned attempt")
+	}
+}
+
+func TestHandlePiOutput_AgentEnd_MarksRetainedTextAsError(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"partial answer"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"failed"}]}`)))
+
+	require.NotEmpty(t, sink.Messages())
+	assert.JSONEq(t, `{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"partial answer",
+		"completion":"error"
+	}`, string(sink.Messages()[0].Content))
+}
+
+func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"printf partial"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_update","toolCallId":"tool-1","partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 3)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.JSONEq(t, `{
+		"type":"tool_execution_end",
+		"toolCallId":"tool-1",
+		"toolName":"bash",
+		"args":{"command":"printf partial"},
+		"result":{"content":[{"type":"text","text":"partial output"}],"details":{}},
+		"isError":true,
+		"_leapmux":{"completion":"error"}
+	}`, string(result.Content))
+}
+
 // Pi retries the WebSocket failure itself when it says willRetry, so LeapMux
 // must not schedule a second continuation for the same failure. willRetry is
 // the ONLY difference between these two envelopes: Pi reports false once its
@@ -272,40 +325,6 @@ func TestPiTurnDurationMs(t *testing.T) {
 	assert.Equal(t, int64(1500), *piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
 }
 
-func TestHandlePiOutput_MessageUpdate_TextDelta_StreamsChunk(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newPiAgentWithSink(sink)
-
-	handlePiOutput(a, parseLine([]byte(
-		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello "}}`,
-	)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	chunk := sink.LastStreamChunk()
-	assert.Equal(t, "Hello ", string(chunk.Content))
-	assert.Equal(t, "text_delta", chunk.Method)
-	assert.Equal(t, "", chunk.SpanID)
-	assert.Equal(t, 0, sink.MessageCount(), "deltas should not persist messages")
-}
-
-func TestHandlePiOutput_MessageUpdate_ThinkingDelta_StreamsChunk(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newPiAgentWithSink(sink)
-
-	handlePiOutput(a, parseLine([]byte(
-		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"reasoning"}}`,
-	)))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	chunk := sink.LastStreamChunk()
-	assert.Equal(t, "reasoning", string(chunk.Content))
-	assert.Equal(t, "thinking_delta", chunk.Method)
-}
-
 func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -322,7 +341,6 @@ func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
 		handlePiOutput(a, parseLine(raw))
 	}
 
-	assert.Equal(t, 0, sink.StreamChunkCount())
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
@@ -507,20 +525,31 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	assert.Equal(t, []testSinkSpanOpen{{SpanID: "call-1", ParentSpanID: ""}}, sink.OpenSpans())
 	assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
 
-	// Stream update fanned out into chunk + end. The chunk carries the
-	// extracted text delta — not the raw envelope.
-	require.Equal(t, 1, sink.StreamChunkCount())
-	chunk := sink.LastStreamChunk()
-	assert.Equal(t, "call-1", chunk.SpanID)
-	assert.Equal(t, "tool_execution_update", chunk.Method)
-	assert.Equal(t, "file1\n", string(chunk.Content))
-	assert.Equal(t, 1, sink.StreamEndCount())
-	assert.Equal(t, "call-1", sink.LastStreamEnd())
+	updates := sink.ProgressUpdates()
+	assert.Contains(t, updates, OutputTotalProgress("call-1", 6, false))
+	assert.Contains(t, updates, CompleteOutputProgress("call-1"))
 
 	// Tool count incremented.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	assert.Equal(t, 1, a.turnToolUses)
+}
+
+func TestHandlePiOutput_NativeTruncationTotalIsExact(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{
+		"type":"tool_execution_update",
+		"toolCallId":"call-1",
+		"partialResult":{
+			"content":[{"type":"text","text":"limited tail"}],
+			"details":{"truncation":{"totalBytes":164440,"truncated":true}}
+		}
+	}`)))
+
+	assert.Contains(t, sink.ProgressUpdates(), OutputExactTotalProgress("call-1", 164440))
 }
 
 // Pi's tool_execution_update events carry the *cumulative* partialResult.
@@ -545,15 +574,20 @@ func TestHandlePiOutput_ToolExecutionUpdate_BroadcastsDeltaOnly(t *testing.T) {
 	handlePiOutput(a, parseLine(updateNoNew))
 	handlePiOutput(a, parseLine(endRaw))
 
-	chunks := sink.StreamChunks()
-	require.Equal(t, 2, len(chunks), "third update was a no-op delta and must not broadcast")
-	assert.Equal(t, "line1\n", string(chunks[0].Content))
-	assert.Equal(t, "line2\n", string(chunks[1].Content))
+	updates := sink.ProgressUpdates()
+	var totals []int64
+	for _, update := range updates {
+		if update.Operation == ProgressOutputTotal {
+			totals = append(totals, update.Value)
+		}
+	}
+	assert.Equal(t, []int64{6, 12, 12}, totals)
+	assert.Contains(t, updates, CompleteOutputProgress("call-1"))
 
 	// After tool_execution_end, per-span state should be cleared so that a new
 	// tool reusing the same id starts fresh.
 	a.mu.Lock()
-	_, present := a.cumulativeBroadcast["call-1"]
+	_, present := a.cumulativeOutput["call-1"]
 	a.mu.Unlock()
 	assert.False(t, present, "tool_execution_end should clear cumulativeBroadcast entry")
 }
@@ -931,19 +965,6 @@ func TestHandlePiOutput_EmptyDeltaDoesNotBroadcastThinkingTokens(t *testing.T) {
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":""}}`)))
 
 	assert.Equal(t, int64(-1), lastThinkingTokens(&sink.testSink), "empty delta is a no-op")
-}
-
-func TestHandlePiOutput_ToolExecutionUpdateDoesNotCountThinkingTokens(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingControlSink{}
-	a := newPiAgentWithSink(sink)
-
-	// Tool output is not model generation; it must not inflate the estimate.
-	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_update","toolCallId":"call-1","partialResult":{"content":[{"type":"text","text":"big tool output here"}]}}`)))
-
-	assert.Equal(t, int64(-1), lastThinkingTokens(&sink.testSink), "tool output must not broadcast thinking_tokens")
 }
 
 func TestHandlePiOutput_MessageEndResetsThinkingTokens(t *testing.T) {

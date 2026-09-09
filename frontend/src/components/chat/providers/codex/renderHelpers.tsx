@@ -1,8 +1,4 @@
-import type { JSX } from 'solid-js'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
-import { For } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
-import { commandStreamContainer, commandStreamInteraction, toolResultContentPre } from '../../toolStyles.css'
 
 /**
  * Codex emits items either wrapped (`{item: {...}, threadId, turnId}`) or
@@ -18,23 +14,4 @@ export function extractItem(parsed: unknown): Record<string, unknown> | null {
   if (parsed.type && typeof parsed.type === 'string')
     return parsed
   return null
-}
-
-/**
- * Plain stream-of-segments output area used by command-execution and
- * file-change in-progress views. `interaction` segments (terminal user input
- * echoed back from the agent) are styled distinctly and prefixed with `> `.
- */
-export function LiveStreamOutput(props: { stream: () => CommandStreamSegment[] }): JSX.Element {
-  return (
-    <div class={commandStreamContainer}>
-      <For each={props.stream()}>
-        {segment => (
-          <div class={segment.kind === 'interaction' ? commandStreamInteraction : toolResultContentPre}>
-            {segment.kind === 'interaction' ? `> ${segment.text}` : segment.text}
-          </div>
-        )}
-      </For>
-    </div>
-  )
 }

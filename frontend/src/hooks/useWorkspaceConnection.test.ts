@@ -1,4 +1,4 @@
-import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
@@ -8,7 +8,7 @@ import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -709,116 +709,6 @@ describe('applyNotificationMetadata usage folding', () => {
   })
 })
 
-describe('streaming text preservation', () => {
-  it('keeps accumulated assistant streaming text when a persisted user message arrives mid-stream', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-
-      chatStore.streamingText.set('agent-1', 'Hello')
-
-      const echoedUserMessage = {
-        id: 'server-user-1',
-        source: MessageSource.USER,
-        content: new TextEncoder().encode(JSON.stringify({ content: 'follow-up' })),
-        contentCompression: ContentCompression.NONE,
-        seq: 1n,
-      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-
-      chatStore.addMessage('agent-1', echoedUserMessage)
-
-      chatStore.streamingText.set('agent-1', `${chatStore.streamingText.get('agent-1') ?? ''} world`)
-
-      expect(chatStore.streamingText.get('agent-1')).toBe('Hello world')
-
-      chatStore.streamingText.clear('agent-1')
-      expect(chatStore.streamingText.get('agent-1')).toBe('')
-      dispose()
-    })
-  })
-
-  it('clears top-level streaming text when a persisted codex agentMessage completion arrives', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-
-      chatStore.streamingText.set('agent-1', 'Hello')
-
-      const completedAssistantMessage = {
-        id: 'assistant-1',
-        source: MessageSource.AGENT,
-        content: new TextEncoder().encode(JSON.stringify({
-          item: {
-            type: 'agentMessage',
-            id: 'msg-1',
-            text: 'Hello world',
-          },
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-        })),
-        contentCompression: ContentCompression.NONE,
-        seq: 2n,
-        agentProvider: AgentProvider.CODEX,
-      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-
-      chatStore.addMessage('agent-1', completedAssistantMessage)
-      const parsed = parseMessageContent(completedAssistantMessage)
-      const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-      if (item?.type === 'agentMessage')
-        chatStore.streamingText.clear('agent-1')
-
-      expect(chatStore.streamingText.get('agent-1')).toBe('')
-      dispose()
-    })
-  })
-
-  it('clears top-level plan streaming text and streamingType when a persisted codex plan completion arrives', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      const agentSessionStore = createAgentSessionStore()
-
-      chatStore.streamingText.set('agent-1', '# Plan\n')
-      agentSessionStore.updateInfo('agent-1', { streamingType: 'plan' })
-
-      const completedPlanMessage = {
-        id: 'plan-1',
-        source: MessageSource.AGENT,
-        content: new TextEncoder().encode(JSON.stringify({
-          item: {
-            type: 'plan',
-            id: 'plan-1',
-            text: '# Plan\nStep 1',
-          },
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-        })),
-        contentCompression: ContentCompression.NONE,
-        seq: 2n,
-        agentProvider: AgentProvider.CODEX,
-      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-
-      chatStore.addMessage('agent-1', completedPlanMessage)
-      const parsed = parseMessageContent(completedPlanMessage)
-      const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-      if (item?.type === 'plan') {
-        chatStore.streamingText.clear('agent-1')
-        agentSessionStore.updateInfo('agent-1', { streamingType: '' })
-      }
-
-      expect(chatStore.streamingText.get('agent-1')).toBe('')
-      expect(agentSessionStore.getInfo('agent-1').streamingType).toBe('')
-      dispose()
-    })
-  })
-})
-
-/**
- * These tests lock in the startup_message plumbing rules in
- * useWorkspaceConnection's agent statusChange handler:
- *  - STARTING status → store sc.startupMessage on the agent record.
- *  - Any other concrete status → clear startupMessage (so stale phase
- *    labels don't linger).
- *  - UNSPECIFIED / status-less events (catchUp sentinels, git-only
- *    updates) → leave startupMessage alone.
- */
 describe('startupMessage handling in agent statusChange', () => {
   function applyStatusChange(
     tabs: TabStores,
@@ -1414,7 +1304,7 @@ describe('applyTerminalStatusChange', () => {
 /**
  * agent_session_info wire-shape handling. The worker broadcasts
  * snake_case keys exclusively (`total_cost_usd`, `context_usage`,
- * `rate_limits`, `streaming_type`, `pi_*`); these tests
+ * `rate_limits`, generation progress, and `pi_*`); these tests
  * reproduce the unwrap-and-merge logic in useWorkspaceConnection that
  * translates wire keys back to the frontend store's camelCase shape.
  */
@@ -1551,128 +1441,6 @@ describe('agentMessage sub-handlers', () => {
       // field at all, which is the point: the only route to the sound and the
       // badge is handleActivityChanged's busy -> idle edge.
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
-      dispose()
-    })
-  })
-
-  /** A span (commandExecution/fileChange/reasoning) row carrying its `item` payload. */
-  // Command streams (and the item-shape completion check) are a Codex feature, so span fixtures
-  // carry the Codex provider -- clearCompletedSpanStream dispatches commandSpanSuperseded per plugin.
-  function spanMessage(item: unknown, spanType: string, spanId = 'span1') {
-    return {
-      id: 'm1',
-      source: MessageSource.AGENT,
-      content: new TextEncoder().encode(JSON.stringify({ item })),
-      contentCompression: ContentCompression.NONE,
-      seq: 1n,
-      spanId,
-      spanType,
-      agentProvider: AgentProvider.CODEX,
-    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-  }
-
-  it('clearCompletedSpanStream reclaims a COMPLETED span command stream', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
-      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
-
-      // The persisted row reports the commandExecution span completed -> its buffered
-      // in-flight segments are superseded and reclaimed.
-      const msg = spanMessage({ type: 'commandExecution', status: 'completed' }, 'commandExecution')
-      clearCompletedSpanStream('a1', msg, parseMessageContent(msg), chatStore)
-      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(0)
-      dispose()
-    })
-  })
-
-  it('clearCompletedSpanStream replaces a live reasoning stream only after completed content arrives', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.appendCommandStream('a1', 'span1', 'reasoning_summary', 'live summary')
-
-      const started = spanMessage({ type: 'reasoning', summary: [], content: [] }, 'reasoning')
-      clearCompletedSpanStream('a1', started, parseMessageContent(started), chatStore)
-      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
-
-      const completed = spanMessage({
-        type: 'reasoning',
-        summary: ['persisted summary'],
-        content: ['persisted raw reasoning'],
-      }, 'reasoning')
-      clearCompletedSpanStream('a1', completed, parseMessageContent(completed), chatStore)
-      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(0)
-      dispose()
-    })
-  })
-
-  it('clearCompletedSpanStream leaves an IN-PROGRESS span stream buffered', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
-
-      // A still-running span (status != completed) must keep its live stream.
-      const msg = spanMessage({ type: 'commandExecution', status: 'in_progress' }, 'commandExecution')
-      clearCompletedSpanStream('a1', msg, parseMessageContent(msg), chatStore)
-      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
-      dispose()
-    })
-  })
-
-  it('handleAgentMessage does not clear a completed span stream when the row is dropped beyond the window', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const stores = {
-        agentSessionStore: createAgentSessionStore(),
-        agentActivityStore: createAgentActivityStore(),
-        chatStore: createChatStore(),
-        view: tabs.view,
-        metadata: tabs.metadata,
-        selection: tabs.selection,
-        getActiveWorkspaceId: () => WS,
-      }
-      stores.chatStore.setMessages('a1', Array.from({ length: 50 }, (_, i) => ({
-        ...agentMessage({ type: 'assistant' }),
-        id: `m${i + 1}`,
-        seq: BigInt(i + 1),
-      })))
-      stores.chatStore.trimNewestEnd('a1', 30) // hasMoreNewer=true; seq 60 is recorded but not inserted.
-      stores.chatStore.appendCommandStream('a1', 'span1', 'output', 'output')
-      const dropped = {
-        ...spanMessage({ type: 'commandExecution', status: 'completed' }, 'commandExecution'),
-        id: 'dropped-complete',
-        seq: 60n,
-      }
-
-      handleAgentMessage('a1', dropped, stores, 'live')
-
-      expect(stores.chatStore.getMessages('a1').some(m => m.id === 'dropped-complete')).toBe(false)
-      expect(stores.chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
-      dispose()
-    })
-  })
-
-  it('applyAgentLifecycle skips a non-AGENT message (the source gate)', () => {
-    createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { streamingType: 'plan' })
-      // A USER-source message carrying a lifecycle item must be ignored, so the
-      // streaming marker survives -- the gate that keeps a hidden-classified
-      // lifecycle item from being processed off a non-AGENT row.
-      const msg = { ...agentMessage({ item: { type: 'plan' } }, AgentProvider.CODEX), source: MessageSource.USER }
-      applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
-      expect(agentSessionStore.getInfo('a1').streamingType).toBe('plan')
-      dispose()
-    })
-  })
-
-  it('applyAgentLifecycle clears the plan streaming marker on an AGENT lifecycle item', () => {
-    createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { streamingType: 'plan' })
-      const msg = agentMessage({ item: { type: 'plan' } }, AgentProvider.CODEX)
-      applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
-      expect(agentSessionStore.getInfo('a1').streamingType).toBe('')
       dispose()
     })
   })
@@ -1902,75 +1670,6 @@ describe('extracted handleAgentEvent branch handlers', () => {
       tabs,
     }
   }
-
-  describe('handleStreamChunk', () => {
-    it('accumulates free-form streaming text when there is no spanId', () => {
-      createRoot((dispose) => {
-        const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc('hello '), spanId: '', method: '', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
-        handleStreamChunk('a1', { delta: enc('world'), spanId: '', method: '', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
-        expect(chatStore.streamingText.get('a1')).toBe('hello world')
-        dispose()
-      })
-    })
-
-    it('routes a spanId chunk to the command-stream buffer, not the free-form text', () => {
-      createRoot((dispose) => {
-        const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc('out'), spanId: 's1', method: 'bash', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
-        expect(chatStore.streamingText.get('a1')).toBe('') // NOT the free-form text
-        expect(chatStore.getCommandStream('a1', 's1').map(seg => seg.text).join('')).toContain('out')
-        dispose()
-      })
-    })
-
-    it('resolves the segment kind from the CHUNK\'s own agentProvider, not a tab lookup', () => {
-      // Regression guard: the chunk carries its authoritative provider (backend stamps it on every
-      // AgentStreamChunk). A Codex reasoning-summary delta must map to `reasoning_summary` purely
-      // from the chunk -- no tab is registered here, so a tab-provider lookup would resolve
-      // undefined and mis-bucket every Codex delta as plain `output`.
-      createRoot((dispose) => {
-        const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc('pondering'), spanId: 's1', method: 'item/reasoning/summaryTextDelta', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
-        const segs = chatStore.getCommandStream('a1', 's1')
-        expect(segs).toHaveLength(1)
-        expect(segs[0].kind).toBe('reasoning_summary')
-        dispose()
-      })
-    })
-
-    it('preserves a content-less reasoning_summary_break delta when the chunk provider maps it', () => {
-      // `item/reasoning/summaryPartAdded` carries empty text and maps to `reasoning_summary_break`;
-      // the store keeps it (the `!text && kind !== 'reasoning_summary_break'` guard). If the kind
-      // degraded to `output` (the tab-lookup failure mode this dispatch avoids, when the tab is
-      // still bare), the empty delta would be dropped entirely.
-      createRoot((dispose) => {
-        const chatStore = createChatStore()
-        handleStreamChunk('a1', { delta: enc(''), spanId: 's1', method: 'item/reasoning/summaryPartAdded', agentProvider: AgentProvider.CODEX } as unknown as AgentStreamChunk, chatStore)
-        const segs = chatStore.getCommandStream('a1', 's1')
-        expect(segs).toHaveLength(1)
-        expect(segs[0].kind).toBe('reasoning_summary_break')
-        dispose()
-      })
-    })
-  })
-
-  describe('handleStreamEnd', () => {
-    it('clears the free-form streaming text without badging', () => {
-      createRoot((dispose) => {
-        const chatStore = createChatStore()
-        const tabs = makeTabStores()
-        tabs.addAgent('a1')
-        tabs.addAgent('a2')
-        tabs.selection.setActiveById(TabType.AGENT, 'a2')
-        chatStore.streamingText.set('a1', 'partial')
-        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore })
-        expect(chatStore.streamingText.get('a1')).toBe('')
-        expect(tabs.view.getAgentTab('a1')?.hasNotification).toBeFalsy()
-        dispose()
-      })
-    })
-  })
 
   describe('handleActivityChanged', () => {
     const activityStores = (
@@ -2437,11 +2136,13 @@ describe('wireSessionInfoToUpdates', () => {
     const updates = wireSessionInfoToUpdates({
       total_cost_usd: 1.5,
       context_usage: { input_tokens: 100 },
-      streaming_type: 'plan',
+      output_bytes: 2048,
+      output_bytes_minimum: true,
     })
     expect(updates.totalCostUsd).toBe(1.5)
     expect(updates.contextUsage).toMatchObject({ inputTokens: 100 })
-    expect(updates.streamingType).toBe('plan')
+    expect(updates.outputBytes).toBe(2048)
+    expect(updates.outputBytesMinimum).toBe(true)
   })
 
   it('deep-maps rate_limits tiers', () => {
@@ -2539,42 +2240,13 @@ describe('wireSessionInfoToUpdates', () => {
     expect('thinkingTokens' in wireSessionInfoToUpdates({ thinking_tokens: '5' })).toBe(false)
   })
 
+  it('does not retain an output minimum flag after an output clear', () => {
+    expect(wireSessionInfoToUpdates({ output_bytes: 0, output_bytes_minimum: false })).toEqual({})
+  })
+
   it('skips keys that are absent or fail their type guard', () => {
     // A non-number cost and a context_usage with no token data contribute nothing.
     expect(wireSessionInfoToUpdates({ total_cost_usd: 'free', context_usage: {} })).toEqual({})
-  })
-
-  it('keeps an empty-string streaming_type (the "not streaming plan" signal)', () => {
-    // streaming_type uses `!== undefined`, so "" is a meaningful value, not a skip.
-    expect(wireSessionInfoToUpdates({ streaming_type: '' }).streamingType).toBe('')
-  })
-})
-
-describe('shouldClearThinkingTokensForMessage', () => {
-  const agentMsg = (parentSpanId = '') => ({ source: MessageSource.AGENT, parentSpanId })
-  // A plugin that always clears, mirroring Claude's telemetry-driven counter.
-  const alwaysClears = { clearsThinkingTokensForMessage: () => true }
-
-  it('clears on a main-agent AGENT message by default (empty parentSpanId)', () => {
-    expect(shouldClearThinkingTokensForMessage(agentMsg(''), undefined)).toBe(true)
-  })
-
-  it('does NOT clear on a subagent message by default (nested under a span)', () => {
-    expect(shouldClearThinkingTokensForMessage(agentMsg('collab-span'), undefined)).toBe(false)
-  })
-
-  it('does NOT clear on non-AGENT messages, even with an always-clear plugin', () => {
-    expect(shouldClearThinkingTokensForMessage({ source: MessageSource.USER, parentSpanId: '' }, undefined)).toBe(false)
-    expect(shouldClearThinkingTokensForMessage(
-      { source: MessageSource.LEAPMUX, parentSpanId: '' },
-      alwaysClears,
-    )).toBe(false)
-  })
-
-  it('delegates the AGENT-message policy to the provider plugin', () => {
-    // A plugin (e.g. Claude) that always clears overrides the default main-scope
-    // gate, so even a message with a non-empty parentSpanId clears.
-    expect(shouldClearThinkingTokensForMessage(agentMsg('sys-tu-999'), alwaysClears)).toBe(true)
   })
 })
 
@@ -2673,11 +2345,9 @@ describe('clearOfflineAgentState', () => {
     const chatStore = createChatStore()
     const agentSessionStore = createAgentSessionStore()
     const agentActivityStore = createAgentActivityStore()
-    chatStore.streamingText.set('a1', 'half a sentence')
-    chatStore.appendCommandStream('a1', 'toolu_A', 'output', 'mid-line')
     chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
     chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
-    agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+    agentSessionStore.updateInfo('a1', { thinkingTokens: 500, outputBytes: 4096, outputBytesMinimum: true })
     agentActivityStore.apply('a1', AgentActivityState.WORKING)
     return { chatStore, agentSessionStore, agentActivityStore }
   }
@@ -2687,13 +2357,12 @@ describe('clearOfflineAgentState', () => {
       const s = seededStores()
       clearOfflineAgentState('a1', s)
 
-      expect(s.chatStore.streamingText.get('a1')).toBe('')
-      expect(s.chatStore.getCommandStream('a1', 'toolu_A')).toHaveLength(0)
       // The two the sweep used to miss. Each badge would otherwise read "30s" /
       // "1m 30s" for as long as the worker stayed away.
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toBeUndefined()
       expect(s.chatStore.getToolProgress('a1', 'toolu_B')).toBeUndefined()
       expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
+      expect(s.agentSessionStore.getInfo('a1').outputBytes).toBeUndefined()
       // The worker that was going to report the settle is gone, so a retained
       // busy flag would pin the spinner and keep the Interrupt button on an
       // agent nothing can interrupt.

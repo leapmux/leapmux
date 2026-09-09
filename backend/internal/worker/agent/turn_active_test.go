@@ -326,6 +326,25 @@ func TestACPTurnActive_PromptOpensTheTurnAndTheResponseCloses(t *testing.T) {
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 }
 
+func TestACPTurnActive_ProviderErrorPersistsBufferedText(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	b, sink := newACPTurnBase(t, nopWriteCloser{&out})
+	require.NoError(t, b.SendInput("hi", nil))
+	b.HandleOutput(acpMessageChunk("partial answer"))
+
+	b.handleJSONRPCResponse(parseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"provider failed"}}`)))
+
+	require.Eventually(t, func() bool { return sink.MessageCount() == 1 }, time.Second, 5*time.Millisecond)
+	assert.JSONEq(t, `{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"partial answer",
+		"completion":"error"
+	}`, string(sink.Messages()[0].Content))
+}
+
 func TestACPTurnActive_AFailedSendOpensNoTurn(t *testing.T) {
 	t.Parallel()
 

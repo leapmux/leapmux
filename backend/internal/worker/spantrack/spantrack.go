@@ -484,33 +484,3 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 	}
 	return depth, string(data), connectorColorOut
 }
-
-// ShouldBroadcastStreamChunk reports whether a live stream chunk should be
-// broadcast. spanID is the span the chunk belongs to, or "" for the agent's
-// free-form text.
-//
-// A chunk that belongs to an ACTIVE span is its own tool's live output, and the
-// frontend routes it to that tool's card, so it always goes. Testing only
-// "is any span open" suppressed every one of them: a tool's output delta is
-// emitted while that tool's span is open by construction, so the whole
-// per-tool live stream never reached the UI for any provider.
-//
-// Free-form text (spanID "") stays suppressed while any span is active, which
-// is what the suppression was written for -- it keeps the agent's prose from
-// interleaving with a running tool.
-//
-// A chunk naming a span that is NOT active (already closed, or a spawn that
-// owns none) falls under the same free-form rule: with nothing open it goes,
-// otherwise it waits.
-func (t *SpanTracker) ShouldBroadcastStreamChunk(spanID string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if spanID != "" {
-		for _, s := range t.spans {
-			if s.SpanID == spanID {
-				return true
-			}
-		}
-	}
-	return len(t.spans) == 0
-}

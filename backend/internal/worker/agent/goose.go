@@ -23,6 +23,9 @@ const (
 // GooseCLIAgent manages a single Goose CLI ACP process.
 type GooseCLIAgent struct {
 	acpBase
+	gooseOutputSequence map[string]uint64
+	gooseOutputBytes    map[string]int64
+	gooseOutputMinimum  map[string]bool
 }
 
 func (a *GooseCLIAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
@@ -82,11 +85,57 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			// _meta.goose.toolCall {toolName:"delegate", extensionName:"summon"}.
 			a.subagentFromToolCall = gooseSubagentFromToolCall
 			a.subagentFromToolCallUpdate = gooseSubagentFromToolCallUpdate
+			a.toolOutputProgress = a.gooseToolOutputProgress
+			a.toolOutputComplete = a.clearGooseToolOutput
 		},
 		afterHandshake: func(a *GooseCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, contracts.GooseModeAuto, opts.Model())
 		},
 	})
+}
+
+func (a *GooseCLIAgent) clearGooseToolOutput(toolCallID string) {
+	a.mu.Lock()
+	delete(a.gooseOutputSequence, toolCallID)
+	delete(a.gooseOutputBytes, toolCallID)
+	delete(a.gooseOutputMinimum, toolCallID)
+	a.mu.Unlock()
+}
+
+func (a *GooseCLIAgent) gooseToolOutputProgress(update acpToolCallUpdateEnvelope) (int64, bool, bool) {
+	var meta struct {
+		ToolNotification struct {
+			Type   string `json:"type"`
+			Params struct {
+				Sequence  uint64 `json:"sequence"`
+				Truncated bool   `json:"truncated"`
+				Chunks    []struct {
+					Output string `json:"output"`
+				} `json:"chunks"`
+			} `json:"params"`
+		} `json:"toolNotification"`
+	}
+	if json.Unmarshal(update.Meta, &meta) != nil || meta.ToolNotification.Type != "live_output" {
+		return 0, false, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gooseOutputSequence == nil {
+		a.gooseOutputSequence = make(map[string]uint64)
+		a.gooseOutputBytes = make(map[string]int64)
+		a.gooseOutputMinimum = make(map[string]bool)
+	}
+	if meta.ToolNotification.Params.Sequence <= a.gooseOutputSequence[update.ToolCallID] {
+		return 0, false, false
+	}
+	a.gooseOutputSequence[update.ToolCallID] = meta.ToolNotification.Params.Sequence
+	for _, chunk := range meta.ToolNotification.Params.Chunks {
+		a.gooseOutputBytes[update.ToolCallID] = saturatingAdd(
+			a.gooseOutputBytes[update.ToolCallID], int64(len([]byte(chunk.Output))))
+	}
+	a.gooseOutputMinimum[update.ToolCallID] =
+		a.gooseOutputMinimum[update.ToolCallID] || meta.ToolNotification.Params.Truncated
+	return a.gooseOutputBytes[update.ToolCallID], a.gooseOutputMinimum[update.ToolCallID], true
 }
 
 // fallbackGooseCLIModes lists Goose's modes in Goose's own order, then applies the same

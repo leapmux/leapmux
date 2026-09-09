@@ -10,7 +10,6 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
@@ -25,6 +24,7 @@ import { createLogger } from '~/lib/logger'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { inlineFlex } from '~/styles/shared.css'
+import { assembledMessageDisplayText, completionMarker, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
@@ -114,8 +114,6 @@ export interface RenderContext {
   spanType?: string
   /** Current message span id. */
   spanId?: string
-  /** Live streamed Codex span content for command, fileChange, and reasoning items. */
-  commandStream?: () => CommandStreamSegment[] | undefined
   /**
    * Live progress for THIS row's still-running tool (elapsed time, subagent
    * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
@@ -455,6 +453,14 @@ export function renderMessageContent(
       ? JSON.parse(parsedOrRawJson)
       : parsedOrRawJson
 
+    const assembled = parseAssembledMessage(parsed)
+    if (assembled) {
+      const text = assembledMessageDisplayText(assembled)
+      if (assembled.kind === 'reasoning')
+        return <ThinkingBubble text={text} icon={Brain} label="Thinking" stateKey={MESSAGE_UI_KEY.THINKING} context={context} />
+      return <MarkdownText text={text} context={context} />
+    }
+
     // Dispatch strictly by the message's own provider -- no Claude fallback. An
     // unregistered/UNSPECIFIED provider yields no plugin, so we drop to the
     // raw-JSON span below rather than rendering another provider's bytes through
@@ -462,8 +468,18 @@ export function renderMessageContent(
     // `unsupported_provider`, which MessageBubble surfaces explicitly).
     const plugin = pluginFor(agentProvider)
     const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
-    if (result !== null)
+    if (result !== null) {
+      const marker = completionMarker(parseProviderMessageCompletion(parsed))
+      if (marker) {
+        return (
+          <>
+            {result}
+            <div role="note">{marker}</div>
+          </>
+        )
+      }
       return result
+    }
 
     // A persisted control-response row is provider-neutral in the renderer layer: every plugin's
     // classify maps it to `control_response`, and the plugin's controlResponseDisplay (when set)

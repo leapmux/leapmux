@@ -296,7 +296,6 @@ export interface PaginationCallbacks {
 export interface UseChatScrollOptions extends PaginationCallbacks {
   messages: Accessor<AgentChatMessage[]>
   messageVersion?: Accessor<number | undefined>
-  streamingText: Accessor<string>
   agentWorking?: Accessor<boolean | undefined>
   /**
    * Agent lifecycle status. Tracked in the auto-scroll signature so a
@@ -1662,7 +1661,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     const sig = [
       msgs.length,
       opts.messageVersion?.() ?? 0,
-      opts.streamingText().length,
       opts.agentWorking?.() ?? false,
       // -1 (outside the AgentStatus enum, which starts at 0) so "no accessor" can't
       // alias UNSPECIFIED(0) -- a transition between undefined and UNSPECIFIED would
@@ -1689,8 +1687,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // conclude the user is no longer at the bottom. The signal captures
     // the user's scroll position from before the content changed.
     // Windowed away from the live tail: live messages are dropped from the
-    // store, the bottom of the in-memory list isn't the real bottom, and the
-    // streaming/thinking UI is hidden — so never auto-stick here.
+    // store, and the bottom of the in-memory list is not the real bottom.
     if (opts.hasNewerMessages?.())
       return
     // Cap the in-memory window on every tail append, INDEPENDENT of scroll
@@ -1698,9 +1695,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // scrolled up, live messages append to the tail and this is the ONLY window
     // cap -- the pagination trims fire only on overscroll, and the at-bottom
     // stick path below is skipped. Without this an active tab watched from a
-    // scrolled-up position grows the in-memory set unbounded during a long
-    // stream. Only run the raw-row cap when the message count changed: streaming text,
-    // status, or message-version wake-ups can need sticky-bottom handling below, but
+    // scrolled-up position grows the in-memory set without a limit during a long
+    // turn. Only run the raw-row cap when the message count changed. Status or
+    // message-version updates can need sticky-bottom handling below, but
     // they do not increase the number of rows and must not reap the older buffer.
     const messageCountChanged = lastTrimMessageCount !== msgs.length
     lastTrimMessageCount = msgs.length
