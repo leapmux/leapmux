@@ -24,6 +24,7 @@ const (
 	CodexDefaultNetworkAccess     = "restricted"
 	CodexDefaultCollaborationMode = "default"
 	CodexDefaultServiceTier       = "default"
+	codexMemoriesFeature          = "memories"
 	codexMultiAgentV2Feature      = "multi_agent_v2"
 )
 
@@ -173,9 +174,8 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 		LoginShell:   opts.LoginShell,
 		Launch:       launch,
 		StripEnvKeys: []string{"CODEX_CI"},
-		// Current models select Multi-Agent V2 from model metadata. Enable the
-		// stable feature explicitly too, so every supported model exposes one
-		// subagent protocol and LeapMux never falls back because metadata is absent.
+		// Codex leaves Multi-Agent V2 and memories off by default. Enable both
+		// stable features for every app-server process, independent of user config.
 		BaseArgs:   codexBaseArgs(),
 		WorkingDir: opts.WorkingDir,
 	})
@@ -309,7 +309,11 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 }
 
 func codexBaseArgs() []string {
-	return []string{"--enable", codexMultiAgentV2Feature, "app-server"}
+	return []string{
+		"--enable", codexMultiAgentV2Feature,
+		"--enable", codexMemoriesFeature,
+		"app-server",
+	}
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
