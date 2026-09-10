@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { solveCaptchaViaUI } from './helpers/captcha'
+import { loginViaUI, logoutViaUI } from './helpers/ui'
 
 // Where a successful login lands, and stays: `/` is the whole app, and
 // activating a workspace no longer changes the URL.
@@ -30,11 +31,8 @@ test.describe('Authentication', () => {
     // hub answered.
     await expect(page.getByText(INVALID_CREDENTIALS_RE)).toBeVisible()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-    // Still on /login. The test asserts this POSITIVELY rather than as
-    // `not.toHaveURL(APP_HOME_URL_RE)`: `/login` does not end in `/`, so the
-    // negative form passes on its first poll no matter what the hub answered,
-    // whether the hub rejected the wrong password or silently accepted it --
-    // the exact regression it exists to catch.
+    // Verify the login URL after the error appears.
+    // A negative home-URL check could pass before the hub answers, even if it accepts the wrong password.
     await expect(page).toHaveURL(/\/login(?:\?.*)?$/)
   })
 
@@ -49,16 +47,9 @@ test.describe('Authentication', () => {
     await expect(page.getByText('LeapMux')).toBeVisible()
   })
 
-  // The credential pages are for a visitor who is NOT signed in, and until
-  // SignedOutOnly they had no gate at all: a signed-in user got the whole
-  // form on every one of them. /signup was the worst of the four -- its only
-  // restriction was the hub's signup setting, so the user could create a
-  // SECOND account and the page then swapped their session to it with no
-  // message.
-  //
-  // In the real router, not only in the unit test: the gate depends on route
-  // wrappers, and a page that lost its wrapper would still pass every unit
-  // test of the component.
+  // SignedOutOnly restricts credential pages to visitors without a session.
+  // Without that wrapper, a signed-in visitor could create another account and replace their active session without an explanation.
+  // Check the real router because component tests alone cannot detect a missing route wrapper.
   test('sends a signed-in user away from every credential page', async ({ page }) => {
     await loginViaUI(page)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
@@ -70,11 +61,8 @@ test.describe('Authentication', () => {
     }
   })
 
-  // /recover-account/complete is the one page that EXPLAINS instead of redirecting, and
-  // the reason is in its address: it carries a single-use token and no
-  // ?redirect=, so a silent bounce gains the visitor nothing, explains
-  // nothing, and the `replace` takes the tokened address out of that tab's
-  // history as well.
+  // Recovery completion explains the signed-in state instead of redirecting.
+  // The URL holds a single-use token and no redirect parameter. A replacement navigation would remove that token URL from the tab history.
   test('explains rather than redirects on the recover-account completion page', async ({ page }) => {
     await loginViaUI(page)
     await expect(page).toHaveURL(APP_HOME_URL_RE)

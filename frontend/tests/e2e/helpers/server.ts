@@ -5,32 +5,18 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 
-// hubDataDir states the dev-mode data-dir layout: the fixture root holds
-// the hub's database under a `hub` subdirectory. One spelling, because the
-// specs and fixtures each re-derived it and the layout change nobody
-// greps for is the one written four ways.
+// Dev mode stores the hub database below the fixture's hub subdirectory.
+// Share this path rule between fixtures and tests.
 export function hubDataDir(dataDir: string): string {
   return join(dataDir, 'hub')
 }
 
 /**
- * The environment every hub this suite spawns must start from.
- *
- * `LEAPMUX_HUB_DEV_FRONTEND` is CLEARED. It points a hub at a Vite dev server
- * instead of the frontend built into the binary under test. A developer who
- * exports it for their own `leapmux solo`, or who runs `task dev-desktop`,
- * exports it into this suite too. The hub then serves whatever checkout that
- * Vite server runs from: a different worktree, or nothing at all. A spec then
- * asserts against a frontend that nobody built from the code under test. It
- * fails for a reason that is nowhere in the diff. Worse, it can PASS against
- * code that was never built.
- *
- * Every spawn site layers its own variables on top of this, so a new one
- * inherits the guard rather than restating it.
- *
- * The guard sits AFTER the spread, so a caller cannot override it by accident.
- * The parameter type omits the key as well, so naming it does not compile --
- * a silently dropped value would be the same defect one step later.
+ * Supply the environment for every test hub.
+ * Clear LEAPMUX_HUB_DEV_FRONTEND so the hub serves the binary's embedded frontend.
+ * An inherited development URL could select a different checkout or an unavailable server.
+ * A test could then pass against code outside this build, or fail for an unrelated cause.
+ * Apply the restriction after caller overrides. The parameter type also excludes this setting.
  */
 export function hubSpawnEnv(
   extra: Omit<Record<string, string | undefined>, 'LEAPMUX_HUB_DEV_FRONTEND'> = {},
@@ -70,27 +56,51 @@ export function findFreePort(): Promise<number> {
   })
 }
 
-/**
- * Poll `url` until it answers.
- *
- * The timeout is the ceiling for a server that never comes up; the interval is
- * what every healthy run actually pays. A locally spawned instance binds in
- * tens of milliseconds, so a half-second tick spent nearly all of its time
- * asleep after the server was already listening.
- */
+/** Wait for a successful HTTP response within the startup deadline. */
 export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
-  const start = Date.now()
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
+    return Promise.reject(new RangeError('The startup deadline must fit a positive Node timer delay'))
   return new Promise((resolve, reject) => {
-    const check = () => {
-      fetch(url).then(() => resolve()).catch(() => {
-        if (Date.now() - start > timeoutMs) {
-          reject(new Error(`Server at ${url} did not start within ${timeoutMs}ms`))
-        }
-        else {
-          setTimeout(check, 25)
-        }
-      })
+    const controller = new AbortController()
+    let finished = false
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let lastError: unknown
+    const deadline = setTimeout(() => {
+      finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError }))
+    }, timeoutMs)
+
+    function finish(error?: Error) {
+      if (finished)
+        return
+      finished = true
+      clearTimeout(deadline)
+      clearTimeout(retry)
+      // Stop requests that never return headers. Cancellation releases the body after a successful response.
+      controller.abort()
+      if (error)
+        reject(error)
+      else
+        resolve()
     }
-    check()
+
+    async function check() {
+      try {
+        const response = await fetch(url, { signal: controller.signal })
+        if (finished)
+          return
+        if (response.ok) {
+          finish()
+          return
+        }
+        await response.body?.cancel()
+        lastError = new Error(`Startup request returned HTTP ${response.status}`)
+      }
+      catch (error) {
+        lastError = error
+      }
+      if (!finished)
+        retry = setTimeout(check, 25)
+    }
+    void check()
   })
 }

@@ -1,7 +1,8 @@
 /**
  * Kilo-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
+import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { WorkspaceFixture } from './helpers/workspace'
 import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 

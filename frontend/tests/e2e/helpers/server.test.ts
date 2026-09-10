@@ -1,12 +1,13 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { hubSpawnEnv } from './server'
+import ts from 'typescript'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { collectE2EFiles } from '~/test-support/e2eFiles'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
+import { hubSpawnEnv, waitForServer } from './server'
 
 describe('hubSpawnEnv', () => {
-  it('clears the dev-frontend URL the ambient environment carries', () => {
+  it('clears an inherited development frontend URL', () => {
     const before = process.env.LEAPMUX_HUB_DEV_FRONTEND
     process.env.LEAPMUX_HUB_DEV_FRONTEND = 'http://localhost:5173'
     try {
@@ -20,54 +21,121 @@ describe('hubSpawnEnv', () => {
     }
   })
 
-  it('keeps the variables a caller layers on top', () => {
-    const env = hubSpawnEnv({ LEAPMUX_WORKER_NAME: 'Local' })
-    expect(env.LEAPMUX_WORKER_NAME).toBe('Local')
+  it('keeps explicit worker settings', () => {
+    expect(hubSpawnEnv({ LEAPMUX_WORKER_NAME: 'Local' }).LEAPMUX_WORKER_NAME).toBe('Local')
   })
 
-  // The guard sits after the spread, so a caller cannot reinstate the value.
-  // The parameter type omits the key as well, so this only reaches the runtime
-  // through a cast -- which is exactly the accident worth pinning, because a
-  // silently honoured override is the same defect the helper exists to remove.
-  it('cannot be overridden by its own caller', () => {
+  it('refuses a caller override of the development frontend URL', () => {
     const env = hubSpawnEnv({ LEAPMUX_HUB_DEV_FRONTEND: 'http://localhost:5173' } as Record<string, string>)
     expect(env.LEAPMUX_HUB_DEV_FRONTEND).toBeUndefined()
   })
 })
 
-// A hub that inherits `LEAPMUX_HUB_DEV_FRONTEND` serves whatever checkout a
-// developer's Vite server runs from, so the spec asserts against a frontend
-// nobody built from the code under test -- and it can PASS that way, which is
-// the worse half. `hubSpawnEnv` is the one home for that guard, and this test
-// is what keeps it the only one: three hub spawns bypassed it for a whole
-// commit whose subject said "every spawned hub".
-describe('every hub spawn goes through hubSpawnEnv', () => {
-  const e2eRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-
-  const walk = (dir: string): string[] =>
-    readdirSync(dir).flatMap((entry) => {
-      const path = join(dir, entry)
-      if (statSync(path).isDirectory())
-        return entry === 'node_modules' ? [] : walk(path)
-      return path.endsWith('.ts') ? [path] : []
-    })
-
-  it('spawns no hub with a hand-rolled environment', () => {
-    const offenders: string[] = []
-    for (const file of walk(e2eRoot)) {
-      if (file.endsWith('server.test.ts'))
-        continue
-      const source = readFileSync(file, 'utf8')
-      // Each `spawn(...)` call, with the arguments that follow it up to the
-      // closing brace of its options object. A hub spawn is one whose argument
-      // list names the `hub`, `solo` or `dev` subcommand.
-      for (const call of source.split('spawn(').slice(1)) {
-        const block = call.slice(0, call.indexOf('})'))
-        const isHub = /['"](?:hub|solo|dev)['"]/.test(block)
-        if (isHub && block.includes('env:') && !block.includes('hubSpawnEnv'))
-          offenders.push(`${file.slice(e2eRoot.length + 1)}: ${block.split('\n').find(l => l.includes('env:'))?.trim()}`)
+// Parse calls so comments and strings cannot affect the guard.
+function scanHubSpawns(text: string) {
+  const source = ts.createSourceFile('fixture.ts', text, ts.ScriptTarget.Latest, true)
+  let count = 0
+  const violations: number[] = []
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && ['spawn', 'spawnTestProcess'].includes(node.expression.text)) {
+      const args = node.arguments[1]
+      if (args && ts.isArrayLiteralExpression(args)
+        && args.elements.some(arg => ts.isStringLiteral(arg) && ['hub', 'solo', 'dev'].includes(arg.text))) {
+        count++
+        const options = node.arguments[2]
+        const env = options && ts.isObjectLiteralExpression(options)
+          ? options.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(source) === 'env')
+          : undefined
+        const guarded = env && ts.isPropertyAssignment(env) && ts.isCallExpression(env.initializer)
+          && ts.isIdentifier(env.initializer.expression) && env.initializer.expression.text === 'hubSpawnEnv'
+        if (!guarded)
+          violations.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1)
       }
     }
-    expect(offenders, 'route every hub spawn through hubSpawnEnv').toEqual([])
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return { count, violations }
+}
+
+describe('hub launch environment', () => {
+  it('guards every hub launch and finds at least one real call', () => {
+    let count = 0
+    const violations: string[] = []
+    for (const file of collectE2EFiles()) {
+      const result = scanHubSpawns(readFileSync(file, 'utf8'))
+      count += result.count
+      violations.push(...result.violations.map(line => `${posixRelative(frontendRoot, file)}:${line}`))
+    }
+    // An inherited development URL can make a test pass against another checkout's frontend.
+    expect(violations, 'Use hubSpawnEnv for every hub process').toEqual([])
+    expect(count, 'The guard must inspect actual launch calls').toBeGreaterThan(0)
+  })
+
+  it.each(['spawn', 'spawnTestProcess'])('detects an unsafe environment through %s', (method) => {
+    expect(scanHubSpawns(`${method}(binary, ['hub'], { env: process.env })`))
+      .toEqual({ count: 1, violations: [1] })
+    expect(scanHubSpawns(`${method}(binary, ['hub'], { env: hubSpawnEnv() })`))
+      .toEqual({ count: 1, violations: [] })
+  })
+
+  it('rejects a missing environment and ignores comments and quoted calls', () => {
+    expect(scanHubSpawns('spawnTestProcess(binary, ["solo"])')).toEqual({ count: 1, violations: [1] })
+    expect(scanHubSpawns('// spawn(binary, ["hub"], { env: process.env })')).toEqual({ count: 0, violations: [] })
+    expect(scanHubSpawns('const text = "spawn(binary, [\'hub\'])"')).toEqual({ count: 0, violations: [] })
+  })
+})
+
+describe('server readiness deadline', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('refuses an invalid timeout before a request: %s', async (timeout) => {
+    const request = vi.fn()
+    vi.stubGlobal('fetch', request)
+    await expect(waitForServer('http://server.test', timeout)).rejects.toThrow(RangeError)
+    expect(request).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('accepts a successful response without leaving timers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ready')))
+    await waitForServer('http://server.test', 100)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('waits past an unsuccessful HTTP response', async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValue(new Response('ready'))
+    vi.stubGlobal('fetch', request)
+    let ready = false
+    const result = waitForServer('http://server.test', 100).then(() => {
+      ready = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).toBe(false)
+    await vi.advanceTimersByTimeAsync(25)
+    await result
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ends an in-flight request when the deadline expires', async () => {
+    const request = vi.fn<typeof fetch>(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', request)
+    let outcome: unknown
+    void waitForServer('http://server.test', 100).catch((error) => {
+      outcome = error
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(outcome).toBeInstanceOf(Error)
+    expect(String(outcome)).toContain('did not start within 100ms')
+    expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

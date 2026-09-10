@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
+import { createTestDirectory } from './helpers/runDirectory'
 import { expectClipsToOneLine } from './helpers/ui'
 
 /** Create a minimal 1x1 PNG file in a temp directory and return its path. */
@@ -12,14 +12,14 @@ function createTestPng(name = 'test.png'): string {
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==',
     'base64',
   )
-  const path = join(tmpdir(), `leapmux-e2e-${Date.now()}-${name}`)
+  const path = join(createTestDirectory('attachment-'), name)
   writeFileSync(path, png)
   return path
 }
 
 /** Create a minimal binary file (unsupported for the default provider) for rejection testing. */
 function createTestBinary(name = 'test.bin'): string {
-  const path = join(tmpdir(), `leapmux-e2e-${Date.now()}-${name}`)
+  const path = join(createTestDirectory('attachment-'), name)
   writeFileSync(path, Buffer.from([0x00, 0xFF, 0x01, 0xFE]))
   return path
 }

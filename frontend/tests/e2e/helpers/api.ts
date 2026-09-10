@@ -3,22 +3,17 @@
 // ──────────────────────────────────────────────
 
 import type { ChannelManager } from '../../../src/lib/channel'
-import { enumFromJson } from '@bufbuild/protobuf'
-import { TabTypeSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { fromJson } from '@bufbuild/protobuf'
+import { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { solveCaptchaViaAPI } from './altcha'
+import { finishCleanup } from './cleanup'
 import { createTestChannelManager } from './e2e-channel'
 
 /**
- * Poll interval for the API-backed waits below.
- *
- * Each tick is a real HTTP round trip to the hub (plus, for the agent-list
- * helpers, an E2EE callWorker on top), landing on the same instance whose
- * latency the wait measures. What these wait on -- `git worktree add`, a
- * CLI spawn, a second worker process handshaking -- settles on a second scale,
- * so a 25ms tick was ~40x oversampling: a single 30s wait could fire ~2400
- * requests into the process it waited for. 150ms keeps the latency win
- * (the flat sleeps this replaced cost 200-500ms each) at a fraction of the
- * request volume.
+ * Poll interval for API readiness checks.
+ * Each check makes an HTTP request. Agent checks also make an encrypted worker request.
+ * These operations can take seconds. Polling every 25ms could add about 2,400 requests during a 30-second wait.
+ * A 150ms interval reduces request volume while retaining less delay than the previous fixed waits of 200–500ms.
  */
 export const API_POLL_INTERVAL_MS = 150
 
@@ -26,29 +21,29 @@ export const API_POLL_INTERVAL_MS = 150
 // Keeps a ChannelManager per hubUrl+cookie pair to avoid re-handshaking
 // on every test API call.
 
-const channelManagerCache = new Map<string, ChannelManager>()
-const channelManagerPending = new Map<string, Promise<ChannelManager>>()
+const channelManagers = new Map<string, Promise<ChannelManager>>()
 
-async function getTestChannel(hubUrl: string, cookie: string): Promise<ChannelManager> {
-  const key = `${hubUrl}|${cookie}`
-  const cached = channelManagerCache.get(key)
-  if (cached) {
-    return cached
-  }
-  // Deduplicate concurrent initialization for the same key.
-  let pending = channelManagerPending.get(key)
+export async function getTestChannel(hubUrl: string, cookie: string): Promise<ChannelManager> {
+  const key = JSON.stringify([hubUrl, cookie])
+  let pending = channelManagers.get(key)
   if (!pending) {
-    pending = createTestChannelManager(hubUrl, cookie).then((mgr) => {
-      channelManagerCache.set(key, mgr)
-      channelManagerPending.delete(key)
-      return mgr
+    pending = createTestChannelManager(hubUrl, cookie).catch((error) => {
+      if (channelManagers.get(key) === pending)
+        channelManagers.delete(key)
+      throw error
     })
-    channelManagerPending.set(key, pending)
+    channelManagers.set(key, pending)
   }
   return pending
 }
 
-export { getTestChannel }
+/** Close this hub's cached channels, including an initialization that still runs. */
+export async function closeTestChannels(hubUrl: string): Promise<void> {
+  const pending = [...channelManagers.entries()].filter(([key]) => JSON.parse(key)[0] === hubUrl)
+  for (const [key] of pending)
+    channelManagers.delete(key)
+  await finishCleanup(pending.map(([, channel]) => channel.then(manager => manager.closeAll(), () => {})))
+}
 
 // ---- Test admin fixture credentials ----
 // The first-admin user seeded by e2e fixtures via /setup mode. Mirrors the
@@ -134,9 +129,8 @@ export async function getCurrentUser(hubUrl: string, cookie: string): Promise<Ap
 }
 
 /**
- * Get the current user's ID via the Connect API. Which user that is comes
- * entirely from `cookie` -- there is no separate "admin" lookup, since admin
- * is a property of the session the caller supplies, not of the endpoint.
+ * Get the user ID for the supplied session cookie through the Connect API.
+ * Administrator status belongs to that session. The endpoint has no separate administrator lookup.
  */
 export async function getUserId(hubUrl: string, cookie: string): Promise<string> {
   const id = (await getCurrentUser(hubUrl, cookie)).id
@@ -214,28 +208,18 @@ export async function deregisterWorkerViaAPI(
 }
 
 /**
- * Open self-serve sign-up on a hub, as an admin.
- *
- * A hub started with `leapmux hub` resolves `signup_enabled` from its STORED
- * row, and the code default is closed. Only `leapmux dev` reports it open, and
- * only while no operator row exists (`SignupEnabledEffective`). So a fixture
- * that spawns a plain hub and then signs a second account up has to store the
- * row first, or the hub answers `failed_precondition: sign-up is disabled`.
- *
- * The first account is exempt and needs no call here: a hub with no users at
- * all accepts one sign-up and makes it an administrator.
+ * Enable signup through an administrator session.
+ * A standalone hub defaults to closed signup. Store signup_enabled before registering a second account, or signup returns failed_precondition.
+ * Dev mode defaults to open signup only while no explicit setting exists.
+ * The first account is exempt. A hub without users accepts its signup and makes it an administrator.
  */
 export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promise<void> {
   await updateSettingViaAPI(hubUrl, cookie, 'signup_enabled', 'true')
 }
 
 /**
- * Write one hub setting, as an administrator.
- *
- * `partialJson` is the wire shape `UpdateSetting` takes: a scalar key sends a
- * bare JSON value (`'true'`), and a structured one sends an object with only
- * the fields it changes. The write needs an ELEVATED session — every hub
- * setting write does — so the caller elevates first.
+ * Write one hub setting through an elevated administrator session. Elevate the session before this call.
+ * partialJson follows UpdateSetting: a scalar uses a JSON value, and a structured setting uses an object with only changed fields.
  */
 export async function updateSettingViaAPI(
   hubUrl: string,
@@ -362,13 +346,9 @@ export async function deletePasskeyViaAPI(
 }
 
 /**
- * The hub's marker on a refusal whose remedy is "prove a factor and retry".
- *
- * Asserting the STATUS alone cannot tell that refusal from the one the hub
- * deliberately leaves unmarked -- the permanent "this credential can never
- * elevate" answer a bearer gets. Both are FailedPrecondition, and only the
- * marker says which, so only the marker distinguishes a retryable prompt
- * from a permanent refusal.
+ * The marker identifies a refusal that permits elevation and another attempt.
+ * A bearer credential that cannot elevate receives FailedPrecondition without this marker.
+ * Status alone cannot distinguish that permanent refusal from a request to prove a factor.
  */
 export const ELEVATION_REQUIRED_HEADER = 'leapmux-elevation-required'
 
@@ -389,11 +369,9 @@ export async function deletePasskeyResponse(
 }
 
 /**
- * One credential an app holds on the account.
- *
- * `clientName` is the APP's registered display name and `installationName` is
- * the one device or checkout that holds this credential — one app, many
- * installations, which is why both are here.
+ * An app credential for this account.
+ * clientName identifies the registered app. installationName identifies the device or checkout that holds this credential.
+ * One app can have multiple installations.
  */
 export interface MyAPITokenSummary {
   id: string
@@ -435,21 +413,18 @@ export async function listMyAPITokensViaAPI(hubUrl: string, cookie: string): Pro
  * cooldown already ended (signup issues a code immediately; the hub blocks a
  * resend for 60s).
  */
-export async function backdatePendingEmailIssuedAt(hubDataDir: string, username: string): Promise<void> {
+export async function expirePendingEmailCooldown(hubDataDir: string, username: string): Promise<void> {
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
   const { join } = await import('node:path')
   const execFileAsync = promisify(execFile)
   const dbPath = join(hubDataDir, 'hub.db')
   const escaped = username.replace(/'/g, `''`)
-  // The cooldown gate reads pending_email_issued_at with a raw text
-  // compare, so the backdate MUST use the canonical strftime layout the
-  // hub writes: SQLite's datetime() renders a space at byte 10, which
-  // sorts before the canonical 'T' regardless of how far back the value
-  // sits -- a backdate that passes the gate by format mixing cannot also
-  // prove a correctly elapsed cooldown passes it.
-  // Retry on SQLITE_BUSY: the hub may hold a write lock briefly.
-  const sql = `UPDATE users SET pending_email_issued_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
+  // The cooldown compares pending_email_unblocked_at as text. Use the same strftime format as the hub.
+  // SQLite datetime() puts a space where the stored format uses T. That format difference can pass the comparison regardless of elapsed time.
+  // A test with mixed formats cannot prove that an expired cooldown permits resend.
+  // Retry SQLITE_BUSY because the hub can briefly hold a write lock.
+  const sql = `UPDATE users SET pending_email_unblocked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
   let lastErr: unknown
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
@@ -522,8 +497,8 @@ export async function mintRegistrationKeyViaAPI(
 }
 
 /**
- * Poll `ListWorkers` until a worker that was NOT in `before` appears
- * online, and return its ID. Mirrors `multiWorker.waitForNewOnlineWorker`.
+ * Poll ListWorkers until an online worker ID appears outside the supplied before set.
+ * Return that new worker ID.
  */
 export async function waitForNewOnlineWorkerViaAPI(
   hubUrl: string,
@@ -592,28 +567,22 @@ export async function openAgentViaAPI(
     useWorktreePath?: string
     agentProvider?: number
     /**
-     * Optional initial tab title. UI-driven opens pick a name via
-     * `pickAgentTitle`; the API path leaves `title=""` by default so
-     * tests that need a visible non-empty title (e.g. for
-     * cross-workspace move regression coverage where the bug strips
-     * exactly this field) must opt in explicitly.
+     * Optional initial tab title. Browser opens use pickAgentTitle. This API helper defaults to an empty title.
+     * Supply a title explicitly when a test requires visible text, such as a test that detects title loss during a workspace move.
      */
     title?: string
   },
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
-  // The proto carries the model AND every option-group value under the `options` map,
-  // not as a top-level field; create() would silently drop a spread `{ model }`, opening
-  // the agent at the provider default instead of the requested one.
+  // The options map holds the model and every option-group value.
+  // A top-level model property would disappear during protobuf creation, and the agent would use the provider default.
   const initialOptions = {
     ...options?.optionValues,
     ...(options?.model ? { model: options.model } : {}),
   }
 
-  // No workspace announcement. A channel carries no workspace set at all, so a
-  // workspace created after the cached ChannelManager handshook needs no extra
-  // step before the worker serves an RPC on its tabs.
+  // Channels hold no workspace set. A workspace created after the handshake needs no announcement before a worker serves its tabs.
   const resp = await channel.callWorker(
     workerId,
     'OpenAgent',
@@ -635,19 +604,11 @@ export async function openAgentViaAPI(
     throw new Error('openAgentViaAPI: no agent in response')
   }
 
-  // Seed the tab into the CRDT so UI-driven tests find a rendered
-  // tab on a freshly-API-seeded workspace. Mirrors what
-  // `tabStore.addTab` emits during a browser-driven openAgent flow:
-  // SetTabRegister(tile_id=root_node_id) + position + worker_id.
-  //
-  // The seed uses the SHARED `UserEventsSubscription` opened by
-  // `createWorkspaceViaAPI` BEFORE the workspace existed. The hub's
-  // broadcast of the seed `SetWorkspaceRootNode` op (or the
-  // `WorkspaceCreated` event) populates that subscription's state,
-  // exactly like the browser's long-lived `/ws/userevents`. A
-  // workspace where the hub failed to deliver those events surfaces
-  // here as an `awaitRootNodeId` timeout — same diagnostic the user
-  // would see in production (empty workspace, missing agent tab).
+  // Register the tab in the conflict-free replicated data type (CRDT), as tabStore.addTab does in the browser.
+  // The register contains the root tile ID, position, and worker ID.
+  // Use the subscription that createWorkspaceViaAPI opened before workspace creation.
+  // The hub must deliver its root-node operation or creation event through that existing subscription.
+  // A lost event then causes awaitRootNodeId to time out, as the browser would otherwise show an empty workspace without the agent tab.
   const { seedTabIntoWorkspace, getUserEventsSubscription } = await import('./crdt')
   const { TabType } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
   const userEvents = await getUserEventsSubscription(hubUrl, cookie)
@@ -664,16 +625,11 @@ export async function openAgentViaAPI(
 }
 
 /**
- * Open an agent with the permission mode pinned to `default`.
- *
- * A new session otherwise starts on the provider's safe default — Claude Code requests
- * Auto Mode — and the installed CLI decides whether it can enter that mode, so the
- * resulting mode varies by machine. Every spec that asserts one EXACT mode string, or a
- * "Mode (X → Y)" notification, opens its agent through here.
- *
- * A spec that means to exercise the safe default must NOT use this helper. It should
- * open the agent plainly and read the offered modes to decide what to expect, the way
- * `044-agent-settings.spec.ts` does.
+ * Open an agent with permission mode default.
+ * Without an explicit mode, Claude requests Auto Mode and the installed CLI decides whether it is available.
+ * Use this helper when a test requires an exact mode or a mode-change notification.
+ * A test of the provider default must open the agent without this helper.
+ * Read the offered modes to select expectations, as 044-agent-settings.spec.ts does.
  */
 export async function openPinnedModeAgentViaAPI(
   hubUrl: string,
@@ -690,28 +646,18 @@ export async function openPinnedModeAgentViaAPI(
 // These call the hub's WorkspaceService directly via HTTP.
 
 /**
- * Create a workspace via the hub's WorkspaceService. Returns the workspace ID.
- *
- * Warms the per-(hub, session) `UserEventsSubscription` BEFORE dispatching
- * the create RPC. This makes the test fixture mirror the production
- * browser flow: a long-lived `/ws/userevents` subscription is already
- * attached at the moment the workspace is created, so the hub-side
- * seed-ops broadcast (and its filter-expansion contract) is on the
- * critical path of the test. Opening the subscription AFTER the
- * create would re-bootstrap from the materialized state and mask
- * regressions where the hub drops the seed ops for existing
- * subscribers.
+ * Create a workspace through WorkspaceService and return its ID.
+ * Open the session subscription before creating the workspace, as the browser does.
+ * The test then requires the hub to expand its subscription filter and broadcast the initial operations.
+ * A subscription opened afterward would reload materialized state and hide lost operations for existing subscribers.
  */
 export async function createWorkspaceViaAPI(
   hubUrl: string,
   cookie: string,
   title: string,
 ): Promise<string> {
-  // Establish the subscription FIRST so the hub's broadcast of the
-  // lifecycle-create's seed batch reaches it. Awaiting the open
-  // here guarantees the WebSocket is in the manager's subscriber set
-  // by the time the CreateWorkspace RPC reaches the lifecycle
-  // outbox.
+  // Wait for the subscription before CreateWorkspace.
+  // Its WebSocket must belong to the subscriber set before the lifecycle outbox publishes the initial operations.
   const { getUserEventsSubscription } = await import('./crdt')
   await getUserEventsSubscription(hubUrl, cookie)
 
@@ -731,108 +677,7 @@ export async function createWorkspaceViaAPI(
   return workspaceId
 }
 
-/**
- * Stop and close every agent/terminal a workspace owns on its worker — the
- * worker-side half of a workspace delete.
- *
- * The browser app's delete flow is two steps: the hub soft-deletes the workspace
- * (returning worker IDs), then the frontend sends a `CleanupWorkspace` E2EE RPC
- * to each worker (useWorkspaceOperations.deleteWorkspace), which stops the agent
- * subprocesses. `deleteWorkspaceViaAPI` only does the hub half, so without this the
- * worker keeps every test's Claude CLI subprocess alive; across a suite they
- * accumulate (observed peak ~17 concurrent) and exhaust local resources, which makes
- * the live frontend slow enough to make settings-menu interactions flaky. Run this
- * at teardown to mirror what the real client does. Best-effort; reuses the cached
- * test channel, which already has the workspace in its accessible set from
- * openAgentViaAPI.
- */
-export async function cleanupWorkspaceViaAPI(
-  hubUrl: string,
-  cookie: string,
-  workerId: string,
-  workspaceId: string,
-): Promise<void> {
-  const { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
-  const channel = await getTestChannel(hubUrl, cookie)
-  // The worker tracks no workspace id, so the CALLER supplies the tab list --
-  // read from the hub here, exactly as the browser reads it from its projection.
-  // Must run BEFORE the hub-side delete, while the tabs are still listable.
-  const tabs = await listTabsViaAPI(hubUrl, cookie, workspaceId)
-  await channel.callWorker(
-    workerId,
-    'CleanupWorkspace',
-    CleanupWorkspaceRequestSchema,
-    CleanupWorkspaceResponseSchema,
-    { tabs: tabs.filter(t => t.workerId === workerId).map(t => ({ tabType: t.tabType, tabId: t.tabId })) },
-  )
-}
-
-/**
- * The tabs the hub lists for a workspace, as (tab_type, tab_id, worker_id).
- * cleanupWorkspaceViaAPI reads it, because that helper has to identify the
- * tabs explicitly.
- *
- * `tab_type` arrives as the enum NAME, not its number: this is Connect's JSON
- * codec (protojson), which serializes enums as `"TAB_TYPE_AGENT"`. Reading it
- * as a number yielded a string that then failed to encode into
- * `CleanupWorkspaceRequest`, so every teardown asked the worker to close
- * TAB_TYPE_UNSPECIFIED tabs, the worker's switch fell to `default:`, and the
- * worker closed nothing — leaving every spec's agent subprocess alive on the
- * shared worker. This helper maps it back to the numeric enum so the caller
- * can build a real request.
- *
- * A failed read THROWS rather than degrading to an empty list. An empty list is
- * a valid request meaning "close nothing", so swallowing the error would make
- * teardown report success while leaving every process running — the precise
- * failure this helper exists to prevent.
- */
-async function listTabsViaAPI(
-  hubUrl: string,
-  cookie: string,
-  workspaceId: string,
-): Promise<{ tabType: number, tabId: string, workerId: string }[]> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ workspaceIds: [workspaceId] }),
-  })
-  if (!res.ok)
-    throw new Error(`listTabsViaAPI failed: ${res.status} ${await res.text()}`)
-  const body = await res.json() as { tabs?: { tabType?: string, tabId?: string, workerId?: string }[] }
-  return (body.tabs ?? [])
-    .filter(t => t.tabId)
-    .map(t => ({
-      tabType: tabTypeFromProtoName(t.tabType ?? '', t.tabId!),
-      tabId: t.tabId!,
-      workerId: t.workerId ?? '',
-    }))
-}
-
-/**
- * The TabType a protojson `tab_type` name stands for.
- *
- * Reflection over the generated enum, NOT a hand-written table. The table this
- * replaced listed four names and was already one short: `TAB_TYPE_IMAGE` was
- * missing, so `listTabsViaAPI` threw on any workspace that held an image tab,
- * and every spec sharing that fixture failed in teardown rather than in the
- * assertion it was written for.
- *
- * It still THROWS on a name the enum does not declare, which is the contract
- * the caller needs: a tab this helper cannot classify must not be silently
- * dropped from a cleanup sweep.
- */
-export function tabTypeFromProtoName(name: string, tabId?: string): number {
-  try {
-    return enumFromJson(TabTypeSchema, name as never) as number
-  }
-  catch {
-    throw new Error(`listTabsViaAPI: unrecognized tab_type ${JSON.stringify(name)}${tabId ? ` for tab ${tabId}` : ''}`)
-  }
-}
-
-/**
- * Delete (soft-delete) a workspace via the hub's WorkspaceService.
- */
+/** Delete a workspace and close the tabs that its online workers own. */
 export async function deleteWorkspaceViaAPI(
   hubUrl: string,
   cookie: string,
@@ -843,9 +688,43 @@ export async function deleteWorkspaceViaAPI(
     headers: authedHeaders(cookie),
     body: JSON.stringify({ workspaceId }),
   })
-  if (!res.ok) {
+  // Tests can delete a fixture workspace before fixture cleanup runs.
+  if (res.status === 404)
+    return
+  if (!res.ok)
     throw new Error(`deleteWorkspaceViaAPI failed: ${res.status}`)
+
+  // The hub returns an atomic snapshot of owned tabs with the deletion.
+  // A separate ListTabs request can miss tabs or arrive after the hub removes them.
+  const { workerTabs } = fromJson(DeleteWorkspaceResponseSchema, await res.json())
+  const groups = workerTabs.filter(worker => worker.tabs.length > 0)
+  if (groups.length === 0)
+    return
+  for (const worker of groups) {
+    if (!worker.workerId)
+      throw new Error('Missing worker ID in workspace deletion response')
+    for (const tab of worker.tabs) {
+      if (!tab.tabId)
+        throw new Error('Missing tab ID in workspace deletion response')
+      if (tab.tabType === TabType.UNSPECIFIED || !Object.values(TabType).includes(tab.tabType))
+        throw new Error(`Invalid tab type for ${tab.tabId} in workspace deletion response`)
+    }
   }
+
+  // Offline workers reconcile deleted workspaces when they reconnect.
+  // Do not wait for a channel to a worker that the test deliberately stopped.
+  const online = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, cookie))
+  const reachable = groups.filter(worker => online.has(worker.workerId))
+  if (reachable.length === 0)
+    return
+  const channel = await getTestChannel(hubUrl, cookie)
+  await finishCleanup(reachable.map(worker => channel.callWorker(
+    worker.workerId,
+    'CleanupWorkspace',
+    CleanupWorkspaceRequestSchema,
+    CleanupWorkspaceResponseSchema,
+    { tabs: worker.tabs },
+  )))
 }
 
 /**

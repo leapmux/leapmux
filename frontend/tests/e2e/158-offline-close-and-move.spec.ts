@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
 import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -50,14 +50,9 @@ async function dragTo(page: Page, source: { x: number, y: number }, target: { x:
 }
 
 /**
- * Ask the Worker directly which of `tabIds` it still holds an OPEN agent row
- * for. `ListAgents` filters `closed_at IS NULL`, so a reaped agent drops out
- * of the response -- which makes this the observable form of "the reconciler
- * stopped the process and tombstoned the row" (both happen in the same branch
- * of `reconcileAgents`; only the row is visible from out here).
- *
- * Returns `null` while the channel to a just-restarted Worker is still being
- * re-established, so callers can poll instead of racing the reconnect.
+ * Read the open agent IDs directly from the worker. ListAgents excludes rows with closed_at set.
+ * reconcileAgents stops the process and marks the row closed in the same branch. This API exposes the row outcome.
+ * Return null while a restarted worker channel is unavailable, so callers can poll during reconnection.
  */
 async function liveAgentIdsViaAPI(hubUrl: string, token: string, workerId: string, tabIds: string[]): Promise<string[] | null> {
   const channel = await getTestChannel(hubUrl, token)
@@ -139,8 +134,8 @@ test.describe('Offline close and cross-workspace move', () => {
         .toEqual([closedAgentId, movedAgentId].sort())
 
       // ─── Take the Worker offline ────────────────────────────────────────
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
 
       // ─── 1. Close a tab with the Worker offline ─────────────────────────
       //
@@ -200,17 +195,13 @@ test.describe('Offline close and cross-workspace move', () => {
     finally {
       // `separateHubWorker` is worker-SCOPED: later specs in the same worker
       // reuse it. This spec deliberately kills it mid-test, so a failure between
-      // stopWorker() and the restart above would otherwise leave it dead and
+      // stopWorker(separateHubWorker) and the restart above would otherwise leave it dead and
       // every later spec would fail for an unrelated reason, masking the real
       // one. Restarting here is idempotent -- restartWorker is a no-op when the
       // process is already up.
       await restartWorker(separateHubWorker).catch(() => {})
-      // Tear the workers' local state down before dropping the hub rows, in the
-      // pairing every other separateHubWorker consumer uses: each workspace here
-      // holds a live agent, and deleting only the hub row leaves the subprocess
-      // running on the shared machine for the rest of the suite.
+      // The shared delete helper closes worker resources as well as the hub workspace.
       for (const ws of [wsA, wsB]) {
-        await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, ws).catch(() => {})
         await deleteWorkspaceViaAPI(hubUrl, adminToken, ws).catch(() => {})
       }
     }

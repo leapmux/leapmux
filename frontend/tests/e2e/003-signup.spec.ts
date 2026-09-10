@@ -1,35 +1,16 @@
 import { expect, test } from './fixtures'
 import { signUpViaUI } from './helpers/ui'
 
-test.describe('Sign Up', () => {
-  test('should sign up with valid credentials and redirect', async ({ page }) => {
-    // Use a unique username so this test doesn't conflict with "newuser"
-    // created in global setup or other test runs
+// SignupForm unit tests cover reserved names. SignupPage unit tests cover the login link.
+test.describe('signup', () => {
+  test('creates an account and opens the app', async ({ page }) => {
     const username = `signup-${Date.now()}`
     await signUpViaUI(page, username, 'password123', 'Signup Test User', 'signup@test.com')
-    // Should redirect to app home after signup
     await expect(page).toHaveURL('/')
   })
 
-  test('should show error for reserved username', async ({ page }) => {
-    await signUpViaUI(page, 'admin', 'password123')
-    // Public signup rejects "admin" before the server is even hit.
-    await expect(page.getByText(/reserved username/i)).toBeVisible()
-  })
-
-  test('should show error for duplicate username', async ({ page }) => {
-    // newuser is seeded by the worker-scoped fixture.
+  test('reports the username when that username already exists', async ({ page }) => {
     await signUpViaUI(page, 'newuser', 'password123')
-    // The hub names the field AND the value it collided on (`FieldTakenError`),
-    // so pin both. A bare /already taken/ would keep passing if a regression
-    // reported the email as taken instead, which is the confusion that error
-    // type exists to prevent.
     await expect(page.getByText(/username "newuser" is already taken/)).toBeVisible()
-  })
-
-  test('should link back to login page', async ({ page }) => {
-    await page.goto('/signup')
-    await page.getByText('Sign in').click()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   })
 })

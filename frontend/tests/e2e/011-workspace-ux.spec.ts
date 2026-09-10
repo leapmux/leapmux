@@ -1,192 +1,56 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { loginViaToken, openWorkspace, workspaceRow } from './helpers/ui'
+import { loginViaToken, workspaceRow } from './helpers/ui'
+import { withTestWorkspace } from './helpers/workspace'
 import { openNewWorkspaceDialog } from './helpers/worktree'
 
-test.describe('Workspace UX Enhancements', () => {
-  test('should auto-activate first workspace on app home', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Auto Activate Test')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Load the app home cold
-      await page.goto('/')
-      await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
-
-      // Should auto-activate a workspace rather than sit on an empty shell.
-      // There is no URL to check any more -- the sidebar row is where the
-      // active selection is observable.
-      await expect(workspaceRow(page, workspaceId))
-        .toHaveAttribute('data-active', 'true')
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
-
-  test('should open new workspace dialog from the section header menu', async ({ page, leapmuxServer }) => {
+test.describe('workspace navigation', () => {
+  test('activates the first workspace on a fresh app load', async ({ page, emptyWorkspace, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    // Navigate to app home first
+    // Do not preselect the workspace. A stored selection would hide a broken initial selection.
     await page.goto('/')
-    await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
+    await expect(workspaceRow(page, emptyWorkspace.workspaceId)).toHaveAttribute('data-active', 'true')
+  })
 
-    // The header carries a menu now, and "New workspace..." is an item in it.
+  test('opens the workspace dialog from the section header', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
     await openNewWorkspaceDialog(page)
-
-    // Close dialog without creating. The menu popover closed behind the item's
-    // own click, so this Escape reaches the dialog rather than the popover.
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeHidden()
   })
 
-  test('should show empty state when no tabs are open', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Empty State Test')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Close any auto-created tabs (agents) via the close button
-      const tabs = page.locator('[data-testid="tab"]')
-      const count = await tabs.count()
-      for (let i = count - 1; i >= 0; i--) {
-        const closeBtn = tabs.nth(i).locator('[data-testid="tab-close"]')
-        if (await closeBtn.isVisible()) {
-          await closeBtn.click()
-          await page.waitForTimeout(500)
-        }
-      }
-
-      // Verify all tabs are actually closed
-      await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
-
-      // Empty state actions should be visible
-      await expect(page.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
-
-  test('should open new agent dialog when clicking agent button with no tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Agent Dialog Test')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Close all tabs to reach the empty state
-      const tabs = page.locator('[data-testid="tab"]')
-      const count = await tabs.count()
-      for (let i = count - 1; i >= 0; i--) {
-        const closeBtn = tabs.nth(i).locator('[data-testid="tab-close"]')
-        if (await closeBtn.isVisible()) {
-          await closeBtn.click()
-          await page.waitForTimeout(500)
-        }
-      }
-      await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
-
-      // Click the empty-state agent button — should open dialog, not show a toast
-      await page.locator('[data-testid="empty-tile-open-agent"]').click()
-      await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
-
-      // Verify no error toast was shown
-      const toasts = await getRecordedToasts(page)
-      const errorToasts = toasts.filter(t => t.variant === 'danger')
-      expect(errorToasts).toHaveLength(0)
-
-      // Close the dialog
+  for (const { trigger, title } of [
+    { trigger: 'empty-tile-open-agent', title: 'New Agent' },
+    { trigger: 'new-terminal-button', title: 'New Terminal' },
+  ]) {
+    test(`opens ${title} from an empty workspace without an error toast`, async ({ page, authenticatedEmptyWorkspace }) => {
+      void authenticatedEmptyWorkspace
+      await expect(page.getByTestId('tab')).toHaveCount(0)
+      await expect(page.getByTestId('empty-tile-actions')).toBeVisible()
+      // These buttons have no active tab context, so each must open its directory dialog.
+      await page.getByTestId(trigger).click()
+      await expect(page.getByRole('heading', { name: title })).toBeVisible()
       await page.keyboard.press('Escape')
-      await expect(page.getByRole('heading', { name: 'New Agent' })).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
+      await expect(page.getByRole('heading', { name: title })).toBeHidden()
+      expect((await getRecordedToasts(page)).filter(toast => toast.variant === 'danger')).toEqual([])
+    })
+  }
 
-  test('should open new terminal dialog when clicking terminal button with no tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Terminal Dialog Test')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Close all tabs to reach the empty state
-      const tabs = page.locator('[data-testid="tab"]')
-      const count = await tabs.count()
-      for (let i = count - 1; i >= 0; i--) {
-        const closeBtn = tabs.nth(i).locator('[data-testid="tab-close"]')
-        if (await closeBtn.isVisible()) {
-          await closeBtn.click()
-          await page.waitForTimeout(500)
-        }
-      }
-      await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
-
-      // Click the button DIRECTLY, not through `openTerminalViaUI`: that helper
-      // waits for the active tab's working directory, and this test's whole
-      // subject is the no-tab state where there is no such context and the
-      // dialog is the correct answer. Waiting for it here would hang forever.
-      await page.locator('[data-testid="new-terminal-button"]').click()
-      await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
-
-      // Verify no error toast was shown
-      const toasts = await getRecordedToasts(page)
-      const errorToasts = toasts.filter(t => t.variant === 'danger')
-      expect(errorToasts).toHaveLength(0)
-
-      // Close the dialog
-      await page.keyboard.press('Escape')
-      await expect(page.getByRole('heading', { name: 'New Terminal' })).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
-  })
-
-  test('should activate next workspace after deleting the active one', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const workspaceId1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delete Target WS')
-    const workspaceId2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Next WS')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId1)
-
-      // Ensure both workspaces are visible in the sidebar before deleting
-      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).toBeVisible()
-      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Next WS' })).toBeVisible()
-
-      // Delete the active workspace
-      const deleteTarget = workspaceRow(page, workspaceId1)
-      await deleteTarget.hover()
-      await deleteTarget.locator('button').first().click()
-      // `exact`: the row menu's info block joins every row into its own
-      // accessible name, and Playwright matches a name by substring.
-      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
-
-      // Confirm the delete via ConfirmDialog (danger mode: arm then confirm)
-      const dialog = page.locator('dialog')
+  test('activates the surviving workspace after deleting the active workspace', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+    await withTestWorkspace(leapmuxServer, 'survivor', async (second) => {
+      const first = workspaceRow(page, authenticatedEmptyWorkspace.workspaceId)
+      const survivor = workspaceRow(page, second.workspaceId)
+      await expect(first).toHaveAttribute('data-active', 'true')
+      await expect(survivor).toBeVisible()
+      await first.getByTestId('workspace-row-menu-trigger').click()
+      await first.getByRole('menuitem', { name: 'Delete', exact: true }).click()
+      const dialog = page.getByRole('dialog')
       await expect(dialog).toBeVisible()
-      await dialog.getByRole('button', { name: 'Delete' }).click()
+      await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
       await dialog.getByRole('button', { name: 'Confirm?' }).click()
-
-      // The deleted workspace should be gone from sidebar
-      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
-      // Should switch to the surviving workspace rather than leave the shell
-      // pointed at the one that was just deleted.
-      await expect(workspaceRow(page, workspaceId2))
-        .toHaveAttribute('data-active', 'true')
-      // Verify the 'Next WS' workspace is visible in the sidebar
-      await expect(page.getByText('Next WS')).toBeVisible()
-    }
-    finally {
-      // workspaceId1 was deleted by the test, but clean up best-effort
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId1).catch(() => {})
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId2).catch(() => {})
-    }
+      await expect(first).toBeHidden()
+      await expect(survivor).toHaveAttribute('data-active', 'true')
+    })
   })
 })

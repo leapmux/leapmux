@@ -23,9 +23,7 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-// Partial mock: this file fakes only the ceremony. passkeyErrorMessage is the real
-// classifier, so these tests exercise the same cancel-vs-failure rule the
-// component ships with.
+// Mock only the passkey ceremony. Keep the real passkeyErrorMessage classifier to distinguish cancellation from failure.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
   startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
@@ -53,22 +51,21 @@ function displayNameInput() {
   return screen.getByLabelText('Display Name') as HTMLInputElement
 }
 
-function renderForm() {
+function renderForm(overrides: Partial<Parameters<typeof SignupForm>[0]> = {}) {
   return render(() => (
     <SignupForm
       submitLabel="Create account"
       submittingLabel="Creating account..."
       onSuccess={() => {}}
+      {...overrides}
     />
   ))
 }
 
 /**
- * The reason a disabled control carries, read the way a screen reader gets it.
- *
- * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
- * as the control is disabled. It is NOT `title`: a reason long enough to be
- * worth reading becomes the control's accessible name on `title`.
+ * Read the disabled control description through aria-describedby, as a screen reader does.
+ * Tooltip keeps this description while the control stays disabled.
+ * A native title would instead make a long explanation the accessible name.
  */
 function reasonOf(el: Element): string {
   const describedBy = el.getAttribute('aria-describedby')
@@ -139,12 +136,8 @@ describe('signup form passkey path', () => {
     expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
   })
 
-  // The other branch of the condition that this form tests, which nothing
-  // exercised. A page that cannot run a ceremony must not offer to sign
-  // somebody up with one, and the password option has to survive -- it is the
-  // only remaining way to sign up.
-  //
-  // The HUB's refusal is a property of the deployment, so the option goes.
+  // A form that cannot run a passkey ceremony must retain password signup.
+  // When the hub refuses passkeys, remove the passkey option because the deployment cannot serve it.
   it('drops the passkey option when the hub does not serve this origin', () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
     renderForm()
@@ -153,8 +146,8 @@ describe('signup form passkey path', () => {
     expect(screen.getByLabelText('New Password')).toBeInTheDocument()
   })
 
-  // The BROWSER's refusal is something the reader can clear by moving, so the
-  // option stays and carries the reason.
+  // When the browser refuses passkeys, retain the option and explain why it is disabled.
+  // The user can change browsers or origins.
   it.each([
     ['the page is not secure', 'insecure-context' as const, /secure page/i],
     ['the browser has no WebAuthn', 'no-webauthn' as const, /does not support passkeys/i],
@@ -172,9 +165,8 @@ describe('signup form passkey path', () => {
 
   it('hides the password fields when the user selects passkey', () => {
     renderForm()
-    // Present FIRST, then gone. The label reads "New Password", so the
-    // absence assertion this replaced queried a label that never existed --
-    // it passed whether the fields rendered or not.
+    // Check that the password fields exist before switching methods.
+    // Use the actual New Password label, or an absence check could pass when the form never rendered it.
     expect(screen.getByLabelText('New Password')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
     expect(screen.queryByLabelText('New Password')).not.toBeInTheDocument()
@@ -206,5 +198,40 @@ describe('signup form passkey path', () => {
     })
     expect(await screen.findByRole('button', { name: 'Create account' })).toBeEnabled()
     expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('signup username validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetSystemInfoMock()
+    resetCaptchaMocks()
+    mockSignUp.mockResolvedValue({ user: { id: 'created-user' } })
+  })
+
+  function fillCredentials(username: string) {
+    fireEvent.input(usernameInput(), { target: { value: username } })
+    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+  }
+
+  it.each(['admin', 'Admin', ' ADMIN '])('rejects reserved usernames before sending a request: %s', async (username) => {
+    const onSuccess = vi.fn()
+    renderForm({ onSuccess })
+    fillCredentials(username)
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    expect(await screen.findByText(/reserved username/i)).toBeVisible()
+    expect(mockSignUp).not.toHaveBeenCalled()
+    expect(onSuccess).not.toHaveBeenCalled()
+  })
+
+  it('permits the administrator name for the first-account setup form', async () => {
+    const onSuccess = vi.fn()
+    renderForm({ allowAdminUsername: true, onSuccess })
+    fillCredentials('admin')
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
+    expect(mockSignUp).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ username: 'admin', password: 'newpass123' }))
+    expect(screen.queryByText(/reserved username/i)).not.toBeInTheDocument()
   })
 })

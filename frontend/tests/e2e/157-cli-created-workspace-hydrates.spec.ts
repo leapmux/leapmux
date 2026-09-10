@@ -1,39 +1,18 @@
 /**
- * A workspace created by the CLI while the page is already open must still work.
+ * A CLI-created workspace must hydrate through a channel that already exists.
+ * The former announcement protocol fixed a channel workspace set at open time. New workspaces then received NOT_ACCESSIBLE until reload repaired that set.
+ * Workers now serve one user and hold no workspace IDs, so channels need no workspace announcement.
+ * This test checks the resulting behavior across the hub, worker, and browser.
  *
- * This used to be a bug with a whole protocol behind it. A worker channel was
- * told which workspaces it may serve exactly once, at OpenChannel time, and
- * that set grew only when somebody called `PrepareWorkspaceAccess`. A workspace
- * that came into existence AFTER a channel opened was invisible to it: the tabs
- * projected into the sidebar from the CRDT but never hydrated, because the
- * worker answered NOT_ACCESSIBLE to every ListAgents and the client could only
- * re-ask and be refused again until a reload re-seeded the channel.
- *
- * The announcement protocol is gone. A worker serves exactly one user and
- * stores no workspace id, so a channel carries no workspace set to be stale
- * about -- there is nothing to announce and nothing to repair. This spec stays
- * because the USER-VISIBLE outcome is still worth pinning: an agent the CLI
- * opens in a workspace created after page load hydrates, with no reload.
- *
- * WHY THIS IS AN E2E. Nothing smaller covers the seam between three processes
- * -- the hub's channel open, the worker's authorization, and the browser's
- * hydration. Two details of the setup are load-bearing:
- *
- *   - the page must not reload afterwards, because `page.goto` re-opens the
- *     channel and would hide a regression that only affects an already-open
- *     one; and
- *   - the assertion must be the TAB LABEL. The pane renders its chat editor
- *     either way and never shows the "Agent not found." placeholder here, so
- *     both of those pass against an unhydrated tab. `tabDisplayLabel` falls back
- *     to the bare string "Agent" with no record; the worker assigns
- *     "Agent <Name>", and only hydration can put that in the DOM.
+ * Do not reload the page after creating the second workspace. A reload would replace the channel and hide the original failure.
+ * Check the tab label that worker metadata supplies. An unhydrated tab can still render an editor.
+ * Only hydration replaces its generic Agent label with the assigned Agent <Name> label.
  */
 
 import type { ServerInfo } from './fixtures'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import {
-  cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   openAgentViaAPI,
@@ -98,7 +77,6 @@ test.describe('cli-created workspace hydrates', () => {
       for (const id of [first, second]) {
         if (!id)
           continue
-        await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, id).catch(() => {})
         await deleteWorkspaceViaAPI(hubUrl, adminToken, id).catch(() => {})
       }
     }

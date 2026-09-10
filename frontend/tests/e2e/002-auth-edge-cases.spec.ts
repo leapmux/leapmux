@@ -1,54 +1,29 @@
 import { expect, test } from './fixtures'
 import { deleteStorageDatabase } from './helpers/storage'
-import { loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginViaUI, logoutViaUI } from './helpers/ui'
 
-// Where a successful login lands, and stays: `/` is the whole app, and
-// activating a workspace no longer changes the URL.
-const APP_HOME_URL_RE = /\/$/
-const LOGIN_URL_RE = /\/login/
-
-/**
- * The "Sign in disabled while fields are empty" UI state and the absence of a
- * `leapmux_token` localStorage entry are unit-tested in
- * `src/components/common/LoginPage.test.tsx`. The redirect-when-unauth and
- * AuthGuard behavior are unit-tested in `src/components/common/AuthGuard.test.tsx`.
- *
- * What only a real browser session can verify is that the auth cookie is
- * HttpOnly and survives wiping every browser store + reload — proving the
- * session is genuinely cookie-backed, not storage-backed. That smoke is below.
- */
-test.describe('Auth Edge Cases', () => {
-  test('cookie-based session survives wiping every browser store and reloading', async ({ page }) => {
+// Component tests cover empty fields and authentication redirects.
+// Captcha helper unit tests cover readiness failures without a two-minute browser timeout.
+test.describe('authentication storage independence', () => {
+  test('keeps an HttpOnly session after browser storage is cleared', async ({ page }) => {
     await loginViaUI(page)
-    await expect(page).toHaveURL(APP_HOME_URL_RE)
+    await expect(page).toHaveURL(/\/$/)
+    const session = (await page.context().cookies()).find(cookie => cookie.name === 'leapmux-session')
+    expect(session).toBeDefined()
+    expect(session!.httpOnly).toBe(true)
 
-    // Wipe BOTH stores the app can write. If the session were storage-backed,
-    // the next reload would bounce to /login. localStorage alone no longer says
-    // that: the `leapmux:` family lives in IndexedDB.
-    await page.evaluate(() => localStorage.clear())
+    // Simulate the browser's data deletion outside the app's storage gateway.
+    await page.evaluate(() => {
+      localStorage.clear()
+      sessionStorage.clear()
+    })
     await deleteStorageDatabase(page)
-
     await page.reload()
-    await expect(page).toHaveURL(APP_HOME_URL_RE)
-    await expect(page).not.toHaveURL(LOGIN_URL_RE)
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page).not.toHaveURL(/\/login/)
 
-    // Logout still works after the wipe (the cookie is the source of truth).
     await logoutViaUI(page)
     await page.goto('/')
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-  })
-
-  // solveCaptchaViaUI is a no-op when the hub reports captcha disabled;
-  // that return lives INSIDE its poll loop (the submit button enabling).
-  // When neither the widget nor an enabled submit appears — here a
-  // GetSystemInfo that never answers keeps the submit gate closed — the
-  // helper must throw at the wait instead of silently proceeding, so a
-  // widget-mount regression fails at its cause rather than as a starved
-  // downstream assertion.
-  test('solveCaptchaViaUI fails loudly when neither widget nor enabled submit appears', async ({ page }) => {
-    await page.route('**/leapmux.v1.AuthService/GetSystemInfo*', () => new Promise(() => {}))
-    await page.goto('/login')
-
-    await expect(solveCaptchaViaUI(page)).rejects.toThrow(/solveCaptchaViaUI/)
   })
 })

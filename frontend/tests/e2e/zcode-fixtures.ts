@@ -1,33 +1,19 @@
+import type { WorkspaceFixture } from './helpers/workspace'
 /**
- * ZCode-specific e2e test fixtures.
- *
- * ZCode is a native line-delimited JSON agent (not ACP, not JSON-RPC), so the
- * fixture mirrors the Pi/Codex pattern rather than the shared ACP factory.
- *
- * The skip reason asks the same questions the worker asks at launch: a `zcode` on
- * PATH, else the bundled `zcode.cjs`, and then a `~/.zcode/v2/config.json` that
- * carries a usable provider. `StartZCode` fails on any of them, so a machine that
- * misses one would fail every test before it reached the chat surface.
+ * ZCode fixtures use the shared agent workspace lifetime.
+ * The skip check requires a launcher or bundled script and a usable provider configuration.
+ * These checks match the worker's launch requirements.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import process from 'node:process'
 import { AgentProvider } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
-  openAgentViaAPI,
-} from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { realAgentOpenOptions, realAgentSettings } from './realAgentSettings'
-import { computeZCodeE2ESkipReason } from './zcode-install'
 
-interface WorkspaceFixture {
-  workspaceId: string
-}
+import { loginViaToken, openWorkspace } from './helpers/ui'
+import { withAgentWorkspace } from './helpers/workspace'
+import { computeZCodeE2ESkipReason } from './zcode-install'
 
 function zcodeOnPath(): boolean {
   try {
@@ -56,22 +42,7 @@ export const zcodeTest = base.extend<{
   authenticatedZCodeWorkspace: WorkspaceFixture
 }>({
   zcodeWorkspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(
-      hubUrl,
-      adminToken,
-      `zcode-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, mkdtempSync(join(tmpdir(), 'zcode-e2e-wd-')), {
-      agentProvider: AgentProvider.ZCODE,
-      ...realAgentOpenOptions(realAgentSettings(AgentProvider.ZCODE)),
-    })
-    await use({ workspaceId })
-
-    try {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
-    }
-    catch { /* best effort */ }
+    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e' }, use)
   },
 
   authenticatedZCodeWorkspace: async ({ page, zcodeWorkspace, leapmuxServer }, use) => {

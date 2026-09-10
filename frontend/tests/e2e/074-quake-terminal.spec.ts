@@ -1,14 +1,22 @@
 import type { Page } from '@playwright/test'
 import type { ServerInfo } from './fixtures'
-import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import type { WorkspaceFixture } from './helpers/workspace'
+import { test as base, expect } from './fixtures'
+import { listWorkspacesViaAPI, openAgentViaAPI } from './helpers/api'
 import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { createTestDirectory } from './helpers/runDirectory'
 import { hubDataDir } from './helpers/server'
 import { getTerminalText, waitForTerminalReady } from './helpers/terminal'
 import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref, waitForActiveTabContext } from './helpers/ui'
+import { withTestWorkspace } from './helpers/workspace'
+
+interface QuakeServer extends ServerInfo, WorkspaceFixture {}
+
+const test = base.extend<{ quakeServer: QuakeServer }>({
+  quakeServer: async ({ leapmuxServer }, use, testInfo) => {
+    await withTestWorkspace(leapmuxServer, `Quake-${testInfo.title}`, workspace => use({ ...leapmuxServer, ...workspace }))
+  },
+})
 
 /**
  * The Quake terminal: a shell that slides over the centre area for one working
@@ -44,23 +52,19 @@ async function toggleQuake(page: Page) {
 const panel = (page: Page) => page.locator(PANEL)
 
 /**
- * A directory no other case in this file uses.
- *
- * A quake terminal is keyed on (Worker, working directory), and this fixture's
- * hub and Worker are WORKER-SCOPED — one instance serves every test in the
- * file. Sharing one directory would therefore share one SHELL across cases:
- * a scrollback assertion would read the previous test's output, and the
- * "goes away with the last tab" case could never see its directory empty,
- * because every earlier case left an agent tab in it.
+ * Create a directory for this test only.
+ * A quake terminal belongs to one worker and directory. The worker fixture serves multiple tests.
+ * Private directories keep file contents separate between tests.
+ * Multiple directories in one test must receive separate quake terminals.
  */
 function freshDir() {
-  return mkdtemp(join(tmpdir(), 'leapmux-quake-'))
+  return createTestDirectory('leapmux-quake-')
 }
 
 /** Open an agent tab and land on it, which is the state every case starts in. */
-async function openAgentTab(page: Page, server: { hubUrl: string, adminToken: string, workerId: string }, title: string) {
-  const workingDir = await freshDir()
-  const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
+async function openAgentTab(page: Page, server: QuakeServer) {
+  const workingDir = freshDir()
+  const { workspaceId } = server
   const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir)
   await loginViaToken(page, server.adminToken)
   await openWorkspace(page, workspaceId)
@@ -144,8 +148,20 @@ async function runInQuake(page: Page, command: string, expected: string) {
 }
 
 test.describe('Quake-mode terminal', () => {
-  test('nothing exists until the shortcut is pressed', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Lazy')
+  let initialWorkspaceIds: string[] | undefined
+  test.beforeAll(async ({ leapmuxServer }) => {
+    initialWorkspaceIds = (await listWorkspacesViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(workspace => workspace.id).sort()
+  })
+
+  test.afterAll(async ({ leapmuxServer }) => {
+    if (!initialWorkspaceIds)
+      return
+    const workspaces = await listWorkspacesViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+    expect(workspaces.map(workspace => workspace.id).sort()).toEqual(initialWorkspaceIds)
+  })
+
+  test('nothing exists until the shortcut is pressed', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
     // The tab is fully hydrated, so the chord WOULD work from here. Without
     // this the absence below is satisfied by a page that has not finished
     // loading, which is true with the feature deleted.
@@ -160,8 +176,8 @@ test.describe('Quake-mode terminal', () => {
     await expect(panel(page)).toBeInViewport()
   })
 
-  test('opens a shell over the centre area and runs a command', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Open')
+  test('opens a shell over the centre area and runs a command', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
@@ -172,8 +188,8 @@ test.describe('Quake-mode terminal', () => {
 
   // The point of the feature: a toggle hides the panel, it does not end the
   // shell. The scrollback proves the PTY and the xterm both survived.
-  test('keeps the shell and its scrollback across a toggle', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Toggle')
+  test('keeps the shell and its scrollback across a toggle', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -192,8 +208,8 @@ test.describe('Quake-mode terminal', () => {
 
   // Exiting ENDS a quake terminal, unlike a terminal tab, which stays on screen
   // offering Enter to restart. The next open gets a shell with no history.
-  test('ends the shell on exit, and opens a fresh one next time', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Exit')
+  test('ends the shell on exit, and opens a fresh one next time', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -217,8 +233,8 @@ test.describe('Quake-mode terminal', () => {
   // Through the keyboard, not the tab strip's X. A top-anchored panel covers the
   // strip while it is open -- it spans the whole centre area by design -- so the
   // click would land on the terminal underneath instead.
-  test('goes away with the last tab in its directory', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Close Owner')
+  test('goes away with the last tab in its directory', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -241,8 +257,8 @@ test.describe('Quake-mode terminal', () => {
   // The shell lives on the Worker, so a reload re-attaches to it rather than
   // starting another. The panel itself starts closed, because whether it shows
   // is per-device UI state that nothing persists.
-  test('re-attaches to the same shell after a reload', async ({ page, leapmuxServer }) => {
-    const { workspaceId } = await openAgentTab(page, leapmuxServer, 'Quake Reload')
+  test('re-attaches to the same shell after a reload', async ({ page, quakeServer }) => {
+    const { workspaceId } = await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -258,8 +274,8 @@ test.describe('Quake-mode terminal', () => {
     await expect.poll(async () => (await getTerminalText(page)).includes('survives-reload')).toBe(true)
   })
 
-  test('slides in from the configured edge, at the configured size', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Geometry')
+  test('slides in from the configured edge, at the configured size', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
 
@@ -293,9 +309,9 @@ test.describe('Quake-mode terminal', () => {
    * the shadow the panel drops.
    */
   for (const [orientation, axis] of [['bottom', 'y'], ['left', 'x'], ['right', 'x']] as const) {
-    test(`slides in from the ${orientation} edge`, async ({ page, leapmuxServer }) => {
-      const { workspaceId } = await openAgentTab(page, leapmuxServer, `Quake ${orientation}`)
-      await withQuakePref(page, leapmuxServer, 'quakeOrientation', orientation, workspaceId)
+    test(`slides in from the ${orientation} edge`, async ({ page, quakeServer }) => {
+      const { workspaceId } = await openAgentTab(page, quakeServer)
+      await withQuakePref(page, quakeServer, 'quakeOrientation', orientation, workspaceId)
 
       await toggleQuake(page)
       await expect(panel(page)).toBeInViewport()
@@ -336,9 +352,9 @@ test.describe('Quake-mode terminal', () => {
    * xterm leaving the surface alone. `color-mix` serializes differently across
    * engines, so both spellings are accepted and only the alpha is asserted.
    */
-  test('paints its background at the configured opacity', async ({ page, leapmuxServer }) => {
-    const { workspaceId } = await openAgentTab(page, leapmuxServer, 'Quake Opacity')
-    await withQuakePref(page, leapmuxServer, 'quakeBackgroundOpacity', 0.5, workspaceId)
+  test('paints its background at the configured opacity', async ({ page, quakeServer }) => {
+    const { workspaceId } = await openAgentTab(page, quakeServer)
+    await withQuakePref(page, quakeServer, 'quakeBackgroundOpacity', 0.5, workspaceId)
 
     await toggleQuake(page)
     await expect(panel(page)).toBeInViewport()
@@ -360,11 +376,10 @@ test.describe('Quake-mode terminal', () => {
     expect(alpha).toBeCloseTo(0.5, 2)
   })
 
-  // The panel is in the DOM while closed so the shell survives a toggle, which
-  // means it must be out of the accessibility tree and out of the tab order --
-  // otherwise Tab lands a keyboard user in a terminal that is off screen.
-  test('keeps a hidden panel out of the tab order', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Inert')
+  // Keep the closed panel mounted so its shell survives a toggle.
+  // Exclude that panel from accessibility navigation and tab order, or keyboard focus can enter an off-screen terminal.
+  test('keeps a hidden panel out of the tab order', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -375,9 +390,9 @@ test.describe('Quake-mode terminal', () => {
     await expect(panel(page)).toHaveAttribute('inert', '')
   })
 
-  test('appears at once when the system asks for reduced motion', async ({ page, leapmuxServer }) => {
+  test('appears at once when the system asks for reduced motion', async ({ page, quakeServer }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
-    await openAgentTab(page, leapmuxServer, 'Quake Reduced Motion')
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
 
@@ -393,10 +408,10 @@ test.describe('Quake-mode terminal', () => {
    * Tabs are switched from the keyboard, not the strip: a top-anchored panel
    * covers the strip while it is open, by design.
    */
-  test('shares one shell between two agent tabs in one directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const dir = await freshDir()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Quake Two Tabs')
+  test('shares one shell between two agent tabs in one directory', async ({ page, quakeServer }) => {
+    const { hubUrl, adminToken, workerId } = quakeServer
+    const dir = freshDir()
+    const { workspaceId } = quakeServer
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dir)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dir)
     await loginViaToken(page, adminToken)
@@ -426,11 +441,11 @@ test.describe('Quake-mode terminal', () => {
    * The other half of the rule: two DIRECTORIES are two shells, each with its
    * own scrollback, and switching between them swaps the panel with no dispose.
    */
-  test('keeps a separate shell for each directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const dirOne = await freshDir()
-    const dirTwo = await freshDir()
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Quake Two Dirs')
+  test('keeps a separate shell for each directory', async ({ page, quakeServer }) => {
+    const { hubUrl, adminToken, workerId } = quakeServer
+    const dirOne = freshDir()
+    const dirTwo = freshDir()
+    const { workspaceId } = quakeServer
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dirOne)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dirTwo)
     await loginViaToken(page, adminToken)
@@ -461,8 +476,8 @@ test.describe('Quake-mode terminal', () => {
    * opens the very same shell, which is the invariant the chord's `when` clause
    * stopped narrowing to `activeTabType == "agent"`.
    */
-  test('opens the same shell over a terminal tab', async ({ page, leapmuxServer }) => {
-    await openAgentTab(page, leapmuxServer, 'Quake Terminal Tab')
+  test('opens the same shell over a terminal tab', async ({ page, quakeServer }) => {
+    await openAgentTab(page, quakeServer)
 
     await toggleQuake(page)
     await waitForTerminalReady(page)
@@ -491,16 +506,16 @@ test.describe('Quake-mode terminal', () => {
    * `is_quake` and its unique partial index over `working_dir` are what make the
    * second browser adopt the first one's terminal instead of spawning a second.
    */
-  test('shares one shell between two browsers on the same account', async ({ page, browser, leapmuxServer }) => {
-    const { workspaceId } = await openAgentTab(page, leapmuxServer, 'Quake Shared')
+  test('shares one shell between two browsers on the same account', async ({ page, browser, quakeServer }) => {
+    const { workspaceId } = await openAgentTab(page, quakeServer)
     await toggleQuake(page)
     await waitForTerminalReady(page)
     await runInQuake(page, 'echo from-browser-a', 'from-browser-a')
 
-    const context = await browser.newContext({ baseURL: leapmuxServer.hubUrl })
+    const context = await browser.newContext({ baseURL: quakeServer.hubUrl })
     const second = await context.newPage()
     try {
-      await loginViaToken(second, leapmuxServer.adminToken)
+      await loginViaToken(second, quakeServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
 
@@ -538,14 +553,14 @@ test.describe('Quake-mode terminal', () => {
    * what lets it move a panel while the active tab stays client-local. Both
    * open browsers therefore act on it.
    */
-  test('moves the panel from the Control CLI, in every open browser', async ({ page, browser, leapmuxServer }) => {
-    const { workspaceId, workingDir } = await openAgentTab(page, leapmuxServer, 'Quake CLI')
-    const cli = await mintCLITokenForAdmin(cliTokenSource(leapmuxServer))
+  test('moves the panel from the Control CLI, in every open browser', async ({ page, browser, quakeServer }) => {
+    const { workspaceId, workingDir } = await openAgentTab(page, quakeServer)
+    const cli = await mintCLITokenForAdmin(cliTokenSource(quakeServer))
 
-    const context = await browser.newContext({ baseURL: leapmuxServer.hubUrl })
+    const context = await browser.newContext({ baseURL: quakeServer.hubUrl })
     const second = await context.newPage()
     try {
-      await loginViaToken(second, leapmuxServer.adminToken)
+      await loginViaToken(second, quakeServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
       // The CLI addresses a DIRECTORY, and each browser maps it back through
@@ -555,15 +570,15 @@ test.describe('Quake-mode terminal', () => {
       await waitForActiveTabContext(page)
       await waitForActiveTabContext(second)
 
-      await runCLI(cli, ['terminal', 'quake', 'open', '--worker-id', leapmuxServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, ['terminal', 'quake', 'open', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
       await expect(panel(page)).toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
 
-      await runCLI(cli, ['terminal', 'quake', 'close', '--worker-id', leapmuxServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, ['terminal', 'quake', 'close', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
       await expect(panel(page)).not.toBeInViewport()
       await expect(second.locator(PANEL)).not.toBeInViewport()
 
-      await runCLI(cli, ['terminal', 'quake', 'toggle', '--worker-id', leapmuxServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, ['terminal', 'quake', 'toggle', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
       await expect(panel(page)).toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
     }

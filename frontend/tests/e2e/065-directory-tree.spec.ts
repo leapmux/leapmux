@@ -1,8 +1,8 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync } from 'node:fs'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { createTestDirectory } from './helpers/runDirectory'
 import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
@@ -283,8 +283,7 @@ test.describe('DirectoryTree', () => {
   test('large directory shows truncation indicator', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     // Create a temp directory with more than 256 entries
-    const largeDir = join(tmpdir(), `leapmux-e2e-largedir-${Date.now()}`)
-    mkdirSync(largeDir)
+    const largeDir = createTestDirectory('large-directory-')
     const totalFiles = 300
     for (let i = 0; i < totalFiles; i++) {
       writeFileSync(join(largeDir, `file${String(i).padStart(3, '0')}.txt`), '')
@@ -362,8 +361,7 @@ test.describe('DirectoryTree', () => {
     const { hubUrl, adminToken, adminUserId, workerId } = leapmuxServer
     // A directory whose size order differs from its name order, so an
     // assertion on the row order cannot pass with the sort key ignored.
-    const sortDir = join(tmpdir(), `leapmux-e2e-sortdir-${Date.now()}`)
-    mkdirSync(sortDir)
+    const sortDir = createTestDirectory('sort-directory-')
     writeFileSync(join(sortDir, 'apple.txt'), 'x'.repeat(900))
     writeFileSync(join(sortDir, 'banana.txt'), 'x'.repeat(10))
     writeFileSync(join(sortDir, 'cherry.txt'), 'x'.repeat(100))

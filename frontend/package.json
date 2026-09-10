@@ -14,8 +14,8 @@
     "test": "node scripts/run-vitest.mjs run",
     "test:watch": "node scripts/run-vitest.mjs",
     "test:e2e": "bun scripts/run-e2e.ts",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "eslint --cache --cache-strategy content --cache-location node_modules/.cache/eslint/frontend .",
+    "lint:fix": "bun run lint --fix",
     "typecheck": "tsc --noEmit && bun run typecheck:e2e",
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },

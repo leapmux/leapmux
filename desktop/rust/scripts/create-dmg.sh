@@ -13,11 +13,14 @@ APP_PATH="$2"
 OUTPUT_DMG="$3"
 APP_NAME="$(basename "${APP_PATH}")"
 
-VOLUME_NAME="LeapMux Desktop ${VERSION}"
-DMG_TEMP="$(mktemp -u -t leapmux).dmg"
-STAGING_DIR="$(mktemp -d -t leapmux-dmg)"
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+mkdir -p "${PROJECT_ROOT}/.tmp"
+STAGING_DIR="$(mktemp -d "${PROJECT_ROOT}/.tmp/dmg-XXXXXX")"
+VOLUME_NAME="LeapMux Desktop ${VERSION}"
+DMG_TEMP="${STAGING_DIR}/writable.dmg"
+MOUNT_POINT="${STAGING_DIR}/volume"
+MOUNTED=0
 
 # Window dimensions and icon positions.
 WIN_WIDTH=540
@@ -36,22 +39,21 @@ BG_G=0.945
 BG_B=0.922
 
 cleanup() {
-  if [ -d "/Volumes/${VOLUME_NAME}" ]; then
-    hdiutil detach "/Volumes/${VOLUME_NAME}" -quiet -force 2>/dev/null || true
+  local result=$?
+  trap - EXIT
+  if [ "${MOUNTED}" -eq 1 ]; then
+    if ! hdiutil detach "${MOUNT_POINT}" -quiet -force; then
+      printf 'Cannot detach the build volume at %s. Staging remains intact.\n' "${MOUNT_POINT}" >&2
+      exit 1
+    fi
   fi
-  rm -f "${DMG_TEMP}"
   rm -rf "${STAGING_DIR}"
+  exit "${result}"
 }
 trap cleanup EXIT
 
-# -- 0. Detach the previously attached DMGs. --
-find /Volumes/ \
-  -type d -mindepth 1 -maxdepth 1 -name 'LeapMux*' \
-  -exec hdiutil detach {} -quiet -force ';'
-
-# -- 1. Calculate DMG size and create empty read-write DMG. --
-cp -a "${APP_PATH}" "${STAGING_DIR}/${APP_NAME}"
-APP_SIZE_KB=$(du -sk "${STAGING_DIR}/${APP_NAME}" | awk '{print $1}')
+# Calculate the image size from the source. Copy the app only onto the mounted image.
+APP_SIZE_KB=$(du -sk "${APP_PATH}" | awk '{print $1}')
 DMG_SIZE_KB=$(( APP_SIZE_KB + 20480 ))
 
 hdiutil create \
@@ -62,8 +64,9 @@ hdiutil create \
   -fs HFS+ \
   "${DMG_TEMP}"
 
-DEVICE=$(hdiutil attach -readwrite -noverify "${DMG_TEMP}" | grep '/Volumes/' | awk '{print $1}')
-MOUNT_POINT="/Volumes/${VOLUME_NAME}"
+mkdir -p "${MOUNT_POINT}"
+hdiutil attach -readwrite -noverify -nobrowse -mountpoint "${MOUNT_POINT}" "${DMG_TEMP}"
+MOUNTED=1
 
 # -- 2. Copy contents onto the mounted volume. --
 cp -a "${APP_PATH}" "${MOUNT_POINT}/${APP_NAME}"
@@ -83,25 +86,30 @@ node "${SCRIPT_DIR}/generate-dsstore.mjs" \
 chmod -Rf go-w "${MOUNT_POINT}" 2>/dev/null || true
 sync
 
-# Retry detach: mds/Spotlight briefly holds the volume after the .DS_Store
-# write, causing `hdiutil detach` to exit 16 ("Resource busy"). Wait and
-# retry a few times, then fall back to -force so we don't block the build
-# on a transient lock — we've already sync'd, so forced detach is safe.
+# Spotlight can briefly hold the volume after the metadata write.
+# Retry only status 16 (resource busy). The completed sync permits a final forced detach.
 for attempt in 1 2 3 4 5; do
-  if hdiutil detach "${DEVICE}" -quiet; then
+  if hdiutil detach "${MOUNT_POINT}" -quiet; then
+    MOUNTED=0
     break
+  else
+    detach_result=$?
+  fi
+  if [ "${detach_result}" -ne 16 ]; then
+    exit "${detach_result}"
   fi
   if [ "${attempt}" -eq 5 ]; then
-    echo "create-dmg: detach still busy after ${attempt} attempts; forcing." >&2
-    hdiutil detach "${DEVICE}" -force -quiet
+    printf 'The build volume remains busy after %s attempts. Force detach.\n' "${attempt}" >&2
+    hdiutil detach "${MOUNT_POINT}" -force -quiet
+    MOUNTED=0
     break
   fi
-  echo "create-dmg: detach attempt ${attempt} busy; retrying in ${attempt}s..." >&2
+  printf 'The build volume is busy. Retry in %s seconds.\n' "${attempt}" >&2
   sleep "${attempt}"
 done
-sleep 1
 
-rm -f "${OUTPUT_DMG}"
-hdiutil convert "${DMG_TEMP}" -format UDZO -imagekey zlib-level=9 -o "${OUTPUT_DMG}"
+# Preserve the previous artifact if conversion fails.
+hdiutil convert "${DMG_TEMP}" -format UDZO -imagekey zlib-level=9 -o "${STAGING_DIR}/result.dmg"
+mv -f "${STAGING_DIR}/result.dmg" "${OUTPUT_DMG}"
 
 echo "Created: ${OUTPUT_DMG}"

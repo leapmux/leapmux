@@ -1,16 +1,14 @@
 name: Build desktop artifacts
 
-# Reusable build pipeline for the desktop app + CLI server tarballs that get
-# attached to GitHub releases. Called by:
-#   - .github/workflows/ci.yaml      (push to main → prerelease-<ts> release)
-#   - .github/workflows/release.yaml (workflow_dispatch → v<version> release)
+# This reusable workflow builds desktop apps and CLI archives for GitHub releases.
+# These workflows call it:
+# - .github/workflows/ci.yaml creates prerelease-<ts> releases on pushes to main.
+# - .github/workflows/release.yaml creates v<version> releases through workflow_dispatch.
 #
-# The macos-app-sign job is the only place Apple signing/notarization secrets are
-# read. It declares `environment: apple-signing`, whose deployment-branch
-# protection limits secret access to runs targeting `main`. Other jobs do not
-# declare an environment, so they cannot read the Apple secrets even though
-# the caller passes `secrets: inherit` — env-scoping still gates the secrets
-# at the consuming job, not at the workflow_call boundary.
+# The macos-app-sign and macos-cli-sign jobs read Apple signing and notarization secrets.
+# Both declare the apple-signing environment, whose deployment rules restrict secret access to main.
+# Other jobs declare no environment and cannot read those secrets.
+# The secrets: inherit setting preserves this restriction at each job that uses the secrets.
 
 on:
   workflow_call:
@@ -77,18 +75,17 @@ jobs:
         run: task prepare-frontend
 
       - name: Build
+        id: build
         run: task build
 
+      - name: Check the unchanged native build
+        run: task check-build-cache
+
       - name: Diagnose linuxdeploy (on failure)
-        # Tauri captures linuxdeploy's stdout/stderr and silently discards
-        # them on failure, leaving only "failed to run linuxdeploy" in the
-        # log. Re-run the wrapper and the extracted AppRun directly so
-        # their real output surfaces in the CI log. Runs only if a
-        # preceding step failed, so the success path stays quiet. Mirrors
-        # the matching step in ci.yaml's linux job — desktop-artifacts and
-        # CI share the same Tauri linuxdeploy build path, so they share
-        # the same flake surface.
-        if: failure()
+        # Tauri discards linuxdeploy output on failure and reports only "failed to run linuxdeploy".
+        # Run the wrapper and extracted AppRun directly to retain their diagnostics, as ci.yaml does.
+        # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
+        if: failure() && steps.build.outcome == 'failure'
         run: |
           set +e
           echo "=== ~/.cache/tauri contents ==="
@@ -198,6 +195,9 @@ jobs:
         # unsigned .app and re-signs it with the Developer ID identity.
         run: task build
 
+      - name: Check the unchanged native build
+        run: task check-build-cache
+
       - name: Tar unsigned .app for the signing job
         # tar preserves symlinks/permissions inside the .app bundle that
         # actions/upload-artifact's zipping does not. Name does NOT start
@@ -258,12 +258,6 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install frontend dependencies (for create-dmg.sh)
-        run: cd frontend && bun install --frozen-lockfile
-
-      - name: Rebuild macos-alias native module
-        run: cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
-
       - name: Setup Task
         uses: arduino/setup-task@v3
         with:
@@ -273,6 +267,11 @@ jobs:
           # rate limit on shared-IP runners — has been failing intermittently
           # on Windows without it.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare disk image tools
+        # Use the same dependency installation and pinned node-gyp version as the native build.
+        # A native-module build failure must stop signing and retain its diagnostics.
+        run: task prepare-dmg-tools
 
       - name: Setup Apple signing
         uses: ./.github/actions/apple-signing-setup
@@ -427,6 +426,10 @@ jobs:
         # link.exe and breaks the Tauri build.
         shell: pwsh
         run: task build
+
+      - name: Check the unchanged native build
+        shell: pwsh
+        run: task check-build-cache
 
       - name: Package CLI server zip
         shell: pwsh

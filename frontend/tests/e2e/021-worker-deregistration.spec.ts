@@ -1,5 +1,4 @@
 import type { Buffer } from 'node:buffer'
-import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -9,6 +8,7 @@ import {
   mintRegistrationKeyViaAPI,
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
+import { spawnTestProcess } from './helpers/processRegistry'
 import { expectAnyVisible, loginViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -73,7 +73,7 @@ test.describe('Worker Deregistration', () => {
     const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
 
     // Spawn a temporary worker
-    const workerProc = spawn(binaryPath, [
+    const workerProc = spawnTestProcess(binaryPath, [
       'worker',
       '--hub',
       hubUrl,
@@ -202,8 +202,8 @@ test.describe('Worker Status Indicator', () => {
     await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
 
     // Stop the worker
-    await stopWorker()
-    await waitForWorkerOffline(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+    await stopWorker(separateHubWorker)
+    await waitForWorkerOffline(separateHubWorker)
 
     // Status dot should change to disconnected (red)
     await expect(workersSection.locator('[data-status="disconnected"]')).toBeVisible()

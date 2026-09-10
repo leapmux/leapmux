@@ -1,18 +1,15 @@
-/* eslint-disable no-console */
 import type { ChildProcess } from 'node:child_process'
 import type { ServerOutput } from './helpers/serverOutput'
-import { execFile, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+/* eslint-disable no-console */
+import type { WorkspaceFixture } from './helpers/workspace'
+import { execFile } from 'node:child_process'
+import { rmSync, writeFileSync } from 'node:fs'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
 import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import {
-  cleanupWorkspaceViaAPI,
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
+  closeTestChannels,
   elevateSessionViaAPI,
   getUserId,
   getWorkerId,
@@ -23,21 +20,24 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './helpers/api'
+import { finishCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { stopProcess } from './helpers/process'
+import { spawnTestProcess } from './helpers/processRegistry'
+import { createTestDirectory } from './helpers/runDirectory'
 import { findFreePort, getGlobalState, hubDataDir, hubSpawnEnv, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { withTestWorkspace } from './helpers/workspace'
 import { realAgentEnv } from './realAgentSettings'
 
 export interface ServerInfo {
   hubUrl: string
   adminToken: string
   /**
-   * The admin's user id. Every browser-storage key is scoped to an account, so
-   * a spec that seeds a preference through `addInitScript` -- before the page
-   * signs in -- needs it in advance.
+   * The administrator user ID.
+   * Browser storage requires an account ID before addInitScript can set a preference for a page that did not sign in yet.
    */
   adminUserId: string
   workerId: string
@@ -51,13 +51,9 @@ export interface ServerInfo {
 const execFileAsync = promisify(execFile)
 
 /**
- * Create the first administrator OFFLINE, before the hub process starts.
- *
- * The offline admin-token CLI command that the tests used no longer exists;
- * first-admin bootstrap lives in `leapmux recover bootstrap
- * create-admin`, which opens the DB directly and refuses once any admin
- * exists. Dev mode splits the data dir, so the hub's DB is `<dataDir>/hub`
- * — the same directory devModeTokenSource hands to the CLI token helper.
+ * Create the first administrator offline before the hub opens its database.
+ * leapmux recover bootstrap create-admin refuses the operation if an administrator exists.
+ * Dev mode places this database in <dataDir>/hub, the same directory that devModeTokenSource supplies.
  */
 async function bootstrapFirstAdmin(hubDataDir: string): Promise<void> {
   await execFileAsync(getGlobalState().binaryPath, [
@@ -77,14 +73,12 @@ async function bootstrapFirstAdmin(hubDataDir: string): Promise<void> {
   })
 }
 
-interface WorkspaceFixture {
-  workspaceId: string
-}
-
 export const test = base.extend<
   {
     toastRecorder: void
     pageErrorRecorder: void
+    emptyWorkspace: WorkspaceFixture
+    authenticatedEmptyWorkspace: WorkspaceFixture
     workspace: WorkspaceFixture
     authenticatedWorkspace: WorkspaceFixture
   },
@@ -92,26 +86,22 @@ export const test = base.extend<
     leapmuxServer: ServerInfo
   }
 >({
-  // Worker-scoped fixture: one dev-mode instance per Playwright WORKER, not per
-  // spec file. A worker that runs two files serves both from the same hub, so
-  // one file sees whatever account state the previous one left behind. That is
-  // the difference between a full-suite run and a single-file run, and a bug
-  // that only the shared hub exposes reads as a flake until somebody knows it.
+  // Share one dev instance per Playwright worker. Multiple files can use the same hub.
+  // A test must account for state that earlier files left in that hub.
   // eslint-disable-next-line no-empty-pattern
   leapmuxServer: [async ({}, use) => {
     const globalState = getGlobalState()
-    const dataDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-dev-'))
+    const dataDir = createTestDirectory('leapmux-e2e-dev-')
     const port = await findFreePort()
     const hubUrl = `http://localhost:${port}`
 
-    // The first admin must exist BEFORE the hub opens the DB: the offline
-    // bootstrap refuses once any admin exists, and the online /setup path no
-    // longer reserves the `admin` username once one does.
+    // Create the first administrator before starting the hub.
+    // Offline bootstrap refuses an existing administrator. Later online signup cannot claim the reserved admin username.
     await bootstrapFirstAdmin(hubDataDir(dataDir))
 
     console.log(`[e2e] Starting dev instance on port ${port}...`)
 
-    const proc = spawn(globalState.binaryPath, [
+    const proc = spawnTestProcess(globalState.binaryPath, [
       'dev',
       '-listen',
       `:${port}`,
@@ -122,101 +112,63 @@ export const test = base.extend<
       env: hubSpawnEnv({ ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'Local' }),
     })
 
-    // Consume server output (also prevents backpressure), keeping a tail for
-    // failing tests to attach.
+    // Drain server output to prevent backpressure. Keep recent output for failure attachments.
     const output = createServerOutput()
     output.capture(proc)
 
-    // Everything up to `use` runs OUTSIDE any test, so a failure here has no
-    // test to attach the tail to -- the fixture prints it instead. Otherwise a
-    // dev instance that died on startup reports as a bare "Timed out waiting".
-    let adminToken: string
-    let adminUserId: string
-    let workerId: string
-    let newuserToken: string
+    // Startup runs outside a test, so no test attachment exists yet.
+    // Print recent server output on startup failure instead of reporting only a readiness timeout.
     try {
-      await waitForServer(hubUrl)
-      console.log(`[e2e] Dev instance ready on port ${port}`)
+      let adminToken: string
+      let adminUserId: string
+      let workerId: string
+      let newuserToken: string
+      try {
+        await waitForServer(hubUrl)
+        console.log(`[e2e] Dev instance ready on port ${port}`)
 
-      // This fixture bootstrapped the admin offline above; log in over HTTP
-      // for the session cookie the rest of the fixtures auth with.
-      adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-      // ELEVATED, once, exactly as an operator's browser session is.
-      //
-      // Every hub-settings write demands an elevated session, so a fixture
-      // cookie without one turns each `UpdateSetting` helper into a
-      // failed_precondition in setup -- and the specs that walk the admin
-      // panels would measure the gate instead of the panel.
-      //
-      // The specs that need an UN-elevated session already mint their own
-      // (006-passkey, 009-elevation, 143-cli-elevation all say so where they
-      // do it), for the same reason this is safe: a shared session that is
-      // reliably elevated is one less thing for them to depend on.
-      await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
-      adminUserId = await getUserId(hubUrl, adminToken)
-      workerId = await getWorkerId(hubUrl, adminToken)
+        // Log in over HTTP with the administrator that offline bootstrap created. Fixtures use the returned session cookie.
+        adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+        // Elevate the shared administrator session once. Every hub-settings write requires elevation.
+        // Otherwise, panel tests fail during setup with failed_precondition before they reach the panel.
+        // Tests 006, 009, and 143 create separate sessions when they need to check an unelevated session.
+        await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
+        adminUserId = await getUserId(hubUrl, adminToken)
+        workerId = await getWorkerId(hubUrl, adminToken)
 
-      // Create newuser for sharing tests
-      newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
+        // Create newuser for sharing tests
+        newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
+      }
+      catch (err) {
+        reportStartupFailure(output, `dev instance on port ${port}`, err)
+      }
+
+      await use({ hubUrl, adminToken, adminUserId, workerId, newuserToken, serverProc: proc, dataDir, output })
     }
-    catch (err) {
-      await stopProcess(proc)
-      reportStartupFailure(output, `dev instance on port ${port}`, err)
+    finally {
+      await finishCleanup([closeAllUserEventsSubscriptions(), closeTestChannels(hubUrl), stopProcess(proc)])
+      rmSync(dataDir, { recursive: true, force: true })
     }
-
-    await use({ hubUrl, adminToken, adminUserId, workerId, newuserToken, serverProc: proc, dataDir, output })
-
-    // Close any UserEvents subscriptions this worker opened. Per-worker
-    // cleanup matters because the singleton cache is keyed by
-    // (hubUrl, cookie) and the next worker spawns a NEW dev
-    // instance on a different port; leaving WS sockets dangling would
-    // leak file descriptors across the test session.
-    await closeAllUserEventsSubscriptions()
-
-    // Teardown: stop the process, clean up the data dir.
-    await stopProcess(proc)
-    rmSync(dataDir, { recursive: true, force: true })
-    console.log(`[e2e] Dev instance on port ${port} stopped`)
   }, { scope: 'worker' }],
 
-  // Override page to set baseURL dynamically from the dev instance
-  page: async ({ leapmuxServer, browser }, use) => {
-    const context = await browser.newContext({
-      baseURL: leapmuxServer.hubUrl,
-    })
-    const page = await context.newPage()
-    await use(page)
-    await context.close()
+  baseURL: async ({ leapmuxServer }, use) => {
+    await use(leapmuxServer.hubUrl)
   },
 
-  // Page-error recorder: auto-use, so it runs for every test that inherits this
-  // base. It RECORDS and does not fail.
-  //
-  // An uncaught exception in the app is invisible to Playwright: the spec keeps
-  // waiting on a locator and reports a timeout somewhere unrelated. Only
-  // `102-codex-plan-mode.spec.ts` asserts on page errors today, so nothing
-  // measures how often the suite raises one.
-  //
-  // Measuring is the point of this step. Read the `page-errors` attachment of a
-  // full run, decide per message whether it is browser-inherent (suppress it in
-  // `~/lib/ignorableErrorEvents`), deliberate (the spec that provokes it says
-  // so), or a real crash, and THEN make this fixture fail. Turning the
-  // assertion on before that measurement fails an unknown number of specs.
-  //
-  // Nineteen of the specs build their own `test` from `@playwright/test` -- nine
-  // directly, and ten through `process-control-fixtures.ts`, which spawns its
-  // own hub. They inherit nothing here, and the deliberate-failure specs are
-  // among them. Repointing them is a prerequisite of a suite-wide guarantee.
+  // Record page errors for every test that inherits this fixture. Do not fail the test here.
+  // An uncaught app exception can otherwise appear only as a timeout on an unrelated locator.
+  // Inspect page-errors attachments before converting this recorder into a suite-wide assertion.
+  // Distinguish browser errors from deliberate test failures and app defects. ignorableErrorEvents holds browser exclusions.
+  // Tests that extend @playwright/test directly or use process-control-fixtures do not inherit this recorder.
+  // A suite-wide assertion requires those fixtures to participate also.
   pageErrorRecorder: [async ({ page }, use, testInfo) => {
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message))
 
     await use()
 
-    // The chat virtualizer trips the ResizeObserver delivery loop routinely.
-    // `ignorableErrorEvents` owns that judgement, and the DEV-only suppressor
-    // does not reach the production bundle this suite serves, so the message
-    // arrives here. Ask that module rather than spelling its regex a second time.
+    // The chat virtualizer can exceed the ResizeObserver delivery loop.
+    // Use ignorableErrorEvents to classify that browser error. Do not duplicate its regular expression here.
     const real = pageErrors.filter(message => !isResizeObserverLoopError(message))
     if (real.length > 0) {
       await testInfo.attach('page-errors', {
@@ -244,14 +196,9 @@ export const test = base.extend<
       })
     }
 
-    // A failing test gets the dev instance's recent output. The hub and worker
-    // run out of process, so their errors are otherwise invisible and a
-    // worker-side failure surfaces only as a timeout on an unrelated locator.
-    //
-    // The fixture attaches it as a FILE, not as a body: the list reporter
-    // truncates an inline attachment to its first line, which is the startup
-    // banner and nothing else. A path puts the whole tail under test-results/,
-    // where a reader can actually open it.
+    // Attach recent server output when a test fails. Otherwise, an out-of-process error can appear only as a locator timeout.
+    // Use a file attachment because the list reporter truncates inline attachments to the first line.
+    // The file under test-results retains all recent output.
     if (testInfo.status !== testInfo.expectedStatus) {
       const logPath = testInfo.outputPath('server-log.txt')
       writeFileSync(logPath, leapmuxServer.output.since(serverMark))
@@ -259,39 +206,20 @@ export const test = base.extend<
     }
   }, { auto: true }],
 
-  // Workspace fixture: creates workspace via API + opens initial agent, provides ID and URL
-  workspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(
-      hubUrl,
-      adminToken,
-      `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    )
-    // Open an initial agent — workspace creation on the hub no longer
-    // auto-creates one (that was the old worker behavior).
-    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    await use({ workspaceId })
+  emptyWorkspace: async ({ leapmuxServer }, use) => {
+    await withTestWorkspace(leapmuxServer, 'e2e', use)
+  },
 
-    // Teardown (best effort): stop the workspace's agents on the worker, THEN
-    // soft-delete on the hub -- the same two-step cascade the browser app runs.
-    // The cleanup must precede the delete because it identifies the
-    // workspace's tabs to the worker, and the hub can only list them while the
-    // workspace still exists. Without the cleanup step, the worker keeps each
-    // test's Claude CLI subprocess alive and they accumulate across the suite,
-    // which exhausts resources and makes later settings-menu interactions
-    // flaky.
-    try {
-      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    }
-    catch {
-      // Best effort
-    }
-    try {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
-    }
-    catch {
-      // Best effort
-    }
+  workspace: async ({ leapmuxServer, emptyWorkspace }, use) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, emptyWorkspace.workspaceId)
+    await use(emptyWorkspace)
+  },
+
+  authenticatedEmptyWorkspace: async ({ page, emptyWorkspace, leapmuxServer }, use) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await openWorkspace(page, emptyWorkspace.workspaceId)
+    await use(emptyWorkspace)
   },
 
   // Authenticated workspace: logs in via token + navigates to workspace

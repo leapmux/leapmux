@@ -28,7 +28,7 @@ test.describe('Agent Session Resume', () => {
       await expectAssistantAnswer(page)
 
       // Stop the worker
-      await stopWorker()
+      await stopWorker(separateHubWorker)
 
       // Wait for the agent to show as closed
       await page.waitForTimeout(3000)
@@ -75,7 +75,7 @@ test.describe('Agent Session Resume', () => {
       await expect(editor).toHaveText('')
       await expectAssistantAnswer(page)
 
-      await stopWorker()
+      await stopWorker(separateHubWorker)
       await restartWorker(separateHubWorker)
 
       // The whole point: the process comes back on its own. Nothing below sends
@@ -116,7 +116,7 @@ test.describe('Agent Session Resume', () => {
       await expectAssistantAnswer(page)
 
       // Stop the worker, wait, restart
-      await stopWorker()
+      await stopWorker(separateHubWorker)
       await page.waitForTimeout(3000)
       await restartWorker(separateHubWorker)
 
@@ -156,7 +156,7 @@ test.describe('Agent Session Resume', () => {
       await expectAssistantAnswer(page)
 
       // Stop the worker, wait, restart
-      await stopWorker()
+      await stopWorker(separateHubWorker)
       await page.waitForTimeout(3000)
       await restartWorker(separateHubWorker)
 

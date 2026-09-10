@@ -19,24 +19,20 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "device-auth-subsecond-user")
 		deviceCode := id.Generate()
-		expiresAt := time.Now().UTC().Truncate(time.Second).Add(950 * time.Millisecond)
-		if time.Until(expiresAt) < 400*time.Millisecond {
-			time.Sleep(time.Until(expiresAt) + 50*time.Millisecond)
-			expiresAt = time.Now().UTC().Truncate(time.Second).Add(950 * time.Millisecond)
-		}
+		now := time.Date(2040, 1, 2, 3, 4, 5, 500_000_000, time.UTC)
+		expiresAt := now.Truncate(time.Second).Add(950 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
-		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)}, time.Now().UTC())
+		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)}, now)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
 	})
 
-	// Both approve verbs judge grant liveness on the caller's clock. The
-	// omission that left this unbound was a silent always-true predicate on
-	// sqlite/postgres/mysql and a hard `Incorrect datetime value` on TiDB,
-	// so every CLI device authorization on a TiDB hub answered 500.
+	// Both approval methods check expiry against the caller's clock.
+	// A missing SQL parameter previously made this predicate always true on SQLite, PostgreSQL, and MySQL.
+	// TiDB instead rejected the datetime, so every CLI device authorization returned HTTP 500.
 	t.Run("device grant approval judges liveness on the caller clock", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "device-auth-clock-user")
@@ -72,32 +68,35 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "device-auth-user")
 		deviceCode := id.Generate()
-		expiresAt := time.Now().Add(1500 * time.Millisecond)
+		now := time.Date(2040, 1, 2, 3, 4, 5, 0, time.UTC)
+		expiresAt := now.Add(1500 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
-		}, time.Now().UTC())
+		}, now)
 		require.NoError(t, err)
 		require.Equal(t, int64(1), rows)
-		time.Sleep(time.Until(expiresAt) + 100*time.Millisecond)
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, time.Now().UTC())
+		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt)
 		require.NoError(t, err)
-		assert.Zero(t, rows)
+		assert.Zero(t, rows, "the grant expires at its deadline")
+
+		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt.Add(time.Millisecond))
+		require.NoError(t, err)
+		assert.Zero(t, rows, "the grant stays expired after its deadline")
+
+		// A refused consume must preserve the row. The same grant remains usable before expiry.
+		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt.Add(-time.Millisecond))
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows)
 	})
 
-	// An approval identifies WHO approved, so an unminted approver must be
-	// refused rather than written as SQL NULL.
-	//
-	// NULL is the legitimate state of a PENDING row, which is exactly why this
-	// is dangerous: the UPDATE filters on the device/user code alone, so it
-	// would match and report one row affected. The browser would say "device
-	// authorized" while the row stayed effectively unapproved, and the polling
-	// CLI, which answers authorization_pending for a blank user_id, would keep
-	// waiting until the grant expired, told the opposite of what happened.
+	// An approval must identify its user. Refuse a zero user ID instead of writing SQL NULL.
+	// NULL is valid for a pending row. An update that filters only by device or user code could report success without an approver.
+	// The browser would report authorization, but the CLI would receive authorization_pending until the grant expired.
 	t.Run("device grant cannot be approved by an unminted user", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "device-auth-zero-user")
@@ -130,15 +129,10 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		assert.Equal(t, int64(1), rows, "control: a real user approves the same row")
 	})
 
-	// An approval is once. The statements match a PENDING row only, so the
-	// second POST -- a double click, a re-submitted form, or a second person
-	// who received the code -- changes nothing.
-	//
-	// Without that guard the second approval overwrote user_id and
-	// granted_scopes on a grant nobody consumed yet, so the credential reached
-	// whoever approved LAST while the first approver read "Device
-	// authorized". The window is one poll interval normally, and the whole
-	// grant TTL for a code nobody polls.
+	// Approve a pending grant only once. A repeated form submission or a second approver must change nothing.
+	// Otherwise, the second approval could replace user_id and granted_scopes before consumption.
+	// The last approver would receive the credential while the first approver saw a successful authorization.
+	// This remains possible until the next poll, or until expiry if no client polls.
 	t.Run("an approved device grant cannot be approved again", func(t *testing.T) {
 		st := s.NewStore(t)
 		first := SeedUser(t, st, "device-auth-first-approver")

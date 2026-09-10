@@ -4,18 +4,10 @@ import { waitForWorkspaceReady } from './helpers/ui'
 import { expect, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
- * What the user reads when the link to a worker drops.
- *
- * A mobile browser drops the socket every time the user leaves for another app
- * or another tab, and the app used to answer that with TWO error toasts, both
- * naming our own plumbing: "channel not open" from whichever call raced the
- * teardown, and "channel disconnected" from the drained watch stream. One outage
- * now produces one sentence, and only after the redials have really failed.
- *
- * Driven by stopping the worker rather than by pulling the browser offline: it
- * is the one drop this suite can produce deterministically, and it exercises the
- * same path -- the hub tears down the channel, the watch stream errors, and the
- * redials fail at the hub leg because the worker is gone.
+ * Check the message that reports a lost worker connection.
+ * Mobile app or tab changes can close a socket. Previously, one outage could produce separate channel-not-open and channel-disconnected messages.
+ * The app now reports one outage only after reconnection attempts fail.
+ * Stop the worker to reproduce that path deterministically. The hub closes its channel, the watch stream fails, and later connection attempts cannot reach the worker.
  */
 test.describe('Disconnection toasts', () => {
   /** Every toast the app raised whose text names a channel-layer internal. */
@@ -35,12 +27,10 @@ test.describe('Disconnection toasts', () => {
     // workspace raised while loading is not.
     await clearRecordedToasts(page)
 
-    // Marked BEFORE the stop, because stopWorker sleeps two seconds after the
-    // signal. Marking after it would charge that sleep against the grace period
-    // measured below and leave the assertion almost no margin.
+    // Start timing before the stop request. Process shutdown time belongs to the observed outage interval.
     const killedAt = Date.now()
-    await stopWorker()
-    await waitForWorkerOffline(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+    await stopWorker(separateHubWorker)
+    await waitForWorkerOffline(separateHubWorker)
 
     await expect.poll(async () => outageToasts(await getRecordedToasts(page)).length).toBe(1)
 

@@ -6,6 +6,7 @@ import process from 'node:process'
 
 import { expect } from '@playwright/test'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
+import { solveCaptchaViaUI } from './captcha'
 import { readEntry, storageKeys, writeEntry } from './storage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
@@ -26,25 +27,11 @@ export async function expectAnyVisible(...locators: Locator[]) {
 // ──────────────────────────────────────────────
 
 /**
- * Assert that a sidebar label declares the one-line clip.
- *
- * Only a real browser resolves this. The rules arrive through a COMPOSED
- * vanilla-extract style (`style([clippedText, …])`), so the element carries two
- * class names and the declarations come from two rules; jsdom loads no
- * stylesheet at all, so a unit test can see the class but never the outcome.
- *
- * `min-width` is asserted with the rest, because it is the one that decides
- * whether the ellipsis ever fires: a flex item defaults to `min-width: auto`
- * and keeps the width of its own text, so the other three declarations sit
- * there and do nothing. Several labels shipped exactly that way.
- *
- * This states what the label DECLARES. Pair it with {@link expectClipsLongText},
- * which measures what the label DOES.
- *
- * Pass the LABEL, not an ancestor. A clipped label usually sits inside
- * `Tooltip`, which wraps its child in a bare `display: contents` span; that
- * wrapper holds the same text and comes first, so a loose `span` locator
- * resolves to it and reports `text-overflow: clip`.
+ * Check the composed styles for single-line label clipping in a real browser.
+ * The vanilla-extract composition supplies multiple classes and rules. jsdom does not load their stylesheets.
+ * Check min-width also. A flex item with min-width:auto retains its text width and prevents ellipsis.
+ * Pair this with expectClipsLongText to verify the resulting layout.
+ * Pass the label itself. A Tooltip wrapper contains the same text but uses display:contents and reports text-overflow:clip.
  */
 export async function expectClipsToOneLine(label: Locator) {
   await expect(label).toHaveCSS('white-space', 'nowrap')
@@ -54,23 +41,11 @@ export async function expectClipsToOneLine(label: Locator) {
 }
 
 /**
- * Assert that a LONG label clips itself and widens no scroller above it.
- *
- * The declarations alone prove nothing. A worker name already declared the
- * whole quartet while the ellipsis still never fired, because the list's
- * container sized to its widest row; only a label longer than its box separates
- * the two containers. No fixture can give the dev worker a long name, so this
- * writes one into the text node and restores it inside ONE synchronous block.
- * The write forces the reflow that the reads below need, and Solid keeps its
- * reference to the text node because the node itself is reused.
- *
- * A scroller is a box whose computed `overflow-x` is `auto` or `scroll`.
- * Testing that is what separates "an ancestor grew a scrollbar" from "the label
- * clips its own text" -- a clipped label reports `scrollWidth > clientWidth` BY
- * CONSTRUCTION, which is the same measurement the ellipsis is made of.
- *
- * A 1px tolerance absorbs sub-pixel layout rounding, which reports a scrollable
- * width larger than the client width on a box that shows no scrollbar.
+ * Check that a long label clips without widening an ancestor scroller.
+ * Style declarations alone cannot detect a container that grows to its widest row.
+ * Temporarily replace the text and restore it within one synchronous browser operation. This forces layout while retaining Solid references to the same node.
+ * Check ancestors with overflow-x:auto or scroll. The label itself must have scrollWidth greater than clientWidth to clip.
+ * Allow one pixel for subpixel rounding in ancestor measurements.
  */
 export async function expectClipsLongText(label: Locator) {
   const measured = await label.evaluate((el) => {
@@ -105,16 +80,9 @@ export async function expectClipsLongText(label: Locator) {
 // ──────────────────────────────────────────────
 
 /**
- * Send a message via the ProseMirror editor.
- *
- * Types at the default (zero) inter-key delay. The 100ms-per-key delay this
- * used to carry bought nothing -- every key event is still dispatched in
- * order, and ProseMirror handles them synchronously -- but it cost ~5s on the
- * shared arithmetic prompt alone, on every one of the ~60 sends in the suite.
- * The pagination and scroll-rail specs had already been typing without it.
- *
- * Specs that exercise ProseMirror's own input rules (markdown shortcuts,
- * mention/slash triggers) keep their local, deliberately paced typing.
+ * Send a message through the ProseMirror editor with no inter-key delay.
+ * ProseMirror handles the ordered key events synchronously. The former 100ms delay added about five seconds to each arithmetic prompt.
+ * Tests of input rules, mention triggers, and slash commands retain their deliberate local typing intervals.
  */
 export async function sendMessage(page: Page, text: string) {
   const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
@@ -122,9 +90,7 @@ export async function sendMessage(page: Page, text: string) {
   await editor.click()
   await page.keyboard.type(text)
   await page.keyboard.press('Meta+Enter')
-  // The editor emptying is the app's acknowledgement that the send committed.
-  // Waiting on it here stops a caller from racing ahead of its own message --
-  // which matters more now that typing no longer takes seconds.
+  // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
   await expect(editor).toHaveText('')
 }
 
@@ -136,38 +102,19 @@ export async function waitForControlBanner(page: Page) {
 }
 
 /**
- * Every chat row exists in the DOM TWICE for as long as its height is unknown.
- *
- * ChatView mounts a faithful copy of each unmeasured row inside its hidden
- * premeasure root (`ChatHiddenPremeasure`) purely to read a height off it: same
- * test ids, same text, same classes, `visibility: hidden`. Separately, a real
- * row that is waiting on its own measurement is itself hidden in place. So a
- * bare `[data-testid="message-bubble"]` transiently resolves to two elements
- * per message, and Playwright's strict mode fails the assertion outright --
- * `strict mode violation: ... resolved to 2 elements`, with both matches
- * carrying identical markup.
- *
- * A probe sampling the DOM every 20ms saw 6 bubbles for 2 messages, 4 of them
- * hidden, in 1 of 596 samples on an idle machine. That is the whole story
- * behind this suite's "only flaky at high worker counts" chat failures: load
- * widens the measurement window, it does not create the bug.
- *
- * `:visible` is the fix and it belongs on the OUTERMOST chat locator only --
- * anything scoped under an already-visible bubble cannot be in the premeasure
- * root, so descendants need no filter.
- *
- * Prefer the helpers below to hand-written chat selectors.
+ * ChatView mounts hidden copies of rows whose heights remain unknown.
+ * ChatHiddenPremeasure retains the same IDs, text, and classes. A visible-list row can also stay hidden until measurement completes.
+ * An unfiltered locator can therefore match multiple copies and fail Playwright strict mode.
+ * A 20ms sample once found six bubbles for two messages, including four hidden copies. Higher load can lengthen that measurement period.
+ * Apply :visible to the outermost chat locator. Descendants of a visible bubble need no extra filter.
+ * Use these shared helpers for chat locators.
  */
 const VISIBLE = ':visible'
 
 /**
- * CSS selector for agent message bubbles, WITHOUT the visibility filter.
- *
- * Safe only when scoped under an element already known to be visible (e.g.
- * `firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)`), or as
- * the `has:` argument of a filter, which resolves relative to the outer match.
- * Rooted at the page it matches the premeasure copy too -- use
- * {@link assistantBubbles}.
+ * CSS selector for agent bubbles without a visibility filter.
+ * Use it only below an already visible element or as a relative has filter.
+ * A page-level lookup also matches hidden measurement copies. Use assistantBubbles for that lookup.
  */
 export const ASSISTANT_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="agent"]'
 
@@ -195,13 +142,9 @@ export function messageContents(page: Page) {
 }
 
 /**
- * Return a locator for the visible band ROWS -- the full-bleed strips an
- * assistant message (`data-band="text"`) and a thought (`data-band="thought"`)
- * paint behind themselves. Pass a kind to restrict to one of the two.
- *
- * The strip is the row's own background and border, so it is the ROW that
- * carries the marker, not the bubble inside it. Every style class is a hashed
- * vanilla-extract name, which is why the attribute exists at all.
+ * Locate visible message-band rows. Restrict kind to text or thought when needed.
+ * The row supplies the full-width background and border, so the marker belongs to the row.
+ * The test attribute avoids dependence on hashed style class names.
  */
 export function bandRows(page: Page, kind?: 'text' | 'thought') {
   const selector = kind === undefined ? '[data-band]' : `[data-band="${kind}"]`
@@ -217,51 +160,25 @@ export function chatScrollContainer(page: Page) {
 }
 
 /**
- * How long {@link readAttached} waits for a match that is still in the document.
- *
- * The only thing it waits out is a REMOUNT, which is a handful of frames, so the
- * budget is deliberately far below `expect.timeout`: an element that is genuinely
- * outside every chat list must report THAT, rather than expire as a bare test
- * timeout with no named assertion.
+ * Maximum wait for an attached match in readAttached.
+ * A row replacement takes a few frames. Keep this below expect.timeout so an absent chat row produces a specific error before the test deadline.
  */
 const ATTACHED_READ_TIMEOUT_MS = 15_000
 
 /**
- * Read from the first match of `locator` that is still in the document.
+ * Read from an attached locator match. Use this for chat rows and their descendants because the app can replace them.
+ * Locator resolution and evaluation require separate browser requests. A replacement between those requests leaves a detached node.
+ * Detached nodes report zero geometry and empty styles. That can fail a layout check or falsely pass a color comparison.
+ * See https://github.com/leapmux/leapmux/issues/402.
  *
- * Use this, not `locator.evaluate`, for anything the app can re-create -- every
- * chat row, and everything inside one.
+ * evaluateAll also resolves an array handle before evaluating it. A replacement can occur between these two requests also.
+ * A single page.evaluate request would lose Playwright visibility filtering, which excludes the hidden measurement copies.
+ * Instead, the reader skips detached candidates and returns null for another attempt.
+ * Every returned measurement then comes from one synchronous browser operation on an attached node.
  *
- * Reading a chat row is racy in a way no Playwright API removes. Resolving a
- * locator and reading from what it resolved are two browser round trips, and a
- * chat row does not always survive the gap. ChatView re-creates a row when a
- * notification changes its sequence. A resolve that lands just before the swap
- * leaves the read holding a DETACHED node, whose `closest()` is null, whose rect
- * is all zeroes and whose computed style is EMPTY -- which fails an assertion on
- * geometry at random (https://github.com/leapmux/leapmux/issues/402) and silently
- * PASSES one that only asks for two colours to differ.
- *
- * `evaluateAll` does not close that gap, and assuming it did was the first attempt
- * at this fix. Playwright runs it as `querySelectorAll` into an array HANDLE, then
- * a second call that applies `read` to that handle -- so the elements are pinned
- * one round trip before `read` sees them, exactly like `evaluate`. Driving a
- * probe that replaced its element on every event-loop turn, both forms handed
- * `read` a detached node on most attempts. The one-round-trip alternative,
- * `page.evaluate` with the query inside it, gives up Playwright's `:visible`
- * engine -- which is what keeps the hidden premeasure copy out of every chat
- * locator -- so it trades this defect for that one.
- *
- * What IS guaranteed is that the element and everything `read` derives from it
- * belong to the same synchronous page turn. So `read` filters out what has left
- * the document and returns null, and this retries. A measurement it does return
- * came off a node that was attached when it was taken.
- *
- * `read` takes the match ARRAY, and must skip the detached candidates itself,
- * because a wrapper cannot do it for them: Playwright serializes `read` and runs
- * it inside the page, so a wrapper that called it would have to close over a
- * Node-side function that does not survive the crossing. For the same reason
- * `read` cannot reach {@link CHAT_SCROLL_CONTAINER}, so every read is handed it as
- * a second argument; one that does not need the list just declares one parameter.
+ * The serialized reader must filter the candidate array itself. It cannot call a Node closure across the browser boundary.
+ * For the same reason, this helper passes CHAT_SCROLL_CONTAINER as the second reader argument.
+ * A reader that does not need it can omit that parameter.
  */
 export async function readAttached<R>(
   locator: Locator,
@@ -279,16 +196,17 @@ export async function readAttached<R>(
 }
 
 /**
- * Every number the two chat measurements below need, read together.
- *
- * One page-side reader serves both so they cannot drift apart on how they read
- * the box -- the guarantee their own doc comments claim, made structural instead
- * of aspirational. Each caller projects the fields it asked for.
+ * Read all geometry for the two chat measurements in one browser operation.
+ * Both callers use this reader and select the fields they need, so their layout measurements cannot diverge.
  */
 interface ChatBoxGeometry {
   /** The element's own border-box width. */
   width: number
-  /** The list's padding-box width, the native scrollbar excluded. */
+  /**
+   * The list width used to calculate both gaps.
+   * Include it in errors to distinguish the wrong scroller from an incorrect card width.
+   * Derive the card width from listWidth minus both gaps.
+   */
   listWidth: number
   /** Distance from the element's right side to the list's padding-box right edge. */
   rightGap: number
@@ -306,15 +224,10 @@ interface ChatBoxOutsideList {
 }
 
 /**
- * Measure the first still-attached match against its chat scroll container and
- * its own row.
- *
- * The container is resolved from the element itself rather than from a hard-coded
- * position in the DOM, and by the attribute the app publishes rather than by a
- * computed-style walk that has to guess which ancestor scrolls. `clientLeft` is
- * the list's left border and `clientWidth` stops before a native scrollbar, so
- * both edges track the same padding box whichever scrollbar the list is wearing.
- * Every number comes off one layout, so none of them can straddle a resize.
+ * Measure an attached element against its own row and chat scroll container.
+ * Find the container through its published attribute on an ancestor. Do not infer it from DOM position or computed overflow.
+ * clientLeft accounts for its left border. clientWidth excludes the native scrollbar.
+ * All values come from one layout, so a resize cannot split the measurement.
  */
 function readChatBoxGeometry(
   possiblyDetachedMatches: (SVGElement | HTMLElement)[],
@@ -327,9 +240,7 @@ function readChatBoxGeometry(
     return null
   const list = el.closest(chatScrollContainerSelector)
   if (!list) {
-    // Name the copy outright. The premeasure root sits OUTSIDE the scroll
-    // container, so a measurement that lands on it looks exactly like a row that
-    // remounted -- telling the two apart by hand is what made issue 402 a guess.
+    // Report a hidden measurement copy explicitly. It sits outside the chat scroller and can otherwise resemble a detached row.
     if (el.closest('[data-chat-premeasure-root="true"]'))
       return { outside: 'it is ChatView\'s hidden premeasure copy, not the live row' }
     const chain: string[] = []
@@ -395,16 +306,10 @@ export interface BubbleEdges {
 }
 
 /**
- * Measure an end-of-line card against both panel edges and against its own row.
- *
- * One rule runs a user message and a plan execution to the right edge, so both
- * specs measure through this function and cannot drift apart on how they read
- * the box.
- *
- * `topGapInRow` is the vertical half: the ROW places its bubble on both axes, so
- * a card's top edge must sit on its row's. It is what a bubble-level `alignSelf`
- * would move, and jsdom computes no flex layout, so only a real browser can hold
- * that line.
+ * Measure the card against both panel edges and its row.
+ * User messages and plan execution cards share the right-alignment rule, so both tests use this reader.
+ * topGapInRow checks that the card starts at the top of its row.
+ * A bubble alignSelf rule can change that position. A real browser is required because jsdom does not calculate flex layout.
  */
 export async function measureBubbleEdges(locator: Locator): Promise<BubbleEdges> {
   const { listWidth, rightGap, leftGap, topGapInRow, radius } = await measureChatBox(locator, 'measureBubbleEdges')
@@ -435,20 +340,10 @@ export function lastAssistantBubble(page: Page) {
 }
 
 /**
- * The row hosting the first agent bubble that is a real assistant MESSAGE --
- * one carrying the per-message actions (quote, copy) on its row.
- *
- * Not every agent-role bubble is a message: turn-end dividers and the notices
- * an agent emits around startup render through the same bubble component with
- * no onReply, so they have neither a quote affordance nor prose to select.
- * firstAssistantBubble() takes whichever is first in the DOM, so a spec that
- * then reaches for the reply button or drags across the text can bind to one of
- * those and spend its whole timeout waiting for an element that will never
- * appear there. Whether a notice lands ahead of the reply depends on how busy
- * the machine is, which is why this only bites some runs.
- *
- * Specs about quoting or selecting an assistant message should name the message
- * rather than take the first bubble and hope.
+ * Locate the first assistant message row that offers quote and copy actions.
+ * Turn dividers and startup notices also use agent-role bubbles, but supply no onReply handler or selectable message prose.
+ * Their order can vary, so the first agent bubble does not necessarily contain an assistant message.
+ * Use this helper for tests that quote or select a message.
  */
 export function firstAssistantMessageRow(page: Page) {
   return assistantBubbles(page)
@@ -473,10 +368,8 @@ export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the numbe
 export const ARITHMETIC_ANSWER = /\b6,?912\b/
 
 /**
- * A SECOND arithmetic probe, for specs that need a follow-up turn whose answer
- * is distinguishable from the first. 3333 is not a substring of 6912 and vice
- * versa, so a wait for either cannot be satisfied by the other turn's leftover
- * bubble -- which is the whole reason these two numbers, and not any others.
+ * Arithmetic prompt for a second turn with a distinct answer.
+ * Neither 3333 nor 6912 contains the other, so one answer cannot satisfy an assertion for the other turn.
  */
 export const SECOND_ARITHMETIC_PROMPT = 'What is 1111 + 2222? Reply with just the number, nothing else.'
 
@@ -505,31 +398,19 @@ export async function expectUserMessage(page: Page, text: string) {
 }
 
 /**
- * How long to give the thinking indicator to appear after a send. Expiring is
- * an expected outcome (see waitForAgentIdle), so this is a probe budget rather
- * than a deadline: long enough to catch a normal turn starting, short enough
- * that a turn which already finished does not pay for the wait.
+ * Maximum wait for the thinking indicator to appear after a send.
+ * The indicator may finish before the wait starts. A short observation period avoids a full action timeout in that case.
  */
 const APPEARANCE_PROBE_MS = 2000
 
 /** Wait for the agent to finish its current turn (thinking indicator gone). */
 export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
   const thinking = page.locator('[data-testid="thinking-indicator"]')
-  // The indicator has to be given a chance to APPEAR first: asserting it is
-  // absent the instant after a send would pass against a turn that has not
-  // started yet. Waiting for the appearance rather than sleeping a flat 2s
-  // returns as soon as it shows, usually within tens of ms.
-  //
-  // The wait EXPIRING is a normal outcome, not a failure: a turn that finished
-  // before we looked never shows an indicator at all, which is why the
-  // rejection is swallowed. That is also why the budget is explicit rather than
-  // inherited -- `locator.waitFor` takes `use.actionTimeout` (30s), and paying
-  // that on every already-finished turn would cost more than the flat sleep
-  // this replaced.
-  //
-  // What the budget does NOT do is close the slow-machine gap: an indicator
-  // that first paints after it still reads as idle, exactly as it did under the
-  // sleep. It is the same bound, spent only when it has to be.
+  // Observe the indicator before checking that it is hidden. An immediate absence check could precede the start of a turn.
+  // An expired observation is permitted because a fast turn can finish before the first check.
+  // Use the short explicit interval instead of the 30-second action timeout.
+  // This helper alone cannot distinguish a completed turn from one that starts after the observation interval.
+  // Callers must also check the expected response or operation result.
   await thinking.waitFor({ state: 'visible', timeout: APPEARANCE_PROBE_MS }).catch(() => {})
   await expect(thinking).not.toBeVisible({ timeout: timeoutMs })
 }
@@ -539,27 +420,17 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
 // ──────────────────────────────────────────────
 
 /**
- * The app menu's trigger, in whichever shell is mounted.
- *
- * Desktop puts it in the custom titlebar (`app-menu-trigger`); a phone has no
- * titlebar, so About and Preferences live under the tab bar's collapsed "+"
- * menu (`collapsed-new-tab-button`) instead. Only `AppShell` renders either,
- * and only behind `AuthGuard`, so this doubles as the marker that the
- * authenticated shell mounted — {@link loginViaUI} waits on it, and the
- * startup specs use it as the shared shell oracle.
+ * Locate the app-menu trigger for the active layout.
+ * Desktop uses app-menu-trigger in the title bar. Phones use collapsed-new-tab-button in the tab bar.
+ * AppShell renders these only after AuthGuard permits access. Their presence also identifies the authenticated shell for login and startup tests.
  */
 export function appMenuTrigger(page: Page): Locator {
   return page.getByTestId('app-menu-trigger').first().or(page.getByTestId('collapsed-new-tab-button')).first()
 }
 
 /**
- * Open the app menu, whichever shell is mounted.
- *
- * WAIT for one of the two triggers before branching. `isVisible()` is a
- * one-shot probe with no auto-wait, so probing it straight after `goto`
- * raced the shell's mount: the titlebar was not there yet, the helper took
- * the mobile branch, and on desktop `collapsed-new-tab-button` exists but
- * is `display: none` — the click then stalled until the action timeout.
+ * Open the app menu for the active layout. Wait for either trigger before selecting one.
+ * isVisible does not wait. Checking it immediately after navigation could select the hidden phone trigger before the desktop title bar mounts.
  */
 async function openAppMenu(page: Page) {
   const appMenu = page.getByTestId('app-menu-trigger').first()
@@ -586,21 +457,14 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 }
 
 /**
- * Open the Preferences dialog from the app menu and land on a category.
- *
- * The dialog's navigation is a category list (sidebar tabs on desktop, an
- * oat-styled section dropdown on phones); `category` is the nav id
- * (e.g. 'appearance', 'notifications', 'admin-general'), defaulting to the
- * dialog's own default category.
+ * Open Preferences and select a category.
+ * Desktop uses sidebar tabs, and phones use a section menu.
+ * category specifies the navigation ID. If absent, keep the dialog default.
  */
 export async function openPreferencesDialog(page: Page, category?: string) {
   const dialog = page.getByRole('dialog', { name: 'Preferences' })
-  // IDEMPOTENT, because the dialog is addressable now: its open state and its
-  // category live in the `?prefs=` search parameter, so a reload while it is
-  // open brings it straight back. A spec that reloads and then calls this
-  // again would otherwise reach for an app-menu trigger that sits UNDER a
-  // modal dialog, and wait out the action timeout on an element the browser
-  // has made inert.
+  // The prefs query parameter restores the open dialog and category after reload.
+  // Reuse that dialog when it is already open. Its modal overlay makes the app-menu trigger inert.
   if (!(await dialog.isVisible())) {
     await openAppMenu(page)
     await page.getByRole('menuitem', { name: 'Preferences' }).click()
@@ -609,11 +473,8 @@ export async function openPreferencesDialog(page: Page, category?: string) {
   if (category) {
     const item = dialog.getByTestId(`preferences-nav-${category}`)
     const compactTrigger = dialog.getByTestId('preferences-nav')
-    // The dialog is visible before its settings load, and an admin nav id
-    // only exists once ListSettings answers — so wait for either the tab
-    // itself or the compact dropdown trigger before branching. Probing
-    // `item` alone raced the load and clicked a compact trigger that
-    // desktop never renders.
+    // Wait for the category tab or compact menu trigger. Admin categories appear only after ListSettings responds.
+    // An early check could choose a compact trigger that the desktop layout never renders.
     await item.or(compactTrigger).first().waitFor({ state: 'visible' })
     // Compact (phone) keeps the sections inside a closed dropdown; open it
     // first. Desktop tabs are already visible in the sidebar.
@@ -626,11 +487,8 @@ export async function openPreferencesDialog(page: Page, category?: string) {
 /** Sign-in attempts {@link loginViaUI} makes before it gives up. */
 const LOGIN_ATTEMPTS = 3
 /**
- * Budget for ONE sign-in attempt, so three of them fit inside the 300s test
- * timeout. Without an explicit slice the URL assertion inherits
- * `expect.timeout` (120s) and the shell wait inherits `actionTimeout` (30s):
- * two attempts already exceed the test budget, and the third can never run —
- * the test dies with a bare "Test timeout" that specifies no assertion.
+ * Maximum duration of one sign-in attempt. Three attempts must fit within the 300-second test deadline.
+ * Default URL and shell waits can consume 150 seconds together, leaving no time for the third attempt or a specific error.
  */
 const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
 
@@ -645,27 +503,15 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   await solveCaptchaViaUI(page)
   await page.getByRole('button', { name: 'Sign in' }).click()
 
-  // After login the user lands on `/` and stays there: `/` is the whole app,
-  // and activating a workspace no longer changes the URL. (Earlier versions had
-  // to tolerate a redirect to `/o/{username}` and then to `/workspace/{id}`;
-  // both are gone, so this can match exactly.)
+  // Login selects /. Workspace activation does not change the path, so the URL check can match exactly.
+  // Wait for the authenticated shell trigger. Do not wait for networkidle after an ALTCHA challenge.
   //
-  // Readiness is the app shell's own menu trigger, NOT
-  // `page.waitForLoadState('networkidle')`. A page that solved an ALTCHA
-  // captcha can NEVER reach networkidle: altcha's solveChallengeWorkers
-  // spawns `min(16, navigator.hardwareConcurrency)` workers that all fetch
-  // the same solver chunk at once, and its `finally` terminates every one of
-  // them the moment the first returns a solution. Chromium drops the script
-  // loads of the workers that were still fetching, and Playwright's
-  // CRNetworkManager.removeSession discards that session's listeners without
-  // failing those requests — so they stay in `frame._inflightRequests` for
-  // the rest of the page's life and the idle timer never starts. The wait
-  // then runs to the 300s test budget, because `navigationTimeout` is unset
-  // (0 = no limit). The cheaper the algorithm, the wider the window: a
-  // 1 MiB-per-derivation SCRYPT solve finished while seven of ten workers
-  // were still loading their chunk.
+  // ALTCHA starts up to 16 solver workers and terminates the others after the first solution.
+  // Chromium can cancel unfinished worker-script loads while Playwright retains their in-flight request records.
+  // The idle timer then never starts, and an unlimited navigation wait lasts until the test deadline.
+  // Faster solutions increase this overlap. One SCRYPT run finished while seven of ten workers still loaded their scripts.
   //
-  // If a transient error occurs (e.g. hub DB not yet ready after restart), retry.
+  // Retry a transient login refusal, such as a database that is not ready after restart.
   const loggedInURL = /\/$/
   let lastError: unknown
   for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt++) {
@@ -712,55 +558,6 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
 }
 
 /**
- * Solve the ALTCHA proof-of-work captcha when the hub presents one.
- *
- * The widget mounts only after the app's bootstrap answers the captcha
- * question, and on a captcha-disabled hub it never mounts at all — so a
- * single un-waited presence check races the system-info fetch on a cold
- * load and silently skips solving. Poll for either outcome instead: the
- * widget appearing (solve it), or the form's submit button enabling
- * (bootstrap answered "no captcha"; the caller's fields are already
- * filled). A no-op when captcha is disabled, so specs run identically
- * either way; when NEITHER outcome arrives, the poll fails rather than
- * proceeding — a widget-mount regression must fail at the wait, not as a
- * downstream assertion the silent no-op starves.
- *
- * Playwright pierces the widget's open shadow DOM; clicking the checkbox
- * kicks off the PoW (PBKDF2 at the default cost lands well under the
- * global timeout in headless Chromium) and the checkbox ending up checked
- * is the verified state the forms gate their submit buttons on.
- */
-export async function solveCaptchaViaUI(page: Page) {
-  const widget = page.locator('altcha-widget')
-  const submit = page.locator('form button[type="submit"]')
-  // One compound predicate decides the disjunction at the deadline — the
-  // widget appeared (solve it) or the submit button enabled (bootstrap
-  // answered "no captcha"; the caller's fields are already filled) —
-  // instead of a hand-rolled loop plus a post-loop re-check that covers
-  // only the gap between the last poll and itself. expect.poll rides the
-  // global expect timeout; the message names the helper so a timeout
-  // failure points here, not at a downstream assertion the silent no-op
-  // would starve.
-  await expect.poll(async () => {
-    if (await widget.count() > 0)
-      return true
-    return await submit.count() > 0 && await submit.first().isEnabled()
-  }, { message: 'solveCaptchaViaUI: neither the captcha widget nor an enabled submit button appeared' }).toBe(true)
-  if (await widget.count() === 0) {
-    return
-  }
-  const checkbox = widget.locator('input[type="checkbox"]')
-  await checkbox.waitFor({ state: 'visible' })
-  if (await checkbox.isChecked()) {
-    return
-  }
-  // The widget's checkmark svg overlays the input, so a plain click lands
-  // on the svg; force dispatches on the input itself.
-  await checkbox.click({ force: true })
-  await expect(checkbox).toBeChecked()
-}
-
-/**
  * Navigate to the registration page and approve the worker.
  */
 export async function approveWorkerViaUI(page: Page, token: string, name: string) {
@@ -776,13 +573,9 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
  * Clicks the agent button in the tab bar which directly creates an agent.
  */
 export async function openAgentViaUI(page: Page) {
-  // Wait for the active tab's context first, for the same reason
-  // openTerminalViaUI does: handleOpenAgent reads `{workerId, workingDir}`
-  // SYNCHRONOUSLY on click and, finding either missing, opens the "new agent"
-  // dialog to ask the user instead. That is a one-shot bail with no retry, so a
-  // click that lands too early creates no tab at all and the count wait below
-  // burns its whole budget against a number that will never change -- which is
-  // exactly how 036 failed.
+  // Wait for the active tab directory before clicking. The agent handler reads workerId and workingDir synchronously.
+  // If either is absent, it opens the directory dialog and does not retry.
+  // An early click therefore creates no tab and would leave the later count check waiting until timeout.
   await waitForActiveTabContext(page)
   // Count existing agent tabs so we can wait for the new one to appear.
   const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
@@ -795,46 +588,22 @@ export async function openAgentViaUI(page: Page) {
 }
 
 /**
- * Wait until the app has resolved a WORKING DIRECTORY for the active tab.
+ * Wait for the active tab working directory.
+ * A projected tab initially holds only tile, position, and worker data. useTabHydrators retrieves the directory later.
+ * Check the nonempty data-working-dir that the Files section publishes after resolution.
+ * The tree root is insufficient: it can render from workerId alone with a ~ directory fallback.
  *
- * `waitForWorkspaceReady` returns as soon as a tab element exists, which happens
- * the moment the CRDT projection lands -- but a projected tab carries only
- * tile/position/worker. Everything else, `workingDir` included, arrives later
- * from the worker (`useTabHydrators` -> `ListAgents` / `ListTerminals`). Any
- * action whose precondition is the active tab's directory therefore races page
- * load, and loses on a cold instance.
- *
- * Waits on the Files section's RESOLVED working dir, which the app publishes as
- * `data-working-dir` -- the app's own statement that the context has landed, not
- * a proxy we invented for the tests.
- *
- * Emphatically NOT the tree root node, which this used to wait for. That node is
- * dependent only on `workerId` (available from the CRDT TabRecord immediately) and
- * renders against a `props.workingDir || '~'` fallback, so it attaches while the
- * dir is still empty -- i.e. it was already on screen at exactly the moment the
- * race it was supposed to close was open, and the specs kept their original
- * flake. A non-empty `data-working-dir` cannot be produced by the fallback.
- *
- * `attached`, NOT `visible`: whether the sidebar is EXPANDED is a layout question
- * (it collapses under the mobile-layout breakpoint, so a spec that shrinks the
- * viewport first would wait forever on a visibility check) and is orthogonal to
- * whether the directory resolved. Attachment is exactly the half we mean.
- *
- * Fails loudly on timeout rather than proceeding, so a genuinely broken
- * hydration surfaces here instead of as a confusing downstream assertion.
+ * Wait for attachment, not visibility. Mobile layout can collapse the sidebar even when the directory is ready.
+ * Report a timeout here so a hydration failure does not appear as an unrelated interaction failure.
  */
 export async function waitForActiveTabContext(page: Page) {
   await page.locator('[data-working-dir]:not([data-working-dir=""])').first().waitFor({ state: 'attached' })
 }
 
 /**
- * Open a new terminal in the currently selected workspace.
- * Clicks the terminal button in the tab bar.
- *
- * Waits for the active tab's context first: the handler reads the directory
- * SYNCHRONOUSLY on click and, finding none, opens the "new terminal" dialog to
- * ask the user instead -- a one-shot bail with no retry, so a click that lands
- * too early yields no terminal at all and every later assertion times out.
+ * Open a terminal through the tab-bar button. Wait for the active tab directory first.
+ * The handler reads the directory synchronously. If absent, it opens a directory dialog without retrying.
+ * An early click therefore creates no terminal, and later terminal assertions would time out.
  */
 export async function openTerminalViaUI(page: Page) {
   await waitForActiveTabContext(page)
@@ -944,20 +713,9 @@ export async function screenshotIfEnabled(page: Page, name: string) {
 }
 
 /**
- * The app does not store preferences as bare JSON: every `leapmux:`-family
- * value goes through `~/lib/browserStorage`, which wraps it as `{ v, e }` with
- * an expiration and sweeps any entry whose wrapper is missing or malformed.
- *
- * These two helpers therefore have to speak the wrapper, and both silently did
- * the wrong thing when they did not. Reading `JSON.parse(raw)[field]` yields
- * the WRAPPER's fields, so `getBrowserPref` returned null for every preference
- * that was actually set; writing a bare object made `setInitialBrowserPref` a
- * no-op, because `loadBrowserPrefs` rejects an unwrapped entry and falls back
- * to `{}`. Neither failed loudly -- the specs just asserted against defaults.
- *
- * The key and its TTL come from the app's own registry rather than being
- * restated here, so a change on that side cannot leave the tests writing an
- * entry the sweep would drop.
+ * Browser preferences use the browserStorage wrapper with a value and expiry. The storage layer rejects missing or invalid wrappers.
+ * Reading a raw field from the wrapper returns no preference. Writing an unwrapped object makes the app use defaults.
+ * These helpers use the app registry for the key and lifetime, so storage-policy changes cannot invalidate fixture values unnoticed.
  */
 function browserPrefsTtlMs(): number {
   const ttlMs = getTtlForKey(KEY_BROWSER_PREFS)
@@ -979,17 +737,9 @@ export async function getBrowserPref(page: Page, userId: string, field: string):
 }
 
 /**
- * One field of the consolidated browser preferences, as stored.
- *
- * Beside `getBrowserPref`, which stringifies. Not every preference is a scalar:
- * `theme` is a `{ name, mode }` document, and `String()` renders it
- * "[object Object]", which compares equal to every other object-shaped value.
- *
- * It NAMES the account, like its writer sibling `setInitialBrowserPref`, and
- * composes the key with the app's own `accountStorageKey`. Finding the key by
- * scanning the page for one that looks scoped -- which this did -- reads back a
- * DIFFERENT account's document as soon as two accounts have written on one
- * browser, and there is no test-visible signal when it does.
+ * Read one browser preference without converting it to a string.
+ * Structured values such as theme must remain objects. String conversion would make different objects compare as [object Object].
+ * Use the supplied account ID and accountStorageKey. Scanning for a similar key could read another account after multiple logins.
  */
 export async function getBrowserPrefValue(page: Page, userId: string, field: string): Promise<unknown> {
   const row = await readEntry(page, accountStorageKey(userId, KEY_BROWSER_PREFS))
@@ -1001,23 +751,11 @@ export async function getBrowserPrefValue(page: Page, userId: string, field: str
 }
 
 /**
- * Set a single field in the consolidated browser preferences.
- *
- * Pass `leapmuxServer.adminUserId`: the caller seeds before the page signs in,
- * so there is nothing in storage to find the key from.
- *
- * AWAITED rather than installed as an init script. The preferences live in
- * IndexedDB, which is durable across a navigation, so the seed only has to land
- * before the app READS it -- and every caller reloads immediately afterwards,
- * which is what supplies that ordering. An init script was compensating for a
- * `page.evaluate` seed happening after the first load; nothing needs it now.
- *
- * The page must already be on the app's origin, which every caller satisfies.
- *
- * `value` is `unknown` because a preference is not always a string: the quake
- * size is a number and the opacity a float, and every parse in
- * `PreferencesContext` checks `typeof raw === 'number'` -- so a stringified
- * seed would be discarded for the default with nothing to show for it.
+ * Set one browser preference for the supplied account ID.
+ * Pass leapmuxServer.adminUserId because the page did not sign in yet.
+ * The page must already use the app origin. Await this write before reloading, so IndexedDB holds the value before the app reads it.
+ * The value can be any supported preference type. For example, terminal size and opacity require numbers.
+ * PreferencesContext rejects a numeric value stored as a string and uses the default instead.
  */
 export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: unknown) {
   const storedKey = accountStorageKey(userId, KEY_BROWSER_PREFS)
@@ -1114,13 +852,9 @@ export function settingsBar(page: Page) {
 }
 
 /**
- * The status bar's chip TRIGGERS — the labels the user actually sees.
- *
- * Assertions must go through these, never through the bar itself. Each chip's
- * popover is a DOM sibling that stays mounted while closed, so the bar's own
- * `textContent` also contains every option label of every axis: asserting
- * `toContainText('Plan Mode')` on the bar passes whatever mode is selected,
- * because "Plan Mode" is one of the options in the closed mode list.
+ * Locate the visible status-bar chip triggers.
+ * Assert on these triggers instead of the entire bar. Closed sibling popovers retain every option label in the DOM.
+ * A bar-level text assertion could therefore pass for an option that the user did not select.
  */
 export function settingsChips(page: Page) {
   return page.locator('[data-testid="composer-status-bar"] [data-testid$="-trigger"]')
@@ -1151,16 +885,8 @@ function settingsGroupIdOf(optionTestId: string): string {
 }
 
 /**
- * Close every open popover, so a menu interaction starts from a known state.
- *
- * The composer's menus nest: the `[+]` popover holds one submenu popover per
- * option group. A submenu left open from a previous step covers the `[+]`
- * menu's other items, and a click on one of them is then intercepted — which
- * shows up as a retry loop that runs to the test timeout rather than as a
- * readable failure.
- *
- * Driven through `hidePopover()` rather than Escape because Escape only reaches
- * a popover that holds focus, and the caller cannot know which one does.
+ * Close composer popovers before another menu interaction. An open submenu can cover another group trigger.
+ * Use hidePopover because Escape affects only the popover that holds focus, which the caller cannot reliably identify.
  */
 export async function closeComposerMenus(page: Page) {
   await page.evaluate(() => {
@@ -1173,19 +899,9 @@ export async function closeComposerMenus(page: Page) {
 }
 
 /**
- * Click `trigger` unless it already reports an open popover, then confirm it is
- * open.
- *
- * Waits on `aria-expanded`, which is the app's own statement of whether its
- * popover is open, rather than on the popover's visibility. A menu caught
- * mid-CLOSE is still visible for the length of its animation, so a visibility
- * check saw "already open", skipped the click, and handed the caller a menu
- * that vanished a frame later -- the caller's click on an item then failed with
- * "element is not stable" and finally "element is not visible", which is
- * exactly how 044's model switches died under load.
- *
- * Call inside a `toPass` block: it is idempotent, so a retry re-establishes an
- * open that a re-render closed.
+ * Click the trigger unless aria-expanded already reports an open popover. Then confirm aria-expanded.
+ * A closing popover stays visible during its animation. A visibility check alone could incorrectly skip the click.
+ * Call this idempotent operation inside toPass so an app update that closes the menu permits another attempt.
  */
 async function ensureExpanded(trigger: Locator) {
   if (await trigger.getAttribute('aria-expanded') !== 'true')
@@ -1226,37 +942,18 @@ export async function openPlusMenu(page: Page): Promise<Locator> {
 }
 
 /**
- * The `[+]` menu's submenu trigger for one option group.
- *
- * Present only while the agent OFFERS that group, so its absence is how the new
- * composer says "this axis does not apply" — the fused menu it replaced listed
- * every group at once and expressed the same thing by omitting the group's
- * items. Requires the `[+]` menu to be open.
+ * Locate an option-group trigger in the open plus menu.
+ * The trigger exists only when the agent offers the group. Its absence indicates that the option group does not apply.
  */
 export function settingsGroupTrigger(page: Page, groupId: string): Locator {
   return page.locator(`[data-testid="composer-group-${groupId}"]`)
 }
 
 /**
- * Open one option group's settings submenu and leave it open.
- *
- * Drives the composer's `[+]` menu rather than the status-bar chips: the `[+]`
- * menu carries EVERY group (the status bar shows only model/effort/mode), and
- * it stays rendered at any width, while the chips are hidden below the `sm`
- * breakpoint and can be switched off entirely by the "Show status bar"
- * preference.
- *
- * Opens BOTH triggers inside one `toPass` block rather than calling
- * `openPlusMenu` first: a settings round-trip that lands between the two closes
- * the `[+]` menu, and only a retry that re-opens both recovers from it.
- *
- * The close is INSIDE the loop, so each attempt starts from a shut menu. With it
- * outside, every retry ran against the menu the first attempt had left open, and
- * `ensureExpanded` does not re-click one that reports itself open -- so a menu
- * that opened onto the wrong content could never be reopened, and the loop
- * spun on it until the test budget died. That is how a `[+]` menu opened before
- * the agent's first status push read as a 5-minute timeout on an unrelated
- * locator.
+ * Open an option-group submenu through the composer plus menu and leave it open.
+ * The plus menu includes every group at all widths. Status-bar chips expose only some groups and can be hidden.
+ * Open both menus within the same toPass attempt because a settings response can close the first before the second opens.
+ * Close existing menus inside each attempt. Otherwise, a menu with outdated content could remain open through every retry.
  */
 export async function openSettingsMenu(page: Page, groupId: string): Promise<Locator> {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
@@ -1291,16 +988,9 @@ export async function chooseSettingsOption(page: Page, testId: string) {
 }
 
 /**
- * A DirectoryTree row, located by the file or directory name it displays.
- *
- * Anchored on the row's own test id rather than on `getByText(name)`: the label
- * is duplicated into the Tooltip portal for every truncated node, so a bare
- * text locator matches twice and dies on Playwright's strict-mode check.
- *
- * `:visible`-scoped before `.first()` for the same reason as {@link workspaceRow}:
- * the sidebar is mounted twice, and `.first()` alone can pick the off-screen
- * copy's row -- hoverable in the accessibility sense, but covered, so the hover
- * is refused until it times out.
+ * Locate a directory-tree row by its displayed name and row test ID.
+ * A Tooltip duplicates truncated text, so a text-only locator can match twice.
+ * Apply :visible before first() because the sidebar has another mounted copy. The other copy can intercept or reject pointer actions.
  */
 export function treeRow(page: Page, name: string): Locator {
   return page.locator(`[data-testid="tree-row"]${VISIBLE}`).filter({ hasText: name }).first()
@@ -1317,20 +1007,10 @@ export function treeRowNames(page: Page): Locator {
 }
 
 /**
- * Wait until the chat editor's draft for `text` has actually reached storage.
- *
- * The draft is written on a debounce and then flushed behind, so a reload
- * issued before both land drops it. Sleeping "the debounce plus a margin" is
- * what made the draft specs flaky: the margin is sized against a real timer,
- * and under a loaded machine the debounce itself lands late, so the sleep
- * expires first and the reload races the write. Poll the state the reload
- * depends on instead.
- *
- * The draft key carries the agent id, which the caller does not know, so this
- * scans the account's draft rows rather than naming one. The prefix is COMPOSED
- * by the app's own `accountStorageKey`, which is why the match is a
- * `startsWith` and not a regex: splicing a key name into a regex source hands
- * every metacharacter in it to the matcher.
+ * Wait until the draft reaches durable browser storage before reload.
+ * The debounce and write queue can both delay persistence. A fixed sleep cannot account for delayed timers on a busy host.
+ * The caller lacks the agent ID, so inspect draft rows for its account.
+ * Build the prefix with accountStorageKey and compare with startsWith. A regular expression would interpret metacharacters in the key.
  */
 export async function waitForEditorDraft(page: Page, userId: string, text: string) {
   const prefix = accountStorageKey(userId, PREFIX_EDITOR_DRAFT)
@@ -1348,19 +1028,10 @@ export async function waitForEditorDraft(page: Page, userId: string, text: strin
 }
 
 /**
- * Wait until the Files section's sort choice has actually reached storage.
- *
- * The preference travels through the same coalescing write-behind queue the
- * editor draft does, so a reload issued in the moments after the click drops
- * it. `App`'s `pagehide` flush narrows that window and cannot close it: the
- * flush awaits the connection before it opens a transaction, so the write
- * lands at least a microtask after the handler returns. A click followed
- * immediately by a reload loses the write EVERY time, not sometimes.
- *
- * The key carries the tab's working directory, which the Worker canonicalizes
- * (`/var/...` becomes `/private/var/...` on macOS), so this matches on the
- * `(prefix, workerId)` head and on the stored value instead. One agent per
- * spec is what makes that unambiguous.
+ * Wait until the Files sort preference reaches durable browser storage.
+ * The write queue can outlive the click. pagehide flush also awaits a connection, so it does not complete synchronously.
+ * Match the prefix, worker ID, and stored value. The worker can canonicalize the directory path, such as /var to /private/var on macOS.
+ * One agent per test makes this lookup unambiguous.
  */
 export async function waitForFilesSortOrder(
   page: Page,
@@ -1383,13 +1054,9 @@ export async function waitForFilesSortOrder(
 }
 
 /**
- * Rename a tab through its double-click inline editor and wait for the label
- * to settle.
- *
- * A rename is the only thing that writes a terminal's persisted title: the
- * worker gives every terminal the name `Terminal <Name>` at creation, and a PTY-driven
- * OSC title is a live overlay that is deliberately never persisted (see the
- * SignalTitle case in the worker's terminal.go).
+ * Rename a tab through its inline editor and wait for the label.
+ * A rename writes a terminal title to storage. Terminal creation supplies the initial Terminal <Name> value.
+ * Terminal escape-sequence titles are live overlays and do not persist. See SignalTitle in the worker terminal.go file.
  */
 export async function renameTabViaUI(page: Page, tab: Locator, newTitle: string) {
   await tab.dblclick()
@@ -1401,20 +1068,10 @@ export async function renameTabViaUI(page: Page, tab: Locator, newTitle: string)
 }
 
 /**
- * Open a sidebar row's hover-revealed menu and leave it open, with `item` on
- * screen.
- *
- * Hover, trigger click, AND the item lookup are retried as ONE unit, because
- * the menu is transient in two different ways. The tree re-renders on
- * git-status refreshes and on every turn-end trigger, detaching the row under
- * the pointer ("element is not stable", then "element was detached from the
- * DOM"); and the sidebar itself re-renders on workspace / worker / todo
- * changes. Waiting on a generic "the menu opened" signal and THEN reaching for
- * the item left exactly that gap: 014 and 037 both failed with the menu open
- * and the item they wanted gone.
- *
- * Shared by the file-tree three-dot menu and the branch-group one, which differ
- * only in how their trigger is addressed.
+ * Open a sidebar row menu and wait for the requested item.
+ * Retry hover, trigger click, and item lookup together. Git refreshes and turn completion can replace a row during the interaction.
+ * Workspace, worker, and todo changes can also update the sidebar. An open-menu check alone cannot ensure that the requested item remains.
+ * File-tree and branch-group menus share this helper and supply their own trigger locators.
  */
 export async function openRowMenu(row: Locator | null, trigger: Locator, item: Locator) {
   await expect(async () => {
@@ -1464,18 +1121,9 @@ export async function clickTreeContextItem(page: Page, row: Locator, itemTestId:
 }
 
 /**
- * The first branch-group row in the sidebar.
- *
- * `:visible`-scoped for the same reason as {@link workspaceRow}: the app mounts
- * the sidebar twice, and an unscoped `.first()` can land on the OFF-SCREEN
- * copy's row -- which is visible enough to hover but sits under the on-screen
- * sidebar, so the hover is refused with "subtree intercepts pointer events"
- * until the action times out.
- *
- * Its menu trigger is addressed by `aria-expanded` rather than by position:
- * DropdownMenu renders its items as `<button role="menuitem">` inside the row's
- * own popover, so `.locator('button').last()` resolves to a hidden menu ITEM
- * and never becomes clickable. Only the trigger carries `aria-expanded`.
+ * Locate the first visible branch-group row.
+ * The sidebar has two mounted copies. An unfiltered first() can select a covered copy that rejects pointer actions.
+ * Use aria-expanded to identify the menu trigger. A last-button lookup can instead select a hidden menu item inside the popover.
  */
 export function branchGroupRow(page: Page): Locator {
   return page.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
@@ -1486,19 +1134,10 @@ function branchMenuTrigger(row: Locator): Locator {
 }
 
 /**
- * The first repository-group row under `root`.
- *
- * `:visible`-scoped for the same reason as {@link branchGroupRow}: the app
- * mounts the sidebar twice, and an unscoped `.first()` lands on the off-screen
- * copy, whose row refuses a hover because the on-screen sidebar covers it.
- *
- * Pass a workspace's own `workspace-children-<id>` subtree as `root` whenever
- * an earlier test in the file left another workspace expanded -- rooted at the
- * page, `.first()` answers for whichever workspace sits highest in the sidebar.
- *
- * The row is the HEADER alone. Its branch rows are siblings rather than
- * children, so a locator scoped to this row addresses its own menu and never a
- * branch's.
+ * Locate the first visible repository-group header below root.
+ * Visibility filtering excludes the covered sidebar copy.
+ * Supply the workspace children as root when another workspace can also remain expanded. A page-level lookup selects the first workspace.
+ * Branch rows are siblings of the header, so a lookup below this row reaches only the repository menu.
  */
 export function repoGroupRow(root: Page | Locator): Locator {
   return root.locator(`[data-testid="tab-tree-repo-group"]${VISIBLE}`).first()
@@ -1565,22 +1204,10 @@ export async function waitForSettingsIdle(page: Page) {
 }
 
 /**
- * Wait until the agent has reported its option catalog.
- *
- * Waits on the `[+]` menu's model submenu, not the status-bar chip: the chip
- * lives inside a surface the "Show status bar" preference removes, so a spec
- * that switches the bar off would block here until the global timeout.
- *
- * The submenu exists only for a group that exists and offers at least one
- * option, so its PRESENCE is the app's own marker that the catalog landed --
- * nothing invented for the tests. A freshly opened tab shows no model group at
- * all for as long as its agent takes to hand over its groups, so any assertion
- * about a model's name has to wait for this.
- *
- * Each attempt shuts the menu first, for the reason {@link openSettingsMenu}
- * gives: `ensureExpanded` never re-clicks a menu that reports itself open, so a
- * loop that leaves one open can only ever re-read the content that first open
- * produced.
+ * Wait for an option catalog through the model submenu.
+ * Status-bar chips can be hidden by a preference. The plus menu remains available.
+ * A submenu exists only when the agent supplies a group with at least one option.
+ * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
  */
 export async function waitForSettingsHydrated(page: Page) {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
@@ -1626,34 +1253,20 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
 }
 
 /**
- * The sidebar row for `workspaceId`, restricted to the one on screen.
- *
- * The app mounts the sidebar TWICE -- the desktop element and the
- * mobile/overlay one are separate `createLeftSidebarElement` calls -- so the
- * same `workspace-item-<id>` can exist in two subtrees with only one of them
- * rendered. Playwright reports the strict-mode violation on the resolved set
- * BEFORE applying its visibility filter, so even `waitFor()` (which waits for
- * `visible`) throws outright. 142 and 152 both died there.
- *
- * `.first()` on top of that, because during a layout-breakpoint transition BOTH
- * copies can be visible at once and `:visible` alone still resolves to two. It
- * is safe by construction: both nodes carry the same workspace id, so clicking
- * or reading either answers the same question.
+ * Locate the visible sidebar row for workspaceId.
+ * Desktop and mobile sidebars mount separate copies of the same workspace ID.
+ * Filter visibility before resolving the locator, or Playwright can reject both matches before its wait begins.
+ * Use first() because both copies can briefly remain visible during a layout transition.
+ * Either visible copy identifies the same workspace.
  */
 export function workspaceRow(page: Page, workspaceId: string): Locator {
   return page.locator(`[data-testid="workspace-item-${workspaceId}"]${VISIBLE}`).first()
 }
 
 /**
- * The workspace row's expand chevron. Addressed by its own testid because it
- * is no longer the row's first SVG: the drag grip precedes it, and the grip
- * stays `display: none` on fine-pointer devices.
- *
- * Derived from {@link workspaceRow} rather than located on its own, so it
- * inherits the `:visible` scoping every other sidebar locator carries. A bare
- * `workspace-chevron-<id>` also matches a row the collapsed rail keeps in the
- * DOM under `display: none`, where the click waits for a chevron that never
- * becomes actionable and reports a timeout instead of the real cause.
+ * Locate the workspace chevron through its test ID and visible workspace row.
+ * The drag grip precedes it in SVG order, so a first-SVG lookup is incorrect.
+ * An independent chevron lookup can select the hidden collapsed sidebar copy and wait for a click that cannot succeed.
  */
 export function workspaceChevron(page: Page, workspaceId: string): Locator {
   return workspaceRow(page, workspaceId)
@@ -1661,19 +1274,9 @@ export function workspaceChevron(page: Page, workspaceId: string): Locator {
 }
 
 /**
- * The tab-tree leaves nested under `workspaceId`'s sidebar row, read from the
- * ON-SCREEN sidebar.
- *
- * Built on {@link workspaceRow}, so it inherits the `:visible` scoping. The two
- * specs that needed this each hand-rolled it with a bare
- * `document.querySelector`, which takes the FIRST `workspace-item-<id>` in DOM
- * order -- and the app mounts the sidebar twice, so that is sometimes the
- * off-screen copy. Its leaves exist but never hydrate their worker-side
- * metadata, so a title assertion sat on the fallback "Agent" until it timed
- * out, reporting a hydration bug that was really a wrong-copy read.
- *
- * The children wrapper is the row's next sibling (the tree renders them as
- * siblings, not as descendants), hence the xpath hop.
+ * Locate tab leaves below the visible workspace row.
+ * The other mounted sidebar copy can retain unhydrated labels, so a page query can read a permanent generic Agent label.
+ * The children wrapper follows the workspace row as a sibling. Use that sibling relationship for the lookup.
  */
 export function sidebarLeaves(page: Page, workspaceId: string): Locator {
   return workspaceRow(page, workspaceId)
@@ -1708,24 +1311,12 @@ export async function sidebarLeafIds(page: Page, workspaceId: string): Promise<s
 }
 
 /**
- * Load the app and make `workspaceId` the active workspace, then wait for its
- * shell to be ready.
+ * Load the app, select workspaceId through its sidebar row, and wait for its shell.
+ * The app uses / for every workspace. resolveActiveWorkspace reads the saved selection from browser storage.
+ * A click uses the same selection path as the user. Skip it when the requested workspace is already active.
  *
- * There is no per-workspace URL to navigate to: `/` is the whole app, and which
- * workspace it opens on is decided by `resolveActiveWorkspace` from
- * localStorage. So this drives the same path a user does — load `/`, click the
- * sidebar row — rather than seeding storage, which would let the specs pass
- * against a broken restore.
- *
- * The click is skipped when the row is already active (a single-workspace
- * account, or a reload that restored the one we want), so this stays a no-op
- * rather than a redundant switch.
- *
- * NOTE the transit: when the target is NOT the workspace a cold start picks,
- * that other workspace is briefly activated first — which auto-expands its
- * sidebar row and hydrates its tabs. A spec asserting on sidebar expansion has
- * to establish its starting state explicitly rather than assume everything but
- * the target is collapsed (see 017's expanded-state-persists test).
+ * A cold load can first activate another saved workspace. That activation expands its sidebar row and hydrates its tabs.
+ * Tests of expansion state must establish their starting state explicitly. See the expanded-state test in 017.
  */
 export async function openWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
@@ -1746,13 +1337,9 @@ export async function openWorkspace(page: Page, workspaceId: string) {
 }
 
 /**
- * Reload the app at `/` and assert it came back on `workspaceId` without being
- * told to — i.e. that the persisted selection was restored.
- *
- * Deliberately does NOT click the sidebar row; that is the whole difference
- * from `openWorkspace`. A broken restore has to fail here rather than be
- * papered over by the click, which is what makes this the right helper for the
- * reload-and-come-back specs.
+ * Reload / and verify that the app restores workspaceId from saved state.
+ * Do not click the sidebar row. That click would hide a broken restore.
+ * Use openWorkspace only when explicit selection is intended.
  */
 export async function reopenWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
@@ -1808,12 +1395,9 @@ export function tabById(page: Page, tabId: string): Locator {
  * boxes" with nothing else wrong. Waiting first removes the race.
  */
 export async function boxOf(locator: Locator): Promise<{ x: number, y: number, width: number, height: number }> {
-  // Capture the box INSIDE the poll and return that one. Checking for a box
-  // and then reading it are two round trips, and the element can detach
-  // between them — a workspace switch legitimately remounts the tile and its
-  // tab strip, and these drags run right after one, so a re-read lands
-  // mid-remount often enough to matter. `expect.poll` retries under the
-  // global expect timeout.
+  // Return the geometry captured inside the poll.
+  // A separate read could follow a workspace switch that replaces the tile and tab strip.
+  // expect.poll retries through the global assertion timeout.
   let box: { x: number, y: number, width: number, height: number } | null = null
   await expect.poll(async () => {
     box = await locator.boundingBox()

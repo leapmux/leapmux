@@ -1,48 +1,49 @@
 version: '3'
 
 run: once
+method: checksum
 
-# Tool and image versions are centralized in versions.env. Task's dotenv
-# support exposes each KEY=VALUE both as a template variable ({{.KEY}})
-# and as a shell environment variable ($KEY). Existing environment
-# variables take precedence over the file, so e.g. `VERSION=1.2.3 task
-# build` still overrides the pinned release version.
+# versions.env supplies tool and image versions through Task's dotenv support.
+# Each entry supplies a template variable ({{.KEY}}) and a shell variable ($KEY).
+# An existing environment variable takes precedence, such as VERSION=1.2.3 task build.
 dotenv: ['versions.env']
 
 vars:
-  # Respect VERSION from the environment when set (for CI overrides),
-  # otherwise fall back to the value loaded from versions.env. Task's
-  # dotenv only propagates into command shells, so we have to bounce
-  # through a shell here and let {{.VERSION}} expand to the dotenv
-  # default before the parameter expansion runs.
+  SPINNERS_CACHE_DIR:
+    sh: echo "${HOME:-$USERPROFILE}/.cache/awesome-claude-spinners"
+  GO_CONTEXT:
+    sh: go env -json GOOS GOARCH GOAMD64 GOARM GOARM64 GOEXPERIMENT GO386 GOPPC64 GOMIPS GOMIPS64 GORISCV64 GOWASM CGO_ENABLED CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_FFLAGS CGO_LDFLAGS CC CXX GOFLAGS GOTOOLCHAIN GOVERSION GOWORK
+  JS_CONTEXT:
+    sh: bun --version && node --version
+  # Use VERSION from the environment when set, including CI overrides.
+  # Otherwise, use the value from versions.env. Task's dotenv supplies command shells.
+  # Quote the dotenv default before the shell evaluates the environment fallback.
   VERSION:
-    sh: echo "${VERSION:-{{.VERSION}}}"
+    sh: |
+      task_default_version={{.VERSION | shellQuote}}
+      printf '%s' "${VERSION:-$task_default_version}"
   COMMIT_HASH:
-    sh: echo "${COMMIT_HASH:-$(git rev-parse --short HEAD 2>/dev/null)}"
+    sh: printf '%s' "${COMMIT_HASH:-$(git rev-parse --short HEAD 2>/dev/null)}"
   COMMIT_TIME:
-    sh: echo "${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null)}"
+    sh: printf '%s' "${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null)}"
   BUILD_TIME:
-    sh: echo "${BUILD_TIME:-{{dateInZone `2006-01-02T15:04:05Z` now `UTC`}}}"
-  # BRANCH is the git branch name embedded in the binary so the version
-  # banner / AboutDialog can show which dev build is running. Prefer an
-  # environment override (CI can pass github.head_ref, etc.); fall back
-  # to the current branch; leave empty for detached HEAD (tag builds,
-  # ad-hoc SHA checkouts). The version package hides an empty branch,
-  # so detached / release builds get a clean banner.
+    sh: printf '%s' "${BUILD_TIME:-}"
+  EFFECTIVE_BUILD_TIME: '{{.BUILD_TIME | default (dateInZone "2006-01-02T15:04:05Z" now "UTC")}}'
+  # The version banner and AboutDialog show the embedded Git branch.
+  # Use the environment override first, then the current branch.
+  # Detached checkouts, including tag builds, leave this empty. The version package hides an empty branch.
   BRANCH:
-    sh: echo "${BRANCH:-$(git symbolic-ref --short HEAD 2>/dev/null)}"
+    sh: printf '%s' "${BRANCH:-$(git symbolic-ref --short HEAD 2>/dev/null)}"
+  BUILD_CONTEXT: '{{dict "version" .VERSION "commit" .COMMIT_HASH "commitTime" .COMMIT_TIME "branch" .BRANCH "buildTime" .BUILD_TIME | toJson}}'
   VERSION_LDFLAGS: >-
     -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
     -X github.com/leapmux/leapmux/util/version.CommitTime={{.COMMIT_TIME}}
-    -X github.com/leapmux/leapmux/util/version.BuildTime={{.BUILD_TIME}}
+    -X github.com/leapmux/leapmux/util/version.BuildTime={{.EFFECTIVE_BUILD_TIME}}
     -X github.com/leapmux/leapmux/util/version.Branch={{.BRANCH}}
-  # macOS .app/.dmg bundles use Apple's arch names (arm64 / x86_64), while
-  # Task's built-in {{ARCH}} is Go-style (arm64 / amd64); remap the x86 token
-  # for the bundle filename (arm64 is identical under both). Defined globally
-  # because both build-desktop-darwin and sign-and-notarize-darwin-app
-  # reference the DMG by name. The Go server tarball keeps {{ARCH}} -- a Go
-  # CLI archive follows Go's convention, not Apple's.
+  # macOS bundles use arm64/x86_64. Task uses Go's arm64/amd64 architecture values.
+  # Both Darwin build and notarization tasks need the same disk-image filename.
+  # Go server archives retain Go's architecture values.
   DMG_ARCH: '{{if eq ARCH "amd64"}}x86_64{{else}}{{ARCH}}{{end}}'
 
 # --- Code Generation ---
@@ -50,11 +51,9 @@ vars:
 tasks:
   generate:
     desc: Generate all code
-    # proto, contracts, and spinners read no each other's OUTPUT (contracts
-    # runs its own local `buf build` from proto/ and reads no proto output),
-    # so they run as parallel deps; sqlc needs generate-proto's output and
-    # declares that dep itself. generate-contracts also resolves ajv from
-    # frontend/node_modules and carries that install dep itself.
+    # Proto, contracts, and spinners can run concurrently because they do not read each other's output.
+    # Contracts runs its own local buf build and requires the frontend dependency installation for ajv.
+    # SQL generation requires the generated proto files. Each task declares its prerequisites.
     deps:
       - generate-proto
       - generate-contracts
@@ -64,93 +63,102 @@ tasks:
 
   sync-versions:
     desc: Rewrite documented tool versions from versions.env
-    # Everything that can read versions.env already does (this file's dotenv,
-    # the workflows' $GITHUB_ENV splat, the Dockerfile's ARGs). Prose in
-    # README.md and the docs site, and the `go` directive in each go.mod, have
-    # nowhere to put a variable -- so they are rewritten from it instead, and
-    # `lint-versions` fails the build if one drifts.
+    # Task, workflows, and Docker read versions.env directly.
+    # Documentation and go.mod directives require literal values, so this task rewrites those values.
+    # lint-versions rejects a value that differs from versions.env.
     #
-    # Deliberately NOT fingerprinted. This is the remediation `lint-versions`
-    # prints, and it rewrites files that are not its own sources: with
-    # `sources:` and no `generates:`, hand-editing a claim site left the target
-    # "up to date", so the one command that fixes the drift refused to run
-    # while lint stayed red. It is a bun script over six small files.
+    # Always run this repair. A checksum on the script alone would miss an edited destination file.
+    # A sources list without generates previously marked the repair current while lint still failed.
     cmds:
       - bun scripts/sync-versions.mjs
 
   generate-proto:
     desc: Generate Protocol Buffer code
     sources:
+      - versions.env
+      - scripts/task-state.mjs
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
       - scripts/sync-generated.mjs
-    generates:
-      - backend/generated/proto/**/*
-      - frontend/src/generated/**/*
+    vars:
+      BUF_CONTEXT:
+        sh: buf --version
+      CACHE_CONTEXT: '{{.BUF_CONTEXT}}'
+      OUTPUTS: &outputs_generate_proto
+        - backend/generated/proto/**/*
+        - frontend/src/generated/proto/**/*
+    generates: *outputs_generate_proto
+    # Task checks source bytes. The shared status check validates the recipe and outputs.
+    # Forget the previous result before execution. Record a result only after success.
+    status: &artifact_status
+      - bun scripts/task-state.mjs check {{.TASK | shellQuote}} {{.OUTPUTS | toJson | shellQuote}} {{.CACHE_CONTEXT | default "" | sha256sum | shellQuote}}
     cmds:
-      # The proto tree moved from frontend/src/generated/leapmux/ to
-      # frontend/src/generated/proto/; sync-generated prunes only inside its
-      # --out roots, so a checkout built before the move keeps a stale
-      # duplicate that tsconfig and eslint still scan. Delete it here until
-      # no such checkout remains.
+      - &forget_artifacts bun scripts/task-state.mjs forget {{.TASK | shellQuote}}
+      # Old checkouts can retain generated/leapmux beside generated/proto.
+      # sync-generated prunes only its output roots, so remove the old tree before TypeScript and ESLint scan it.
       - rm -rf frontend/src/generated/leapmux
-      # Regenerate into a throwaway staging dir, then publish with
-      # scripts/sync-generated.mjs so byte-identical files keep their mtime and a
-      # running Vite dev server (which watches frontend/src/**) does not
-      # hard-refresh. buf's -o prepends the staging path to each plugin `out:`
-      # dir (see buf.gen.yaml), so both output trees are mirrored under {STAGING}.
+      # Generate into a private staging directory and publish through scripts/sync-generated.mjs.
+      # Identical files retain their modification times, so Vite does not reload unchanged frontend sources.
+      # Buf's -o prefixes every plugin output directory. Both output trees then reside below {STAGING}.
       - >-
         bun scripts/sync-generated.mjs
         --out backend/generated/proto backend/generated/proto
         --out frontend/src/generated/proto frontend/src/generated/proto
         -- buf generate -o {STAGING}
+      - &record_artifacts bun scripts/task-state.mjs record {{.TASK | shellQuote}} {{.OUTPUTS | toJson | shellQuote}} {{.CACHE_CONTEXT | default "" | sha256sum | shellQuote}}
 
   generate-contracts:
     desc: Generate Go and TS constants from contracts/*.json
-    # contracts/ is the single source of truth for every value consumed on
-    # both sides of a language boundary (channelwire limits, HTTP headers,
-    # retry policies, enum-keyed catalogs). The generator validates each
-    # contract against its sibling JSON Schema and cross-checks enum-keyed
-    # domains against the buf descriptors BEFORE emitting, so drift fails
-    # generation instead of surviving to a pin test. Every registered domain
-    # must ship its contracts/<name>.json: a missing file fails generation
-    # loudly (the migration is complete; a skip would orphan outputs).
-    # The proto files are sources because the enum cross-checks read them;
-    # buf itself is invoked by the generator (local build only, no plugins).
-    # validate-json.mjs is a source because the generator imports it (the
-    # pre-emit schema validation); sync-generated.mjs because the cmd runs it.
+    # contracts/ supplies shared values across language boundaries.
+    # The generator validates each contract against its sibling JSON Schema before it writes output.
+    # It also checks enum domains against descriptors from a local buf build.
+    # Every registered domain requires contracts/<name>.json. A missing file must fail generation.
+    # The proto sources affect the enum checks. validate-json.mjs supplies validation, and sync-generated.mjs publishes the output.
     sources:
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
+      - buf.yaml
+      - proto/**/*.proto
+      - frontend/package.json
+      - frontend/bun.lock
       - contracts/**/*
       - scripts/generate-contracts.mjs
       - scripts/validate-json.mjs
       - scripts/sync-generated.mjs
-      - proto/leapmux/v1/agent.proto
-      - proto/leapmux/v1/scope.proto
-    generates:
-      - backend/generated/contracts/**/*
-      - frontend/src/generated/contracts/**/*
-      - desktop/rust/src/generated/**/*
+    vars:
+      BUF_CONTEXT:
+        sh: buf --version
+      CACHE_CONTEXT: '{{.BUF_CONTEXT}}/{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_generate_contracts
+        - backend/generated/contracts/**/*
+        - frontend/src/generated/contracts/**/*
+        - desktop/rust/src/generated/**/*
+    generates: *outputs_generate_contracts
     deps: [install-frontend-deps] # the generator resolves ajv from frontend/node_modules
+    status: *artifact_status
     cmds:
-      # Same staging/publish pattern as generate-proto: mtime-preserving so a
-      # running Vite dev server does not hard-refresh on identical output.
+      - *forget_artifacts
+      # Preserve modification times when generated content stays identical, as generate-proto does.
+      # This prevents a Vite reload for unchanged output.
       - >-
         bun scripts/sync-generated.mjs
         --out backend/generated/contracts backend/generated/contracts
         --out frontend/src/generated/contracts frontend/src/generated/contracts
         --out desktop/rust/src/generated desktop/rust/src/generated
         -- bun scripts/generate-contracts.mjs --staging {STAGING}
+      - *record_artifacts
 
   generate-conformance-corpus:
     desc: Regenerate the differential CRDT conformance corpus (deliberate; not part of test runs)
     deps: [generate-proto]
     cmds:
-      # Deliberately NOT wired into `generate` or any test target. The corpus
-      # records the Go projection's answers, so regenerating it as a side effect
-      # of running tests would rubber-stamp exactly the drift it exists to catch.
-      # Run this only when you have changed the generator, and review the
-      # resulting expectation diff.
+      # Do not run this task from generate or a test target.
+      # The corpus records the Go projection's expected results. Automatic regeneration would accept the change that the tests must detect.
+      # Run this task only after changing the generator. Review the changed expectations.
       - cd backend && go run ./internal/hub/crdt/internal/genconformance ../testdata/crdt_projection_corpus.json
 
   generate-sqlc:
@@ -161,21 +169,31 @@ tasks:
     desc: Generate type-safe SQL code for Hub
     deps: [generate-proto]
     vars:
+      CACHE_CONTEXT: '{{.GO_CONTEXT}}'
+      OUTPUTS: &outputs_generate_sqlc_hub
+        - backend/internal/hub/store/*/generated/db/**/*
       BACKENDS: sqlite postgres mysql
     sources:
+      - go.work.sum
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - versions.env
+      - scripts/task-state.mjs
+      - go.work
+      - backend/go.mod
+      - backend/go.sum
+      - scripts/sync-generated.mjs
       - backend/generated/proto/**/*
       - backend/internal/hub/store/*/sqlc.yaml
       - backend/internal/hub/store/*/db/**/*.sql
-    generates:
-      - backend/internal/hub/store/*/generated/db/**/*
+    generates: *outputs_generate_sqlc_hub
+    status: *artifact_status
     cmds:
-      # Regenerate into a staging dir under backend/, then publish via
-      # scripts/sync-generated.mjs so unchanged files keep their mtime and
-      # orphaned files (from a deleted query .sql) are still pruned. sqlc must
-      # run inside the Go module for `go tool` to resolve it and has no
-      # output-dir override, so staging lives under backend/ (--base, --cwd-staging)
-      # and we copy the config + db inputs in so its relative `out: generated/db`
-      # lands there.
+      - *forget_artifacts
+      # Generate below backend/ and publish through scripts/sync-generated.mjs.
+      # Identical files retain their modification times. Deleted queries also remove their obsolete generated files.
+      # go tool must resolve sqlc inside the module, and sqlc has no output-directory override.
+      # Copy the configuration and database inputs into staging. --cwd-staging makes sqlc write its relative output there.
       - for: { var: BACKENDS }
         cmd: >-
           bun scripts/sync-generated.mjs --base backend --cwd-staging
@@ -183,17 +201,32 @@ tasks:
           --copy backend/internal/hub/store/{{.ITEM}}/db db
           --out generated/db backend/internal/hub/store/{{.ITEM}}/generated/db
           -- go tool sqlc generate
+      - *record_artifacts
 
   generate-sqlc-worker:
     desc: Generate type-safe SQL code for Worker
     deps: [generate-proto]
     sources:
+      - go.work.sum
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - versions.env
+      - scripts/task-state.mjs
+      - go.work
+      - backend/go.mod
+      - backend/go.sum
+      - scripts/sync-generated.mjs
       - backend/generated/proto/**/*
       - backend/internal/worker/sqlc.yaml
       - backend/internal/worker/db/**/*.sql
-    generates:
-      - backend/internal/worker/generated/db/**/*
+    vars:
+      CACHE_CONTEXT: '{{.GO_CONTEXT}}'
+      OUTPUTS: &outputs_generate_sqlc_worker
+        - backend/internal/worker/generated/db/**/*
+    generates: *outputs_generate_sqlc_worker
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       # See generate-sqlc-hub for the staging rationale.
       - >-
         bun scripts/sync-generated.mjs --base backend --cwd-staging
@@ -201,31 +234,45 @@ tasks:
         --copy backend/internal/worker/db db
         --out generated/db backend/internal/worker/generated/db
         -- go tool sqlc generate
+      - *record_artifacts
 
-  generate-spinners:
-    desc: Download spinner verb JSON files from awesome-claude-spinners
-    vars:
-      CACHE_DIR:
-        sh: echo "${HOME:-$USERPROFILE}/.cache/awesome-claude-spinners"
-    generates:
-      - frontend/src/spinners/**/*
+  fetch-spinners:
+    desc: Obtain the spinner sources
+    internal: true
     status:
-      - test -d frontend/src/spinners
+      - test -d "{{.SPINNERS_CACHE_DIR}}/spinners"
     cmds:
       - |
-        if [ ! -d "{{.CACHE_DIR}}" ]; then
-          git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.CACHE_DIR}}"
+        if [ -d "{{.SPINNERS_CACHE_DIR}}/.git" ]; then
+          bun scripts/sync-generated.mjs --out repository/spinners "{{.SPINNERS_CACHE_DIR}}/spinners" -- git clone --local --no-hardlinks "{{.SPINNERS_CACHE_DIR}}" {STAGING}/repository
+        else
+          git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.SPINNERS_CACHE_DIR}}"
         fi
-      # Publish via scripts/sync-generated.mjs so unchanged spinner files keep
-      # their mtime (no dev-server reload) and removed spinners are pruned,
-      # instead of deleting and re-copying the whole tree every run. There is no
-      # generator here: --copy stages the cached spinners and --out publishes them.
-      # CACHE_DIR is an absolute Windows path (backslashes from $HOME); quote it
-      # so Task's POSIX shell does not strip the backslashes as escape chars.
+
+  generate-spinners:
+    desc: Copy spinner verb JSON files from awesome-claude-spinners
+    deps: [fetch-spinners]
+    vars:
+      OUTPUTS: &outputs_generate_spinners
+        - frontend/src/spinners/**/*
+    sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - scripts/sync-generated.mjs
+      - "{{.SPINNERS_CACHE_DIR}}/spinners/**/*"
+    generates: *outputs_generate_spinners
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      # Publish cached spinners through scripts/sync-generated.mjs.
+      # Identical files retain their modification times, which prevents a development-server reload.
+      # Remove outputs for deleted spinners. --copy supplies the files without a generator.
+      # Quote CACHE_DIR because Windows paths contain backslashes that Task's POSIX shell would otherwise remove.
       - >-
         bun scripts/sync-generated.mjs
-        --copy "{{.CACHE_DIR}}/spinners" spinners
+        --copy "{{.SPINNERS_CACHE_DIR}}/spinners" spinners
         --out spinners frontend/src/spinners
+      - *record_artifacts
 
   # --- Preparation ---
 
@@ -236,128 +283,161 @@ tasks:
       - task: prepare-backend
       - task: prepare-desktop
 
-  # Install-only slice of prepare-frontend: scripts that resolve tooling from
-  # frontend/node_modules (validate-json's ajv, lint-scripts' eslint) dep on
-  # THIS, not the whole prepare chain -- a contract edit must not re-run icon
-  # rendering before a 0.1s validation.
+  # Scripts that need frontend/node_modules depend on this installation task.
+  # They do not need the full frontend preparation. A contract validation must not render icons.
   install-frontend-deps:
     desc: Install frontend node modules
     sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - frontend/.npmrc
+      - frontend/bunfig.toml
+      - frontend/patches/**/*
+      - frontend/scripts/only-bun.mjs
       - frontend/package.json
       - frontend/bun.lock
-    generates:
-      - frontend/node_modules/**/*
+    vars:
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_install_frontend_deps
+        - frontend/node_modules/**/*
+        # prepare-dmg-tools owns the native macOS build directory.
+        - exclude: frontend/node_modules/macos-alias/build/**/*
+        - exclude: frontend/node_modules/.cache/**/*
+        - exclude: frontend/node_modules/.vite/**/*
+        - exclude: frontend/node_modules/.vite-temp/**/*
+    generates: *outputs_install_frontend_deps
+    status: *artifact_status
     cmds:
-      - cd frontend && bun install
+      - *forget_artifacts
+      - cd frontend && bun install --force --frozen-lockfile
+      - *record_artifacts
 
   prepare-frontend:
     desc: Prepare frontend for builds
+    deps: [generate-proto, generate-contracts, generate-spinners, generate-frontend-icons, copy-frontend-notice]
+
+  generate-frontend-icons:
+    desc: Generate web icons
+    deps: [install-frontend-deps]
     sources:
-      - proto/**/*
-      - buf.gen.yaml
-      - buf.yaml
-      - contracts/**/*
-      - scripts/generate-contracts.mjs
-      - scripts/validate-json.mjs
-      - scripts/sync-generated.mjs
-      - NOTICE.html
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
       - icons/leapmux-icon.svg
       - icons/leapmux-icon-square.svg
-      - frontend/package.json
-      - frontend/bun.lock
-      - frontend/scripts/**/*
+      - frontend/scripts/generate-icons.mjs
       - scripts/build-ico.mjs
       - scripts/render-icon.mjs
       - scripts/icon-corners.mjs
-      - frontend/src/generated/**/*
-    generates:
-      - frontend/node_modules/**/*
-      - frontend/public/NOTICE.html
-      - frontend/public/icons/leapmux-icon.ico
-      - frontend/public/icons/leapmux-icon.svg
-      - frontend/public/icons/leapmux-icon-192.png
-      - frontend/public/icons/leapmux-icon-512.png
-      - frontend/public/icons/leapmux-icon-maskable-512.png
-      - frontend/public/icons/leapmux-icon-square-apple-touch.png
+      - frontend/package.json
+      - frontend/bun.lock
+    vars:
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_generate_frontend_icons
+        - frontend/public/icons/leapmux-icon.ico
+        - frontend/public/icons/leapmux-icon.svg
+        - frontend/public/icons/leapmux-icon-192.png
+        - frontend/public/icons/leapmux-icon-512.png
+        - frontend/public/icons/leapmux-icon-maskable-512.png
+        - frontend/public/icons/leapmux-icon-square-apple-touch.png
+    generates: *outputs_generate_frontend_icons
+    status: *artifact_status
     cmds:
-      - task: generate-proto
-      - task: generate-contracts
-      - task: generate-spinners
-      - cd frontend && bun install
+      - *forget_artifacts
       - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-square.svg frontend/public
-      - "[ -a NOTICE.html ] && cp NOTICE.html frontend/public/NOTICE.html || true"
+      - *record_artifacts
+
+  copy-frontend-notice:
+    desc: Copy the third-party license notice into the frontend
+    sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - NOTICE.html
+    vars:
+      OUTPUTS: &outputs_copy_frontend_notice
+        - frontend/public/NOTICE.html
+    generates: *outputs_copy_frontend_notice
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      - mkdir -p frontend/public
+      - cp NOTICE.html frontend/public/NOTICE.html
+      - *record_artifacts
 
   prepare-backend:
     desc: Prepare backend for builds
+    deps: [generate-proto, generate-contracts, generate-sqlc, embed-frontend]
+
+  embed-frontend:
+    desc: Embed frontend assets in the backend
+    deps: [build-frontend]
     sources:
-      - proto/**/*
-      - buf.gen.yaml
-      - buf.yaml
-      - contracts/**/*
-      - scripts/generate-contracts.mjs
-      - scripts/validate-json.mjs
-      - scripts/sync-generated.mjs
+      - versions.env
+      - scripts/task-state.mjs
       - backend/internal/hub/frontend.embed
       - frontend/.output/public/**/*
-      - backend/generated/proto/**/*
-      - backend/internal/hub/store/*/generated/db/**/*
-      - backend/internal/worker/generated/db/**/*
-    generates:
-      - backend/internal/hub/generated/frontend/embed.go
-      - backend/internal/hub/generated/frontend/public/**/*
+      - scripts/sync-generated.mjs
+    vars:
+      OUTPUTS: &outputs_embed_frontend
+        - backend/internal/hub/generated/frontend/embed.go
+        - backend/internal/hub/generated/frontend/public/**/*
+    generates: *outputs_embed_frontend
+    status: *artifact_status
     cmds:
-      - task: generate-proto
-      - task: generate-contracts
-      - task: generate-sqlc
-      - task: build-frontend
-      - rm -rf backend/internal/hub/generated/frontend/public
-      - mkdir -p backend/internal/hub/generated/frontend/public
-      - cp backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
-      - cp -r frontend/.output/public/. backend/internal/hub/generated/frontend/public/
+      - *forget_artifacts
+      # Preserve identical files so Go and development servers see only real changes.
+      - >-
+        bun scripts/sync-generated.mjs
+        --copy backend/internal/hub/frontend.embed frontend/embed.go
+        --copy frontend/.output/public frontend/public
+        --out frontend backend/internal/hub/generated/frontend
+      - *record_artifacts
 
   prepare-desktop:
     desc: Prepare desktop for builds
+    deps: [prepare-backend, generate-desktop-icons]
+
+  generate-desktop-icons:
+    desc: Generate desktop and tray icons
+    deps: [install-frontend-deps]
     preconditions:
       - sh: '[ "{{OS}}" = "darwin" ] || [ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
         msg: "Unsupported OS: {{OS}}. Desktop builds require macOS, Linux, or Windows."
     sources:
-      - proto/**/*
-      - buf.gen.yaml
-      - buf.yaml
-      - contracts/**/*
-      - scripts/generate-contracts.mjs
-      - scripts/validate-json.mjs
-      - scripts/sync-generated.mjs
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
       - icons/leapmux-icon-square.svg
       - icons/leapmux-icon.svg
       - icons/leapmux-icon-mono.svg
-      - desktop/rust/scripts/**/*
+      - desktop/rust/scripts/generate-icons.mjs
+      - desktop/rust/scripts/icon-set.mjs
       - scripts/build-ico.mjs
       - scripts/render-icon.mjs
       - scripts/icon-corners.mjs
-      - frontend/.output/**/*
-      - backend/internal/hub/generated/frontend/public/**/*
-    generates:
-      # The set that desktop/rust/scripts/icon-set.mjs defines, including the
-      # tray icons its TRAY_ICON_FILES adds.
-      - desktop/rust/icons/*.png
-      - desktop/rust/icons/icon.ico
+      - frontend/package.json
+      - frontend/bun.lock
+    vars:
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_generate_desktop_icons
+        # Include both platform sets and the tray icons from icon-set.mjs.
+        - desktop/rust/icons/*.png
+        - desktop/rust/icons/icon.ico
+    generates: *outputs_generate_desktop_icons
+    status: *artifact_status
     cmds:
-      - task: generate-proto
-      # The Rust shell include!'s the generated contracts module at compile
-      # time, so the desktop build needs it on disk before cargo runs.
-      - task: generate-contracts
-      - task: build-frontend
-      - task: prepare-backend
-      # macOS renders the square source, because the system applies its own mask
-      # and a rounded icon would show the corner twice. Linux and Windows draw
-      # the icon as authored, so they render the rounded source.
-      # The third source is the tray / menu-bar silhouette, which is the same
-      # picture on every platform.
+      - *forget_artifacts
+      # macOS applies its own mask. The square source prevents a second rounded corner.
+      # Linux and Windows use the rounded source. All platforms share the tray silhouette.
       - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg icons/leapmux-icon-mono.svg desktop/rust/icons opaque
         if: '[ "{{OS}}" = "darwin" ]'
       - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg icons/leapmux-icon-mono.svg desktop/rust/icons transparent
         if: '[ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
+      - *record_artifacts
 
   # --- Build ---
 
@@ -368,58 +448,109 @@ tasks:
       - task: build-backend
       - task: build-desktop
 
+  check-build-cache:
+    desc: Fail if an unchanged native build runs any commands
+    summary: |
+      Run task build first, then run task check-build-cache with the same environment.
+      This task executes the build again and requires every build command to stay cached.
+      It retains complete logs under .tmp/ and prints them if the check fails.
+      It detects unnecessary rebuilds. It cannot discover undeclared build inputs.
+    cmds:
+      - bun scripts/check-build-cache.mjs {{.TASK_EXE | shellQuote}}
+
   build-frontend:
     desc: Build frontend
+    deps: [prepare-frontend]
     sources:
-      - proto/**/*
-      - buf.gen.yaml
-      - buf.yaml
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - versions.env
+      - scripts/task-state.mjs
       - frontend/package.json
       - frontend/bun.lock
-      - frontend/*config*
-      - frontend/scripts/**/*
+      - frontend/app.config.ts
+      - frontend/tsconfig.json
+      - frontend/.env*
       - frontend/src/**/*
-      - frontend/tests/**/*
+      - exclude: frontend/src/**/*.test.*
+      - exclude: frontend/src/**/*.testkit.*
+      - exclude: frontend/src/test-support/**/*
       - frontend/patches/**/*
       - frontend/public/**/*
-    generates:
-      - frontend/.output/**/*
-      - frontend/.vinxi/**/*
+    env:
+      LEAPMUX_DEV: '{{.LEAPMUX_DEV | default ""}}'
+    vars:
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.JS_CONTEXT}}/{{.LEAPMUX_DEV | default ""}}/{{.NODE_ENV | default ""}}'
+      OUTPUTS: &outputs_build_frontend
+        - frontend/.output/**/*
+    generates: *outputs_build_frontend
+    status: *artifact_status
     cmds:
-      - task: prepare-frontend
-      - cd frontend && LEAPMUX_VERSION={{.VERSION}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH}} LEAPMUX_COMMIT_TIME={{.COMMIT_TIME}} LEAPMUX_BUILD_TIME={{.BUILD_TIME}} LEAPMUX_BRANCH={{.BRANCH}} bun run build
+      - *forget_artifacts
+      - cd frontend && LEAPMUX_VERSION={{.VERSION | shellQuote}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH | shellQuote}} LEAPMUX_COMMIT_TIME={{.COMMIT_TIME | shellQuote}} LEAPMUX_BUILD_TIME={{.EFFECTIVE_BUILD_TIME | shellQuote}} LEAPMUX_BRANCH={{.BRANCH | shellQuote}} bun run build
+      - *record_artifacts
 
   build-backend:
     desc: Build backend
+    deps: [prepare-backend]
     sources:
+      - go.work.sum
+      - versions.env
+      - scripts/task-state.mjs
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - go.work
+      - backend/internal/hub/store/*/db/migrations/*.sql
+      - backend/internal/worker/db/migrations/*.sql
+      - backend/internal/hub/generated/frontend/public/**/*
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
       - backend/go.mod
       - backend/go.sum
-      - backend/**/*.go
-      - backend/internal/hub/generated/frontend/public/**/*
-    generates:
-      - leapmux{{if eq OS "windows"}}.exe{{end}}
+      - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - exclude: backend/**/*_test.go
+    vars:
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
+      OUTPUTS: &outputs_build_backend
+        - leapmux{{if eq OS "windows"}}.exe{{end}}
+    generates: *outputs_build_backend
+    status: *artifact_status
     cmds:
-      - task: prepare-backend
-      - cd backend && go build -ldflags "{{.VERSION_LDFLAGS}}" -o ../leapmux{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux
+      - *forget_artifacts
+      - cd backend && go build -ldflags {{.VERSION_LDFLAGS | shellQuote}} -o ../leapmux{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux
+      - *record_artifacts
 
   build-backend-docker:
     desc: Build backend for Docker images
+    deps: [prepare-backend]
     sources:
+      - go.work.sum
+      - versions.env
+      - scripts/task-state.mjs
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - go.work
+      - backend/internal/hub/store/*/db/migrations/*.sql
+      - backend/internal/worker/db/migrations/*.sql
+      - backend/internal/hub/generated/frontend/public/**/*
       - backend/go.mod
       - backend/go.sum
-      - backend/**/*.go
-      - backend/internal/hub/generated/frontend/public/**/*
-    generates:
-      - leapmux
+      - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - exclude: backend/**/*_test.go
+    vars:
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
+      OUTPUTS: &outputs_build_backend_docker
+        - leapmux
+    generates: *outputs_build_backend_docker
+    status: *artifact_status
     cmds:
-      - task: prepare-backend
+      - *forget_artifacts
       - |
-        CGO_ENABLED=0
-        GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
-        cd backend && go build -ldflags "-s -w {{.VERSION_LDFLAGS}}" -o ../leapmux ./cmd/leapmux
+        export CGO_ENABLED=0
+        export GOOS={{.GOOS | default "linux" | shellQuote}} GOARCH={{.GOARCH | default "amd64" | shellQuote}}
+        cd backend && go build -ldflags {{printf "-s -w %s" .VERSION_LDFLAGS | shellQuote}} -o ../leapmux ./cmd/leapmux
+      - *record_artifacts
 
   build-desktop:
     desc: Build desktop
@@ -434,9 +565,38 @@ tasks:
       - task: build-desktop-windows
         if: '[ "{{OS}}" = "windows" ]'
 
+  prepare-dmg-tools:
+    desc: Build the native module for macOS disk image metadata
+    deps: [install-frontend-deps]
+    sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - frontend/node_modules/macos-alias/package.json
+      - frontend/node_modules/macos-alias/binding.gyp
+      - frontend/node_modules/macos-alias/src/**/*
+      - frontend/node_modules/nan/**/*
+    vars:
+      SDK_CONTEXT:
+        sh: xcrun clang --version && xcrun --show-sdk-version
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.SDK_CONTEXT}}/{{.MACOSX_DEPLOYMENT_TARGET | default ""}}'
+      OUTPUTS: &outputs_prepare_dmg_tools
+        - frontend/node_modules/macos-alias/build/**/*
+    generates: *outputs_prepare_dmg_tools
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      - cd frontend/node_modules/macos-alias && bunx node-gyp@{{.NODE_GYP_VERSION}} rebuild
+      - *record_artifacts
+
   build-desktop-darwin:
     desc: Build desktop for macOS
+    deps: [build-backend, prepare-desktop, build-desktop-sidecar, prepare-dmg-tools]
     sources:
+      - .cargo/**/*
+      - desktop/rust/.cargo/**/*
+      - desktop/rust/rust-toolchain*
+      - versions.env
+      - scripts/task-state.mjs
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
@@ -455,35 +615,32 @@ tasks:
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux
-    generates:
-      - "LeapMux Desktop.app/**/*"
-      - "LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
+    vars:
+      RUST_CONTEXT:
+        sh: cd desktop/rust && rustc -vV && cargo --version
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}/{{.MACOS_CODESIGN_IDENTITY | default ""}}'
+      OUTPUTS: &outputs_build_desktop_darwin
+        - "LeapMux Desktop.app/**/*"
+        - "LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
+    generates: *outputs_build_desktop_darwin
+    status: *artifact_status
     cmds:
-      # build-backend isn't implied by build-desktop-darwin on its own (only
-      # by the top-level `task build`), but the cp step below embeds the CLI
-      # into the .app bundle, so leapmux must exist at the repo root first.
-      - task: build-backend
-      - task: prepare-desktop
-      - task: build-desktop-sidecar
+      - *forget_artifacts
+      # The build-backend dependency supplies the CLI that this bundle embeds.
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --bundles app --config '{"version":"{{.VERSION}}"}'
       # Move sidecar from Resources/_up_/go/bin/ to MacOS/ for a cleaner bundle layout.
       - mv "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_/go/bin/"* "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/"
       - rm -rf "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_"
-      # Embed the leapmux CLI inside Contents/MacOS/. The inside-out
-      # signing sweep in sign-macos.sh discovers it as a Mach-O and applies
-      # Developer ID + hardened runtime alongside the sidecar; the runtime
-      # PATH check in the Go sidecar resolves it via
-      # filepath.Join(filepath.Dir(os.Executable()), "leapmux") at startup.
+      # Embed the CLI in Contents/MacOS/.
+      # sign-macos.sh discovers this Mach-O binary and applies the same signing policy as the sidecar.
+      # The sidecar finds the CLI beside os.Executable() at startup.
       - cp leapmux "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/leapmux"
       - chmod 0755 "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/leapmux"
-      # Sign the .app. With MACOS_CODESIGN_IDENTITY set, sign-macos.sh applies
-      # Developer ID + hardened runtime + entitlements to nested Mach-O code
-      # inside-out; without it, falls back to ad-hoc signing for local dev.
-      # `sign-and-notarize-darwin-app` re-runs this with the same identity later
-      # when notarizing for release.
+      # With MACOS_CODESIGN_IDENTITY, sign nested Mach-O code before the outer app.
+      # Apply Developer ID, hardened runtime, and entitlements. Otherwise, use ad-hoc signing for local development.
+      # The release notarization task signs again with the same identity.
       - MACOS_ENTITLEMENTS_PATH="$(pwd)/desktop/rust/entitlements.plist" desktop/rust/scripts/sign-macos.sh "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
       - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
-      - cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
       - mkdir -p desktop/rust/target/release/bundle/dmg
       - >-
         desktop/rust/scripts/create-dmg.sh
@@ -491,6 +648,7 @@ tasks:
         "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
         "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
       - cp -f "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg" "LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
+      - *record_artifacts
 
   sign-and-notarize-darwin-app:
     desc: Re-sign with Developer ID, notarize the .app and the .dmg, staple both.
@@ -506,29 +664,20 @@ tasks:
       # Re-sign every Mach-O inside the .app with Developer ID (replaces the
       # ad-hoc signature applied during build-desktop-darwin).
       - MACOS_ENTITLEMENTS_PATH="$(pwd)/desktop/rust/entitlements.plist" desktop/rust/scripts/sign-macos.sh {{.APP_PATH}}
-      # Notarize the .app: notarytool submit needs a flat archive, but
-      # `stapler` cannot staple a .zip — it has to staple the .app itself.
-      # So submit with --no-staple, then staple the bundle directly.
+      # notarytool requires a flat archive, but stapler cannot attach a ticket to a ZIP file.
+      # Submit with --no-staple, then staple the app bundle.
       - rm -f notarize-app.zip
       - ditto -c -k --keepParent {{.APP_PATH}} notarize-app.zip
       - desktop/rust/scripts/notarize-macos.sh --no-staple notarize-app.zip
       - xcrun stapler staple {{.APP_PATH}}
       - xcrun stapler validate {{.APP_PATH}}
       - rm -f notarize-app.zip
-      # Explicit assertion that the inside-out signer actually picked up the
-      # embedded leapmux CLI binary. Without this check, a regression in
-      # sign-macos.sh's Mach-O discovery could silently ship an unsigned
-      # CLI inside an otherwise-notarized .app. `codesign --verify --strict`
-      # fails if the inner binary is unsigned or tampered with, so it's the
-      # right tool here; an `spctl --assess --type exec` on the inner Mach-O
-      # would instead fail with "the code is valid but does not seem to be
-      # an app" because Gatekeeper's assessment is bundle-scoped and the
-      # notarization staple lives on the .app, not on individual inner
-      # binaries — the outer `spctl --assess` below covers that.
-      # APP_PATH already wraps the bundle name in quotes (see vars: above),
-      # so concatenating a literal path tail must NOT re-wrap in quotes —
-      # `"{{.APP_PATH}}/...` would expand to `""LeapMux Desktop.app"/...`,
-      # which the shell parses as two arguments (`LeapMux` and the rest).
+      # Verify the embedded CLI signature separately. A discovery error in sign-macos.sh must not leave the CLI unsigned.
+      # codesign --verify --strict rejects an unsigned or modified inner binary.
+      # Gatekeeper assesses bundles. Its ticket belongs to the app, so spctl on the inner binary reports that it is not an app.
+      # The spctl command below checks the outer app.
+      # APP_PATH already includes quotes. Do not add quotes around a concatenated suffix.
+      # Extra quotes split "LeapMux Desktop.app" into separate shell arguments.
       - codesign --verify --strict --verbose=2 {{.APP_PATH}}/Contents/MacOS/leapmux
       # Confirm Gatekeeper accepts the now-stapled .app before we wrap it.
       - spctl --assess --verbose --type exec {{.APP_PATH}}
@@ -556,20 +705,15 @@ tasks:
       # like the WKWebView desktop app does.
       - codesign --force --options runtime --timestamp --sign "${MACOS_CODESIGN_IDENTITY}" {{.BIN}}
       - codesign --verify --strict --verbose=2 {{.BIN}}
-      # Notarize. notarytool needs a flat archive; `stapler` does not
-      # support raw Mach-O binaries, so we always pass --no-staple.
-      # Apple's notary database registers the binary's hash and
-      # Gatekeeper looks it up online at first launch; offline first
-      # launch shows a one-time verify prompt (unavoidable for raw
-      # binaries — only .app/.pkg/.dmg can carry stapled tickets).
+      # notarytool requires a flat archive. stapler cannot attach a ticket to a raw Mach-O binary, so use --no-staple.
+      # Apple stores the binary hash, and Gatekeeper checks it online on first launch.
+      # A first launch offline requires a verification prompt. Only app, pkg, and dmg bundles can hold stapled tickets.
       - rm -f notarize-cli.zip
       - ditto -c -k {{.BIN}} notarize-cli.zip
       - desktop/rust/scripts/notarize-macos.sh --no-staple notarize-cli.zip
       - rm -f notarize-cli.zip
-      # Re-package the signed binary into the release tarball. Explicit
-      # `chmod 0755` is belt-and-braces: codesign / ditto / artifact
-      # round-trips should all preserve the executable bit, but assert
-      # it before tar so the downloaded tarball always launches.
+      # Package the signed binary in the release archive.
+      # Set mode 0755 explicitly before tar, so signing or artifact transfer cannot leave the downloaded CLI without execute permission.
       - rm -rf dist/{{.DIR}}
       - mkdir -p dist/{{.DIR}}
       - cp {{.BIN}} LICENSE.md NOTICE.md dist/{{.DIR}}/
@@ -578,7 +722,13 @@ tasks:
 
   build-desktop-linux:
     desc: Build desktop for Linux
+    deps: [build-backend, prepare-desktop, build-desktop-sidecar]
     sources:
+      - .cargo/**/*
+      - desktop/rust/.cargo/**/*
+      - desktop/rust/rust-toolchain*
+      - versions.env
+      - scripts/task-state.mjs
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
@@ -598,54 +748,40 @@ tasks:
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux
-    generates:
-      - leapmux-desktop
-      - leapmux-desktop-service-*
-      - leapmux-desktop*.deb
-      - leapmux-desktop*.AppImage
+    vars:
+      RUST_CONTEXT:
+        sh: cd desktop/rust && rustc -vV && cargo --version
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}'
+      OUTPUTS: &outputs_build_desktop_linux
+        - leapmux-desktop
+        - leapmux-desktop-service-*
+        - leapmux-desktop*.deb
+        - leapmux-desktop*.AppImage
+    generates: *outputs_build_desktop_linux
+    status: *artifact_status
     cmds:
-      # build-backend is not implied by build-desktop-linux on its own (only by
-      # the top-level `task build`), but tauri.linux.conf.json's `deb.files`
-      # references ../../leapmux, so the CLI must exist before tauri build.
-      - task: build-backend
-      - task: prepare-desktop
-      - task: build-desktop-sidecar
+      - *forget_artifacts
+      # The build-backend dependency supplies ../../leapmux for tauri.linux.conf.json's deb.files entry.
       - desktop/rust/scripts/patch-linuxdeploy.sh
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
-      # Relocate the AppImage's app binary to /usr/lib/leapmux-desktop/ for
-      # layout parity with the .deb: the binary and the sidecar then live
-      # together under /usr/lib/, and nothing named leapmux-desktop sits on the
-      # launcher PATH. Tauri's AppImage bundler reuses the deb data tree, so the
-      # binary starts at usr/bin/leapmux-desktop; move it beside the sidecar,
-      # which is already in usr/lib/leapmux-desktop/ via the resources glob.
+      # Place the AppImage binary beside the sidecar in /usr/lib/leapmux-desktop/, as the Debian package does.
+      # Tauri starts with the Debian data tree, which places the app in usr/bin and the sidecar in usr/lib/leapmux-desktop/.
+      # Move the app so leapmux-desktop stays outside the launcher's PATH.
       #
-      # linuxdeploy's AppRun resolves the desktop Exec by searching a fixed PATH
-      # (usr/bin, usr/sbin, ...) that excludes usr/lib, and an absolute Exec is
-      # execvp'd as a literal host path (the bug that broke launch before). So
-      # instead of leaving a usr/bin symlink, prepend usr/lib/leapmux-desktop to
-      # PATH inside the AppRun script: AppRun.wrapped appends the inherited PATH,
-      # so the shared template's bare `Exec=leapmux-desktop` resolves to the
-      # relocated binary, and /proc/self/exe reports the real usr/lib path so the
-      # Go sidecar resolves "next to exe" exactly like the deb. Then repack the
-      # AppDir with the linuxdeploy appimage plugin Tauri already cached,
-      # overwriting Tauri's AppImage (which still had the binary in usr/bin).
+      # linuxdeploy's AppRun searches a fixed PATH that excludes usr/lib. An absolute Exec value instead resolves against the host filesystem.
+      # Prepend the private app directory inside AppRun. AppRun.wrapped appends the inherited PATH.
+      # The shared Exec=leapmux-desktop then resolves correctly, and /proc/self/exe identifies the real directory for sidecar discovery.
+      # Repack the AppDir with Tauri's cached linuxdeploy plugin and replace the original AppImage.
       #
-      # The greps are tripwires: they fail the build loudly if a future
-      # linuxdeploy changes the AppRun exec line (so the PATH injection would
-      # silently no-op) or if the shared template stops emitting the bare Exec.
+      # The grep checks must fail if linuxdeploy changes the AppRun command or the shared template changes Exec.
+      # Otherwise, the substitutions could do nothing without an error.
       - |
         set -euo pipefail
         appdir="desktop/rust/target/release/bundle/appimage/leapmux-desktop.AppDir"
         src="$(ls desktop/rust/target/release/bundle/appimage/leapmux-desktop_*.AppImage)"
-        # Publish the AppImage under its conventional `uname -m` architecture
-        # (x86_64 / aarch64) -- the names appimagetool's ARCH env var and
-        # linuxdeploy's own release assets use. Tauri's AppImage bundler
-        # instead emits Debian's `amd64` for x86_64 while keeping GNU's
-        # `aarch64` for ARM, so the x86 build is the lone Debian-styled
-        # outlier; repack under the uname name so both arches are
-        # consistently GNU-named. (The .deb stays amd64/arm64 -- that is
-        # dpkg's own convention.) On arm64 this is a no-op: Tauri already
-        # named it aarch64, which equals `uname -m`.
+        # Use uname-style architecture values: x86_64/aarch64, as appimagetool and linuxdeploy do.
+        # Tauri uses amd64/aarch64, so only x86 requires a filename change.
+        # Debian packages retain amd64/arm64, as dpkg requires.
         img="${src%_*.AppImage}_$(uname -m).AppImage"
         grep -q '^Exec=leapmux-desktop$' "$appdir"/*.desktop
         grep -q '^exec "$this_dir"/AppRun.wrapped' "$appdir/AppRun"
@@ -664,20 +800,11 @@ tasks:
       - cp -f desktop/go/bin/leapmux-desktop-service-* .
       - cp -f desktop/rust/target/release/bundle/deb/leapmux-desktop*.deb .
       - cp -f desktop/rust/target/release/bundle/appimage/leapmux-desktop*.AppImage .
-      # Tauri's deb bundler hardcodes /usr/bin/<mainBinaryName> for the app
-      # binary; there's no config knob to relocate it. Post-process the .deb
-      # so `leapmux-desktop` lands under /usr/lib/ (off PATH) while
-      # /usr/bin/leapmux (added via deb.files) stays as the only CLI on PATH.
-      # The .desktop Exec must follow the binary, so rewrite the template's
-      # bare `Exec=leapmux-desktop` to the absolute relocated path — under
-      # /usr/lib/ the bare name would no longer resolve for the system launcher.
-      # (The AppImage reaches the same /usr/lib layout differently — via a
-      # PATH-injected AppRun — because its Exec is resolved by linuxdeploy, not
-      # the system launcher; see the AppImage step above.) dpkg-deb -R/-b is
-      # round-tripped by Debian itself — md5sums regenerate automatically. The
-      # grep -q is a tripwire: if the sed ever stops matching (e.g. the
-      # template's Exec changes), the rewrite silently no-ops and we want a loud
-      # failure rather than a .desktop pointing off PATH.
+      # Tauri fixes the Debian app location at /usr/bin/<mainBinaryName> and offers no configuration override.
+      # Move the app to /usr/lib/ so /usr/bin/leapmux remains the only CLI on PATH.
+      # Change the desktop Exec entry to the absolute relocated path, because the system launcher cannot find it through PATH.
+      # AppImage reaches the same layout through its private AppRun PATH because linuxdeploy resolves that Exec entry.
+      # dpkg-deb -R/-b regenerates md5sums. The grep check rejects an unchanged Exec entry if the substitution stops matching.
       - |
         set -euo pipefail
         for deb in leapmux-desktop_*.deb; do
@@ -697,10 +824,17 @@ tasks:
       # icon theme declares installs without an error and leaves the app with no
       # icon anywhere -- the failure that shipped as issue #387.
       - bun desktop/rust/scripts/verify-deb-icons.mjs leapmux-desktop_*.deb
+      - *record_artifacts
 
   build-desktop-windows:
     desc: Build desktop for Windows
+    deps: [build-backend, prepare-desktop, build-desktop-sidecar]
     sources:
+      - .cargo/**/*
+      - desktop/rust/.cargo/**/*
+      - desktop/rust/rust-toolchain*
+      - versions.env
+      - scripts/task-state.mjs
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
@@ -720,38 +854,28 @@ tasks:
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux.exe
-    generates:
-      - LeapMuxDesktop*.msi
-      - leapmux-desktop-service-*.exe
+    vars:
+      RUST_CONTEXT:
+        sh: cd desktop/rust && rustc -vV && cargo --version
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}'
+      OUTPUTS: &outputs_build_desktop_windows
+        - LeapMuxDesktop*.msi
+        - leapmux-desktop-service-*.exe
+        # run-desktop starts this executable directly.
+        - desktop/rust/target/release/LeapMuxDesktop.exe
+    generates: *outputs_build_desktop_windows
+    status: *artifact_status
     cmds:
-      # build-backend isn't implied by build-desktop-windows on its own; only
-      # the top-level `task build` calls it first. Our custom main.wxs
-      # template (desktop/rust/windows/main.wxs) references
-      # $(env.TAURI_LEAPMUX_CLI_PATH) and $(env.TAURI_LEAPMUX_SIDECAR_PATH),
-      # which we point at the CLI and Go sidecar built right here.
-      - task: build-backend
-      - task: prepare-desktop
-      - task: build-desktop-sidecar
-      # TAURI_LEAPMUX_CLI_PATH and TAURI_LEAPMUX_SIDECAR_PATH are consumed
-      # by desktop/rust/windows/main.wxs via WiX's $(env.NAME)
-      # preprocessor. The TAURI_ prefix is load-bearing: tauri-bundler's
-      # clear_env_for_wix() wipes the candle.exe environment and only
-      # restores SYSTEMROOT/TMP/TEMP plus variables whose uppercased name
-      # starts with "TAURI", so a plain LEAPMUX_CLI_PATH would be invisible
-      # to candle and the preprocessor would fail.
-      # The sidecar path is hardcoded to the x86_64-pc-windows-msvc binary
-      # name because Windows CI only ever builds amd64. If we add a second
-      # Windows arch later, this needs to switch on {{ARCH}} the way
-      # build-desktop-sidecar does.
-      # --bundles msi drops Tauri's default NSIS .exe — we ship MSI only
-      # because only WiX exposes the `<Environment>` machinery we use for
-      # the scoped HKCU PATH append.
-      # --verbose makes tauri-bundler log candle/light stdout+stderr at
-      # debug level. Without it, both compilers' output is captured but
-      # discarded and you only see "failed to run candle.exe" / "failed
-      # to run light.exe" with no detail — a particularly painful
-      # debugging experience for WiX since the toolset's error messages
-      # are usually precise.
+      - *forget_artifacts
+      # The build-backend dependency supplies the CLI for the custom WiX template in desktop/rust/windows/main.wxs.
+      # The template reads TAURI_LEAPMUX_CLI_PATH and TAURI_LEAPMUX_SIDECAR_PATH through WiX's environment preprocessor.
+      # Tauri clears candle.exe's environment except SYSTEMROOT/TMP/TEMP and variables whose uppercase keys start with TAURI.
+      # Keep that prefix, or WiX cannot resolve the paths.
+      #
+      # Windows CI builds only amd64, so the sidecar path uses x86_64-pc-windows-msvc.
+      # Support for another architecture requires the same selection as build-desktop-sidecar.
+      # Build MSI only. WiX supplies the Environment element for the per-user PATH entry.
+      # Use --verbose to retain candle/light diagnostics. Without it, Tauri reports only the compiler failure.
       - |
         export TAURI_LEAPMUX_CLI_PATH="$(pwd)/leapmux.exe"
         export TAURI_LEAPMUX_SIDECAR_PATH="$(pwd)/desktop/go/bin/leapmux-desktop-service-x86_64-pc-windows-msvc.exe"
@@ -760,19 +884,12 @@ tasks:
           --bundles msi \
           --config '{"version":"{{.VERSION | replace "-dev" ""}}"}'
       - cp -f desktop/go/bin/leapmux-desktop-service-*.exe .
-      # Tauri's WiX bundler names the installer after productName ("LeapMux
-      # Desktop" — with a space) regardless of mainBinaryName, and appends
-      # "_en-US" before the extension. Strip both for the published filename.
-      # Tauri also embeds whatever version we passed to `tauri build` —
-      # {{.VERSION}} with "-dev" stripped, since WiX's ProductVersion rejects
-      # semver prerelease tags — so we re-insert the full {{.VERSION}} in the
-      # output filename to match the .deb/.dmg artifacts. The MSI's internal
-      # ProductVersion stays at the stripped form; that's a Windows Installer
-      # limitation we can't work around, but the filename is what users
-      # download. We cd into the bundle dir first so the glob expands to bare
-      # filenames: on Windows, mvdan/sh expands globs with directory segments
-      # to native backslash paths and `${##*/}` then varies with the parent
-      # shell (bash vs PowerShell).
+      # Tauri uses productName ("LeapMux Desktop") for the installer and appends _en-US.
+      # Remove the space and locale suffix from the published filename.
+      # WiX ProductVersion rejects prerelease tags, so the internal version omits -dev.
+      # Restore the full VERSION in the filename to match the other platform artifacts.
+      # Change to the bundle directory before expanding the glob.
+      # On Windows, mvdan/sh otherwise produces paths with backslashes, and suffix removal with ${##*/} differs between parent shells.
       - |
         repo_root="$(pwd)"
         cd desktop/rust/target/release/bundle/msi
@@ -783,6 +900,7 @@ tasks:
           dest="${dest/_{{.VERSION | replace "-dev" ""}}_/_{{.VERSION}}_}"
           cp -f "$src" "$repo_root/$dest"
         done
+      - *record_artifacts
 
   run-desktop:
     desc: Build and run the desktop app
@@ -803,8 +921,8 @@ tasks:
   test:
     desc: Run all tests
     cmds:
-      # validate-json first: CI has no standalone lint job, so this is what
-      # puts schema validation on every test runner (all three OSes).
+      # Run schema validation first. CI has no separate lint job.
+      # Every test runner must validate the schemas.
       - task: validate-json
       - task: test-scripts
       - task: test-frontend
@@ -813,18 +931,12 @@ tasks:
 
   test-scripts:
     desc: Test repository scripts
-    # `bun test` rather than vitest: these are build scripts outside frontend/
-    # and its vitest project (whose root is frontend/ and whose co-location rule
-    # covers frontend/src only). desktop/rust/scripts/ holds the desktop build's
-    # own Bun scripts and joins them here for the same reason.
-    #
-    # Deliberately NOT fingerprinted. The suites read beyond their own *.mjs --
-    # versions.env, scripts/license-overrides/spdx/ through the real vendored
-    # path, and the Tauri configs next to desktop/rust/scripts/ -- so a
-    # `sources:` list narrow enough to be worth having would go stale and skip
-    # the run that mattered. It takes ~40 ms.
+    # Bun tests repository and desktop build scripts outside the frontend Vitest project.
+    # Always run these tests. They read inputs beyond their own scripts, including tool versions and license metadata.
+    # They also read Tauri configuration. A partial source list could skip a required test.
+    # Allow 30 seconds per test for subprocess startup and file operations on CI runners.
     cmds:
-      - bun test scripts/ desktop/rust/scripts/
+      - bun test --timeout 30000 ./scripts/ ./desktop/rust/scripts/
 
   test-frontend:
     desc: Run frontend tests
@@ -844,13 +956,10 @@ tasks:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
     cmds:
       - task: prepare-backend
-      # The CRDT manager's whole concurrency story -- published generations that
-      # readers walk lock-free, a fallback baseline built off the manager
-      # goroutine, a compaction that prunes a private clone -- is only ASSERTED
-      # by the detector. TestFallbackBaselineRacesCompaction in particular
-      # exists to fail when an in-place prune is reinstated, and without -race
-      # it passes no matter what, so a suite that never runs this target is a
-      # suite where that test proves nothing.
+      # The race detector verifies the CRDT manager's shared generations and lock-free readers.
+      # It also verifies fallback snapshots and compaction of private clones.
+      # TestFallbackBaselineRacesCompaction detects in-place pruning only under -race.
+      # Without the detector, that test can pass despite the race.
       - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
 
   test-backend-no-docker:
@@ -871,9 +980,8 @@ tasks:
   test-no-docker:
     desc: Run all tests except Docker-backed storage backends
     cmds:
-      # Docker is the only thing this target drops. test-scripts needs none,
-      # and leaving it out meant three of the four CI test jobs never ran it.
-      # validate-json first, for the same reason as `test` above.
+      # Exclude only storage tests that require Docker. Repository script tests require no Docker daemon.
+      # Run schema validation first, as the test target does.
       - task: validate-json
       - task: test-scripts
       - task: test-frontend
@@ -908,43 +1016,66 @@ tasks:
 
   validate-json:
     desc: Validate every project-written JSON file against its schema
-    # The no-schemaless-JSON rule: any JSON an include pattern in
-    # scripts/validate-json.mjs matches must resolve to a schema (a sibling
-    # <name>.schema.json, or a shared one named on the rule) and conform to
-    # it. Covers contracts/, testdata/ fixtures, the vendored syntax themes,
-    # and the license-override metadata; tool-owned JSON (package.json,
-    # tsconfig, tauri configs, lockfiles) stays out on purpose.
+    # Every file that scripts/validate-json.mjs selects must resolve to a schema and conform to it.
+    # The schema can be a sibling file or the shared schema that its rule specifies.
+    # The selection covers contracts, test fixtures, syntax themes, and license metadata.
+    # Tool-owned package files, configuration files, and lockfiles remain excluded.
     deps: [install-frontend-deps] # ajv lives in frontend/node_modules
     sources:
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
+      - frontend/package.json
+      - frontend/bun.lock
       - contracts/**/*
       - testdata/**/*
       - backend/**/testdata/**/*
       - frontend/src/lib/syntaxThemes/**/*
       - scripts/license-overrides/**/*
       - scripts/validate-json.mjs
+    vars:
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}'
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - bun scripts/validate-json.mjs
+      - *record_artifacts
 
   lint-scripts:
     desc: Lint the repository build scripts
-    # These were unlinted until now: the only eslint config lives in frontend/,
-    # and `eslint .` runs with cwd=frontend, so scripts/ came back as "outside
-    # of base path". eslint.config.mjs at the root fixes that, resolving the
-    # shared @antfu config out of frontend/node_modules rather than duplicating
-    # the toolchain in a root package.json the repo does not otherwise need.
+    # The root ESLint configuration includes scripts outside frontend/.
+    # It resolves the shared configuration from frontend/node_modules, so no second root package.json is necessary.
+    # Running ESLint only from frontend/ would exclude these scripts as outside its base path.
     deps: [install-frontend-deps]
     sources:
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
+      - frontend/package.json
+      - frontend/bun.lock
       - scripts/*.mjs
       - desktop/rust/scripts/*.mjs
       - eslint.config.mjs
       - frontend/eslint.config.ts
+    vars:
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}'
+    status: *artifact_status
     cmds:
-      - ./frontend/node_modules/.bin/eslint scripts/ desktop/rust/scripts/
+      - *forget_artifacts
+      - ./frontend/node_modules/.bin/eslint --cache --cache-strategy content --cache-location frontend/node_modules/.cache/eslint/scripts scripts/ desktop/rust/scripts/
+      - *record_artifacts
 
   lint-versions:
     desc: Check documented tool versions against versions.env
     sources:
       - versions.env
+      - scripts/task-state.mjs
       - scripts/sync-versions.mjs
       - README.md
       - site/content/docs/getting-started/installation.md
@@ -952,59 +1083,115 @@ tasks:
       - backend/go.mod
       - desktop/go/go.mod
       - site/go.mod
+    vars:
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}'
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - bun scripts/sync-versions.mjs --check
+      - *record_artifacts
 
   lint-proto:
     desc: Lint Protocol Buffer definitions
     sources:
+      - versions.env
+      - scripts/task-state.mjs
       - proto/**/*.proto
       - buf.yaml
+    vars:
+      BUF_CONTEXT:
+        sh: buf --version
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.BUF_CONTEXT}}/{{.JS_CONTEXT}}'
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - buf lint
+      - *record_artifacts
 
   lint-frontend:
     desc: Lint frontend code
     deps: [prepare-frontend]
     sources:
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - versions.env
+      - scripts/task-state.mjs
       - frontend/package.json
       - frontend/bun.lock
       - frontend/*config*
+      - frontend/vitest*.ts
       - frontend/scripts/**/*
       - frontend/src/**/*
       - frontend/tests/**/*
       - frontend/patches/**/*
       - frontend/public/**/*
+    vars:
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}'
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - cd frontend && bun run typecheck
-      - cd frontend && bun run lint .
+      - cd frontend && bun run lint
+      - *record_artifacts
 
   lint-backend:
     desc: Lint Go code
     deps: [prepare-backend]
     sources:
+      - go.work.sum
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - versions.env
+      - scripts/task-state.mjs
+      - go.work
+      - backend/internal/hub/store/*/db/migrations/*.sql
+      - backend/internal/worker/db/migrations/*.sql
+      - backend/internal/hub/generated/frontend/public/**/*
       - .golangci.yml
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
+    vars:
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.GO_CONTEXT}}'
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - cd backend && go tool golangci-lint run ./...
-      # golangci-lint only sees the HOST build configuration, so a file behind
-      # `//go:build unix` (38 files under backend/, 20 of them _test.go) is
-      # invisible to it on every other platform -- and an untagged file that
-      # references a symbol defined only in one typechecks fine here and fails
-      # the Windows CI job minutes later. `go vet` is the check that catches
-      # it; `go build` does NOT, because it skips _test.go files.
+      # golangci-lint checks only the host build configuration.
+      # An untagged caller can compile here but fail on Windows if its callee exists only in a Unix-tagged file.
+      # Cross-platform go vet checks test files also. go build omits _test.go files and cannot detect that failure.
       - cd backend && GOOS=windows go vet -tags integration ./...
       - cd backend && GOOS=linux go vet -tags integration ./...
       - cd backend && GOOS=darwin go vet -tags integration ./...
+      - *record_artifacts
 
   lint-desktop:
     desc: Lint desktop sidecar and Tauri shell code
+    deps: [prepare-desktop, build-desktop-sidecar]
     sources:
+      - go.work.sum
+      - backend/go.mod
+      - backend/go.sum
+      - .cargo/**/*
+      - desktop/rust/.cargo/**/*
+      - desktop/rust/rust-toolchain*
+      - versions.env
+      - scripts/task-state.mjs
+      - backend/**/*.go
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/rust/tauri*.conf.json
+      - desktop/rust/capabilities/**/*
+      - proto/**/*
+      - go.work
+      - backend/internal/hub/store/*/db/migrations/*.sql
+      - backend/internal/worker/db/migrations/*.sql
+      - backend/internal/hub/generated/frontend/public/**/*
       - .golangci.yml
-      - desktop/go.mod
-      - desktop/go.sum
       - desktop/**/*.go
       - exclude: desktop/go/bin/**/*
       - desktop/rust/Cargo.toml
@@ -1012,16 +1199,21 @@ tasks:
       - desktop/rust/*.rs
       - desktop/rust/src/**/*.rs
       - exclude: desktop/rust/target/**/*
+    vars:
+      RUST_CONTEXT:
+        sh: cd desktop/rust && rustc -vV && cargo --version
+      OUTPUTS: []
+      CACHE_CONTEXT: '{{.GO_CONTEXT}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}'
+    status: *artifact_status
     cmds:
-      - task: prepare-desktop
-      - task: build-desktop-sidecar
+      - *forget_artifacts
       - cd desktop/go && go tool golangci-lint run ./...
-      # Same blind spot as lint-backend: desktop/go carries 10 OS-tagged files,
-      # including _test.go ones. See the comment there.
+      # Check the desktop's platform-specific files, including tests, as lint-backend does.
       - cd desktop/go && GOOS=windows go vet -tags integration ./...
       - cd desktop/go && GOOS=linux go vet -tags integration ./...
       - cd desktop/go && GOOS=darwin go vet -tags integration ./...
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
+      - *record_artifacts
 
   lint-fix:
     desc: Auto-fix lint violations
@@ -1034,7 +1226,7 @@ tasks:
     desc: Auto-fix frontend lint violations
     cmds:
       - task: prepare-frontend
-      - cd frontend && bun run lint . --fix
+      - cd frontend && bun run lint:fix
 
   lint-fix-backend:
     desc: Auto-fix backend lint violations
@@ -1084,30 +1276,44 @@ tasks:
 
   build-desktop-sidecar:
     desc: Build desktop sidecar binary
+    deps: [prepare-backend]
     sources:
-      - backend/go.mod
-      - backend/go.sum
-      - backend/**/*.go
+      - go.work.sum
+      - versions.env
+      - scripts/task-state.mjs
       - desktop/go/go.mod
       - desktop/go/go.sum
-      - desktop/go/**/*.go
+      - go.work
+      - backend/internal/hub/store/*/db/migrations/*.sql
+      - backend/internal/worker/db/migrations/*.sql
+      - backend/internal/hub/generated/frontend/public/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - exclude: backend/**/*_test.go
+      - desktop/go/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - exclude: desktop/go/**/*_test.go
       - exclude: desktop/go/bin/**/*
-    generates:
-      - desktop/go/bin/leapmux-desktop-service-*
+    vars:
+      SIDECAR_LDFLAGS: '{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}'
+      CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
+      OUTPUTS: &outputs_build_desktop_sidecar
+        - desktop/go/bin/leapmux-desktop-service-*
+    generates: *outputs_build_desktop_sidecar
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - mkdir -p desktop/go/bin
       - |
         TARGET="{{if eq OS "darwin"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-apple-darwin{{else if eq OS "linux"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-unknown-linux-gnu{{else}}x86_64-pc-windows-msvc{{end}}"
         BIN="./bin/leapmux-desktop-service-${TARGET}{{if eq OS "windows"}}.exe{{end}}"
-        # -H=windowsgui links the sidecar for the Windows GUI subsystem so
-        # spawning it from the Tauri shell doesn't pop up a console window.
-        # -buildmode=pie on Linux produces a shared-object-style ELF whose
-        # layout patchelf (run by linuxdeploy against every ELF in the
-        # AppDir) can rewrite without corruption. Non-PIE Go binaries get
-        # subtly mangled on aarch64 — the .note.go.buildid section gets
-        # dropped and ldd then exits 1 silently, which linuxdeploy treats
-        # as a hard failure ("Failed to run ldd: exited with code 1").
-        cd desktop/go && go build {{if eq OS "linux"}}-buildmode=pie {{end}}-ldflags "{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}" -o "${BIN}" .
+        # -H=windowsgui selects the Windows GUI subsystem, so a sidecar launch does not open a console.
+        # -buildmode=pie on Linux produces an ELF layout that patchelf can modify safely.
+        # linuxdeploy runs patchelf on every ELF in the AppDir.
+        # For a non-PIE Go binary on aarch64, that step can remove .note.go.buildid.
+        # Then ldd exits with status 1 and no diagnostic, which makes linuxdeploy fail.
+        cd desktop/go && go build {{if eq OS "linux"}}-buildmode=pie {{end}}-ldflags {{.SIDECAR_LDFLAGS | shellQuote}} -o "${BIN}" .
+      - *record_artifacts
 
   # --- Docker ---
 
@@ -1167,24 +1373,21 @@ tasks:
 
   generate-notice:
     desc: Generate third-party license notice
-    # prepare-backend, not just prepare-frontend: collectGoDeps runs
-    # `go list -deps -test ./...`, which has to LOAD every package in the
-    # module, and two generated trees it needs are gitignored -- the sqlc
-    # output under internal/hub/store/*/generated/ and the embed package under
-    # internal/hub/generated/frontend/, whose //go:embed of public/ fails when
-    # the directory is absent. In a tree that has built before, both are
-    # already there and this looks redundant; in a clean checkout the run dies
-    # with "no required module provides package .../generated/db".
-    #
-    # prepare-backend pulls in a frontend build, which is why the NOTICE gate
-    # is worth its path filter: this is not a check to run on every push.
+    # collectGoDeps runs go list -deps -test ./..., which loads every package.
+    # It requires the generated SQL code and embedded frontend assets.
+    # Without prepare-backend, a clean checkout fails on a missing generated package or the absent public directory for go:embed.
+    # This dependency also builds the frontend. The CI path filter limits that cost to relevant changes.
     deps: [prepare-backend]
     sources:
+      - frontend/bunfig.toml
+      - frontend/.npmrc
+      - frontend/patches/**/*
+      - versions.env
+      - scripts/task-state.mjs
       - scripts/generate-notice.mjs
       - scripts/license-overrides/**/*
-      # go.work decides which modules the generator walks: it reads the
-      # `use (...)` list and runs `go list -m -json all` workspace-wide, so
-      # adding or dropping a member changes the licenses NOTICE describes.
+      # The generator reads go.work's use list and runs go list -m -json all across those modules.
+      # Adding or removing a module changes the licenses in NOTICE.
       - go.work
       - go.work.sum
       - backend/go.mod
@@ -1195,17 +1398,28 @@ tasks:
       - desktop/rust/Cargo.lock
       - frontend/package.json
       - frontend/bun.lock
-    generates:
-      - NOTICE.md
-      - NOTICE.html
+    vars:
+      OUTPUTS: &outputs_generate_notice
+        - NOTICE.md
+        - NOTICE.html
+    generates: *outputs_generate_notice
+    status: *artifact_status
     cmds:
+      - *forget_artifacts
       - bun scripts/generate-notice.mjs
+      - *record_artifacts
 
   # --- Documentation site ---
 
   site:
     desc: Generate the static documentation web site (Hugo + Hextra)
     sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - site/go.sum
+      - site/archetypes/**/*
+      - site/data/**/*
+      - site/config/**/*
       - site/hugo.yaml
       - site/go.mod
       - site/content/**/*
@@ -1213,15 +1427,22 @@ tasks:
       - site/layouts/**/*
       - site/assets/**/*
       - site/i18n/**/*
-    generates:
-      - site/public/**/*
+    vars:
+      HUGO_CONTEXT:
+        sh: >-
+          bun -e 'console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("HUGO_")).sort(([a], [b]) => a.localeCompare(b)))))'
+      CACHE_CONTEXT: '{{.GO_CONTEXT}}/{{.HUGO_CONTEXT}}'
+      OUTPUTS: &outputs_site
+        - site/public/**/*
+    generates: *outputs_site
+    status: *artifact_status
     cmds:
-      # Hugo ships as a Go tool dependency (see site/go.mod) and is invoked via
-      # `go tool hugo` -- the same pattern as `go tool sqlc`. GOWORK=off keeps
-      # the site module's large dependency graph out of the root go.work.
-      # --cleanDestinationDir wipes public/ so old fingerprinted assets (whose
-      # hashed filenames change on every edit) don't accumulate as orphans.
+      - *forget_artifacts
+      # Run Hugo through the tool dependency in site/go.mod.
+      # GOWORK=off keeps the site's dependency graph outside the root workspace.
+      # --cleanDestinationDir removes obsolete assets whose content hashes changed.
       - cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir
+      - *record_artifacts
 
   # --- Clean ---
 
