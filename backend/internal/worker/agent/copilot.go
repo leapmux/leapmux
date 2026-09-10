@@ -75,7 +75,7 @@ func newCopilotCLIAgent(assistedApproval string, assistedApprovalUnavailable boo
 // The downgrade applies only to a value LeapMux chose. An explicitly requested Assisted
 // Approval still surfaces the startup error, so a user who asks for it learns that this
 // CLI cannot do it rather than silently running without it.
-func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartCopilotCLI(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	assisted := contracts.CopilotPermissionGroupAssistedApproval
 	defaulted := opts.NewSessionDefaultOptionIDs[assisted]
 	wantsAssisted := opts.Get(assisted) == contracts.CopilotPermissionValueOn
@@ -108,7 +108,7 @@ func copilotWithoutAssistedApproval(opts Options) Options {
 	return out
 }
 
-func startCopilotCLI(ctx context.Context, opts Options, sink OutputSink, assistedApprovalUnavailable bool) (Agent, error) {
+func startCopilotCLI(ctx context.Context, opts Options, sink ProviderServices, assistedApprovalUnavailable bool) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[CopilotCLIAgent]{
 		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		providerName: "copilot",

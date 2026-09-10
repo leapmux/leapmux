@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
+func newCursorAgentWithSink(sink ProviderServices) *CursorCLIAgent {
 	a := &CursorCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
@@ -24,7 +24,7 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 	a.modelIDNormalizer = normalizeCursorModelID
 	a.modeChannel = modeChannelPermissionMode
 	a.extraMethod = a.handleExtraMethod
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 

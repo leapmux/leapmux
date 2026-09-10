@@ -2,9 +2,10 @@ import type { MessageBandKind } from './chatRowGeometry'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
+import { parseAssembledMessage } from './assembledMessage'
 import { messageBandKind } from './chatRowGeometry'
 import * as chatStyles from './messageStyles.css'
 import { isPersistedControlResponse } from './persistedControlResponse'
@@ -27,6 +28,7 @@ export type MessageCategory
     | { kind: 'agent_prompt' }
     | { kind: 'assistant_text' }
     | { kind: 'assistant_thinking' }
+    | { kind: 'assistant_plan' }
     | { kind: 'user_text' }
     | { kind: 'user_content' }
     | { kind: 'plan_execution' }
@@ -57,6 +59,8 @@ export function toClassificationInput(
     wrapper: parsed.wrapper,
     agentProvider: message.agentProvider,
     source: message.source,
+    assembledKind: message.assembledKind,
+    completion: message.completion,
     spanId: message.spanId,
     spanType: message.spanType,
     parentSpanId: message.parentSpanId,
@@ -100,6 +104,25 @@ export function classifyMessage(
   input: ClassificationInput,
   context?: ClassificationContext,
 ): MessageCategory {
+  switch (input.assembledKind) {
+    case AssembledMessageKind.REASONING:
+      return { kind: 'assistant_thinking' }
+    case AssembledMessageKind.PLAN:
+      return { kind: 'assistant_plan' }
+    case AssembledMessageKind.TEXT:
+      return { kind: 'assistant_text' }
+  }
+  const assembled = parseAssembledMessage(input.parentObject)
+  if (assembled) {
+    switch (assembled.kind) {
+      case 'reasoning':
+        return { kind: 'assistant_thinking' }
+      case 'plan':
+        return { kind: 'assistant_plan' }
+      case 'text':
+        return { kind: 'assistant_text' }
+    }
+  }
   const plugin = pluginFor(input.agentProvider)
   if (!plugin) {
     // A USER row is the one message no plugin is needed to read: LeapMux writes
@@ -149,8 +172,7 @@ export function classifyParsedMessage(
 // context-free classification by message reference avoids redispatching
 // through the provider plugin on every render pass. Skip when a
 // ClassificationContext is supplied (MessageBubble's per-render path)
-// because the classifier may consult context-dependent fields like the
-// command-stream length.
+// because the classifier can consult context-dependent fields.
 //
 // Solid's createStore wraps stored objects in proxies, so the wire-side
 // ref passed at broadcast time and the proxy ref read by per-render
@@ -159,13 +181,8 @@ export function classifyParsedMessage(
 // chats — and broadcast-time hits act as one-shot warm-ups whose
 // entries are GC'd once the wire ref goes out of scope.
 //
-// Cache safety caveat: today's consumers (shouldClearStreamingText and
-// the render path) treat 'hidden' and 'assistant_thinking'
-// equivalently, which is why the Codex reasoning classifier's
-// context-dependent split between those two kinds is currently
-// invisible to cache readers. A future caller that distinguishes them
-// MUST either pass through `classifyMessage` directly or extend this
-// cache key to include the relevant context bits.
+// A context-sensitive caller must use `classifyMessage` directly or add its
+// context inputs to this cache key.
 const classifyCache = new WeakMap<AgentChatMessage, MessageCategory>()
 
 /**
@@ -211,48 +228,12 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'tool_use',
   'tool_result',
   'agent_prompt',
+  'assistant_plan',
   'control_response',
   'compact_summary',
   'notification',
   'unsupported_provider',
 ])
-
-/**
- * Categories that must NOT clear the in-flight streaming text buffer
- * when a persisted AGENT message arrives. Notification rows are handled
- * separately via `parsed.wrapper`.
- */
-const NON_STREAM_CLEAR_KINDS = new Set<MessageCategory['kind']>([
-  'notification',
-  'hidden',
-  'control_response',
-  'compact_summary',
-  'agent_prompt',
-  'plan_execution',
-])
-
-/**
- * True when a persisted AGENT message should drop the in-flight
- * streaming text buffer. Notification wrappers and meta categories
- * leave the buffer alone — only assistant-side outputs (text,
- * thinking, tool_use, tool_result) and turn-end dividers close it.
- * `kind === 'unknown'` and `kind === 'unsupported_provider'` both
- * deliberately fall through to true (neither is in NON_STREAM_CLEAR_KINDS)
- * so any unclassified or unattributable AGENT shape conservatively closes
- * the buffer rather than leaving stale streaming text glued to the next
- * message.
- */
-export function shouldClearStreamingText(
-  msg: { source: MessageSource },
-  parsed: ParsedMessageContent,
-  category: MessageCategory,
-): boolean {
-  if (msg.source !== MessageSource.AGENT)
-    return false
-  if (parsed.wrapper !== null)
-    return false
-  return !NON_STREAM_CLEAR_KINDS.has(category.kind)
-}
 
 /**
  * True when the row lays its bubble out at the END of the line and MIRRORS its
@@ -374,12 +355,9 @@ export interface MessageRowChrome {
  * The chrome for ONE mounted chat row. Every place that mounts a row calls this
  * and spreads the result, which is what keeps them identical.
  *
- * There are four such places, and they agree on nothing else: the virtual row and
- * the streaming tail (ChatView), the hidden premeasure row (chatHiddenPremeasure)
- * and, for its class alone, the positioned skeleton that stands in for an
- * unmeasured row. They differ in positioning and in role -- absolute and measured,
- * in flow, hidden and measured, an overlay -- so they are deliberately NOT one
- * component. Their CHROME is the one thing that must not differ: a row measured
+ * Three places use it: the virtual row, hidden premeasure row, and positioned
+ * skeleton. They differ in position and role, so they are separate components.
+ * Their chrome must stay equal: a row measured
  * without its band commits a height two borders and two paddings short of the
  * height it renders at, and the offset map then shifts under the reader.
  */

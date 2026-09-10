@@ -64,7 +64,7 @@ func (m *agentEventCapturingWriter) count() int64 {
 // The tempdir is *not* a git repo, so gitutil.GetGitStatus returns an empty
 // GitRepoStatus — sufficient to assert event shape without dragging git
 // state into the test. Returns the concrete *agentOutputSink so tests can
-// reach BroadcastGitStatus directly (it's not on the agent.OutputSink
+// reach BroadcastGitStatus directly (it's not on the agent.ProviderServices
 // interface — providers don't call it; the sink fires it automatically
 // at turn-end).
 func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWriter) {
@@ -86,7 +86,8 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 	mock := &agentEventCapturingWriter{channelID: "ch-1"}
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
+	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := requireRootOutputSink(t, svc.Output, "agent-1")
 	return sink, mock
 }
 

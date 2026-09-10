@@ -26,7 +26,7 @@ func openAgentAndCapture(t *testing.T, req *leapmuxv1.OpenAgentRequest) (*Servic
 	t.Helper()
 	svc, d, w := setupTestService(t)
 	started := make(chan agent.Options, 1)
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		started <- opts
 		return opts.Options, nil
 	}

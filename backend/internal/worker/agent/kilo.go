@@ -14,7 +14,7 @@ type KiloAgent struct {
 }
 
 // StartKilo starts a Kilo ACP agent process and performs the handshake.
-func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartKilo(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[KiloAgent]{
 		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		providerName:   "kilo",

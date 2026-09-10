@@ -99,7 +99,7 @@ func (a *CursorCLIAgent) finishedObservation(tcu acpToolCallUpdateEnvelope) *acp
 }
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
-func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[CursorCLIAgent]{
 		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		providerName: "cursor",

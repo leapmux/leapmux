@@ -865,7 +865,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// It writes no optimistic state. A side-band provider reports its change.
 	// A text-route provider returns a user message for the durable queue.
 	//
-	// A child agent has no goal of its own (see OutputSink.UpsertGoal), so it is
+	// A child agent has no goal of its own (see ProviderServices.UpsertGoal), so it is
 	// refused rather than redirected to its root -- silently acting on a
 	// different agent than the one addressed is worse than saying no.
 	registerAgentGuardedByID(d, "UpdateAgentGoal", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
@@ -1415,11 +1415,9 @@ func (svc *Service) replayAgentCatchUp(
 	// its progress row measures the goal the event above just restored, and
 	// Codex advances those numbers only after a completed tool call.
 	//
-	// It ships under the ROOT id for the reason the goal does -- a child owns no
-	// goal, and the sink that caches these counters is the root's. Nil when no
-	// process runs, which is the correct answer: an inactive agent has no live
-	// counters to restore.
-	if event := svc.Output.SessionInfoReplayEvent(rootID); event != nil {
+	// Each child sink owns its own generation counters. Replay the sink for the
+	// subscribed agent; the goal above remains root-owned.
+	if event := svc.Output.SessionInfoReplayEvent(agentID); event != nil {
 		broadcastReplayAgentEvent(sink, event)
 		if !sink.alive() {
 			return
@@ -2860,8 +2858,8 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		})
 
 		// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
-		// the OutputSink's init handshake didn't (or hasn't yet) emitted its
-		// own ACTIVE broadcast. broadcastAgentActive carries the fresh model
+		// the provider handshake did not yet emit an ACTIVE broadcast.
+		// broadcastAgentActive carries the fresh model
 		// catalogs that the catch-up path also relies on.
 		svc.broadcastAgentActive(&activeDbAgent, nil)
 	}
@@ -3580,6 +3578,8 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		SpanColor:          int32(m.SpanColor),
 		SpanLines:          m.SpanLines,
 		MarkType:           m.MarkType,
+		AssembledKind:      leapmuxv1.AssembledMessageKind(m.AssembledKind),
+		Completion:         leapmuxv1.MessageCompletion(m.Completion),
 	}
 }
 

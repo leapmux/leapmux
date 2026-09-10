@@ -170,7 +170,7 @@ func zcodeToolFromSubagent(payload zcodeToolUpdated) bool {
 // Every row of one tool call goes to ONE transcript. The closing row and the batch
 // summary state no subagent linkage of their own, so without this they would close a
 // span in a transcript that never opened it.
-func (a *zcodeAgent) zcodeSinkForToolCall(toolCallID string) OutputSink {
+func (a *zcodeAgent) zcodeSinkForToolCall(toolCallID string) ProviderServices {
 	if childID, ok := a.children.toolChild(toolCallID); ok {
 		return a.sink.ChildSink(childID)
 	}
@@ -292,7 +292,7 @@ func (a *zcodeAgent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
 // The input is recovered from the model stream when the update omits it, which is the
 // COMMON case: the app-server sets `inputOmitted: true, inputRef: "model_stream"` and
 // sends no input of its own, so the stream is the only copy that ever existed.
-func (a *zcodeAgent) openZCodeToolCallInto(sink OutputSink, event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -302,6 +302,10 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink OutputSink, event zcodeEventEnve
 	if toolName == "" {
 		toolName = tc.name
 	} else {
+		if tc.name == "" {
+			tc.order = a.nextToolOrder
+			a.nextToolOrder++
+		}
 		tc.name = toolName
 	}
 	input := payload.Input
@@ -337,7 +341,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink OutputSink, event zcodeEventEnve
 // the AGENT's rather than the transcript's, so they are updated here whichever sink
 // the row went to. A subagent's calls count toward the turn deliberately: they are
 // part of the work that turn did.
-func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -361,8 +365,8 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnv
 	tc.name = ""
 	tc.input = nil
 	a.mu.Unlock()
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStdout))
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStderr))
+	a.clearCumulativeOutput(payload.ToolCallID)
+	sink.ReportProgress(CompleteOutputProgress(payload.ToolCallID))
 
 	content := event.persistBytes()
 	if content != nil {
@@ -374,7 +378,6 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnv
 			slog.Error("zcode persist tool result", "agent_id", a.agentID, "error", err)
 		}
 	}
-	sink.BroadcastStreamEnd(payload.ToolCallID)
 	sink.CloseSpan(payload.ToolCallID)
 
 	a.applyZCodeSubagentEnd(payload)

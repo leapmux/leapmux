@@ -1125,7 +1125,7 @@ func TestACP_FinalToolCallSpawnStillFeedsTheRegistry(t *testing.T) {
 // the two hooks share the per-agent note about which tool calls are the `task`
 // tool. Building a bare acpBase from the package-level functions instead would
 // drop that note and test a wiring production never uses.
-func newCursorTestAgent(sink OutputSink) *CursorCLIAgent {
+func newCursorTestAgent(sink ProviderServices) *CursorCLIAgent {
 	a := &CursorCLIAgent{}
 	a.sink = sink
 	a.subagentFromToolCall = a.spawnObservation

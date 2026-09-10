@@ -355,10 +355,10 @@ func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snaps
 	})
 }
 
-// TurnEnded and TurnStarted reconcile the queue against the turn flag that the
-// agent's provider publishes. The provider owns that flag -- its own SendInput
-// refuses input from the same value -- so the queue follows it rather than
-// keeping a second answer of its own.
+// TurnEnded and TurnStarted reconcile the queue against the turn state that the
+// agent's provider publishes. The provider owns the flag and its optional
+// steering classification. Its own SendInput refuses input from the same flag.
+// The queue follows that state instead of keeping a second answer.
 //
 // Both are idempotent, because a provider republishes the unchanged value
 // freely. A call that moves nothing broadcasts nothing.
@@ -378,13 +378,13 @@ func (m *Manager) TurnAbandoned(ctx context.Context, agentID string) (Snapshot, 
 	})
 }
 
-func (m *Manager) TurnStarted(ctx context.Context, agentID string) (Snapshot, error) {
+func (m *Manager) TurnStarted(ctx context.Context, agentID string, steerable bool) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
 	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
-		return m.store.TurnStarted(ctx, agentID)
+		return m.store.TurnStarted(ctx, agentID, steerable)
 	})
 }
 
@@ -764,7 +764,14 @@ func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDi
 	var record func() (Snapshot, error)
 	switch dispatchOutcome(dispatchErr) {
 	case DispatchBusy:
-		record = func() (Snapshot, error) { return m.store.RequeueBusy(ctx, item.AgentID, item.ID) }
+		activeTurnSteerable := false
+		var deliveryErr *DeliveryError
+		if errors.As(dispatchErr, &deliveryErr) {
+			activeTurnSteerable = deliveryErr.ActiveTurnSteerable
+		}
+		record = func() (Snapshot, error) {
+			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnSteerable)
+		}
 	case DispatchNotReady:
 		record = func() (Snapshot, error) {
 			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr)

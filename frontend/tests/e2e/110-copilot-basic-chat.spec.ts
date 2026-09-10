@@ -39,11 +39,19 @@ copilotTest.describe('Copilot Basic Chat', () => {
 
     const menu = await openPlusMenu(page)
     const smart = menu.getByTestId('composer-smart-permissions')
-    await expect(menu.getByTestId('composer-bypass-permissions')).toBeVisible()
+    const allowAllOffered = await menu.getByRole('menuitem', { name: 'Allow All', exact: true }).count() > 0
+    const bypass = menu.getByTestId('composer-bypass-permissions')
+    if (allowAllOffered)
+      await expect(bypass).toBeVisible()
+    else
+      await expect(bypass).toHaveCount(0)
     if (assistedOffered)
       await expect(smart).toBeDisabled()
     else
       await expect(smart).toHaveCount(0)
+
+    if (!allowAllOffered)
+      return
 
     await applyPermissionPreset(page, 'bypass')
     let group = await openSettingsMenu(page, 'allow_all')

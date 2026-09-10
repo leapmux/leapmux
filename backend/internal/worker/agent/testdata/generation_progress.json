@@ -1,0 +1,82 @@
+{
+  "$schema": "generation_progress.schema.json",
+  "providers": [
+    {
+      "name": "claude",
+      "events": [
+        { "operation": "native_tokens", "scope": "thinking", "value": 17 }
+      ],
+      "expected": { "thinkingTokens": 17, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "codex",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefgh" },
+        { "operation": "output_delta", "scope": "command", "value": 96 }
+      ],
+      "expected": { "thinkingTokens": 2, "outputBytes": 96, "outputBytesMinimum": false }
+    },
+    {
+      "name": "opencode",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefgh" },
+        { "operation": "output_total", "scope": "command", "value": 30005, "minimum": true }
+      ],
+      "expected": { "thinkingTokens": 2, "outputBytes": 30005, "outputBytesMinimum": true }
+    },
+    {
+      "name": "kilo",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijkl" },
+        { "operation": "output_total", "scope": "command", "value": 3088 }
+      ],
+      "expected": { "thinkingTokens": 3, "outputBytes": 3088, "outputBytesMinimum": false }
+    },
+    {
+      "name": "goose",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijklmnop" },
+        { "operation": "output_delta", "scope": "terminal", "value": 3088 }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 3088, "outputBytesMinimum": false }
+    },
+    {
+      "name": "reasonix",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijklmnop" }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "pi",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijkl" },
+        { "operation": "output_total", "scope": "command", "value": 164440 }
+      ],
+      "expected": { "thinkingTokens": 3, "outputBytes": 164440, "outputBytesMinimum": false }
+    },
+    {
+      "name": "copilot",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijklmnop" },
+        { "operation": "output_total", "scope": "command", "value": 3088 }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 3088, "outputBytesMinimum": false }
+    },
+    {
+      "name": "cursor",
+      "events": [
+        { "operation": "model_text", "scope": "message", "text": "abcdefghijkl" }
+      ],
+      "expected": { "thinkingTokens": 3, "outputBytes": 0, "outputBytesMinimum": false }
+    },
+    {
+      "name": "zcode",
+      "events": [
+        { "operation": "model_text", "scope": "reasoning", "text": "abcdefghijklmnop" },
+        { "operation": "output_total", "scope": "command", "value": 2895 }
+      ],
+      "expected": { "thinkingTokens": 4, "outputBytes": 2895, "outputBytesMinimum": false }
+    }
+  ]
+}

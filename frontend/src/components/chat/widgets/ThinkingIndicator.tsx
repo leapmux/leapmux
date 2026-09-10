@@ -1,8 +1,9 @@
-import type { Component, JSX } from 'solid-js'
+import type { Accessor, Component, JSX } from 'solid-js'
+import type { ThinkingStatusCounter } from './ThinkingStatusRow'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, untrack } from 'solid-js'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
@@ -13,7 +14,10 @@ import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
+import { ThinkingCompass } from './ThinkingCompass'
 import * as styles from './ThinkingIndicator.css'
+import { ThinkingOutputCount } from './ThinkingOutputCount'
+import { ThinkingStatusRow } from './ThinkingStatusRow'
 import { ThinkingTokenCount } from './ThinkingTokenCount'
 
 export interface ThinkingIndicatorProps {
@@ -30,7 +34,7 @@ export interface ThinkingIndicatorProps {
    * Stable identifier (typically the agent id) used to persist the
    * randomly-chosen verb across re-mounts of this component. Without
    * it, every mount picks a fresh verb — so a tile split / make-grid
-   * / close-grid that re-mounts ChatView mid-stream would flip the
+   * / close-grid that re-mounts ChatView during a turn would flip the
    * verb visibly. When supplied, the verb persists across re-mounts
    * during a continuous thinking session and only refreshes on
    * genuine idle→thinking transitions inside a live component (and
@@ -44,6 +48,10 @@ export interface ThinkingIndicatorProps {
    * indicator shows nothing.
    */
   thinkingTokens?: number
+  /** Bytes produced by live process and tool output. */
+  outputBytes?: number
+  /** True when outputBytes is a provider-limited minimum. */
+  outputBytesMinimum?: boolean
   /**
    * The background-task registry rows (active AND past) for THIS tab's own
    * work: every descendant for a root, and only what it spawned for a subagent
@@ -88,12 +96,43 @@ const ROW_FADE_MS = motion.medium
 // releases the parent flex gap; a zero-height flex item still creates a gap.
 const ROW_COLLAPSE_TOTAL_MS = ROW_FADE_MS * 2
 
+function createFadingValue<T>(
+  visible: Accessor<boolean>,
+  value: Accessor<T | undefined>,
+  present: (value: T | undefined) => value is T,
+): Accessor<T | undefined> {
+  const [mounted, setMounted] = createSignal<T | undefined>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const next = value()
+    if (visible() && present(next)) {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      setMounted(() => next)
+      return
+    }
+    if (untrack(mounted) !== undefined && timer === undefined) {
+      timer = setTimeout(() => {
+        timer = undefined
+        setMounted(undefined)
+      }, ROW_FADE_MS)
+    }
+  })
+  onCleanup(() => {
+    if (timer !== undefined)
+      clearTimeout(timer)
+  })
+  return mounted
+}
+
 // Module-level cache of the indicator's persistent state per id —
 // the verb currently displayed and the last compass angle (in
 // radians). Survives ThinkingIndicator re-mounts caused by
 // layout-tree restructures (tile split / make-grid / close-grid) so
 // neither the verb nor the pendulum visibly snaps when the
-// indicator's DOM re-mounts mid-stream.
+// indicator's DOM re-mounts during a turn.
 //
 // Entries are written on mount (when seeding the verb), on
 // invisible→visible transitions inside a live component, on each 60s
@@ -101,12 +140,12 @@ const ROW_COLLAPSE_TOTAL_MS = ROW_FADE_MS * 2
 // Updating an existing key is in-place — the map's insertion-order
 // queue isn't disturbed — so only first-seen ids advance the FIFO.
 //
-// Size is bounded by MAX_CACHE_ENTRIES with FIFO eviction. Eviction
+// MAX_CACHE_ENTRIES caps the size with first-in, first-out eviction. Eviction
 // kicks in only when a NEW id arrives past the cap; an evicted
 // agent's next re-mount simply falls back to a fresh verb / zero
 // angle, which is the same behaviour as the very first mount of any
 // id. There's no explicit "agent closed" hook because the cap
-// catches it within a bounded number of subsequent agent opens
+// catches it after a limited number of subsequent agent opens
 // regardless.
 interface IndicatorSnapshot {
   verb?: string
@@ -252,28 +291,18 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // the gate closes it freezes the last value mounted for ROW_FADE_MS (the
   // wrapper's opacity fade) and then unmounts. The frozen value means no roll
   // effects fire during the fade.
-  const [countTokens, setCountTokens] = createSignal<number | undefined>(undefined)
-  let countFadeTimer: ReturnType<typeof setTimeout> | undefined
-  createEffect(() => {
-    const tokens = props.thinkingTokens
-    if (props.visible && (tokens ?? 0) > 0) {
-      if (countFadeTimer !== undefined) {
-        clearTimeout(countFadeTimer)
-        countFadeTimer = undefined
-      }
-      setCountTokens(tokens)
-      return
-    }
-    // Gate closed: keep the last value mounted through the wrapper's opacity
-    // fade, then unmount. untrack the read so this effect doesn't depend on its
-    // own write (it tracks only props.visible / props.thinkingTokens).
-    if (untrack(countTokens) !== undefined && countFadeTimer === undefined) {
-      countFadeTimer = setTimeout(() => {
-        countFadeTimer = undefined
-        setCountTokens(undefined)
-      }, ROW_FADE_MS)
-    }
-  })
+  const countTokens = createFadingValue(
+    () => props.visible,
+    () => props.thinkingTokens,
+    (value): value is number => (value ?? 0) > 0,
+  )
+  const countOutput = createFadingValue(
+    () => props.visible,
+    () => (props.outputBytes ?? 0) > 0
+      ? { bytes: props.outputBytes!, minimum: props.outputBytesMinimum === true }
+      : undefined,
+    (value): value is { bytes: number, minimum: boolean } => value !== undefined,
+  )
 
   // {done, total} for the to-dos counter, recomputed only when the todo list
   // changes. Deleted todos are excluded from both counts (todoProgress).
@@ -301,6 +330,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // Which counters the verb row shows. Named because each one is also read by
   // its successor to decide whether to draw a leading `·`.
   const showTokens = () => countTokens() !== undefined
+  const showOutput = () => countOutput() !== undefined
   const showBgTasks = () => activeBgTaskCount() > 0
   // The chip opens the Goals & To-dos popover, so EITHER half can open it. A
   // to-do count alone left an agent with a goal and no list with no goal
@@ -375,7 +405,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
 
   // Initiallly-visible mount path: skip the height-expand animation
   // (it would look like a disappear/reappear when ChatView re-mounts
-  // mid-stream via a tile split), but still tick onExpandTick so the
+  // during a turn via a tile split), but still tick onExpandTick so the
   // parent re-pins to bottom as the indicator's content lays out.
   onMount(() => {
     if (initiallyVisible)
@@ -451,8 +481,6 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     for (const t of pendingClearTimers)
       clearTimeout(t)
     pendingClearTimers.clear()
-    if (countFadeTimer !== undefined)
-      clearTimeout(countFadeTimer)
     clearPresenceTimer()
   })
 
@@ -486,7 +514,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
    * One entry per trailing counter, in render order. Constant for the life of
    * the component -- see the <For> below for why that matters.
    */
-  const counters: Array<{ show: () => boolean, render: () => JSX.Element }> = [
+  const counters: ThinkingStatusCounter[] = [
     {
       // Background tasks: shown while there are active subagents/shells.
       // Clicking opens a popover with the full registry.
@@ -579,9 +607,24 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       // popping -- and unmounts after, so a stale estimate can't keep it (or
       // its roll effects) alive in a collapsed row.
       show: showTokens,
-      render: () => <ThinkingTokenCount tokens={countTokens()!} />,
+      render: () => <ThinkingTokenCount tokens={countTokens()!} paused={props.paused} />,
+    },
+    {
+      show: showOutput,
+      render: () => {
+        const output = countOutput()!
+        return <ThinkingOutputCount bytes={output.bytes} minimum={output.minimum} paused={props.paused} />
+      },
     },
   ]
+
+  const verb = (
+    <span class={styles.verbStack} data-testid="thinking-verb">
+      <span class={styles.baselineStrut} aria-hidden="true">{'\u00A0'}</span>
+      {verbSpan(true, charsA, highlightPosA)}
+      {verbSpan(false, charsB, highlightPosB)}
+    </span>
+  )
 
   return (
     <div
@@ -598,101 +641,8 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     >
       <div class={styles.wrapperInner}>
         <div class={styles.container}>
-          <svg class={styles.compass} viewBox="0 0 401.294 401.294">
-            <g transform={`translate(100.666,-852.275) rotate(${angleDeg()},100,1052.922)`}>
-              {/* Tertiary intercardinal points */}
-              <g transform="matrix(0.41544,-0.17208,0.17208,0.41544,-122.740,632.706)">
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-              {/* Secondary intercardinal points */}
-              <g transform="matrix(0.17208,-0.41544,0.41544,0.17208,-354.645,913.272)">
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-              {/* Annulus ring */}
-              <path fill="currentColor" stroke="currentColor" stroke-width="1" transform="translate(0,852.362)" d="M100,37.15A162.85,162.85 0 0 0-62.85,200 162.85,162.85 0 0 0 100,362.85 162.85,162.85 0 0 0 262.85,200 162.85,162.85 0 0 0 100,37.15zM100,65.5A134.5,134.5 0 0 1 234.5,200 134.5,134.5 0 0 1 100,334.5 134.5,134.5 0 0 1-34.5,200 134.5,134.5 0 0 1 100,65.5z" />
-              {/* Intermediate intercardinal points (NE, SE, SW, NW) */}
-              <g>
-                <path fill="currentColor" stroke="currentColor" d="m185.055,967.864-84.828,59.38 0,25.448 84.828-84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m185.039,967.848-59.38,84.828-25.448,0 84.828-84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m14.907,1137.98 84.829-59.38 0-25.448-84.829,84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m14.923,1137.996 59.38-84.828 25.448,0-84.828,84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m185.039,1137.996-59.38-84.828-25.448,0 84.828,84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m185.055,1137.98-84.828-59.38 0-25.448 84.828,84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m14.923,967.848 59.38,84.828 25.448,0-84.828-84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m14.907,967.864 84.829,59.38 0,25.448-84.829-84.828z" />
-              </g>
-              {/* Cardinal points (N, S, E, W) */}
-              <g>
-                <path fill="currentColor" stroke="currentColor" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-            </g>
-          </svg>
-          <span class={styles.verbRow}>
-            {/* The verb LEADS the row and the counters trail it, so it reads
-                "<verb>… <background tasks> · <to-dos> · <tokens>". Every counter
-                is optional, so each one draws its own leading `·` only when
-                another counter already precedes it — a separator included in a
-                counter's own text would dangle whenever its neighbour is gone.
-                The verb is outside that chain: the row's own gap divides it from
-                the first counter, so no `·` sits between them. */}
-            <span class={styles.verbStack} data-testid="thinking-verb">
-              {/* Stable baseline anchor -- see baselineStrut in the CSS.
-                  A NON-BREAKING space (U+00A0), not an ASCII one: the strut is
-                  the first thing in its box, and white-space processing
-                  collapses a leading ASCII space away entirely, which drops the
-                  box's height to 0 and leaves no baseline to anchor to. */}
-              <span class={styles.baselineStrut} aria-hidden="true">{'\u00A0'}</span>
-              {verbSpan(true, charsA, highlightPosA)}
-              {verbSpan(false, charsB, highlightPosB)}
-            </span>
-            {/* The counters that trail the verb, in render order.
-                A CONSTANT array driven by <For>, so each counter owns its own
-                <Show>: a predicate flip re-creates only THAT counter and leaves
-                its neighbours mounted, so a neighbour's DropdownMenu keeps an
-                open popover and a neighbour's ThinkingTokenCount keeps its
-                odometer. (A counter's own flip does dispose and rebuild it --
-                <Show> is not keyed -- so the token count restarts its roll when
-                it reappears at the start of a turn.)
-
-                The separator rule lives here, once, derived from position: draw
-                a leading middot when any EARLIER counter is showing. Spelling it
-                per counter meant each one had to name every predecessor
-                (`showBgTasks() || showTodos()` ...), so another counter would
-                have to be added to every later condition -- and forgetting one
-                leaves a dangling `·` or drops one. The verb stays outside the
-                chain: the row's own gap divides it from the first counter. */}
-            <For each={counters}>
-              {(counter, index) => (
-                <Show when={counter.show()}>
-                  <Show when={counters.slice(0, index()).some(earlier => earlier.show())}>
-                    <span class={styles.countSeparator} aria-hidden="true">·</span>
-                  </Show>
-                  {counter.render()}
-                </Show>
-              )}
-            </For>
-          </span>
+          <ThinkingCompass angleDeg={angleDeg()} />
+          <ThinkingStatusRow verb={verb} counters={counters} />
         </div>
       </div>
     </div>

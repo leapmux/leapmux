@@ -16,11 +16,12 @@ import (
 // and ChildSteerer, so Manager.SendChildInput/InterruptChild can reach it.
 type steerableStub struct {
 	stubProvider
-	sendInputErr    error
-	interruptErr    error
-	sendInputCalls  []sendInputCall
-	steerInputCalls []sendInputCall
-	interruptCalls  []string
+	sendInputErr        error
+	interruptErr        error
+	activeTurnSteerable bool
+	sendInputCalls      []sendInputCall
+	steerInputCalls     []sendInputCall
+	interruptCalls      []string
 }
 
 type sendInputCall struct {
@@ -48,6 +49,10 @@ func (s *steerableStub) SteerChildInput(childKey, content string, attachments []
 func (s *steerableStub) InterruptChild(childKey string) error {
 	s.interruptCalls = append(s.interruptCalls, childKey)
 	return s.interruptErr
+}
+
+func (s *steerableStub) ActiveChildTurnState(string) TurnState {
+	return TurnState{Active: s.activeTurnSteerable, Steerable: s.activeTurnSteerable}
 }
 
 // Ensure stubProvider stays compatible (this catches an interface drift at
@@ -88,6 +93,23 @@ func TestManager_SendChildInputDispatch(t *testing.T) {
 	assert.Equal(t, "child-1", st.sendInputCalls[0].childKey)
 	assert.Equal(t, "hello", st.sendInputCalls[0].content)
 	assert.Equal(t, 1, st.sendInputCalls[0].attachments)
+}
+
+func TestManager_SendChildInputPreservesABusyTurnKind(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil)
+	st := &steerableStub{
+		sendInputErr:        ErrAgentBusy,
+		activeTurnSteerable: true,
+	}
+	m.mu.Lock()
+	m.agents["root"] = st
+	m.mu.Unlock()
+
+	err := m.SendChildInput("root", "child-1", "hello", nil)
+	var busyErr *AgentBusyError
+	require.ErrorAs(t, err, &busyErr)
+	assert.True(t, busyErr.ActiveTurnSteerable)
 }
 
 func TestManager_SteerChildInputDispatch(t *testing.T) {

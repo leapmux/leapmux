@@ -81,7 +81,7 @@ type CodexAgent struct {
 	model      string
 	effort     string
 	workingDir string
-	sink       OutputSink
+	sink       ProviderServices
 	// resumingThread is true only while a thread/resume handshake is in flight.
 	//
 	// It is what tells a goal RESTATEMENT from a goal EVENT. Codex marks the
@@ -111,19 +111,24 @@ type CodexAgent struct {
 	turnSawPlan       bool   // whether the current turn produced a plan item
 	turnPlanText      string // final text of the current turn's plan item
 	turnAssistantText string // final assistant message text for the current turn
-	streamingPlan     bool   // whether we've sent streamingType session info for the current plan stream
-	// thinkingTokens is the per-phase generated-token estimate driving the
-	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
-	thinkingTokens thinkingTokenEstimator
 	// reasoningStreamKind records, per reasoning itemId, which reasoning sub-stream
-	// ("summary" or "raw") was seen first, so the thinking-token estimate counts
+	// ("summary" or "raw") was seen first, so the token counter counts
 	// only one of them. Codex can emit both summaryTextDelta and textDelta for the
 	// SAME reasoning item (they are the same generation surfaced two ways), which
 	// would otherwise double-count. Locking onto whichever arrives first keeps the
 	// counter moving for models that stream only one of the two.
-	reasoningStreamKind map[string]string
-	availableModels     []*ModelInfo
-	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID (child index)
+	reasoningStreamKind    map[string]string
+	reasoningRetainedKind  map[string]string
+	reasoningSummaryIndex  map[string]int
+	reasoningSummarySeen   map[string]bool
+	reasoningSummaryBreak  map[string]bool
+	generationBuffer       GenerationBuffer
+	childGenerationBuffers map[string]*GenerationBuffer
+	unresolvedChildBuffers map[string]*GenerationBuffer
+	incompleteTools        map[string]*codexIncompleteTool
+	incompleteToolOrder    uint64
+	availableModels        []*ModelInfo
+	collabThreadSpans      map[string]string // child thread ID -> owning spawnAgent span ID (child index)
 	// collabChildAgents remembers the child AGENT id each thread resolved to.
 	// The span index above answers the same question, but it is torn down on a
 	// ClearContext and a registry write can fail, and a thread whose id cannot
@@ -131,11 +136,11 @@ type CodexAgent struct {
 	// queue with a turn that nothing will ever clear. The agent id does not
 	// change once assigned, so remembering it makes the clear survive both.
 	collabChildAgents map[string]string // child thread ID -> child agent ID
-	// collabChildItems records the child agent id that owns a streamed item
+	// collabChildItems records the child agent ID that owns an item
 	// (commandExecution/fileChange itemID -> childID). Populated when
 	// persistItemStartedChild routes the item/started to a child; consulted by
 	// the output-delta handlers (which carry only an itemID, no threadID) so a
-	// subagent's command output streams to its own transcript, not the parent's.
+	// subagent's command output contributes to its own counter.
 	// Guarded by mu.
 	collabChildItems map[string]string
 	// collabChildTitles records the spawn prompt's first line per child thread
@@ -168,7 +173,7 @@ type codexInterruptCall struct {
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
-func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Codex doesn't have third-party provider detection or model/effort
@@ -205,8 +210,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		workingDir:  opts.WorkingDir,
 		sink:        sink,
 	}
-	// Reset the thinking-token estimate centrally at every frontend-clear boundary.
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -325,6 +329,8 @@ func (a *CodexAgent) startOrResumeThread(
 ) (codexThreadResult, error) {
 	if resumeSessionID != "" {
 		threadParams["threadId"] = resumeSessionID
+		// LeapMux reads transcript history from its own database.
+		threadParams["excludeTurns"] = true
 		return a.resumeThread(threadParams, resumeSessionID, timeout)
 	}
 	thread, err := a.startThread(threadParams, timeout)
@@ -548,6 +554,24 @@ func (a *CodexAgent) Interrupt() error {
 	return a.interruptCodexTurn(threadID, turnID)
 }
 
+// Stop retains unfinished model output before it stops the process.
+func (a *CodexAgent) Stop() {
+	a.processBase.Stop()
+	a.flushAllCodexGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
+	a.sink.ReportProgress(ResetProgress())
+}
+
+// Wait retains unfinished model output after an unexpected process exit.
+func (a *CodexAgent) Wait() error {
+	err := a.processBase.Wait()
+	completion := a.processExitCompletion()
+	a.flushAllCodexGeneration(completion)
+	a.persistIncompleteCodexTools("", true, completion)
+	a.sink.ReportProgress(ResetProgress())
+	return err
+}
+
 func (a *CodexAgent) interruptCodexTurn(threadID, turnID string) error {
 	if threadID == "" || turnID == "" {
 		return nil
@@ -616,6 +640,8 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
+	a.flushAllCodexGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
 
 	a.mu.Lock()
 	a.applyThreadResult(thread)
@@ -624,8 +650,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.turnAssistantText = ""
-	a.streamingPlan = false
 	clear(a.reasoningStreamKind)
+	clear(a.reasoningRetainedKind)
+	clear(a.reasoningSummaryIndex)
+	clear(a.reasoningSummarySeen)
+	clear(a.reasoningSummaryBreak)
 	// Clear the collab child index: a new thread means prior child threads are
 	// gone. Entries are otherwise only removed on a final collab status.
 	clear(a.collabThreadSpans)
@@ -634,13 +663,16 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
 	clear(a.childTurnStartAcks)
+	clear(a.incompleteTools)
+	a.incompleteToolOrder = 0
+	a.mu.Unlock()
+	a.generationBuffer.Reset()
+	a.mu.Lock()
+	clear(a.childGenerationBuffers)
+	clear(a.unresolvedChildBuffers)
 	a.mu.Unlock()
 	a.PublishTurnActive()
-	// The thread was replaced; drop any in-flight thinking-token estimate so it
-	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
-	// turn/started also resets, but resetting here keeps every provider's context
-	// clear consistent rather than relying on that follow-up.
-	a.thinkingTokens.reset()
+	a.sink.ReportProgress(ResetProgress())
 
 	// A goal belongs to a THREAD, and this call replaced the thread. Codex
 	// sends thread/goal/cleared only after a real removal and on a resume, so a
@@ -662,7 +694,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 //
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block
 // on a slow transport.
-func (a *CodexAgent) PublishTurnActive() {
+func (a *CodexAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnID != ""
 	seq := a.nextTurnSeq()
@@ -670,7 +702,7 @@ func (a *CodexAgent) PublishTurnActive() {
 	// Codex tracks collab child turns in childTurnIDs, deliberately not here: a
 	// child's own run is its background-task registry row, and the Worker reads
 	// that for the child tab. This is the MAIN thread's turn only.
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // SendInput starts a new turn with the current settings. It refuses an active
@@ -1037,6 +1069,10 @@ func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier st
 		"cwd":            cwd,
 		"approvalPolicy": approvalPolicy,
 		"sandbox":        sandboxPolicy,
+		// Request detailed summaries so app-server emits reasoning summary items.
+		"config": map[string]interface{}{
+			"model_reasoning_summary": "detailed",
+		},
 	}
 	if !UsesAccountDefaultModel(model) {
 		params["model"] = model

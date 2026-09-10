@@ -34,7 +34,7 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	released := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		select {
 		case <-released:
 		case <-ctx.Done():
@@ -73,7 +73,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	releaseAfter := 150 * time.Millisecond
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		time.Sleep(releaseAfter)
 		return map[string]string{}, nil
 	}
@@ -133,7 +133,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}
 	defer release()
 
-	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		startCalled <- opts
 		select {
 		case <-releaseStart:
@@ -257,7 +257,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	}, sink)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
-	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID, false)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "startup-relaunch-queued", AgentID: agentID, Text: "after startup relaunch",
@@ -311,7 +311,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}
 	defer release()
 
-	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		startCalled <- opts
 		select {
 		case <-releaseStart:
@@ -720,7 +720,7 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		startCalled <- opts
 		return opts.Options, nil
 	}
@@ -762,7 +762,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	blocked := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		select {
 		case <-blocked:
 		case <-ctx.Done():
@@ -1007,7 +1007,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	// ("Starting Claude Code…") and waits there — the registry entry
 	// then holds that phase label for replay.
 	blocked := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		select {
 		case <-blocked:
 		case <-ctx.Done():
@@ -1074,7 +1074,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return map[string]string{}, nil
 	}
@@ -1204,7 +1204,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("forced startup failure")
 	}
 
@@ -1255,7 +1255,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 
 	var startCalls sync.WaitGroup
 	startCalls.Add(1)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		defer startCalls.Done()
 		return nil, errors.New("forced startup failure: boom")
 	}
@@ -1325,7 +1325,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 
@@ -1465,13 +1465,13 @@ func TestRelaunchForStartupSettingsChange_AFailedLaunchReportsNoProcess(t *testi
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, assert.AnError
 	}
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
-	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1", false)
 	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
@@ -1498,7 +1498,7 @@ func TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess(t *testi
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
-	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1", false)
 	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)

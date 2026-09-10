@@ -40,6 +40,13 @@ type processBase struct {
 
 	mu      sync.Mutex
 	stopped bool
+	// processExited freezes exitCompletion at the instant cmd.Wait returns.
+	// A later cleanup call must not reclassify a natural failure as a stop.
+	processExited  bool
+	exitCompletion MessageCompletion
+	// intentionalStop is set before a provider sends its graceful stop request.
+	// Wait can then classify retained content while Stop still owns that request.
+	intentionalStop atomic.Bool
 
 	// turnSeqSource issues the ordering token that rides every publish of this
 	// provider's turn flag. It lives here so all five providers get it from one
@@ -71,60 +78,39 @@ type processBase struct {
 	apiTimeout   time.Duration // timeout for JSON-RPC requests
 	turnToolUses int           // number of tool uses in the current turn
 
-	// cumulativeBroadcast tracks the length of cumulative text already
-	// broadcast for a given span (typically a tool call), keyed by span id.
-	// Providers whose in-progress events carry the full running output (Pi's
-	// `tool_execution_update.partialResult`, ACP's `tool_call_update.content`
-	// when the server sends cumulative deltas) record the prior broadcast
-	// length here so they can ship only the new tail. Guarded by p.mu.
-	cumulativeBroadcast map[string]int
+	// cumulativeOutput tracks cumulative snapshots and limited tails per scope.
+	// Guarded by p.mu.
+	cumulativeOutput map[string]*CumulativeOutputCounter
 }
 
-// recordCumulativeLength records the new cumulative text length for spanID
-// and returns (prevLen, reset) where reset is true when the stream rotated
-// (newLen < prevLen). Assumes the producer's stream is append-only; current
-// callers (Pi `partialResult`, ACP `tool_call_update.content`) satisfy this
-// contract. Safe for concurrent use; takes p.mu briefly.
-func (p *processBase) recordCumulativeLength(spanID string, newLen int) (prevLen int, reset bool) {
+// observeCumulativeOutput records one cumulative output snapshot.
+func (p *processBase) observeCumulativeOutput(scopeID, value string, limited bool) CumulativeOutputObservation {
 	p.mu.Lock()
-	if p.cumulativeBroadcast == nil {
-		p.cumulativeBroadcast = make(map[string]int)
+	defer p.mu.Unlock()
+	if p.cumulativeOutput == nil {
+		p.cumulativeOutput = make(map[string]*CumulativeOutputCounter)
 	}
-	prevLen = p.cumulativeBroadcast[spanID]
-	p.cumulativeBroadcast[spanID] = newLen
-	p.mu.Unlock()
-	if newLen < prevLen {
-		return 0, true
+	counter := p.cumulativeOutput[scopeID]
+	if counter == nil {
+		counter = &CumulativeOutputCounter{}
+		p.cumulativeOutput[scopeID] = counter
 	}
-	return prevLen, false
+	return counter.Observe(value, limited)
 }
 
-// recordCumulativeDelta is the string-tail variant of recordCumulativeLength
-// for callers that already hold the full cumulative text. Returns the new
-// tail since the previous call, or "" when there is no new content; on a
-// stream reset the entire `full` is returned.
-func (p *processBase) recordCumulativeDelta(spanID, full string) string {
-	prevLen, reset := p.recordCumulativeLength(spanID, len(full))
-	if reset {
-		return full
-	}
-	return full[prevLen:]
-}
-
-// clearCumulativeDelta drops the cumulative-broadcast bookkeeping for spanID,
-// typically after the span closes. Caller must NOT hold p.mu.
-func (p *processBase) clearCumulativeDelta(spanID string) {
+// clearCumulativeOutput removes one completed output scope.
+func (p *processBase) clearCumulativeOutput(scopeID string) {
 	p.mu.Lock()
-	delete(p.cumulativeBroadcast, spanID)
+	delete(p.cumulativeOutput, scopeID)
 	p.mu.Unlock()
 }
 
 // resetCumulativeDeltas drops all cumulative-broadcast bookkeeping, used at
 // turn boundaries to recover from aborted streams that never sent a
 // terminating event. Caller must NOT hold p.mu.
-func (p *processBase) resetCumulativeDeltas() {
+func (p *processBase) resetCumulativeOutput() {
 	p.mu.Lock()
-	clear(p.cumulativeBroadcast)
+	clear(p.cumulativeOutput)
 	p.mu.Unlock()
 }
 
@@ -167,6 +153,7 @@ func (p *processBase) SendRawInput(data []byte) error {
 // (kills orphaned grandchildren too), then via context cancellation as a
 // fallback (SIGTERM + WaitDelay).
 func (p *processBase) Stop() {
+	p.noteIntentionalStop()
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
@@ -195,6 +182,37 @@ func (p *processBase) IsStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stopped
+}
+
+func (p *processBase) processExitCompletion() MessageCompletion {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.processExited {
+		return p.exitCompletion
+	}
+	if p.intentionalStop.Load() || p.stopped {
+		return MessageCompletionInterrupted
+	}
+	return MessageCompletionError
+}
+
+func (p *processBase) noteIntentionalStop() {
+	p.mu.Lock()
+	if !p.processExited {
+		p.intentionalStop.Store(true)
+	}
+	p.mu.Unlock()
+}
+
+func (p *processBase) recordProcessExit(err error) {
+	p.mu.Lock()
+	p.waitErr = err
+	p.processExited = true
+	p.exitCompletion = MessageCompletionError
+	if p.intentionalStop.Load() || p.stopped {
+		p.exitCompletion = MessageCompletionInterrupted
+	}
+	p.mu.Unlock()
 }
 
 // Interrupt is a default no-op implementation. Providers that have a
@@ -549,7 +567,7 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 		)
 	}
 
-	p.waitErr = p.cmd.Wait()
+	p.recordProcessExit(p.cmd.Wait())
 	if err := p.jobObject.Close(); err != nil {
 		slog.Debug("job object close failed", "agent_id", p.agentID, "error", err)
 	}

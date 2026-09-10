@@ -94,7 +94,7 @@ type ClaudeCodeAgent struct {
 	effort     string
 	workingDir string
 	homeDir    string
-	sink       OutputSink
+	sink       ProviderServices
 
 	// Claude Code-specific state.
 	contextUsage    *contextUsageSnapshot
@@ -255,7 +255,7 @@ func claudeAgentEnv(environ []string, loginShell bool) []string {
 // StartClaudeCode returns immediately without waiting for output. The session ID is
 // extracted later from the init message when the first user message triggers
 // output from Claude.
-func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 	TraceStartupPhase(opts.AgentID, "claude_begin")
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -345,7 +345,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
-		sink:                   sink,
+		sink:                   newModelProgressResetSink(sink),
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 		alwaysThinking:         AlwaysThinkingOn,
@@ -675,6 +675,17 @@ func (r effortResolver) reconcileOmittedLaunch(model, effort string) map[string]
 	return r.reconciledEffortFlags(model, effort, "")
 }
 
+func (a *ClaudeCodeAgent) Stop() {
+	a.processBase.Stop()
+	a.sink.ReportProgress(ResetProgress())
+}
+
+func (a *ClaudeCodeAgent) Wait() error {
+	err := a.processBase.Wait()
+	a.sink.ReportProgress(ResetProgress())
+	return err
+}
+
 // Interrupt aborts the current turn by sending the Claude Code
 // interrupt control_request. This matches the wire format the
 // frontend's buildInterruptRequest produced before the dedicated RPC,
@@ -710,17 +721,18 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 // It re-reads rather than taking a value, so a caller cannot publish something
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block on
-// a slow transport.//
+// a slow transport.
+//
 // seq comes from the SAME critical section that reads the flag. Two goroutines
 // reach the sink unordered -- the reader that ends a turn, and the drain that a
 // refusal answers -- so without it the older value can land second and latch a
 // turn that is over.
-func (a *ClaudeCodeAgent) PublishTurnActive() {
+func (a *ClaudeCodeAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // armTurn records a turn that the CLI runs and this Worker did not start. The
@@ -793,7 +805,7 @@ func (a *ClaudeCodeAgent) noteSessionIdle() {
 }
 
 // disarmTurn records the end of the turn and publishes it, the way armTurn
-// records the start. OutputSink.SetTurnActive requires the mutation and the
+// records the start. ProviderServices.SetTurnState requires the mutation and the
 // publish at ONE site, and the falling edge kept them twenty lines apart in the
 // middle of the output handler.
 //
@@ -831,7 +843,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	// across a broadcast. It re-reads the flag, so the error paths below -- and a
 	// steer, which opens no turn -- publish the unchanged value, and the Worker
 	// reconciles rather than moves. That covers the busy refusal for this
-	// provider, which the other four publish explicitly.
+	// provider, which the other providers publish explicitly.
 	defer a.PublishTurnActive()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -2573,7 +2585,7 @@ func (r effortResolver) resolveEffort(model, effort string) string {
 func init() {
 	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+		func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 			return StartClaudeCode(ctx, opts, sink)
 		},
 		claudeCodeAvailableModels,

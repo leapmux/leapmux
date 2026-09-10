@@ -387,13 +387,6 @@ const claudeCodePlugin: Provider = {
   spanRole: claudeSpanRole,
   rateLimitsFromMessage: claudeRateLimitsFromMessage,
   contextUsageFromMessage: claudeContextUsageFromMessage,
-  // Claude's thinking-token counter is driven by real per-phase telemetry (the
-  // worker relays Claude's own estimated_tokens), not the streamed-text estimator
-  // the other providers use. Every committed AGENT message ends a phase, so always
-  // clear -- and unlike the estimator providers we cannot gate on parentSpanId,
-  // since a system-injected tool_use_id gives a main-agent message a non-empty
-  // parentSpanId that does not mark a subagent.
-  clearsThinkingTokensForMessage: () => true,
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
   toolResultImages: claudeToolResultImages,

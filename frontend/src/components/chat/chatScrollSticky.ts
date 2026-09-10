@@ -35,7 +35,7 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     if (!el || el.clientHeight === 0)
       return false
     // Route through the SHARED programmatic write so its write-time bookkeeping runs for
-    // the restick too -- the highest-frequency programmatic write during streaming: the
+    // the restick too -- the highest-frequency programmatic write during an active turn: the
     // direction/last-position baseline advances at write time (a user wheel interleaving
     // before the echo would otherwise measure from the stale pre-stick baseline and
     // mis-infer its direction), and a stale-native repin shift is disarmed. Writing

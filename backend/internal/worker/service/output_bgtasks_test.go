@@ -22,7 +22,7 @@ import (
 // setupBgTaskTest provisions a worker service with one Claude-code agent and
 // returns the sink, the agent_id, and a row-listing helper bound to that agent.
 // Mirrors setupTodoTest.
-func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentBackgroundTask) {
+func setupBgTaskTest(t *testing.T) (agent.ProviderServices, string, func() []db.AgentBackgroundTask) {
 	t.Helper()
 	_, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	return sink, ownerID, listRows
@@ -33,7 +33,7 @@ func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentB
 // the same: the cap limits what LoadBackgroundTasks returns, and a row that
 // carries a child transcript stays in the table after it leaves that list, so
 // listRows (the table) and displayedRowKeys (the list) disagree by design.
-func setupBgTaskTestWithService(t *testing.T) (*Service, agent.OutputSink, string, func() []db.AgentBackgroundTask) {
+func setupBgTaskTestWithService(t *testing.T) (*Service, agent.ProviderServices, string, func() []db.AgentBackgroundTask) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)

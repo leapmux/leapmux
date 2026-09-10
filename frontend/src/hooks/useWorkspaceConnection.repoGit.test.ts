@@ -208,14 +208,11 @@ describe('useWorkspaceConnection worker-offline sweep', () => {
     }
   })
 
-  it('still drops its ACTIVE agents to INACTIVE and clears their streaming text', () => {
-    const { dispose, view, chatStore } = mountConnection()
+  it('still drops its ACTIVE agents to INACTIVE', () => {
+    const { dispose, view } = mountConnection()
     try {
-      chatStore.streamingText.set('a1', 'half a sentence')
       streamOpts().onWorkerOnline(WORKER, false)
-
       expect(view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
-      expect(chatStore.streamingText.get('a1'), 'the process that would finish it is gone').toBe('')
     }
     finally {
       dispose()

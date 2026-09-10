@@ -28,7 +28,7 @@ func decodeNotifWrapper(t *testing.T, content []byte, compression leapmuxv1.Cont
 // the sink + a row-listing helper bound to that agent. Used by the
 // notification-threading tests below to remove repeated CreateAgent /
 // NewSink / ListMessagesByAgentID boilerplate.
-func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent.OutputSink, func() []db.Message) {
+func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent.ProviderServices, func() []db.Message) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)

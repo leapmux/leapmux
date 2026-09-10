@@ -17,12 +17,10 @@ describe('usechatscroll programmatic-write pagination guard', () => {
       div.setClientHeight(500)
       div.setScrollTop(4500)
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const [streamingText] = createSignal('')
       let olderLoads = 0
       const hook = useChatScroll({
         virtualizer: makeStubVirtualizer(),
         messages,
-        streamingText,
         hasOlderMessages: () => true,
         onLoadOlderMessages: () => { olderLoads++ },
       })
@@ -49,12 +47,10 @@ describe('usechatscroll programmatic-write pagination guard', () => {
       div.setClientHeight(500)
       div.setScrollTop(2000)
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const [streamingText] = createSignal('')
       let newerLoads = 0
       const hook = useChatScroll({
         virtualizer: makeStubVirtualizer(),
         messages,
-        streamingText,
         hasNewerMessages: () => true,
         onLoadNewerMessages: () => { newerLoads++ },
       })
@@ -91,12 +87,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setClientHeight(500)
           div.setScrollHeight(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
           })
@@ -122,12 +116,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setClientHeight(500)
           div.setScrollHeight(0) // content fits the viewport -> non-scrollable
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const loadOrder: string[] = []
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => loadOrder.push('older'),
@@ -160,12 +152,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setClientHeight(500)
           div.setScrollHeight(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           let loads = 0
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasOlderMessages: () => false,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { loads++ },
@@ -195,12 +185,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           const { virt, setTotal } = makeGrowableVirtualizer()
           setTotal(300) // totalHeight > 0 keeps the hidden-page auto-load inert
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const loadOrder: string[] = []
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => loadOrder.push('older'),
@@ -240,12 +228,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           let remaining = 25
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -286,12 +272,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           let remaining = 3
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -345,12 +329,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -420,12 +402,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true, // history exists AND the above-buffer (500px) is
             hasNewerMessages: () => false, // deficient (< 1250) -- the OLD code would page it
             fetchingOlder,
@@ -484,12 +464,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true, // unbounded history: any stop is the scrollable
             hasNewerMessages: () => false, // gate, not exhaustion
             fetchingOlder,
@@ -553,12 +531,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             fetchingOlder,
@@ -617,12 +593,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => true, // windowed away from the live tail
             fetchingOlder,
@@ -670,12 +644,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
             scrollTopForAnchor: () => null,
           }
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
           })
@@ -719,12 +691,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingNewer, setFetchingNewer] = createSignal(false)
-          const [streamingText] = createSignal('')
           let newerLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             fetchingNewer,
             onLoadNewerMessages: () => {
@@ -784,13 +754,11 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let remaining = 30
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -845,12 +813,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -907,12 +873,10 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
             scrollTopForAnchor: () => null,
           }
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false, // forceScrollToBottom just sticks (no jump)
             onLoadOlderMessages: () => { olderLoads++ },
@@ -969,12 +933,10 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
           const { virt, setTotal } = makeGrowableVirtualizer()
           setTotal(3000)
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage, {} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1010,13 +972,11 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [hasOlder, setHasOlder] = createSignal(true)
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           let remainingOlderPages = 30
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => hasOlder(),
             hasNewerMessages: () => false,
             fetchingOlder,
@@ -1077,13 +1037,11 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
           // stubs whose null anchor must keep the auto-advance UN-suppressed.
           const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           let newerLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1121,12 +1079,10 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
           div.setScrollTop(0)
           const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1162,12 +1118,10 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
           const { virt, setTotal } = makeGrowableVirtualizer()
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
           const [hasOlder, setHasOlder] = createSignal(false)
-          const [streamingText] = createSignal('')
           let olderLoads = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => hasOlder(),
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1210,13 +1164,11 @@ describe('usechatscroll scroll pagination dispatch', () => {
       div.setScrollHeight(600)
       div.setScrollTop(0)
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const [streamingText] = createSignal('')
       let olderLoads = 0
       let newerLoads = 0
       const hook = useChatScroll({
         virtualizer: makeStubVirtualizer(),
         messages,
-        streamingText,
         hasOlderMessages: () => true,
         hasNewerMessages: () => true,
         onLoadOlderMessages: () => { olderLoads++ },
@@ -1240,13 +1192,11 @@ describe('usechatscroll scroll pagination dispatch', () => {
       div.setScrollHeight(5000)
       div.setScrollTop(4500) // pinned to the bottom, far from the top
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const [streamingText] = createSignal('')
       let olderLoads = 0
       let newerLoads = 0
       const hook = useChatScroll({
         virtualizer: makeStubVirtualizer(),
         messages,
-        streamingText,
         hasOlderMessages: () => true,
         hasNewerMessages: () => true,
         onLoadOlderMessages: () => { olderLoads++ },

@@ -15,7 +15,7 @@ import (
 
 // newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe. The read
 // end drains so a long command cannot fill the pipe buffer.
-func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
+func newClaudeGoalAgent(t *testing.T, sink ProviderServices) *ClaudeCodeAgent {
 	t.Helper()
 	readPipe, writePipe, err := os.Pipe()
 	require.NoError(t, err)

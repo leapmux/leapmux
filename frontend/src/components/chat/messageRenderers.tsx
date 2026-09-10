@@ -5,12 +5,11 @@ import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ControlResponseDeriver } from './persistedControlResponse'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
@@ -22,11 +21,10 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
-import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
-import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { inlineFlex } from '~/styles/shared.css'
+import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
 import { markdownContent } from './markdownEditor/markdownContent.css'
-import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
+import { renderMarkdownForContext } from './markdownRendering'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
@@ -35,36 +33,11 @@ import {
   toolInputText,
   toolUseIcon,
 } from './toolStyles.css'
+import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
 
-/**
- * The per-row markdown cache namespace, which carries the syntax theme
- * generation.
- *
- * A row's cached HTML holds Shiki's baked token colours, so it is wrong after a
- * theme change rather than merely old. The module-level cache is cleared
- * outright; this one is per-row and short-lived, so orphaning it by namespace is
- * cheaper than reaching into every row to evict.
- */
-export function markdownCacheNamespace(): string {
-  return `markdown-html:${syntaxThemeGeneration()}`
-}
+export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHighlighting } from './markdownRendering'
 
 const logger = createLogger('messageRenderers')
-
-/**
- * Options for a per-message UI-state write, so the host can tell a user gesture
- * from a renderer-initiated write.
- */
-export interface MessageUiWriteOptions {
-  /**
-   * The write was NOT initiated by a user gesture on the row (e.g. a stream-start
-   * auto-expand effect). The host must not treat it as a toggle whose row should be
-   * scroll-pinned: the reader's focus is wherever they are reading, so the default
-   * viewport-midpoint anchor — which keeps THAT stationary — must win over a
-   * row-top pin on the written row.
-   */
-  programmatic?: boolean
-}
 
 /**
  * Context passed to renderers from MessageBubble.
@@ -114,8 +87,6 @@ export interface RenderContext {
   spanType?: string
   /** Current message span id. */
   spanId?: string
-  /** Live streamed Codex span content for command, fileChange, and reasoning items. */
-  commandStream?: () => CommandStreamSegment[] | undefined
   /**
    * Live progress for THIS row's still-running tool (elapsed time, subagent
    * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
@@ -128,7 +99,7 @@ export interface RenderContext {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
   /**
    * Hidden premeasurement render pass. Renderers should keep layout-relevant
    * structure but skip non-geometry work such as timers, copy chrome, worker
@@ -204,71 +175,6 @@ export function getToolResultExpanded(context: RenderContext | undefined): boole
   return getExpandedForKey(context, MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
 }
 
-export function shouldPauseSyntaxHighlighting(context: RenderContext | undefined): boolean {
-  return context?.premeasureMode === true || context?.syntaxHighlightingPaused?.() === true || isTextSelectionActive(context)
-}
-
-function isTextSelectionActive(context: RenderContext | undefined): boolean {
-  return context?.textSelectionActive?.() === true
-}
-
-function cachedHighlightedMarkdown(
-  text: string,
-  context: RenderContext | undefined,
-): string | undefined {
-  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
-  if (rowCached !== undefined)
-    return rowCached
-  const sharedCached = getCachedMarkdownHtml(text)
-  return sharedCached === undefined ? undefined : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
-}
-
-function rememberDisplayedMarkdown(
-  context: RenderContext | undefined,
-  text: string,
-  html: string,
-): string {
-  return setCachedRenderValueForString(context, 'markdown-displayed', text, html)
-}
-
-export function renderMarkdownForContext(text: string, context: RenderContext | undefined): string {
-  if (context?.premeasureMode)
-    return cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text))
-  if (isTextSelectionActive(context)) {
-    const displayed = getCachedRenderValueForString<string>(context, 'markdown-displayed', text)
-    if (displayed !== undefined)
-      return displayed
-    const highlighted = cachedHighlightedMarkdown(text, context)
-    return rememberDisplayedMarkdown(
-      context,
-      text,
-      highlighted ?? cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text)),
-    )
-  }
-  if (context?.syntaxHighlightingPaused?.()) {
-    const highlighted = cachedHighlightedMarkdown(text, context)
-    if (highlighted !== undefined)
-      return rememberDisplayedMarkdown(context, text, highlighted)
-    const html = renderMarkdownCachedOrPlain(text)
-    const cached = getCachedMarkdownHtml(text)
-    return rememberDisplayedMarkdown(
-      context,
-      text,
-      cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
-    )
-  }
-  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
-  if (rowCached !== undefined)
-    return rememberDisplayedMarkdown(context, text, rowCached)
-  const html = renderMarkdown(text, false, context?.rowOffscreen)
-  const cached = getCachedMarkdownHtml(text)
-  return rememberDisplayedMarkdown(
-    context,
-    text,
-    cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
-  )
-}
-
 export function useSharedExpandedState(
   getContext: () => RenderContext | undefined,
   key: MessageUiKey,
@@ -276,16 +182,16 @@ export function useSharedExpandedState(
   // context's expandAgentThoughts pref); a renderer with a per-row default passes
   // its own thunk to override it.
   initial: () => boolean = () => messageUiDefault(key, { expandAgentThoughts: getContext()?.expandAgentThoughts }),
-): [() => boolean, (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => void] {
+): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
   const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? initial()
-  const setExpanded = (value: boolean | ((prev: boolean) => boolean), opts?: MessageUiWriteOptions) => {
+  const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
     const ctx = getContext()
     const next = typeof value === 'function'
       ? (value as (prev: boolean) => boolean)(expanded())
       : value
     if (ctx?.setMessageUiState)
-      ctx.setMessageUiState(key, next, opts)
+      ctx.setMessageUiState(key, next)
     else
       setLocalExpanded(next)
   }
@@ -449,11 +355,25 @@ export function renderMessageContent(
   context?: RenderContext,
   category?: MessageCategory,
   agentProvider?: AgentProvider,
+  messageCompletion?: MessageCompletion,
 ): JSX.Element {
   try {
     const parsed = typeof parsedOrRawJson === 'string'
       ? JSON.parse(parsedOrRawJson)
       : parsedOrRawJson
+
+    const assembled = parseAssembledMessage(parsed)
+    if (assembled) {
+      const text = appendCompletionMarker(assembled.text, messageCompletionFromProto(messageCompletion) ?? assembled.completion)
+      switch (assembled.kind) {
+        case 'reasoning':
+          return <ThinkingBubble text={text} icon={Brain} label="Thinking" stateKey={MESSAGE_UI_KEY.THINKING} context={context} />
+        case 'plan':
+          return <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText={text} context={context} />
+        case 'text':
+          return <MarkdownText text={text} context={context} />
+      }
+    }
 
     // Dispatch strictly by the message's own provider -- no Claude fallback. An
     // unregistered/UNSPECIFIED provider yields no plugin, so we drop to the
@@ -462,8 +382,18 @@ export function renderMessageContent(
     // `unsupported_provider`, which MessageBubble surfaces explicitly).
     const plugin = pluginFor(agentProvider)
     const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
-    if (result !== null)
+    if (result !== null) {
+      const marker = completionMarker(messageCompletionFromProto(messageCompletion) ?? parseProviderMessageCompletion(parsed))
+      if (marker) {
+        return (
+          <>
+            {result}
+            <div role="note">{marker}</div>
+          </>
+        )
+      }
       return result
+    }
 
     // A persisted control-response row is provider-neutral in the renderer layer: every plugin's
     // classify maps it to `control_response`, and the plugin's controlResponseDisplay (when set)
@@ -485,5 +415,14 @@ export function renderMessageContent(
       return <UserContentMessage parsed={parsed} context={context} />
   }
   catch (err) { logger.warn('Failed to render message content:', err) }
-  return <span>{typeof parsedOrRawJson === 'string' ? parsedOrRawJson : JSON.stringify(parsedOrRawJson)}</span>
+  const fallback = <span>{typeof parsedOrRawJson === 'string' ? parsedOrRawJson : JSON.stringify(parsedOrRawJson)}</span>
+  const marker = completionMarker(messageCompletionFromProto(messageCompletion))
+  return marker
+    ? (
+        <>
+          {fallback}
+          <div role="note">{marker}</div>
+        </>
+      )
+    : fallback
 }

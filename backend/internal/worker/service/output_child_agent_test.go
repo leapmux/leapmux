@@ -24,7 +24,7 @@ import (
 // tests; this helper keeps each test focused on the behavior under test. The
 // sink is NOT registered with the agent manager (these tests drive the sink
 // directly), unlike setupAgentWithWatcher.
-func setupRootSink(t *testing.T, rootID string) (*Service, agent.OutputSink) {
+func setupRootSink(t *testing.T, rootID string) (*Service, agent.ProviderServices) {
 	t.Helper()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
@@ -39,7 +39,7 @@ func setupRootSink(t *testing.T, rootID string) (*Service, agent.OutputSink) {
 // newRootAgent adds a SECOND root to an existing service, so a test can ask one
 // root's sink about the other's children. The worker keeps every root in one
 // agents table, which is what makes an unscoped read answer across them.
-func newRootAgent(t *testing.T, svc *Service, rootID string) agent.OutputSink {
+func newRootAgent(t *testing.T, svc *Service, rootID string) agent.ProviderServices {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
@@ -382,11 +382,11 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	rootSink := sink.(*agentOutputSink)
+	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
 	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
 	require.NoError(t, err)
-	retainedChildSink := sink.ChildSink(childID).(*agentOutputSink)
+	retainedChildSink := requireChildOutputSink(t, rootSink, childID)
 	retainedChildSink.OpenSpan("item-1", "span-1")
 
 	// Final close reaps the registry entry and prunes the cached child sink
@@ -426,7 +426,7 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	rootSink := sink.(*agentOutputSink)
+	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
 	closedID, err := sink.EnsureChildAgent("span-1", "task-1", "closed-child")
 	require.NoError(t, err)
@@ -434,8 +434,8 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Drive ChildSink for both so both are cached on the root sink.
-	closedSink := sink.ChildSink(closedID).(*agentOutputSink)
-	survivingSink := sink.ChildSink(survivingID).(*agentOutputSink)
+	closedSink := requireChildOutputSink(t, rootSink, closedID)
+	survivingSink := requireChildOutputSink(t, rootSink, survivingID)
 
 	// Final close of one child prunes ONLY that child's cached sink.
 	sink.CleanupChildAgent(closedID)
@@ -447,6 +447,10 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	assert.False(t, closedPresent, "closed child's cached sink pruned from the parent")
 	require.True(t, survivingPresent, "surviving sibling stays cached")
 	assert.Same(t, survivingSink, surviving, "surviving sink is the same pointer the parent cached")
+	closedSink.progress.mu.Lock()
+	progressClosed := closedSink.progress.closed
+	closedSink.progress.mu.Unlock()
+	assert.True(t, progressClosed, "closed child's progress timer is stopped")
 
 	// The closed child's per-agent state is reclaimed; the sibling's survives.
 	_, _, closedTracked := svc.Output.trackers.get(closedID)
@@ -469,17 +473,17 @@ func TestCleanupChildAgent_PrunesGrandchildFromIntermediateParent(t *testing.T) 
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	rootSink := sink.(*agentOutputSink)
+	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
 	// child -> grandchild (depth 2). The grandchild's cached sink lives on the
 	// child's childSinks, not the root's.
 	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
 	require.NoError(t, err)
-	childSink := sink.ChildSink(childID).(*agentOutputSink)
+	childSink := requireChildOutputSink(t, rootSink, childID)
 
 	grandchildID, err := childSink.EnsureChildAgent("span-2", "task-2", "grandchild")
 	require.NoError(t, err)
-	grandchildSink := childSink.ChildSink(grandchildID).(*agentOutputSink)
+	grandchildSink := requireChildOutputSink(t, childSink, grandchildID)
 	_ = grandchildSink
 
 	// Close the grandchild via the intermediate parent (childSink).
@@ -543,11 +547,11 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	rootSink := sink.(*agentOutputSink)
+	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
 	childID, err := sink.EnsureChildAgent("span-1", "task-1", "child")
 	require.NoError(t, err)
-	first := sink.ChildSink(childID).(*agentOutputSink)
+	first := requireChildOutputSink(t, rootSink, childID)
 	firstTracker := first.tracker
 
 	// Final close: registry entry deleted, cached sink pruned.
@@ -557,7 +561,7 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 
 	// Re-resolve the child sink. The registry entry is gone, so childTracker
 	// creates a fresh one.
-	second := sink.ChildSink(childID).(*agentOutputSink)
+	second := requireChildOutputSink(t, rootSink, childID)
 
 	// The re-cached sink's tracker is a distinct allocation that the registry
 	// owns and the orphan sweep reaches.
@@ -699,12 +703,12 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		end  func(t *testing.T, sink agent.OutputSink)
+		end  func(t *testing.T, sink agent.ProviderServices)
 	}{
 		{
 			// Claude's handleClaudeTaskNotification order.
 			name: "status update then close",
-			end: func(t *testing.T, sink agent.OutputSink) {
+			end: func(t *testing.T, sink agent.ProviderServices) {
 				require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusStopped, ""))
 				require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusStopped))
 			},
@@ -712,7 +716,7 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 		{
 			// Codex's collabAgentsStatesToRegistry order.
 			name: "final upsert then close",
-			end: func(t *testing.T, sink agent.OutputSink) {
+			end: func(t *testing.T, sink agent.ProviderServices) {
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 					RowKey: "task-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusStopped,
 				}))
@@ -722,7 +726,7 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 		{
 			// Pi's piApplySubagentEnd: no close at all.
 			name: "final upsert with no close",
-			end: func(t *testing.T, sink agent.OutputSink) {
+			end: func(t *testing.T, sink agent.ProviderServices) {
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 					RowKey: "task-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusStopped,
 				}))
@@ -731,7 +735,7 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 		{
 			// The ACP close-only path (Goose, OpenCode, Kilo).
 			name: "close only",
-			end: func(t *testing.T, sink agent.OutputSink) {
+			end: func(t *testing.T, sink agent.ProviderServices) {
 				require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusStopped))
 			},
 		},
@@ -1228,7 +1232,7 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 // registry, so every row that was there before leaves the capped display list.
 // Each row carries a child transcript, which is the case the cap must not
 // destroy.
-func fillSubagentDisplayCap(t *testing.T, sink agent.OutputSink, extra int) {
+func fillSubagentDisplayCap(t *testing.T, sink agent.ProviderServices, extra int) {
 	t.Helper()
 	for i := range extra {
 		_, err := sink.EnsureChildAgent(fmt.Sprintf("filler-span-%d", i), fmt.Sprintf("filler-%d", i), "filler")

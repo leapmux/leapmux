@@ -15,12 +15,18 @@ import { ThinkingIndicator } from './ThinkingIndicator'
 // synchronous test rAF stub would recurse into forever; `renderVisible` stubs
 // rAF to a no-op for the render and passes paused=true so the compass sim and
 // verb-rotation interval stay idle. Hidden cases render visible=false directly.
-function renderVisible(thinkingTokens?: number) {
+function renderVisible(thinkingTokens?: number, outputBytes?: number, outputBytesMinimum?: boolean) {
   const realRaf = globalThis.requestAnimationFrame
   globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
   try {
     return render(() => (
-      <ThinkingIndicator visible={true} paused={true} thinkingTokens={thinkingTokens} />
+      <ThinkingIndicator
+        visible={true}
+        paused={true}
+        thinkingTokens={thinkingTokens}
+        outputBytes={outputBytes}
+        outputBytesMinimum={outputBytesMinimum}
+      />
     ))
   }
   finally {
@@ -61,6 +67,24 @@ describe('thinking indicator token count', () => {
     expect(queryByText(/tokens/)).toBeNull()
   })
 
+  it('renders no output count when the byte count is absent or zero', () => {
+    const { queryByTestId: queryAbsent } = renderVisible(undefined, undefined)
+    expect(queryAbsent('thinking-output-count')).toBeNull()
+    const { queryByTestId: queryZero } = renderVisible(undefined, 0)
+    expect(queryZero('thinking-output-count')).toBeNull()
+  })
+
+  it('renders token and output counters together', () => {
+    const { getByText } = renderVisible(230, 1536)
+    expect(getByText('230 tokens')).toBeInTheDocument()
+    expect(getByText('1.5 KB')).toBeInTheDocument()
+  })
+
+  it('marks provider-limited output as a minimum', () => {
+    const { getByText } = renderVisible(undefined, 1536, true)
+    expect(getByText('≥1.5 KB')).toBeInTheDocument()
+  })
+
   it('keeps the count mounted through the row fade after hiding, then unmounts it', () => {
     vi.useFakeTimers()
     const realRaf = globalThis.requestAnimationFrame
@@ -68,18 +92,21 @@ describe('thinking indicator token count', () => {
     try {
       const [visible, setVisible] = createSignal(true)
       const { queryByText } = render(() => (
-        <ThinkingIndicator visible={visible()} paused={true} thinkingTokens={500} />
+        <ThinkingIndicator visible={visible()} paused={true} thinkingTokens={500} outputBytes={1536} />
       ))
       expect(queryByText('500 tokens')).toBeInTheDocument()
+      expect(queryByText('1.5 KB')).toBeInTheDocument()
 
       // The indicator hides (turn end). The count must NOT pop — it stays
       // mounted (frozen on its last value) to fade out with the collapsing row.
       setVisible(false)
       expect(queryByText('500 tokens')).toBeInTheDocument()
+      expect(queryByText('1.5 KB')).toBeInTheDocument()
 
       // Once the wrapper's opacity fade (ROW_FADE_MS) elapses, it unmounts.
       vi.advanceTimersByTime(motion.medium)
       expect(queryByText('500 tokens')).toBeNull()
+      expect(queryByText('1.5 KB')).toBeNull()
     }
     finally {
       globalThis.requestAnimationFrame = realRaf

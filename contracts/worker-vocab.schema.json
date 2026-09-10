@@ -11,6 +11,7 @@
     "goalStatusTokens",
     "goalTransitions",
     "workerAuthoredNotificationTypes",
+    "assembledMessage",
     "notificationThreadWrapperType",
     "codexRateLimitReachedTimeWindow",
     "modelSentinels"
@@ -60,6 +61,56 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
+    },
+    "assembledMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "types", "kinds", "completions", "metadata"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Type", "Kind", "Text", "Completion"],
+          "properties": {
+            "Type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Text": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Completion": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+          }
+        },
+        "types": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Assembled"],
+          "properties": { "Assembled": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } }
+        },
+        "kinds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Text", "Reasoning", "Plan"],
+          "properties": {
+            "Text": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Reasoning": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Plan": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+          }
+        },
+        "completions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Complete", "Interrupted", "Error"],
+          "properties": {
+            "Complete": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Interrupted": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Error": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Field"],
+          "properties": { "Field": { "type": "string", "pattern": "^_[a-z][a-z0-9_]*$" } }
+        }
       }
     },
     "notificationThreadWrapperType": {

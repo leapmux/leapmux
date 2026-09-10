@@ -23,13 +23,11 @@ describe('usechatscroll non-wheel scroll direction', () => {
     div.setClientHeight(500)
     div.setScrollTop(0)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     let olderLoads = 0
     let newerLoads = 0
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       hasOlderMessages: () => true,
       hasNewerMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
@@ -80,11 +78,9 @@ describe('usechatscroll keyboard navigation', () => {
     div.setClientHeight(500)
     div.setScrollTop(1000)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       hasNewerMessages: () => opts.hasNewer ?? false,
       hasOlderMessages: () => opts.hasOlder ?? false,
       onJumpToLatest: opts.onJumpToLatest,
@@ -142,11 +138,9 @@ describe('usechatscroll keyboard navigation', () => {
           // it (exactly the ordering useChatScroll relies on -- see repinToAnchor).
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -192,11 +186,9 @@ describe('usechatscroll keyboard navigation', () => {
           div.setScrollTop(1000)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -237,13 +229,11 @@ describe('usechatscroll keyboard navigation', () => {
           div.setScrollTop(0) // parked at the very top, as after a Home jump lands
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // A long (windowed) transcript: Home re-fetches the earliest page and REPLACES
           // the loaded window, so newer history still exists beyond it.
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             hasOlderMessages: () => false,
           })
@@ -293,11 +283,9 @@ describe('usechatscroll keyboard navigation', () => {
           div.setScrollTop(0)
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -462,8 +450,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
           div.setScrollHeight(600)
           const ctrl = makeAnchorVirt(0, 600)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -523,13 +510,11 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
             scrollTopForAnchor: () => 1100,
           }
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const [hasNewer, setHasNewer] = createSignal(false)
           const [agentStatus, setAgentStatus] = createSignal<AgentStatus | undefined>(AgentStatus.ACTIVE)
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             agentStatus,
             hasNewerMessages: hasNewer,
           })
@@ -585,12 +570,10 @@ describe('usechatscroll momentum reporting', () => {
     div.setClientHeight(500)
     div.setScrollTop(0)
     const [messages] = createSignal<AgentChatMessage[]>([])
-    const [streamingText] = createSignal('')
     let momentumReports = 0
     const hook = useChatScroll({
       virtualizer: makeStubVirtualizer(),
       messages,
-      streamingText,
       onMomentumScroll: () => { momentumReports++ },
     })
     hook.attachListRef(div.el)

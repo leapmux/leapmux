@@ -121,6 +121,8 @@ CREATE TABLE messages (
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
+    assembled_kind      INTEGER NOT NULL DEFAULT 0 CHECK (assembled_kind BETWEEN 0 AND 3),
+    completion          INTEGER NOT NULL DEFAULT 0 CHECK (completion BETWEEN 0 AND 3),
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
@@ -154,7 +156,7 @@ CREATE TABLE agent_input_queue_state (
     -- flight.
     restarting      INTEGER NOT NULL DEFAULT 0 CHECK (restarting IN (0, 1)),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
-    active_turn_kind INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_kind BETWEEN 0 AND 6),
+	active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
     active_input_id TEXT NOT NULL DEFAULT '',
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -496,7 +498,7 @@ CREATE TABLE agent_todos (
 );
 
 -- Background-task registry rows. Populated incrementally by the worker output
--- handler from provider-neutral OutputSink primitives so the sidebar survives
+-- handler from provider-neutral ProviderServices methods so the sidebar survives
 -- page reloads and cross-machine opens. One registry per ROOT main agent
 -- (owner_agent_id); rows for descendants at any depth live under the root.
 -- row_key is the provider linkage key (Claude task_id, Codex thread id, ACP

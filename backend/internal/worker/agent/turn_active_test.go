@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Every provider publishes "a turn is in flight" through OutputSink.SetTurnActive,
+// Every provider publishes "a turn is in flight" through ProviderServices.SetTurnState,
 // and the Worker derives the agent's busy state from it. That state drives the
 // thinking indicator, the Interrupt button and both close guards, and it has NO
 // fallback: the browser's transcript-scanning heuristic was deleted when this
@@ -31,7 +32,7 @@ func (nopWriteCloser) Close() error { return nil }
 
 // --- Claude Code -------------------------------------------------------------
 
-func newClaudeAgentWithStdin(sink OutputSink) (*ClaudeCodeAgent, *bytes.Buffer) {
+func newClaudeAgentWithStdin(sink ProviderServices) (*ClaudeCodeAgent, *bytes.Buffer) {
 	var buf bytes.Buffer
 	a := &ClaudeCodeAgent{
 		processBase: processBase{
@@ -127,10 +128,16 @@ func TestCodexTurnActive_StartedOpensAndCompletedCloses(t *testing.T) {
 
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
 	assert.Equal(t, []bool{true}, sink.TurnActives())
+	assert.Equal(t, []leapmuxv1.AgentInputKind{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, sink.TurnKinds(),
+		"Codex accepts turn/steer for a provider-started turn, so the queue must classify it as steerable")
 
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
 
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+	assert.Equal(t, []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+	}, sink.TurnKinds(), "the turn end must clear the steering classification")
 }
 
 func TestCodexTurnActive_ReadsTurnIDNotTheInheritedPromptActive(t *testing.T) {
@@ -273,14 +280,14 @@ func newACPTurnBase(t *testing.T, stdin io.WriteCloser) (*acpBase, *testSink) {
 }
 
 // swallowingSink stands in for a decorator that forgets to forward the turn
-// flag. thinkingResetSink promotes SetTurnActive from the embedded interface
+// flag. thinkingResetSink promotes SetTurnState from the embedded interface
 // today, so only a type like this one can tell a hook that re-reads b.sink from
 // one that captured the sink it was wired with.
 type swallowingSink struct {
-	OutputSink
+	ProviderServices
 }
 
-func (s *swallowingSink) SetTurnActive(bool, uint64) {}
+func (s *swallowingSink) SetTurnState(TurnState, uint64) {}
 
 func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	t.Parallel()
@@ -289,11 +296,11 @@ func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	// thinkingResetSink. A hook that captured the raw sink would publish past
 	// every decorator for the life of the process -- and this flag is the input
 	// queue's only dispatch guard, so a decorator that ever overrode
-	// SetTurnActive would silently hold every later message of all six ACP
+	// SetTurnState would silently hold every later message of all six ACP
 	// providers.
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, nopWriteCloser{&out})
-	b.sink = &swallowingSink{OutputSink: sink}
+	b.sink = &swallowingSink{ProviderServices: sink}
 
 	b.publishTurnActive(true, 1)
 
@@ -317,6 +324,25 @@ func TestACPTurnActive_PromptOpensTheTurnAndTheResponseCloses(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return len(sink.TurnActives()) == 2 }, time.Second, 5*time.Millisecond)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}
+
+func TestACPTurnActive_ProviderErrorPersistsBufferedText(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	b, sink := newACPTurnBase(t, nopWriteCloser{&out})
+	require.NoError(t, b.SendInput("hi", nil))
+	b.HandleOutput(acpMessageChunk("partial answer"))
+
+	b.handleJSONRPCResponse(parseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"provider failed"}}`)))
+
+	require.Eventually(t, func() bool { return sink.MessageCount() == 1 }, time.Second, 5*time.Millisecond)
+	assert.JSONEq(t, `{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"partial answer",
+		"completion":"error"
+	}`, string(sink.Messages()[0].Content))
 }
 
 func TestACPTurnActive_AFailedSendOpensNoTurn(t *testing.T) {
@@ -593,11 +619,11 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 	// stale value would latch a turn that is over.
 	for _, tc := range []struct {
 		name    string
-		publish func(t *testing.T, sink OutputSink)
+		publish func(t *testing.T, sink ProviderServices)
 	}{
 		{
 			name: "claude",
-			publish: func(t *testing.T, sink OutputSink) {
+			publish: func(t *testing.T, sink ProviderServices) {
 				a, _ := newClaudeAgentWithStdin(sink)
 				a.PublishTurnActive()
 				a.PublishTurnActive()
@@ -606,7 +632,7 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 		},
 		{
 			name: "codex",
-			publish: func(t *testing.T, sink OutputSink) {
+			publish: func(t *testing.T, sink ProviderServices) {
 				a := newCodexAgentWithSink(sink)
 				a.sink = sink
 				a.PublishTurnActive()
@@ -616,7 +642,7 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 		},
 		{
 			name: "pi",
-			publish: func(t *testing.T, sink OutputSink) {
+			publish: func(t *testing.T, sink ProviderServices) {
 				a := newPiAgentWithSink(sink)
 				a.PublishTurnActive()
 				a.PublishTurnActive()
@@ -625,7 +651,7 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 		},
 		{
 			name: "zcode",
-			publish: func(t *testing.T, sink OutputSink) {
+			publish: func(t *testing.T, sink ProviderServices) {
 				a := newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
 				a.PublishTurnActive()
 				a.PublishTurnActive()
@@ -634,7 +660,7 @@ func TestTurnActive_EveryProviderIssuesRisingOrderingTokens(t *testing.T) {
 		},
 		{
 			name: "acpBase",
-			publish: func(t *testing.T, sink OutputSink) {
+			publish: func(t *testing.T, sink ProviderServices) {
 				var out bytes.Buffer
 				b, _ := newACPTurnBase(t, nopWriteCloser{&out})
 				b.sink = sink

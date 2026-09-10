@@ -41,7 +41,7 @@ type piTestRig struct {
 // newPiTestRig sets up a PiAgent suitable for unit tests. The agent's stdin is
 // captured by a goroutine that decodes JSONL commands and either lets the
 // supplied responder craft a response, or replies with an option success.
-func newPiTestRig(t *testing.T, sink OutputSink) *piTestRig {
+func newPiTestRig(t *testing.T, sink ProviderServices) *piTestRig {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())

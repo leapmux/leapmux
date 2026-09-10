@@ -29,7 +29,9 @@ func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
 // Manager.SendInput calls it only after a refusal this stub never returns.
-func (s *stubProvider) PublishTurnActive()        {}
+func (s *stubProvider) PublishTurnActive() TurnState {
+	return TurnState{}
+}
 func (s *stubProvider) SendRawInput([]byte) error { return nil }
 func (s *stubProvider) Stop()                     {}
 func (s *stubProvider) IsStopped() bool           { return false }
@@ -53,7 +55,7 @@ func (s *stubProvider) UpdateSettings(options optionmap.Map) SettingsApplyResult
 func (s *stubProvider) Interrupt() error { return nil }
 
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
-func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func startMockAgent(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	return mockStart(ctx, opts, sink)
 }
 
@@ -308,7 +310,7 @@ func TestManager_SendInputDoesNotHoldTheLifecycleLockAcrossTheWrite(t *testing.T
 
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	start := func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+	start := func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 		base, err := mockStart(ctx, opts, sink)
 		if err != nil {
 			return nil, err
@@ -440,7 +442,7 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 	provider := &blockingStub{waitCh: make(chan struct{})}
 	_, err := m.startAgentWith(context.Background(), Options{
 		AgentID: "exiting", WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return provider, nil }, false)
+	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) { return provider, nil }, false)
 	require.NoError(t, err)
 
 	close(provider.waitCh)
@@ -476,7 +478,7 @@ func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 		AgentID:    "r",
 		Options:    map[string]string{OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil }, false)
+	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) { return old, nil }, false)
 	require.NoError(t, err)
 	require.True(t, m.HasAgent("r"))
 
@@ -545,7 +547,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 		AgentID:    "w",
 		Options:    map[string]string{OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil }, false)
+	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) { return old, nil }, false)
 	require.NoError(t, err)
 
 	stopReturned := make(chan struct{})
@@ -611,7 +613,7 @@ func TestManager_OptionGroupsRefreshesCacheFromLive(t *testing.T) {
 		AgentID:    "c",
 		Options:    map[string]string{OptionIDModel: "x"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return p, nil }, false)
+	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) { return p, nil }, false)
 	require.NoError(t, err)
 	m.mu.RLock()
 	_, seeded := m.cachedOptionGroups["c"]
@@ -692,7 +694,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		AgentID:    "auto-exit",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+	}, noopSink{}, func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 		// Create a process that exits immediately.
 		ctx2, cancel := context.WithCancel(ctx)
 		cmd := exec.CommandContext(ctx2, "true")

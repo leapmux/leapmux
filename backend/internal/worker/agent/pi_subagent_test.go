@@ -191,8 +191,8 @@ func TestPi_ExtractDescription_CleansBeforeItCuts(t *testing.T) {
 }
 
 // Compile-time check: ensure the helpers participate in the package's sink
-// interface (the testSink satisfies OutputSink).
-var _ OutputSink = (*testSink)(nil)
+// interface (the testSink satisfies ProviderServices).
+var _ ProviderServices = (*testSink)(nil)
 var _ leapmuxv1.MessageSource
 
 // pi-subagents declares the nested agent's task as `prompt`

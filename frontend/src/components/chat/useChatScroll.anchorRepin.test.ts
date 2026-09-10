@@ -19,7 +19,6 @@ describe('useChatScroll scroll coordinate normalization', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(500)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const updateViewport = vi.fn()
           const anchorAt = vi.fn((top: number): ScrollAnchor => ({ id: `top@${top}`, offsetWithinRow: 0 }))
           const virt: ChatScrollVirtualizer = {
@@ -34,7 +33,6 @@ describe('useChatScroll scroll coordinate normalization', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -110,13 +108,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -156,13 +152,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -208,13 +202,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -267,13 +259,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -321,13 +311,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -381,13 +369,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(200)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -436,13 +422,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(4500)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -481,13 +465,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(4000)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -540,13 +522,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(300)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -595,13 +575,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -642,13 +620,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             // The jump-to-latest RPC fails (e.g. worker disconnect).
             onJumpToLatest: () => Promise.reject(new Error('worker offline')),
@@ -702,13 +678,11 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest: () => Promise.reject(new Error('worker offline')),
           })
@@ -755,14 +729,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           let jumps = 0
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest: () => {
               jumps++
@@ -800,14 +772,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
 
           let jumps = 0
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onJumpToLatest: () => {
               jumps++
@@ -844,14 +814,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
           let resolveJump: () => void = () => {}
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             // A SLOW jump-to-latest: stays in flight until we resolve it below.
             onJumpToLatest: () => new Promise<void>((r) => { resolveJump = r }),
@@ -899,14 +867,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
           let rejectJump: (reason?: unknown) => void = () => {}
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest: () => new Promise<void>((_, reject) => { rejectJump = reject }),
           })
@@ -961,14 +927,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(100)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
           let resolveJump: () => void = () => {}
 
           const hook = useChatScroll({
             virtualizer: ctrl.virt,
             messages,
-            streamingText,
             // The window is STILL short of the live tail after the jump resolves -- a
             // live append landed during the in-flight jump, so hasNewerMessages stays
             // true throughout.
@@ -1015,7 +979,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(300)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
 
           // Controllable virt: only `resolvableId` resolves; anchorAt always
           // reports the row currently at the viewport midpoint.
@@ -1036,7 +999,7 @@ describe('useChatScroll anchor re-pin', () => {
             scrollTopForAnchor: a => (a.id === resolvableId ? rowOffset + a.offsetWithinRow : null),
           }
 
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1086,7 +1049,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollTop(300)
 
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
 
           // ~6 viewport-heights tall (3000px) for the row that mounts during the
           // armed scroll. `updateViewport` (called by refreshViewport) models that
@@ -1099,7 +1061,7 @@ describe('useChatScroll anchor re-pin', () => {
           const SHIFT = 3000
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
 
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1140,7 +1102,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setClientHeight(500)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [version, setVersion] = createSignal(0)
           // A measurement below the midpoint anchor: scrollTopForAnchor resolves to within
           // a sub-pixel of the current viewport midpoint (the anchor didn't move).
@@ -1156,7 +1117,7 @@ describe('useChatScroll anchor re-pin', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: a => a.offsetWithinRow + 0.4,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1189,7 +1150,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // A small (100px) same-flush geometry shift during the user's scroll.
           // 100 < clientHeight/2 (250), so the re-pin suppresses the correction:
           // scrollTop stays where the user flung (no write to cancel momentum).
@@ -1197,7 +1157,7 @@ describe('useChatScroll anchor re-pin', () => {
           // the re-pin policy for geometry that has already committed.
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1232,13 +1192,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Same 100px under-estimate shift the fling test defers -- but reached by a
           // SLOW native scroll. There is no momentum for a write to cancel, and 100px is
           // far past what the reader can miss, so the re-pin compensates it.
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1285,13 +1244,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Same setup as the suppress test: a 100px shift (< clientHeight/2) is
           // deferred during the fling. Once momentum stops, the current visual
           // position wins; the settle re-anchors there instead of snapping by 100px.
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1332,13 +1290,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // The same 100px under-estimate shift the fling tests use, but reached
           // via a discrete keyboard PageDown rather than momentum. A discrete page
           // must apply the correction immediately, not defer it as fling drift.
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1383,13 +1340,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // The same 100px under-estimate shift the fling tests defer, but reached
           // while a pointer is DOWN (a scrollbar drag). A drag has no momentum to
           // protect, so the correction must apply immediately, not defer.
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1431,10 +1387,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1484,14 +1439,13 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
           // touchActive is derived from the live touch list, so lifting ONE finger of
           // a two-finger gesture must keep it active (a finger remains) -- the drag
           // correction stays immediate until the last finger lifts.
           const touchEvent = (count: number) => ({ touches: Array.from({ length: count }, () => ({ clientY: 0 })) } as unknown as TouchEvent)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1529,10 +1483,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1574,10 +1527,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1621,7 +1573,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           let deferred = false
           const setVisibleMeasurementDeferral = vi.fn((next: boolean) => {
             deferred = next
@@ -1642,7 +1593,7 @@ describe('useChatScroll anchor re-pin', () => {
             hasDeferredMeasurements: () => deferred,
             flushDeferredMeasurements,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1682,7 +1633,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const setFastScrollActive = vi.fn()
           const setVisibleMeasurementDeferral = vi.fn()
           const virt: ChatScrollVirtualizer = {
@@ -1696,7 +1646,7 @@ describe('useChatScroll anchor re-pin', () => {
             setFastScrollActive,
             setVisibleMeasurementDeferral,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1740,7 +1690,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const setFastScrollActive = vi.fn()
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
@@ -1753,7 +1702,7 @@ describe('useChatScroll anchor re-pin', () => {
             setFastScrollActive,
             setVisibleMeasurementDeferral: () => {},
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1789,7 +1738,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const setFastScrollActive = vi.fn()
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
@@ -1802,7 +1750,7 @@ describe('useChatScroll anchor re-pin', () => {
             setFastScrollActive,
             setVisibleMeasurementDeferral: () => {},
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1837,10 +1785,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1881,10 +1828,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1927,13 +1873,12 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // A NEGATIVE shift: content above the anchor shrinks, so keeping the
           // anchored row stationary would pull scrollTop DOWN by 100 — deferred
           // during the fling (|100| < clientHeight/2). flingDrift = -100.
           const SHIFT = -100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT, { reanchorWhenShifted: true })
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1979,7 +1924,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 100
           const ANCHOR_OFFSET = 290
           let armed = false
@@ -2009,7 +1953,7 @@ describe('useChatScroll anchor re-pin', () => {
               ? (trimmed ? null : (shifted ? ANCHOR_OFFSET + SHIFT : ANCHOR_OFFSET) + a.offsetWithinRow)
               : a.offsetWithinRow),
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2055,7 +1999,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Two scroll events, each committing a geometry shift during
           // refreshViewport (synchronous re-pin). Phase 1 is a
           // user scroll with a LARGE (400px) shift: 400 >= clientHeight/2 (250) so
@@ -2092,7 +2035,7 @@ describe('useChatScroll anchor re-pin', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: a => rowOffset + a.offsetWithinRow,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2130,10 +2073,9 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = -100
           const { virt, arm } = makeShiftingVirtualizer(SHIFT)
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2183,7 +2125,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const SHIFT = 50
           const ANCHOR_OFFSET = 290
           let armed = false
@@ -2213,7 +2154,7 @@ describe('useChatScroll anchor re-pin', () => {
               ? ANCHOR_OFFSET + shiftLevel * SHIFT + a.offsetWithinRow
               : a.offsetWithinRow),
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2254,7 +2195,6 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(300)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Two SEPARATE scroll events at two positions, each capturing a DIFFERENT
           // anchor and deferring its own distinct shift (+50 for row-a at 300, then
           // +30 for row-b at 200). Older code summed those into a later +80 settle
@@ -2289,7 +2229,7 @@ describe('useChatScroll anchor re-pin', () => {
               ? 300 + (shiftA ? 50 : 0)
               : a.id === 'row-b' ? 200 + (shiftB ? 30 : 0) : a.offsetWithinRow),
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2339,9 +2279,8 @@ describe('useChatScroll anchor re-pin', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2396,9 +2335,8 @@ describe('useChatScroll anchor re-pin', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2453,9 +2391,8 @@ describe('useChatScroll anchor re-pin', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -2511,9 +2448,8 @@ describe('useChatScroll anchor re-pin', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const ctrl = makeControllableVirtualizer()
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()

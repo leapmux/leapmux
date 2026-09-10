@@ -1,15 +1,17 @@
 package agent
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
+func newCopilotAgentWithSink(sink ProviderServices) *CopilotCLIAgent {
 	a := newCopilotCLIAgent("", false)
 	a.jsonrpcBase = jsonrpcBase{processBase: processBase{
 		agentID:      "test-agent",
@@ -18,23 +20,28 @@ func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
 	a.sink = sink
 	a.sessionID = "test-session"
 	a.modeChannel = modeChannelPermissionMode
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 
-func TestHandleCopilotOutput_AgentMessageChunk(t *testing.T) {
+func TestHandleCopilotOutput_StatuslessOutputMergesIntoCompletion(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"update":{
+		"sessionUpdate":"tool_call","toolCallId":"tool-1","kind":"execute","status":"pending"}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"update":{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1",
+		"content":[{"type":"content","content":{"type":"text","text":"hello"}}]}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"update":{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}`))
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello Copilot"}}}}`
-	agent.HandleOutput([]byte(input))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "agent_message_chunk", got.Method)
-	require.Equal(t, "Hello Copilot", string(got.Content))
+	require.Len(t, sink.Messages(), 2)
+	var completed map[string]interface{}
+	require.NoError(t, json.Unmarshal(sink.Messages()[1].Content, &completed))
+	assert.Contains(t, string(sink.Messages()[1].Content), "hello")
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("tool-1"))
 }
 
 func TestHandleCopilotOutput_RequestPermission(t *testing.T) {

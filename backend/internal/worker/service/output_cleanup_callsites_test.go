@@ -90,7 +90,7 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 
 	// Mock a successful restart so the test exercises only the cleanup
 	// path, not a real Claude Code subprocess.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 
@@ -113,7 +113,7 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 

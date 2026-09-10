@@ -95,6 +95,22 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
 		if finished {
+			if childAgentID == "" {
+				childAgentID = a.rememberedChildAgent(threadID)
+			}
+			if childAgentID != "" {
+				completion := MessageCompletionError
+				switch status {
+				case bgtask.StatusCompleted:
+					completion = MessageCompletionComplete
+				case bgtask.StatusStopped, bgtask.StatusInterrupted:
+					completion = MessageCompletionInterrupted
+				default:
+					// Failed and unexpected active states keep the error completion.
+				}
+				a.flushCodexChildGeneration(childAgentID, completion)
+				a.persistIncompleteCodexTools(childAgentID, false, completion)
+			}
 			if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
 				slog.Warn("codex collab registry close failed", "thread", threadID, "error", err)
 			}
@@ -231,6 +247,7 @@ func (a *CodexAgent) collabSpanForThread(threadID string) string {
 func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	childID := a.collabChildAgents[threadID]
 	if a.collabThreadSpans != nil {
 		delete(a.collabThreadSpans, threadID)
 	}
@@ -239,6 +256,9 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	}
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
+	}
+	if childID != "" {
+		delete(a.childGenerationBuffers, childID)
 	}
 	a.collabChildPrompts.forget(threadID)
 }
@@ -322,6 +342,11 @@ func (a *CodexAgent) SteerChildInput(childKey, content string, attachments []*le
 		return ErrNoActiveTurn
 	}
 	return nil
+}
+
+func (a *CodexAgent) ActiveChildTurnState(childKey string) TurnState {
+	active := a.childTurnID(childKey) != ""
+	return TurnState{Active: active, Steerable: active}
 }
 
 func codexChildInput(content string, attachments []*leapmuxv1.Attachment) string {

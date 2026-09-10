@@ -15,12 +15,8 @@ import { warnSlowScrollPhase } from './chatScrollGeometry'
 //  - `pendingPremeasureIds`: the rows currently owed a hidden premeasure render.
 //  - `collapsedPremeasureIds`: the IN-RANGE unmeasured rows the visible list must keep
 //    collapsed until their height commits, so a tall unmeasured row can't paint past
-//    its estimated slot and overlap what follows -- the next row, or (for the live
-//    tail) the in-flow thinking indicator / streaming bubble / startup banner that sit
-//    below the virtual spacer. Look-ahead rows are never collapsed (they are not in the
-//    main <For>). The live tail IS collapsed like any other in-range row: ChatView
-//    keeps the stream-replacement tail exempt from the skeleton separately (the in-flow
-//    streaming bubble already covers it), so live streaming text is never double-painted.
+//    its estimated slot and overlap what follows. Look-ahead rows are never
+//    collapsed because they are not in the main <For>.
 //  - `unsettledPremeasureKeys`: rows whose ACCEPTED measurement is still settling
 //    (pending images), keyed by the heightKey it was measured under, so the row keeps
 //    its premeasure mount for a re-measure instead of being dropped as done.
@@ -72,7 +68,7 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     const nextUnsettled = new Map(unsettled)
     // Every in-range unmeasured row is collapsed until its height commits -- the live
     // tail included, so an unmeasured tall tail can't overflow its estimated slot onto
-    // the trailing thinking indicator / streaming bubble, and appended rows reveal in
+    // the trailing thinking indicator, and appended rows reveal in
     // order rather than the tail popping in ahead of a still-loading sibling.
     for (const candidate of deps.rangedCandidates()) {
       nextPending.add(candidate.item.id)

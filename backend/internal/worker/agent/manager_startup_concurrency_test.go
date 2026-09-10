@@ -26,7 +26,9 @@ type idleAgent struct{}
 
 func (idleAgent) AgentID() string                                 { return "idle" }
 func (idleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (idleAgent) PublishTurnActive()                              {}
+func (idleAgent) PublishTurnActive() TurnState {
+	return TurnState{}
+}
 func (idleAgent) SendRawInput([]byte) error                       { return nil }
 func (idleAgent) Stop()                                           {}
 func (idleAgent) IsStopped() bool                                 { return false }
@@ -84,7 +86,7 @@ func newBlockingStart(capacity int) *blockingStart {
 	}
 }
 
-func (b *blockingStart) fn(_ context.Context, opts Options, _ OutputSink) (Agent, error) {
+func (b *blockingStart) fn(_ context.Context, opts Options, _ ProviderServices) (Agent, error) {
 	defer testutil.TrackPeak(&b.inFlight, &b.peak)()
 	b.entered <- struct{}{}
 	<-b.release
@@ -286,7 +288,7 @@ func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 	queuedErr := make(chan error, 1)
 	go func() {
 		_, err := m.startAgentWith(ctx, Options{AgentID: "queued", WorkingDir: t.TempDir()}, noopSink{},
-			func(context.Context, Options, OutputSink) (Agent, error) {
+			func(context.Context, Options, ProviderServices) (Agent, error) {
 				queuedStarted.Store(true)
 				return idleAgent{}, nil
 			}, true)
@@ -354,7 +356,7 @@ func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 	_, err := m.startAgentWith(context.Background(), Options{
 		AgentID:    "unconfigured",
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) {
+	}, noopSink{}, func(context.Context, Options, ProviderServices) (Agent, error) {
 		return agent, nil
 	}, true)
 	require.NoError(t, err)

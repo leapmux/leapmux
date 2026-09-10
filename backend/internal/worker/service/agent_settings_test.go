@@ -1088,7 +1088,7 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 
-	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID, false)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "after-restart", AgentID: agentID, Text: "continue after restart",
@@ -1110,9 +1110,9 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
-func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 	t.Helper()
-	return func(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+	return func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		if onStart != nil {
 			onStart(opts)
 		}
@@ -1947,7 +1947,7 @@ func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 	}))
 
 	launched := make(chan agent.Options, 1)
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		launched <- opts
 		return opts.Options, nil
 	}

@@ -322,7 +322,7 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 
@@ -360,7 +360,7 @@ func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 

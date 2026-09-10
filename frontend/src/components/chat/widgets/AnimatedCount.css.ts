@@ -1,7 +1,7 @@
-import { keyframes, style } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { motion } from '~/styles/tokens'
 
-// Vertical size of one digit cell — also the per-digit roll distance. Tied to
+// Vertical size of one digit cell and the per-digit roll distance. Tied to
 // the count's font-size (em) so the strip scales with the surrounding text.
 const CELL = '1.3em'
 
@@ -23,10 +23,19 @@ export const root = style({
   lineHeight: CELL,
 })
 
+globalStyle(`${root}[data-paused="true"] *`, {
+  animation: 'none !important',
+  transition: 'none !important',
+})
+
+globalStyle(`${root}[data-paused="true"]`, {
+  animation: 'none !important',
+})
+
 // numberBox sizes and baselines the number from an in-flow hidden ghost; the
 // rolling digits are painted by absolutely-positioned overlays on top of it, so
 // the overlays' clipped (baseline-less) columns never affect where the number
-// sits relative to " tokens" and the verb.
+// sits relative to its unit and the verb.
 export const numberBox = style({
   position: 'relative',
   display: 'inline-block',
@@ -39,8 +48,7 @@ export const numberGhost = style({
 const fadeIn = keyframes({ from: { opacity: 0 }, to: { opacity: 1 } })
 const fadeOut = keyframes({ from: { opacity: 1 }, to: { opacity: 0 } })
 
-// Easter egg: when the count lands on exactly 777, the number + " tokens" go
-// "star power" -- a Mario-star pulse. Two animations layer on the root: a hue
+// The optional star-power effect applies a Mario-star pulse. Two animations layer on the root: a hue
 // cycle through the spectrum (the rainbow) and a faster scale+glow throb (the
 // pulse). They run on `color`/`transform`, so every glyph -- the rolling digits
 // and the unit noun, all of which inherit `color` -- shifts at the same time.
@@ -117,8 +125,8 @@ export const exitingLayer = style([liveLayer, {
 // One digit position: a window onto a 0-9 strip, clipped by overflow:hidden.
 // Its width and height come from an in-flow hidden sizer digit (see columnSizer)
 // rather than the `ch` unit — `ch` does not track the tabular-figure advance, so
-// 1ch left visible gaps around each digit and pushed the unit char into
-// " tokens" (worse under zoom, where ch and glyph widths round apart). The sizer
+// 1ch left visible gaps around each digit and pushed the unit character into
+// its label. The sizer
 // uses the real rendered digit, so columns match the ghost exactly.
 //
 // position:relative is the containing block for the absolutely-positioned strip.

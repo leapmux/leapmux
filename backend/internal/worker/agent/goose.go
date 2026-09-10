@@ -18,11 +18,20 @@ import (
 const (
 	GooseConfigThinkingEffort = "thinking_effort"
 	GooseConfigProvider       = "provider"
+	gooseSteerNamespace       = "goose"
+	gooseSteerMethod          = "_goose/unstable/session/steer"
 )
 
 // GooseCLIAgent manages a single Goose CLI ACP process.
 type GooseCLIAgent struct {
 	acpBase
+	gooseOutput map[string]gooseOutputState
+}
+
+type gooseOutputState struct {
+	sequence uint64
+	bytes    int64
+	minimum  bool
 }
 
 func (a *GooseCLIAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
@@ -59,7 +68,7 @@ func (a *GooseCLIAgent) SteerInput(content string, attachments []*leapmuxv1.Atta
 }
 
 // StartGooseCLI starts a Goose CLI ACP agent process and performs the handshake.
-func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartGooseCLI(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[GooseCLIAgent]{
 		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		providerName: "goose",
@@ -82,11 +91,79 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			// _meta.goose.toolCall {toolName:"delegate", extensionName:"summon"}.
 			a.subagentFromToolCall = gooseSubagentFromToolCall
 			a.subagentFromToolCallUpdate = gooseSubagentFromToolCallUpdate
+			a.toolOutputProgress = a.gooseToolOutputProgress
+			a.toolOutputComplete = a.clearGooseToolOutput
+			a.sessionMetadataHandler = a.captureSteerRunID
+			a.advertisedSteerMethod = func(response []byte) string {
+				return parseACPAdvertisedMethod(response, gooseSteerNamespace, gooseSteerMethod)
+			}
 		},
 		afterHandshake: func(a *GooseCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, contracts.GooseModeAuto, opts.Model())
 		},
 	})
+}
+
+func (a *GooseCLIAgent) captureSteerRunID(updateType string, metadata map[string]json.RawMessage) bool {
+	if updateType != "session_info_update" {
+		return false
+	}
+	var goose map[string]json.RawMessage
+	if json.Unmarshal(metadata[gooseSteerNamespace], &goose) != nil {
+		return false
+	}
+	rawRunID, ok := goose["activeRunId"]
+	if !ok {
+		return false
+	}
+	var runID string
+	if string(rawRunID) != "null" && json.Unmarshal(rawRunID, &runID) != nil {
+		return false
+	}
+	a.mu.Lock()
+	a.steerRunID = runID
+	a.mu.Unlock()
+	return true
+}
+
+func (a *GooseCLIAgent) clearGooseToolOutput(toolCallID string) {
+	a.mu.Lock()
+	delete(a.gooseOutput, toolCallID)
+	a.mu.Unlock()
+}
+
+func (a *GooseCLIAgent) gooseToolOutputProgress(update acpToolCallUpdateEnvelope) (int64, bool, bool) {
+	var meta struct {
+		ToolNotification struct {
+			Type   string `json:"type"`
+			Params struct {
+				Sequence  uint64 `json:"sequence"`
+				Truncated bool   `json:"truncated"`
+				Chunks    []struct {
+					Output string `json:"output"`
+				} `json:"chunks"`
+			} `json:"params"`
+		} `json:"toolNotification"`
+	}
+	if json.Unmarshal(update.Meta, &meta) != nil || meta.ToolNotification.Type != "live_output" {
+		return 0, false, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gooseOutput == nil {
+		a.gooseOutput = make(map[string]gooseOutputState)
+	}
+	state := a.gooseOutput[update.ToolCallID]
+	if meta.ToolNotification.Params.Sequence <= state.sequence {
+		return 0, false, false
+	}
+	state.sequence = meta.ToolNotification.Params.Sequence
+	for _, chunk := range meta.ToolNotification.Params.Chunks {
+		state.bytes = saturatingAdd(state.bytes, int64(len([]byte(chunk.Output))))
+	}
+	state.minimum = state.minimum || meta.ToolNotification.Params.Truncated
+	a.gooseOutput[update.ToolCallID] = state
+	return state.bytes, state.minimum, true
 }
 
 // fallbackGooseCLIModes lists Goose's modes in Goose's own order, then applies the same

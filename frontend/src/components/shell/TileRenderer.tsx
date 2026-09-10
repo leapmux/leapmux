@@ -814,9 +814,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               getToolResultParsedBySpanId: spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId),
               getToolResultContentVersionBySpanId: spanId => chatStore.getToolResultContentVersionBySpanId(agentId, spanId),
               getToolResultRevisionBySpanId: spanId => chatStore.getToolResultRevisionBySpanId(agentId, spanId),
-              getCommandStreamBySpanId: spanId => chatStore.getCommandStream(agentId, spanId),
               getToolProgressBySpanId: spanId => chatStore.getToolProgress(agentId, spanId),
-              hasRenderableCommandStreamBySpanId: spanId => chatStore.hasRenderableCommandStream(agentId, spanId),
               getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
               getTodoById: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
             }
@@ -841,8 +839,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
             //
             // `agentLifecycle` below is a plain object literal, so Solid treats
             // it as ONE reactive unit: every read re-evaluates every field,
-            // including `thinkingTokens`, which streams many deltas per turn.
-            // Without the memo, every delta walked the parent chain and
+            // including the live progress counters. Without the memo, every
+            // progress update walked the parent chain and
             // re-filtered the whole registry, and each fresh array identity
             // defeated BackgroundTaskList's own sort-and-group memo.
             const chipTasks = createMemo(() => chipTasksForTab(agentId))
@@ -881,14 +879,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // A named const with GETTERS, not an inline object literal in the
             // JSX. Solid compiles a literal passed as a prop into ONE getter for
             // the whole object, so any reader that touches one field inside a
-            // tracking scope subscribes to EVERY field -- `thinkingTokens` and
-            // `agentWorking` included, and those change many times per turn. A
+            // tracking scope subscribes to every field, including the live
+            // progress and activity fields. A
             // bare identifier compiles to a STATIC prop instead, so each getter
             // below is its own reactive read. `renderContext` in MessageBubble is
             // the same pattern for the same reason.
             const agentLifecycle: AgentLifecycleProps = {
               get agentWorking() { return agentThinking(agentId) },
-              get thinkingTokens() { return agentSessionStore.getInfo(agentId).thinkingTokens },
+              get thinkingTokens() { return agentSessionStore.getProgress(agentId).thinkingTokens },
+              get outputBytes() { return agentSessionStore.getProgress(agentId).output?.bytes },
+              get outputBytesMinimum() { return agentSessionStore.getProgress(agentId).output?.minimum },
               get agentStatus() { return agent()?.agentStatus },
               get startupError() { return agent()?.startupError },
               get startupMessage() { return agent()?.startupMessage },
@@ -908,7 +908,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               // and fires on the bubble. The image would then be registered
               // against a worker that has no such agent.
               onOpenImage: onOpenChatImage
-                // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: this closure is an event handler, so the worker must be the one the tab holds when the user clicks, not the one it held when the row rendered
+              // eslint-disable-next-line solid/reactivity -- the click must read the tab's current worker
                 ? image => onOpenChatImage({
                   ...image,
                   agentId,
@@ -973,8 +973,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     isChildTranscript={isSubagentTab(agent())}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
-                    streamingText={chatStore.streamingText.get(agentId)}
-                    streamingType={agentSessionStore.getInfo(agentId).streamingType}
                     tabActive={agentTab()?.id === agentId}
                     workingDir={agent()?.workingDir}
                     homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
@@ -1240,7 +1238,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const branchMenuActions = (): BranchMenuActions | undefined => {
       const actions = branchCallbacks?.actions
       return actions
-        // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: an untracked read here would freeze the ref at bind time, which is the staleness this closure exists to avoid
+      // eslint-disable-next-line solid/reactivity -- the click must read the current ref
         ? bindBranchActions(actions, () => branchAction().buildRef?.())
         : undefined
     }

@@ -5,8 +5,8 @@ import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
  * Whether each agent is working, as the WORKER derives it.
  *
  * This replaced a client-side derivation that assembled the answer on every
- * render from six inputs -- a backwards scan of the transcript, live streaming
- * text, the Codex turn id smuggled through ephemeral session info, the
+ * render from several inputs: a transcript scan, live counters, the Codex turn
+ * ID in ephemeral session info, the
  * background-task registry, pending control requests and agent status. The
  * worker owns all of those, and four of its five provider families already kept
  * a turn flag privately, so the heuristic existed only because nothing published

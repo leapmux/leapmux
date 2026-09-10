@@ -101,9 +101,8 @@ function isHiddenZCodeNotification(msg: unknown): boolean {
 /**
  * The tool.updated kinds that OPEN a span rather than close it.
  *
- * `scheduled` is the opener; `result`, `error` and `batch` are final. `started` and
- * `progress` are never persisted -- the worker broadcasts them as stream chunks --
- * so they are not classified here.
+ * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * The Worker consumes `started` and `progress` for live counters.
  */
 function zcodeToolSpanRole(kind: string): SpanRole {
   if (kind === ZCODE_TOOL_KIND.Scheduled)
@@ -332,9 +331,8 @@ const zcodePlugin: Provider = {
           content: [],
         }
       }
-      // `started` and `progress` are broadcast as stream chunks, not persisted. One
-      // reaching a transcript means a build changed; hiding it is better than a raw
-      // JSON bubble mid-span.
+      // The Worker consumes `started` and `progress` for live counters. One
+      // reaching a transcript means a provider changed its protocol.
       return { kind: 'hidden' }
     }
 

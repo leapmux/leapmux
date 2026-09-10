@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageCategory } from './messageClassification'
 import type { MessageRenderCache } from './messageRenderCache'
-import type { MessageUiWriteOptions, RenderContext } from './messageRenderers'
+import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -10,7 +10,6 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -28,6 +27,7 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
+import { appendCompletionMarker, assembledMessageDisplayText, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
@@ -150,15 +150,8 @@ export interface MessageBubbleHost {
    */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /**
-   * Live command stream for this message's span, as a thunk so the host
-   * literal stays cheap to construct: callers do the lookup only when a
-   * renderer reads it.
-   */
-  commandStream?: () => CommandStreamSegment[] | undefined
-  /**
-   * Live tool progress for this message's span, as a thunk for the same reason
-   * commandStream is one -- and additionally so no reader above the badge
-   * subscribes to it. See RenderContext.toolProgress.
+   * Live tool progress for this message's span. The thunk restricts the
+   * reactive subscription to the badge. See RenderContext.toolProgress.
    */
   toolProgress?: () => ToolProgressEntry | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
@@ -168,7 +161,7 @@ export interface MessageBubbleHost {
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean, opts?: MessageUiWriteOptions) => void
+  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
   /** Debug: this row's measured DOM height, for the raw-JSON surface. */
   getHeightDebug?: () => { measured?: number }
   /** Per-row/content-version cache for pure renderer derivations shared across hidden + visible mounts. */
@@ -349,7 +342,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
-    commandStream: () => props.host?.commandStream?.(),
     toolProgress: () => props.host?.toolProgress?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
@@ -360,8 +352,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Quotable text dispatch: each provider plugin reads its own wire format
   // (Codex: parent.item.text, ACP: parent.content.text, Claude: message.content[]).
   const extractQuotableText = createMemo(() => {
+    const assembled = parseAssembledMessage(parsed().parentObject)
+    if (assembled)
+      return assembledMessageDisplayText(assembled)
     const plugin = providerFor(props.message.agentProvider)
-    return plugin?.extractQuotableText?.(category(), parsed()) ?? null
+    const text = plugin?.extractQuotableText?.(category(), parsed()) ?? null
+    if (text === null)
+      return null
+    return appendCompletionMarker(text, parseProviderMessageCompletion(parsed().parentObject))
   })
 
   const handleReply = () => {
@@ -401,7 +399,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // unrecognized or legacy shape) -- so the message surfaces as raw JSON rather
   // than an empty bubble.
   const renderContent = () =>
-    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider)
+    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider, props.message.completion)
 
   // The raw-JSON last-resort block (highlighted as token spans via the async
   // token worker), shared by the `hidden` category and the unsupported-provider
@@ -486,8 +484,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
     // injected buttons). A one-shot injection raced that swap -- inject before it and the
     // button is wiped; after it and the button lands -- so a code block "sometimes" had no
-    // copy button. Observing contentRef re-injects after the swap (and after streaming
-    // re-renders / expand-collapse) regardless of timing.
+    // copy button. Observing contentRef re-injects after the swap and after an
+    // expand-collapse change, regardless of timing.
     //
     // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
     // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on

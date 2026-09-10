@@ -207,19 +207,8 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 		a.handleActiveGoal(content)
 
 	default:
-		// A type this switch does not know is DROPPED, never forwarded. The
-		// switch used to end in a catch-all that called
-		// `BroadcastStreamChunk(content, "", "")`, and a span-less chunk is
-		// appended verbatim to the chat's free-form streaming text -- so every
-		// unknown CLI frame printed into the transcript as raw JSON, which is
-		// what tool_progress did before the case above claimed it.
-		//
-		// `stream_event` is not an exception to this. StartClaudeCode passes no
-		// `--include-partial-messages`, and the CLI emits the type only with that
-		// flag, so nothing arrives today; and if the flag is ever added, the
-		// frames carry incremental deltas that need real extraction. A verbatim
-		// forward would print the envelopes instead. Whoever adds the flag adds
-		// the extraction with it.
+		// Drop an unknown type. `stream_event` only appears when the launch uses
+		// `--include-partial-messages`, which LeapMux does not enable.
 		slog.Debug("unhandled claude output type", "agent_id", a.agentID, "type", msgType)
 	}
 }
@@ -443,7 +432,7 @@ func claudeSpanForEnvelope(msgType string, env *messageEnvelope, spanTypeFor fun
 // Shared by the parent transcript (handlePersistableMessage) and the child one
 // (routeSubagentMessage), which differ only in the sink and the parent span id.
 // They held two copies of this rule, so the spawn guard had to be written twice.
-func claudeSpanInfoFor(sink OutputSink, msgType string, env *messageEnvelope, parentSpanID string) SpanInfo {
+func claudeSpanInfoFor(sink SpanServices, msgType string, env *messageEnvelope, parentSpanID string) SpanInfo {
 	spanID, spanType, closing := claudeSpanForEnvelope(msgType, env, sink.GetSpanType)
 	spawns := spanID != "" && claudeToolSpawnsSubagent(spanType)
 
@@ -471,7 +460,7 @@ func claudeSpanInfoFor(sink OutputSink, msgType string, env *messageEnvelope, pa
 // claudeCloseToolResultSpans closes the span of EVERY tool_result in a user
 // envelope. One user message can carry parallel tool calls, so closing only the
 // first would leak the rest until the turn's bulk ResetSpans.
-func claudeCloseToolResultSpans(sink OutputSink, env *messageEnvelope) {
+func claudeCloseToolResultSpans(sink SpanServices, env *messageEnvelope) {
 	for _, block := range env.ContentBlocks() {
 		if block.Type == "tool_result" && block.ToolUseID != "" {
 			sink.CloseSpan(block.ToolUseID)
@@ -649,9 +638,11 @@ func (a *ClaudeCodeAgent) handleThinkingTokens(content []byte) bool {
 	if !ok {
 		return false
 	}
-	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyThinkingTokens: estimate,
-	})
+	if estimate <= 0 {
+		a.sink.ReportProgress(CompleteModelProgress("claude:thinking"))
+	} else {
+		a.sink.ReportProgress(NativeTokenProgress("claude:thinking", estimate))
+	}
 	return true
 }
 

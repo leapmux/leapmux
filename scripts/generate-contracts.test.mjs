@@ -50,6 +50,7 @@ import {
   emitGoTrustedProxies,
   emitGoValidate,
   emitGoWire,
+  emitGoWorkerVocab,
   emitRsDesktop,
   emitTsChatHistory,
   emitTsDesktop,
@@ -62,6 +63,7 @@ import {
   emitTsTrustedProxies,
   emitTsValidate,
   emitTsWire,
+  emitTsWorkerVocab,
   enumValues,
   generate,
   HEADERS_GO_NAMES,
@@ -1209,6 +1211,24 @@ describe('checkSessionInfo', () => {
 })
 
 describe('checkWorkerVocab / checkDesktop', () => {
+  const workerVocab = overrides => ({
+    notificationTypes: { AgentError: 'agent_error' },
+    workerAuthoredNotificationTypes: ['AgentError'],
+    goalStatusTokens: { None: '', Running: 'running' },
+    goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
+    assembledMessage: {
+      fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
+      types: { Assembled: 'assembled_message' },
+      kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
+      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error' },
+      metadata: { Field: '_leapmux' },
+    },
+    notificationThreadWrapperType: 'notification_thread',
+    codexRateLimitReachedTimeWindow: 'rate_limit_reached',
+    modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
+    ...overrides,
+  })
+
   // Supply a valid windowBehavior block to each negative desktop fixture. Each
   // fixture must fail with its expected ContractError, not an unrelated
   // TypeError after check order changes.
@@ -1262,45 +1282,46 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('rejects a worker-authored type that is not a notification type', () => {
-    expectContractError(() => checkWorkerVocab({
-      notificationTypes: { AgentError: 'agent_error' },
+    expectContractError(() => checkWorkerVocab(workerVocab({
       workerAuthoredNotificationTypes: ['NotAType'],
-      notificationThreadWrapperType: 'notification_thread',
-      codexRateLimitReachedTimeWindow: 'rate_limit_reached',
-      modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
-    }), 'not a notificationTypes key')
+    })), 'not a notificationTypes key')
   })
 
   it('rejects two notification types sharing one token', () => {
-    expectContractError(() => checkWorkerVocab({
+    expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { A: 'same_token', B: 'same_token' },
       workerAuthoredNotificationTypes: ['A'],
-      notificationThreadWrapperType: 'notification_thread',
-      codexRateLimitReachedTimeWindow: 'rate_limit_reached',
-      modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
-    }), 'share one wire token')
+    })), 'share one wire token')
   })
 
   it('rejects a thread-wrapper token that collides with a notification type', () => {
     // The browser routes thread probes through NOTIFICATION_THREAD_TYPE. An
     // equal notification token would enter the wrong processing case.
-    expectContractError(() => checkWorkerVocab({
+    expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { AgentError: 'notification_thread' },
-      workerAuthoredNotificationTypes: ['AgentError'],
-      notificationThreadWrapperType: 'notification_thread',
-      codexRateLimitReachedTimeWindow: 'rate_limit_reached',
-      modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
-    }), 'collides with a notificationTypes token')
+    })), 'collides with a notificationTypes token')
   })
 
   it('rejects model sentinels that collide', () => {
-    expectContractError(() => checkWorkerVocab({
-      notificationTypes: { AgentError: 'agent_error' },
-      workerAuthoredNotificationTypes: ['AgentError'],
-      notificationThreadWrapperType: 'notification_thread',
-      codexRateLimitReachedTimeWindow: 'rate_limit_reached',
+    expectContractError(() => checkWorkerVocab(workerVocab({
       modelSentinels: { accountDefaultModel: 'same', effortAuto: 'same' },
-    }), 'sentinels must be distinct')
+    })), 'sentinels must be distinct')
+  })
+
+  it('rejects duplicate assembled-message tokens', () => {
+    const assembledMessage = workerVocab({}).assembledMessage
+    expectContractError(() => checkWorkerVocab(workerVocab({
+      assembledMessage: {
+        ...assembledMessage,
+        kinds: { Text: 'same', Reasoning: 'same', Plan: 'plan' },
+      },
+    })), 'assembled-message kinds entries share one wire token')
+  })
+
+  it('emits assembled-message constants for Go and TypeScript', () => {
+    const vocab = readContract('worker-vocab')
+    expect(emitGoWorkerVocab(vocab)).toContain('AssembledMessageCompletionInterrupted = "interrupted"')
+    expect(emitTsWorkerVocab(vocab)).toContain('CompletionInterrupted: "interrupted"')
   })
 
   it('rejects two Tauri events sharing one name', () => {

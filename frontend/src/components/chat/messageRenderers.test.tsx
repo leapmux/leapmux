@@ -3,7 +3,7 @@ import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
@@ -228,6 +228,27 @@ describe('renderMessageContent provider resolution', () => {
     // The Claude renderer would have produced "Took 1.1s"; instead we get raw JSON.
     expect(container.textContent).toContain('"duration_ms"')
     expect(container.textContent).not.toContain('Took 1.1s')
+  })
+
+  it('renders the durable interruption marker after retained provider output', () => {
+    const parsed = {
+      type: 'assembled_message',
+      kind: 'text',
+      text: 'partial output',
+      completion: 'interrupted',
+    }
+    const result = renderMessageContent(parsed, undefined, { kind: 'assistant_text' })
+    const { container } = render(() => result)
+    expect(container.textContent).toContain('partial output')
+    expect(container.textContent).toContain('Text truncated by interruption.')
+  })
+
+  it('uses typed completion metadata when provider content has no metadata object', () => {
+    const parsed = { type: 'tool', output: 'partial' }
+    const category = { kind: 'unknown' } as MessageCategory
+    const result = renderMessageContent(parsed, undefined, category, AgentProvider.CODEX, MessageCompletion.ERROR)
+    const { container } = render(() => result)
+    expect(container.textContent).toContain('Text truncated by an error.')
   })
 })
 

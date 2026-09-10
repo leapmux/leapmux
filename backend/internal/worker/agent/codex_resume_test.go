@@ -83,6 +83,12 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 				sent := requests()
 				require.Len(t, sent, 1)
 				assert.Equal(t, test.wantMethod, sent[0].Method)
+				assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
+				if test.resumeID == "" {
+					assert.NotContains(t, sent[0].Params, "excludeTurns", "thread/start does not accept the resume-only field")
+				} else {
+					assert.Equal(t, true, sent[0].Params["excludeTurns"], "thread/resume must skip history hydration")
+				}
 				if test.wantModelOmitted {
 					assert.NotContains(t, sent[0].Params, "model", "the account default lets Codex resolve the model")
 				} else {
@@ -171,7 +177,6 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	a.turnSawPlan = true
 	a.turnPlanText = "old plan"
 	a.turnAssistantText = "old answer"
-	a.streamingPlan = true
 	a.model = "gpt-5.6-sol"
 	a.approvalPolicy = "never"
 	a.sandboxPolicy = CodexSandboxDangerFullAccess
@@ -186,7 +191,6 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.False(t, a.turnSawPlan)
 	assert.Empty(t, a.turnPlanText)
 	assert.Empty(t, a.turnAssistantText)
-	assert.False(t, a.streamingPlan)
 	assert.Equal(t, CodexSandboxDangerFullAccess, a.sandboxPolicy)
 	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
 	assert.Equal(t, "thread-new", sink.LastSessionID())
@@ -200,6 +204,7 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.Equal(t, "never", sent[0].Params["approvalPolicy"])
 	assert.Equal(t, CodexSandboxDangerFullAccess, sent[0].Params["sandbox"])
 	assert.Equal(t, CodexServiceTierFast, sent[0].Params["serviceTier"])
+	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
 }
 
 func testCodexThreadResponse(id, model string, effort, serviceTier, approvalPolicy, sandbox json.RawMessage) codexThreadResponse {

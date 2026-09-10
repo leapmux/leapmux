@@ -14,7 +14,7 @@ import { parseSpanLines } from './spanLinesParse'
 // Classifies each window message for rendering and caches the result by message
 // id so <For> receives stable object references for unchanged rows (no full DOM
 // recreation). A self-contained unit -- extracted from ChatView so its freshness
-// rule (reuse only when seq AND command-stream presence are unchanged) and its
+// rule (reuse only when all freshness inputs are unchanged) and its
 // incremental prune are testable in isolation, mirroring the scroll hook's
 // extracted units (createStickyBottom, etc.).
 // ---------------------------------------------------------------------------
@@ -41,14 +41,6 @@ export interface EntryFreshness {
    * on such an update instead of rendering the pre-update classification.
    */
   contentVersion: number
-  /**
-   * Whether the row's span had renderable command-stream content at classify time.
-   * A Codex reasoning row with no persisted summary/content classifies as visible
-   * (assistant_thinking) ONLY while its span has renderable stream content, so the
-   * cache must re-classify when that presence flips — otherwise the row freezes on
-   * its first classification (hidden) and the streamed thinking never appears.
-   */
-  hasCommandStream: boolean
   /**
    * Whether the row's span had a paired tool_use (opener) parse available at
    * classify time. A tool_result's renderer reads its sibling opener (Claude's edit
@@ -124,12 +116,10 @@ export type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & {
 /**
  * The measured-height cache key for a classified entry at a given UI
  * version. Reads height-affecting freshness signals (sibling presence/content
- * versions, content version, command-stream presence) off the entry's OWN
+ * versions and content version) off the entry's own
  * freshness signature, so a new freshness dimension that affects height is wired
  * in one place here -- not hand-copied into the ChatView call site, the same
- * drift hazard EntryFreshness itself guards against. Live streaming TEXT is
- * deliberately excluded (it grows per-delta and lives outside msg.content); see
- * ChatView's virtualItems and HeightKeyInputs for the rationale.
+ * drift hazard EntryFreshness itself guards against.
  */
 export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
   return buildHeightKey({
@@ -142,7 +132,6 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
     toolResultRevisionKey: entry.freshness.toolResultSiblingRevisionKey,
     uiVersion,
     contentVersion: entry.freshness.contentVersion,
-    hasCommandStream: entry.freshness.hasCommandStream,
     isChildTranscript: entry.freshness.isChildTranscript,
   })
 }
@@ -150,16 +139,6 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
 export interface ClassifiedEntryCacheDeps {
   /** The window's messages, in display order (read reactively). */
   messages: () => readonly AgentChatMessage[]
-  /**
-   * Whether a span's command stream has renderable content to show, read
-   * REACTIVELY. Backed by the store's renderable-span set, this presence bit flips
-   * only when the stream first has content OR is cleared (not per delta), so the
-   * freshness check can track it for every row without re-classifying the window on
-   * every chunk. A row re-classifies the moment its span first has renderable stream
-   * content AND the moment it's cleared. NOT "actively streaming": it stays true
-   * after the producer goes quiet, until the stream ends.
-   */
-  hasRenderableStreamBySpanId?: (spanId: string) => boolean
   /**
    * Whether a span has a paired tool_use (opener) parse right now, read
    * REACTIVELY (the store's span index). Lets a tool_result row re-classify and
@@ -225,16 +204,6 @@ export interface ClassifiedEntryCache {
 
 export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): ClassifiedEntryCache {
   const entryCache = new Map<string, ClassifiedEntry>()
-  /**
-   * Renderable command-stream presence for a row's span, read REACTIVELY. The
-   * store's renderable-span bit flips only when the stream first has content or is
-   * cleared, so the freshness check below can track it for every row each memo run
-   * without re-classifying on every delta -- and the memo wakes the moment a span's
-   * presence flips in EITHER direction (hidden->visible when it first has content,
-   * the reverse when it's cleared).
-   */
-  const hasRenderableStream = (msg: AgentChatMessage): boolean =>
-    !!msg.spanId && (deps.hasRenderableStreamBySpanId?.(msg.spanId) ?? false)
   const hasToolUseSibling = (msg: AgentChatMessage): boolean =>
     !!msg.spanId && (deps.hasToolUseSiblingBySpanId?.(msg.spanId) ?? false)
   const hasToolResultSiblingOf = (msg: AgentChatMessage, kind: string): boolean =>
@@ -278,7 +247,6 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     return {
       seq: msg.seq,
       contentVersion: contentVersionOf(msg),
-      hasCommandStream: hasRenderableStream(msg),
       hasToolUseSibling: hasToolUseSibling(msg),
       toolUseSiblingContentVersion: toolUseContentVersion,
       toolUseSiblingRevisionKey: revisionKeyOf(toolUseRevision) || (toolUseContentVersion === 0 ? '' : `legacy:${toolUseContentVersion}`),
@@ -290,7 +258,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   }
   /**
    * A cached entry is reusable only if its freshness signature still matches the
-   * message's: the seq, the in-place content version, the command-stream presence,
+   * message's seq, in-place content version,
    * the paired tool_use availability, AND (for a tool_result) the opener's content
    * version are all unchanged. seq alone is not enough -- a same-seq in-place body
    * replacement keeps the seq (and the proxy reference), so the content version is
@@ -301,9 +269,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   const isEntryFresh = (cached: ClassifiedEntry | undefined, msg: AgentChatMessage): cached is ClassifiedEntry =>
     !!cached && shallowEqual(cached.freshness, freshnessOf(msg, cached.category.kind))
   const buildEntry = (msg: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
-    const hasCommandStream = hasRenderableStream(msg)
     const classified = classifyParsedMessage(msg, {
-      hasCommandStream,
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     })
     // Reuse the cached parse when the `spanLines` payload is byte-identical to the
@@ -324,7 +290,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   }
   /**
    * The classified entry for a message: reused when still fresh (same seq AND
-   * command-stream presence), otherwise freshly built and cached. The single
+   * freshness inputs, otherwise freshly built and cached. The single
    * home for the cache-fill dance both the emptiness check (hasVisibleMessage)
    * and the full materialization (visibleEntries) share, so populating the cache
    * for the visibleEntries memo can't drift from the freshness rule.
@@ -365,8 +331,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     const showHidden = deps.showHiddenMessages()
     const result: ClassifiedEntry[] = []
     walkWindow((msg) => {
-      // Reuse the cached entry when the message hasn't changed (same seq = same
-      // content) AND its command-stream presence is unchanged; otherwise rebuild.
+      // Reuse the cached entry when all freshness inputs match.
       const entry = resolveEntry(msg)
       if (showHidden || entry.category.kind !== 'hidden')
         result.push(entry)

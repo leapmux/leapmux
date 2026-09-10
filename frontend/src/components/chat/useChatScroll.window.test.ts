@@ -36,7 +36,6 @@ describe('usechatscroll render-ahead overscan', () => {
           div.setScrollHeight(50000)
           div.setScrollTop(40000) // scrolled deep into a long transcript
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Record the look-ahead args handleScroll passes to updateViewport.
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'newer'
@@ -52,7 +51,7 @@ describe('usechatscroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -96,7 +95,6 @@ describe('usechatscroll render-ahead overscan', () => {
           div.setScrollHeight(50000)
           div.setScrollTop(1000) // near the top, away from the bottom
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'older'
           const virt: ChatScrollVirtualizer = {
@@ -111,7 +109,7 @@ describe('usechatscroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -155,7 +153,6 @@ describe('usechatscroll render-ahead overscan', () => {
           div.setScrollHeight(50000)
           div.setScrollTop(40000)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined
           const virt: ChatScrollVirtualizer = {
@@ -170,7 +167,7 @@ describe('usechatscroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           }
-          const hook = useChatScroll({ virtualizer: virt, messages, streamingText })
+          const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -218,7 +215,6 @@ describe('usechatscroll windowing trim', () => {
           div.setScrollTop(500) // at the bottom
           // A window already at the cap: one new tail message pushes it over.
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
           const { virt, setTotal } = makeGrowableVirtualizer()
           setTotal(1000)
           let trims = 0
@@ -226,7 +222,6 @@ describe('usechatscroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             onTrimOldMessages: (k) => {
               trims++
               lastKeep = k
@@ -281,14 +276,12 @@ describe('usechatscroll windowing trim', () => {
           div.setClientHeight(500)
           div.setScrollTop(4500) // start at the bottom
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
           const { virt, setTotal } = makeGrowableVirtualizer()
           setTotal(5000)
           let trims = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             // Still AT the live tail (no newer history unloaded), so live messages
             // append to the tail rather than being dropped by the beyond-window guard.
             hasNewerMessages: () => false,
@@ -327,66 +320,6 @@ describe('usechatscroll windowing trim', () => {
       })
     }))
 
-  it('does not trim the older buffer after an older prepend wakes the auto-scroll effect again', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(8000)
-          div.setClientHeight(733)
-          div.setScrollTop(2500)
-          const mkSeqMsgs = (first: number, last: number): AgentChatMessage[] =>
-            Array.from({ length: last - first + 1 }, (_, i) => {
-              const seq = BigInt(first + i)
-              return { id: `m${seq}`, seq } as AgentChatMessage
-            })
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkSeqMsgs(101, 250))
-          const [streamingText, setStreamingText] = createSignal('')
-          const { virt, setTotal } = makeGrowableVirtualizer()
-          setTotal(8000)
-          let trims = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            streamingText,
-            hasNewerMessages: () => false,
-            onTrimOldMessages: () => { trims++ },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-          trims = 0
-
-          // Older prefetch: the first server seq moves earlier, while the newest edge
-          // is unchanged. The auto-scroll effect must treat this as an older-buffer
-          // mutation, not as live-tail growth to cap.
-          setMessages(mkSeqMsgs(51, 250))
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(trims).toBe(0)
-
-          // A later non-row wake-up used to see the stale pre-prepend signature and
-          // trim the just-prefetched older rows, producing a prepend/trim re-pin pair.
-          setStreamingText('tail is still streaming')
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(trims).toBe(0)
-
-          // A real newest-edge row append still runs the live-tail cap.
-          setMessages(mkSeqMsgs(51, 251))
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(trims).toBeGreaterThan(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
-        }
-      })
-    }))
-
   it('still trims when an older prepend also advances the newest edge', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -401,14 +334,12 @@ describe('usechatscroll windowing trim', () => {
               return { id: `m${seq}`, seq } as AgentChatMessage
             })
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkSeqMsgs(101, 250))
-          const [streamingText] = createSignal('')
           const { virt, setTotal } = makeGrowableVirtualizer()
           setTotal(8000)
           let trims = 0
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onTrimOldMessages: () => { trims++ },
           })
@@ -444,7 +375,6 @@ describe('usechatscroll windowing trim', () => {
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
             Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
           const virt: ChatScrollVirtualizer = {
@@ -460,7 +390,6 @@ describe('usechatscroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -502,7 +431,6 @@ describe('usechatscroll windowing trim', () => {
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
             Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
           const virt: ChatScrollVirtualizer = {
@@ -518,7 +446,6 @@ describe('usechatscroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -561,7 +488,6 @@ describe('usechatscroll windowing trim', () => {
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
             Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(400))
-          const [streamingText] = createSignal('')
           // A virtualizer whose anchorAt maps a scroll offset to the row at that offset
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
           // viewport top) resolves to a row STRICTLY above the viewport anchor.
@@ -578,7 +504,6 @@ describe('usechatscroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -627,7 +552,6 @@ describe('usechatscroll windowing trim', () => {
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
             Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
@@ -643,7 +567,6 @@ describe('usechatscroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })

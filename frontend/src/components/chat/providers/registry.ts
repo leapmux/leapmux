@@ -14,11 +14,10 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
-import type { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
-import type { CommandStreamSegment } from '~/stores/chatTypes'
+import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 
 export interface AttachmentCapabilities {
@@ -61,6 +60,8 @@ export interface ClassificationInput extends ParsedMessageContent {
    * row LeapMux wrote.
    */
   source?: MessageSource
+  assembledKind?: AssembledMessageKind
+  completion?: MessageCompletion
   spanId?: string
   spanType?: string
   parentSpanId?: string
@@ -69,12 +70,6 @@ export interface ClassificationInput extends ParsedMessageContent {
 }
 
 export interface ClassificationContext {
-  /**
-   * Whether the message's span has a live command stream right now: a Codex
-   * reasoning row with no persisted summary/content is `assistant_thinking`
-   * while streaming, else `hidden`.
-   */
-  hasCommandStream?: boolean
   /**
    * Whether these messages are a SUBAGENT's own transcript rather than the
    * transcript that spawned it.
@@ -212,19 +207,6 @@ export interface Provider {
    * tool_use openers) -- the caller defaults to `'other'` and files them first-seen-is-opener.
    */
   spanRole?: (parsed: ParsedMessageContent) => SpanRole
-
-  /**
-   * Decide whether a persisted AGENT message should clear the live thinking-token
-   * estimate (a per-phase reset). Called only for AGENT-source messages. Omit to
-   * use the default "main-scope only" policy (clear when `parentSpanId === ''`),
-   * which is correct for the streamed-text estimator that drives Codex/Pi/ACP: a
-   * subagent's commit nests under a span and must not reset the primary counter,
-   * and the backend applies the same gate. Claude overrides to always clear,
-   * because its counter is real per-phase telemetry (not the estimator) and its
-   * parentSpanId is not a clean main-vs-subagent signal (a system-injected
-   * tool_use_id yields a non-empty parentSpanId on a main-agent message).
-   */
-  clearsThinkingTokensForMessage?: (msg: { parentSpanId: string }) => boolean
 
   /**
    * Render a message given its category and parsed content.
@@ -375,30 +357,6 @@ export interface Provider {
    * neutral `inner.subtype`.
    */
   resultSubtype?: (parsed: ParsedMessageContent) => string | undefined
-
-  /**
-   * Fold a provider lifecycle frame into a session-info patch: Codex clears its live turn id on
-   * `thread/started` and clears the plan streaming indicator on a `plan` item. Returns null for a
-   * frame with no lifecycle side effect. The caller applies the patch via `updateInfo`. Typed as
-   * `Partial<AgentSessionInfo>` so a mistyped session-info key is a compile error, not a silent
-   * junk-key write.
-   */
-  lifecycleSessionInfo?: (parsed: ParsedMessageContent) => Partial<AgentSessionInfo> | null
-
-  /**
-   * Report whether a persisted span row supersedes its in-flight command stream, from the
-   * provider's item shape (Codex: a completed `commandExecution`/`fileChange`, or a `reasoning`
-   * item that now carries summary/content). The caller owns the neutral span/source gate and the
-   * stream reclaim. Command streams are a Codex-only feature today.
-   */
-  commandSpanSuperseded?: (parsed: ParsedMessageContent) => boolean
-
-  /**
-   * Map a command-stream delta's JSON-RPC method to its segment kind (Codex `item/...` methods).
-   * Returns null for a method with no special kind; the caller defaults to `'output'`. Keeps the
-   * provider's delta-method vocabulary in the plugin rather than a map in the shared store.
-   */
-  commandStreamSegmentKind?: (method: string) => CommandStreamSegment['kind'] | null
 
   /**
    * Build the wire-format control-response object for a *non-AskUserQuestion*

@@ -199,7 +199,27 @@ type SpanInfo struct {
 //
 // A failed persist is logged by the caller and does NOT stop the span from
 // opening, which is what each of these call sites did before.
-func openToolSpan(sink OutputSink, content []byte, spanID, spanType string, spawns bool) error {
+type ToolSpanServices interface {
+	TranscriptServices
+	SpanServices
+}
+
+type generationServices interface {
+	TranscriptServices
+	ProgressServices
+}
+
+type toolLifecycleServices interface {
+	generationServices
+	SpanServices
+}
+
+type subagentServices interface {
+	ChildServices
+	BackgroundTaskServices
+}
+
+func openToolSpan(sink ToolSpanServices, content []byte, spanID, spanType string, spawns bool) error {
 	var spanColor int32
 	if !spawns {
 		spanColor = sink.ReserveSpanColor(spanID, "")
@@ -232,7 +252,7 @@ type AutoContinueSchedule struct {
 // schedule otherwise. The payload is defensively copied because the
 // caller's buffer may be reused by the stdout reader before the schedule
 // is consumed.
-func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload []byte) {
+func scheduleOrCancelAPIErrorAutoContinue(sink AutoContinueServices, retry bool, payload []byte) {
 	if !retry {
 		sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		return
@@ -244,7 +264,7 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 	})
 }
 
-// publishTurnActiveTo reports a provider's turn flag to its sink.
+// publishTurnActiveTo reports an unclassified provider turn to its sink.
 //
 // A NIL sink publishes nowhere. This package's tests construct bare agents by
 // long-standing convention -- `&ClaudeCodeAgent{turnActive: true}` and its like
@@ -252,16 +272,29 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 // The jsonrpcBase hook takes the same stance for the same reason: nobody is
 // listening, so there is nothing to say. Every agent the Worker builds has a
 // sink, so this is never nil in production.
-func publishTurnActiveTo(sink OutputSink, active bool, seq uint64) {
-	if sink == nil {
-		return
-	}
-	sink.SetTurnActive(active, seq)
+type TurnState struct {
+	Active    bool
+	Steerable bool
 }
 
-// OutputSink provides generic primitives for persisting and broadcasting
-// agent output. Implemented by the service layer and injected into providers.
-type OutputSink interface {
+// publishSteerableTurnActiveTo reports a turn that accepts steering. Codex
+// uses this for turn/started because its app-server accepts turn/steer for each
+// active turn, including a turn that a goal continuation starts. Other
+// providers use publishTurnActiveTo until their protocols supply the same
+// guarantee.
+func publishSteerableTurnActiveTo(sink TurnServices, active bool, seq uint64) TurnState {
+	return publishTurnStateTo(sink, TurnState{Active: active, Steerable: active}, seq)
+}
+
+func publishTurnStateTo(sink TurnServices, state TurnState, seq uint64) TurnState {
+	if sink != nil {
+		sink.SetTurnState(state, seq)
+	}
+	return state
+}
+
+// TranscriptServices persists provider output and turn boundaries.
+type TranscriptServices interface {
 	PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
 	// PersistNotification persists an agent notification (appending it to the
 	// active notification thread when one is open). It returns whether the
@@ -276,12 +309,17 @@ type OutputSink interface {
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
-	// SetTurnActive publishes whether a turn is in flight, and it is the ONE
-	// signal for that fact. The Worker derives two answers from it. The first is
-	// "is this agent busy", which a client renders without re-deriving it from
-	// the transcript. The second is the input queue's dispatch guard, which
-	// holds a message until the running turn ends. Providers already keep this
-	// flag for their own control flow, and SendInput refuses input from the same
+}
+
+// TurnServices publishes the provider's turn state.
+type TurnServices interface {
+	// SetTurnState publishes whether a turn is active. It is the only signal for
+	// that fact. Steerable states whether the active turn accepts steering.
+	// The Worker derives two answers from this state.
+	// The first answer states whether the agent is busy. A client renders it
+	// without scanning the transcript. The second answer controls the input
+	// queue, which holds a message until the running turn ends. Providers keep
+	// this flag for their own control flow. SendInput refuses input from the same
 	// value. Call this from the SAME site that mutates the flag, and the three
 	// cannot drift.
 	//
@@ -289,7 +327,7 @@ type OutputSink interface {
 	// repeat it freely: the Worker deduplicates it, and the queue reconciles
 	// idempotently and moves no revision. It is not free -- the queue answers
 	// from one small write transaction -- so publish on a turn boundary or a
-	// refusal, not once per streamed message block. A MISSING publish is the
+	// refusal, not once per provider event. A MISSING publish is the
 	// only failure, and it hands the queue a turn it cannot see.
 	//
 	// seq ORDERS the publishes. A provider reads its flag under a lock and then
@@ -303,7 +341,11 @@ type OutputSink interface {
 	// which is not always the same as "between one envelope and the next": a
 	// provider that retries a failed attempt itself stays active across the
 	// backoff, where nothing streams and no envelope arrives.
-	SetTurnActive(active bool, seq uint64)
+	SetTurnState(state TurnState, seq uint64)
+}
+
+// SpanServices owns transcript span state.
+type SpanServices interface {
 	OpenSpan(spanID string, parentSpanID string)
 	// CloseSpan frees a span's column. The recorded span type SURVIVES it (only
 	// ResetSpans clears types), because a provider's closing message reads that
@@ -316,8 +358,17 @@ type OutputSink interface {
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
 	ReserveSpanColor(spanID, parentSpanID string) int32
-	BroadcastStreamChunk(content []byte, spanID string, method string)
-	BroadcastStreamEnd(spanID string)
+}
+
+// ProgressServices publishes live generation progress.
+type ProgressServices interface {
+	// ReportProgress sends one provider observation to the Worker's live counter.
+	// The sink calculates aggregates and publication timing.
+	ReportProgress(update ProgressUpdate)
+}
+
+// ControlServices persists and broadcasts control requests.
+type ControlServices interface {
 	// PersistControlRequest stores the pending control request and returns the fresh per-instance
 	// claim_token it minted for it. The caller threads that token straight into the paired
 	// BroadcastControlRequest so the live broadcast carries the SAME token that was persisted --
@@ -329,6 +380,10 @@ type OutputSink interface {
 	// PersistControlRequest returned so the frontend can echo it in its answer (AgentControlRequest.claim_token).
 	BroadcastControlRequest(requestID string, payload []byte, claimToken string)
 	BroadcastControlCancel(requestID string)
+}
+
+// SessionServices publishes provider session state and settings.
+type SessionServices interface {
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)
 	// NotifyPermissionModeChanged emits the chat-view settings_changed notification
@@ -347,9 +402,17 @@ type OutputSink interface {
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	PersistLeapMuxNotification(content map[string]interface{})
+}
+
+// PlanServices stores plan-mode state.
+type PlanServices interface {
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
+}
+
+// GoalServices owns the provider-neutral session goal.
+type GoalServices interface {
 	// UpsertGoal records the provider's current session goal (see goal.go for the
 	// neutral shape and why there is only ever one).
 	//
@@ -410,8 +473,16 @@ type OutputSink interface {
 	// for an agent that reports no goal capability -- so an answer that is
 	// merely early leaves the feature unreachable for the life of the session.
 	PublishGoalCapabilities()
+}
+
+// AutoContinueServices schedules automatic continuation.
+type AutoContinueServices interface {
 	ScheduleAutoContinue(schedule AutoContinueSchedule)
 	CancelAutoContinue(reason AutoContinueReason)
+}
+
+// ChildServices owns child transcripts and their in-memory state.
+type ChildServices interface {
 
 	// --- Subagent transcripts and the background-task registry ---
 
@@ -444,10 +515,10 @@ type OutputSink interface {
 	// not a miss, for the reason LookupBackgroundTask states.
 	ChildSpawnSpan(childAgentID string) (spawnSpanID string, err error)
 
-	// ChildSink returns an OutputSink bound to the child agent's transcript.
+	// ChildSink returns a ProviderServices value for the child transcript.
 	// The child sink has its OWN span tracker; transcript primitives act on the
 	// child. Registry primitives on a child sink write under the same ROOT owner.
-	ChildSink(childAgentID string) OutputSink
+	ChildSink(childAgentID string) ProviderServices
 
 	// PersistChildMessage / PersistChildTurnEnd are shorthands for
 	// ChildSink(id).PersistMessage / PersistTurnEnd.
@@ -491,6 +562,10 @@ type OutputSink interface {
 	// under the root and re-hydrate on reopen); only the in-memory caches are
 	// reclaimed. A no-op for an unknown child id.
 	CleanupChildAgent(childAgentID string)
+}
+
+// BackgroundTaskServices owns the provider-neutral task registry.
+type BackgroundTaskServices interface {
 
 	// Registry writes. All are keyed under the ROOT owner of this sink.
 
@@ -544,6 +619,60 @@ type OutputSink interface {
 	// indicator for good. This method is the one deliberate exception, and the
 	// burden of proof sits with its caller.
 	ReviveBackgroundTask(rowKey string) error
+}
+
+type providerServiceFacets interface {
+	TranscriptServices
+	TurnServices
+	SpanServices
+	ProgressServices
+	ControlServices
+	SessionServices
+	PlanServices
+	GoalServices
+	AutoContinueServices
+	ChildServices
+	BackgroundTaskServices
+}
+
+// ProviderServices gives a provider one opaque set of focused services.
+// NewProviderServices keeps all facets on one underlying agent identity.
+type ProviderServices interface {
+	providerServiceFacets
+	providerServices()
+}
+
+type providerServices struct {
+	TranscriptServices
+	TurnServices
+	SpanServices
+	ProgressServices
+	ControlServices
+	SessionServices
+	PlanServices
+	GoalServices
+	AutoContinueServices
+	ChildServices
+	BackgroundTaskServices
+}
+
+func (providerServices) providerServices() {}
+
+// NewProviderServices composes one implementation into opaque provider facets.
+func NewProviderServices(services providerServiceFacets) ProviderServices {
+	return providerServices{
+		TranscriptServices:     services,
+		TurnServices:           services,
+		SpanServices:           services,
+		ProgressServices:       services,
+		ControlServices:        services,
+		SessionServices:        services,
+		PlanServices:           services,
+		GoalServices:           services,
+		AutoContinueServices:   services,
+		ChildServices:          services,
+		BackgroundTaskServices: services,
+	}
 }
 
 // logRegistryRefusal records a background-task write the registry REFUSED.
@@ -648,8 +777,8 @@ type Agent interface {
 	// provider's own error notification -- not by holding this call open.
 	SendInput(content string, attachments []*leapmuxv1.Attachment) error
 	// PublishTurnActive republishes this provider's turn flag through its sink.
-	// It re-reads the flag, so a caller states nothing: it only asks the
-	// provider to say again what it already holds.
+	// It re-reads the flag, so a caller states nothing. The return value is the
+	// turn kind that it published, or UNSPECIFIED when it cannot classify it.
 	//
 	// Manager.SendInput calls it on ErrAgentBusy. That refusal is PROOF that the
 	// Worker's view of the turn was wrong -- the Worker dispatched into a turn
@@ -657,7 +786,7 @@ type Agent interface {
 	// state and the input queue's dispatch guard are known to need repair. It
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
-	PublishTurnActive()
+	PublishTurnActive() TurnState
 	SendRawInput(data []byte) error
 	Stop()
 	IsStopped() bool
@@ -725,6 +854,28 @@ var (
 	ErrAgentBusy = errors.New("agent is already running a turn")
 )
 
+// AgentBusyError adds the provider's current turn classification to an
+// ErrAgentBusy refusal. The input queue uses it after it releases the dispatch
+// identity that collided with the provider's existing turn.
+type AgentBusyError struct {
+	Err                 error
+	ActiveTurnSteerable bool
+}
+
+func (e *AgentBusyError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrAgentBusy.Error()
+	}
+	return e.Err.Error()
+}
+
+func (e *AgentBusyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // ChildSteerer lets a provider address a child conversation in its process.
 // Queue dispatch resolves the child registry row and drives the owner process.
 // Providers that cannot steer a child do not implement this interface.
@@ -735,6 +886,9 @@ type ChildSteerer interface {
 	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
 	// SteerChildInput adds input to the child's active turn.
 	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	// ActiveChildTurnState classifies the child's current turn after
+	// SendChildInput returns ErrAgentBusy.
+	ActiveChildTurnState(childKey string) TurnState
 	// InterruptChild stops the child's current turn inside the owner process.
 	InterruptChild(childKey string) error
 }
@@ -752,8 +906,8 @@ var ErrChildSteeringUnsupported = errors.New("agent provider does not support st
 
 // ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process
 // runs but does not yet know the child thread. A worker restart empties the
-// in-memory spawn index, so the registry row resolves while the live stream did
-// not report the spawn again. The condition is transient: the same call
+// in-memory spawn index, so the registry row resolves before the provider
+// reports the spawn again. The condition is transient: the same call
 // succeeds after the owner process reports the spawn.
 //
 // ErrChildSteeringUnsupported is the opposite condition. That provider cannot

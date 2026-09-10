@@ -62,7 +62,7 @@ func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attac
 	return result
 }
 
-func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.DispatchResult, error) {
+func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	svc := a.svc
 	spanLines := svc.Output.snapshotPassthroughSpanLines(item.AgentID)
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
@@ -103,7 +103,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 			}
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	}
 
 	ensureRunning := func() error {
@@ -150,7 +150,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION:
 		if item.PrepareContext {
 			if err := svc.preparePlanExecutionContext(item.AgentID, item.TargetMode, dbAgent); err != nil {
@@ -162,7 +162,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
+		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
 	default:
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
@@ -170,7 +170,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	}
 }
 
@@ -196,7 +196,12 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 //     that has no problem, and hold it stopped until the user resumed it by
 //     hand.
 func classifyQueueDeliveryError(err error) error {
-	return &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
+	deliveryErr := &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
+	var busyErr *agent.AgentBusyError
+	if errors.As(err, &busyErr) {
+		deliveryErr.ActiveTurnSteerable = busyErr.ActiveTurnSteerable
+	}
+	return deliveryErr
 }
 
 func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
@@ -225,7 +230,7 @@ func classifyQueueSteerError(err error) error {
 	}
 }
 
-func (a *agentInputQueueAdapter) Steer(item inputqueue.Item) (inputqueue.DispatchResult, error) {
+func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
@@ -324,7 +329,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 	result := &leapmuxv1.AgentInputQueueSnapshot{
 		AgentId: snapshot.AgentID, Revision: snapshot.Revision,
 		Paused: snapshot.Paused, PauseReason: snapshot.PauseReason,
-		ActiveTurn: snapshot.ActiveTurn, ActiveTurnKind: snapshot.ActiveTurnKind,
+		ActiveTurn: snapshot.ActiveTurn, ActiveTurnSteerable: snapshot.ActiveTurnSteerable,
 		Items: make([]*leapmuxv1.QueuedAgentInput, len(snapshot.Items)),
 	}
 	for i := range snapshot.Items {

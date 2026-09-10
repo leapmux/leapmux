@@ -1,11 +1,8 @@
-import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { ToolHeaderActionsCallerProps } from './messageActions'
 import type { RenderContext } from './messageRenderers'
 import type { CommandResultSource } from './results/commandResult'
 import type { FileEditDiffSource } from './results/fileEditDiff'
 import type { TokenGate } from './useAsyncCodeTokens'
-import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { CachedToken } from '~/lib/tokenCache'
 import Check from 'lucide-solid/icons/check'
@@ -14,7 +11,6 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { Icon } from '~/components/common/Icon'
-import { Tooltip } from '~/components/common/Tooltip'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { inlineFlex } from '~/styles/shared.css'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from './messageRenderers'
@@ -25,10 +21,7 @@ import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
 import { ImageResultList } from './results/imageResult'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
-import { ToolHeaderActions } from './ToolHeaderActions'
 import {
-  toolBodyBorder,
-  toolBodyContent,
   toolInputText,
   toolMessage,
   toolResultCollapsed,
@@ -38,133 +31,13 @@ import {
   toolUseIcon,
 } from './toolStyles.css'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
-import { spanColorKey } from './widgets/SpanLines'
-import { spanLineColors } from './widgets/SpanLines.css'
-import { ToolRunningBadge } from './widgets/ToolRunningBadge'
+import { ToolUseLayout } from './widgets/ToolUseLayout'
+
+export { ToolUseLayout } from './widgets/ToolUseLayout'
 
 /** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
 export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {
   return <ToolUseLayout icon={ListTodo} toolName={props.toolName} title="To-do list cleared" context={props.context} />
-}
-
-/**
- * Shared layout for tool_use messages. Three content slots, ordered by
- * information density:
- *
- *  1. `title` — the header line, always visible. Identifies what the tool
- *     ran on (file path, command description, search pattern).
- *  2. `summary` — content below the title, also always visible when present. A
- *     preview that supplements the title (Bash command preview, Grep search
- *     path, etc.).
- *  3. `children` — "the details": the full expanded body. Hidden by default
- *     until the user clicks the expand toggle, OR shown unconditionally when
- *     `alwaysVisible` is set (e.g. TodoList where the list IS the content).
- *
- * Don't pass `summary` content as `children` or vice versa — the relationship
- * between summary (preview) and children (full) is what makes the
- * expand/collapse interaction read naturally.
- */
-export function ToolUseLayout(props: {
-  /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). Used unless `renderIcon` is set. */
-  icon?: LucideIcon
-  /** Custom icon renderer for non-lucide glyphs (e.g. the Task card's checkbox SVG). Takes precedence over `icon`. */
-  renderIcon?: () => JSX.Element
-  /** Tool name, used as the title attribute on the icon. */
-  toolName: string
-  /** Primary title shown in the header. String auto-wraps in toolInputText; JSX renders as-is. */
-  title: string | JSX.Element
-  /** Brief preview line below the header, always visible (when present). */
-  summary?: JSX.Element
-  /** The details — full body content, hidden until expanded (or always visible when `alwaysVisible` is set). */
-  children?: JSX.Element
-  /** If true, body is always visible (not gated by expand). Default: false. */
-  alwaysVisible?: boolean
-  /** If true, body gets left border. Default: true. */
-  bordered?: boolean
-  /** Whether this tool has a diff to show (Edit tool). */
-  hasDiff?: boolean
-  /** Current diff view mode. */
-  diffView?: DiffViewPreference
-  /** Toggle diff view between unified and split. */
-  onDiffViewChange?: (view: DiffViewPreference) => void
-  context?: RenderContext
-  /** Whether the body is expanded. */
-  expanded?: boolean
-  /** Toggle expand/collapse. When provided, shows the expand button. */
-  onToggleExpand?: () => void
-  /** Custom label for the expand button tooltip. */
-  expandLabel?: string
-  /**
-   * Optional bag for the copy/reply/markdown buttons forwarded to
-   * `ToolHeaderActions`. Layout-owned fields (timestamp, expanded, hasDiff,
-   * etc.) come from `props.context` / `props.expanded` / `props.hasDiff` —
-   * don't put them here.
-   */
-  headerActions?: ToolHeaderActionsCallerProps
-}): JSX.Element {
-  const expanded = () => props.expanded ?? false
-  const actions = () => props.headerActions
-  const hasActions = () =>
-    !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
-  return (
-    <div class={toolMessage} data-tool-message>
-      <div class={toolUseHeader}>
-        <Tooltip text={props.toolName} ariaLabel>
-          <span class={`${inlineFlex} ${toolUseIcon}`}>
-            {props.renderIcon
-              ? props.renderIcon()
-              : props.icon
-                ? <Icon icon={props.icon} size="md" />
-                : null}
-          </span>
-        </Tooltip>
-        {typeof props.title === 'string'
-          ? <span class={toolInputText}>{props.title}</span>
-          : props.title}
-        {/*
-          ToolUseLayout passes the thunk on WITHOUT calling it: a read here
-          subscribes this layout to the value, and a re-render of the card drops
-          a text selection the user holds across it. Only the badge reads it.
-        */}
-        <ToolRunningBadge
-          toolProgress={props.context?.toolProgress}
-          textSelectionActive={props.context?.textSelectionActive}
-        />
-        <Show when={hasActions()}>
-          <ToolHeaderActions
-            caller={actions()}
-            layout={{
-              createdAt: props.context?.createdAt,
-              expanded: expanded(),
-              onToggleExpand: props.onToggleExpand,
-              expandLabel: props.expandLabel,
-              onCopyJson: props.context?.onCopyJson,
-              jsonCopied: props.context?.jsonCopied?.() ?? false,
-              hasDiff: props.hasDiff,
-              diffView: props.diffView,
-              onToggleDiffView: props.onDiffViewChange ? () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') : undefined,
-            }}
-          />
-        </Show>
-      </div>
-      <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
-        <div class={[
-          toolBodyContent,
-          props.bordered !== false && toolBodyBorder,
-          props.bordered !== false
-          && props.context?.spanColor != null
-          && props.context.spanColor > 0
-          && spanLineColors[spanColorKey(props.context.spanColor)],
-        ].filter(Boolean).join(' ')}
-        >
-          <Show when={props.summary}>{props.summary}</Show>
-          <Show when={props.children && (props.alwaysVisible || expanded())}>
-            {props.children}
-          </Show>
-        </div>
-      </Show>
-    </div>
-  )
 }
 
 /** Map a chat RenderContext to the shared token hook's premeasure/hold gate. */

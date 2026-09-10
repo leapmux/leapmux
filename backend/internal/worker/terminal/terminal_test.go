@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	pty "github.com/aymanbagabas/go-pty"
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -20,6 +21,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type writeCountingPTY struct {
+	pty.Pty
+	writes atomic.Int64
+}
+
+func (p *writeCountingPTY) Write([]byte) (int, error) {
+	p.writes.Add(1)
+	return 0, assert.AnError
+}
 
 func TestManagerWithClockRejectsNil(t *testing.T) {
 	t.Parallel()
@@ -341,6 +352,16 @@ func TestTerminal_StopAfterANaturalExitIsSafe(t *testing.T) {
 	assert.True(t, term.IsExited())
 }
 
+func TestTerminal_SendInputSkipsEmptyData(t *testing.T) {
+	t.Parallel()
+
+	ptmx := &writeCountingPTY{}
+	term := &Terminal{ptmx: ptmx}
+
+	assert.NoError(t, term.SendInput(nil))
+	assert.Zero(t, ptmx.writes.Load(), "empty input must not enter the PTY write path")
+}
+
 // TestTerminal_ResizeRacingANaturalExitIsSafe drives the window the pty lock
 // exists for.
 //
@@ -371,38 +392,33 @@ func TestTerminal_ResizeRacingANaturalExitIsSafe(t *testing.T) {
 	require.NoError(t, err, "Start")
 	t.Cleanup(term.Stop)
 
-	// Keep resizing and writing for the whole of the exit, so at least one call
-	// lands inside the teardown however the scheduler orders them. Errors are
-	// expected once the pty is gone; a PANIC is not, and neither is a hang.
+	// Start a finite resize burst with the exit command. An unbounded burst can
+	// starve a Darwin shell with SIGWINCH before it processes the command. That
+	// tests signal throughput instead of the teardown race.
 	var wg sync.WaitGroup
-	stop := make(chan struct{})
+	start := make(chan struct{})
 	for i := range 4 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			assert.NotPanics(t, func() {
-				for n := 0; ; n++ {
-					select {
-					case <-stop:
-						return
-					default:
-					}
+				<-start
+				for n := range 8 {
 					_ = term.Resize(uint16(80+(n+i)%20), 24)
-					_ = term.SendInput([]byte(""))
 				}
 			}, "a pty call that straddled the natural-exit teardown panicked")
 		}(i)
 	}
 
 	require.NoError(t, term.SendInput([]byte("exit"+testutil.TestShellEnter())), "SendInput")
+	close(start)
 	term.Wait()
+	wg.Wait()
 	select {
 	case <-term.readDoneCh:
 	case <-time.After(30 * time.Second):
 		require.FailNow(t, "the reader never ended after the shell exited on its own")
 	}
-	close(stop)
-	wg.Wait()
 
 	assert.True(t, term.IsExited())
 	// And the close that follows still runs, on a pty one of those calls may

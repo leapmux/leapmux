@@ -153,9 +153,8 @@ describe('zcode classify', () => {
     }
   })
 
-  // `started` and `progress` are broadcast as stream chunks, never persisted. One
-  // reaching a transcript means a build changed, and a raw JSON bubble mid-span is
-  // worse than nothing.
+  // The Worker consumes `started` and `progress` for live counters. One
+  // reaching a transcript means a provider changed its protocol.
   it('hides the mid-flight tool kinds', () => {
     for (const kind of [ZCODE_TOOL_KIND.Started, ZCODE_TOOL_KIND.Progress]) {
       expect(plugin.classify(input(toolEvent(kind)))).toEqual({ kind: 'hidden' })
@@ -377,9 +376,9 @@ describe('zcode extractQuotableText', () => {
     expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, parsed)).toBe('the answer')
   })
 
-  // `classify` never answers assistant_thinking for ZCode: reasoning arrives only as a
-  // live `reasoning_delta` stream that the worker broadcasts and never persists.
-  it('does not quote a thinking row, because ZCode never classifies one', () => {
+  // Native ZCode messages never classify as assistant_thinking. Worker-assembled
+  // reasoning uses the shared classifier before this plugin runs.
+  it('does not quote a native message as thinking', () => {
     const parsed = parsedOf(event(ZCODE_EVENT.SessionUpdated, { content: 'reasoning', stopReason: 'stop' }))
     expect(plugin.extractQuotableText!({ kind: 'assistant_thinking' }, parsed)).toBeNull()
   })

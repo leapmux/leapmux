@@ -12,9 +12,6 @@ import { lruSet } from './mapLru'
 // the parse: each distinct HTML string is parsed ONCE into a detached
 // <template>, and every (re)application deep-clones the template's content,
 // which is several times cheaper than parsing for large bodies.
-//
-// Deliberately NOT used for the streaming tail: its HTML differs on every
-// frame, so caching it would just churn parses into dead template entries.
 // ---------------------------------------------------------------------------
 
 /**

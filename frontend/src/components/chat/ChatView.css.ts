@@ -4,7 +4,6 @@ import { hideNativeScrollbar } from '~/styles/scrollbar'
 import { chipBase } from '~/styles/shared.css'
 import { breakpoints, composerContainer, motion } from '~/styles/tokens'
 import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
-import { BAND_BORDER_PX } from './chatRowGeometry'
 import { contentColumnBleed } from './messageStyles.css'
 
 export const editorResizeHandle = style({
@@ -139,9 +138,8 @@ export const messageListSelectionRoot = style({
 /**
  * Flow gap between the virtual spacer and the in-flow tail UI below it.
  *
- * Named because two rules must agree on it: this gap, and the negative margin that
- * `bandTailMerged` uses to cancel it. It also matches the virtualizer's own
- * gapLargePx, which ChatView measures from the same token (see the
+ * It matches the virtualizer's own gapLargePx. ChatView measures that value
+ * from the same token (see the
  * `measureSpaceToken('--space-5', …)` call), so a virtual row and the tail are
  * spaced alike.
  */
@@ -152,20 +150,6 @@ export const messageListContent = style({
   flexDirection: 'column',
   flexShrink: 0,
   gap: MESSAGE_LIST_ROW_GAP,
-})
-
-/**
- * Merge the streaming tail's band into the band of the row directly above it.
- *
- * The virtualizer overlaps two adjacent bands by one border width in its offset
- * map, so the pair shows one line. The tail is not in that map -- it is a flow
- * sibling of the virtual spacer -- so the same merge has to be spelled here: cancel
- * the flow gap, then one more border so the tail's top border lands on the row's
- * bottom border. Without it the reader watches a gap and two separate lines while
- * the reply streams, which close the instant the persisted row lands.
- */
-export const bandTailMerged = style({
-  marginTop: `calc(-1 * ${MESSAGE_LIST_ROW_GAP} - ${BAND_BORDER_PX}px)`,
 })
 
 export const messageList = style({

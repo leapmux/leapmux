@@ -31,7 +31,7 @@ type zcodeAgent struct {
 	// re-subscribe. See that function for why the whole body needs it.
 	dispatchMu sync.Mutex
 
-	sink       OutputSink
+	sink       ProviderServices
 	workingDir string
 	workspace  zcodeWorkspace
 
@@ -79,7 +79,8 @@ type zcodeAgent struct {
 	observedThoughtDefault string
 
 	// toolCalls holds everything a.mu knows about each tool call, keyed by its id.
-	toolCalls map[string]*zcodeToolCall
+	toolCalls     map[string]*zcodeToolCall
+	nextToolOrder uint64
 
 	// pendingControls maps the request id of each control prompt LeapMux forwarded to the
 	// user, and that nothing resolved yet, to the payload of its FIRST announcement. It
@@ -106,8 +107,7 @@ type zcodeAgent struct {
 	sessionCostUsd   float64
 	sessionCostKnown bool
 
-	// thinkingTokens drives the thinking-indicator estimate from reasoning deltas.
-	thinkingTokens thinkingTokenEstimator
+	generationBuffer GenerationBuffer
 	// toolCallPrompts holds an Agent spawn's full prompt until the child transcript
 	// exists to receive it as its first message.
 	toolCallPrompts pendingPrompts
@@ -131,7 +131,7 @@ const (
 )
 
 // StartZCode starts a ZCode app-server and performs the startup handshake.
-func StartZCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Resolve the launch FIRST. A machine with no ZCode at all fails both this and the
@@ -182,7 +182,7 @@ func StartZCode(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		toolCalls:        map[string]*zcodeToolCall{},
 		pendingControls:  map[string]json.RawMessage{},
 	}
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to
 	// the composite id the option groups carry. An unresolvable request leaves the
 	// model empty, and the app-server then picks the registry default -- which the
@@ -665,6 +665,7 @@ func (a *zcodeAgent) Interrupt() error {
 // The stop is issued SYNCHRONOUSLY before processBase.Stop sets stopped and closes
 // stdin: on a goroutine it would race that flag and be dropped in the common case.
 func (a *zcodeAgent) Stop() {
+	a.noteIntentionalStop()
 	a.mu.Lock()
 	stopped, turnActive, sessionID := a.stopped, a.turnActive, a.sessionID
 	a.mu.Unlock()
@@ -673,6 +674,19 @@ func (a *zcodeAgent) Stop() {
 		_, _ = a.sendZCodeRequest(ZCodeMethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
 	}
 	a.processBase.Stop()
+	a.flushZCodeGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
+	a.sink.ReportProgress(ResetProgress())
+}
+
+// Wait retains unfinished model output after an unexpected process exit.
+func (a *zcodeAgent) Wait() error {
+	err := a.processBase.Wait()
+	completion := a.processExitCompletion()
+	a.flushZCodeGeneration(completion)
+	a.persistIncompleteZCodeTools(completion)
+	a.sink.ReportProgress(ResetProgress())
+	return err
 }
 
 // ClearContext starts a fresh session on the same workspace.
@@ -709,6 +723,8 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	if err := a.subscribe(timeout); err != nil {
 		slog.Warn("zcode ClearContext: subscribe failed", "agent_id", a.agentID, "error", err)
 	}
+	a.flushZCodeGeneration(MessageCompletionInterrupted)
+	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
 
 	a.mu.Lock()
 	a.turnActive = false
@@ -716,16 +732,16 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.turnToolUses = 0
 	a.latestContextUsage = nil
 	clear(a.toolCalls)
+	a.nextToolOrder = 0
 	clear(a.pendingControls)
 	sessionID := a.sessionID
 	a.mu.Unlock()
 	a.PublishTurnActive()
 	a.toolCallPrompts.clear()
 	a.children.clear()
-	a.resetCumulativeDeltas()
-	// The session was replaced, so an in-flight thinking-token estimate belongs to a
-	// context that no longer exists.
-	a.thinkingTokens.reset()
+	a.resetCumulativeOutput()
+	a.generationBuffer.Reset()
+	a.sink.ReportProgress(ResetProgress())
 	a.sink.ResetSpans()
 	// A goal belongs to a SESSION, and this call replaced the session. The
 	// create snapshot omits the `goal` key rather than spelling it null, and
@@ -776,8 +792,10 @@ type zcodeToolCall struct {
 	// name and input cache what model.streaming said before tool.updated opens the call.
 	// The scheduled update reports `inputOmitted: true, inputRef: "model_stream"` and
 	// carries no input of its own, so the stream is the ONLY place the input is sent.
-	name  string
-	input json.RawMessage
+	name     string
+	input    json.RawMessage
+	progress zcodeToolUpdated
+	order    uint64
 	// final marks a call that already reached a final state, so the batch summary that
 	// follows it does not reopen or re-close it. It is cleared at the TURN end rather
 	// than at the call's own close, because the batch arrives after the results it
@@ -790,7 +808,8 @@ type zcodeToolCall struct {
 func (a *zcodeAgent) zcodeToolCallLocked(id string) *zcodeToolCall {
 	tc := a.toolCalls[id]
 	if tc == nil {
-		tc = &zcodeToolCall{}
+		tc = &zcodeToolCall{order: a.nextToolOrder}
+		a.nextToolOrder++
 		a.toolCalls[id] = tc
 	}
 	return tc

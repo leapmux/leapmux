@@ -96,7 +96,7 @@ func TestOutputTestSink_MirrorsTheSpanBookkeepingItExtends(t *testing.T) {
 }
 
 // newTestAgent creates a minimal ClaudeCodeAgent for unit-testing HandleOutput.
-func newTestAgent(sink OutputSink) *ClaudeCodeAgent {
+func newTestAgent(sink ProviderServices) *ClaudeCodeAgent {
 	return &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID: "test-agent",
@@ -979,6 +979,19 @@ func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
 	assert.Equal(t, int64(230), sink.LastSessionInfo()["thinking_tokens"])
 }
 
+func TestClaudeWaitClearsNativeProgress(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newTestAgent(sink)
+	agent.processDone = make(chan struct{})
+	close(agent.processDone)
+	sink.ReportProgress(NativeTokenProgress("claude:thinking", 42))
+
+	require.NoError(t, agent.Wait())
+	assert.Equal(t, ProgressSnapshot{}, sink.progressCount.Snapshot())
+}
+
 func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
 	t.Parallel()
 
@@ -997,8 +1010,9 @@ func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
 
 	assert.Equal(t, 0, sink.MessageCount(), "zero-estimate thinking_tokens must not be persisted")
 	assert.Equal(t, 0, sink.SessionIDCount(), "zero-estimate thinking_tokens must not re-fire session init")
-	require.Equal(t, 1, sink.SessionInfoCount(), "zero-estimate thinking_tokens must still broadcast")
-	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"])
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1, "zero-estimate thinking_tokens must still broadcast")
+	assert.Equal(t, ProgressModelComplete, updates[0].Operation)
 }
 
 func TestHandleOutput_ThinkingTokensFractionalEstimateStillSwallowed(t *testing.T) {
@@ -1048,8 +1062,9 @@ func TestHandleOutput_ThinkingTokensMalformedEstimateStillSwallowed(t *testing.T
 
 	assert.Equal(t, 0, sink.MessageCount(), "malformed thinking_tokens must not be persisted")
 	assert.Equal(t, 0, sink.SessionIDCount(), "malformed thinking_tokens must not re-fire session init")
-	require.Equal(t, 1, sink.SessionInfoCount(), "malformed thinking_tokens must still broadcast")
-	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "an unparseable count broadcasts 0")
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1, "malformed thinking_tokens must still broadcast")
+	assert.Equal(t, ProgressModelComplete, updates[0].Operation)
 }
 
 func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T) {
@@ -1070,8 +1085,9 @@ func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T)
 
 	assert.Equal(t, 0, sink.MessageCount(), "overflowing thinking_tokens must not be persisted")
 	assert.Equal(t, 0, sink.SessionIDCount(), "overflowing thinking_tokens must not re-fire session init")
-	require.Equal(t, 1, sink.SessionInfoCount(), "overflowing thinking_tokens must still broadcast")
-	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "an out-of-range count broadcasts 0")
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1, "overflowing thinking_tokens must still broadcast")
+	assert.Equal(t, ProgressModelComplete, updates[0].Operation)
 }
 
 func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) {
@@ -1092,8 +1108,9 @@ func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) 
 
 	assert.Equal(t, 0, sink.MessageCount(), "negative thinking_tokens must not be persisted")
 	assert.Equal(t, 0, sink.SessionIDCount(), "negative thinking_tokens must not re-fire session init")
-	require.Equal(t, 1, sink.SessionInfoCount(), "negative thinking_tokens must still broadcast")
-	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "a negative count clamps to 0")
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1, "negative thinking_tokens must still broadcast")
+	assert.Equal(t, ProgressModelComplete, updates[0].Operation)
 }
 
 func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T) {
@@ -1115,8 +1132,9 @@ func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T
 	}`))
 
 	assert.Equal(t, 0, sink.MessageCount(), "finite-huge thinking_tokens must not be persisted")
-	require.Equal(t, 1, sink.SessionInfoCount(), "finite-huge thinking_tokens must still broadcast")
-	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "a finite-huge count broadcasts 0")
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 1, "finite-huge thinking_tokens must still broadcast")
+	assert.Equal(t, ProgressModelComplete, updates[0].Operation)
 }
 
 func TestParseThinkingTokens(t *testing.T) {

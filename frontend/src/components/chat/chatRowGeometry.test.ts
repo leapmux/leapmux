@@ -21,6 +21,7 @@ import { kindScopedLayoutKey, messageBandKind } from './chatRowGeometry'
 const BAND_BY_KIND: Record<MessageCategory['kind'], MessageBandKind | undefined> = {
   assistant_text: 'text',
   assistant_thinking: 'thought',
+  assistant_plan: undefined,
   // plan_execution shares the thought expander but stays a right-aligned accent
   // bubble, so it must NOT join the band set -- it would also lose its gap
   // against the assistant rows around it.
@@ -44,6 +45,7 @@ const SCOPED_KEY_BY_KIND: Record<MessageCategory['kind'], string> = {
   tool_use: '|d:split',
   tool_result: '|d:split',
   assistant_thinking: '|t:1',
+  assistant_plan: '',
   agent_prompt: '',
   assistant_text: '',
   compact_summary: '',

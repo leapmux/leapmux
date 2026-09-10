@@ -47,7 +47,7 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 
@@ -86,7 +86,7 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 
@@ -118,7 +118,7 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 

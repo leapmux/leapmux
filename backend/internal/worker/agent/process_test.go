@@ -23,3 +23,23 @@ func TestResumeFailedError(t *testing.T) {
 	assert.Contains(t, err.Error(), "no such session")
 	assert.Contains(t, err.Error(), "/clear", "the message must state the one command that recovers the tab")
 }
+
+func TestProcessExitCompletion(t *testing.T) {
+	t.Parallel()
+
+	process := &processBase{}
+	assert.Equal(t, MessageCompletionError, process.processExitCompletion())
+	process.noteIntentionalStop()
+	assert.Equal(t, MessageCompletionInterrupted, process.processExitCompletion())
+	assert.Equal(t, MessageCompletionInterrupted, (&processBase{stopped: true}).processExitCompletion())
+}
+
+func TestProcessExitCompletionDoesNotChangeAfterExit(t *testing.T) {
+	t.Parallel()
+
+	process := &processBase{}
+	process.recordProcessExit(errors.New("provider crashed"))
+	process.noteIntentionalStop()
+
+	assert.Equal(t, MessageCompletionError, process.processExitCompletion())
+}

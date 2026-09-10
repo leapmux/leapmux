@@ -135,7 +135,7 @@ func TestHelperProcessControlResponder(t *testing.T) {
 // child process and wires it up as a ClaudeCodeAgent. script is forwarded
 // as LEAPMUX_TEST_CONTROL_SCRIPT; logPath (optional) as
 // LEAPMUX_TEST_CONTROL_LOG.
-func mockStartWithResponder(ctx context.Context, opts Options, sink OutputSink, script, logPath string) (*ClaudeCodeAgent, error) {
+func mockStartWithResponder(ctx context.Context, opts Options, sink ProviderServices, script, logPath string) (*ClaudeCodeAgent, error) {
 	env := []string{
 		"GO_WANT_HELPER_PROCESS_RESPONDER=1",
 		"LEAPMUX_TEST_CONTROL_SCRIPT=" + script,
@@ -147,7 +147,7 @@ func mockStartWithResponder(ctx context.Context, opts Options, sink OutputSink, 
 }
 
 // mockStart spawns a test helper process instead of the real claude binary.
-func mockStart(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+func mockStart(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 	return spawnMockClaudeAgent(ctx, "TestHelperProcess", []string{"GO_WANT_HELPER_PROCESS=1"}, opts, sink)
 }
 
@@ -259,7 +259,7 @@ func TestHelperProcessWithInit(t *testing.T) {
 
 // mockStartWithInit spawns a test helper process that outputs an init line
 // with a session_id, simulating real Claude Code behavior.
-func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+func mockStartWithInit(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 	return spawnMockClaudeAgent(ctx, "TestHelperProcessWithInit",
 		[]string{"GO_WANT_HELPER_PROCESS_WITH_INIT=1"}, opts, sink)
 }
@@ -554,7 +554,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 	// Use mock infra to test the timeout path: a process that reads stdin
 	// but never writes a control_response, causing the handshake to timeout.
-	startUnresponsive := func(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+	startUnresponsive := func(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessUnresponsive", "--")
@@ -659,7 +659,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 	// Spawn a process that writes to stderr and exits immediately,
 	// simulating Claude Code rejecting a nested session.
-	startEarlyExit := func(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+	startEarlyExit := func(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessEarlyExit", "--")

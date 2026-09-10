@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -62,6 +62,14 @@ func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 
+	if event.SessionID != "" {
+		a.mu.Lock()
+		currentSessionID := a.sessionID
+		a.mu.Unlock()
+		if currentSessionID != "" && event.SessionID != currentSessionID {
+			return
+		}
+	}
 	if event.Seq > 0 {
 		a.mu.Lock()
 		// An event at or below the watermark was already dispatched. A subscribe replays
@@ -106,9 +114,8 @@ func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	case contracts.ZCodeEventMessageUpserted, contracts.ZCodeEventMessageRemoved,
 		contracts.ZCodeEventPartStarted, contracts.ZCodeEventPartDelta,
 		contracts.ZCodeEventPartUpserted, contracts.ZCodeEventPartRemoved:
-		// The row/part projection is the desktop application's own rendering model, and
-		// it repeats what model.streaming already streamed and what the model-response
-		// session.updated already persisted. Consuming both would double every message.
+		// The row/part projection repeats model.streaming data and the completed
+		// model response. Consuming both would duplicate every message.
 
 	case contracts.ZCodeEventPermissionRequested:
 		// The actionable copy is the interaction/requestPermission REQUEST, which
@@ -183,12 +190,12 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
-func (a *zcodeAgent) PublishTurnActive() {
+func (a *zcodeAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.
@@ -225,8 +232,8 @@ func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	a.PublishTurnActive()
 
 	if !background {
-		// A fresh user turn begins: restart the thinking-token estimate from zero.
-		a.thinkingTokens.reset()
+		a.generationBuffer.Reset()
+		a.sink.ReportProgress(ResetModelProgress())
 	}
 	slog.Debug("zcode turn started", "agent_id", a.agentID, "turn", payload.TurnNumber, "input_source", payload.InputSource)
 }
@@ -278,6 +285,13 @@ func (a *zcodeAgent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 		}
 	}
 	content := event.persistBytes()
+	completion := MessageCompletionError
+	failureKind := strings.ToLower(payload.Error.Type + " " + payload.Error.Code)
+	if strings.Contains(failureKind, "cancel") || strings.Contains(failureKind, "interrupt") {
+		completion = MessageCompletionInterrupted
+	}
+	a.flushZCodeGeneration(completion)
+	a.persistIncompleteZCodeTools(completion)
 	a.finishZCodeTurn(event, 0)
 	scheduleOrCancelAPIErrorAutoContinue(a.sink, zcodeFailureIsRetryable(payload), content)
 }
@@ -330,15 +344,26 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 		return
 	}
 	if background {
+		completion := MessageCompletionError
+		if event.Type == contracts.ZCodeEventTurnCompleted {
+			completion = MessageCompletionComplete
+		}
+		a.flushZCodeGeneration(completion)
+		a.persistIncompleteZCodeTools(completion)
 		// The background turn's own outcome is still worth recording, as a notification
 		// rather than as the user's turn end.
 		a.persistZCodeNotification(event)
 		return
 	}
+	if event.Type == contracts.ZCodeEventTurnCompleted {
+		a.flushZCodeGeneration(MessageCompletionComplete)
+		a.persistIncompleteZCodeTools(MessageCompletionError)
+	}
 
 	// Recover any tool call that never reached a final update (an aborted turn), so
 	// the next turn's progress deltas are not measured against a dead stream.
-	a.resetCumulativeDeltas()
+	a.resetCumulativeOutput()
+	a.sink.ReportProgress(ResetModelProgress())
 
 	if err := a.sink.PersistTurnEnd(zcodeAugmentWithUsage(content, a.usageSnapshot()), SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.agentID, "type", event.Type, "error", err)
@@ -374,8 +399,7 @@ type zcodeModelStreaming struct {
 	ToolName           string          `json:"toolName"`
 }
 
-// handleZCodeModelStreaming streams assistant text and reasoning, and caches what
-// the stream says about a tool call.
+// handleZCodeModelStreaming counts model deltas and caches streamed tool input.
 //
 // The app-server filters this event before it leaves: only text_delta and
 // reasoning_delta (with a non-empty delta) and the four tool_input kinds are ever
@@ -393,15 +417,22 @@ func (a *zcodeAgent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		if payload.Delta == "" {
 			return
 		}
-		a.sink.BroadcastStreamChunk([]byte(payload.Delta), "", payload.Kind)
+		a.flushZCodeGenerationScope(zcodeReasoningScope(payload.AssistantMessageID), MessageCompletionComplete)
+		textScope := zcodeTextScope(payload.AssistantMessageID)
+		a.generationBuffer.Append(textScope, AssembledMessageKindText, payload.Delta, joinVerbatim)
+		a.sink.ReportProgress(ModelTextProgress(textScope, payload.Delta))
 	case ZCodeStreamReasoningDelta:
 		if payload.Delta == "" {
 			return
 		}
-		a.sink.BroadcastStreamChunk([]byte(payload.Delta), "", payload.Kind)
-		a.thinkingTokens.observe(a.sink, payload.Delta)
+		reasoningScope := zcodeReasoningScope(payload.AssistantMessageID)
+		a.generationBuffer.Append(reasoningScope, AssembledMessageKindReasoning, payload.Delta, joinVerbatim)
+		a.sink.ReportProgress(ModelTextProgress(reasoningScope, payload.Delta))
 
 	case ZCodeStreamToolInputStart:
+		// The completed model response supplies assistant text after this event.
+		// Persist only reasoning, which that response omits.
+		a.flushZCodeGenerationKind(AssembledMessageKindReasoning, MessageCompletionComplete)
 		if payload.ToolCallID == "" {
 			return
 		}
@@ -476,8 +507,8 @@ type zcodeToolUpdated struct {
 	InputOmitted bool            `json:"inputOmitted"`
 	InputRef     string          `json:"inputRef"`
 
-	// progress. OutputBytes is the COMBINED total; the two per-stream counters are what
-	// the tails are measured against, because each tail holds one stream only.
+	// progress. OutputBytes is the combined native total. The per-stream totals
+	// supply the fallback when a provider omits it.
 	OutputBytes int64  `json:"outputBytes"`
 	StdoutBytes int64  `json:"stdoutBytes"`
 	StderrBytes int64  `json:"stderrBytes"`
@@ -582,8 +613,8 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	// The progress counters are measured from here, so a re-started call does not read
 	// its predecessor's byte totals as already-broadcast. Both streams are keyed
 	// separately, so both are dropped.
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStdout))
-	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStderr))
+	a.clearCumulativeOutput(payload.ToolCallID)
+	a.zcodeSinkForToolCall(payload.ToolCallID).ReportProgress(ResetOutputProgress(payload.ToolCallID))
 	// This used to broadcast a `zcode_running_tool` session-info key that nothing
 	// read. The shared channel for "which tool is running" is now
 	// contracts.SessionInfoKeyRunningTool, which the tool card renders as a live
@@ -600,101 +631,100 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	// https://github.com/leapmux/leapmux/issues/439
 }
 
-// streamZCodeToolProgress ships the new output of a running tool.
-//
-// A tool writes to two streams and the app-server reports both, so each one is shipped
-// on its own. Measuring one stream's tail against the OTHER's counter -- or against the
-// combined `outputBytes` -- makes the growth of either look like the growth of both: the
-// quiet stream's tail is re-broadcast while the busy stream's new bytes never appear.
-// Every compiler, `git` and `npm` invocation writes on both.
+// streamZCodeToolProgress reports the native combined byte total when present.
 func (a *zcodeAgent) streamZCodeToolProgress(payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
 		return
 	}
-	// One sink for every chunk of this call. A subagent's tool call opened its span in a
-	// CHILD transcript, so a chunk broadcast on the parent lands under a span the parent
-	// never opened -- invisible in the child tab and orphaned in the parent's.
+	a.mu.Lock()
+	tc := a.zcodeToolCallLocked(payload.ToolCallID)
+	tc.progress = payload
+	a.mu.Unlock()
 	sink := a.zcodeSinkForToolCall(payload.ToolCallID)
-	stdoutTotal, stderrTotal := payload.StdoutBytes, payload.StderrBytes
-	if stdoutTotal == 0 && stderrTotal == 0 && payload.OutputBytes > 0 {
-		// A build that sends only the COMBINED counter. It is attributable when exactly
-		// one tail is present, and then it is exact. When both are, it belongs to neither
-		// stream on its own, so both fall back to their tail's own growth -- which is
-		// exact anyway while the output is shorter than the tail's size limit.
-		switch {
-		case payload.StdoutTail != "" && payload.StderrTail == "":
-			stdoutTotal = payload.OutputBytes
-		case payload.StderrTail != "" && payload.StdoutTail == "":
-			stderrTotal = payload.OutputBytes
-		}
-	}
-	a.streamZCodeToolTail(sink, payload.ToolCallID, zcodeStreamStdout, payload.StdoutTail, stdoutTotal)
-	a.streamZCodeToolTail(sink, payload.ToolCallID, zcodeStreamStderr, payload.StderrTail, stderrTotal)
-}
-
-// zcodeStreamStdout and zcodeStreamStderr key the per-stream progress bookkeeping. They
-// are internal to this file and never reach the wire.
-const (
-	zcodeStreamStdout = "stdout"
-	zcodeStreamStderr = "stderr"
-)
-
-// streamZCodeToolTail ships one stream's new output for one tool call.
-//
-// The app-server sends a byte TOTAL plus a size-limited TAIL, not a delta. So the growth
-// is computed from the total and cut from the end of the tail. When the output grew by
-// more than the tail holds, the tail is shipped whole and the middle is lost -- it is
-// lost at the source too, because the app-server keeps only a tail.
-func (a *zcodeAgent) streamZCodeToolTail(sink OutputSink, toolCallID, stream, tail string, total int64) {
-	if tail == "" {
-		return
-	}
-	key := zcodeProgressKey(toolCallID, stream)
+	total := payload.OutputBytes
 	if total <= 0 {
-		// No counter to measure against: fall back to the tail's own growth.
-		if delta := a.recordCumulativeDelta(key, tail); delta != "" {
-			sink.BroadcastStreamChunk([]byte(delta), toolCallID, contracts.ZCodeToolKindProgress)
+		total = saturatingAdd(payload.StdoutBytes, payload.StderrBytes)
+	}
+	if total <= 0 {
+		combined := payload.StdoutTail + payload.StderrTail
+		if combined == "" {
+			return
 		}
+		observed := a.observeCumulativeOutput(payload.ToolCallID, combined, true)
+		sink.ReportProgress(OutputTotalProgress(payload.ToolCallID, observed.Total, observed.Minimum))
 		return
 	}
-	prev, reset := a.recordCumulativeLength(key, int(total))
-	if !reset && int(total) <= prev {
-		return
-	}
-	grown := int(total) - prev
-	if reset {
-		grown = len(tail)
-	}
-	chunk := tail
-	if grown < len(tail) {
-		// The counter is a BYTE count and `tail` is UTF-8, so the cut can land inside a
-		// multi-byte rune. Move it forward to the next rune start: the browser decodes
-		// each chunk on its own, and an orphan continuation byte renders as U+FFFD.
-		// Moving forward drops at most three bytes of a rune whose remainder is already
-		// unusable; moving back would repeat bytes the previous chunk already shipped.
-		cut := len(tail) - grown
-		for cut < len(tail) && !utf8.RuneStart(tail[cut]) {
-			cut++
-		}
-		chunk = tail[cut:]
-	}
-	if chunk == "" {
-		return
-	}
-	sink.BroadcastStreamChunk([]byte(chunk), toolCallID, contracts.ZCodeToolKindProgress)
-}
-
-// zcodeProgressKey is the key of one tool call's progress bookkeeping for one stream. The two
-// streams must never share a slot: their totals count different bytes, so a shared slot
-// reads one stream's growth as the other's.
-func zcodeProgressKey(toolCallID, stream string) string {
-	return toolCallID + "\x00" + stream
+	sink.ReportProgress(OutputExactTotalProgress(payload.ToolCallID, total))
 }
 
 // closeZCodeToolCall persists the tool call's final row into the transcript that
 // holds its opening row -- this agent's own, or a subagent's child transcript.
 func (a *zcodeAgent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload)
+}
+
+func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
+	a.mu.Lock()
+	toolCallIDs := make([]string, 0, len(a.toolCalls))
+	tools := make(map[string]zcodeToolUpdated)
+	orders := make(map[string]uint64)
+	for toolCallID, tool := range a.toolCalls {
+		if tool == nil || tool.final || tool.name == "" {
+			continue
+		}
+		progress := tool.progress
+		progress.Kind = contracts.ZCodeToolKindResult
+		progress.ToolCallID = toolCallID
+		progress.ToolName = tool.name
+		progress.Result, _ = json.Marshal(map[string]interface{}{
+			"success": false,
+			"content": progress.StdoutTail + progress.StderrTail,
+		})
+		tool.final = true
+		tool.name = ""
+		tool.input = nil
+		toolCallIDs = append(toolCallIDs, toolCallID)
+		tools[toolCallID] = progress
+		orders[toolCallID] = tool.order
+	}
+	a.mu.Unlock()
+	if a.isDiscardingOutput() {
+		return
+	}
+	sort.Slice(toolCallIDs, func(left, right int) bool {
+		if orders[toolCallIDs[left]] != orders[toolCallIDs[right]] {
+			return orders[toolCallIDs[left]] < orders[toolCallIDs[right]]
+		}
+		return toolCallIDs[left] < toolCallIDs[right]
+	})
+	for _, toolCallID := range toolCallIDs {
+		payload, err := json.Marshal(tools[toolCallID])
+		if err != nil {
+			slog.Warn("marshal incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+			continue
+		}
+		raw := (zcodeEventEnvelope{Type: contracts.ZCodeEventToolUpdated, Payload: payload}).persistBytes()
+		raw, err = AnnotateMessageCompletion(raw, completion)
+		if err != nil {
+			slog.Warn("annotate incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+			continue
+		}
+		sink := a.zcodeSinkForToolCall(toolCallID)
+		tool := tools[toolCallID]
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
+		}); err != nil {
+			slog.Error("persist incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
+		}
+		sink.CloseSpan(toolCallID)
+		a.clearCumulativeOutput(toolCallID)
+		sink.ReportProgress(CompleteOutputProgress(toolCallID))
+		a.applyZCodeSubagentEnd(tool)
+		a.closeZCodeSubagentChild(tool)
+		a.children.forgetTool(toolCallID)
+		a.children.forgetTitle(toolCallID)
+		a.toolCallPrompts.take(toolCallID)
+	}
 }
 
 // applyZCodeToolBatch backfills the calls a batch summary lists.
@@ -796,6 +826,8 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	case payload.TaskID != "":
 		a.handleZCodeBackgroundTask(event)
 	case payload.Content != nil && payload.StopReason != "":
+		a.flushZCodeGenerationKind(AssembledMessageKindReasoning, MessageCompletionComplete)
+		a.generationBuffer.DiscardKind(AssembledMessageKindText)
 		if payload.ContextWindow > 0 {
 			a.mu.Lock()
 			a.contextWindow = payload.ContextWindow
@@ -810,6 +842,63 @@ func (a *zcodeAgent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// and the provider request record (baseURL, requestId, maxAttempts). They carry
 		// no conversation, and persisting them would fill the transcript.
 	}
+}
+
+func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion MessageCompletion) {
+	if scopeID == "" {
+		return
+	}
+	if a.isDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+	})
+	if err != nil {
+		slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	a.sink.ReportProgress(CompleteModelProgress(scopeID))
+}
+
+func (a *zcodeAgent) flushZCodeGenerationKind(kind AssembledMessageKind, completion MessageCompletion) {
+	if a.isDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	a.persistZCodeGenerationKind(kind, completion)
+}
+
+func (a *zcodeAgent) flushZCodeGeneration(completion MessageCompletion) {
+	if a.isDiscardingOutput() {
+		a.generationBuffer.Reset()
+		return
+	}
+	if err := a.generationBuffer.PersistAll(completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.agentID, "error", err)
+	}
+}
+
+func (a *zcodeAgent) persistZCodeGenerationKind(kind AssembledMessageKind, completion MessageCompletion) {
+	if err := a.generationBuffer.PersistKind(kind, completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.agentID, "error", err)
+	}
+}
+
+func (a *zcodeAgent) persistZCodeGenerationRow(raw []byte) error {
+	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+}
+
+func zcodeReasoningScope(assistantMessageID string) string {
+	return "zcode:reasoning:" + assistantMessageID
+}
+
+func zcodeTextScope(assistantMessageID string) string {
+	return "zcode:text:" + assistantMessageID
 }
 
 // persistZCodeAssistantMessage records one finished model response.

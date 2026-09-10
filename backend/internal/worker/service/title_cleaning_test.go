@@ -628,7 +628,7 @@ func newRegistryRoot(t *testing.T) (*Service, *testResponseWriter) {
 }
 
 // registryRootSink returns a root sink for the agent newRegistryRoot created.
-func registryRootSink(svc *Service) agent.OutputSink {
+func registryRootSink(svc *Service) agent.ProviderServices {
 	return svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 

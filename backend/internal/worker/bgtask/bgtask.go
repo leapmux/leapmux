@@ -1,6 +1,6 @@
 // Package bgtask holds the provider-neutral model for the background-task
 // registry (the "Background tasks" sidebar section). Providers feed rows to the
-// worker OutputSink via neutral Upsert/Close primitives (see OutputSink);
+// worker ProviderServices via neutral Upsert/Close primitives (see ProviderServices);
 // this package owns the in-memory model, the proto / DB-column conversions,
 // and the neutral normalization rules that every provider's write meets
 // (ValidateRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
@@ -368,7 +368,7 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 }
 
 // Upsert is the neutral write shape providers hand to
-// OutputSink.UpsertBackgroundTask. It never carries seq/created_at (those are
+// ProviderServices.UpsertBackgroundTask. It never carries seq/created_at (those are
 // allocated by the sink on insert) nor ended_at (set on close).
 type Upsert struct {
 	RowKey        string

@@ -1,6 +1,5 @@
-// Package service output provides agent output persistence and broadcasting.
-// It implements the agent.OutputSink interface, backing the generic primitives
-// with DB queries, notification threading, and WatcherManager fan-out.
+// Package service persists and broadcasts agent output. OutputHandler supplies
+// the focused facets that agent.NewProviderServices composes.
 package service
 
 import (
@@ -149,7 +148,7 @@ type cachedTodo struct {
 }
 
 // OutputHandler manages agent output persistence and broadcasting.
-// It holds shared state accessed by per-agent OutputSink instances.
+// It holds shared state accessed by per-agent ProviderServices instances.
 type OutputHandler struct {
 	queries *db.Queries
 	// db backs the agent_todos snapshot transaction (delete-all + N
@@ -232,6 +231,8 @@ type OutputHandler struct {
 	// otherwise retain the child's SpanTracker + OutputHandler ref for the
 	// parent's lifetime). Populated by NewSink; entry per root.
 	rootSinks sync.Map // rootAgentID -> *agentOutputSink
+	// sinksByAgent indexes both root and child sinks for replay lookup.
+	sinksByAgent sync.Map // agentID -> *agentOutputSink
 
 	// shuttingDown is set by Service.Shutdown so a shutdown-driven StopAll
 	// leaves background-task rows active (the next boot marks them
@@ -272,12 +273,12 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
-	// turnActive carries the provider's turn flag to the input queue. It takes
-	// the flag itself, not one callback for each edge: the queue's dispatch
-	// guard must follow the SAME signal that the provider's own SendInput
+	// turnActive carries the provider's turn state to the input queue. It takes
+	// the flag and the provider's optional kind, not one callback for each edge.
+	// The queue's dispatch guard must follow the SAME signal that SendInput
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
-	turnActive func(agentID string, active bool)
+	turnState func(agentID string, state agent.TurnState)
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -367,10 +368,10 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
 }
 
-// SetTurnActiveFunc wires the input queue's turn state to the turn flag every
+// SetTurnStateFunc wires the input queue's turn state to the turn flag every
 // provider publishes. Call it before any agent output is processed.
-func (h *OutputHandler) SetTurnActiveFunc(fn func(agentID string, active bool)) {
-	h.turnActive = fn
+func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, state agent.TurnState)) {
+	h.turnState = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -399,20 +400,19 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// not retained for the parent's lifetime. A root id is its own root: clear
 	// its whole childSinks map (every child dies with the root). A child id is
 	// pruned from whichever root sink cached it.
-	if root, ok := h.rootSinks.Load(agentID); ok {
-		rootSink := root.(*agentOutputSink)
-		rootSink.childMu.Lock()
-		rootSink.childSinks = nil
-		rootSink.childMu.Unlock()
-		h.rootSinks.Delete(agentID)
+	if root, ok := h.rootSinks.LoadAndDelete(agentID); ok {
+		agentIDs := root.(*agentOutputSink).closeProgressTree()
+		for _, id := range agentIDs {
+			h.sinksByAgent.Delete(id)
+		}
+		h.clearProgressFor(agentIDs)
 	} else {
+		h.sinksByAgent.Delete(agentID)
 		h.rootSinks.Range(func(_, v any) bool {
-			rootSink := v.(*agentOutputSink)
-			rootSink.childMu.Lock()
-			if rootSink.childSinks != nil {
-				delete(rootSink.childSinks, agentID)
+			if child := v.(*agentOutputSink).detachChildSink(agentID); child != nil {
+				h.clearProgressFor(child.closeProgressTree())
+				return false
 			}
-			rootSink.childMu.Unlock()
 			return true
 		})
 	}
@@ -436,7 +436,7 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 
 // cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
 // CleanupChildAgents (root close, many children) and CleanupChildAgent (a single
-// child's closing update driven from a provider's OutputSink). Does NOT touch
+// child's closing update driven from a provider's ProviderServices). Does NOT touch
 // rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
 	h.notifMu.Delete(childID)
@@ -459,8 +459,19 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	if root, ok := h.rootSinks.Load(rootID); ok {
 		rootSink := root.(*agentOutputSink)
 		rootSink.childMu.Lock()
+		children := make([]*agentOutputSink, 0, len(rootSink.childSinks))
+		for _, child := range rootSink.childSinks {
+			children = append(children, child)
+		}
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
+		for _, child := range children {
+			agentIDs := child.closeProgressTree()
+			for _, id := range agentIDs {
+				h.sinksByAgent.Delete(id)
+			}
+			h.clearProgressFor(agentIDs)
+		}
 	}
 }
 
@@ -645,8 +656,8 @@ func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
 	return lines
 }
 
-// NewSink creates a per-agent OutputSink backed by this OutputHandler.
-func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
+// NewSink creates a per-agent ProviderServices backed by this OutputHandler.
+func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.ProviderServices {
 	s := &agentOutputSink{
 		h:             h,
 		agentID:       agentID,
@@ -655,11 +666,74 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		plugin:        agent.ProviderFor(agentProvider),
 		tracker:       h.rootTracker(agentID),
 	}
-	h.rootSinks.Store(agentID, s)
-	return s
+	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+		h.broadcastAgentSessionInfo(agentID, info)
+	})
+	h.sinksByAgent.Store(agentID, s)
+	if previous, replaced := h.rootSinks.Swap(agentID, s); replaced {
+		agentIDs := previous.(*agentOutputSink).closeProgressTree()
+		for _, id := range agentIDs {
+			if id != agentID {
+				h.sinksByAgent.Delete(id)
+			}
+		}
+		h.clearProgressFor(agentIDs)
+	}
+	return agent.NewProviderServices(s)
 }
 
-// agentOutputSink implements agent.OutputSink for a single agent.
+func (h *OutputHandler) clearProgressFor(agentIDs []string) {
+	for _, agentID := range agentIDs {
+		h.broadcastAgentSessionInfo(agentID, progressInfo(agent.ProgressSnapshot{}, generationProgressRevision.Add(1)))
+	}
+}
+
+// closeProgressTree stops this sink and every cached descendant from
+// publishing counters after a process replacement.
+func (s *agentOutputSink) closeProgressTree() []string {
+	if s == nil {
+		return nil
+	}
+	s.childMu.Lock()
+	children := make([]*agentOutputSink, 0, len(s.childSinks))
+	for _, child := range s.childSinks {
+		children = append(children, child)
+	}
+	s.childSinks = nil
+	s.progressClosed = true
+	s.childMu.Unlock()
+
+	if s.progress != nil {
+		s.progress.close()
+	}
+	agentIDs := []string{s.agentID}
+	for _, child := range children {
+		agentIDs = append(agentIDs, child.closeProgressTree()...)
+	}
+	return agentIDs
+}
+
+func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
+	s.childMu.Lock()
+	if child := s.childSinks[agentID]; child != nil {
+		delete(s.childSinks, agentID)
+		s.childMu.Unlock()
+		return child
+	}
+	children := make([]*agentOutputSink, 0, len(s.childSinks))
+	for _, child := range s.childSinks {
+		children = append(children, child)
+	}
+	s.childMu.Unlock()
+	for _, child := range children {
+		if found := child.detachChildSink(agentID); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// agentOutputSink supplies every provider-service facet for one agent.
 type agentOutputSink struct {
 	h *OutputHandler
 	// agentID is THIS sink's agent id (a child id for a child sink).
@@ -682,6 +756,9 @@ type agentOutputSink struct {
 	// span tracker). Guarded by childMu.
 	childMu    sync.Mutex
 	childSinks map[string]*agentOutputSink
+	// progressClosed prevents a replaced process from caching a new child
+	// publisher after closeProgressTree detached its old children.
+	progressClosed bool
 
 	// sessionInfoMu guards lastSessionInfo against concurrent
 	// BroadcastSessionInfo calls. Agent handlers may broadcast from
@@ -695,6 +772,7 @@ type agentOutputSink struct {
 	// frontend would observe.
 	sessionInfoMu   sync.Mutex
 	lastSessionInfo map[string][]byte
+	progress        *generationProgressPublisher
 
 	// catalogMu serializes the read-build-persist of the option-group catalog in
 	// BroadcastStatusActive. Every BroadcastStatusActive for an agent runs on this one
@@ -707,7 +785,7 @@ type agentOutputSink struct {
 	catalogMu sync.Mutex
 }
 
-// --- OutputSink interface implementation ---
+// --- Provider-service facets ---
 
 func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
@@ -771,22 +849,22 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	return nil
 }
 
-// SetTurnActive publishes the provider's own turn bookkeeping. Providers call
+// SetTurnState publishes the provider's own turn bookkeeping. Providers call
 // it from the same site that mutates their private flag, so the two cannot
 // drift.
 //
-// Both consumers are here, because one flag answers both: the activity latch
-// that a client renders, and the input queue that holds a message until the
-// running turn ends. The queue used to have a signal of its own, which only a
-// turn the queue itself dispatched ever raised -- so a turn the agent process
-// started on its own was invisible to it, and the next message the user sent
-// went into that turn instead of waiting behind it.
+// Both consumers are here, because one state answers both: the activity latch
+// that a client renders, and the input queue that holds a message. The queue
+// uses kind to offer steering only when the provider classifies the turn. The
+// queue used to have a signal of its own. Only a queue dispatch raised it.
+// Thus, the queue did not see a turn that the agent process started. The next
+// user message then entered that turn instead of waiting behind it.
 //
 // The queue call does NOT depend on the latch's edge. The latch resets its
 // record at every process boundary, and a reconciliation that the reset drops
 // leaves the queue on a turn state the provider no longer reports. The queue
 // answers idempotently instead, and reports its own change.
-func (s *agentOutputSink) SetTurnActive(active bool, seq uint64) {
+func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	// Both consumers are downstream of ONE ordering test, because both latch: a
 	// stale value that reaches either one is never corrected by a later publish
 	// of the same state. A child publishes through its own sink, so the test
@@ -795,9 +873,9 @@ func (s *agentOutputSink) SetTurnActive(active bool, seq uint64) {
 	if !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
 		return
 	}
-	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
-	if s.h.turnActive != nil {
-		s.h.turnActive(s.agentID, active)
+	s.h.setTurnActive(s.agentID, s.rootAgentID, state.Active)
+	if s.h.turnState != nil {
+		s.h.turnState(s.agentID, state)
 	}
 }
 
@@ -847,34 +925,8 @@ func (s *agentOutputSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
 	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
 }
 
-func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
-	if !s.tracker.ShouldBroadcastStreamChunk(spanID) {
-		return
-	}
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event: &leapmuxv1.AgentEvent_StreamChunk{
-			StreamChunk: &leapmuxv1.AgentStreamChunk{
-				MessageId:     s.agentID,
-				Delta:         content,
-				AgentProvider: s.agentProvider,
-				SpanId:        spanID,
-				Method:        method,
-			},
-		},
-	})
-}
-
-func (s *agentOutputSink) BroadcastStreamEnd(spanID string) {
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event: &leapmuxv1.AgentEvent_StreamEnd{
-			StreamEnd: &leapmuxv1.AgentStreamEnd{
-				MessageId: s.agentID,
-				SpanId:    spanID,
-			},
-		},
-	})
+func (s *agentOutputSink) ReportProgress(update agent.ProgressUpdate) {
+	s.progress.report(update)
 }
 
 func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte) string {
@@ -900,11 +952,15 @@ func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte
 }
 
 func (s *agentOutputSink) DeleteControlRequest(requestID string) {
-	_ = s.h.queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
-		AgentID:   s.agentID,
+	s.h.deleteControlRequest(s.agentID, s.rootAgentID, requestID)
+}
+
+func (h *OutputHandler) deleteControlRequest(agentID, rootAgentID, requestID string) {
+	_ = h.queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
+		AgentID:   agentID,
 		RequestID: requestID,
 	})
-	s.h.noteControlRequestsRemoved(s.agentID, s.rootAgentID, requestID)
+	h.noteControlRequestsRemoved(agentID, rootAgentID, requestID)
 }
 
 func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
@@ -1504,18 +1560,9 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 // BroadcastSessionInfo broadcasts unconditionally -- always broadcast, never
 // cache.
 //
-// The rest of the vocabulary (cost, rate limits, context usage) carries
-// meaningfully across turns and benefits from the dedup. These two do not. They
-// are live per-turn state, and the FRONTEND drops them at boundaries the worker
-// cannot all observe.
-//
-//   - thinking_tokens: a per-turn running count the frontend drops at the
-//     turn-end divider, at each interleaved thinking phase, and when the agent
-//     pauses for input.
-//   - running_tool: a per-span record the frontend drops when the tool's result
-//     row lands, and at every turn boundary and agent boundary.
-//
-// A dedup on either one suppresses a re-broadcast of a value that the frontend
+// The rest of the vocabulary carries across turns and benefits from the dedup.
+// Running-tool progress is live state that the frontend drops when its result
+// row arrives. A dedup suppresses a repeat of a value that the frontend
 // already dropped, and the counter or the badge then stays hidden until a
 // strictly different value arrives. Both carry unique values in normal
 // operation, and the frontend stores drop an identical update themselves, so
@@ -1525,8 +1572,7 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 // strings that the handlers broadcast. Hand-copied literals could drift and
 // re-enable the dedup without a word.
 var dedupExemptSessionInfoKeys = map[string]struct{}{
-	contracts.SessionInfoKeyThinkingTokens: {},
-	contracts.SessionInfoKeyRunningTool:    {},
+	contracts.SessionInfoKeyRunningTool: {},
 }
 
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
@@ -1586,10 +1632,8 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 // bytes unchanged, so the replayed frame carries the exact encoding the live
 // one did.
 //
-// A dedup-exempt key is absent by construction, and that is what a replay
-// wants. `thinking_tokens` and `running_tool` are per-turn state that the
-// frontend drops at boundaries the worker cannot all observe, so replaying
-// either one restores a counter or a tool badge that already ended.
+// A dedup-exempt key is absent by construction. The separate progress
+// publisher supplies active counter snapshots during replay.
 func (s *agentOutputSink) sessionInfoSnapshot() map[string]interface{} {
 	s.sessionInfoMu.Lock()
 	defer s.sessionInfoMu.Unlock()
@@ -1668,6 +1712,14 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	default:
 		return 0, fmt.Errorf("refusing to persist message %q for agent %q with unknown mark_type %d", params.ID, params.AgentID, params.MarkType)
 	}
+	if params.AssembledKind < int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED) ||
+		params.AssembledKind > int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN) {
+		return 0, fmt.Errorf("refusing to persist message %q with unknown assembled kind %d", params.ID, params.AssembledKind)
+	}
+	if params.Completion < int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED) ||
+		params.Completion > int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR) {
+		return 0, fmt.Errorf("refusing to persist message %q with unknown completion %d", params.ID, params.Completion)
+	}
 	return q.CreateMessage(ctx, params)
 }
 
@@ -1700,6 +1752,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	}
 
 	msgID := id.Generate()
+	assembledKind, completion := agent.MessageMetadata(contentJSON)
 	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := nowMillis()
 
@@ -1717,6 +1770,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
 		MarkType:           span.MarkType,
+		AssembledKind:      int64(assembledKind),
+		Completion:         int64(completion),
 		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
@@ -1741,6 +1796,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanColor:          spanColor,
 		SpanLines:          spanLines,
 		MarkType:           span.MarkType,
+		AssembledKind:      assembledKind,
+		Completion:         completion,
 	})
 
 	// Update the provider-neutral to-do list off the just-persisted
@@ -2244,8 +2301,8 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 	// If a flapping ProviderScoped notification (e.g.
 	// remoteControl/status/changed) collapses into the existing tail and
 	// produces a byte-identical slice, skip the DB write + broadcast. The
-	// false return tells the reset decorator no frontend clear fired, so it must
-	// not reset the thinking-token estimate for this collapsed notification.
+	// The false return tells the reset decorator that no visible row arrived.
+	// It must not reset the live progress counters in that case.
 	oldMessages := wrapper.Messages
 	nextMessages := append(slices.Clone(oldMessages), contentJSON)
 	nextMessages = consolidateNotificationThread(nextMessages, plugin)
@@ -2423,16 +2480,30 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 //
 // The sink already keeps the last value of each key for the dedup, so this
 // costs one map copy and adds no new state to keep in step.
-func (h *OutputHandler) SessionInfoReplayEvent(rootID string) *leapmuxv1.AgentEvent {
-	sink, ok := h.rootSinks.Load(rootID)
-	if !ok {
+func (h *OutputHandler) SessionInfoReplayEvent(agentID string) *leapmuxv1.AgentEvent {
+	sink := h.sinkForAgent(agentID)
+	if sink == nil {
 		return nil
 	}
-	info := sink.(*agentOutputSink).sessionInfoSnapshot()
+	info := sink.sessionInfoSnapshot()
+	if info == nil {
+		info = make(map[string]interface{})
+	}
+	for key, value := range sink.progress.snapshotInfo() {
+		info[key] = value
+	}
 	if len(info) == 0 {
 		return nil
 	}
-	return sessionInfoEvent(rootID, info)
+	return sessionInfoEvent(agentID, info)
+}
+
+func (h *OutputHandler) sinkForAgent(agentID string) *agentOutputSink {
+	value, ok := h.sinksByAgent.Load(agentID)
+	if !ok {
+		return nil
+	}
+	return value.(*agentOutputSink)
 }
 
 // PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.

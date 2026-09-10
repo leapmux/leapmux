@@ -18,6 +18,7 @@ describe('acpExecuteFromToolCall', () => {
     expect(source).toEqual({
       output: 'hi\n',
       exitCode: 0,
+      truncated: false,
       isError: false,
     })
   })
@@ -57,6 +58,7 @@ describe('acpExecuteFromToolCall', () => {
     expect(source).toEqual({
       output: 'hi\n',
       exitCode: 0,
+      truncated: false,
       isError: false,
     })
   })

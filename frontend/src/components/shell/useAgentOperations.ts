@@ -508,8 +508,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    * this is the local state that NOTHING else reclaims. `forgetAgent` has no
    * other production caller, and the tombstone-driven metadata sweep drops
    * `tabMetadata` rows only -- so an agent tab that leaves without this call
-   * strands its loaded window, live tail, command streams, span index, to-dos,
-   * streaming text, and the input queue snapshot for the life of the page.
+   * strands its loaded window, live tail, span index, to-dos, and input queue
+   * snapshot for the life of the page.
    *
    * Every path that retires an agent tab must call it: the ordinary close
    * below, and the descendant sweep that follows the worker's answer.

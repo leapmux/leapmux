@@ -73,8 +73,8 @@ export function createLiveTailTracker() {
     settleToWindow(agentId: string, liveSeqAtEntry: bigint, windowTail: bigint) {
       // Never clamp the recorded tail to 0n: an empty window tail means the server
       // range emptied during the fetch, not that
-      // we caught up. Erasing it would make caughtUp trivially true and hide the
-      // streaming tail while newer history still exists. An AUTHORITATIVE empty (an
+      // we caught up. Erasing it would make caughtUp trivially true while newer
+      // history still exists. An authoritative empty (an
       // empty LATEST response) is handled by resetToEmptyIfStale instead.
       if (windowTail === 0n)
         return

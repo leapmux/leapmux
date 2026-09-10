@@ -233,20 +233,6 @@ func TestZCodeSubagent_ABatchSummaryClosesInTheChildTranscript(t *testing.T) {
 }
 
 // The progress stream belongs to the transcript that holds the row it updates.
-func TestZCodeSubagent_ProgressStreamsIntoTheChildTranscript(t *testing.T) {
-	t.Parallel()
-
-	a, sink := spawnAZCodeSubagent(t)
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"sub-1","source":"subagent","parentToolCallId":"spawn-1",
-		  "stdoutTail":"one file","outputBytes":8}`))
-
-	child, ok := sink.ChildSink(sink.ChildAgentIDs()[0]).(*testSink)
-	require.True(t, ok)
-	require.Len(t, child.StreamChunks(), 1)
-	assert.Equal(t, "one file", string(child.StreamChunks()[0].Content))
-	assert.Empty(t, sink.StreamChunks())
-}
 
 // The spawn's own description gives the TASK its title. The subagent's updates describe each
 // command it runs, so a row labelled from one of those reads "ls -la" where the

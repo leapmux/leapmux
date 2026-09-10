@@ -88,31 +88,6 @@ function forwardedUserText(id: string, seq: bigint, parentToolUseId: string): Ag
 }
 
 describe('createclassifiedentrycache', () => {
-  it('re-classifies a hidden reasoning row visible<->hidden as its command stream starts and clears', () => {
-    createRoot((dispose) => {
-      const [streaming, setStreaming] = createSignal(false)
-      const messages = [assistantText('a1', 1n, 'hi'), emptyCodexReasoning('r1', 2n, 'span-1')]
-      const cache = createClassifiedEntryCache({
-        messages: () => messages,
-        hasRenderableStreamBySpanId: () => streaming(),
-        showHiddenMessages: () => false,
-      })
-      // No stream yet -> the empty reasoning row is hidden.
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1'])
-      // The span starts streaming -> the row flips to visible (same seq). The
-      // reactive presence read wakes the memo; the freshness check rebuilds it.
-      setStreaming(true)
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1', 'r1'])
-      // The stream is CLEARED with NO messages() change (streamEnd / completion):
-      // the presence flip alone must re-classify the row back to hidden. Reading
-      // presence reactively (not untracked) is exactly what makes THIS direction
-      // work -- the bug was the row freezing visible after the stream ended.
-      setStreaming(false)
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1'])
-      dispose()
-    })
-  })
-
   it('rebuilds a span row\'s entry when its paired tool_use sibling becomes available', () => {
     createRoot((dispose) => {
       const [hasSibling, setHasSibling] = createSignal(false)
@@ -359,7 +334,6 @@ describe('createclassifiedentrycache', () => {
       ])
       const cache = createClassifiedEntryCache({
         messages,
-        hasRenderableStreamBySpanId: () => false, // r1 stays hidden
         showHiddenMessages: () => false,
       })
       // Read ONLY hasVisibleEntries() -- never visibleEntries(). It still caches
@@ -387,7 +361,6 @@ describe('createclassifiedentrycache', () => {
       ])
       const cache = createClassifiedEntryCache({
         messages,
-        hasRenderableStreamBySpanId: () => false, // r1 stays hidden
         showHiddenMessages: () => false,
       })
       expect(cache.hasVisibleEntries()).toBe(true)

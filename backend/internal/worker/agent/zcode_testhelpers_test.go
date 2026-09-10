@@ -69,12 +69,12 @@ type zcodeSentRequest struct {
 // child process is needed -- and none is started, which keeps the suite free of the
 // ZCode installation the launch resolver looks for. The context is live so a code
 // path that consults a.ctx does not read a nil channel.
-func newZCodeTestAgent(t *testing.T, sink OutputSink) *zcodeAgent {
+func newZCodeTestAgent(t *testing.T, sink ProviderServices) *zcodeAgent {
 	t.Helper()
 	return newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
 }
 
-func newZCodeTestAgentWithStdin(t *testing.T, sink OutputSink, stdin *zcodeRecordedStdin) *zcodeAgent {
+func newZCodeTestAgentWithStdin(t *testing.T, sink ProviderServices, stdin *zcodeRecordedStdin) *zcodeAgent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	// A handler may start an RPC whose reply never comes (nothing answers this
@@ -97,7 +97,7 @@ func newZCodeTestAgentWithStdin(t *testing.T, sink OutputSink, stdin *zcodeRecor
 		toolCalls:       map[string]*zcodeToolCall{},
 		pendingControls: map[string]json.RawMessage{},
 	}
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
 }
 

@@ -159,6 +159,22 @@ describe('opencode classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
+  it('classifies a retained in-progress tool update as tool output', () => {
+    const parent = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-1',
+      status: 'in_progress',
+      kind: 'execute',
+      _leapmux: { completion: 'interrupted' },
+    }
+    expect(plugin.classify(input(parent))).toEqual({
+      kind: 'tool_use',
+      toolName: 'execute',
+      toolUse: parent,
+      content: [],
+    })
+  })
+
   it('classifies plan as tool_use', () => {
     const parent = {
       sessionUpdate: 'plan',

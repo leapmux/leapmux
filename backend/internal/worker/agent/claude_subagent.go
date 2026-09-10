@@ -519,7 +519,7 @@ func (a *ClaudeCodeAgent) claudeRestartSpawnSpan(childID string) string {
 	return span
 }
 
-func lookupClaudeKnownTask(sink OutputSink, taskID string) claudeKnownTask {
+func lookupClaudeKnownTask(sink BackgroundTaskServices, taskID string) claudeKnownTask {
 	childID, status, exists, err := sink.LookupBackgroundTask(taskID)
 	if err != nil {
 		slog.Warn("claude task_started: registry lookup failed", "task_id", taskID, "error", err)

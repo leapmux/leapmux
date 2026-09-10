@@ -173,9 +173,8 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
    * worker -- nothing renders it as one. Its only reader is the cleanup effect
    * in useWorkspaceConnection, which patches this worker's READY terminals to
    * DISCONNECTED, drops its ACTIVE agents back to INACTIVE, and clears their
-   * streaming text. Skipping that for a fatal close left a half-streamed
-   * assistant message rendered as in-flight forever, with nothing left that
-   * would ever reconnect and finish it.
+   * live counters. A fatal close needs the same cleanup because no reconnect
+   * will send the missing lifecycle event.
    *
    * Telling the USER is a separate decision, and `announceOutage` owns it.
    */

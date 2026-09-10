@@ -37,7 +37,7 @@ type PiAgent struct {
 	model         string
 	thinkingLevel string // stored as the agent's "effort"
 	workingDir    string
-	sink          OutputSink
+	sink          ProviderServices
 
 	sessionID   string // Pi's runtime sessionId (rotates on new_session)
 	sessionFile string // Pi's persistent session file path (durable identifier)
@@ -51,10 +51,6 @@ type PiAgent struct {
 	// duration of its own. Zero between turns, and zero for a turn whose start
 	// this worker never saw -- the divider then omits the duration.
 	turnStartedAt time.Time
-	// thinkingTokens is the per-phase generated-token estimate driving the
-	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
-	thinkingTokens thinkingTokenEstimator
-
 	// Pi exposes token/cost information in assistant messages and via
 	// get_session_stats. Keep the latest normalized snapshot here so persisted
 	// message_end / agent_end events can rehydrate the frontend after reconnect.
@@ -62,6 +58,9 @@ type PiAgent struct {
 	sessionCostKnown   bool
 	latestContextUsage map[string]any
 	usageGeneration    uint64
+	generationBuffer   GenerationBuffer
+	toolStates         map[string]*piToolState
+	nextToolOrder      uint64
 
 	availableModels []*ModelInfo
 	// modelProviders maps modelID -> underlying provider (e.g.
@@ -75,11 +74,6 @@ type PiAgent struct {
 	// an int64 atom.
 	nextReqID atomic.Int64
 
-	// toolCallDescriptions records toolCallId -> description (from the
-	// tool_execution_start input) for the background-task registry title.
-	// Guarded by mu. An entry is dropped on the matching tool_execution_end,
-	// and the whole map is cleared when the session is replaced.
-	toolCallDescriptions map[string]string
 	// toolCallPrompts records toolCallId -> the spawn's FULL prompt (the
 	// description above is a one-line label). Held until the background re-key
 	// creates the child transcript, so a background Pi subagent's tab opens on
@@ -160,7 +154,7 @@ func piResumeArgs(resumeSessionID, homeDir string) ([]string, error) {
 // `agent_session_id` after a failed start, so a stored handle that Pi refuses
 // keeps failing until `/clear` replaces it -- which is what resumeFailedError
 // tells the user to send.
-func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartPi(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
@@ -198,8 +192,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
 	}
-	// Reset the thinking-token estimate centrally at every frontend-clear boundary.
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -386,12 +379,26 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 	// write as delivery acceptance, so the response wait runs separately.
 	return a.sendPiCommandDetached(PiCommandPrompt, payload, func(err error) {
 		if err != nil {
-			slog.Error("pi prompt failed", "agent_id", a.agentID, "error", err)
-			a.sink.PersistLeapMuxNotification(map[string]any{
-				"type":  contracts.NotificationTypeAgentError,
-				"error": err.Error(),
-			})
+			a.handlePiPromptFailure(err, steer)
 		}
+	})
+}
+
+func (a *PiAgent) handlePiPromptFailure(err error, steer bool) {
+	if a.IsStopped() {
+		// Stop owns incomplete-output persistence. A detached waiter can fail
+		// after the process closes, but that is not a second visible error.
+		return
+	}
+	if !steer {
+		a.flushPiGeneration(MessageCompletionError)
+		a.persistIncompletePiTools(MessageCompletionError)
+		a.sink.ReportProgress(ResetProgress())
+	}
+	slog.Error("pi prompt failed", "agent_id", a.agentID, "steer", steer, "error", err)
+	a.sink.PersistLeapMuxNotification(map[string]any{
+		"type":  contracts.NotificationTypeAgentError,
+		"error": err.Error(),
 	})
 }
 
@@ -401,6 +408,7 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 // running it on a goroutine instead would race the stopped-check inside
 // sendPiCommand and drop the abort in the common case.
 func (a *PiAgent) Stop() {
+	a.noteIntentionalStop()
 	a.mu.Lock()
 	stopped := a.stopped
 	turnActive := a.currentTurnActive
@@ -411,6 +419,19 @@ func (a *PiAgent) Stop() {
 		_, _ = a.sendPiCommand(PiCommandAbort, nil, 1*time.Second)
 	}
 	a.processBase.Stop()
+	a.flushPiGeneration(MessageCompletionInterrupted)
+	a.persistIncompletePiTools(MessageCompletionInterrupted)
+	a.sink.ReportProgress(ResetProgress())
+}
+
+// Wait retains unfinished model output after an unexpected process exit.
+func (a *PiAgent) Wait() error {
+	err := a.processBase.Wait()
+	completion := a.processExitCompletion()
+	a.flushPiGeneration(completion)
+	a.persistIncompletePiTools(completion)
+	a.sink.ReportProgress(ResetProgress())
+	return err
 }
 
 // Interrupt aborts the running Pi turn by sending the `abort`
@@ -451,6 +472,8 @@ func (a *PiAgent) ClearContext() (string, bool) {
 		slog.Error("pi ClearContext: get_state failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
+	a.flushPiGeneration(MessageCompletionInterrupted)
+	a.persistIncompletePiTools(MessageCompletionInterrupted)
 	a.applyStateResponse(stateRaw)
 	a.mu.Lock()
 	a.currentTurnActive = false
@@ -469,16 +492,14 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	// the life of the process, and a reused tool-call id would open the next
 	// transcript on the previous session's instruction (mirrors
 	// acpBase.ClearContext).
-	clear(a.toolCallDescriptions)
+	clear(a.toolStates)
+	a.nextToolOrder = 0
 	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()
 	a.mu.Unlock()
 	a.PublishTurnActive()
-	// The session was replaced; drop any in-flight thinking-token estimate so it
-	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
-	// agent_start also resets, but resetting here keeps every provider's context
-	// clear consistent rather than relying on that follow-up.
-	a.thinkingTokens.reset()
+	// The session was replaced. Clear all live progress before the next turn.
+	a.sink.ReportProgress(ResetProgress())
 	if handle == "" {
 		return "", false
 	}

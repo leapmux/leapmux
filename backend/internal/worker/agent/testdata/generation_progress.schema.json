@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "generation_progress.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "providers"],
+  "properties": {
+    "$schema": { "type": "string", "const": "generation_progress.schema.json" },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "events", "expected"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["operation", "scope"],
+              "properties": {
+                "operation": {
+                  "enum": ["model_text", "native_tokens", "output_delta", "output_total", "model_complete", "output_complete", "reset"]
+                },
+                "scope": { "type": "string" },
+                "text": { "type": "string" },
+                "value": { "type": "integer", "minimum": 0 },
+                "minimum": { "type": "boolean" }
+              }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["thinkingTokens", "outputBytes", "outputBytesMinimum"],
+            "properties": {
+              "thinkingTokens": { "type": "integer", "minimum": 0 },
+              "outputBytes": { "type": "integer", "minimum": 0 },
+              "outputBytesMinimum": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

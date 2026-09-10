@@ -2,8 +2,9 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { forwardDelta, shapeFamily, ThinkingTokenCount } from './ThinkingTokenCount'
-import * as styles from './ThinkingTokenCount.css'
+import { forwardDelta, shapeFamily } from './AnimatedCount'
+import * as styles from './AnimatedCount.css'
+import { ThinkingTokenCount } from './ThinkingTokenCount'
 
 // The visible odometer reads data-digit off each rolling column, so tests can
 // assert the displayed value without depending on CSS transforms. Columns are

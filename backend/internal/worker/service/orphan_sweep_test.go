@@ -116,7 +116,8 @@ func TestCleanupChildAgentsBatchPrunesWithoutRootScan(t *testing.T) {
 
 	// Seed a root sink + per-child span trackers (the state CleanupChildAgents
 	// reaps).
-	rootSink := svc.Output.NewSink("root-batch", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
+	svc.Output.NewSink("root-batch", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	rootSink := requireRootOutputSink(t, svc.Output, "root-batch")
 	for _, childID := range []string{"child-a", "child-b", "child-c"} {
 		svc.Output.childTracker(childID)
 	}

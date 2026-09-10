@@ -422,7 +422,7 @@ message AgentInputQueueSnapshot {
   AgentInputQueuePauseReason pause_reason = 4;
   bool active_turn = 5;
   repeated QueuedAgentInput items = 6;
-  AgentInputKind active_turn_kind = 7;
+  bool active_turn_steerable = 7;
 }
 
 message AgentInputQueueChanged {
@@ -513,6 +513,20 @@ message SendAgentRawMessageRequest {
 message SendAgentRawMessageResponse {}
 
 // AgentChatMessage represents a complete message in the conversation.
+enum AssembledMessageKind {
+  ASSEMBLED_MESSAGE_KIND_UNSPECIFIED = 0;
+  ASSEMBLED_MESSAGE_KIND_TEXT = 1;
+  ASSEMBLED_MESSAGE_KIND_REASONING = 2;
+  ASSEMBLED_MESSAGE_KIND_PLAN = 3;
+}
+
+enum MessageCompletion {
+  MESSAGE_COMPLETION_UNSPECIFIED = 0;
+  MESSAGE_COMPLETION_COMPLETE = 1;
+  MESSAGE_COMPLETION_INTERRUPTED = 2;
+  MESSAGE_COMPLETION_ERROR = 3;
+}
+
 message AgentChatMessage {
   string id = 1;
   MessageSource source = 2;
@@ -541,24 +555,8 @@ message AgentChatMessage {
   // Scroll-rail jump-mark classifier, set at write time. MARK_TYPE_UNSPECIFIED for
   // ordinary rows. Carried on persisted rows, ListAgentMessages pages, and replays.
   MarkType mark_type = 16;
-}
-
-message AgentStreamChunk {
-  string message_id = 1;
-  // The provider's own streamed delta. Codex sends plain text; an ACP provider
-  // sends its extracted text. No provider sends a raw envelope: a chunk with no
-  // span_id is appended verbatim to the chat's free-form streaming text, so an
-  // unextracted line prints into the transcript as JSON.
-  bytes delta = 2;
-  AgentProvider agent_provider = 3; // Provider that produced this chunk
-  string span_id = 4; // Optional target tool/item span for inline streaming
-  string method = 5; // Original provider notification method for classifying the stream
-}
-
-// AgentStreamEnd signals that streaming for a message is complete.
-message AgentStreamEnd {
-  string message_id = 1;
-  string span_id = 2; // Optional target tool/item span for inline streaming
+  AssembledMessageKind assembled_kind = 17;
+  MessageCompletion completion = 18;
 }
 
 // AgentStatusChange notifies of agent status transitions.

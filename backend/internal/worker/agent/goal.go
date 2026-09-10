@@ -397,7 +397,7 @@ func (r goalTextRoute) commandText(action GoalAction, objective string) (string,
 }
 
 // observe writes the goal that a delivered command installed.
-func (r goalTextRoute) observe(sink OutputSink, delivery GoalCommandDelivery, text string) {
+func (r goalTextRoute) observe(sink GoalServices, delivery GoalCommandDelivery, text string) {
 	if delivery == GoalDeliverySteer && !r.steerCarriesCommand {
 		return
 	}

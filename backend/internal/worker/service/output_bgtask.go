@@ -612,7 +612,7 @@ func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status 
 	}
 }
 
-// --- agentOutputSink: OutputSink registry + child-transcript methods ---
+// --- agentOutputSink: ProviderServices registry + child-transcript methods ---
 
 // EnsureChildAgent resolves (and creates on first sight) the virtual child
 // agent spawned by the tool_use span spawnSpanID in THIS sink's transcript.
@@ -917,7 +917,7 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 	return nil
 }
 
-// ChildSink returns an OutputSink bound to the child agent's transcript. The
+// ChildSink returns a ProviderServices value for the child transcript. The
 // child sink has its OWN span tracker (registered with kind=child so cleanup
 // and the orphan sweep distinguish it from a root tracker); transcript
 // primitives act on the child. Registry primitives on a child sink write under
@@ -931,12 +931,12 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 //     (SpanInfo{}); the child tracker is created but quiescent. ACP's own
 //     tool-call spans run on the ROOT sink.
 //   - Pi: no child sink; child linkage is registry-only.
-func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
+func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	if s.childSinks != nil {
 		if c, ok := s.childSinks[childAgentID]; ok {
-			return c
+			return agent.NewProviderServices(c)
 		}
 	}
 	child := &agentOutputSink{
@@ -948,11 +948,19 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 		plugin:        s.plugin,
 		tracker:       s.h.childTracker(childAgentID),
 	}
+	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+		s.h.broadcastAgentSessionInfo(childAgentID, info)
+	})
+	if s.progressClosed {
+		child.progress.close()
+		return agent.NewProviderServices(child)
+	}
 	if s.childSinks == nil {
 		s.childSinks = make(map[string]*agentOutputSink)
 	}
 	s.childSinks[childAgentID] = child
-	return child
+	s.h.sinksByAgent.Store(childAgentID, child)
+	return agent.NewProviderServices(child)
 }
 
 func (s *agentOutputSink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
@@ -964,7 +972,7 @@ func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byt
 }
 
 // PersistChildPrompt writes the spawn prompt as the child transcript's first
-// message. See the OutputSink doc for the contract; the emptiness check is what
+// message. See the ProviderServices doc for the contract; the emptiness check is what
 // makes it idempotent, and it is deliberately a READ of the child's max seq
 // rather than a flag: a worker restart loses a flag but not the transcript.
 func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error {
@@ -1007,7 +1015,7 @@ func userMessageContent(text string) ([]byte, error) {
 }
 
 // PersistChildUserMessage appends a delivered message to a child transcript.
-// See the OutputSink doc for the contract. Unlike PersistChildPrompt there is
+// See the ProviderServices doc for the contract. Unlike PersistChildPrompt there is
 // NO emptiness guard: this message belongs wherever the transcript currently
 // ends, which is the point of it.
 func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) error {
@@ -1162,11 +1170,15 @@ func (h *OutputHandler) closingChildTracker(childAgentID string) *SpanTracker {
 // Idempotent; a no-op when the child was never cached.
 func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 	s.h.cleanupChildMaps(childAgentID)
-	s.childMu.Lock()
-	if s.childSinks != nil {
-		delete(s.childSinks, childAgentID)
+	if child := s.detachChildSink(childAgentID); child != nil {
+		agentIDs := child.closeProgressTree()
+		for _, id := range agentIDs {
+			s.h.sinksByAgent.Delete(id)
+		}
+		s.h.clearProgressFor(agentIDs)
+	} else {
+		s.h.sinksByAgent.Delete(childAgentID)
 	}
-	s.childMu.Unlock()
 }
 
 // --- Registry write primitives on the sink ---

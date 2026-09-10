@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { parseMessageContent } from '~/lib/messageParser'
 import { truncatePreview } from '~/lib/textTruncate'
+import { appendCompletionMarker, parseProviderMessageCompletion } from './assembledMessage'
 import { defaultMarkPreview } from './markPreviewShared'
 import { classifyAgentMessage } from './messageClassification'
 import { controlResponsePreviewText, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
@@ -63,7 +64,10 @@ export function messageMarkPreviewText(message: AgentChatMessage): string | null
     // would both re-run the default a second time -- claude's previewText already falls
     // back to it internally -- and rob a plugin of the ability to suppress a preview.)
     const previewText = plugin?.previewText
-    return previewText ? previewText(category, parsed) : defaultMarkPreview(category, parsed)
+    const preview = previewText ? previewText(category, parsed) : defaultMarkPreview(category, parsed)
+    if (preview === null)
+      return null
+    return truncatePreview(appendCompletionMarker(preview, parseProviderMessageCompletion(parsed.parentObject)))
   }
   catch (err) {
     console.warn('mark preview extraction failed', { id: message.id, err })

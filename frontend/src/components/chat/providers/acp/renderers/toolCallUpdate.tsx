@@ -235,7 +235,6 @@ export function ToolCallUpdateMessage(props: {
   })
 
   // ACP `{ type: 'terminal', terminalId }` content while a host terminal runs.
-  // Badge only — no live streaming in this PR.
   const terminalRef = createMemo(() => {
     const context = props.context
     const toolUse = props.toolUse

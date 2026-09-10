@@ -62,8 +62,7 @@ export const BAND_BORDER_PX = 1
 
 /**
  * Per-row inputs that make a cached DOM measurement stale even when the message
- * id stays stable. Live streaming text is deliberately excluded: streaming rows
- * measure at the tail instead of invalidating the cache per delta.
+ * id stays stable.
  */
 export interface HeightKeyInputs {
   /** Message seq -- a reseq / in-place consolidation bumps it. */
@@ -95,8 +94,6 @@ export interface HeightKeyInputs {
   uiVersion: number
   /** Content version -- a same-seq in-place body replacement bumps it. */
   contentVersion: number
-  /** Whether a renderable command stream is present for the row. */
-  hasCommandStream: boolean
   /**
    * Whether the row was classified as part of a SUBAGENT's own transcript. The
    * flag re-classifies a forwarded row between a collapsed "Prompt" card and a
@@ -109,7 +106,7 @@ export interface HeightKeyInputs {
 export function buildHeightKey(inputs: HeightKeyInputs): string {
   const toolUseRevision = `${inputs.toolUseRevisionKey.length}:${inputs.toolUseRevisionKey}`
   const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
-  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.hasCommandStream ? 'c' : ''}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.isChildTranscript ? 'k' : ''}`
 }
 
 /**

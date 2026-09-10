@@ -80,14 +80,11 @@ const GEOMETRY_KEYS = (Object.keys(GEOMETRY_RELEVANCE) as (keyof VirtualItem)[])
  * estimate bucket on exactly those fields, so a recompute that preserves them produces an
  * identical offset map. Used as the
  * `virtualItems` memo's `equals` so a recompute that DOESN'T change the visible window's
- * rows -- a streaming text chunk or a command-stream delta that bumps the agent's message
- * version (and so re-walks the whole window in walkWindow) without adding/removing/
- * reordering a visible row or bumping its content version -- keeps the PRIOR array
- * reference. That stops the geom rebuild and the scroll re-pin effect from firing per
- * delta, which is the dominant per-delta churn in a hidden-heavy window (where walkWindow
- * re-classifies all raw rows, including the hidden ones, every time). Row CONTENT still
- * updates: the rendered slice reads visibleEntries directly, and a real height change is
- * still caught by the row's measurement (geometryVersion), not by this array's identity.
+ * rows. A recompute that does not add, remove, reorder, or revise a visible row
+ * keeps the prior array
+ * reference. That stops an unnecessary geometry rebuild and scroll re-pin. Row
+ * content still updates through visibleEntries. Row measurement catches a real
+ * height change.
  *
  * MAINTENANCE: the compared fields are DERIVED from GEOMETRY_RELEVANCE above (compile-
  * enforced exhaustive over VirtualItem's keys), so a new geometry-affecting field can't be

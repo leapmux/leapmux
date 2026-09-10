@@ -1,6 +1,6 @@
 import type { CommandResultSource } from '../../../results/commandResult'
 import Terminal from 'lucide-solid/icons/terminal'
-import { createEffect, createMemo, Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { CODEX_ITEM } from '~/types/toolMessages'
 import { cachedRenderValue } from '../../../messageRenderCache'
@@ -13,8 +13,7 @@ import { toolInputSummary, toolResultContentPre } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
 import { codexCommandFromItem, codexUnwrapCommand, stripToolUseHeaderFromOutput } from '../extractors/commandExecution'
-import { LiveStreamOutput } from '../renderHelpers'
-import { isCodexTerminalStatus, readLiveStream } from '../status'
+import { isCodexFinishedStatus } from '../status'
 
 // Registry-only: dispatched by `item.type === 'commandExecution'` via
 // `CODEX_RENDERERS` (loaded from `renderers/registerAll.ts`).
@@ -37,21 +36,9 @@ defineCodexRenderer({
 
     const command = createMemo(() => codexUnwrapCommand((props.item.command as string) || '(command)'))
     const cwd = (): string => (props.item.cwd as string) || ''
-    const isTerminal = (): boolean => isCodexTerminalStatus((props.item.status as string) || '')
-    const liveStream = () => readLiveStream(props.context)
-    const hasLiveStream = (): boolean => liveStream().length > 0
+    const isFinished = (): boolean => isCodexFinishedStatus((props.item.status as string) || '')
 
     const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION)
-    createEffect(() => {
-      // Auto-expand once the live stream starts. PROGRAMMATIC: this is not a user
-      // toggle, so the host must not pin this row's scroll position over the reader's
-      // midpoint anchor -- and this effect re-runs on every stream chunk, so a
-      // gesture-style write would re-assert that pin continuously while the user is
-      // anchored scrolled-up with the streaming row on-screen.
-      if (hasLiveStream())
-        setExpanded(true, { programmatic: true })
-    })
-
     const title = createMemo(() => renderBashTitle('Run command', command()) || 'Run command')
 
     const statusParts = createMemo(() => {
@@ -65,7 +52,7 @@ defineCodexRenderer({
 
     return (
       <Show
-        when={isTerminal() && baseSource()}
+        when={isFinished() && baseSource()}
         fallback={(
           <ToolUseLayout
             icon={Terminal}
@@ -94,12 +81,7 @@ defineCodexRenderer({
                 {relativizePath(cwd(), props.context?.workingDir, props.context?.homeDir)}
               </div>
             </Show>
-            <Show
-              when={hasLiveStream()}
-              fallback={<Show when={output()}><div class={toolResultContentPre}>{output()}</div></Show>}
-            >
-              <LiveStreamOutput stream={liveStream} />
-            </Show>
+            <Show when={output()}><div class={toolResultContentPre}>{output()}</div></Show>
           </ToolUseLayout>
         )}
       >

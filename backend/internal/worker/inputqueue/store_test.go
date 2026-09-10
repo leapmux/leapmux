@@ -129,7 +129,7 @@ func TestStoreEnqueueRetryRemainsIdempotentAfterAcceptance(t *testing.T) {
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 
 	snapshot, err := store.Enqueue(ctx, input)
@@ -155,7 +155,7 @@ func TestStoreTextOnlyRetryTreatsEmptyAndNilAttachmentsAsEqual(t *testing.T) {
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 
 	snapshot, err := store.Enqueue(ctx, input)
@@ -181,7 +181,7 @@ func TestStoreClassifiesCommandsAndRejectsAttachments(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	accepted, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	accepted, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, accepted.MarkType)
 	for _, command := range []string{"/clear", "/compact"} {
@@ -354,7 +354,7 @@ func TestStoreSteerRejectsOperationHeadAndCompactionTurn(t *testing.T) {
 		require.NoError(t, err)
 		prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 		require.NoError(t, err)
-		_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+		_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 		require.NoError(t, err)
 		_, err = store.Enqueue(ctx, NewItem{ID: "compact", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, Text: "/compact"})
 		require.NoError(t, err)
@@ -393,7 +393,7 @@ func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
 	active, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
 	require.NotNil(t, active)
-	_, _, err = store.Accept(ctx, *active, DispatchResult{StartsTurn: true})
+	_, _, err = store.Accept(ctx, *active, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	_, err = store.Enqueue(ctx, NewItem{
 		ID: "steer", AgentID: "agent-1", Text: "guide",
@@ -438,12 +438,12 @@ func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	require.NotNil(t, prepared)
 	assert.Positive(t, prepared.ReservedSeq)
 	assert.True(t, snapshot.ActiveTurn)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.ActiveTurnKind)
+	assert.False(t, snapshot.ActiveTurnSteerable, "dispatch preparation does not assume provider steering support")
 	var transcriptCount int
 	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE agent_id = 'agent-1'`).Scan(&transcriptCount))
 	assert.Zero(t, transcriptCount)
 
-	transcript, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, SpanLines: `[{"span_id":"tool-1"}]`})
+	transcript, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true, SpanLines: `[{"span_id":"tool-1"}]`})
 	require.NoError(t, err)
 	assert.Equal(t, prepared.ReservedSeq, transcript.Seq)
 	assert.Empty(t, snapshot.Items)
@@ -475,7 +475,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	snapshots, err = NewStore(database).Recover(ctx)
 	require.NoError(t, err)
@@ -670,7 +670,7 @@ func TestStoreRetryKeepsAManualPause(t *testing.T) {
 func TestStoreAcceptKeepsThePlanMarkerWithAttachments(t *testing.T) {
 	t.Parallel()
 
-	item := Item{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "run it"}
+	item := StoredItem{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "run it"}
 	withAttachment, err := transcriptContent(item, []Attachment{{Filename: "a.png", MimeType: "image/png"}})
 	require.NoError(t, err)
 	withoutAttachment, err := transcriptContent(item, nil)
@@ -697,7 +697,7 @@ func TestStoreAcceptReportsTheSpanColumn(t *testing.T) {
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, SpanLines: `[{"color":2}]`})
+	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true, SpanLines: `[{"color":2}]`})
 	require.NoError(t, err)
 	assert.Equal(t, `[{"color":2}]`, transcript.SpanLines)
 }
@@ -764,7 +764,7 @@ func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
 
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
-	_, active, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, active, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	require.Len(t, active.Items, 1)
 	assert.True(t, active.Items[0].CanSteer)
@@ -808,7 +808,7 @@ func TestStoreAcceptKeepsTheRevisionMovingWhenTheTurnEndedMidDispatch(t *testing
 	require.NoError(t, err)
 	require.True(t, changed, "the dispatch opened a turn, so the clear moves the state")
 
-	_, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	assert.False(t, snapshot.ActiveTurn, "a turn that ended inside the dispatch is not restored")
 	assert.Empty(t, snapshot.Items, "the item still left the queue")
@@ -816,20 +816,20 @@ func TestStoreAcceptKeepsTheRevisionMovingWhenTheTurnEndedMidDispatch(t *testing
 		"the removal needs a revision, although the guarded turn write matched no row")
 }
 
-func TestStoreProviderReportedTurnStatesNoKindAndRefusesASteer(t *testing.T) {
+func TestStoreUnclassifiedProviderTurnRefusesASteer(t *testing.T) {
 	t.Parallel()
 
-	// SetTurnActive carries no kind, so the store records none. The steer
-	// predicate reads that column, and a fabricated USER_MESSAGE would offer a
+	// This provider supplies no kind, so the store records none. The steer
+	// predicate reads that column. A fabricated USER_MESSAGE would offer a
 	// steer into whatever the agent process started on its own -- an
 	// auto-compaction, a plan the CLI resumed, a background turn.
 	_, store := newStoreFixture(t)
 	ctx := context.Background()
-	snapshot, changed, err := store.TurnStarted(ctx, "agent-1")
+	snapshot, changed, err := store.TurnStarted(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.True(t, snapshot.ActiveTurn)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, snapshot.ActiveTurnKind,
+	assert.False(t, snapshot.ActiveTurnSteerable,
 		"the signal states no kind, so the store invents none")
 
 	_, err = store.Enqueue(ctx, NewItem{
@@ -846,6 +846,58 @@ func TestStoreProviderReportedTurnStatesNoKindAndRefusesASteer(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSteeringState, "and the Worker refuses one that arrives anyway")
 }
 
+func TestStoreClassifiedProviderTurnOffersASteer(t *testing.T) {
+	t.Parallel()
+
+	// Codex accepts turn/steer for every turn/started notification. Such a turn
+	// can start without a queue dispatch, so the provider's classification is
+	// the only fact that lets the queue offer the operation.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	snapshot, changed, err := store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.True(t, snapshot.ActiveTurnSteerable)
+
+	_, err = store.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "steer me",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	snapshot, err = store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.True(t, snapshot.Items[0].CanSteer)
+
+	prepared, _, err := store.PrepareSteer(ctx, "agent-1", "one")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+}
+
+func TestStoreTurnStartAddsALateProviderClassification(t *testing.T) {
+	t.Parallel()
+
+	// An unknown future enum is unclassified. A later classified start is
+	// richer than that first start, so the store must keep it.
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	first, changed, err := store.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.False(t, first.ActiveTurnSteerable)
+
+	classified, changed, err := store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Greater(t, classified.Revision, first.Revision)
+	assert.True(t, classified.ActiveTurnSteerable)
+
+	repeated, changed, err := store.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, classified.Revision, repeated.Revision)
+}
+
 func TestStoreAbandonUnownedTurnClearsAProviderReportedTurnOnly(t *testing.T) {
 	t.Parallel()
 
@@ -855,7 +907,7 @@ func TestStoreAbandonUnownedTurnClearsAProviderReportedTurnOnly(t *testing.T) {
 	// would hold every later message with no pause and no error.
 	_, store := newStoreFixture(t)
 	ctx := context.Background()
-	_, _, err := store.TurnStarted(ctx, "agent-1")
+	_, _, err := store.TurnStarted(ctx, "agent-1", false)
 	require.NoError(t, err)
 
 	snapshot, changed, err := store.AbandonUnownedTurn(ctx, "agent-1")
@@ -891,8 +943,8 @@ func TestStoreAbandonUnownedTurnKeepsTheTurnADispatchOwns(t *testing.T) {
 	assert.False(t, changed, "the dispatch owns this turn")
 	assert.True(t, snapshot.ActiveTurn)
 
-	_, accepted, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	_, accepted, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
 	assert.True(t, accepted.ActiveTurn, "the dispatched turn survives the boundary")
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, accepted.ActiveTurnKind)
+	assert.True(t, accepted.ActiveTurnSteerable)
 }

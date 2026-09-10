@@ -116,7 +116,9 @@ const (
 // (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink OutputSink
+	sink ProviderServices
+	acpTurnOutput
+	acpTerminalHost
 	// availableCommands is the last command set that the ACP process
 	// advertised. Goal-capable providers read their command token from it.
 	//
@@ -145,6 +147,10 @@ type acpBase struct {
 	// from a backgrounded shell without what the spawn recorded.
 	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
 	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
+	toolOutputProgress         func(tcu acpToolCallUpdateEnvelope) (total int64, minimum bool, ok bool)
+	toolOutputComplete         func(toolCallID string)
+	sessionMetadataHandler     func(updateType string, metadata map[string]json.RawMessage) bool
+	advertisedSteerMethod      func(initializeResponse []byte) string
 	// subagentPrompts holds each spawn's prompt until the child transcript that
 	// should open with it exists (see acpSubagentObservation.Prompt). Keyed by
 	// the registry RowKey. Guarded by subagentPromptMu; entries are spent when
@@ -218,20 +224,15 @@ type acpBase struct {
 	// as internal pseudo-agents to hide from the picker (OpenCode's
 	// compaction/title/summary). Applied wherever the primary-agent list is built.
 	primaryAgentHiddenFilter func(string) bool
-	// spawnSpansReleased holds the tool calls whose span was already given back
-	// by the late-spawn path, so a re-reported spawn does not re-run the release
-	// on every update. Keyed by toolCallId, dropped when the call ends and
-	// cleared with the session. Guarded by mu.
-	spawnSpansReleased  map[string]struct{}
-	clearProviderState  func()                // called by ClearContext to drop provider state keyed by the OUTGOING session's tool-call ids
-	reapplySettings     func()                // called by ClearContext after session/new to re-apply model, mode, etc.
-	refreshFromSession  func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
-	sessionID           string
-	workingDir          string
-	model               string
-	permissionMode      string
-	currentPrimaryAgent string
-	availableModels     []*ModelInfo
+	clearProviderState       func()                // called by ClearContext to drop provider state keyed by the OUTGOING session's tool-call ids
+	reapplySettings          func()                // called by ClearContext after session/new to re-apply model, mode, etc.
+	refreshFromSession       func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
+	sessionID                string
+	workingDir               string
+	model                    string
+	permissionMode           string
+	currentPrimaryAgent      string
+	availableModels          []*ModelInfo
 	// modelsFieldInfos holds the models reported through the SessionModelState
 	// `models` field at the last full session response (handshake or ClearContext).
 	// A runtime config_option_update carries only the configOptions `model` select,
@@ -269,95 +270,127 @@ type acpBase struct {
 	// targeting a torn-down session. It is acquired BEFORE b.mu, and BELOW optionWriteMu in
 	// the lock order (optionWriteMu -> sessionMu -> b.mu); ClearContext releases it before
 	// reapplySettings, whose RPCs re-acquire the read lock per call.
-	sessionMu         sync.RWMutex
-	turnAssistantText strings.Builder
-	// turnThoughtText buffers consecutive agent_thought_chunk notifications
-	// so live token-by-token reasoning streams (each delta is its own
-	// notification) coalesce into one message instead of one-message-per-token.
-	// Flushed when interrupted by any non-thought event (preserves chronology
-	// with tool calls) and at end-of-turn.
-	turnThoughtText strings.Builder
-	// thinkingTokens is the per-phase generated-token estimate driving the
-	// thinking-indicator counter. Fed from both the reader and the prompt-response
-	// goroutines, so it self-locks; see thinkingTokenEstimator and thinkingResetSink.
-	thinkingTokens thinkingTokenEstimator
-
-	// terminals holds live ACP host terminal sessions keyed by terminalId.
-	// Guarded by terminalsMu (not b.mu) so wait_for_exit / output readers are
-	// not serialized behind the agent state lock. Tear down in Stop/Wait.
-	// terminalsClosed latches after Stop/Wait so a racing terminal/create
-	// cannot re-seed the map and orphan processes after teardown.
-	terminalsMu     sync.Mutex
-	terminals       map[string]*acpTerminalSession
-	terminalsClosed bool
+	sessionMu sync.RWMutex
 }
 
-// handleACPPromptResponse extracts accumulated turn text, persists the prompt
-// response, and resets the tool-use count.
+// handleACPPromptResponse drains one turn and persists its prompt response.
 func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	if resp == nil {
-		// A nil result ends the turn via error/abort, NOT the normal path: the
-		// persistPromptResponse turn-end below -- which flushes the buffered thought,
-		// persists the reply, and emits the result divider the frontend clears on --
-		// is skipped. So nothing here commits the in-flight assistant/thought text,
-		// and (unlike the normal path) no frontend clear fires for this turn end.
-		// Drop the buffered turn state so an aborted turn's text can't leak into the
-		// next turn -- both as a stale handoff signal and as text prepended to the
-		// next reply -- since ACP has no turn-start reset. Then clear() the estimate:
-		// it broadcasts an explicit zero (no result divider does it for us) so the
-		// live counter drops now instead of freezing on its last value until the next
-		// turn streams.
-		b.mu.Lock()
-		b.turnAssistantText.Reset()
-		b.turnThoughtText.Reset()
-		b.turnToolUses = 0
-		b.mu.Unlock()
-		b.thinkingTokens.clear(b.sink)
+		b.finishIncompleteACPPrompt(MessageCompletionInterrupted)
 		return
 	}
 
-	// Flush any buffered thought text before the end-of-turn assistant
-	// message and result divider so trailing thoughts persist in their true
-	// chronological position rather than after the reply.
-	b.flushThoughtBuffer()
+	turn := b.drainTurn()
+	b.persistCompletedACPText(AssembledMessageKindReasoning, turn.thoughtText)
+	b.persistCompletedACPText(AssembledMessageKindText, turn.assistantText)
+	b.persistIncompleteACPTools(turn.incompleteTools, MessageCompletionError)
+	b.clearCompletedTerminals()
+	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
-	b.mu.Lock()
-	assistantText := b.turnAssistantText.String()
-	b.turnAssistantText.Reset()
-	numToolUses := b.turnToolUses
-	b.turnToolUses = 0
-	b.mu.Unlock()
-
-	b.persistPromptResponse(assistantText, resp, func(resp json.RawMessage) json.RawMessage {
+	b.persistPromptResponse("", resp, func(resp json.RawMessage) json.RawMessage {
 		return enrichWithToolUseCount(resp, numToolUses)
 	})
+}
+
+func (b *acpBase) persistCompletedACPText(kind AssembledMessageKind, text string) {
+	if text == "" {
+		return
+	}
+	sessionUpdate := acpUpdateAgentMessageChunk
+	if kind == AssembledMessageKindReasoning {
+		sessionUpdate = acpUpdateAgentThoughtChunk
+	}
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
+	b.persistTextMessage(sessionUpdate, text)
+}
+
+func (b *acpBase) finishIncompleteACPPrompt(completion MessageCompletion) {
+	b.finishACPTurn(b.drainTurn(), completion)
+}
+
+func (b *acpBase) finishACPTurn(turn acpTurnSnapshot, completion MessageCompletion) {
+	if b.isDiscardingOutput() {
+		b.resetCumulativeOutput()
+		b.sink.ReportProgress(ResetProgress())
+		return
+	}
+	b.persistIncompleteACPText(AssembledMessageKindReasoning, turn.thoughtText, completion)
+	b.persistIncompleteACPText(AssembledMessageKindText, turn.assistantText, completion)
+	b.persistIncompleteACPTools(turn.incompleteTools, completion)
+	b.clearCompletedTerminals()
+	b.sink.ReportProgress(ResetProgress())
+}
+
+func (b *acpBase) persistIncompleteACPText(kind AssembledMessageKind, text string, completion MessageCompletion) {
+	if text == "" {
+		return
+	}
+	raw, err := MarshalAssembledMessage(kind, text, completion)
+	if err != nil {
+		slog.Warn("marshal incomplete acp text", "agent_id", b.agentID, "error", err)
+		return
+	}
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+		slog.Error("persist incomplete acp text", "agent_id", b.agentID, "error", err)
+	}
+}
+
+func (b *acpBase) persistIncompleteACPTools(tools []acpIncompleteTool, completion MessageCompletion) {
+	for _, tool := range tools {
+		if tool.encodeErr != nil {
+			slog.Warn("marshal incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
+		} else if annotated, err := AnnotateMessageCompletion(tool.content, completion); err != nil {
+			slog.Warn("annotate incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
+		} else {
+			annotated = b.expandACPTerminalResult(annotated)
+			spanType := b.sink.GetSpanType(tool.toolCallID)
+			if spanType == "" {
+				spanType = acpUpdateToolCall
+			}
+			if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, annotated, SpanInfo{
+				SpanID: tool.toolCallID, SpanType: spanType, Closing: true,
+			}); err != nil {
+				slog.Error("persist incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
+			}
+		}
+		b.sink.CloseSpan(tool.toolCallID)
+		b.completeACPToolOutput(tool.toolCallID)
+		if tool.rowKey != "" {
+			if err := b.sink.CloseBackgroundTask(tool.rowKey, incompleteTaskStatus(completion)); err != nil {
+				slog.Warn("close incomplete acp subagent", "agent_id", b.agentID, "row_key", tool.rowKey, "error", err)
+			}
+		}
+	}
+}
+
+func (b *acpBase) completeACPToolOutput(toolCallID string) {
+	b.clearCumulativeOutput(toolCallID)
+	b.sink.ReportProgress(CompleteOutputProgress(toolCallID))
+	if b.toolOutputComplete != nil {
+		b.toolOutputComplete(toolCallID)
+	}
+}
+
+func incompleteTaskStatus(completion MessageCompletion) bgtask.Status {
+	if completion == MessageCompletionInterrupted {
+		return bgtask.StatusStopped
+	}
+	if completion == MessageCompletionComplete {
+		return bgtask.StatusCompleted
+	}
+	return bgtask.StatusFailed
+}
+
+func (b *acpBase) rememberACPToolSubagentRow(toolCallID string, obs *acpSubagentObservation) {
+	if toolCallID == "" || obs == nil || obs.RowKey == "" || obs.CloseRow {
+		return
+	}
+	b.rememberSubagentRow(toolCallID, obs.RowKey)
 }
 
 // acpSessionUpdateHandler is called for session update types not handled by
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
-
-func (b *acpBase) captureGooseSteerRunID(updateType string, metadata map[string]json.RawMessage) bool {
-	if b.providerName != "goose" || updateType != "session_info_update" {
-		return false
-	}
-	var goose map[string]json.RawMessage
-	if json.Unmarshal(metadata["goose"], &goose) != nil {
-		return false
-	}
-	rawRunID, ok := goose["activeRunId"]
-	if !ok {
-		return false
-	}
-	var runID string
-	if string(rawRunID) != "null" && json.Unmarshal(rawRunID, &runID) != nil {
-		return false
-	}
-	b.mu.Lock()
-	b.steerRunID = runID
-	b.mu.Unlock()
-	return true
-}
 
 // acpMethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
@@ -380,6 +413,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	var header struct {
 		SessionUpdate string                     `json:"sessionUpdate"`
 		Role          string                     `json:"role"`
+		Status        string                     `json:"status"`
 		Content       json.RawMessage            `json:"content"`
 		Meta          map[string]json.RawMessage `json:"_meta"`
 	}
@@ -387,7 +421,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		slog.Warn("acp session update unmarshal header failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
-	if b.captureGooseSteerRunID(header.SessionUpdate, header.Meta) {
+	if b.sessionMetadataHandler != nil && b.sessionMetadataHandler(header.SessionUpdate, header.Meta) {
 		return
 	}
 
@@ -395,24 +429,34 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		return
 	}
 
-	// Flush any buffered thought text before handling an event that
-	// produces a visible/persisted message, so coalesced thoughts appear at
-	// their real chronological position relative to tool calls and replies.
-	// Skip the flush for thought chunks and updates that create no transcript
-	// entry (usage, history replay, and command capabilities).
+	// Flush model segments at each chronology boundary. Status and tool-progress
+	// updates do not split a segment.
 	switch header.SessionUpdate {
-	case acpUpdateAgentThoughtChunk,
-		acpUpdateUsageUpdate,
+	case acpUpdateAgentMessageChunk:
+		b.flushThoughtBuffer()
+	case acpUpdateAgentThoughtChunk:
+		b.flushAssistantBuffer()
+	case acpUpdateToolCall, acpUpdatePlan:
+		b.flushThoughtBuffer()
+		b.flushAssistantBuffer()
+	case acpUpdateToolCallUpdate:
+		if acpStatusIsFinal(header.Status) {
+			b.flushThoughtBuffer()
+			b.flushAssistantBuffer()
+		}
+	case acpUpdateUsageUpdate,
 		acpUpdateUserMessageChunk,
-		acpUpdateAvailableCommandsUpdate:
+		acpUpdateAvailableCommandsUpdate,
+		acpUpdateConfigOptionUpdate:
 		// no flush
 	default:
 		b.flushThoughtBuffer()
+		b.flushAssistantBuffer()
 	}
 
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
-		b.broadcastACPChunk(header.Content, &b.turnAssistantText, acpUpdateAgentMessageChunk)
+		b.bufferACPChunk(header.Content, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
 		b.handleAgentThoughtChunk(header.Content)
 	case acpUpdateToolCall:
@@ -483,28 +527,23 @@ func (b *acpBase) hasAvailableCommand(command string) bool {
 // created, the reapplySettings callback (if set) re-applies provider-
 // specific settings such as model and permission mode.
 func (b *acpBase) ClearContext() (string, bool) {
-	// Host terminals are bound to the outgoing sessionId; release them before
-	// the swap so requireSession cannot strand them under a mismatch. Do not
-	// latch the store closed — the new session may create terminals again.
+	b.sessionMu.Lock()
+	// Host terminals belong to the outgoing session. Release the current set
+	// before session/new. The session swap releases any set created during it.
 	b.releaseSessionTerminals()
 
-	sessionID, resp, ok := b.newSessionLocked()
+	sessionID, resp, outgoingTurn, ok := b.newSessionLocked()
+	b.sessionMu.Unlock()
 	if !ok {
 		return "", false
 	}
-	// The session was replaced; drop any in-flight thinking-token estimate too.
-	b.thinkingTokens.reset()
+	b.finishACPTurn(outgoingTurn, MessageCompletionInterrupted)
 	// Same for an unspent spawn prompt. Its row belongs to the OUTGOING session
 	// and will never produce a closing observation to drop it, so without this
 	// it is held for the life of the agent process -- and if the new session
 	// ever reuses the tool-call id, it would open the next transcript on the
 	// previous session's instruction. Codex clears its equivalent map here too.
 	b.subagentPrompts.clear()
-	// Same for the late-spawn notes: they are keyed by the OUTGOING session's
-	// tool-call ids, which will never report again.
-	b.mu.Lock()
-	clear(b.spawnSpansReleased)
-	b.mu.Unlock()
 	// A provider that keys its own state by tool-call id has the same exposure,
 	// for the same reason, so it clears that state here.
 	if b.clearProviderState != nil {
@@ -534,35 +573,34 @@ func (b *acpBase) ClearContext() (string, bool) {
 	return sessionID, true
 }
 
-// newSessionLocked sends session/new and atomically swaps b.sessionID, holding
-// sessionMu.Lock for the whole exchange so no concurrent session/* RPC (each holding
-// sessionMu.RLock around its own capture-and-send via withSessionID) can straddle the
-// replacement -- such a write would otherwise target the just-replaced session. Returns
-// the new session id and the raw response (for refreshFromSession), or ok=false on failure.
-func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ok bool) {
-	b.sessionMu.Lock()
-	defer b.sessionMu.Unlock()
-
+// newSessionLocked sends session/new and atomically swaps b.sessionID. The
+// caller holds sessionMu for the complete exchange. Thus, a concurrent
+// session request cannot target the replaced session.
+func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, outgoing acpTurnSnapshot, ok bool) {
 	_, params := buildACPSessionRequest("", b.currentWorkingDir(), acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return "", nil, false
+		return "", nil, acpTurnSnapshot{}, false
 	}
 	var session struct {
 		SessionID string `json:"sessionId"`
 	}
 	if err := json.Unmarshal(resp, &session); err != nil || session.SessionID == "" {
 		slog.Error("acp ClearContext: invalid response", "provider", b.providerName, "agent_id", b.agentID, "error", err, "response", string(resp))
-		return "", nil, false
+		return "", nil, acpTurnSnapshot{}, false
 	}
 
-	b.mu.Lock()
-	b.sessionID = session.SessionID
-	b.turnAssistantText.Reset()
-	b.turnThoughtText.Reset()
-	b.mu.Unlock()
-	return session.SessionID, resp, true
+	// Lock order: sessionMu -> terminal lifecycle -> turn output -> protocol
+	// state. The second release catches a terminal created during session/new.
+	b.replaceTerminalSession(func() {
+		outgoing = b.replaceSession(func() {
+			b.mu.Lock()
+			b.sessionID = session.SessionID
+			b.mu.Unlock()
+		})
+	})
+	return session.SessionID, resp, outgoing, true
 }
 
 // withSessionID runs fn with the agent's current session id, holding sessionMu.RLock for
@@ -1339,10 +1377,15 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 // startACPHandshake REPLACES that field with a decorator (thinkingResetSink),
 // and a hook that captured the raw sink would keep publishing past the
 // decorator for the life of the process. That flag is the input queue's only
-// dispatch guard, so a decorator that ever overrides SetTurnActive would then
+// dispatch guard, so a decorator that ever overrides SetTurnState would then
 // hold every later message of every ACP provider, silently.
 func (b *acpBase) wireTurnActive() {
-	b.publishTurnActive = func(active bool, seq uint64) { publishTurnActiveTo(b.sink, active, seq) }
+	b.publishTurnActive = func(active bool, seq uint64) {
+		b.mu.Lock()
+		steerable := active && b.steerMethod != ""
+		b.mu.Unlock()
+		publishTurnStateTo(b.sink, TurnState{Active: active, Steerable: steerable}, seq)
+	}
 }
 
 // notePromptActive republishes the turn state from promptActive, the single
@@ -1384,6 +1427,11 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	b.notePromptActive()
 	err := b.sendACPPromptDetached(content, attachments, func(resp json.RawMessage, err error) {
 		if err != nil {
+			completion := MessageCompletionError
+			if b.IsStopped() {
+				completion = MessageCompletionInterrupted
+			}
+			b.finishIncompleteACPPrompt(completion)
 			if !b.IsStopped() {
 				slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
 				b.sink.PersistLeapMuxNotification(map[string]interface{}{"type": contracts.NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err)})
@@ -1466,9 +1514,11 @@ func (b *acpBase) steerAdvertised(content string, attachments []*leapmuxv1.Attac
 // Stop clears prompt state, tears down host terminals, and terminates the
 // agent process.
 func (b *acpBase) Stop() {
+	b.noteIntentionalStop()
 	b.clearActivePrompt()
 	b.releaseAllTerminals()
 	b.processBase.Stop()
+	b.finishIncompleteACPPrompt(MessageCompletionInterrupted)
 }
 
 // Wait blocks until the agent process exits, then tears down any host
@@ -1477,6 +1527,7 @@ func (b *acpBase) Stop() {
 func (b *acpBase) Wait() error {
 	err := b.processBase.Wait()
 	b.releaseAllTerminals()
+	b.finishIncompleteACPPrompt(b.processExitCompletion())
 	return err
 }
 
@@ -1512,76 +1563,52 @@ func (b *acpBase) extractACPChunkText(content json.RawMessage, kind string) stri
 	return c.Text
 }
 
-// broadcastACPChunk extracts text from a pre-parsed content RawMessage and
-// broadcasts it. The content JSON is already extracted from the header parse,
-// avoiding a full re-unmarshal of the update on the streaming hot path.
-func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Builder, eventType string) {
+// bufferACPChunk extracts text from a pre-parsed content envelope and counts it.
+func (b *acpBase) bufferACPChunk(content json.RawMessage, eventType string) {
 	text := b.extractACPChunkText(content, eventType)
 	if text == "" {
 		return
 	}
-	b.mu.Lock()
-	builder.WriteString(text)
-	b.mu.Unlock()
-	b.sink.BroadcastStreamChunk([]byte(text), "", eventType)
-	b.thinkingTokens.observe(b.sink, text)
+	b.appendAssistant(text)
+	b.sink.ReportProgress(ModelTextProgress("acp:"+eventType, text))
 }
 
 // handleAgentThoughtChunk buffers an agent_thought_chunk notification's text
-// for later flushing. ACP providers vary in chunk granularity — OpenCode for
-// instance emits one notification per reasoning *delta* token in live
-// streaming (line 513 of opencode/src/acp/agent.ts) but one notification per
-// complete reasoning *part* on session replay (line 1087). Persisting each
-// notification as its own message produces a separate "Thinking" box per
-// token in the live case. We coalesce instead, flushing the buffer when a
-// non-thought event interrupts (preserves chronology with tool calls) or at
-// end-of-turn.
+// for later flushing. ACP providers vary in chunk size. Persisting each
+// notification would produce a separate Thinking row for each token. The
+// buffer flushes when another event interrupts it or when the turn ends.
 func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 	text := b.extractACPChunkText(content, acpUpdateAgentThoughtChunk)
 	if text == "" {
 		return
 	}
-	b.mu.Lock()
-	// freshSegment is true when this chunk opens a new reasoning segment: the
-	// thought buffer was empty before it (live thought deltas keep appending to a
-	// non-empty buffer; a flush between segments empties it).
-	freshSegment := b.turnThoughtText.Len() == 0
-	if !freshSegment {
-		if sep := thoughtChunkSeparator(b.turnThoughtText.String(), text); sep != "" {
-			b.turnThoughtText.WriteString(sep)
-		}
+	// A chunk opens a segment when the thought buffer was empty before it.
+	freshSegment := b.appendThought(text)
+	// A new reasoning segment completes the preceding assistant counter scope.
+	if freshSegment {
+		b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
 	}
-	b.turnThoughtText.WriteString(text)
-	b.mu.Unlock()
-	// A reasoning segment that opens while the live counter still holds uncommitted
-	// assistant chars is a new phase: the assistant chunks were only buffered in
-	// turnAssistantText and not committed until turn end, so they triggered no
-	// frontend clear. clear() supplies one so the reasoning reads as its own phase
-	// rather than inheriting the assistant total (which would also spin the
-	// forward-only odometer backward from the larger assistant count to the smaller
-	// reasoning count). Gating on the estimator's own pending chars -- not on
-	// turnAssistantText, which stays non-empty all turn for end-of-turn persistence
-	// -- keeps a committed tool call between assistant text and a later reasoning
-	// segment from re-firing a redundant clear: that commit already reset the
-	// estimator and cleared the frontend, so hasPending then reports false.
-	if freshSegment && b.thinkingTokens.hasPending() {
-		b.thinkingTokens.clear(b.sink)
-	}
-	// Reasoning is model generation too: feed it into the live token estimate.
-	b.thinkingTokens.observe(b.sink, text)
+	b.sink.ReportProgress(ModelTextProgress("acp:"+acpUpdateAgentThoughtChunk, text))
 }
 
 // flushThoughtBuffer persists the buffered thought text (if any) as one
 // agent_thought_chunk message and resets the buffer.
 func (b *acpBase) flushThoughtBuffer() {
-	b.mu.Lock()
-	text := b.turnThoughtText.String()
-	b.turnThoughtText.Reset()
-	b.mu.Unlock()
+	b.flushTextBuffer(AssembledMessageKindReasoning, acpUpdateAgentThoughtChunk)
+}
+
+// flushAssistantBuffer persists one completed assistant-text segment.
+func (b *acpBase) flushAssistantBuffer() {
+	b.flushTextBuffer(AssembledMessageKindText, acpUpdateAgentMessageChunk)
+}
+
+func (b *acpBase) flushTextBuffer(kind AssembledMessageKind, sessionUpdate string) {
+	text := b.takeText(kind)
 	if text == "" {
 		return
 	}
-	b.persistTextMessage(acpUpdateAgentThoughtChunk, text)
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
+	b.persistTextMessage(sessionUpdate, text)
 }
 
 func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
@@ -1610,6 +1637,7 @@ func (b *acpBase) persistPromptResponse(
 	resp json.RawMessage,
 	enrich func(json.RawMessage) json.RawMessage,
 ) {
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
 	b.persistTextMessage(acpUpdateAgentMessageChunk, assistantText)
 
 	resp = unwrapACPResult(resp)
@@ -1767,18 +1795,26 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	if b.subagentFromToolCall != nil {
 		obs = b.subagentFromToolCall(tc)
 	}
+	b.rememberACPToolSubagentRow(tc.ToolCallID, obs)
 
-	// Tool calls that arrive already final (completed/failed/cancelled)
-	// are persisted as closing spans immediately — no open/close cycle.
+	// Persist a final tool call as a closing row. It closes an earlier pending
+	// call when one exists. A call that first arrives final opens no span.
 	if acpStatusIsFinal(tc.Status) {
+		opened := b.sink.GetSpanType(tc.ToolCallID) != ""
+		b.completeTool(tc.ToolCallID)
+		b.completeACPToolOutput(tc.ToolCallID)
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist final acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
+		if opened {
+			b.sink.CloseSpan(tc.ToolCallID)
+		}
 		b.applySubagentObservation(obs)
 		return
 	}
+	b.rememberIncompleteACPTool(tc.ToolCallID, update)
 
 	// A subagent spawn owns no span: its output lands in its own child
 	// transcript, so a rail held open for the whole subagent run only pushes
@@ -1790,13 +1826,33 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	b.applySubagentObservation(obs)
 }
 
+func (b *acpBase) rememberIncompleteACPTool(toolCallID string, update json.RawMessage) {
+	var incoming map[string]json.RawMessage
+	if json.Unmarshal(update, &incoming) != nil {
+		return
+	}
+	delete(incoming, "status")
+	incoming["sessionUpdate"] = json.RawMessage(`"tool_call_update"`)
+
+	b.rememberIncompleteTool(toolCallID, incoming)
+}
+
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
-	var tcu acpToolCallUpdateEnvelope
-	if err := json.Unmarshal(update, &tcu); err != nil {
-		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+	incoming, tcu, ok := parseACPToolCallUpdate(update)
+	if !ok {
+		slog.Warn("acp tool_call_update decode failed", "provider", b.providerName, "agent_id", b.agentID)
 		return
 	}
 	if tcu.ToolCallID == "" {
+		return
+	}
+	if b.toolOutputProgress != nil {
+		if total, minimum, ok := b.toolOutputProgress(tcu); ok {
+			b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, total, minimum))
+		}
+	}
+	update, tcu, ok = b.mergeACPToolCallUpdate(tcu.ToolCallID, incoming, acpStatusIsFinal(tcu.Status))
+	if !ok {
 		return
 	}
 
@@ -1805,6 +1861,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	// Kilo final updates close on the final-status arm below.
 	if b.subagentFromToolCallUpdate != nil {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
+			b.rememberACPToolSubagentRow(tcu.ToolCallID, obs)
 			b.applySubagentObservation(obs)
 			// A spawn recognized only HERE already opened a span at its
 			// tool_call, so give that span back now. Kilo is why: it opens the
@@ -1832,40 +1889,103 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 
 	switch tcu.Status {
-	case "in_progress":
-		// ACP tool_call_update content (when the server provides it) is
-		// cumulative; ship only the new tail so the frontend's command-stream
-		// buffer doesn't grow quadratically as updates arrive. When the
-		// payload carries no text content, drop the broadcast entirely —
-		// in_progress with only status fields has nothing useful to stream.
+	case "", "in_progress":
+		// ACP tool output is cumulative. Count growth from the latest snapshot.
 		full := acpToolCallText(tcu.Content)
 		if full == "" {
 			return
 		}
-		delta := b.recordCumulativeDelta(tcu.ToolCallID, full)
-		if delta == "" {
-			return
+		limited := strings.HasPrefix(full, limitedOutputPrefix)
+		if limited {
+			full = strings.TrimPrefix(full, limitedOutputPrefix)
 		}
-		b.sink.BroadcastStreamChunk([]byte(delta), tcu.ToolCallID, acpUpdateToolCallUpdate)
+		observed := b.observeCumulativeOutput(tcu.ToolCallID, full, limited)
+		b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, observed.Total, observed.Minimum))
 	case "completed", "failed", "cancelled":
-		b.mu.Lock()
-		b.turnToolUses++
-		b.mu.Unlock()
-		b.clearCumulativeDelta(tcu.ToolCallID)
-		b.forgetSpawnSpanReleased(tcu.ToolCallID)
+		b.completeTool(tcu.ToolCallID)
+		b.completeACPToolOutput(tcu.ToolCallID)
 
 		spanType := b.sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
 			spanType = acpUpdateToolCall
 		}
+		update = b.expandACPTerminalResult(update)
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
 		}
-		b.sink.BroadcastStreamEnd(tcu.ToolCallID)
 		b.sink.CloseSpan(tcu.ToolCallID)
 	}
+}
+
+func (b *acpBase) mergeACPToolCallUpdate(
+	toolCallID string,
+	incoming map[string]json.RawMessage,
+	final bool,
+) (json.RawMessage, acpToolCallUpdateEnvelope, bool) {
+	return b.mergeToolUpdate(toolCallID, incoming, final)
+}
+
+func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage, acpToolCallUpdateEnvelope, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(update, &fields) != nil {
+		return nil, acpToolCallUpdateEnvelope{}, false
+	}
+	tcu, ok := decodeACPToolCallUpdate(fields)
+	return fields, tcu, ok
+}
+
+func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (acpToolCallUpdateEnvelope, bool) {
+	var update acpToolCallUpdateEnvelope
+	if json.Unmarshal(fields["toolCallId"], &update.ToolCallID) != nil {
+		return acpToolCallUpdateEnvelope{}, false
+	}
+	_ = json.Unmarshal(fields["status"], &update.Status)
+	_ = json.Unmarshal(fields["content"], &update.Content)
+	_ = json.Unmarshal(fields["title"], &update.Title)
+	update.RawInput = fields["rawInput"]
+	update.RawOutput = fields["rawOutput"]
+	update.Meta = fields["_meta"]
+	return update, true
+}
+
+func (b *acpBase) expandACPTerminalResult(update json.RawMessage) json.RawMessage {
+	var value map[string]interface{}
+	if json.Unmarshal(update, &value) != nil {
+		return update
+	}
+	content, _ := value["content"].([]interface{})
+	for index, item := range content {
+		block, _ := item.(map[string]interface{})
+		terminalID, _ := block["terminalId"].(string)
+		if terminalID == "" {
+			continue
+		}
+		result, ok := b.takeCompletedTerminal(terminalID)
+		if !ok {
+			continue
+		}
+		content[index] = map[string]interface{}{
+			"type":    "content",
+			"content": map[string]interface{}{"type": "text", "text": result.Output},
+		}
+		metadata := map[string]interface{}{
+			"exit":      result.ExitCode,
+			"signal":    result.Signal,
+			"truncated": result.Truncated,
+		}
+		value["rawOutput"] = map[string]interface{}{
+			"output":    result.Output,
+			"truncated": result.Truncated,
+			"metadata":  metadata,
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return update
+	}
+	return encoded
 }
 
 // acpObservationIsSpawn reports whether an observation announces that this tool
@@ -1992,24 +2112,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 // true, so the release runs once however many times the detector re-reports the
 // spawn.
 func (b *acpBase) markSpawnSpanReleased(toolCallID string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.spawnSpansReleased == nil {
-		b.spawnSpansReleased = make(map[string]struct{})
-	}
-	if _, done := b.spawnSpansReleased[toolCallID]; done {
-		return false
-	}
-	b.spawnSpansReleased[toolCallID] = struct{}{}
-	return true
-}
-
-// forgetSpawnSpanReleased drops the note when the tool call ends, mirroring the
-// per-tool-call cleanup of cumulativeBroadcast beside it.
-func (b *acpBase) forgetSpawnSpanReleased(toolCallID string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.spawnSpansReleased, toolCallID)
+	return b.markSpanReleased(toolCallID)
 }
 
 // acpStatusIsFinal reports whether an ACP tool_call status ends the call. These
@@ -2199,12 +2302,8 @@ func (b *acpBase) startACPHandshake(
 ) (*acpSessionResult, error) {
 	b.drainStderr(stderr)
 
-	// Install the thinking-token reset decorator once, centrally, so every ACP
-	// provider (Cursor, Copilot, Kilo, OpenCode, Goose) gets the per-phase
-	// reset without each Start* constructor remembering to wrap -- and before the
-	// reader goroutine below drives any persist/broadcast through b.sink. Codex and
-	// Pi wrap in their own constructors; they do not run this handshake.
-	b.sink = newThinkingResetSink(b.sink, &b.thinkingTokens)
+	// Install the progress-reset decorator once for every ACP provider.
+	b.sink = newModelProgressResetSink(b.sink)
 
 	scanner := newStdoutScanner(stdout)
 	go b.readOutputLoop(scanner, b.handleOutput)
@@ -2221,7 +2320,10 @@ func (b *acpBase) startACPHandshake(
 	}
 	// Write under the lock. The note at the session-ID write below gives the
 	// reason.
-	steerMethod := advertisedACPSteerMethod(b.providerName, initResp)
+	steerMethod := ""
+	if b.advertisedSteerMethod != nil {
+		steerMethod = b.advertisedSteerMethod(initResp)
+	}
 	b.mu.Lock()
 	b.steerMethod = steerMethod
 	b.mu.Unlock()
@@ -2272,19 +2374,7 @@ func (b *acpBase) startACPHandshake(
 	return session, nil
 }
 
-func advertisedACPSteerMethod(providerName string, initializeResponse []byte) string {
-	var namespace, candidate string
-	switch providerName {
-	case "goose":
-		namespace = "goose"
-		candidate = "_goose/unstable/session/steer"
-	case "reasonix":
-		namespace = "reasonix.io"
-		candidate = "_reasonix.io/session/steer"
-	}
-	if candidate == "" {
-		return ""
-	}
+func parseACPAdvertisedMethod(initializeResponse []byte, namespace, expectedMethod string) string {
 	var response struct {
 		AgentCapabilities struct {
 			Meta map[string]json.RawMessage `json:"_meta"`
@@ -2298,8 +2388,8 @@ func advertisedACPSteerMethod(providerName string, initializeResponse []byte) st
 			Method string `json:"method"`
 		} `json:"sessionSteer"`
 	}
-	if json.Unmarshal(response.AgentCapabilities.Meta[namespace], &capability) == nil && capability.SessionSteer.Method == candidate {
-		return candidate
+	if json.Unmarshal(response.AgentCapabilities.Meta[namespace], &capability) == nil && capability.SessionSteer.Method == expectedMethod {
+		return expectedMethod
 	}
 	return ""
 }
@@ -2325,7 +2415,7 @@ type acpStartSpec[T any] struct {
 // (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
 // the acpStartSpec fields: the binary/args, an optional rc marker, the session
 // config, the hooks set in configure, and the post-handshake apply step.
-func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (_ Agent, retErr error) {
+func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, spec acpStartSpec[T]) (_ Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, spec.provider)
@@ -2369,6 +2459,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	// so assigning it to the embedded processBase doesn't copy a held lock.
 	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
 	b.sink = sink
+	b.bind(b)
 	b.wireTurnActive()
 	b.model = opts.Model()
 	// Default settings-lifecycle hooks shared by every mode-bearing ACP provider:
@@ -3714,4 +3805,11 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 // PublishTurnActive satisfies Agent for every ACP provider. The base already
 // republishes promptActive from one place, so this only gives that place the
 // interface's name.
-func (b *acpBase) PublishTurnActive() { b.notePromptActive() }
+func (b *acpBase) PublishTurnActive() TurnState {
+	b.mu.Lock()
+	active := b.promptActive
+	steerable := active && b.steerMethod != ""
+	b.mu.Unlock()
+	b.notePromptActive()
+	return TurnState{Active: active, Steerable: steerable}
+}

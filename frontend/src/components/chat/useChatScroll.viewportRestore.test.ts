@@ -20,7 +20,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Saved while scrolled away from the tail; the anchored row (id m42)
           // was trimmed out of the window while hidden, so the stub's
           // scrollTopForAnchor returns null (the anchor no longer resolves).
@@ -40,7 +39,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest,
             savedViewportScroll: saved,
@@ -78,7 +76,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Saved at the IN-MEMORY bottom while still windowed away from the live
           // tail (hasMoreNewer): the in-memory bottom is NOT the real bottom, so
           // restore must re-fetch the tail rather than stick to the stale window.
@@ -91,7 +88,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest: () => { jumped = true },
             savedViewportScroll: saved,
@@ -128,7 +124,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // The saved anchor RESOLVES to a near-top scrollTop (100 < clientHeight/2).
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'm10', offsetWithinRow: 0 },
@@ -148,7 +143,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
             savedViewportScroll: saved,
@@ -193,7 +187,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(1000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Saved anchor resolves NEAR THE TOP (100 < clientHeight/2), arming the
           // one-shot older-load suppression on restore.
           const [saved] = createSignal<ChatScrollState | undefined>({
@@ -215,7 +208,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -262,7 +254,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'm10', offsetWithinRow: 0 },
             atBottom: false,
@@ -281,7 +272,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
             savedViewportScroll: saved,
@@ -328,7 +318,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'm10', offsetWithinRow: 0 },
             atBottom: false,
@@ -347,7 +336,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
             savedViewportScroll: saved,
@@ -394,7 +382,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'm10', offsetWithinRow: 0 },
             atBottom: false,
@@ -415,7 +402,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
             savedViewportScroll: saved,
@@ -474,7 +460,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'm10', offsetWithinRow: 0 },
             atBottom: false,
@@ -493,7 +478,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
             savedViewportScroll: saved,
@@ -542,7 +526,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Saved while scrolled up in an all-hidden window: no anchor, but a raw
           // scrollTop fallback (no virtual spacer there, so no drift to fear).
           const [saved] = createSignal<ChatScrollState | undefined>({
@@ -554,7 +537,6 @@ describe('usechatscroll viewport restore', () => {
             // anchorAt / scrollTopForAnchor return null -> the anchor never resolves.
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => {},
           })
@@ -588,7 +570,6 @@ describe('usechatscroll viewport restore', () => {
           div.setScrollHeight(5000)
           div.setClientHeight(0) // hidden tab
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const [streamingText] = createSignal('')
           // Saved while all-hidden (raw fallback, no anchor). But by restore time
           // the window has virtual content: totalHeight > 0 means a spacer now sits
           // where the raw offset pointed, so 1200 no longer maps to that content.
@@ -610,7 +591,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => {},
             hasOlderMessages: () => true,
@@ -656,7 +636,6 @@ describe('usechatscroll viewport restore', () => {
           let scrollHeight = 520 // maxScrollTop 20 once visible: inside the sticky band
           div.setScrollHeight(scrollHeight)
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const [total, setTotal] = createSignal(520)
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
           // Saved all-hidden (raw fallback, no anchor); by restore time totalHeight > 0
@@ -679,7 +658,6 @@ describe('usechatscroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => {},
             hasOlderMessages: () => true,
@@ -746,11 +724,9 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           divA.setScrollHeight(3000)
           const { virt: virtA } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const hookA = useChatScroll({
             virtualizer: virtA,
             messages,
-            streamingText,
             onSaveViewportScroll: (state) => { savedState = state },
           })
           hookA.attachListRef(divA.el)
@@ -782,12 +758,10 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
             divB.setScrollHeight(3000)
             const { virt: virtB } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
             const [messagesB] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-            const [streamingTextB] = createSignal('')
             let cleared = false
             const hookB = useChatScroll({
               virtualizer: virtB,
               messages: messagesB,
-              streamingText: streamingTextB,
               savedViewportScroll: () => savedState,
               onClearSavedViewportScroll: () => { cleared = true },
             })
@@ -818,12 +792,10 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           div.setClientHeight(0) // hidden tab
           div.setScrollHeight(3000)
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           let saves = 0
           const hook = useChatScroll({
             virtualizer: makeStubVirtualizer(),
             messages,
-            streamingText,
             onSaveViewportScroll: () => { saves++ },
           })
           hook.attachListRef(div.el)
@@ -851,13 +823,11 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           div.setScrollHeight(3000)
           const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: false })
           let cleared = false
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })
@@ -888,14 +858,12 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           div.setScrollHeight(3000)
           const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: true })
           let jumped = false
           let cleared = false
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             hasNewerMessages: () => true,
             onJumpToLatest: () => { jumped = true },
             savedViewportScroll: saved,
@@ -929,7 +897,6 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           div.setScrollHeight(3000)
           const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [streamingText] = createSignal('')
           const [saved] = createSignal<ChatScrollState | undefined>({
             anchor: { id: 'g0_2', seq: 3n, offsetWithinRow: 0 },
             atBottom: false,
@@ -939,7 +906,6 @@ describe('usechatscroll unmount save + visible-mount restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
-            streamingText,
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })

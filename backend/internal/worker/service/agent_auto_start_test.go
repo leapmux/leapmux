@@ -39,7 +39,7 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 	// serializes the two starts here.
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		entered <- struct{}{}
 		<-release
 		return map[string]string{}, nil
@@ -81,7 +81,7 @@ func TestEnsureAgentRunning_RefusesArchivedAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	starts := 0
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		starts++
 		return map[string]string{}, nil
 	}
@@ -107,7 +107,7 @@ func TestEnqueueAgentInput_AutoStartBroadcastsStartingDuringEnsureRunning(t *tes
 
 	// Mock a successful auto-start so the happy path is exercised without
 	// spawning a real subprocess.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 
@@ -161,7 +161,7 @@ func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, assert.AnError
 	}
 
@@ -237,7 +237,7 @@ func TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone(t *testing.T) {
 	svc, _, w := setupTestService(t)
 	// A start that succeeds and whose sink emits no status at all -- the shape
 	// the failing row read produces in production.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -292,7 +292,7 @@ func TestEnsureAgentRunning_ACloseCancelsAMessageDrivenColdStart(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var startCtx context.Context
-	svc.startAgentFn = func(c context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(c context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		startCtx = c
 		close(entered)
 		<-release
@@ -330,7 +330,7 @@ func TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart(t *testing.T) 
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		close(entered)
 		<-release
 		return map[string]string{}, nil

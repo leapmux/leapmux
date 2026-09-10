@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
+func newKiloAgentWithSink(sink ProviderServices) *KiloAgent {
 	a := &KiloAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
@@ -22,25 +22,8 @@ func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
 	}
 	a.modeChannel = modeChannelPrimaryAgent
 	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
-	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	a.sink = newModelProgressResetSink(a.sink)
 	return a
-}
-
-func TestHandleKiloOutput_AgentMessageChunk(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newKiloAgentWithSink(sink)
-
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello world"}}}}`
-	agent.HandleOutput([]byte(input))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "agent_message_chunk", got.Method)
-	require.Equal(t, "Hello world", string(got.Content))
-	require.Equal(t, "", got.SpanID)
-	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
@@ -52,7 +35,6 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	// Thought chunks are buffered; flushed on interrupting event or end-of-turn.
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
-	require.Equal(t, 0, sink.StreamChunkCount())
 	require.Equal(t, 0, sink.MessageCount())
 
 	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
@@ -128,8 +110,7 @@ func TestHandleKiloOutput_ToolCallUpdateCompleted(t *testing.T) {
 	require.Equal(t, "tc-1", msg.SpanID)
 	require.True(t, msg.Closing)
 
-	require.Equal(t, 1, sink.StreamEndCount())
-	require.Equal(t, "tc-1", sink.LastStreamEnd())
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("tc-1"))
 
 	closed := sink.ClosedSpans()
 	require.Len(t, closed, 1)

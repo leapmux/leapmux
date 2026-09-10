@@ -82,11 +82,11 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		send func(t *testing.T, sink OutputSink) (Agent, error)
+		send func(t *testing.T, sink ProviderServices) (Agent, error)
 	}{
 		{
 			name: "acpBase",
-			send: func(t *testing.T, sink OutputSink) (Agent, error) {
+			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
 				agent, requests := newACPAgentForRPC(t,
 					func() *OpenCodeAgent { return &OpenCodeAgent{} },
 					func(agent *OpenCodeAgent) *acpBase { return &agent.acpBase },
@@ -101,7 +101,7 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		},
 		{
 			name: "codex",
-			send: func(t *testing.T, sink OutputSink) (Agent, error) {
+			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
 				agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
 					return json.RawMessage(`{}`)
 				})
@@ -115,14 +115,14 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		},
 		{
 			name: "claude",
-			send: func(t *testing.T, sink OutputSink) (Agent, error) {
+			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
 				agent := &ClaudeCodeAgent{turnActive: true, sink: sink}
 				return agent, agent.SendInput("later turn", nil)
 			},
 		},
 		{
 			name: "pi",
-			send: func(t *testing.T, sink OutputSink) (Agent, error) {
+			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
 				agent := &PiAgent{
 					processBase:       processBase{agentID: "test-agent"},
 					currentTurnActive: true,
@@ -133,7 +133,7 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		},
 		{
 			name: "zcode",
-			send: func(t *testing.T, sink OutputSink) (Agent, error) {
+			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
 				stdin := &zcodeRecordedStdin{}
 				agent := newZCodeTestAgentWithStdin(t, sink, stdin)
 				agent.mu.Lock()
@@ -233,21 +233,20 @@ func TestAdvertisedACPSteeringCapability(t *testing.T) {
 func TestAdvertisedACPSteerMethodDetection(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "_goose/unstable/session/steer", advertisedACPSteerMethod("goose", []byte(`{"agentCapabilities":{"_meta":{"goose":{"sessionSteer":{"method":"_goose/unstable/session/steer"}}}}}`)))
-	assert.Equal(t, "_reasonix.io/session/steer", advertisedACPSteerMethod("reasonix", []byte(`{"agentCapabilities":{"_meta":{"reasonix.io":{"sessionSteer":{"method":"_reasonix.io/session/steer"}}}}}`)))
-	assert.Empty(t, advertisedACPSteerMethod("goose", []byte(`{"agentCapabilities":{"_meta":{"goose":{}}}}`)))
-	assert.Empty(t, advertisedACPSteerMethod("goose", []byte(`{"description":"_goose/unstable/session/steer"}`)))
-	assert.Empty(t, advertisedACPSteerMethod("opencode", []byte(`{"agentCapabilities":{"_meta":{"goose":{"sessionSteer":{"method":"_goose/unstable/session/steer"}}}}}`)))
+	assert.Equal(t, gooseSteerMethod, parseACPAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"goose":{"sessionSteer":{"method":"_goose/unstable/session/steer"}}}}}`), gooseSteerNamespace, gooseSteerMethod))
+	assert.Equal(t, reasonixSteerMethod, parseACPAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"reasonix.io":{"sessionSteer":{"method":"_reasonix.io/session/steer"}}}}}`), reasonixSteerNamespace, reasonixSteerMethod))
+	assert.Empty(t, parseACPAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"goose":{}}}}`), gooseSteerNamespace, gooseSteerMethod))
+	assert.Empty(t, parseACPAdvertisedMethod([]byte(`{"description":"_goose/unstable/session/steer"}`), gooseSteerNamespace, gooseSteerMethod))
+	assert.Empty(t, parseACPAdvertisedMethod([]byte(`{"agentCapabilities":{"_meta":{"goose":{"sessionSteer":{"method":"_goose/unstable/session/steer"}}}}}`), reasonixSteerNamespace, reasonixSteerMethod))
 }
 
 func TestGooseSessionUpdateTracksActiveRunForSteering(t *testing.T) {
 	t.Parallel()
 
 	agent := &GooseCLIAgent{}
-	agent.providerName = "goose"
-	agent.captureGooseSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)})
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)})
 	assert.Equal(t, "run-7", agent.steerRunID)
-	agent.captureGooseSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":null}`)})
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":null}`)})
 	assert.Empty(t, agent.steerRunID)
 }
 
@@ -391,10 +390,19 @@ type busyProvider struct {
 	idleAgent
 	refuse    error
 	republish int
+	turnState TurnState
+	supports  bool
 }
 
 func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) error { return p.refuse }
-func (p *busyProvider) PublishTurnActive()                              { p.republish++ }
+func (p *busyProvider) SteerInput(string, []*leapmuxv1.Attachment) error {
+	return nil
+}
+func (p *busyProvider) SupportsSteering() bool { return p.supports }
+func (p *busyProvider) PublishTurnActive() TurnState {
+	p.republish++
+	return p.turnState
+}
 
 func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 	t.Parallel()
@@ -406,18 +414,32 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 	// rather than in each provider is what stops a sixth provider from leaving
 	// it out.
 	for _, tc := range []struct {
-		name      string
-		refuse    error
-		republish int
+		name          string
+		refuse        error
+		republish     int
+		turnState     TurnState
+		supports      bool
+		wantSteerable bool
 	}{
-		{name: "busy", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1},
+		{
+			name: "busy steering provider", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			turnState: TurnState{Active: true, Steerable: true}, supports: true, wantSteerable: true,
+		},
+		{
+			name: "busy classified compaction", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			turnState: TurnState{Active: true}, supports: true,
+		},
+		{
+			name: "busy non-steering provider", refuse: fmt.Errorf("send: %w", ErrAgentBusy), republish: 1,
+			turnState: TurnState{Active: true},
+		},
 		{name: "delivered", refuse: nil, republish: 0},
 		{name: "other failure", refuse: errors.New("broken pipe"), republish: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			provider := &busyProvider{refuse: tc.refuse}
+			provider := &busyProvider{refuse: tc.refuse, turnState: tc.turnState, supports: tc.supports}
 			m := NewManager(nil)
 			m.mu.Lock()
 			m.agents["agent-1"] = provider
@@ -427,6 +449,11 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 			assert.Equal(t, tc.refuse != nil, err != nil)
 			assert.Equal(t, tc.republish, provider.republish,
 				"only a busy refusal disproves the Worker's view of the turn")
+			if tc.republish > 0 {
+				var busyErr *AgentBusyError
+				require.ErrorAs(t, err, &busyErr)
+				assert.Equal(t, tc.wantSteerable, busyErr.ActiveTurnSteerable)
+			}
 		})
 	}
 }

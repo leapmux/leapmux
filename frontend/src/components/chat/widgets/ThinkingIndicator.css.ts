@@ -28,12 +28,12 @@ export const compass = style({
   flexShrink: 0,
 })
 
-// verbRow pairs the verb with the optional thinking-token count on a shared
+// verbRow pairs the verb with optional progress counts on a shared
 // text baseline. The outer container centers the 24px compass against this
 // row, but its `align-items: center` would otherwise center the smaller count
 // against the larger verb — aligning their visual centers, not their
 // baselines, so the count rides high. Grouping them in a baseline row pins the
-// count's baseline to the verb's regardless of the font-size difference. The
+// each count's baseline to the verb's regardless of the font-size difference. The
 // per-char wave transform on the verb doesn't shift the baseline (transforms
 // are applied after layout), so the count stays put while the verb bobs.
 export const verbRow = style({
@@ -42,9 +42,9 @@ export const verbRow = style({
   gap: 'var(--space-1)',
 })
 
-// countChip is a background-task / to-do counter in the verb row. It reads as
-// plain running text next to the thinking-token count, so it copies that
-// count's type (see the `root` rule in ./ThinkingTokenCount.css.ts) rather than
+// countChip is a background-task or to-do counter in the verb row. It reads as
+// plain running text next to the progress counts, so it copies their
+// count's type (see the `root` rule in ./AnimatedCount.css.ts) rather than
 // looking like a separate badge. Still a button: each one hosts a popover.
 export const countChip = style({
   'display': 'inline-block',
