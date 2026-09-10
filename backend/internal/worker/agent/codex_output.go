@@ -141,17 +141,19 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		if !a.isMainThreadID(notif.ThreadID) {
 			// Record the child's active turn id (for steering) and upsert a
 			// running registry row so the child tab reflects activity.
+			a.activateCollabChild(notif.ThreadID)
 			a.setChildTurnID(notif.ThreadID, notif.Turn.ID)
 			childID := a.routeChildItemIfApplicable(notif.ThreadID)
 			if childID != "" {
 				a.flushCodexChildGeneration(childID, MessageCompletionInterrupted)
-				a.sink.ChildSink(childID).ReportProgress(ResetModelProgress())
+				if childSink, ok := a.codexChildSinkForAgent(childID); ok {
+					childSink.ReportProgress(ResetModelProgress())
+				}
 			}
 			if a.knownCollabChild(notif.ThreadID) {
 				// upsertCollabChildRow reopens the row first when this child runs
-				// again after going final. The reopened row keeps a closer: that
-				// collab call's own item/completed runs the states walk, which
-				// closes it.
+				// again after going final. The reopened row keeps a closer: the child
+				// turn or the parent's completion signal closes it.
 				logRegistryRefusal("codex", "upsert", a.upsertCollabChildRow(bgtask.Upsert{
 					RowKey:     notif.ThreadID,
 					Kind:       bgtask.KindSubagent,
@@ -164,7 +166,9 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 				// The child's own turn. publishTurnActive covers the MAIN thread
 				// alone, so the child's flag is published against the child's
 				// sink -- which is what its own input queue follows.
-				publishSteerableTurnActiveTo(a.sink.ChildSink(childID), true, a.childTurnSeq())
+				if childSink, ok := a.codexChildSinkForAgent(childID); ok {
+					publishSteerableTurnActiveTo(childSink, true, a.childTurnSeq())
+				}
 			}
 			return
 		}
@@ -215,7 +219,12 @@ func (a *CodexAgent) bufferCodexModelText(
 			a.unresolvedChildGenerationBuffer(threadID).Append(scopeID, kind, text, join)
 			return
 		}
-		sink = a.sink.ChildSink(childID)
+		childSink, ok := a.codexChildSinkForAgent(childID)
+		if !ok {
+			a.unresolvedChildGenerationBuffer(threadID).Append(scopeID, kind, text, join)
+			return
+		}
+		sink = childSink
 		buffer = a.childGenerationBuffer(childID)
 	}
 	if reportProgress {
@@ -231,7 +240,11 @@ func (a *CodexAgent) reportCodexModelProgress(scopeID, threadID, text string) {
 		if childID == "" {
 			return
 		}
-		sink = a.sink.ChildSink(childID)
+		childSink, ok := a.codexChildSinkForAgent(childID)
+		if !ok {
+			return
+		}
+		sink = childSink
 	}
 	sink.ReportProgress(ModelTextProgress(scopeID, text))
 }
@@ -300,7 +313,8 @@ func (a *CodexAgent) childSinkForItem(itemID string) ProviderServices {
 	if childID == "" {
 		return nil
 	}
-	return a.sink.ChildSink(childID)
+	childSink, _ := a.codexChildSinkForAgent(childID)
+	return childSink
 }
 
 // Codex reasoning sub-stream kinds. A single reasoning item can surface as a
@@ -520,7 +534,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	// subAgentActivity (v2) is registry-only: never persist. Consume it here
 	// before any transcript handling.
 	if itemType == "subAgentActivity" {
-		a.handleCodexSubAgentActivity(item)
+		a.handleCodexSubAgentActivity(item, threadID)
 		return
 	}
 
@@ -534,7 +548,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	// agent id (EnsureChildAgent, idempotent) and run the same per-type persist/
 	// span logic against the child sink.
 	if childID != "" {
-		a.persistItemStartedChild(childID, params, itemType, itemID)
+		a.persistItemStartedChild(threadID, childID, params, itemType, itemID)
 		return
 	}
 
@@ -565,7 +579,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		// so a rail held open for the whole subagent run only pushes every
 		// concurrent tool one column right. The other collab tools (wait,
 		// sendInput, resumeAgent, closeAgent) keep their span. Register receiver
-		// threads as the child index so later child-thread items route to child
+		// threads as child routes so later child-thread items reach their
 		// transcripts.
 		collab := parseCollabToolCall(item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
@@ -574,7 +588,10 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		}
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
-				a.registerCollabReceiver(receiverID, itemID)
+				if collab.Tool == codexCollabToolSpawnAgent && collab.Prompt != "" {
+					a.recordCollabChildPromptTitle(receiverID, collab.Prompt)
+				}
+				a.registerCollabReceiver(receiverID, itemID, threadID)
 				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 		}
@@ -597,14 +614,14 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 	// subAgentActivity (v2) is registry-only: never persist. Consume it here
 	// before any transcript handling.
 	if itemType == "subAgentActivity" {
-		a.handleCodexSubAgentActivity(item)
+		a.handleCodexSubAgentActivity(item, threadID)
 		return
 	}
 
 	// Route child-thread items to the child transcript (mirrors
 	// handleItemStarted).
 	if childID := a.routeChildItemIfApplicable(threadID); childID != "" {
-		a.persistItemCompletedChild(childID, params, itemType, itemID)
+		a.persistItemCompletedChild(threadID, childID, params, itemType, itemID)
 		return
 	}
 
@@ -653,13 +670,13 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 		// code) and drive the registry from agentsStates.
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
-				a.registerCollabReceiver(receiverID, itemID)
+				a.registerCollabReceiver(receiverID, itemID, threadID)
 				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 			if collab.Tool == codexCollabToolSpawnAgent {
 				if sp := collab.Prompt; sp != "" {
 					for _, rid := range collab.ReceiverThreadIds {
-						a.recordCollabChildTitle(rid, sp)
+						a.recordCollabChildPromptTitle(rid, sp)
 					}
 				}
 			}
@@ -669,7 +686,7 @@ func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 		a.persistCompletedReasoningItem(a.sink, params, itemID, a.agentID)
 	case "contextCompaction":
 		// Persist the raw `item/completed` JSON-RPC notification verbatim as
-		// AGENT, the same way the `item/started` arm above does. It must join
+		// AGENT, the same way the `item/started` case above does. It must join
 		// the notification thread that the start opened, because the
 		// consolidator drops the "Compacting context..." status only when the
 		// compaction boundary lands in that same thread. PersistMessage clears
@@ -698,15 +715,22 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		// transcript (mirrors the main-thread PersistTurnEnd below), then clear
 		// its active turn id (steering no longer possible until a new child
 		// turn starts). Falls through silently when the thread is unknown to
-		// the child index (e.g. a late receiver the spawn never registered).
-		if childID := a.routeChildItemIfApplicable(notif.ThreadID); childID != "" {
-			a.flushCodexChildGeneration(childID, codexTurnCompletion(params))
-			a.persistIncompleteCodexTools(childID, false, codexTurnCompletion(params))
-			if err := a.sink.PersistChildTurnEnd(childID, params, SpanInfo{}); err != nil {
+		// the child routes (for example, a late receiver with no spawn event).
+		if route, ok := a.resolveCodexChild(notif.ThreadID); ok {
+			completion := codexTurnCompletion(params)
+			a.flushCodexChildGeneration(route.agentID, completion)
+			a.persistIncompleteCodexTools(route.agentID, false, completion)
+			if err := route.childSink.PersistTurnEnd(params, SpanInfo{}); err != nil {
 				slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", notif.ThreadID, "error", err)
 			}
 			a.clearChildTurnID(notif.ThreadID)
-			publishSteerableTurnActiveTo(a.sink.ChildSink(childID), false, a.childTurnSeq())
+			publishSteerableTurnActiveTo(route.childSink, false, a.childTurnSeq())
+			if status, finished, activity := codexChildTurnRegistryStatus(params); finished {
+				a.completeCodexChildRun(notif.ThreadID, status, completion)
+			} else if activity != "" {
+				logRegistryRefusal("codex", "update status",
+					a.sink.UpdateBackgroundTaskStatus(notif.ThreadID, bgtask.StatusRunning, activity))
+			}
 			return
 		}
 		a.clearChildTurnID(notif.ThreadID)
@@ -783,10 +807,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	}
 
 	// Reset all span tracking at turn-end so the next turn starts clean.
-	// The collab child index is NOT cleared here: background tasks outlive
-	// turns, and the child-index entries are removed only on a final collab
-	// status (collabAgentsStatesToRegistry). Clearing on ClearContext/restart
-	// stays.
+	// The child routes stay here because background tasks outlive root turns.
+	// A completed child run keeps its route for later input. ClearContext or a
+	// process restart removes the routes for the old child tree.
 	a.sink.ResetSpans()
 
 	if turnStatus != "" {
@@ -819,7 +842,11 @@ func (a *CodexAgent) flushCodexGeneration(completion MessageCompletion) {
 }
 
 func (a *CodexAgent) flushCodexChildGeneration(childID string, completion MessageCompletion) {
-	a.persistCodexGeneration(a.childGenerationBuffer(childID), a.sink.ChildSink(childID), completion)
+	childSink, ok := a.codexChildSinkForAgent(childID)
+	if !ok {
+		return
+	}
+	a.persistCodexGeneration(a.childGenerationBuffer(childID), childSink, completion)
 }
 
 func (a *CodexAgent) flushAllCodexGeneration(completion MessageCompletion) {
@@ -931,6 +958,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, compl
 			order:           tool.order,
 		}
 		delete(a.incompleteTools, itemID)
+		delete(a.collabChildItems, itemID)
 	}
 	a.mu.Unlock()
 	if a.isDiscardingOutput() {
@@ -956,7 +984,12 @@ func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, compl
 		}
 		sink := a.sink
 		if tool.childID != "" {
-			sink = a.sink.ChildSink(tool.childID)
+			childSink, ok := a.codexChildSinkForAgent(tool.childID)
+			if !ok {
+				slog.Warn("persist incomplete codex child tool: route missing", "agent_id", a.agentID, "child", tool.childID)
+				continue
+			}
+			sink = childSink
 		}
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
 			SpanID: itemID, SpanType: tool.itemType, Closing: true,
@@ -1363,82 +1396,156 @@ func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 	return &collab
 }
 
-// registerCollabReceiver records a child thread -> spawnSpanID mapping (the
-// child index). Idempotent. The index is NOT cleared at turn end (background
-// tasks outlive turns); entries are removed on a final collab status by
-// collabAgentsStatesToRegistry -> removeCollabChildIndex.
-func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) bool {
-	if threadID == "" || spanID == "" {
+// registerCollabReceiver records or reactivates one child route. The first
+// spawn ID and direct parent remain authoritative. A later wait, message, or
+// completion activity can identify the same child but must not change either.
+func (a *CodexAgent) registerCollabReceiver(threadID, spawnCorrelationID, parentThreadID string) bool {
+	if threadID == "" {
 		return false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.collabThreadSpans == nil {
-		a.collabThreadSpans = make(map[string]string)
+	if a.collabChildren == nil {
+		a.collabChildren = make(map[string]codexChildState)
 	}
-	if a.collabThreadSpans[threadID] == spanID {
-		return false
+	state := a.collabChildren[threadID]
+	changed := !state.active
+	if state.spawnCorrelationID == "" && spawnCorrelationID != "" {
+		state.spawnCorrelationID = spawnCorrelationID
+		changed = true
 	}
-	a.collabThreadSpans[threadID] = spanID
-	return true
+	if state.parentThreadID == "" {
+		if parentThreadID == "" {
+			parentThreadID = a.threadID
+		}
+		state.parentThreadID = parentThreadID
+		changed = true
+	}
+	state.active = true
+	a.collabChildren[threadID] = state
+	return changed
 }
 
 // routeChildItemIfApplicable returns the child agent id when the threadID is a
-// non-main collab child known to the index, resolving it via EnsureChildAgent
-// (idempotent). Returns "" for the main thread, an empty thread, or an unknown
-// child (which falls through to the parent handler; the index may learn the
-// mapping later via registerCollabReceiver).
+// non-main collab child known to the index. EnsureChildAgent runs against the
+// direct parent's sink, which preserves nested subagent linkage.
 func (a *CodexAgent) routeChildItemIfApplicable(threadID string) string {
-	if threadID == "" {
+	route, ok := a.resolveCodexChild(threadID)
+	if !ok {
 		return ""
 	}
-	a.mu.Lock()
-	mainThreadID := a.threadID
-	spanID := a.collabThreadSpans[threadID]
-	a.mu.Unlock()
-	if threadID == mainThreadID {
-		return ""
-	}
-	if spanID == "" {
-		// The span index is gone (a ClearContext wiped it, or the spawn was
-		// never registered). A thread that resolved before still has to resolve
-		// now: its turn end is the only thing that clears the child's own input
-		// queue, and nothing else ever will.
-		return a.rememberedChildAgent(threadID)
-	}
-	childID, err := a.sink.EnsureChildAgent(spanID, threadID, a.collabChildTitle(threadID))
-	if err != nil {
-		slog.Warn("codex route child ensure failed", "thread", threadID, "error", err)
-		return a.rememberedChildAgent(threadID)
-	}
-	a.rememberChildAgent(threadID, childID)
-	return childID
+	return route.agentID
 }
 
-// rememberChildAgent records the agent id a child thread resolved to, and
-// rememberedChildAgent reads it back. removeCollabChildIndex drops both together
-// when the child reaches a final status.
+func (a *CodexAgent) resolveCodexChild(threadID string) (codexChildRoute, bool) {
+	if threadID == "" || a.isMainThreadID(threadID) {
+		return codexChildRoute{}, false
+	}
+	a.mu.Lock()
+	state, ok := a.collabChildren[threadID]
+	a.mu.Unlock()
+	if !ok || state.spawnCorrelationID == "" && state.childAgentID == "" {
+		return codexChildRoute{}, false
+	}
+	parentSink, parentAgentID, ok := a.codexServicesForThread(state.parentThreadID)
+	if !ok {
+		return codexChildRoute{}, false
+	}
+	childID := state.childAgentID
+	if childID == "" {
+		var err error
+		childID, err = parentSink.EnsureChildAgent(state.spawnCorrelationID, threadID, state.displayTitle())
+		if err != nil {
+			slog.Warn("codex route child ensure failed", "thread", threadID, "error", err)
+			return codexChildRoute{}, false
+		}
+		a.rememberChildAgent(threadID, childID)
+	}
+	return codexChildRoute{
+		agentID:       childID,
+		parentAgentID: parentAgentID,
+		parentSink:    parentSink,
+		childSink:     parentSink.ChildSink(childID),
+	}, true
+}
+
+// codexServicesForThread resolves a thread's transcript sink. It walks the
+// recorded parent chain before it touches sink caches, so malformed cycles or
+// incomplete nested routes fail without creating a sink under the wrong parent.
+func (a *CodexAgent) codexServicesForThread(threadID string) (ProviderServices, string, bool) {
+	a.mu.Lock()
+	mainThreadID := a.threadID
+	if threadID == "" {
+		threadID = mainThreadID
+	}
+	if threadID == mainThreadID {
+		a.mu.Unlock()
+		return a.sink, a.agentID, true
+	}
+	var agentIDs []string
+	seen := make(map[string]struct{})
+	for threadID != "" && threadID != mainThreadID {
+		if _, duplicate := seen[threadID]; duplicate {
+			a.mu.Unlock()
+			return nil, "", false
+		}
+		seen[threadID] = struct{}{}
+		state, ok := a.collabChildren[threadID]
+		if !ok || state.childAgentID == "" {
+			a.mu.Unlock()
+			return nil, "", false
+		}
+		agentIDs = append(agentIDs, state.childAgentID)
+		threadID = state.parentThreadID
+		if threadID == "" {
+			threadID = mainThreadID
+		}
+	}
+	a.mu.Unlock()
+
+	sink := a.sink
+	for i := len(agentIDs) - 1; i >= 0; i-- {
+		sink = sink.ChildSink(agentIDs[i])
+	}
+	return sink, agentIDs[0], true
+}
+
+func (a *CodexAgent) codexChildSinkForAgent(childID string) (ProviderServices, bool) {
+	if childID == "" {
+		return nil, false
+	}
+	a.mu.Lock()
+	threadID := a.collabThreadsByAgent[childID]
+	a.mu.Unlock()
+	route, ok := a.resolveCodexChild(threadID)
+	if !ok || route.agentID != childID {
+		return nil, false
+	}
+	return route.childSink, true
+}
+
+// rememberChildAgent records both directions of the child route.
 func (a *CodexAgent) rememberChildAgent(threadID, childID string) {
 	if threadID == "" || childID == "" {
 		return
 	}
 	a.mu.Lock()
-	if a.collabChildAgents == nil {
-		a.collabChildAgents = make(map[string]string)
+	if a.collabChildren == nil {
+		a.collabChildren = make(map[string]codexChildState)
 	}
-	a.collabChildAgents[threadID] = childID
+	state := a.collabChildren[threadID]
+	state.childAgentID = childID
+	a.collabChildren[threadID] = state
+	if a.collabThreadsByAgent == nil {
+		a.collabThreadsByAgent = make(map[string]string)
+	}
+	a.collabThreadsByAgent[childID] = threadID
 	a.mu.Unlock()
 	a.adoptUnresolvedChildGeneration(threadID, childID)
 }
 
-func (a *CodexAgent) rememberedChildAgent(threadID string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.collabChildAgents[threadID]
-}
-
 // persistItemStartedChild applies item/started to the child transcript.
-func (a *CodexAgent) persistItemStartedChild(childID string, params json.RawMessage, itemType, itemID string) {
+func (a *CodexAgent) persistItemStartedChild(threadID, childID string, params json.RawMessage, itemType, itemID string) {
 	// Record the itemID -> childID mapping so output-delta handlers (which
 	// carry only an itemID) can route streaming chunks to the child.
 	if itemID != "" {
@@ -1449,12 +1556,13 @@ func (a *CodexAgent) persistItemStartedChild(childID string, params json.RawMess
 		a.collabChildItems[itemID] = childID
 		a.mu.Unlock()
 	}
-	childSink := a.sink.ChildSink(childID)
-	persistSharedItemStarted(childSink, params, itemType, itemID, childID)
+	if route, ok := a.resolveCodexChild(threadID); ok {
+		persistSharedItemStarted(route.childSink, params, itemType, itemID, childID)
+	}
 }
 
 // persistItemCompletedChild applies item/completed to the child transcript.
-func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMessage, itemType, itemID string) {
+func (a *CodexAgent) persistItemCompletedChild(threadID, childID string, params json.RawMessage, itemType, itemID string) {
 	// The item is done streaming; drop it from the itemID -> child index so the
 	// map doesn't grow unbounded across turns.
 	if itemID != "" {
@@ -1462,7 +1570,11 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 		delete(a.collabChildItems, itemID)
 		a.mu.Unlock()
 	}
-	childSink := a.sink.ChildSink(childID)
+	route, ok := a.resolveCodexChild(threadID)
+	if !ok {
+		return
+	}
+	childSink := route.childSink
 	discardCompletedCodexGeneration(a.childGenerationBuffer(childID), itemType, itemID)
 	if itemType == "reasoning" {
 		a.persistCompletedReasoningItem(childSink, params, itemID, childID)

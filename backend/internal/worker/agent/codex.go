@@ -23,6 +23,7 @@ const (
 	CodexDefaultNetworkAccess     = "restricted"
 	CodexDefaultCollaborationMode = "default"
 	CodexDefaultServiceTier       = "default"
+	codexMultiAgentV2Feature      = "multi_agent_v2"
 )
 
 const (
@@ -128,14 +129,14 @@ type CodexAgent struct {
 	incompleteTools        map[string]*codexIncompleteTool
 	incompleteToolOrder    uint64
 	availableModels        []*ModelInfo
-	collabThreadSpans      map[string]string // child thread ID -> owning spawnAgent span ID (child index)
-	// collabChildAgents remembers the child AGENT id each thread resolved to.
-	// The span index above answers the same question, but it is torn down on a
-	// ClearContext and a registry write can fail, and a thread whose id cannot
-	// be resolved publishes no turn end -- which holds that child's own input
-	// queue with a turn that nothing will ever clear. The agent id does not
-	// change once assigned, so remembering it makes the clear survive both.
-	collabChildAgents map[string]string // child thread ID -> child agent ID
+	// collabChildren is the durable in-process route from each Codex child
+	// thread to its LeapMux transcript. The route survives completed runs, so
+	// a follow-up turn reuses the same transcript. ClearContext removes it,
+	// because the new root thread owns a different child tree.
+	collabChildren map[string]codexChildState
+	// collabThreadsByAgent is the reverse index for buffered output that records
+	// a LeapMux child agent ID but later needs the child's direct sink.
+	collabThreadsByAgent map[string]string
 	// collabChildItems records the child agent ID that owns an item
 	// (commandExecution/fileChange itemID -> childID). Populated when
 	// persistItemStartedChild routes the item/started to a child; consulted by
@@ -143,12 +144,9 @@ type CodexAgent struct {
 	// subagent's command output contributes to its own counter.
 	// Guarded by mu.
 	collabChildItems map[string]string
-	// collabChildTitles records the spawn prompt's first line per child thread
-	// (the registry + child tab title). Guarded by mu.
-	collabChildTitles map[string]string
 	// collabChildPrompts records the FULL spawn prompt per child thread (the
-	// title above keeps only its first line). Spent when the child transcript is
-	// created, so the subagent tab opens on the instruction it was given.
+	// child route keeps only its first line as the title). Spent when the child
+	// transcript is created, so the subagent tab opens on its instruction.
 	collabChildPrompts pendingPrompts
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
@@ -188,8 +186,11 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 		LoginShell:   opts.LoginShell,
 		Launch:       launch,
 		StripEnvKeys: []string{"CODEX_CI"},
-		BaseArgs:     []string{"app-server"},
-		WorkingDir:   opts.WorkingDir,
+		// Current models select Multi-Agent V2 from model metadata. Enable the
+		// stable feature explicitly too, so every supported model exposes one
+		// subagent protocol and LeapMux never falls back because metadata is absent.
+		BaseArgs:   codexBaseArgs(),
+		WorkingDir: opts.WorkingDir,
 	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
@@ -318,6 +319,10 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 	a.publishSettings()
 
 	return a, nil
+}
+
+func codexBaseArgs() []string {
+	return []string{"--enable", codexMultiAgentV2Feature, "app-server"}
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
@@ -655,11 +660,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.reasoningSummaryIndex)
 	clear(a.reasoningSummarySeen)
 	clear(a.reasoningSummaryBreak)
-	// Clear the collab child index: a new thread means prior child threads are
-	// gone. Entries are otherwise only removed on a final collab status.
-	clear(a.collabThreadSpans)
+	// Clear the child routes: a new root thread owns a different child tree. A
+	// completed run keeps its route only while its root thread lives.
+	clear(a.collabChildren)
+	clear(a.collabThreadsByAgent)
 	clear(a.collabChildItems)
-	clear(a.collabChildTitles)
 	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
 	clear(a.childTurnStartAcks)

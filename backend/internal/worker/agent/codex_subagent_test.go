@@ -57,7 +57,7 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 // keeps the queue item retryable instead of storing a permanent failure.
 func TestCodex_SendChildInputUnknownThreadReturnsRetryable(t *testing.T) {
 	t.Parallel()
-	// A fresh CodexAgent has an empty collabThreadSpans (the post-restart
+	// A fresh CodexAgent has an empty child route index (the post-restart
 	// state until the live spawn re-fires).
 	a := &CodexAgent{}
 	err := a.SendChildInput("unknown-thread", "hello", []*leapmuxv1.Attachment{})
@@ -69,7 +69,7 @@ func TestCodex_SendChildInputReturnsAfterTurnStarted(t *testing.T) {
 	t.Parallel()
 
 	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 	done := make(chan error, 1)
 	go func() {
 		done <- agent.SendChildInput("child-thread", "hello", nil)
@@ -88,7 +88,7 @@ func TestCodex_SendChildInputDoesNotAutomaticallySteer(t *testing.T) {
 	t.Parallel()
 
 	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 	agent.setChildTurnID("child-thread", "turn-1")
 
 	// A child that already runs a turn is busy. The queue holds the item and
@@ -102,7 +102,7 @@ func TestCodex_SteerChildInputUsesActiveTurn(t *testing.T) {
 	t.Parallel()
 
 	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 	agent.setChildTurnID("child-thread", "turn-1")
 
 	require.NoError(t, agent.SteerChildInput("child-thread", "guide", nil))
@@ -115,7 +115,7 @@ func TestCodex_SendChildInputProcessExitIsDeliveryUncertain(t *testing.T) {
 	t.Parallel()
 
 	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 	close(agent.processDone)
 
 	assert.ErrorIs(t, agent.SendChildInput("child-thread", "hello", nil), ErrDeliveryUncertain)
@@ -168,14 +168,14 @@ func TestCodex_CollabPromptIgnoresEmptyInput(t *testing.T) {
 	assert.Zero(t, a.collabChildPrompts.count())
 }
 
-// A terminal child drops its remembered prompt along with the rest of its index
-// entries, so a long session that cycles subagents cannot accumulate them.
+// A completed run drops its spent prompt but keeps the route that a follow-up
+// turn needs.
 func TestCodex_CollabPromptDroppedOnFinalChild(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
 	a.collabChildPrompts.remember("thread-1", "Write the essay.")
-	a.removeCollabChildIndex("thread-1")
+	a.finishCollabChildRun("thread-1")
 	assert.Zero(t, a.collabChildPrompts.count())
 }
 
@@ -199,4 +199,14 @@ func TestCodex_ParseCollabToolCallToleratesNullPrompt(t *testing.T) {
 		`{"type":"collabAgentToolCall","tool":"waitForAgent","receiverThreadIds":["thread-1"],"prompt":null}`))
 	require.NotNil(t, collab)
 	assert.Empty(t, collab.Prompt)
+}
+
+func TestCodex_AgentPathTitleUsesTheLastNonEmptySegment(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "probe_child", codexAgentPathTitle("/root/probe_child"))
+	assert.Equal(t, "probe_child", codexAgentPathTitle(" /root/probe_child/// "))
+	assert.Equal(t, "probe_child", codexAgentPathTitle("probe_child"))
+	assert.Empty(t, codexAgentPathTitle("///"))
+	assert.Empty(t, codexAgentPathTitle(""))
 }

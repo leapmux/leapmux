@@ -350,7 +350,7 @@ func TestCodexAgent_InterruptChild_SendsTurnInterruptRequest(t *testing.T) {
 	t.Parallel()
 
 	rig := newCodexInterruptRig(t)
-	rig.agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	rig.agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 	rig.agent.childTurnIDs = map[string]string{"child-thread": "child-turn"}
 
 	interruptDone := make(chan error, 1)
@@ -378,7 +378,7 @@ func TestCodexAgent_InterruptChild_NoActiveTurnIsNoop(t *testing.T) {
 	t.Parallel()
 
 	rig := newCodexInterruptRig(t)
-	rig.agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	rig.agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 
 	require.NoError(t, rig.agent.InterruptChild("child-thread"))
 	time.Sleep(50 * time.Millisecond)

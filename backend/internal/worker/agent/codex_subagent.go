@@ -4,17 +4,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// This file holds the Codex subagent integration (Part 4b): the background-task
-// registry drive from collab agentsStates + subAgentActivity, the child index
-// repurposed as EnsureChildAgent backing, child-thread routing, and the
-// ChildSteerer implementation. It keeps codex_output.go focused on the main-
-// thread item handlers; the collab-specific translation lives here.
+// codexChildState is one child thread's routing and lifecycle state. Identity
+// fields survive a completed run, so a follow-up turn reuses the same virtual
+// agent. A live event sets active and proves that the row can reopen. A stale
+// agentsStates snapshot does not supply that proof.
+type codexChildState struct {
+	spawnCorrelationID string
+	parentThreadID     string
+	childAgentID       string
+	agentPath          string
+	promptTitle        string
+	active             bool
+}
+
+func (s codexChildState) displayTitle() string {
+	if s.agentPath != "" {
+		return bgtask.CleanTitleRunes(codexAgentPathTitle(s.agentPath), 80)
+	}
+	return s.promptTitle
+}
+
+type codexChildRoute struct {
+	agentID       string
+	parentAgentID string
+	parentSink    ProviderServices
+	childSink     ProviderServices
+}
+
+// This file holds the Codex subagent integration: the legacy collab registry
+// adapter, the V2 activity lifecycle, direct-parent transcript routing, and the
+// ChildSteerer implementation. It keeps codex_output.go focused on item output.
 
 // codexCollabStatusToRegistry maps a collab agentsStates status to the registry
 // status. interrupted does NOT close the row (a child can be resumed via
@@ -48,12 +74,36 @@ func codexCollabStatusToRegistry(s string) (status bgtask.Status, finished bool,
 	}
 }
 
+// codexChildTurnRegistryStatus interprets a child turn boundary. V2 emits no
+// failed activity item, so a failed turn is the only final failure signal.
+// An interrupted turn remains resumable and keeps a paused row.
+func codexChildTurnRegistryStatus(params json.RawMessage) (status bgtask.Status, finished bool, activity string) {
+	var value struct {
+		Turn struct {
+			Status string `json:"status"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(params, &value) != nil {
+		return bgtask.StatusRunning, false, ""
+	}
+	switch strings.ToLower(value.Turn.Status) {
+	case "completed":
+		return bgtask.StatusCompleted, true, ""
+	case "failed":
+		return bgtask.StatusFailed, true, ""
+	case "cancelled", "canceled", "interrupted", "aborted":
+		return bgtask.StatusRunning, false, "paused"
+	default:
+		return bgtask.StatusRunning, false, ""
+	}
+}
+
 // collabAgentsStatesToRegistry walks a collab item's agentsStates and upserts/
 // closes the registry rows for each child thread. The child threadId is the
-// registry row_key; when the thread is known to the child index it is also the
+// registry row_key. When the child route knows the thread, the ID is also the
 // EnsureChildAgent providerChildKey (linking the row to a transcript). Final
-// states close the row AND remove the child-index entry; interrupted updates
-// without closing (resumable).
+// states close the row; interrupted updates without closing (resumable). The
+// durable route stays so a later run can reuse the same transcript.
 func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCall) {
 	if collab == nil || a.sink == nil {
 		return
@@ -64,18 +114,16 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		}
 		status, finished, activity := codexCollabStatusToRegistry(st.Status)
 		title := a.collabChildTitle(threadID)
-		// Link the registry row to a child transcript when the index knows the
-		// thread (EnsureChildAgent is idempotent).
+		route, routed := a.resolveCodexChild(threadID)
 		childAgentID := ""
-		spawnSpan := a.collabSpanForThread(threadID)
-		if spawnSpan != "" {
-			var err error
-			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
-			if err != nil {
-				slog.Warn("codex collab ensure child failed", "thread", threadID, "error", err)
-			} else if prompt := a.collabChildPrompts.take(threadID); prompt != "" {
-				// The transcript exists now, so open it on the spawn prompt.
-				if err := a.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
+		parentAgentID := ""
+		if routed {
+			childAgentID = route.agentID
+			parentAgentID = route.parentAgentID
+			if prompt := a.collabChildPrompts.take(threadID); prompt != "" {
+				// Multi-Agent V1 supplies a prompt. Multi-Agent V2 supplies only
+				// the canonical task path, so its transcript starts with output.
+				if err := route.parentSink.PersistChildPrompt(childAgentID, prompt); err != nil {
 					slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
 				}
 			}
@@ -87,7 +135,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			RowKey:        threadID,
 			Kind:          bgtask.KindSubagent,
 			ChildAgentID:  childAgentID,
-			ParentAgentID: a.agentID,
+			ParentAgentID: parentAgentID,
 			Title:         title,
 			ActiveForm:    activity,
 			Status:        status,
@@ -95,33 +143,16 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
 		if finished {
-			if childAgentID == "" {
-				childAgentID = a.rememberedChildAgent(threadID)
+			completion := MessageCompletionError
+			switch status {
+			case bgtask.StatusCompleted:
+				completion = MessageCompletionComplete
+			case bgtask.StatusStopped, bgtask.StatusInterrupted:
+				completion = MessageCompletionInterrupted
+			default:
+				// Failed and unexpected active states keep the error completion.
 			}
-			if childAgentID != "" {
-				completion := MessageCompletionError
-				switch status {
-				case bgtask.StatusCompleted:
-					completion = MessageCompletionComplete
-				case bgtask.StatusStopped, bgtask.StatusInterrupted:
-					completion = MessageCompletionInterrupted
-				default:
-					// Failed and unexpected active states keep the error completion.
-				}
-				a.flushCodexChildGeneration(childAgentID, completion)
-				a.persistIncompleteCodexTools(childAgentID, false, completion)
-			}
-			if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
-				slog.Warn("codex collab registry close failed", "thread", threadID, "error", err)
-			}
-			a.removeCollabChildIndex(threadID)
-			// Release the child's per-agent service state (span tracker, todos,
-			// cached child sink) so a long-running root that cycles many collab
-			// children does not accumulate a stale entry per closed child until
-			// the root itself closes. The transcript row survives.
-			if childAgentID != "" {
-				a.sink.CleanupChildAgent(childAgentID)
-			}
+			a.completeCodexChildRun(threadID, status, completion)
 		}
 	}
 }
@@ -156,25 +187,25 @@ func (a *CodexAgent) reviveFinishedCollabChild(threadID string) {
 // child turn/started, a collab agentsStates walk, a subAgentActivity), and each
 // carried its own hand-placed copy of the same pair.
 //
-// The child INDEX is the proof: removeCollabChildIndex drops the entry at the
-// close, so a thread that is still known was re-registered by a later collab
-// call, which a replayed snapshot never does.
+// The active field is the proof. The durable route survives a close, so a
+// later direct child turn can reuse it. A replayed snapshot cannot set active.
 func (a *CodexAgent) upsertCollabChildRow(up bgtask.Upsert) error {
-	if !up.Status.IsFinished() && a.knownCollabChild(up.RowKey) {
+	if !up.Status.IsFinished() && a.activeCollabChild(up.RowKey) {
 		a.reviveFinishedCollabChild(up.RowKey)
 	}
 	return a.sink.UpsertBackgroundTask(up)
 }
 
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
-// only; never persisted): {kind: started|interacted|interrupted, agentThreadId}.
-// started→Running, interacted→activity "received input", interrupted→Running
-// with activity "paused" (resumable; see codexCollabStatusToRegistry for why a
-// resumable interrupt must not use the final StatusInterrupted).
-func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
+// only; never persisted). The started item is the V2 spawn authority: it
+// supplies the spawn call ID, child thread ID, and canonical task path. The
+// completed item closes the run. Interacted and interrupted remain resumable.
+func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
+		ID            string `json:"id"`
 		AgentThreadID string `json:"agentThreadId"`
+		AgentPath     string `json:"agentPath"`
 		Kind          string `json:"kind"`
 	}
 	if json.Unmarshal(item, &act) != nil || act.Type != "subAgentActivity" {
@@ -183,29 +214,47 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 	if act.AgentThreadID == "" {
 		return true
 	}
-	var status bgtask.Status
+	if act.AgentPath != "" {
+		a.recordCollabChildAgentPath(act.AgentThreadID, act.AgentPath)
+	}
+	if act.Kind == "completed" {
+		a.completeCodexChildRun(act.AgentThreadID, bgtask.StatusCompleted, MessageCompletionComplete)
+		return true
+	}
+
 	var activity string
 	switch act.Kind {
 	case "started":
-		status = bgtask.StatusRunning
 	case "interacted":
-		status = bgtask.StatusRunning
 		activity = "received input"
 	case "interrupted":
-		status = bgtask.StatusRunning
 		activity = "paused"
 	default:
-		status = bgtask.StatusRunning
+		return true
+	}
+
+	// A started activity always comes from the direct parent. Later activity can
+	// come from another initiator, so registerCollabReceiver never replaces a
+	// parent that the start already recorded.
+	a.registerCollabReceiver(act.AgentThreadID, act.ID, parentThreadID)
+	route, routed := a.resolveCodexChild(act.AgentThreadID)
+	childAgentID := ""
+	parentAgentID := ""
+	if routed {
+		childAgentID = route.agentID
+		parentAgentID = route.parentAgentID
 	}
 	// upsertCollabChildRow reopens the row first. Without it an activity that
 	// follows a close lands its ActiveForm ("received input") on a row that still
 	// reads "completed" -- a finished subagent that just took a message.
 	if err := a.upsertCollabChildRow(bgtask.Upsert{
-		RowKey:     act.AgentThreadID,
-		Kind:       bgtask.KindSubagent,
-		Title:      a.collabChildTitle(act.AgentThreadID),
-		ActiveForm: activity,
-		Status:     status,
+		RowKey:        act.AgentThreadID,
+		Kind:          bgtask.KindSubagent,
+		ChildAgentID:  childAgentID,
+		ParentAgentID: parentAgentID,
+		Title:         a.collabChildTitle(act.AgentThreadID),
+		ActiveForm:    activity,
+		Status:        bgtask.StatusRunning,
 	}); err != nil {
 		slog.Warn("codex subAgentActivity upsert failed", "thread", act.AgentThreadID, "error", err)
 		return true
@@ -216,77 +265,131 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 	// it unconditionally. Same monotonic guard, so this cannot resurrect a row
 	// that already ended.
 	if activity == "" {
-		if err := a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, status, ""); err != nil {
+		if err := a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, bgtask.StatusRunning, ""); err != nil {
 			slog.Warn("codex subAgentActivity clear activity failed", "thread", act.AgentThreadID, "error", err)
 		}
 	}
 	return true
 }
 
-// --- Child index (collabThreadSpans repurposed as EnsureChildAgent backing) ---
-
-// collabSpanForThread returns the owning spawnAgent span id for a child thread,
-// or "" when the thread is unknown to the index.
-func (a *CodexAgent) collabSpanForThread(threadID string) string {
-	if threadID == "" {
-		return ""
+func codexAgentPathTitle(agentPath string) string {
+	agentPath = strings.TrimRight(strings.TrimSpace(agentPath), "/")
+	if i := strings.LastIndexByte(agentPath, '/'); i >= 0 {
+		agentPath = agentPath[i+1:]
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.collabThreadSpans == nil {
-		return ""
-	}
-	return a.collabThreadSpans[threadID]
+	return agentPath
 }
 
-// removeCollabChildIndex drops a child thread from the index (it reached a final status).
-// Both the thread->span mapping and the thread->title cache are cleared so a
-// long-lived session that repeatedly spawns and closes subagents does not
-// accumulate stale title entries (collabChildTitles is otherwise only cleared
-// on ClearContext).
-func (a *CodexAgent) removeCollabChildIndex(threadID string) {
+// --- Child index ---
+
+// finishCollabChildRun marks the current run final but keeps its durable route.
+// A follow-up turn can then reuse the same transcript and direct-parent sink.
+func (a *CodexAgent) finishCollabChildRun(threadID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	childID := a.collabChildAgents[threadID]
-	if a.collabThreadSpans != nil {
-		delete(a.collabThreadSpans, threadID)
-	}
-	if a.collabChildAgents != nil {
-		delete(a.collabChildAgents, threadID)
-	}
-	if a.collabChildTitles != nil {
-		delete(a.collabChildTitles, threadID)
-	}
-	if childID != "" {
-		delete(a.childGenerationBuffers, childID)
+	state, ok := a.collabChildren[threadID]
+	if ok {
+		state.active = false
+		a.collabChildren[threadID] = state
+		if state.childAgentID != "" {
+			delete(a.childGenerationBuffers, state.childAgentID)
+		}
 	}
 	a.collabChildPrompts.forget(threadID)
 }
 
-// collabChildTitle returns a best-effort title for a child thread (the first
-// line of the spawn prompt). Empty when no spawn item has been seen yet.
+func (a *CodexAgent) activeCollabChild(threadID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.collabChildren[threadID].active
+}
+
+func (a *CodexAgent) activateCollabChild(threadID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state, ok := a.collabChildren[threadID]
+	if !ok {
+		return false
+	}
+	state.active = true
+	a.collabChildren[threadID] = state
+	return true
+}
+
+// completeCodexChildRun closes one active run. Both child turn/completed and
+// the parent's completed activity can report the same run, so Active makes the
+// operation idempotent without deleting the route that a follow-up needs.
+func (a *CodexAgent) completeCodexChildRun(
+	threadID string,
+	status bgtask.Status,
+	completion MessageCompletion,
+) {
+	if !a.activeCollabChild(threadID) {
+		return
+	}
+	route, routed := a.resolveCodexChild(threadID)
+	if routed {
+		a.flushCodexChildGeneration(route.agentID, completion)
+		a.persistIncompleteCodexTools(route.agentID, false, completion)
+		if a.childTurnID(threadID) != "" {
+			a.clearChildTurnID(threadID)
+			publishSteerableTurnActiveTo(route.childSink, false, a.childTurnSeq())
+		}
+	}
+	if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
+		slog.Warn("codex child registry close failed", "thread", threadID, "error", err)
+		// Keep the run active. Codex sends duplicate lifecycle notifications,
+		// and the next one can retry this registry write.
+		return
+	}
+	a.finishCollabChildRun(threadID)
+	if routed {
+		route.parentSink.CleanupChildAgent(route.agentID)
+	}
+}
+
+// collabChildTitle returns the V2 path segment or the first V1 prompt line.
+// It returns an empty string when neither spawn form supplied a title.
 func (a *CodexAgent) collabChildTitle(threadID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.collabChildTitles == nil {
-		return ""
-	}
-	return a.collabChildTitles[threadID]
+	return a.collabChildren[threadID].displayTitle()
 }
 
-// recordCollabChildTitle records the spawn prompt's first line as the title for
-// a child thread, for the registry + the child tab.
-func (a *CodexAgent) recordCollabChildTitle(threadID, prompt string) {
+// recordCollabChildPromptTitle records the first V1 prompt line as the title.
+func (a *CodexAgent) recordCollabChildPromptTitle(threadID, prompt string) {
 	if threadID == "" {
 		return
 	}
 	title := bgtask.CleanTitleRunes(bgtask.FirstLine(prompt), 80)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.collabChildTitles == nil {
-		a.collabChildTitles = make(map[string]string)
+	if a.collabChildren == nil {
+		a.collabChildren = make(map[string]codexChildState)
 	}
-	a.collabChildTitles[threadID] = title
+	state := a.collabChildren[threadID]
+	state.promptTitle = title
+	a.collabChildren[threadID] = state
+}
+
+// recordCollabChildAgentPath records the canonical V2 path. The title remains
+// derived from this source, and the path stays available after the run.
+func (a *CodexAgent) recordCollabChildAgentPath(threadID, agentPath string) {
+	if threadID == "" {
+		return
+	}
+	agentPath = strings.TrimRight(strings.TrimSpace(agentPath), "/")
+	if agentPath == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabChildren == nil {
+		a.collabChildren = make(map[string]codexChildState)
+	}
+	state := a.collabChildren[threadID]
+	state.agentPath = agentPath
+	a.collabChildren[threadID] = state
 }
 
 // --- ChildSteerer implementation ---
@@ -304,9 +407,9 @@ func (a *CodexAgent) recordCollabChildTitle(threadID, prompt string) {
 func (a *CodexAgent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	threadID := childKey
 	if !a.knownCollabChild(threadID) {
-		// The owner process runs, but its in-memory spawn index does not know
-		// this thread. The worker rebuilds that index only when the live collab
-		// spawn reports the thread again, so the index is empty after a worker
+		// The owner process runs, but its in-memory child route does not know
+		// this thread. The worker rebuilds that route only when a live spawn
+		// reports the thread again, so the route is empty after a worker
 		// restart. The persisted registry row resolves, so the child IS
 		// steerable in principle. ErrChildNotSteerableYet states exactly that
 		// condition; its declaration lists the caller that maps it and where.
@@ -416,8 +519,8 @@ func (a *CodexAgent) sendTurnStartChild(threadID, input string) error {
 func (a *CodexAgent) knownCollabChild(threadID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, ok := a.collabThreadSpans[threadID]
-	return ok
+	state, ok := a.collabChildren[threadID]
+	return ok && (state.spawnCorrelationID != "" || state.childAgentID != "")
 }
 
 // childTurnID returns the active turn id for a child thread ("" if none).
