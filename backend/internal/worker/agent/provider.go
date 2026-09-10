@@ -159,9 +159,9 @@ type Provider interface {
 	// simply stops return false and get the neutral divider.
 	//
 	// The question is "does this close the SUBAGENT", NOT "is this a turn-end
-	// envelope". The two differ for a steerable child: a Codex collab thread
-	// draws a turn-end divider at the end of EVERY turn and then accepts
-	// another, so answering the turn-end question would suppress the divider
+	// envelope". The two differ for a resumable child: a Codex collab thread
+	// draws a turn-end divider after each turn, and its parent can resume it.
+	// Answering the turn-end question would suppress the divider
 	// for exactly the stopped-mid-life child that needs it. Codex therefore
 	// keeps the false default although it does forward a turn end.
 	//
@@ -170,11 +170,10 @@ type Provider interface {
 	// is stopped mid-flight, and only the stopped one needs the neutral divider.
 	EndsSubagentTranscript(content []byte) bool
 	// SupportsChildSteering reports whether a running agent of this provider
-	// can address a subagent conversation inside the same process (Codex's
-	// collab child threads). Drives AgentInfo.accepts_messages for child tabs:
+	// can address a subagent conversation inside the same process. It drives
+	// AgentInfo.accepts_messages for child tabs:
 	// a child of a steering provider keeps an enabled composer; every other
-	// child tab is read-only. Defaults to false (noopProvider); only Codex
-	// overrides it to true.
+	// child tab is read-only. The default is false.
 	SupportsChildSteering() bool
 	// ReportsDefaultModelSentinel reports whether this provider's own model
 	// catalog lists DefaultModelSentinel as a selectable entry meaning "the
@@ -337,14 +336,13 @@ func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
 // it.
 //
 // Codex keeps this default deliberately although it DOES forward a divider:
-// its per-turn `turn/completed` ends a turn, not the subagent, and a collab
-// child accepts another turn afterwards. Answering true there would suppress
+// its per-turn `turn/completed` ends a turn, not the subagent, and the parent
+// can send the child another turn. Answering true there would suppress
 // the closing divider for every stopped child.
 func (noopProvider) EndsSubagentTranscript([]byte) bool { return false }
 
-// SupportsChildSteering defaults to false: a provider whose running agents
-// cannot steer a subagent conversation inside their own process. Only Codex
-// overrides it to true (its collab child threads accept host-initiated turns).
+// SupportsChildSteering defaults to false for a provider whose running agents
+// cannot send direct input to a child conversation.
 func (noopProvider) SupportsChildSteering() bool { return false }
 
 // ReportsDefaultModelSentinel defaults to false: a provider whose CLI reports
@@ -561,8 +559,8 @@ func (codexProvider) SyntheticInterruptNotice() string { return "[Request interr
 // PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
 func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
-// SupportsChildSteering reports whether Codex accepts input for a child thread.
-func (codexProvider) SupportsChildSteering() bool { return true }
+// Multi-Agent V2 rejects direct app-server input for spawned child threads.
+func (codexProvider) SupportsChildSteering() bool { return false }
 
 // ReportsDefaultModelSentinel is false: Codex stores the sentinel until the
 // thread/start lifecycle response reports a concrete model, and model/list never

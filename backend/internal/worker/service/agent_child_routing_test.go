@@ -27,7 +27,7 @@ func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, s
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	// Root agent (Codex supports child steering).
+	// Codex supports direct child interruption.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
@@ -230,13 +230,13 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 		"child LATEST page must report loaded=true (empty-but-loaded)")
 }
 
-// TestInterruptAgentOnChildRoutesViaChildSteerer verifies InterruptAgent on a
+// TestInterruptAgentOnChildRoutesViaChildInterrupter verifies InterruptAgent on a
 // child agent routes through the child-steering path (Agents.InterruptChild on
 // the owner) rather than interrupting the child id directly. The strongest
 // feasible service-level assertion uses the rejection disposition unique to
-// that path: a RUNNING owner that does NOT implement ChildSteerer (the mock
+// that path: a RUNNING owner that does NOT implement ChildInterrupter (the mock
 // owner here is a ClaudeCodeAgent, which never steers) makes InterruptChild
-// return ErrChildSteeringUnsupported, which the handler maps to
+// return ErrChildOperationUnsupported, which the handler maps to
 // FailedPrecondition "this subagent cannot be interrupted". That arm is ONLY
 // reachable through InterruptChild -- the direct-interrupt arm (owner not
 // running, or a non-child target) produces NotFound instead -- so observing it
@@ -246,18 +246,18 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 // registered, InterruptChild returns ErrAgentNotFound and the handler reports
 // NotFound "agent not found or not running" (still via the child path, not a
 // direct Interrupt on the child id).
-func TestInterruptAgentOnChildRoutesViaChildSteerer(t *testing.T) {
+func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 
-	t.Run("runningOwnerWithoutChildSteererReportsFailedPrecondition", func(t *testing.T) {
+	t.Run("runningOwnerWithoutChildInterrupterReportsFailedPrecondition", func(t *testing.T) {
 		t.Parallel()
 		svc, d, childID, rootID := setupChildAgentTest(t)
 
 		// Start a mock owner process. MockStartAgent wraps it as a
-		// ClaudeCodeAgent, which does NOT implement ChildSteerer -- so
-		// InterruptChild returns ErrChildSteeringUnsupported, the unique
+		// ClaudeCodeAgent, which does NOT implement ChildInterrupter -- so
+		// InterruptChild returns ErrChildOperationUnsupported, the unique
 		// FailedPrecondition disposition that proves the child-steering path
 		// was taken (rather than Agents.Interrupt on the child id).
 		_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -276,7 +276,7 @@ func TestInterruptAgentOnChildRoutesViaChildSteerer(t *testing.T) {
 		rejs := w.rejections()
 		require.Len(t, rejs, 1, "the child-steering-unsupported path must reject")
 		assert.Equal(t, int32(codes.FailedPrecondition), rejs[0].code,
-			"ErrChildSteeringUnsupported maps to FailedPrecondition, proving InterruptChild routing")
+			"ErrChildOperationUnsupported maps to FailedPrecondition, proving InterruptChild routing")
 		assert.Contains(t, rejs[0].message, "cannot be interrupted")
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, childID)
 		require.NoError(t, snapshotErr)

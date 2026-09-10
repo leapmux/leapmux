@@ -745,8 +745,8 @@ describe('handleControlSend', () => {
 /**
  * The Interrupt button is offered only when the click can actually land. A
  * subagent tab whose provider cannot interrupt one subagent gets no button:
- * the worker routes a child interrupt through the same ChildSteerer as a child
- * message, so the request would come back FailedPrecondition.
+ * the worker routes a child interrupt through a separate child capability.
+ * A provider without that capability returns FailedPrecondition.
  */
 describe('showInterrupt', () => {
   it('shows the button while the agent works and nothing is being asked', async () => {

@@ -3,12 +3,9 @@ package agent
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // The `turn/started` notification confirms that Codex accepted a turn.
@@ -50,75 +47,15 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 	assert.NotNil(t, a.turnStartAck, "the main send is still waiting")
 }
 
-// TestCodex_SendChildInputUnknownThreadReturnsRetryable verifies that when the
-// owner process is running but its in-memory collab index does not know the
-// thread (empty after a worker restart), SendChildInput wraps the failure in
-// ErrChildNotSteerableYet. The service maps that to UNAVAILABLE so the client
-// keeps the queue item retryable instead of storing a permanent failure.
-func TestCodex_SendChildInputUnknownThreadReturnsRetryable(t *testing.T) {
-	t.Parallel()
-	// A fresh CodexAgent has an empty child route index (the post-restart
-	// state until the live spawn re-fires).
-	a := &CodexAgent{}
-	err := a.SendChildInput("unknown-thread", "hello", []*leapmuxv1.Attachment{})
-	assert.ErrorIs(t, err, ErrChildNotSteerableYet,
-		"an unknown thread on a running owner must be retryable, not a hard failure")
-}
-
-func TestCodex_SendChildInputReturnsAfterTurnStarted(t *testing.T) {
+func TestCodex_MultiAgentV2ChildDoesNotAdvertiseDirectInput(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
-	done := make(chan error, 1)
-	go func() {
-		done <- agent.SendChildInput("child-thread", "hello", nil)
-	}()
-	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
-	select {
-	case err := <-done:
-		t.Fatalf("child input returned before turn/started: %v", err)
-	default:
-	}
-	agent.setChildTurnID("child-thread", "turn-1")
-	require.NoError(t, <-done)
-}
-
-func TestCodex_SendChildInputDoesNotAutomaticallySteer(t *testing.T) {
-	t.Parallel()
-
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
-	agent.setChildTurnID("child-thread", "turn-1")
-
-	// A child that already runs a turn is busy. The queue holds the item and
-	// dispatches it when the turn ends; ErrNoActiveTurn would fail it instead.
-	assert.ErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrAgentBusy)
-	assert.NotErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrNoActiveTurn)
-	assert.Empty(t, requests())
-}
-
-func TestCodex_SteerChildInputUsesActiveTurn(t *testing.T) {
-	t.Parallel()
-
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
-	agent.setChildTurnID("child-thread", "turn-1")
-
-	require.NoError(t, agent.SteerChildInput("child-thread", "guide", nil))
-	require.Len(t, requests(), 1)
-	assert.Equal(t, "turn/steer", requests()[0].Method)
-	assert.Equal(t, "turn-1", requests()[0].Params["expectedTurnId"])
-}
-
-func TestCodex_SendChildInputProcessExitIsDeliveryUncertain(t *testing.T) {
-	t.Parallel()
-
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-	agent.collabChildren = map[string]codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
-	close(agent.processDone)
-
-	assert.ErrorIs(t, agent.SendChildInput("child-thread", "hello", nil), ErrDeliveryUncertain)
+	assert.False(t, codexProvider{}.SupportsChildSteering(),
+		"Codex rejects direct app-server input for Multi-Agent V2 children")
+	_, sendsDirectInput := any(&CodexAgent{}).(ChildSteerer)
+	assert.False(t, sendsDirectInput)
+	_, interruptsChild := any(&CodexAgent{}).(ChildInterrupter)
+	assert.True(t, interruptsChild, "the app server still permits direct child interruption")
 }
 
 // TestCodex_InterruptChildUnknownThreadReturnsRetryable mirrors the send path
@@ -128,7 +65,7 @@ func TestCodex_InterruptChildUnknownThreadReturnsRetryable(t *testing.T) {
 	t.Parallel()
 	a := &CodexAgent{}
 	err := a.InterruptChild("unknown-thread")
-	assert.ErrorIs(t, err, ErrChildNotSteerableYet)
+	assert.ErrorIs(t, err, ErrChildRouteNotReady)
 }
 
 // Codex declares `prompt` on the collabAgentToolCall thread item
@@ -139,12 +76,11 @@ func TestCodex_CollabPromptHeldUntilTheChildExists(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.collabChildPrompts.remember("thread-1", "Write the essay.")
-	assert.Equal(t, "Write the essay.", a.collabChildPrompts.peek("thread-1"))
+	a.rememberCollabChildPrompt("thread-1", "Write the essay.")
 
 	// Spent once, so a second child creation cannot repeat it.
-	assert.Equal(t, "Write the essay.", a.collabChildPrompts.take("thread-1"))
-	assert.Empty(t, a.collabChildPrompts.take("thread-1"))
+	assert.Equal(t, "Write the essay.", a.takeCollabChildPrompt("thread-1"))
+	assert.Empty(t, a.takeCollabChildPrompt("thread-1"))
 }
 
 // The spawn's own prompt wins; the later collab tools (send/wait) on the same
@@ -153,19 +89,19 @@ func TestCodex_CollabPromptFirstWriteWins(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.collabChildPrompts.remember("thread-1", "first")
-	a.collabChildPrompts.remember("thread-1", "second")
-	a.collabChildPrompts.remember("thread-1", "")
-	assert.Equal(t, "first", a.collabChildPrompts.peek("thread-1"))
+	a.rememberCollabChildPrompt("thread-1", "first")
+	a.rememberCollabChildPrompt("thread-1", "second")
+	a.rememberCollabChildPrompt("thread-1", "")
+	assert.Equal(t, "first", a.takeCollabChildPrompt("thread-1"))
 }
 
 func TestCodex_CollabPromptIgnoresEmptyInput(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.collabChildPrompts.remember("", "x")
-	a.collabChildPrompts.remember("thread-1", "")
-	assert.Zero(t, a.collabChildPrompts.count())
+	a.rememberCollabChildPrompt("", "x")
+	a.rememberCollabChildPrompt("thread-1", "")
+	assert.Empty(t, a.collabChildren)
 }
 
 // A completed run drops its spent prompt but keeps the route that a follow-up
@@ -174,9 +110,9 @@ func TestCodex_CollabPromptDroppedOnFinalChild(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.collabChildPrompts.remember("thread-1", "Write the essay.")
+	a.rememberCollabChildPrompt("thread-1", "Write the essay.")
 	a.finishCollabChildRun("thread-1")
-	assert.Zero(t, a.collabChildPrompts.count())
+	assert.Empty(t, a.takeCollabChildPrompt("thread-1"))
 }
 
 // The spawn item's prompt reaches the index through the parse.
@@ -209,4 +145,14 @@ func TestCodex_AgentPathTitleUsesTheLastNonEmptySegment(t *testing.T) {
 	assert.Equal(t, "probe_child", codexAgentPathTitle("probe_child"))
 	assert.Empty(t, codexAgentPathTitle("///"))
 	assert.Empty(t, codexAgentPathTitle(""))
+}
+
+func TestCodex_RootPathClassificationUsesTheCompleteCanonicalPath(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, codexAgentPathIsRoot("/root"))
+	assert.True(t, codexAgentPathIsRoot(" /root/// "))
+	assert.False(t, codexAgentPathIsRoot("/root/root"), "a child can use root as its task name")
+	assert.False(t, codexAgentPathIsRoot("root"))
+	assert.False(t, codexAgentPathIsRoot(""))
 }

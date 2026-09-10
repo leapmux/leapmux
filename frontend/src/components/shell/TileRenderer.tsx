@@ -51,7 +51,7 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { hasGoalSurface } from '~/stores/chatGoal'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabSupportsSessionGoal, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
+import { agentTabSupportsInterrupt, agentTabSupportsSessionGoal, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
@@ -219,17 +219,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const confirmLink = opts.confirmLink
   const mruEditorDeps = opts.mruEditorDeps
 
-  // A child (subagent) tab whose provider cannot steer a subagent conversation
-  // is a READ-ONLY transcript: the worker routes both a child message
-  // (SendChildInput) and a child interrupt (InterruptChild) through the same
-  // ChildSteerer, so a provider that implements neither can do neither. Roots
-  // and steerable children stay fully interactive. isSteerableAgentTab resolves
-  // acceptsMessages (backend-authoritative) with a supportsSubagentSend fallback
-  // for optimistic state.
+  // A child tab whose provider rejects direct input is a read-only transcript.
+  // Roots and writable children stay interactive. isSteerableAgentTab resolves
+  // acceptsMessages with a supportsSubagentSend fallback before hydration.
   //
-  // One predicate feeds the composer gate, its hint, the Interrupt button, and
-  // where a quote goes, so those cannot disagree about what a tab can do. It
-  // takes an agent id rather than reading the focused one, because the quote
+  // One predicate feeds the composer gate, its hint, and quote routing. The
+  // separate interrupt capability can remain available on a read-only child.
+  // This predicate takes an agent ID because the quote
   // handlers run per TAB inside the tile loop while the composer is built for
   // the focused tab alone.
   const isSubagentReadOnly = (agentId: string): boolean => {
@@ -1271,7 +1267,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onControlResponse={agentOps.handleControlResponse}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
-        canInterrupt={!subagentReadOnly()}
+        canInterrupt={agentTabSupportsInterrupt(focusedAgentTab())}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentThinking(agentId())}

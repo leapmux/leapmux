@@ -98,7 +98,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
 		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments); err != nil {
-			if errors.Is(err, agent.ErrChildSteeringUnsupported) {
+			if errors.Is(err, agent.ErrChildOperationUnsupported) {
 				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
 			}
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
@@ -182,8 +182,8 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 // Two of them need the agent to change state first, so the queue pauses and
 // waits for the cause that changes it (DispatchNotReady):
 //
-//   - ErrChildNotSteerableYet: the owner process runs, but it did not re-fire
-//     the child spawn yet. Every Worker restart produces this condition.
+//   - ErrChildRouteNotReady: the owner process runs, but it did not rebuild
+//     the child route yet. Every Worker restart produces this condition.
 //   - ErrAgentNotFound: the process exited between the readiness test and the
 //     write. Manager returns it from providerAfterLifecycle, which resolves the
 //     provider BEFORE any write, so nothing reached the agent.
@@ -208,7 +208,7 @@ func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
 	switch {
 	case errors.Is(err, agent.ErrAgentBusy):
 		return inputqueue.DispatchBusy
-	case errors.Is(err, agent.ErrChildNotSteerableYet), errors.Is(err, agent.ErrAgentNotFound):
+	case errors.Is(err, agent.ErrChildRouteNotReady), errors.Is(err, agent.ErrAgentNotFound):
 		return inputqueue.DispatchNotReady
 	case errors.Is(err, agent.ErrDeliveryUncertain):
 		return inputqueue.DispatchUncertain
@@ -223,7 +223,7 @@ func classifyQueueSteerError(err error) error {
 		return nil
 	case errors.Is(err, agent.ErrNoActiveTurn):
 		return inputqueue.ErrTurnEnded
-	case errors.Is(err, agent.ErrSteeringUnsupported), errors.Is(err, agent.ErrChildSteeringUnsupported):
+	case errors.Is(err, agent.ErrSteeringUnsupported), errors.Is(err, agent.ErrChildOperationUnsupported):
 		return inputqueue.ErrSteeringUnsupported
 	default:
 		return classifyQueueDeliveryError(err)

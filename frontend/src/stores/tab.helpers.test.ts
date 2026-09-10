@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsSessionGoal, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabSupportsSessionGoal, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1007,7 +1007,7 @@ describe('isSteerableAgentTab', () => {
   it('falls back to the provider for an unhydrated child: a provider with supportsSubagentSend is optimistically steerable', () => {
     // acceptsMessages is unset (optimistic state before hydration). The fallback
     // routes through the provider plugin's supportsSubagentSend so the single
-    // source of truth is the plugin (Codex sets it true), not a hardcoded name.
+    // source of truth is the plugin, not a hardcoded provider check.
     registerProvider(AgentProvider.CODEX, { classify: () => ({} as never), supportsSubagentSend: true })
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CODEX }),
@@ -1032,6 +1032,32 @@ describe('isSteerableAgentTab', () => {
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false, agentProvider: AgentProvider.CODEX }),
     ).toBe(false)
+  })
+})
+
+describe('agentTabSupportsInterrupt', () => {
+  it('keeps roots interruptible and rejects a non-agent tab', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT })).toBe(true)
+    expect(agentTabSupportsInterrupt({ type: TabType.FILE })).toBe(false)
+    expect(agentTabSupportsInterrupt(undefined)).toBe(false)
+  })
+
+  it('uses the child provider interrupt capability independently of input', () => {
+    registerProvider(AgentProvider.CODEX, {
+      classify: () => ({} as never),
+      supportsSubagentSend: false,
+      supportsSubagentInterrupt: true,
+    })
+    expect(agentTabSupportsInterrupt({
+      type: TabType.AGENT,
+      parentAgentId: 'root',
+      agentProvider: AgentProvider.CODEX,
+    })).toBe(true)
+    expect(agentTabSupportsInterrupt({
+      type: TabType.AGENT,
+      parentAgentId: 'root',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+    })).toBe(false)
   })
 })
 

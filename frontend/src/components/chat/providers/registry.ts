@@ -425,14 +425,15 @@ export interface Provider {
   attachments?: AttachmentCapabilities
 
   /**
-   * True when a running agent of this provider can address a subagent
-   * conversation inside the same process (Codex's collab child threads).
+   * True when a running agent of this provider permits direct child input.
    * Drives the composer gate for child tabs together with
    * `AgentInfo.accepts_messages`: the proto field WINS when present on the
-   * tab; this is the fallback for optimistic/legacy state. Omit (false) for
-   * every provider but Codex.
+   * tab; this is the fallback for optimistic state. Omit it for false.
    */
   supportsSubagentSend?: boolean
+
+  /** True when the provider permits direct interruption of a child turn. */
+  supportsSubagentInterrupt?: boolean
 }
 
 const registry = new Map<number, Provider>()

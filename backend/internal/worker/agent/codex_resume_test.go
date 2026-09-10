@@ -207,6 +207,70 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
 }
 
+func TestCodexClearContextDoesNotRouteLateChildOutputToTheNewRoot(t *testing.T) {
+	t.Parallel()
+
+	a, sink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
+		return json.RawMessage(`{
+			"thread":{"id":"thread-new"},
+			"model":"gpt-5.4",
+			"reasoningEffort":"high",
+			"approvalPolicy":"on-request",
+			"sandbox":{"type":"workspaceWrite"}
+		}`)
+	})
+	a.threadID = "thread-old"
+	handleCodexOutput(a, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"thread-old","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"old-child","agentPath":"/root/old_child"}}}`)))
+
+	_, ok := a.ClearContext()
+	require.True(t, ok)
+	handleCodexOutput(a, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"old-child","turnId":"child-turn","item":{"type":"agentMessage","id":"late-message","text":"LATE_OLD_CHILD_OUTPUT","phase":"final_answer"}}}`)))
+
+	assert.Empty(t, sink.Messages(), "an old child item must not enter the new root transcript")
+}
+
+func TestCodexClearContextRejectsAChildRouteThatFinishesLate(t *testing.T) {
+	t.Parallel()
+
+	a, baseSink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
+		return json.RawMessage(`{
+			"thread":{"id":"thread-new"},
+			"model":"gpt-5.4",
+			"reasoningEffort":"high",
+			"approvalPolicy":"on-request",
+			"sandbox":{"type":"workspaceWrite"}
+		}`)
+	})
+	a.threadID = "thread-old"
+	blockingSink := &blockingCodexEnsureSink{
+		testSink: baseSink,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	a.sink = blockingSink
+	done := make(chan struct{})
+	go func() {
+		handleCodexOutput(a, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"thread-old","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"old-child","agentPath":"/root/old_child"}}}`)))
+		close(done)
+	}()
+	<-blockingSink.started
+
+	clearDone := make(chan bool, 1)
+	go func() {
+		_, ok := a.ClearContext()
+		clearDone <- ok
+	}()
+	close(blockingSink.release)
+	ok := <-clearDone
+	require.True(t, ok)
+	<-done
+
+	a.mu.Lock()
+	_, oldRouteReturned := a.collabChildren["old-child"]
+	a.mu.Unlock()
+	assert.False(t, oldRouteReturned, "a completed old-thread write cannot repopulate the new context")
+}
+
 func testCodexThreadResponse(id, model string, effort, serviceTier, approvalPolicy, sandbox json.RawMessage) codexThreadResponse {
 	response := codexThreadResponse{
 		Model:          model,

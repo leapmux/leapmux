@@ -1,8 +1,8 @@
 /**
- * 171 — Codex collab subagent steering.
+ * 171 — Codex subagent lifecycle and transcript routing.
  *
  * Covers: the V2 activity-based registry row, its readable title, a child tab
- * with an isolated transcript, an enabled composer, and exact completion.
+ * with an isolated read-only transcript and exact completion.
  */
 import { codexTest, expect } from './codex-fixtures'
 import {
@@ -13,7 +13,7 @@ import {
 } from './helpers/subagentRegistry'
 import { assistantBubbles, sendMessage } from './helpers/ui'
 
-codexTest.describe('codex subagent steering', () => {
+codexTest.describe('codex subagent lifecycle', () => {
   codexTest('opens and isolates a V2 subagent transcript', async ({
     authenticatedCodexWorkspace,
     page,
@@ -45,27 +45,26 @@ codexTest.describe('codex subagent steering', () => {
     await expect(page.locator(`[data-testid="tab"][data-tab-id="${childTabId}"]`)).toContainText(taskName)
 
     // The child answer belongs only to the child transcript.
-    const childAnswer = assistantBubbles(page).filter({ hasText: 'CHILD_DONE' })
+    const childAnswer = assistantBubbles(page).filter({ hasText: /^CHILD_DONE$/ })
     await expect(childAnswer).toBeVisible()
 
-    // 5. Composer: enabled (Codex is steerable), so the box carries its normal
-    //    placeholder rather than any disabled reason.
-    await expect(page.locator('[data-placeholder="Send a message..."]:visible')).toBeVisible()
+    // 5. Multi-Agent V2 rejects direct app-server input for spawned children.
+    await expect(page.locator('[data-placeholder="This subagent doesn\'t accept messages."]:visible')).toBeVisible()
 
-    // 6. Worker-backed: the child exists with parent linkage and accepts
-    //    messages. Query the worker directly for the child tab id read above
+    // 6. Worker-backed: the child exists with parent linkage and reports the
+    //    read-only capability. Query the worker directly for the child tab ID
     //    (the child tab propagates to the hub's ListTabs async).
     await expect.poll(async () => {
       const agents = await listAgents(hubUrl, adminToken, workerId, [childTabId])
       if (!agents)
         return null
       const child = agents.find(a => a.id === childTabId)
-      return child && child.acceptsMessages ? 'steerable' : null
-    }).toBe('steerable')
+      return child && !child.acceptsMessages ? 'read-only' : null
+    }).toBe('read-only')
 
     // 7. Select the parent and prove the child answer did not leak into it.
     await page.locator(`[data-testid="tab"][data-tab-id="${parentTabId}"]`).click()
-    await expect(assistantBubbles(page).filter({ hasText: 'CHILD_DONE' })).toHaveCount(0)
+    await expect(assistantBubbles(page).filter({ hasText: /^CHILD_DONE$/ })).toHaveCount(0)
 
     // 8. The completed child turn is an exact final signal. A generic final
     // status would let a failed child pass this happy-path regression.

@@ -537,7 +537,7 @@ func (m *Manager) Interrupt(agentID string) error {
 // by childKey, the provider linkage key stored in the registry row_key) inside
 // the owner process rootAgentID. It type-asserts the running Agent to
 // ChildSteerer; providers that cannot steer a subagent return
-// ErrChildSteeringUnsupported. The service resolves childKey from the registry
+// ErrChildOperationUnsupported. The service resolves childKey from the registry
 // before calling here.
 // Like SendInput, it waits for an active lifecycle operation on the owner.
 // The lock covers only provider resolution because child steering can block.
@@ -548,7 +548,7 @@ func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachme
 	}
 	steerer, ok := p.(ChildSteerer)
 	if !ok {
-		return ErrChildSteeringUnsupported
+		return ErrChildOperationUnsupported
 	}
 	err = steerer.SendChildInput(childKey, content, attachments)
 	if errors.Is(err, ErrAgentBusy) {
@@ -564,14 +564,14 @@ func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachm
 	}
 	steerer, ok := p.(ChildSteerer)
 	if !ok {
-		return ErrChildSteeringUnsupported
+		return ErrChildOperationUnsupported
 	}
 	return steerer.SteerChildInput(childKey, content, attachments)
 }
 
-// InterruptChild aborts a subagent's current turn inside the owner process,
-// mirroring SendChildInput. Same resolution + ErrChildSteeringUnsupported
-// disposition for a non-steering provider.
+// InterruptChild aborts a subagent's current turn inside the owner process.
+// Input and interrupt capabilities stay separate because Codex Multi-Agent V2
+// permits direct interruption but rejects direct input.
 func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 	m.mu.RLock()
 	p, ok := m.agents[rootAgentID]
@@ -579,11 +579,11 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, rootAgentID)
 	}
-	steerer, ok := p.(ChildSteerer)
+	interrupter, ok := p.(ChildInterrupter)
 	if !ok {
-		return ErrChildSteeringUnsupported
+		return ErrChildOperationUnsupported
 	}
-	return steerer.InterruptChild(childKey)
+	return interrupter.InterruptChild(childKey)
 }
 
 // SupportedGoalActions reports the session-goal actions the RUNNING agent can
@@ -597,9 +597,8 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 // /goal in 2.1.139, ZCode in 3.10.2), so a table would offer a button that does
 // nothing against an older CLI.
 //
-// Same shape as the AgentInfo.accepts_messages decision, which type-asserts
-// ChildSteerer for the same reason: the capability cannot drift from the code
-// that implements it.
+// Same shape as the AgentInfo.accepts_messages decision, which reads the
+// provider capability that owns direct child input.
 // It reads the agent map DIRECTLY rather than through providerAfterLifecycle,
 // and that is deliberate: StartAgent publishes the capabilities while a
 // lifecycle caller holds LockAgent, and the ExitHandler broadcasts them while

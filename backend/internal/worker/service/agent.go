@@ -814,7 +814,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				slog.Warn("failed to pause agent input queue before interrupt", "agent_id", agentID, "error", err)
 			}
 			// A child agent: resolve its registry row, then interrupt the child
-			// conversation inside the owner process via ChildSteerer.
+			// conversation inside the owner process via ChildInterrupter.
 			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 			if err != nil {
 				sendNotFoundError(sender, "agent not found")
@@ -834,14 +834,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 				svc.Output.NoteAgentInterrupted(agentID, row.OwnerAgentID)
 				if err := svc.Agents.InterruptChild(row.OwnerAgentID, row.RowKey); err != nil {
-					if errors.Is(err, agent.ErrChildSteeringUnsupported) {
+					if errors.Is(err, agent.ErrChildOperationUnsupported) {
 						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
 						return
 					}
-					if errors.Is(err, agent.ErrChildNotSteerableYet) {
-						// Owner running but the spawn index is empty (a restart);
-						// nothing to interrupt yet. Tell the client to retry.
-						sendUnavailable(sender, "subagent not yet steerable in the running owner process; retry")
+					if errors.Is(err, agent.ErrChildRouteNotReady) {
+						// The child route can be empty after an owner restart. Tell the client to retry.
+						sendUnavailable(sender, "subagent route is not ready in the running owner process; retry")
 						return
 					}
 					slog.Warn("interrupt child failed", "agent_id", agentID, "error", err)
@@ -1555,9 +1554,8 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 	if a.ParentAgentID.Valid {
 		info.ParentAgentId = a.ParentAgentID.String
 		info.SpawnSpanId = a.SpawnSpanID
-		// A child accepts messages only when its feeding provider can steer a
-		// subagent conversation inside the same process (Codex). Roots always
-		// accept; non-steering children are read-only transcripts.
+		// A child accepts messages only when its feeding provider permits direct
+		// subagent input. Roots always accept. Other children are read-only.
 		info.AcceptsMessages = agent.ProviderFor(a.AgentProvider).SupportsChildSteering()
 		// Resolve the root owner once here so the frontend reads the registry
 		// owner and its NOTIFY subscription from the wire, instead of walking a
