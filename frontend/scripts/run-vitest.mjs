@@ -1,33 +1,33 @@
-// Runs vitest with the webstorage feature flag disabled on Node.js v25+
-// to avoid "Warning: `--localstorage-file` was provided without a valid
-// path" when running tests with jsdom. The flag is rejected on older
-// runtimes, so the guard is required.
-
 import { spawn } from 'node:child_process'
-import { argv, env, exit, kill, pid, versions } from 'node:process'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 
-const [nodeMajor] = versions.node.split('.').map(n => Number.parseInt(n, 10))
-if (nodeMajor >= 25) {
-  const extra = '--no-experimental-webstorage'
-  env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${extra}` : extra
+const require = createRequire(import.meta.url)
+const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
+
+/** Start the installed CLI with literal arguments on every platform. */
+export function launchVitest(args) {
+  const env = { ...process.env }
+  // Node 25 introduced a web storage stub that conflicts with jsdom. Older Node versions reject this flag.
+  if (Number.parseInt(process.versions.node, 10) >= 25) {
+    const flag = '--no-experimental-webstorage'
+    env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${flag}` : flag
+  }
+  return spawn(process.execPath, [cli, ...args], { stdio: 'inherit', env })
 }
 
-// Pass a single command string with shell: true so:
-//   - Node doesn't emit DEP0190 (triggered by shell: true + args array).
-//   - Windows cmd.exe applies PATHEXT, finding `vitest.cmd` in
-//     node_modules/.bin (which bun/npm adds to PATH when running
-//     package.json scripts).
-// JSON.stringify gives us safe shell quoting for our simple string args.
-const quoted = argv.slice(2).map(a => JSON.stringify(a)).join(' ')
-const child = spawn(quoted ? `vitest ${quoted}` : 'vitest', {
-  stdio: 'inherit',
-  shell: true,
-})
-
-child.on('exit', (code, signal) => {
-  if (signal) {
-    kill(pid, signal)
-    return
-  }
-  exit(code ?? 1)
-})
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const child = launchVitest(process.argv.slice(2))
+  child.once('error', (error) => {
+    console.error(error)
+    process.exitCode = 1
+  })
+  child.once('exit', (code, signal) => {
+    if (signal)
+      process.kill(process.pid, signal)
+    else
+      process.exitCode = code ?? 1
+  })
+}

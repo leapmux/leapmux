@@ -61,15 +61,17 @@ jobs:
         run: task prepare-frontend
 
       - name: Build
+        id: build
         run: task build
 
+      - name: Check the unchanged native build
+        run: task check-build-cache
+
       - name: Diagnose linuxdeploy (on failure)
-        # Tauri captures linuxdeploy's stdout/stderr and silently discards
-        # them on failure, leaving only "failed to run linuxdeploy" in the
-        # log. Re-run the wrapper and the extracted AppRun directly so
-        # their real output surfaces in the CI log. Runs only if a
-        # preceding step failed, so the success path stays quiet.
-        if: failure()
+        # Tauri discards linuxdeploy output on failure and reports only "failed to run linuxdeploy".
+        # Run the wrapper and extracted AppRun directly to retain their diagnostics.
+        # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
+        if: failure() && steps.build.outcome == 'failure'
         run: |
           set +e
           echo "=== ~/.cache/tauri contents ==="
@@ -181,6 +183,9 @@ jobs:
         # which the desktop-artifacts job below invokes only on push-to-main.
         run: task build
 
+      - name: Check the unchanged native build
+        run: task check-build-cache
+
   windows:
     runs-on: windows-latest
     steps:
@@ -209,6 +214,10 @@ jobs:
         # Rust/Tauri build to fail with "/usr/bin/link: extra operand".
         shell: pwsh
         run: task build
+
+      - name: Check the unchanged native build
+        shell: pwsh
+        run: task check-build-cache
 
   docker:
     if: github.event_name == 'pull_request'

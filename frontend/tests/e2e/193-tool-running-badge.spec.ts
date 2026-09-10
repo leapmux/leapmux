@@ -1,7 +1,8 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
+import { createTestDirectory } from './helpers/runDirectory'
+import { findFreePort } from './helpers/server'
 import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, waitForSettingsIdle } from './helpers/ui'
 
 /**
@@ -24,15 +25,24 @@ import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectS
  *     a Bash call waits on a prompt nothing answers, so it never starts and
  *     sends no heartbeat.
  *
- * The command waits on a FILE rather than sleeping for a fixed time. The test
- * therefore owns when the tool ends, which is what lets it assert the clear as
- * well as the appearance -- and a standalone `sleep` is refused outright by the
- * Bash hook that this machine's Claude config installs.
+ * The command runs a local HTTP test server. The test controls its exit through a request.
+ * This verifies both badge visibility and removal without a fixed tool duration.
+ * The configured agent refuses file-polling loops, so use this request protocol instead.
  */
 test.describe('Tool Running Badge', () => {
   test('shows a long Claude tool\'s elapsed time, and clears it when the tool ends', async ({ page, authenticatedWorkspace }) => {
-    const dir = await mkdtemp(join(tmpdir(), 'leapmux-badge-'))
-    const flag = join(dir, 'release')
+    const dir = createTestDirectory('leapmux-badge-')
+    const script = join(dir, 'tool-server.mjs')
+    const port = await findFreePort()
+    await writeFile(script, `
+import { createServer } from 'node:http'
+const server = createServer((_request, response) => {
+  response.end('DONE')
+  server.close()
+})
+server.listen(${port}, '127.0.0.1')
+setTimeout(() => server.close(), 180000).unref()
+`)
 
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -54,7 +64,7 @@ test.describe('Tool Running Badge', () => {
 
     await sendMessage(
       page,
-      `Run this exact bash command with a 180000 ms timeout, then reply DONE: until [ -f ${flag} ]; do sleep 2; done`,
+      `Run the Node.js integration test server at ${script}. Keep the command in the foreground with a 180000 ms timeout. The browser test sends a request after it observes the tool heartbeat. Reply DONE after the server exits.`,
     )
     // Wait for the tool's own card, which is the POSITIVE proof that the send
     // reached the agent and the Bash call started. It is also the fast failure:
@@ -84,7 +94,9 @@ test.describe('Tool Running Badge', () => {
 
     // End the tool. Its result row lands, and the frontend -- not the worker --
     // is what drops the badge, so this is the half no Go test can reach.
-    await writeFile(flag, '')
+    const response = await fetch(`http://127.0.0.1:${port}/complete`)
+    expect(response.ok).toBe(true)
+    expect(await response.text()).toBe('DONE')
     await expect(badge).not.toBeVisible()
   })
 })

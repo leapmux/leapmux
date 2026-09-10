@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// sync-generated.mjs — Run a code generator into a throwaway staging directory,
-// then publish its output trees into the committed tree WITHOUT disturbing files
-// that did not change.
+// Run a generator in a private staging directory and publish its output.
+// Copy changed files and remove outputs that no longer have a source.
+// Identical files retain their modification times, so Vite does not reload unchanged sources.
+// Node filesystem APIs and direct process arguments keep this script portable across platforms.
 //
 // Usage:
 //   bun scripts/sync-generated.mjs \
@@ -10,28 +11,10 @@
 //     --out SRC DEST [--out SRC DEST]... \
 //     [-- GENERATOR ARG...]
 //
-// For every `--out SRC DEST` pair it copies new/changed files, deletes files
-// DEST no longer has a source for (orphans left behind when a proto message, SQL
-// query file, or spinner is removed), and -- crucially -- leaves byte-identical
-// files untouched so their mtime is preserved.
-//
-// That mtime stability is the whole point: a byte-identical regenerate touches
-// nothing on disk, so a running Vite dev server (which watches frontend/src/**)
-// sees no filesystem event and does NOT trigger a full page reload. Deleting the
-// dest and regenerating in place would rewrite every file with a fresh mtime and
-// force a hard refresh on every run, even when the output was identical.
-//
-// This is the cross-platform (Windows-friendly) replacement for the old
-// sync-generated.sh: no mktemp, rsync, cp, or cd -- all of it is done with Node
-// filesystem APIs, and the generator is spawned directly (no shell), so there is
-// nothing here that only exists on Unix.
-//
 // Flags:
-//   --base DIR      Create the staging dir under DIR instead of the OS temp dir.
-//                   The sqlc targets pass `--base backend` because `go tool sqlc`
-//                   only resolves inside the Go module, so staging must live
-//                   under backend/ (the dot-prefixed name is ignored by Go
-//                   tooling and git).
+//   --base DIR      Create staging below DIR. The default is the project's .tmp directory.
+//                   SQL generation uses backend/ because go tool resolves sqlc inside its module.
+//                   The staging directory starts with a dot, so Go and Git ignore it.
 //   --cwd-staging   Run the generator with its working directory set to the
 //                   staging dir (sqlc reads sqlc.yaml from cwd and writes its
 //                   relative `out:` there).
@@ -47,9 +30,8 @@
 //                   omit it to only stage (via --copy) and publish.
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 
 // ---------------------------------------------------------------------------
@@ -63,7 +45,7 @@ function usage(message) {
 
 /** @type {{base: string, cwdStaging: boolean, copies: Array<{src: string, dest: string}>, outs: Array<{src: string, dest: string}>, generator: string[]}} */
 const opts = {
-  base: tmpdir(),
+  base: resolve(import.meta.dirname, '..', '.tmp'),
   cwdStaging: false,
   copies: [],
   outs: [],
@@ -75,7 +57,7 @@ for (let i = 0; i < argv.length; i++) {
   const arg = argv[i]
   switch (arg) {
     case '--base':
-      opts.base = argv[++i] ?? usage('--base needs a directory')
+      opts.base = resolve(argv[++i] ?? usage('--base needs a directory'))
       break
     case '--cwd-staging':
       opts.cwdStaging = true
@@ -124,9 +106,9 @@ function sameContent(a, b) {
 
 /** Copy src -> dest only when the bytes differ, so unchanged files keep mtime. */
 function copyIfChanged(src, dest) {
-  const existing = statSync(dest, { throwIfNoEntry: false })
+  const existing = lstatSync(dest, { throwIfNoEntry: false })
   if (existing && !existing.isFile()) {
-    // Dest is a directory where a file now belongs -- replace it.
+    // Replace a directory or symlink where a regular file belongs.
     rmSync(dest, { recursive: true, force: true })
   }
   else if (existing && sameContent(src, dest)) {
@@ -136,11 +118,14 @@ function copyIfChanged(src, dest) {
 }
 
 /**
- * Recursively make destDir match srcDir by content: copy new/changed files,
- * leave byte-identical files untouched (preserving mtime), and delete any
- * entry destDir has that srcDir does not (orphan prune).
+ * Make destDir match srcDir recursively.
+ * Copy changed files and remove destination entries that the source no longer contains.
+ * Identical files retain their modification times.
  */
 function syncTree(srcDir, destDir) {
+  const existing = lstatSync(destDir, { throwIfNoEntry: false })
+  if (existing && !existing.isDirectory())
+    rmSync(destDir, { recursive: true, force: true })
   mkdirSync(destDir, { recursive: true })
 
   const srcEntries = readdirSync(srcDir, { withFileTypes: true })
@@ -157,7 +142,7 @@ function syncTree(srcDir, destDir) {
     const src = join(srcDir, entry.name)
     const dest = join(destDir, entry.name)
     if (entry.isDirectory()) {
-      const existing = statSync(dest, { throwIfNoEntry: false })
+      const existing = lstatSync(dest, { throwIfNoEntry: false })
       if (existing && !existing.isDirectory())
         rmSync(dest, { force: true })
       syncTree(src, dest)
@@ -190,7 +175,7 @@ function resolveExecutable(cmd) {
         return candidate
     }
   }
-  return cmd // Fall back and let spawn surface a clear ENOENT.
+  return cmd // Let spawn report ENOENT when no executable matches.
 }
 
 function runGenerator(staging) {
@@ -203,39 +188,64 @@ function runGenerator(staging) {
   })
   if (result.error) {
     process.stderr.write(`sync-generated: failed to run generator "${cmd}": ${result.error.message}\n`)
-    process.exit(1)
+    process.exitCode = 1
+    return false
   }
   if (result.status !== 0) {
-    process.exit(result.status ?? 1)
+    process.exitCode = result.status ?? 1
+    return false
   }
+  return true
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-mkdirSync(opts.base, { recursive: true })
-const staging = mkdtempSync(join(opts.base, '.gen-stage-'))
-
-try {
-  for (const { src, dest } of opts.copies) {
-    const target = join(staging, dest)
-    mkdirSync(dirname(target), { recursive: true })
-    cpSync(src, target, { recursive: true })
-  }
-
-  if (opts.generator.length > 0)
-    runGenerator(staging)
-
-  for (const { src, dest } of opts.outs) {
-    const source = join(staging, src)
-    if (!existsSync(source)) {
-      process.stderr.write(`sync-generated: generator did not produce ${source}\n`)
-      process.exit(1)
-    }
-    syncTree(source, dest)
+// Validate every source before publication. A missing output must not publish only part of a generation.
+function validateTree(path) {
+  if (!lstatSync(path).isDirectory())
+    throw new Error(`Generator output is not a directory: ${path}`)
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isDirectory())
+      validateTree(join(path, entry.name))
+    else if (!entry.isFile())
+      throw new Error(`Generator output is not a regular file: ${join(path, entry.name)}`)
   }
 }
-finally {
-  rmSync(staging, { recursive: true, force: true })
+
+function main() {
+  mkdirSync(opts.base, { recursive: true })
+  const staging = mkdtempSync(join(opts.base, '.gen-stage-'))
+
+  try {
+    for (const { src, dest } of opts.copies) {
+      const target = join(staging, dest)
+      mkdirSync(dirname(target), { recursive: true })
+      cpSync(src, target, { recursive: true })
+    }
+
+    if (opts.generator.length > 0 && !runGenerator(staging))
+      return
+
+    for (const { src } of opts.outs) {
+      const source = join(staging, src)
+      if (!existsSync(source))
+        throw new Error(`Generator did not produce ${source}`)
+      validateTree(source)
+    }
+    for (const { src, dest } of opts.outs)
+      syncTree(join(staging, src), dest)
+  }
+  finally {
+    rmSync(staging, { recursive: true, force: true })
+  }
+}
+
+try {
+  main()
+}
+catch (error) {
+  process.stderr.write(`sync-generated: ${error.message}\n`)
+  process.exitCode = 1
 }

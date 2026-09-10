@@ -3,39 +3,12 @@ import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtu
 
 opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
-opencodeTest.describe('OpenCode Basic Chat', () => {
-  opencodeTest('send message and receive response', async ({ authenticatedOpencodeWorkspace, page }) => {
-    void authenticatedOpencodeWorkspace // fixture trigger
-    await sendMessage(page, ARITHMETIC_PROMPT)
-    await waitForAgentIdle(page, 120_000)
-    await expectAssistantAnswer(page)
-  })
-
-  opencodeTest('assistant response appears in chat bubble', async ({ authenticatedOpencodeWorkspace, page }) => {
-    void authenticatedOpencodeWorkspace // fixture trigger
-    await sendMessage(page, 'Say hello world')
-    await waitForAgentIdle(page, 120_000)
-
-    // expectAssistantAnswer, not lastAssistantBubble: a turn-end divider is an
-    // agent-role bubble too, so the LAST one is the divider whenever it lands
-    // after the reply. This asserted on its "turn completed" text instead of
-    // the answer.
-    await expectAssistantAnswer(page, { answer: /hello/i })
-  })
-
-  opencodeTest('thinking indicator appears and disappears during response', async ({ authenticatedOpencodeWorkspace, page }) => {
-    void authenticatedOpencodeWorkspace // fixture trigger
-    await sendMessage(page, 'What is the square root of 144?')
-
-    // The thinking indicator should appear while the agent is processing.
-    const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-    // Wait for it to appear (may be very brief for fast responses).
-    await expect(thinkingIndicator).toBeVisible().catch(() => {
-      // Fast responses may complete before we can observe the indicator — acceptable.
-    })
-
-    // Wait for the agent to finish — indicator should be gone.
-    await waitForAgentIdle(page, 120_000)
-    await expect(thinkingIndicator).not.toBeVisible()
-  })
+// The component tests cover the indicator's visibility transitions.
+// One real turn checks provider delivery and the final browser state.
+opencodeTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedOpencodeWorkspace, page }) => {
+  void authenticatedOpencodeWorkspace
+  await sendMessage(page, ARITHMETIC_PROMPT)
+  await waitForAgentIdle(page, 120_000)
+  await expectAssistantAnswer(page)
+  await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
 })

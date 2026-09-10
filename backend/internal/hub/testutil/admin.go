@@ -4,13 +4,11 @@ package testutil
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/sections"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -20,58 +18,33 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// OpenTestStore opens an in-memory SQLite store with migrations applied.
-// (sqlite.Open runs migrations automatically.)
-//
-// Every transaction callback runs TWICE, because store.Store's contract says
-// one may: the postgres and mysql dialects re-run the whole attempt when the
-// backend aborts it for a serialization conflict. SQLite never retries, so
-// without this the default test store exercised only the single-run path and
-// prose plus a one-time manual audit carried the rule. See
-// storetest.DoubleRunStore for what the rehearsal does and does not change.
-//
-// A test that this makes fail found a callback that ACCUMULATES rather
-// than assigns. That is a finding about the callback, never a reason to
-// unwrap the store here.
+// OpenTestStore opens an in-memory SQLite store and applies migrations.
+// Each transaction callback runs twice because server databases can retry a whole transaction after serialization conflicts.
+// SQLite does not retry by itself. DoubleRunStore makes callback state accumulation fail in ordinary tests.
+// See storetest.DoubleRunStore for rollback and commit behavior.
+// Do not remove the wrapper to bypass a failure.
 func OpenTestStore(t *testing.T) store.Store {
 	t.Helper()
 	st, err := sqlite.OpenTestable(":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
 	return storetest.NewDoubleRunStore(st)
 }
 
-// TestAdminUsername and TestAdminPassword are the credentials created by
-// CreateTestAdmin. Exported so service and e2e tests that log in as the
-// fixture don't hardcode the strings in multiple places.
+// TestAdminUsername and TestAdminPassword hold the credentials that CreateTestAdmin uses.
+// Shared fixture credentials keep Go tests consistent.
 const (
 	TestAdminUsername = usernames.Admin
 	TestAdminPassword = "admin123"
 )
 
-// Argon2id is intentionally slow. Hash the fixture password once per process
-// so tests that seed the admin user don't each pay ~200ms.
-var (
-	testAdminHashOnce sync.Once
-	testAdminHash     string
-	testAdminHashErr  error
-)
-
-func cachedTestAdminHash() (string, error) {
-	testAdminHashOnce.Do(func() {
-		testAdminHash, testAdminHashErr = password.Hash(TestAdminPassword)
-	})
-	return testAdminHash, testAdminHashErr
-}
-
-// CreateTestAdmin creates the default admin fixture directly via the store,
-// bypassing the SignUp RPC (and therefore its reserved-username check).
+// CreateTestAdmin creates an administrator directly through the store.
+// This bypasses the SignUp RPC and its reserved-username check.
 func CreateTestAdmin(t *testing.T, st store.Store) {
 	t.Helper()
 	ctx := context.Background()
 
-	hash, err := cachedTestAdminHash()
-	require.NoError(t, err)
+	hash := FixturePasswordHash(t, TestAdminPassword)
 
 	userID := id.Generate()
 
@@ -87,18 +60,11 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 	seedDefaultSections(t, st, userID)
 }
 
-// seedDefaultSections gives a fixture user the same sidebar a real one gets.
-//
-// service.CreateUser writes the default sections in the SAME transaction as
-// the user row, and nothing backfills them afterwards (ListSections is a
-// pure read), so a fixture that creates its user through the store would have
-// an empty sidebar no production user ever has -- and any test that touched
-// sections would measure the fixture's gap instead of the code.
-//
-// The fixture cannot call service.CreateUser directly: the service layer's own
-// tests import this package, so the import would be a cycle. Both call
-// sections.InitDefaults instead, which is why that package sits below the
-// service layer.
+// seedDefaultSections gives each fixture user the same sidebar as a production user.
+// Production account creation writes default sections with the user. ListSections never creates them.
+// Fixtures must create these sections also, or sidebar tests use a state that production never creates.
+// This package cannot call service.CreateUser because the service tests import it.
+// Both paths call sections.InitDefaults to prevent an import cycle.
 func seedDefaultSections(t *testing.T, st store.Store, userID string) {
 	t.Helper()
 	owner, ok := userid.New(userID)
@@ -106,15 +72,13 @@ func seedDefaultSections(t *testing.T, st store.Store, userID string) {
 	require.NoError(t, sections.InitDefaults(context.Background(), st, owner))
 }
 
-// CreateTestUser creates a non-admin user with the given credentials.
-// Mirrors CreateTestAdmin but with IsAdmin=false and the supplied
-// password instead of the cached fixture. Useful for cross-user tests.
+// CreateTestUser creates a non-admin user with the supplied credentials.
+// Both user helpers reuse full-cost password hashes for fixtures.
 func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string) string {
 	t.Helper()
 	ctx := context.Background()
 
-	hash, err := password.Hash(plainPassword)
-	require.NoError(t, err)
+	hash := FixturePasswordHash(t, plainPassword)
 
 	userID := id.Generate()
 

@@ -1,9 +1,9 @@
 import { execSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync } from 'node:fs'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { createTestDirectory } from './helpers/runDirectory'
 import { loginViaToken, openWorkspace, treeRow } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
@@ -13,7 +13,7 @@ const frontendDir = path.resolve(import.meta.dirname, '../..')
  * Returns the repo directory path. The caller must clean up via `rmSync`.
  */
 function createTempGitRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-git-'))
+  const dir = createTestDirectory('leapmux-e2e-git-')
   // Pin off every background writer, the same way helpers/worktree.ts's
   // createGitRepo and the Go testutil.NewGitRepo do. A developer with a global
   // `core.fsmonitor=true` otherwise gets a daemon per test repo, which keeps
@@ -74,8 +74,8 @@ test.describe('Git File Status', () => {
 
   test('tab bar hidden for non-git directory', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    // Use /tmp as a non-git directory.
-    const tempDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-nongit-'))
+    // Use a private directory with no Git repository.
+    const tempDir = createTestDirectory('leapmux-e2e-nongit-')
     writeFileSync(join(tempDir, 'hello.txt'), 'test')
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Non-Git Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
@@ -121,11 +121,9 @@ test.describe('Git File Status', () => {
       await expect(treeRow('file_a.txt')).toBeVisible()
       await expect(treeRow('file_b.txt')).toBeVisible()
 
-      // Select a filter tab and confirm it actually became the active one before
-      // asserting on the tree. Every "should still be visible" assertion below
-      // also holds on the UNFILTERED tree, so without this the whole test passed
-      // whenever the click was swallowed -- and only the one "should be hidden"
-      // line noticed, which is exactly how this read as flake.
+      // Select the filter and verify that it becomes active before checking the tree.
+      // The unfiltered tree also satisfies the visible-file assertions.
+      // A lost click must not make those assertions pass for the wrong reason.
       const selectFilter = async (key: string) => {
         const tab = page.locator(`[data-testid="files-filter-${key}"]`)
         await tab.click()

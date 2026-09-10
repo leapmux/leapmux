@@ -1,5 +1,5 @@
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
-import { applyPermissionPreset, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Settings', () => {
@@ -237,7 +237,7 @@ test.describe('Agent Settings', () => {
     // even if the agent never answered.
     await page.keyboard.type('Reply with exactly the word PINEAPPLE and nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await expect(assistantBubbles(page).filter({ hasText: 'PINEAPPLE' })).toBeVisible()
+    await expectAssistantAnswer(page, { answer: /\bPINEAPPLE\b/ })
   })
 
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
@@ -376,12 +376,8 @@ test.describe('Agent Settings', () => {
     await expect(editor).toBeFocused()
   })
 
-  // Nested so the retry budget covers ONLY this test. Its subject -- that Plan
-  // Mode survives a worker restart -- can only be reached by making the
-  // RELAUNCHED agent answer, so it inherits the model's variance: the arithmetic
-  // assertion is on what the model chose to emit, and a turn that narrates
-  // instead settles nothing by waiting. Every other test in this file asserts
-  // app state and must keep failing on the first attempt.
+  // Limit model retries to this test. Verifying Plan Mode after restart requires a response from the relaunched agent.
+  // The arithmetic response can vary with model output. Other tests that check app state must fail on their first attempt.
   // See MODEL_NONDETERMINISM_RETRIES.
   test.describe('worker restart', () => {
     test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
@@ -409,7 +405,7 @@ test.describe('Agent Settings', () => {
       await page.waitForTimeout(3000)
 
       // Stop worker
-      await stopWorker()
+      await stopWorker(separateHubWorker)
       await page.waitForTimeout(3000)
 
       // Restart worker
@@ -454,35 +450,15 @@ test.describe('Agent Settings', () => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    // Each axis has its own `[+]` submenu now, so each one is opened before its
-    // own items are read. The fused menu this replaced showed every axis at
-    // once, which let a single open cover all three.
-
-    // Verify all model items are enabled (not disabled) when idle
-    await openSettingsMenu(page, 'model')
-    await expect(page.locator('[data-testid="model-haiku"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="model-sonnet"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="model-sonnet\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="model-opus\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
-
-    // Verify effort items are enabled when idle
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-auto"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-high"]')).not.toHaveAttribute('data-disabled', '')
-    // Every effort-capable model offers the same tiers, xhigh included
-    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
-    await expect(page.locator('[data-testid="effort-max"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
-    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toHaveAttribute('data-disabled', '')
-
-    // Verify permission mode items are enabled when idle
-    await openSettingsMenu(page, 'permissionMode')
-    await expect(page.locator('[data-testid="permissionMode-default"]')).not.toHaveAttribute('data-disabled', '')
-
-    // Verify "Disabled while running" footnote is NOT visible when idle
-    await expect(page.locator('[data-testid="settings-disabled-footnote"]')).not.toBeVisible()
+    // The CLI supplies the available options. Check each offered item without assuming a fixed model catalog.
+    for (const group of ['model', 'effort', 'permissionMode']) {
+      const menu = await openSettingsMenu(page, group)
+      const items = menu.getByRole('menuitemradio')
+      await expect(items).not.toHaveCount(0)
+      for (const item of await items.all())
+        await expect(item).not.toHaveAttribute('data-disabled', '')
+      await expect(page.getByTestId('settings-disabled-footnote')).not.toBeVisible()
+    }
 
     await page.keyboard.press('Escape')
   })
@@ -513,14 +489,9 @@ test.describe('Agent Settings', () => {
     await toggle('on')
     await toggle('off')
 
-    // The bug stranded the baseline on "off" after the on-toggle, making the final
-    // off a silent no-op -- which would leave the net notification on "Adaptive"
-    // instead of "Off". The END state is the subject, so both rendered forms are
-    // accepted: the notification reads a bare "(Off)" when the option had no
-    // prior stored value and "(Adaptive -> Off)" when it did (see firstSet in
-    // notificationRenderers), and which one appears depends on whether the agent
-    // had reported its confirmed baseline before the first toggle landed -- a
-    // race this test neither controls nor is about.
+    // After the on-toggle, the confirmed baseline must change from off. Otherwise, the final off-toggle does nothing and leaves an Adaptive notification.
+    // Accept either Off or Adaptive-to-Off wording. The prior stored value determines that wording through firstSet in notificationRenderers.
+    // The test checks the final state. It does not require baseline delivery to precede the first toggle.
     await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Off\)/))).toBeVisible()
     await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Adaptive\)/))).toHaveCount(0)
   })
@@ -602,11 +573,8 @@ test.describe('Agent Settings', () => {
     // Open a second agent tab
     await openAgentViaUI(page)
 
-    // A new session requests Auto Mode, and the Claude CLI decides whether it can enter
-    // it. The picker offers "auto" exactly when the startup probe accepted it, so it
-    // pins WHICH mode to expect -- an either/or regex would also pass if the safe
-    // default stopped being applied at all, and this is the only unpinned agent left in
-    // the suite.
+    // A new session requests Auto Mode. The CLI startup probe determines whether that mode is available.
+    // Read the picker to select the exact expected mode. An either-or regular expression would also accept a broken default selection.
     await waitForSettingsHydrated(page)
     const expectedMode = await permissionModeOffered(page, 'auto') ? 'Auto Mode' : 'Default'
     await expectSettingsChip(page, expectedMode)

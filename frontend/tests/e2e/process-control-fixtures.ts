@@ -1,18 +1,15 @@
-/* eslint-disable no-console */
-import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
+/* eslint-disable no-console */
 import type { ServerOutput } from './helpers/serverOutput'
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import type { WorkspaceFixture } from './helpers/workspace'
+import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
 import {
+  API_POLL_INTERVAL_MS,
   authedHeaders,
-  cleanupWorkspaceViaAPI,
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
+  closeTestChannels,
   elevateSessionViaAPI,
   enableSignupViaAPI,
   listOnlineWorkerIDsViaAPI,
@@ -25,34 +22,17 @@ import {
   TEST_ADMIN_USERNAME,
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
+import { cleanupOnFailure, finishCleanup } from './helpers/cleanup'
+import { closeAllUserEventsSubscriptions } from './helpers/crdt'
+import { stopProcess, stopProcesses } from './helpers/process'
+import { spawnTestProcess } from './helpers/processRegistry'
+import { createTestDirectory } from './helpers/runDirectory'
 import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
+import { withTestWorkspace } from './helpers/workspace'
 import { realAgentEnv } from './realAgentSettings'
-
-// Per-fixture PID registry written under `<dataDir>/pids.json`. The
-// global-teardown sweep reads this file and reaps any process that
-// survived a crash (timeout, ungraceful worker shutdown, restart that
-// throws before the code updates mutableState) before the Playwright run
-// exits. We append rather than overwrite so a sequence of restart
-// calls leaves a full history; the teardown loops over `pids` and
-// silently ignores already-dead entries.
-const PIDS_FILE = 'pids.json'
-
-export function trackSpawnedPid(dataDir: string, pid: number): void {
-  const path = join(dataDir, PIDS_FILE)
-  let pids: number[] = []
-  if (existsSync(path)) {
-    try {
-      pids = JSON.parse(readFileSync(path, 'utf-8'))
-    }
-    catch { /* corrupted; start over */ }
-  }
-  if (!pids.includes(pid))
-    pids.push(pid)
-  writeFileSync(path, JSON.stringify(pids))
-}
 
 export interface SeparateServerInfo {
   hubUrl: string
@@ -61,8 +41,6 @@ export interface SeparateServerInfo {
   newuserToken: string
   hubProc: ChildProcess
   workerProc: ChildProcess
-  hubPid: number
-  workerPid: number
   dataDir: string
   binaryPath: string
   hubPort: number
@@ -73,65 +51,25 @@ export interface SeparateServerInfo {
   output: ServerOutput
 }
 
-interface WorkspaceFixture {
-  workspaceId: string
+/** Stop the worker and wait for its process to exit. */
+export async function stopWorker(serverInfo: SeparateServerInfo): Promise<void> {
+  await stopProcess(serverInfo.workerProc)
 }
 
-// Mutable state that tests can modify via stop/restart helpers
-interface MutableState {
-  hubPid: number
-  workerPid: number
-  hubProc: ChildProcess
-  workerProc: ChildProcess
-}
-
-let mutableState: MutableState | null = null
-
-export function getMutableState(): MutableState {
-  if (!mutableState)
-    throw new Error('SeparateHubWorker fixture not initialized')
-  return mutableState
-}
-
-/**
- * Stop the worker process without restarting.
- */
-export async function stopWorker() {
-  const state = getMutableState()
-  try {
-    process.kill(state.workerPid, 'SIGTERM')
+async function waitForWorkerState(serverInfo: SeparateServerInfo, online: boolean, timeout = 30_000): Promise<void> {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    const ids = await listOnlineWorkerIDsViaAPI(serverInfo.hubUrl, serverInfo.adminToken)
+    if (ids.includes(serverInfo.workerId) === online)
+      return
+    await new Promise(resolve => setTimeout(resolve, API_POLL_INTERVAL_MS))
   }
-  catch {
-    // Process may already be dead
-  }
-  await new Promise(r => setTimeout(r, 2000))
+  throw new Error(`Worker ${serverInfo.workerId} did not become ${online ? 'online' : 'offline'}`)
 }
 
-/**
- * Wait for the hub to confirm the worker is offline.
- */
-export async function waitForWorkerOffline(hubUrl: string, adminToken: string, timeout = 30_000) {
-  const start = Date.now()
-  while (Date.now() - start < timeout) {
-    try {
-      const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
-        method: 'POST',
-        headers: authedHeaders(adminToken),
-        body: JSON.stringify({}),
-      })
-      if (res.ok) {
-        const data = await res.json() as { workers: Array<{ online: boolean }> }
-        if (data.workers.every(b => !b.online)) {
-          return
-        }
-      }
-    }
-    catch {
-      // Ignore errors during polling
-    }
-    await new Promise(r => setTimeout(r, 500))
-  }
-  throw new Error('Timed out waiting for worker to go offline')
+/** Wait for the hub to report this worker as offline. */
+export async function waitForWorkerOffline(serverInfo: SeparateServerInfo, timeout = 30_000): Promise<void> {
+  await waitForWorkerState(serverInfo, false, timeout)
 }
 
 /**
@@ -157,145 +95,58 @@ export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
   await restartWorker(serverInfo)
 }
 
-/**
- * Restart the worker process.
- */
-export async function restartWorker(serverInfo: SeparateServerInfo) {
-  await stopWorker()
+/** Restart the worker and wait for its new connection. */
+export async function restartWorker(serverInfo: SeparateServerInfo): Promise<void> {
+  await stopWorker(serverInfo)
+  await waitForWorkerOffline(serverInfo)
 
-  const workerDataDir = join(serverInfo.dataDir, 'worker')
-  const workerProc = spawn(serverInfo.binaryPath, [
+  const workerProc = spawnTestProcess(serverInfo.binaryPath, [
     'worker',
     '-hub',
     serverInfo.hubUrl,
     '-data-dir',
-    workerDataDir,
+    join(serverInfo.dataDir, 'worker'),
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
   })
   workerProc.unref()
-  // Track immediately so the fixture teardown / global-teardown sweep still
-  // cleans up after a crash that precedes the state update.
-  trackSpawnedPid(serverInfo.dataDir, workerProc.pid!)
-  // The REPLACEMENT worker feeds the same buffer, so a test that restarts one
-  // gets both halves of its own window rather than losing everything the new
-  // process says.
+  serverInfo.workerProc = workerProc
   serverInfo.output.capture(workerProc, 'worker')
-
-  try {
-    // Wait for the worker to connect to the hub
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Worker restart timed out')), 30_000)
-      const onData = (chunk: Buffer) => {
-        const text = chunk.toString()
-        if (text.includes('connected to hub')) {
-          clearTimeout(timeout)
-          workerProc.stderr?.off('data', onData)
-          workerProc.stdout?.off('data', onData)
-          resolve()
-        }
-      }
-      workerProc.stderr?.on('data', onData)
-      workerProc.stdout?.on('data', onData)
-    })
-  }
-  catch (err) {
-    // The new worker did not start in time; kill it so it doesn't leak.
-    // Without this, mutableState still points at the previous (already
-    // stopped) PID and the fixture teardown sees no surviving process,
-    // leaving the just-spawned one orphaned for the OS.
-    try {
-      workerProc.kill('SIGKILL')
-    }
-    catch { /* already dead */ }
-    throw err
-  }
-
-  // Update mutable state
-  const state = getMutableState()
-  state.workerPid = workerProc.pid!
-  state.workerProc = workerProc
-
-  // Give the hub a moment to fully register the reconnected worker
-  await new Promise(r => setTimeout(r, 1000))
+  await cleanupOnFailure(async () => {
+    await waitForWorkerState(serverInfo, true)
+  }, () => stopProcess(workerProc))
+    .catch(error => reportStartupFailure(serverInfo.output, 'worker restart', error))
 }
 
-/**
- * Stop the hub process without restarting.
- */
-export async function stopHub() {
-  const state = getMutableState()
-  try {
-    process.kill(state.hubPid, 'SIGTERM')
-  }
-  catch {
-    // Process may already be dead
-  }
-  await new Promise(r => setTimeout(r, 2000))
+/** Stop the hub and wait for its process to exit. */
+export async function stopHub(serverInfo: SeparateServerInfo): Promise<void> {
+  await stopProcess(serverInfo.hubProc)
 }
 
-/**
- * Restart the hub process.
- */
-export async function restartHub(serverInfo: SeparateServerInfo) {
-  await stopHub()
-
-  const hubDataDir = join(serverInfo.dataDir, 'hub')
-  const hubProc = spawn(serverInfo.binaryPath, [
+/** Restart the hub and verify that its authentication handler responds. */
+export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> {
+  await stopHub(serverInfo)
+  const hubProc = spawnTestProcess(serverInfo.binaryPath, [
     'hub',
     '-listen',
     `:${serverInfo.hubPort}`,
     '-data-dir',
-    hubDataDir,
+    join(serverInfo.dataDir, 'hub'),
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     env: hubSpawnEnv(realAgentEnv()),
   })
   hubProc.unref()
-  // Track immediately so the fixture teardown / global-teardown sweep still
-  // cleans up after a crash that precedes the state update.
-  trackSpawnedPid(serverInfo.dataDir, hubProc.pid!)
-  // Capture rather than `resume()`: both drain the stream, and only one of them
-  // keeps what a hub that fails its health check below just said.
+  serverInfo.hubProc = hubProc
   serverInfo.output.capture(hubProc, 'hub')
-
-  try {
-    // Wait for the hub to become ready
+  await cleanupOnFailure(async () => {
     await waitForServer(serverInfo.hubUrl)
-
-    // Verify the hub is fully operational by testing login
-    for (let i = 0; i < 10; i++) {
-      try {
-        await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-        break
-      }
-      catch {
-        if (i === 9)
-          throw new Error('Hub restart: login health check failed')
-        await new Promise(r => setTimeout(r, 500))
-      }
-    }
-  }
-  catch (err) {
-    // Same rationale as restartWorker: a startup failure must not leave
-    // the just-spawned hub orphaned. mutableState still points at the
-    // stopped predecessor, so fixture teardown wouldn't see this one.
-    try {
-      hubProc.kill('SIGKILL')
-    }
-    catch { /* already dead */ }
-    throw err
-  }
-
-  // Update mutable state
-  const state = getMutableState()
-  state.hubPid = hubProc.pid!
-  state.hubProc = hubProc
-
-  await new Promise(r => setTimeout(r, 1000))
+    await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+  }, () => stopProcess(hubProc))
+    .catch(error => reportStartupFailure(serverInfo.output, 'hub restart', error))
 }
 
 export const processTest = base.extend<
@@ -312,7 +163,7 @@ export const processTest = base.extend<
   // eslint-disable-next-line no-empty-pattern
   separateHubWorker: [async ({}, use) => {
     const globalState = getGlobalState()
-    const dataDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-separate-'))
+    const dataDir = createTestDirectory('leapmux-e2e-separate-')
     const hubDataDir = join(dataDir, 'hub')
     const workerDataDir = join(dataDir, 'worker')
     const hubPort = await findFreePort()
@@ -327,7 +178,7 @@ export const processTest = base.extend<
 
     // Start hub in its own process group so stray signals from the test
     // runner's process group don't kill it prematurely.
-    const hubProc = spawn(globalState.binaryPath, [
+    const hubProc = spawnTestProcess(globalState.binaryPath, [
       'hub',
       '-listen',
       `:${hubPort}`,
@@ -339,138 +190,89 @@ export const processTest = base.extend<
       env: hubSpawnEnv(realAgentEnv()),
     })
     hubProc.unref()
-    trackSpawnedPid(dataDir, hubProc.pid!)
     output.capture(hubProc, 'hub')
 
-    await waitForServer(hubUrl).catch(err => reportStartupFailure(output, `hub on port ${hubPort}`, err))
-    console.log(`[e2e] Hub ready on port ${hubPort}`)
-
-    // Create the admin. A hub with no users at all accepts one sign-up and
-    // makes it an administrator, so this account needs no open-signup setting.
-    const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
-
-    // Every hub-settings write demands an elevated session, and the very next
-    // line is one. A sign-up mints a session no more elevated than a fresh
-    // login does, so this fixture elevates for the same reason
-    // `mintCLITokenForAdmin` does.
-    await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
-
-    // Every LATER sign-up does. This is a plain `leapmux hub`, not `leapmux
-    // dev`, and `signup_enabled` resolves from its stored row with a closed
-    // code default -- only dev mode reports it open. So the `newuser` sign-up
-    // below answered `failed_precondition: sign-up is disabled`, the fixture
-    // threw, and every test in the nine spec files that use this fixture
-    // failed with it.
-    await enableSignupViaAPI(hubUrl, adminToken)
-
-    // Mint a registration key (new flow: admin creates key, hands it to
-    // worker via --registration-key). PR #216 removed the old self-serve
-    // token flow (worker prints token, admin approves).
-    const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
-
-    // Snapshot online workers BEFORE spawning so we can identify the
-    // new worker by diffing.
-    const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
-
-    // Start worker in its own process group so stray signals from the test
-    // runner's process group don't kill it prematurely.
-    console.log('[e2e] Starting separate worker...')
-    const workerProc = spawn(globalState.binaryPath, [
-      'worker',
-      '--hub',
-      hubUrl,
-      '--registration-key',
-      registrationKey,
-      '--data-dir',
-      workerDataDir,
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-      env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
-    })
-    workerProc.unref()
-    trackSpawnedPid(dataDir, workerProc.pid!)
-    output.capture(workerProc, 'worker')
-
-    // Both waits run OUTSIDE any test, so a failure has no test to attach the
-    // tail to -- `reportStartupFailure` prints it instead. Without it a worker
-    // that refused its registration key reports as a bare "Timed out waiting
-    // for worker".
-    const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
-      .catch(err => reportStartupFailure(output, 'worker registration', err))
-    console.log(`[e2e] Worker connected: ${workerId}`)
-
-    // Create newuser
-    const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
-
-    // Save state path for backward compatibility with loginViaUI which reads token from localStorage
-    const stateForFile = {
-      tmpDir: dataDir,
-      hubPid: hubProc.pid,
-      workerPid: workerProc.pid,
-      hubUrl,
-      adminToken,
-      workerId,
-      newuserToken,
-    }
-    writeFileSync(join(dataDir, 'state.json'), JSON.stringify(stateForFile, null, 2))
-
-    const serverInfo: SeparateServerInfo = {
-      hubUrl,
-      adminToken,
-      workerId,
-      newuserToken,
-      hubProc,
-      workerProc,
-      hubPid: hubProc.pid!,
-      workerPid: workerProc.pid!,
-      dataDir,
-      binaryPath: globalState.binaryPath,
-      hubPort,
-      output,
-    }
-
-    // Set mutable state for stop/restart helpers
-    mutableState = {
-      hubPid: hubProc.pid!,
-      workerPid: workerProc.pid!,
-      hubProc,
-      workerProc,
-    }
-
-    await use(serverInfo)
-
-    // Teardown: kill both processes
+    const started = [hubProc]
+    let serverInfo: SeparateServerInfo | undefined
     try {
-      process.kill(mutableState.workerPid, 'SIGTERM')
+      await waitForServer(hubUrl).catch(err => reportStartupFailure(output, `hub on port ${hubPort}`, err))
+      console.log(`[e2e] Hub ready on port ${hubPort}`)
+
+      // Create the admin. A hub with no users at all accepts one sign-up and
+      // makes it an administrator, so this account needs no open-signup setting.
+      const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+
+      // Elevate the session before changing hub settings. Signup alone does not grant session elevation.
+      await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
+
+      // Enable signup before creating newuser. A standalone hub defaults to closed signup after the first administrator exists.
+      await enableSignupViaAPI(hubUrl, adminToken)
+
+      // Create the registration key as an administrator and pass it to the worker.
+      // PR #216 removed the previous worker-token approval flow.
+      const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
+
+      // Snapshot online workers BEFORE spawning so we can identify the
+      // new worker by diffing.
+      const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
+
+      // Start worker in its own process group so stray signals from the test
+      // runner's process group don't kill it prematurely.
+      console.log('[e2e] Starting separate worker...')
+      const workerProc = spawnTestProcess(globalState.binaryPath, [
+        'worker',
+        '--hub',
+        hubUrl,
+        '--registration-key',
+        registrationKey,
+        '--data-dir',
+        workerDataDir,
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+        env: { ...process.env, ...realAgentEnv(), LEAPMUX_WORKER_NAME: 'test-worker' },
+      })
+      workerProc.unref()
+      started.push(workerProc)
+      output.capture(workerProc, 'worker')
+
+      // Startup waits run outside a test. Print recent server output on failure because no test attachment exists yet.
+      const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
+        .catch(err => reportStartupFailure(output, 'worker registration', err))
+      console.log(`[e2e] Worker connected: ${workerId}`)
+
+      // Create newuser
+      const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
+
+      serverInfo = {
+        hubUrl,
+        adminToken,
+        workerId,
+        newuserToken,
+        hubProc,
+        workerProc,
+        dataDir,
+        binaryPath: globalState.binaryPath,
+        hubPort,
+        output,
+      }
+
+      await use(serverInfo)
     }
-    catch { /* already dead */ }
-    try {
-      process.kill(mutableState.hubPid, 'SIGTERM')
+    finally {
+      const active = serverInfo ? [serverInfo.workerProc, serverInfo.hubProc] : started
+      // Close subscriptions even when setup or a restart fails.
+      await finishCleanup([
+        closeAllUserEventsSubscriptions(),
+        closeTestChannels(hubUrl),
+        stopProcesses(active),
+      ])
+      rmSync(dataDir, { recursive: true, force: true })
     }
-    catch { /* already dead */ }
-    await new Promise(r => setTimeout(r, 1000))
-    try {
-      process.kill(mutableState.workerPid, 'SIGKILL')
-    }
-    catch { /* already dead */ }
-    try {
-      process.kill(mutableState.hubPid, 'SIGKILL')
-    }
-    catch { /* already dead */ }
-    rmSync(dataDir, { recursive: true, force: true })
-    mutableState = null
-    console.log(`[e2e] Separate hub+worker on port ${hubPort} stopped`)
   }, { scope: 'worker' }],
 
-  // Override page to set baseURL dynamically
-  page: async ({ separateHubWorker, browser }, use) => {
-    const context = await browser.newContext({
-      baseURL: separateHubWorker.hubUrl,
-    })
-    const page = await context.newPage()
-    await use(page)
-    await context.close()
+  baseURL: async ({ separateHubWorker }, use) => {
+    await use(separateHubWorker.hubUrl)
   },
 
   // Toast recorder: auto-use so it runs for every test
@@ -510,27 +312,10 @@ export const processTest = base.extend<
   workspace: async ({ separateHubWorker }, use) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(
-      hubUrl,
-      adminToken,
-      `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    )
-    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    await use({ workspaceId })
-    // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
-    // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub
-    // half). Without it the worker keeps every test's Claude CLI subprocess alive;
-    // these accumulate on the shared separateHubWorker across the suite and
-    // exhaust resources, which makes later settings-menu interactions flaky.
-    // Best effort.
-    try {
-      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    }
-    catch { /* best effort */ }
-    try {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
-    }
-    catch { /* best effort */ }
+    await withTestWorkspace(separateHubWorker, 'e2e', async (workspace) => {
+      await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspace.workspaceId)
+      await use(workspace)
+    })
   },
 
   // Authenticated workspace

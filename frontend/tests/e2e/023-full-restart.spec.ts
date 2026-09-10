@@ -35,8 +35,8 @@ test.describe('Full Hub+Worker Restart', () => {
       await expectUserMessage(page, '1234 + 5678')
 
       // Step 2: Stop Worker first (so agent is terminated), then stop Hub
-      await stopWorker()
-      await stopHub()
+      await stopWorker(separateHubWorker)
+      await stopHub(separateHubWorker)
 
       // Step 3: Start Hub and Worker back up
       await restartHub(separateHubWorker)
@@ -94,10 +94,8 @@ test.describe('Full Hub+Worker Restart', () => {
     // Wait for layout save so the tab is persisted
     await saved
 
-    // Rename the tab. A rename is the only thing that writes a terminal's
-    // PERSISTED title: a PTY-driven OSC title is broadcast as a live overlay
-    // and deliberately never written to the DB (see the SignalTitle case in
-    // the worker's terminal.go), so it could not survive a restart by design.
+    // Rename the terminal to save its title.
+    // Escape-sequence titles are live overlays and never reach storage. See SignalTitle in the worker terminal.go file.
     await renameTabViaUI(page, terminalTab, 'My Custom Title')
 
     // Wait for the WORKER to hold the new title before tearing anything down.
@@ -113,8 +111,8 @@ test.describe('Full Hub+Worker Restart', () => {
     }, 'the renamed title must reach the worker before the restart').toContain('My Custom Title')
 
     // Stop worker first, then hub
-    await stopWorker()
-    await stopHub()
+    await stopWorker(separateHubWorker)
+    await stopHub(separateHubWorker)
 
     // Start hub and worker back up
     await restartHub(separateHubWorker)
@@ -168,8 +166,8 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.keyboard.press('Control+D')
     await page.waitForTimeout(2000)
 
-    await stopWorker()
-    await stopHub()
+    await stopWorker(separateHubWorker)
+    await stopHub(separateHubWorker)
 
     await restartHub(separateHubWorker)
 
@@ -203,8 +201,8 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(agentTab).toHaveCount(1)
 
       // Stop worker and hub
-      await stopWorker()
-      await stopHub()
+      await stopWorker(separateHubWorker)
+      await stopHub(separateHubWorker)
 
       // Restart hub and worker
       await restartHub(separateHubWorker)
@@ -257,8 +255,8 @@ test.describe('Full Hub+Worker Restart', () => {
       await expectAnyVisible(thinkingIndicator, streamingText)
 
       // Stop worker first (so agent is terminated), then stop hub — while agent is mid-turn
-      await stopWorker()
-      await stopHub()
+      await stopWorker(separateHubWorker)
+      await stopHub(separateHubWorker)
 
       // Start hub and worker back up
       await restartHub(separateHubWorker)

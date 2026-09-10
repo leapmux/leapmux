@@ -31,7 +31,7 @@ test.describe('Terminal Disconnection', () => {
       }).toPass()
 
       // Stop the worker
-      await stopWorker()
+      await stopWorker(separateHubWorker)
 
       // Verify the Hub reports the worker as offline via API
       await expect(async () => {

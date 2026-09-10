@@ -2,11 +2,20 @@
 .git/
 .gitignore
 
-# Go workspace (only go.work is needed; go.work.sum is not)
+# Let Go create workspace checksums inside the image.
 go.work.sum
 
 # Build artifacts
 .task/
+leapmux
+leapmux.exe
+leapmux-desktop
+leapmux-desktop-service-*
+LeapMux*.app/
+LeapMux*.dmg
+leapmux-desktop*.deb
+leapmux-desktop*.AppImage
+LeapMux*.msi
 backend/leapmux
 *.db
 *.db-journal
@@ -31,8 +40,9 @@ frontend/node_modules/
 *~
 
 # Test artifacts
-frontend/tests/e2e/test-results/
-frontend/tests/e2e/playwright-report/
+.tmp/
+frontend/test-results/
+frontend/playwright-report/
 
 # Docker files (not needed in build context except rootfs)
 docker/Dockerfile

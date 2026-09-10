@@ -2,10 +2,12 @@ import type { WorkspaceStartPoint } from './workspaceStartPoint'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { generateSlug } from 'random-word-slugs'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ListGitBranchesResponseSchema, ListGitWorktreesResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccountForTests } from '~/lib/browserStorage'
@@ -16,14 +18,18 @@ import { withPreferences } from '~/test-support/preferencesProvider'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
 import { gitModeStickyKey, readStickyGitMode } from './workspaceStartPoint'
 
-// Hoisted alongside the `vi.mock` factories below, which read them. A plain
-// `const` would be in its temporal dead zone when the factories run.
+// The vi.mock factories read these values. Hoist them before factory execution to avoid the const temporal dead zone.
 const { WORKER_ID, WORKING_DIR, REPO_DIR, NEW_WORKSPACE_ID } = vi.hoisted(() => ({
   WORKER_ID: 'w1',
   WORKING_DIR: '/home/u/proj',
   REPO_DIR: '/home/u/leapmux',
   NEW_WORKSPACE_ID: 'ws-new',
 }))
+
+vi.mock('random-word-slugs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('random-word-slugs')>()
+  return { ...actual, generateSlug: vi.fn(actual.generateSlug) }
+})
 
 vi.mock('~/api/clients', () => ({
   workerClient: {
@@ -49,26 +55,22 @@ vi.mock('~/stores/workerInfo.store', () => ({
 vi.mock('~/api/workerRpc', () => ({
   openAgent: vi.fn(),
   getGitInfo: vi.fn(),
-  // GitOptions issues both of these as soon as it mounts, which a seeded
-  // path-info snapshot makes happen on the first paint.
+  // GitOptions requests both lists on mount. A supplied path snapshot makes it mount immediately.
   listGitBranches: vi.fn(async () => ({ branches: [] })),
   listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
   listDirectory: vi.fn(),
   statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
 }))
 
-// Partial mock: the dialog imports `seedTabIntoNewWorkspace` through the
-// barrel, and the barrel's other exports (op builders, the bridge) are pulled
-// in by the same import graph.
+// Mock seedTabIntoNewWorkspace through the same module that the dialog imports.
+// Keep its other exports because the import graph also requires operation builders and the bridge.
 vi.mock('~/lib/crdt', async importOriginal => ({
   ...(await importOriginal<typeof import('~/lib/crdt')>()),
   seedTabIntoNewWorkspace: vi.fn(),
 }))
 
-// The real tree issues its own `listDirectory` round-trips and renders nothing
-// this dialog's submit path depends on. Stub it down to the one thing the
-// dialog reads back from it -- the selected working directory, which controls
-// submit.
+// The real directory tree makes separate listDirectory requests. The submit path needs only its selected working directory.
+// This stub supplies that directory through the real onSelect interface.
 vi.mock('~/components/tree/DirectoryTree', () => ({
   DirectoryTree: (props: { onSelect: (path: string) => void }) => (
     <button type="button" data-testid="pick-dir" onClick={() => props.onSelect(WORKING_DIR)}>
@@ -99,6 +101,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main' }))
+  vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, { worktrees: [] }))
   vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
     create(CreateWorkspaceResponseSchema, { workspaceId: NEW_WORKSPACE_ID }),
   )
@@ -124,9 +128,8 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
 }
 
 /**
- * Drive the dialog to a submittable state and click Create. Submit depends on
- * a selected worker (arrives with the `listWorkers` mock) AND a non-empty
- * working directory, which only the directory tree can supply.
+ * Select a working directory and click Create after submission becomes available.
+ * Submission also requires the worker that the listWorkers mock supplies.
  */
 async function submitDialog(): Promise<void> {
   const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
@@ -137,10 +140,8 @@ async function submitDialog(): Promise<void> {
 
 describe('newWorkspaceDialog', () => {
   it('opens the agent on the new workspace\'s worker', async () => {
-    // No announcement step. A channel carries no workspace set any more, so a
-    // workspace created after it opened needs nothing done to it before
-    // OpenAgent will be served -- which is what makes the first agent in a
-    // freshly-created workspace work without an out-of-band repair.
+    // Channels hold no workspace set. A workspace created after the channel opens must accept OpenAgent without an announcement.
+    // The first agent must work without a separate repair request.
     renderDialog()
 
     await submitDialog()
@@ -167,11 +168,9 @@ describe('newWorkspaceDialog', () => {
     })
   })
 
-  // The workspace title keeps its WORD-SLUG generator: a workspace carries no
-  // "Agent "/"Terminal " prefix, so the tab pool's lone first name would read
-  // as an unfinished label. Asserted here because the field now shares its
-  // component and validation with the two tab dialogs, and the generator is
-  // the one thing that must NOT have been unified with them.
+  // Workspace titles must retain their multi-word generator. They have no Agent or Terminal prefix.
+  // A single pooled first name would make the label incomplete.
+  // The shared field and validation must not replace this generator with the tab-name generator.
   it('pre-fills a multi-word title, not a single pooled name', async () => {
     renderDialog()
 
@@ -180,16 +179,14 @@ describe('newWorkspaceDialog', () => {
     expect(input.value).not.toMatch(/^(?:Agent|Terminal) [A-Z][A-Za-z]+$/)
   })
 
-  it('re-rolls the title from the refresh button', async () => {
+  it('replaces the title through the refresh button', async () => {
     renderDialog()
 
     const input = await screen.findByLabelText('Title') as HTMLInputElement
-    const first = input.value
-    // The slug space is large, but a repeat is still possible; click until it
-    // moves rather than asserting one click differs.
-    for (let i = 0; i < 50 && input.value === first; i++)
-      fireEvent.click(screen.getByTestId('title-regenerate'))
-    expect(input.value).not.toBe(first)
+    fireEvent.input(input, { target: { value: 'Original Title' } })
+    vi.mocked(generateSlug).mockReturnValueOnce('Replacement Test Title')
+    fireEvent.click(screen.getByTestId('title-regenerate'))
+    expect(input.value).toBe('Replacement Test Title')
   })
 
   it('disables submit and creates nothing when the title is emptied', async () => {
@@ -207,18 +204,13 @@ describe('newWorkspaceDialog', () => {
     expect(workspaceClient.createWorkspace).not.toHaveBeenCalled()
   })
 
-  // The dialog sends the CLEANED title, not the raw one. The hub applies the
-  // same rule to whatever arrives, so a raw send showed one title in the UI
-  // while the hub stored another until the next refresh overwrote it. The gap
-  // widened when the rule started to FOLD: a plain double space is a far more
-  // common typo than a control character was.
+  // Send the cleaned title so the UI agrees with the hub before a refresh.
+  // The hub applies the same rule. Repeated spaces, as well as control characters, can change the stored title.
   it.each([
     ['a repeated space', 'Auth  fix', 'Auth fix'],
     ['a tab', 'Auth\tfix', 'Auth fix'],
-    // No newline case here: an `<input type="text">` value cannot hold one,
-    // so the DOM removes it before the handler reads it. The fold is covered
-    // where it is reachable -- `~/lib/validate` and the sidebar rename, which
-    // sets the value through a signal rather than a DOM input.
+    // A text input removes newlines before the handler reads them.
+    // Newline normalization remains covered in ~/lib/validate and sidebar rename tests, which set a signal directly.
     ['a no-break space', 'Auth\u00A0fix', 'Auth fix'],
     ['an invisible format character', 'Auth\u200Bfix', 'Authfix'],
     ['a control character', 'Auth\u0000fix', 'Authfix'],
@@ -235,8 +227,7 @@ describe('newWorkspaceDialog', () => {
     })
   })
 
-  // The punctuation the rule now KEEPS must reach the hub untouched, so the
-  // clean does not become a second, stricter character ban on this side.
+  // Send permitted punctuation unchanged. Client cleanup must not impose a stricter character restriction than the hub.
   it('sends visible punctuation unchanged', async () => {
     renderDialog()
 
@@ -264,10 +255,9 @@ describe('newWorkspaceDialog', () => {
       tabId: 'agent-1',
       workerId: WORKER_ID,
     })
-    // `hydrated: true` marks the OpenAgent reply as the worker's answer for
-    // this tab. Without it `useTabHydrators` fires a ListAgents round-trip for
-    // an agent this client just created, and that reply lands with none of the
-    // live handler's in-flight-settings suppression.
+    // hydrated: true marks the OpenAgent response as the worker state for this tab.
+    // Without it, useTabHydrators requests ListAgents for an agent that this client just created.
+    // That response lacks the live handler suppression for settings that still await a response.
     expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.objectContaining({
       title: 'Agent Mimi',
       workerId: WORKER_ID,
@@ -301,14 +291,10 @@ describe('newWorkspaceDialog', () => {
   })
 
   /**
-   * Metadata BEFORE placement, the order `openTabInFocusedTile` documents and
-   * every other open path follows. Placement is what makes the tab exist for
-   * the projection and it applies synchronously, so patching afterwards renders
-   * the tab untitled and provider-less for at least the microtask the `await`
-   * in between costs. The sidebar tree caches its grouping across
-   * metadata-only changes, so that window is enough to leave the row on the
-   * bare "Agent" label and the generic bot icon until an unrelated tab forces
-   * a rebuild.
+   * Write metadata before placement, as openTabInFocusedTile requires.
+   * Placement creates the tab in the projection synchronously. Metadata written after an await leaves a temporary tab without a title or provider.
+   * The sidebar caches its groups across metadata-only changes.
+   * That temporary state can retain the generic Agent label and icon until an unrelated tab forces a rebuild.
    */
   it('seeds the metadata before placing the tab', async () => {
     const order: string[] = []
@@ -338,17 +324,15 @@ describe('newWorkspaceDialog', () => {
     await waitFor(() => {
       expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
     })
-    // Nothing to place and nothing to describe -- but the workspace exists, so
-    // it must not be rolled back either.
+    // The response supplies no tab to place, but the workspace exists and must remain.
     expect(seedTabIntoNewWorkspace).not.toHaveBeenCalled()
     expect(props.metadata.patch).not.toHaveBeenCalled()
     expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
   })
 
   /**
-   * Every failure after `CreateWorkspace` has committed must take the
-   * workspace with it. Without the rollback the user sees an error, retries,
-   * and leaves an empty workspace behind on each attempt.
+   * Roll back the workspace after every failure that follows a committed CreateWorkspace request.
+   * Otherwise, each retry leaves an empty workspace behind.
    */
   describe('rollback', () => {
     it('deletes the workspace when the agent fails to open', async () => {
@@ -376,9 +360,8 @@ describe('newWorkspaceDialog', () => {
     })
 
     it('fails loudly, and without a rollback, when the response carries no workspace id', async () => {
-      // A workspace id is the only handle on what was just created. Proceeding
-      // with an empty one would seed the agent's tab into "", and deleting ""
-      // would be a delete request for whatever the hub resolves an empty id to.
+      // The workspace ID identifies the newly created workspace.
+      // An empty ID would place the agent in an empty workspace key and send a delete request with that same invalid ID.
       vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
         create(CreateWorkspaceResponseSchema, { workspaceId: '' }),
       )
@@ -408,8 +391,7 @@ describe('newWorkspaceDialog', () => {
     })
 
     it('opens ready to submit, with no directory to pick', async () => {
-      // The whole point of the start point: the menu already knows the worker
-      // and the repository, so the dialog must not re-ask for either.
+      // The start point already identifies the worker and repository. The dialog must not request either again.
       renderDialog({ startPoint: REPO_START })
 
       const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
@@ -422,12 +404,77 @@ describe('newWorkspaceDialog', () => {
     })
 
     it('paints the git options straight away, with no loading spinner', async () => {
-      // The seeded snapshot is what keeps `skipLoadingFlash` armed. Without it
-      // the pre-filled dialog shows "Loading branch info" for a round trip.
+      // The supplied snapshot enables skipLoadingFlash. Without it, the dialog shows Loading branch info until the request completes.
       renderDialog({ startPoint: REPO_START })
 
       expect(await screen.findByLabelText('Use current state')).toBeInTheDocument()
       expect(screen.queryByText(/loading branch info/i)).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['invalid branch name', 'Branch name contains invalid characters'],
+      ['foo..bar', 'Branch name must not contain ..'],
+      ['-bad-start', 'Branch name must not start with'],
+    ])('blocks invalid branch input and accepts a corrected value: %s', async (name, message) => {
+      renderDialog({ startPoint: REPO_START })
+      const submit = await screen.findByRole('button', { name: 'Create' })
+      await waitFor(() => expect(submit).toBeEnabled())
+      fireEvent.click(await screen.findByLabelText('Create new worktree'))
+      const input = await screen.findByPlaceholderText('feature-branch')
+      fireEvent.input(input, { target: { value: name } })
+      expect(await screen.findByText(message, { exact: false })).toBeVisible()
+      expect(submit).toBeDisabled()
+      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      fireEvent.input(input, { target: { value: 'valid-new-branch' } })
+      await waitFor(() => expect(submit).toBeEnabled())
+      expect(screen.queryByText(message, { exact: false })).not.toBeInTheDocument()
+    })
+
+    it('replaces the validation message when one invalid branch changes to another', async () => {
+      renderDialog({ startPoint: REPO_START })
+      fireEvent.click(await screen.findByLabelText('Create new worktree'))
+      const input = await screen.findByPlaceholderText('feature-branch')
+      const submit = screen.getByRole('button', { name: 'Create' })
+      fireEvent.input(input, { target: { value: 'invalid branch' } })
+      expect(await screen.findByText('Branch name contains invalid characters')).toBeVisible()
+      fireEvent.input(input, { target: { value: 'foo..bar' } })
+      expect(await screen.findByText('Branch name must not contain ..')).toBeVisible()
+      expect(screen.queryByText('Branch name contains invalid characters')).not.toBeInTheDocument()
+      expect(submit).toBeDisabled()
+      fireEvent.click(submit)
+      expect(workspaceClient.createWorkspace).not.toHaveBeenCalled()
+    })
+
+    it.each(['Create new branch', 'Create new worktree'])('refuses an existing branch and accepts a new name in %s', async (mode) => {
+      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
+        branches: [{ name: 'claimed-branch' }],
+        currentBranch: 'main',
+      }))
+      renderDialog({ startPoint: REPO_START })
+      fireEvent.click(await screen.findByLabelText(mode))
+      const submit = await screen.findByRole('button', { name: 'Create' })
+      const input = await screen.findByPlaceholderText('feature-branch')
+      fireEvent.input(input, { target: { value: 'claimed-branch' } })
+      expect(await screen.findByText('A branch with this name already exists')).toBeVisible()
+      expect(submit).toBeDisabled()
+      fireEvent.input(input, { target: { value: 'unclaimed-branch' } })
+      await waitFor(() => expect(submit).toBeEnabled())
+      expect(screen.queryByText('A branch with this name already exists')).not.toBeInTheDocument()
+    })
+
+    it.each(['Switch to branch', 'Use existing worktree'])('requires a selection in %s and clears that requirement in current mode', async (mode) => {
+      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [{ name: 'other' }] }))
+      vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, {
+        worktrees: [{ path: '/home/u/worktree', branch: 'other' }],
+      }))
+      renderDialog({ startPoint: REPO_START })
+      const submit = await screen.findByRole('button', { name: 'Create' })
+      await waitFor(() => expect(submit).toBeEnabled())
+      fireEvent.click(await screen.findByLabelText(mode))
+      await waitFor(() => expect(submit).toBeDisabled())
+      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByLabelText('Use current state'))
+      await waitFor(() => expect(submit).toBeEnabled())
     })
 
     it('opens on the mode this repository was last submitted with', async () => {
@@ -451,8 +498,7 @@ describe('newWorkspaceDialog', () => {
     })
 
     it('remembers nothing when the submit fails', async () => {
-      // A mode the user selected and then lost to an error is not what they
-      // work with, so the next dialog must not open on it.
+      // A failed submission must not change the saved mode for the next dialog.
       vi.mocked(workerRpc.openAgent).mockRejectedValue(new Error('worker exploded'))
       renderDialog({ startPoint: REPO_START })
 
@@ -466,9 +512,8 @@ describe('newWorkspaceDialog', () => {
     })
 
     it('remembers nothing for a directory that is not a repository', async () => {
-      // The key means "a repository root or a worktree root", which is exactly
-      // what `showGitOptions()` guarantees. A plain directory has no mode to
-      // remember.
+      // The key identifies a repository root or worktree root, as showGitOptions guarantees.
+      // A directory outside a repository has no Git mode to save.
       renderDialog()
 
       await submitDialog()

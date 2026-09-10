@@ -29,8 +29,8 @@ test.describe('Settings and /clear after Worker restart', () => {
       // Step 2: Restart the Worker (stop + start). All persistent data
       // (workspaces, agents, messages) is stored on the Worker's SQLite DB,
       // so the conversation should survive the restart.
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
       await restartWorker(separateHubWorker)
 
       // Wait for the E2EE channels to reconnect and messages to reload.

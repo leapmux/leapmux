@@ -1,5 +1,6 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { appMenuTrigger, firstAssistantBubble, loginViaToken, openWorkspace, userBubbles } from './helpers/ui'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getUserId, openAgentViaAPI } from './helpers/api'
+import { getRecordedToasts } from './helpers/toast'
+import { appMenuTrigger, expectAssistantAnswer, loginViaToken, openWorkspace, userBubbles, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Failed agent input enqueue', () => {
@@ -17,14 +18,17 @@ test.describe('Failed agent input enqueue', () => {
       await editor.fill('What is 1234 + 5678? Reply with only the number.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await expect(firstAssistantBubble(page)).toBeVisible()
+      await expectAssistantAnswer(page)
+      await waitForAgentIdle(page)
 
       const userCount = await userBubbles(page).count()
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
       await editor.fill('Keep this draft')
       await page.keyboard.press('Meta+Enter')
 
+      // Wait for the refusal. The unchanged editor alone can precede the request's result.
+      await expect.poll(async () => (await getRecordedToasts(page)).some(toast => toast.message.includes('worker is offline'))).toBe(true)
       await expect(editor).toHaveText('Keep this draft')
       await expect(userBubbles(page)).toHaveCount(userCount)
 
@@ -51,11 +55,13 @@ test.describe('Failed agent input enqueue', () => {
       const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
       await editor.fill('Draft survives reload')
       await page.keyboard.press('Meta+Enter')
+      await expect.poll(async () => (await getRecordedToasts(page)).some(toast => toast.message.includes('worker is offline'))).toBe(true)
       await expect(editor).toHaveText('Draft survives reload')
+      await waitForEditorDraft(page, await getUserId(hubUrl, adminToken), 'Draft survives reload')
 
       await restartWorker(separateHubWorker)
       await ensureWorkerOnline(separateHubWorker)

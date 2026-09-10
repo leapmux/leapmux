@@ -1,17 +1,12 @@
 {
-  // E2E specs run under Playwright, NOT vitest/jsdom -- their `test`/`expect` and the
-  // Node built-ins they use (node:fs, node:child_process, ...) need a different ambient
-  // type set than the unit suite. Kept as a SEPARATE project so the main tsconfig stays
-  // vitest-typed; `bun run typecheck:e2e` checks this one.
+  // Playwright specs require Playwright and Node types.
+  // Keep this project separate from the Vitest types in the main configuration.
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.cache/tsc/e2e.tsbuildinfo",
     "types": ["@playwright/test", "node"]
   },
   "include": ["tests/e2e"],
-  // The unit tests co-located with the helpers run under vitest, not
-  // Playwright, so tsconfig.json owns them and they are excluded here. The
-  // split follows the same rule the two runners follow: `.spec.ts` is
-  // Playwright, `.test.ts` is vitest. Without this, a vitest test would be
-  // typed against Playwright's ambient set and would lose the `~` mapping.
+  // The main configuration owns co-located unit tests. This follows the runner split by file extension.
   "exclude": ["tests/e2e/**/*.test.ts"]
 }

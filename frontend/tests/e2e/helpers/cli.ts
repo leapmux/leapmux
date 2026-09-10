@@ -1,34 +1,24 @@
+import type { Page } from '@playwright/test'
 /**
- * CLI runner helpers for `leapmux control` end-to-end tests.
+ * CLI helpers for end-to-end tests of leapmux control.
+ * The launcher verifies the root leapmux binary through task build-backend once per run.
+ * Tests use that binary for control and recover commands and parse its standard output as JSON.
  *
- * Global setup builds the leapmux binary once per Playwright run
- * (`task build-backend`), and it lives at the repo root. The same binary
- * serves the `control` and `recover` commands; tests invoke it
- * as a child process and parse its JSON-on-stdout contract.
- *
- * Auth model used by these helpers
- * --------------------------------
- * The CLI is the production path for external clients, so it expects
- * credentials on disk (`~/.config/leapmux/control/<host>.json`). The
- * `LEAPMUX_CONTROL_CONFIG_DIR` env var redirects that lookup to a
- * per-test directory; combined with `mintCLITokenForAdmin` (which
- * mints an api token over the hub's `AdminUserService/IssueAPIToken`
- * RPC and writes the resulting bearer into a credential file) this
- * lets a Playwright test drive the CLI exactly the way a user would
- * after running `leapmux control auth login`, without round-tripping
- * through the OAuth-style flow.
+ * LEAPMUX_CONTROL_CONFIG_DIR selects a private credential directory instead of the default user directory.
+ * mintCLITokenForAdmin requests a token through AdminUserService/IssueAPIToken and writes the credential file.
+ * The resulting CLI requests use the same credential path as a user login, without repeating the OAuth login flow.
  */
 
-import type { Page } from '@playwright/test'
 import type { ChildProcess } from 'node:child_process'
-import { execFile, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { execFile } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
 import { TEST_ADMIN_PASSWORD } from './api'
+import { spawnTestProcess } from './processRegistry'
+import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 
 const execFileAsync = promisify(execFile)
@@ -41,17 +31,13 @@ export interface CLIConfigDir {
   hubURL: string
   /** Bearer access token (visible for assertions; never logged). */
   bearer: string
-  /** Numeric admin user ID the bearer authenticates as. */
+  /** Administrator user ID that the bearer token authenticates. */
   userID: string
 }
 
 /**
- * The minimal slice of a hub fixture `mintCLITokenForAdmin` needs.
- * Both the single-worker `ServerInfo` and the multi-worker harness
- * satisfy this — it's the smallest contract that lets a test hand
- * over "this is my hub URL, this is the cookie that talks to it,
- * here's the admin's credentials" without forcing the multi-worker
- * fixture to pretend it's a `ServerInfo`.
+ * The hub details that mintCLITokenForAdmin requires.
+ * Both ServerInfo and MultiWorkerHarness satisfy this interface without adapting unrelated fixture fields.
  */
 export interface CLITokenSource {
   /** http(s) URL the hub listens on. */
@@ -67,20 +53,10 @@ export interface CLITokenSource {
 }
 
 /**
- * Every permission the E2E CLI credential asks for, in the RFC 6749 §3.3
- * spelling the hub stores.
- *
- * The specs that drive `control admin ...` need the admin permissions: the hub
- * refuses an ordinary credential every Admin* procedure, even for an
- * administrator. See operating/security.md on why that is the default. The
- * rest is what an omitted scope would have granted anyway, and it is named
- * because the ISSUER CEILING refuses a credential wider than the one issuing
- * it — an elevated session is unscoped, so this asks for exactly what the
- * specs use.
- *
- * ONE list, read by both the mint request and the credential file the fixture
- * writes beside it. Two copies would let the file claim a grant the row does
- * not carry, which is precisely what `auth status` would then print.
+ * Permissions for the test CLI credential, using the scope format from RFC 6749 section 3.3.
+ * Admin procedures require admin scopes even when the credential belongs to an administrator. See operating/security.md.
+ * The remaining scopes match the default grant. An unscoped elevated session can issue this requested set.
+ * The request and credential file share this list, so auth status cannot report permissions absent from the stored grant.
  */
 const E2E_CLI_SCOPES = [
   'account:read',
@@ -104,17 +80,10 @@ const E2E_CLI_SCOPES = [
 ]
 
 /**
- * Mint an api_tokens row for the test hub's admin user over the hub's own
- * RPC surface, then write a credential file under a fresh per-test config
- * dir. Returns the dir + bearer so subsequent `runCLI` calls can
- * authenticate as the admin without going through the device-code or
- * local-redirect OAuth flows.
- *
- * The offline admin-token CLI command no longer exists (the `recover`
- * tree only bootstraps); the online path is `AdminUserService/IssueAPIToken`
- * with an admin session. The session comes from a fresh `AuthService/Login`
- * when the source carries credentials, falling back to the fixture's
- * `adminToken` cookie.
+ * Issue an administrator API token through the hub and write it in a new private credential directory.
+ * Return the directory and token for later CLI requests. This avoids repeating the device-code or local-redirect login flow.
+ * The recover command supports bootstrap only. Token issuance uses AdminUserService/IssueAPIToken.
+ * Use a fresh login when the caller supplies credentials. Otherwise, use its adminToken cookie.
  */
 export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   /** Override the hub URL written into the credential file (defaults to source.hubUrl). */
@@ -128,19 +97,10 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   const cookie = source.adminPassword && source.adminUsername
     ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
     : source.adminToken
-  // Issuing an admin-scoped credential is an elevated-only action, the same as
-  // every /oauth/ consent leg: it mints a bearer that outlives the browser
-  // session by a year. So the mint elevates first, exactly as a person at the
-  // verification screen does.
-  //
-  // BOTH branches, and that is the point: the fallback branch reuses a
-  // fixture cookie minted by sign-up, which is no more elevated than a fresh
-  // login. Elevating only the login branch left every dev-server spec
-  // failing in setup with a refusal that specified no verb.
-  //
-  // The password defaults to the seeded admin's, because every E2E hub seeds
-  // that one account -- a source that carries its own credentials states
-  // them, and the rest share the fixture's.
+  // Elevate the issuing session before requesting an admin credential, as the OAuth consent flow does.
+  // The request below gives the new credential a one-hour lifetime.
+  // Elevate both a fresh login and a supplied signup session. Neither starts elevated.
+  // Use the supplied password or the shared administrator fixture password.
   await elevateForMint(source.hubUrl, cookie, source.adminPassword ?? TEST_ADMIN_PASSWORD)
 
   // Connect-JSON: the body is the message object directly (int64s as
@@ -150,8 +110,7 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
     body: JSON.stringify({
       userId: userID,
-      // WHICH COPY of the app this credential is for. One app holds one per
-      // machine, so the app itself cannot tell two rows apart.
+      // Identify this app installation. An app can hold separate credentials on multiple machines.
       installationName: `e2e-${Date.now()}`,
       ttlSeconds: '3600',
       // See E2E_CLI_SCOPES.
@@ -159,10 +118,8 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     }),
   })
   if (!res.ok) {
-    // The BODY, not the status alone. A Connect error carries its message
-    // there, and a bare "IssueAPIToken 400" says nothing about which of the
-    // several refusals fired -- which is exactly the diagnosis this helper's
-    // callers need, because they all fail in setup.
+    // Include the response body in an issuance error.
+    // Connect supplies the refusal message there. A status alone cannot identify which setup requirement failed.
     throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}: ${await res.text()}`)
   }
   const minted = await res.json() as { accessToken?: string }
@@ -171,13 +128,9 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     throw new Error('mintCLITokenForAdmin: no accessToken in IssueAPIToken response')
   }
 
-  // `LEAPMUX_CONTROL_CONFIG_DIR` returns the directory the CLI uses
-  // verbatim — credentials live as `<dir>/<hub-host>.json` inside it.
-  // Don't introduce an extra `control/` subdir: that's only present in
-  // the default `~/.config/leapmux/control/` layout, where the CLI
-  // appends `/leapmux/control` itself when only `XDG_CONFIG_HOME` is
-  // set.
-  const configDir = mkdtempSync(join(tmpdir(), 'leapmux-cli-cfg-'))
+  // LEAPMUX_CONTROL_CONFIG_DIR selects the exact credential directory. Files reside directly below it.
+  // Do not add control/. The CLI appends leapmux/control only when it derives the default from XDG_CONFIG_HOME.
+  const configDir = createTestDirectory('leapmux-cli-cfg-')
   mkdirSync(configDir, { recursive: true })
 
   // The CLI keys the credential file by HubHost(hubURL); replicate
@@ -193,37 +146,25 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     user_id: userID,
     username: 'admin',
-    // ADVISORY, exactly as the CLI writes it: the hub decides the grant, and
-    // this only lets `auth status` say what the credential was given without a
-    // round trip. It must match what the mint above asked for.
+    // This local scope list lets auth status describe the grant without a request.
+    // The hub remains authoritative. Keep the list equal to the issuance request.
     scope: E2E_CLI_SCOPES.join(' '),
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
-  // The CREDENTIAL needs its own window, not just the session that minted it.
-  //
-  // Every hub-settings write and several admin verbs run under the elevation
-  // gate, and the gate reads the ACTING credential -- so a bearer minted by an
-  // elevated session is still un-elevated, and `admin settings set` answers
-  // "this action needs a recent sign-in". A CLI cannot clear that on its own
-  // here: the hub's remedy is a browser ceremony, and an E2E worker has no
-  // person at a keyboard.
+  // Elevate the new credential separately from the session that issued it.
+  // Hub settings and some admin procedures check the acting credential, so the issuer elevation does not transfer.
+  // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
   await elevateMintedCredential(source.hubUrl, bearer, cookie)
 
   return { path: configDir, hubURL, bearer, userID }
 }
 
 /**
- * Run the browser step-up ceremony for a freshly minted CLI credential.
- *
- * The REAL leg, end to end, because a fixture that stamped the row directly
- * would let the ceremony rot: the app posts `/oauth/step-up` for a user code,
- * and the person approves that code at `/oauth/device` from an already
- * elevated browser session. This does both halves with `fetch`, which is what
- * a person does with a browser.
- *
- * The approving session must itself be elevated, which is why the caller
- * elevates it before the mint and this reuses that cookie.
+ * Elevate a newly issued CLI credential through the real approval endpoints.
+ * Request a user code from /oauth/step-up, then approve it at /oauth/device with an elevated session.
+ * Use fetch for both requests. Direct database changes would leave this approval path untested.
+ * The caller elevates the approving session before issuance and supplies that cookie here.
  */
 async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
   const started = await fetch(`${hubUrl}/oauth/step-up`, {
@@ -248,24 +189,17 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
     body: new URLSearchParams({ user_code: grant.user_code, decision: 'allow' }).toString(),
     redirect: 'manual',
   })
-  // The page answers 200 with the "verified" body. Anything else means the
-  // approval did not land, and the credential then fails every gated verb
-  // with a refusal that names a browser the spec does not have.
+  // Require HTTP 200 from the approval endpoint.
+  // An unconfirmed approval leaves the credential unable to call procedures that require elevation.
   if (approved.status !== 200) {
     throw new Error(`mintCLITokenForAdmin: activate ${approved.status}: ${await approved.text()}`)
   }
 }
 
 /**
- * Prove a factor on the session the mint is about to use.
- *
- * Signing in is not enough: the hub refuses IssueAPIToken from a session that
- * did not prove a factor recently, which is the same rule every `/oauth/`
- * consent leg applies. Elevating here is the honest fixture —
- * it is the step the browser takes before the same screen appears.
- *
- * Re-elevating an already-elevated session is harmless: the grant replaces
- * whatever window the session held.
+ * Prove a factor on the session before token issuance.
+ * IssueAPIToken and OAuth consent require a recent factor check. Login alone is insufficient.
+ * An existing elevation can be replaced with a new elevation period.
  */
 async function elevateForMint(hubUrl: string, cookie: string, password: string): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
@@ -305,17 +239,10 @@ async function loginForMint(hubUrl: string, username: string, password: string):
 }
 
 /**
- * Run `leapmux control …` against the cfg dir's hub.
- *
- * Returns the parsed JSON `data` payload from stdout. This helper throws a
- * CLI error as a `CLIError` that carries the upstream `code` and `message`,
- * so test assertions can match on either (e.g.
- * `await expect(...).rejects.toMatchObject({ code: 'out_of_date' })`).
- *
- * This helper also scrubs the `LEAPMUX_CONTROL_*` env vars (except
- * `LEAPMUX_CONTROL_CONFIG_DIR`) so a test running on a laptop that
- * happens to have an active worker shell can't pollute the harness's
- * auth context.
+ * Run leapmux control against the configured hub. Return the JSON data payload from standard output.
+ * A CLIError preserves the error code and message for assertions.
+ * Remove inherited LEAPMUX_CONTROL_* variables except the configured credential directory.
+ * Otherwise, a local worker shell could change the test transport or authentication.
  */
 export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   /** Extra env vars merged into the CLI's environment. */
@@ -378,7 +305,7 @@ export function streamCLI(cfg: CLIConfigDir, args: string[]): {
     ...process.env,
     LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
   })
-  const child = spawn(binaryPath, ['control', ...withHubFlag(args, cfg.hubURL)], { env })
+  const child = spawnTestProcess(binaryPath, ['control', ...withHubFlag(args, cfg.hubURL)], { env })
 
   const events = (async function* () {
     let buf = ''
@@ -535,13 +462,9 @@ function withHubFlag(args: string[], hubURL: string): string[] {
 }
 
 /**
- * Write one hub setting through `control admin settings set`.
- *
- * This helper spells `--hub` out rather than leaving it to withHubFlag. That
- * helper inserts the flag before the FIRST token that starts with `-`, and
- * this verb has none — so the flag arrived after KEY and VALUE, where Go's flag
- * parser already stopped looking, and the CLI counted three positionals and
- * printed its usage line.
+ * Write one hub setting through control admin settings set.
+ * Specify --hub before positional arguments. withHubFlag inserts before the first flag, but this command has only positional arguments.
+ * Appending --hub after KEY and VALUE would make the Go parser treat it as another positional argument.
  */
 export async function setHubSetting(cfg: CLIConfigDir, key: string, value: string): Promise<void> {
   await runCLI(cfg, ['admin', 'settings', 'set', '--hub', cfg.hubURL, key, value])

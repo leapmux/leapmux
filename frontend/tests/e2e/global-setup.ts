@@ -1,14 +1,10 @@
-/* eslint-disable no-console */
-import { execSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { resolveTaskBin } from '../../scripts/resolve-task-bin'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const ROOT = resolve(__dirname, '..', '..', '..')
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const runnerRequired = 'Run end-to-end tests with `bun run test:e2e` so the launcher verifies the build.'
 
 export interface E2EGlobalState {
   binaryPath: string
@@ -16,53 +12,25 @@ export interface E2EGlobalState {
 }
 
 export default async function globalSetup() {
-  // Verify tests were launched via `bun run test:e2e` (scripts/run-e2e.ts).
-  // The runner writes a nonce file and passes the path + expected value via env vars.
-  // This prevents bypassing the guard by simply setting LEAPMUX_E2E_RUNNER=1.
+  // The launcher builds once and gives each run a private directory and nonce.
   const noncePath = process.env.LEAPMUX_E2E_NONCE_PATH
   const expectedNonce = process.env.LEAPMUX_E2E_NONCE
-  if (!noncePath || !expectedNonce) {
-    throw new Error(
-      'E2E tests must be run via `bun run test:e2e` (scripts/run-e2e.ts), '
-      + 'not directly with `bunx playwright test`. '
-      + 'The runner script ensures a clean build before running tests.',
-    )
-  }
+  if (!noncePath || !expectedNonce)
+    throw new Error(runnerRequired)
   try {
-    const actualNonce = readFileSync(noncePath, 'utf-8').trim()
-    if (actualNonce !== expectedNonce) {
-      throw new Error('nonce mismatch')
-    }
+    if (readFileSync(noncePath, 'utf8').trim() !== expectedNonce)
+      throw new Error('Nonce mismatch')
   }
   catch {
-    throw new Error(
-      'E2E tests must be run via `bun run test:e2e` (scripts/run-e2e.ts), '
-      + 'not directly with `bunx playwright test`. '
-      + 'The runner script ensures a clean build before running tests.',
-    )
+    throw new Error(runnerRequired)
   }
 
-  const tmpDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-'))
-
-  console.log(`[e2e] Temp dir: ${tmpDir}`)
-
-  // Build the leapmux binary (includes embedded frontend)
-  console.log('[e2e] Building leapmux...')
-  execSync(`${resolveTaskBin()} build-backend`, { cwd: ROOT, stdio: 'inherit' })
-
-  const binaryPath = join(ROOT, 'leapmux')
-
-  // Save minimal state for fixtures and teardown
+  const tmpDir = dirname(noncePath)
   const state: E2EGlobalState = {
-    binaryPath,
+    binaryPath: join(root, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'),
     tmpDir,
   }
-
   const statePath = join(tmpDir, 'e2e-state.json')
-  writeFileSync(statePath, JSON.stringify(state, null, 2))
-
-  // Store the state path in an env var so fixtures and teardown can find it
+  writeFileSync(statePath, JSON.stringify(state))
   process.env.E2E_STATE_PATH = statePath
-
-  console.log('[e2e] Global setup complete')
 }

@@ -14,14 +14,12 @@ import (
 	"github.com/leapmux/leapmux/tunnel"
 )
 
-// callInnerRPC dispatches an inner-RPC method to the appropriate
-// transport: hub-bound clients open a fresh E2EE channel to the
-// resolved worker; local-IPC clients route through CallInner on the
-// per-agent socket.
+// callInnerRPC selects the transport for an inner remote procedure call (RPC).
+// Hub clients open a new channel with end-to-end encryption (E2EE) to the resolved worker.
+// Clients that use local interprocess communication (IPC) call CallInner on the agent's socket.
 //
-// For hub-bound clients, workerID is required (use resolveWorker to
-// derive it from --workspace-id + tab id when needed). Errors are
-// returned via the JSON error envelope so they appear on stdout.
+// Hub clients require workerID. resolveWorker derives it from --workspace-id and the tab ID when necessary.
+// The JSON error envelope sends failures to stdout.
 func callInnerRPC(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
 	if err := callInnerRPCBest(ctx, c, workerID, method, in, out); err != nil {
 		return emitInnerRPCError(err)
@@ -29,25 +27,27 @@ func callInnerRPC(ctx context.Context, c *control.Client, workerID, method strin
 	return nil
 }
 
-// codedRPCError lets callInnerRPCBest stream a stable error code through
-// the inner-RPC call site so callers that aggregate multiple invocations
-// (e.g. workspace delete fan-out) can emit one envelope at the end while
-// preserving the per-call code.
+// codedRPCError preserves the error code for each call.
+// Commands that combine operation results can emit one envelope with the original error code.
+// Error returns the code when the cause is nil.
 type codedRPCError struct {
 	Code  string
 	Cause error
 }
 
-func (e *codedRPCError) Error() string { return e.Cause.Error() }
+func (e *codedRPCError) Error() string {
+	if e.Cause == nil {
+		return e.Code
+	}
+	return e.Cause.Error()
+}
+
 func (e *codedRPCError) Unwrap() error { return e.Cause }
 
-// callInnerRPCBest is the same dispatch as callInnerRPC but returns
-// raw errors instead of emitting them. Used by orchestration commands
-// (workspace delete, agent open rollback) that need to aggregate or
-// react to per-call failures before producing a single result envelope.
+// callInnerRPCBest selects the same transport as callInnerRPC and returns errors without emitting them.
+// Commands such as workspace deletion and agent rollback combine failures before producing one result envelope.
 func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
-	// Marshal BEFORE opening anything: a malformed request should not pay a
-	// Noise_NK handshake to find that out.
+	// Validate serialization before a malformed request can start a Noise_NK handshake.
 	if _, err := proto.Marshal(in); err != nil {
 		return &codedRPCError{Code: "marshal_failed", Cause: err}
 	}
@@ -56,37 +56,25 @@ func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method s
 	})
 }
 
-// workerCall is a bound "issue an inner-RPC against this worker" value: it
-// carries the client, the worker, and the transport to use, so a call site
-// names only the method and its messages.
+// workerCall binds the client and transport to one worker.
+// Callers supply only the method and its messages.
 //
-// It replaces a matrix of free functions that had grown one name per
-// combination of three orthogonal axes -- channel-owned vs hoisted, bytes vs
-// proto, raw error vs emitted envelope. Besides the naming, that shape had a
-// real footgun: the hoisted helpers took a per-call workerID that the hub-bound
-// path silently ignored (the channel is already bound to one worker), so a
-// caller reusing a channel across two workers would have been routed to the
-// first one with no error. Binding the worker into the value makes that
-// unspellable.
+// A shared channel already belongs to one worker. A per-call workerID could incorrectly suggest that the channel can switch workers.
+// This type prevents callers from supplying a different workerID for a shared channel.
 //
-// ctx stays a per-call ARGUMENT rather than a field: tab_spawn issues OpenAgent
-// on an errgroup's derived context while its rollback and follow-up calls use
-// the outer one, and a ctx-bound value would break that short-circuiting.
+// Each call takes its own context. tab_spawn uses an errgroup context for OpenAgent and the outer context for subsequent calls and rollback.
+// Storing one context would prevent these calls from using the required cancellation behavior.
 type workerCall struct {
 	c        *control.Client
 	workerID string
-	// ch is the shared channel, when there is one. nil means "no shared
-	// channel": either a local-IPC client (routed over the agent socket), or
-	// the best-effort hub-bound case below, which opens one per call.
+	// ch holds the shared channel. A nil channel selects local IPC or the per-call fallback for a hub client.
 	ch *tunnel.Channel
-	// perCallChannel marks a hub-bound caller that could not open a shared
-	// channel and should fall back to opening one per call, rather than
-	// misreading nil as local IPC.
+	// perCallChannel selects a new channel for each call after a hub client fails to open a shared channel.
+	// It prevents a missing shared channel from selecting local IPC incorrectly.
 	perCallChannel bool
 }
 
-// Call issues method and returns raw errors, preserving the stable code in a
-// codedRPCError for callers that aggregate several invocations.
+// Call invokes method and returns errors with their original codes for callers that combine operation results.
 func (w workerCall) Call(ctx context.Context, method string, in, out proto.Message) error {
 	if w.ch == nil && w.perCallChannel {
 		return callInnerRPCBest(ctx, w.c, w.workerID, method, in, out)
@@ -110,10 +98,8 @@ func (w workerCall) Call(ctx context.Context, method string, in, out proto.Messa
 	return nil
 }
 
-// CallEmit is Call with callInnerRPC's error handling: a failure becomes the
-// JSON error envelope on stdout rather than a raw error, so hoisting a channel
-// over a sequence that used to call callInnerRPC keeps the emitted codes
-// identical.
+// CallEmit invokes Call and emits the same JSON error envelope as callInnerRPC.
+// Sharing a channel across multiple calls preserves the emitted error codes.
 func (w workerCall) CallEmit(ctx context.Context, method string, in, out proto.Message) error {
 	if err := w.Call(ctx, method, in, out); err != nil {
 		return emitInnerRPCError(err)
@@ -121,11 +107,9 @@ func (w workerCall) CallEmit(ctx context.Context, method string, in, out proto.M
 	return nil
 }
 
-// withWorkerChannel opens ONE E2EE channel to workerID and invokes body with a
-// workerCall bound to it, closing the channel when body returns. Multi-call
-// sites use it to amortize the Noise_NK handshake across every call in body
-// instead of paying it per call. On local-IPC clients there is no channel to
-// share and body gets a socket-routed workerCall.
+// withWorkerChannel opens one E2EE channel to workerID and gives body a workerCall bound to that channel.
+// It closes the channel when body returns. Calls within body share one Noise_NK handshake.
+// Local IPC clients use the agent's socket without opening a channel.
 func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
 	if c.IsWorkerIPC() {
 		return body(workerCall{c: c, workerID: workerID})
@@ -144,11 +128,10 @@ func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, 
 // withBestEffortWorkerChannel is withWorkerChannel for sequences that must run
 // even when the worker is unreachable.
 //
-// `tab close` is the case: it has to be able to tombstone a tab whose worker is
-// gone, so a failed channel open must not abort the command. body still gets a
-// usable workerCall -- one that opens a channel per call and therefore
-// surfaces the SAME channel_open_failed code isWorkerUnreachable keys on, which
-// is what lets the CRDT-only fallback fire.
+// The tab close command must delete a tab even when its worker is unreachable.
+// A failed shared channel therefore selects a new channel for each call.
+// This preserves the channel_open_failed code that isWorkerUnreachable checks.
+// That code permits the fallback that deletes the tab through the conflict-free replicated data type (CRDT) only.
 func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
 	if c.IsWorkerIPC() || workerID == "" {
 		return body(workerCall{c: c, workerID: workerID})
@@ -161,28 +144,21 @@ func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerI
 	return body(workerCall{c: c, workerID: workerID, ch: ch})
 }
 
-// emitInnerRPCError converts an inner-RPC error into the JSON error
-// envelope, preserving a codedRPCError's stable code. This is the
-// error tail callInnerRPC and every hoisted-channel call site share.
+// emitInnerRPCError converts an inner RPC error into the JSON error envelope and preserves its code.
+// callInnerRPC and callers that share a channel use this error handler.
 func emitInnerRPCError(err error) error {
 	var coded *codedRPCError
 	if errors.As(err, &coded) {
-		return control.EmitErrorWith(coded.Code, coded.Cause)
+		return control.EmitErrorWith(coded.Code, coded)
 	}
 	return control.EmitErrorWith("rpc_failed", err)
 }
 
-// localIPCCallInnerBest routes a worker-namespace call over the per-agent
-// socket.
+// localIPCCallInnerBest routes a call in the worker namespace through the agent's socket.
 //
-// WorkspaceId is deliberately left unset. The worker's router applies no
-// workspace or bearer-scope check of its own (controlipc.Router.CallInner
-// dispatches on the method name alone): the scope rung for a sibling dispatch
-// is the DELEGATION bearer the cross-worker path mints, which the sibling
-// worker's own gate enforces, and the local dispatch needs no rung because
-// the caller already holds the agent's socket. The parameter used to exist
-// and was passed "" at both call sites, which read as a live scoping
-// decision that could never be made.
+// WorkspaceId remains unset because controlipc.Router.CallInner selects the handler by method without checking the workspace or bearer scope.
+// Calls to another worker use a DELEGATION bearer token, which that worker validates.
+// Local calls require no additional token because the caller already holds the agent's socket.
 func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, method string, payload []byte, out proto.Message) error {
 	ipc, err := c.ControlIPCService()
 	if err != nil {
@@ -194,23 +170,17 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 		TargetWorkerId: workerID,
 	}))
 	if err != nil {
-		// An existence/auth-class code means the target could not be reached at
-		// all, which is the same condition the hub transport reports as
-		// channel_open_failed. Tagging it identically is what lets
-		// isWorkerUnreachable fire on BOTH transports: the CRDT-only tombstone
-		// fallback in `tab close` was unreachable from inside a worker-spawned
-		// agent for as long as this path could only answer rpc_failed. Requires
-		// controlipc.relayError to have preserved the code -- a flat
-		// CodeInternal wrap makes this branch dead again.
+		// These connection or authorization codes mean that the call could not reach the target.
+		// Match the hub transport's channel_open_failed code so isWorkerUnreachable permits the CRDT-only fallback on both transports.
+		// controlipc.relayError must preserve the original code. Replacing it with CodeInternal prevents this fallback.
 		if classifyConnectCode(err) {
 			return &codedRPCError{Code: "channel_open_failed", Cause: err}
 		}
 		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
 	if resp.Msg.GetIsError() {
-		// dispatchLocal is the one path that fills the in-band envelope, and it
-		// carries a grpc code in ErrorCode. Rebuild a coded error from it rather
-		// than discarding it into a bare message string.
+		// dispatchLocal fills the in-band envelope with a gRPC code in ErrorCode.
+		// Rebuild the error with that code so callers can classify it.
 		return &codedRPCError{Code: "rpc_error", Cause: inBandError(resp.Msg)}
 	}
 	if out != nil && len(resp.Msg.GetPayload()) > 0 {
@@ -221,13 +191,10 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 	return nil
 }
 
-// inBandError rebuilds an error from the CallInnerResponse envelope that
-// dispatchLocal populates for a LOCAL handler failure.
+// inBandError rebuilds an error from the CallInnerResponse envelope for a local handler failure.
 //
-// ErrorCode is a google.golang.org/grpc code (that is what dispatchLocal
-// writes), NOT a connect.Code -- the two enums differ, so it is mapped rather
-// than cast. A zero/unset code degrades to the bare message, which is what this
-// used to do unconditionally.
+// dispatchLocal writes a gRPC code in ErrorCode. The gRPC and Connect enums differ, so convert the code through an explicit map.
+// A zero or absent code returns the message without a code.
 func inBandError(msg *leapmuxv1.CallInnerResponse) error {
 	cause := errors.New(msg.GetErrorMessage())
 	if code := codes.Code(msg.GetErrorCode()); code != codes.OK {
@@ -236,9 +203,8 @@ func inBandError(msg *leapmuxv1.CallInnerResponse) error {
 	return cause
 }
 
-// grpcToConnectCode maps the grpc codes dispatchLocal emits onto the connect
-// codes the CLI's predicates test. Only the codes that drive a decision are
-// mapped; anything else stays Unknown, which no predicate matches.
+// grpcToConnectCode converts the gRPC codes from dispatchLocal to the Connect codes that the CLI tests.
+// Codes that do not control a decision become Unknown, which no decision predicate matches.
 func grpcToConnectCode(c codes.Code) connect.Code {
 	switch c {
 	case codes.NotFound:
@@ -258,15 +224,11 @@ func grpcToConnectCode(c codes.Code) connect.Code {
 	}
 }
 
-// defaultInnerRPCTimeout caps a single inner-RPC dispatch (E2EE round
-// trip or local-IPC CallInner). 30s is well above any expected
-// worker-side latency for the RPCs the CLI uses today (workspace
-// list, terminal open, file get) and well below CLI-level
-// cancellation timeouts.
+// defaultInnerRPCTimeout limits one inner RPC through an E2EE channel or local IPC.
+// The limit exceeds expected worker latency and remains below the CLI cancellation timeouts.
 const defaultInnerRPCTimeout = 30 * time.Second
 
-// rpcDeadline returns a context.Context with a default timeout
-// unless cmd-level cancellation overrides.
+// rpcDeadline returns a context with the default timeout. Parent cancellation can stop it sooner.
 func rpcDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, defaultInnerRPCTimeout)
 }

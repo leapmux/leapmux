@@ -8,9 +8,10 @@ import {
   signUpViaAPI,
   verifyEmailViaAPI,
 } from './helpers/api'
+import { solveCaptchaViaUI } from './helpers/captcha'
 import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginViaToken, loginViaUI, logoutViaUI } from './helpers/ui'
 import {
   addPasskeyViaAPIInBrowser,
   enableVirtualAuthenticator,

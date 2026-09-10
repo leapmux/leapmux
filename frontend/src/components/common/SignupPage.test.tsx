@@ -1,6 +1,6 @@
 import { MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SignupPage } from './SignupPage'
@@ -35,9 +35,8 @@ vi.mock('~/lib/systemInfo', () => ({
   getCaptchaSiteKey: () => '',
 }))
 
-// The stub surfaces the action the form binds, so this test pins the signup
-// half of the action contract (the hub siteverify check enforces the same
-// string server-side).
+// Expose the captcha action that the form supplies.
+// The hub siteverify check requires the same signup action.
 vi.mock('~/components/common/CaptchaField', () => ({
   CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,
 }))
@@ -60,6 +59,7 @@ function renderSignupPage() {
   return render(() => (
     <MemoryRouter>
       <Route path="/" component={SignupPage} />
+      <Route path="/login" component={() => <h1>Login page</h1>} />
     </MemoryRouter>
   ))
 }
@@ -69,6 +69,8 @@ describe('signupPage', () => {
     vi.clearAllMocks()
     mockIsSignupEnabled.mockReturnValue(true)
     mockLoadOAuthProviders.mockResolvedValue([])
+    mockIsCaptchaEnabled.mockReturnValue(false)
+    mockGetCaptchaProvider.mockReturnValue(1)
   })
 
   it('renders password form when signup enabled and no oauth providers', async () => {
@@ -119,5 +121,13 @@ describe('signupPage', () => {
     // literal is half of a wire contract (the backend half lives in
     // captcha.procedureActions).
     expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'signup')
+  })
+
+  it('opens the login route from the sign-in link', async () => {
+    renderSignupPage()
+    const link = await screen.findByRole('link', { name: 'Sign in' })
+    expect(screen.queryByTestId('captcha-field')).not.toBeInTheDocument()
+    fireEvent.click(link)
+    expect(await screen.findByRole('heading', { name: 'Login page' })).toBeInTheDocument()
   })
 })

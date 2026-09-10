@@ -2,6 +2,7 @@
 import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { generateSlug } from 'random-word-slugs'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
@@ -55,32 +56,23 @@ describe('dirtyWarningCopy', () => {
 })
 
 describe('indexBranches.existingNames', () => {
-  // The set replaces an O(N) `some(... endsWith('/<input>'))` walk that
-  // ran on every keystroke in the create-branch input. These tests pin
-  // the suffix semantics so a future refactor can't quietly drop or
-  // broaden a match. The strip mirrors `gitutil.StripRemotePrefix` /
-  // frontend `stripRemotePrefix`: exactly ONE leading segment.
+  // The set avoids a branch scan on every keystroke.
+  // Preserve the suffix rules from gitutil.StripRemotePrefix and stripRemotePrefix: remove exactly one leading remote segment.
 
   it('returns an empty set for an empty input', () => {
     expect(existingNames([])).toEqual(new Set())
   })
 
   it('local branches contribute only their exact name', () => {
-    // Locals with slashes ("feature/foo") must NOT yield "foo" — the
-    // suffix strip depends on isRemote and we preserve that
-    // asymmetry.
+    // A local branch such as feature/foo must not add foo. Only remote branches lose their first segment.
     const set = existingNames([entry('main'), entry('feature/foo')])
     expect([...set].toSorted()).toEqual(['feature/foo', 'main'])
   })
 
   it('remote branches contribute the full ref + the single first-segment strip', () => {
-    // "origin/feature/foo" → adds "origin/feature/foo" and
-    // "feature/foo". It does NOT add "foo": the worker's
-    // StripRemotePrefix strips a single segment per call, so `foo`
-    // typed in CreateBranch mode cannot actually collide with
-    // `origin/feature/foo` through the worker's collapse path.
-    // Adding `foo` would over-block legitimate names on repos with
-    // deep remote namespaces.
+    // origin/feature/foo adds itself and feature/foo. It must not add foo.
+    // The worker removes only one segment, so foo cannot conflict through that conversion.
+    // Adding foo would incorrectly reject valid branch names in deeper remote namespaces.
     const set = existingNames([entry('origin/feature/foo', true)])
     expect([...set].toSorted()).toEqual(['feature/foo', 'origin/feature/foo'])
     expect(set.has('foo')).toBe(false)
@@ -93,8 +85,7 @@ describe('indexBranches.existingNames', () => {
   })
 
   it('merges local and remote contributions into one collision set', () => {
-    // A local "foo" pre-existed; a remote "origin/foo" must add itself
-    // and the bare "foo" — even though "foo" was already in the set.
+    // A remote origin/foo must add itself and foo even when a local foo already exists.
     const set = existingNames([entry('foo'), entry('origin/foo', true)])
     expect([...set].toSorted()).toEqual(['foo', 'origin/foo'])
   })
@@ -108,8 +99,7 @@ describe('indexBranches.existingNames', () => {
   })
 
   it('handles consecutive slashes in a malformed remote ref by stripping only the first segment', () => {
-    // Branch refs shouldn't contain `//`, but if a malformed value
-    // sneaks in the strip must still be a single segment.
+    // A malformed branch reference can contain //. Remove only one segment even for this invalid input.
     const set = existingNames([entry('origin//x', true)])
     expect(set.has('origin//x')).toBe(true)
     expect(set.has('/x')).toBe(true)
@@ -117,18 +107,15 @@ describe('indexBranches.existingNames', () => {
   })
 
   it('a trailing slash adds the empty suffix (best-effort, harmless in practice)', () => {
-    // `validateBranchName` rejects empty user input upstream, so the
-    // empty entry here can never produce a false-positive collision —
-    // but pin the behavior so a future loop guard that special-cases
-    // empty strings doesn't accidentally drop legitimate suffixes.
+    // validateBranchName rejects empty input before this lookup, so an empty entry cannot cause a false conflict.
+    // Keep this case to prevent an empty-string special case from removing valid suffixes.
     const set = existingNames([entry('origin/', true)])
     expect(set.has('origin/')).toBe(true)
     expect(set.has('')).toBe(true)
   })
 
   it('is idempotent on duplicate inputs', () => {
-    // The branches() signal can carry the same entry twice during a
-    // transient refresh; the set's size must stay bounded.
+    // A refresh can supply duplicate entries. The set must count each branch only once.
     const set = existingNames([
       entry('main'),
       entry('main'),
@@ -139,9 +126,7 @@ describe('indexBranches.existingNames', () => {
   })
 
   it('does not match across branches (single-segment strip is per-ref)', () => {
-    // Two unrelated remote refs sharing a suffix: each contributes its
-    // own first-segment strip independently; cross-ref deep suffixes
-    // are NOT inferred.
+    // Each remote branch contributes its own first-segment removal. Do not derive deeper suffixes from other references.
     const set = existingNames([
       entry('origin/a/foo', true),
       entry('upstream/b/foo', true),
@@ -149,21 +134,18 @@ describe('indexBranches.existingNames', () => {
     // "origin/a/foo" → "a/foo"; "upstream/b/foo" → "b/foo".
     expect(set.has('a/foo')).toBe(true)
     expect(set.has('b/foo')).toBe(true)
-    // The "any prefix of any branch" expansion is gone — bare `foo`
-    // is no longer flagged just because some deep remote ref ends
-    // with it.
+    // A deep remote suffix alone must not mark the local name foo as a conflict.
     expect(set.has('foo')).toBe(false)
     expect(set.has('origin/b/foo')).toBe(false)
   })
 })
 
 describe('indexBranches', () => {
-  // indexBranches replaces three independent walks (the local/remote
-  // partition inside BranchSelect, the existing-name set built in
-  // GitOptions, and the local-name set used for the
-  // "remote shadows local" warning) with one pass. These tests pin
-  // the combined output so the optimization can't quietly drop any
-  // of the three views.
+  // indexBranches computes these results in one pass:
+  // - The local and remote branch lists.
+  // - The set of existing branch names.
+  // - The local names used to warn about remote conflicts.
+  // Check every result to prevent a partial optimization.
 
   it('returns empty sets and empty arrays for empty input', () => {
     const idx = indexBranches([])
@@ -174,9 +156,7 @@ describe('indexBranches', () => {
   })
 
   it('preserves input order within each partition', () => {
-    // The select renders branches in input order under <optgroup>; a
-    // future Set/Map-based partition could silently reorder. Pin both
-    // halves so the UI stays stable.
+    // The branch menu retains input order. Check both lists so a Set or Map refactor cannot reorder the UI.
     const idx = indexBranches([
       entry('z'),
       entry('a'),
@@ -199,11 +179,10 @@ describe('indexBranches', () => {
   })
 
   it('partition + localNames coexist with existingNames in one pass', () => {
-    // The composite assertion: every output is consistent with the
-    // others (no fields out of sync). Specifically, every name in
-    // localNames must also be in existingNames; every entry in
-    // local must have isRemote=false; every entry in remote must
-    // have isRemote=true.
+    // All outputs must agree:
+    // - Every localNames entry also belongs to existingNames.
+    // - Every local entry has isRemote=false.
+    // - Every remote entry has isRemote=true.
     const idx = indexBranches([
       entry('main'),
       entry('feature/x'),
@@ -219,13 +198,11 @@ describe('indexBranches', () => {
   })
 })
 
-// Component-level tests that pin GitOptions' active-mode ownership
-// contract: the `gitMode` prop seeds the radio at mount only, and
-// every subsequent mode change flows out via `onGitModeChange`. Real
-// dialog callers don't mutate the parent's gitMode out-of-band, so
-// these synthetic cases are what actually exercise the contract — the
-// ChangeBranchDialog integration tests cover the radio-click path but
-// can't observe the seed-only nature of the prop read.
+// gitMode supplies the initial selection only. Later changes leave through onGitModeChange.
+// Dialog callers do not change gitMode independently. These cases verify that later prop changes cannot override the internal selection.
+// ChangeBranchDialog tests cover clicks, but cannot observe that initial-only prop read.
+
+vi.mock('random-word-slugs', () => ({ generateSlug: vi.fn(() => 'seeded-branch-name') }))
 
 vi.mock('~/api/workerRpc', () => ({
   listGitBranches: vi.fn(),
@@ -266,11 +243,7 @@ describe('gitOptions activeMode ownership', () => {
   })
 
   it('seeds the radio from `props.gitMode()` at mount and ignores subsequent external mutations', async () => {
-    // The `gitMode` prop is read once with `untrack` to seed the
-    // internal `activeMode` signal; later updates to the prop accessor
-    // do NOT flow into the radio. A reactive read here would echo
-    // `setMode(GitMode.CreateBranch)` into the checked state and break
-    // the uni-directional emit contract.
+    // Read gitMode once with untrack to initialize activeMode. Later prop updates must not replace the internal mode.
     const [mode, setMode] = createSignal<GitMode>(GitMode.SwitchBranch)
     const onGitModeChange = vi.fn()
 
@@ -534,14 +507,8 @@ describe('gitOptions activeMode ownership', () => {
   })
 
   it('resets the mode to the default when the selected path changes', async () => {
-    // Switching repos invalidates every selection the mode depends on --
-    // checkout branch, base branch, worktree path, and the fetched lists
-    // behind them -- so the mode goes back to the default with them rather
-    // than pointing at a repo that no longer supplies its inputs.
-    //
-    // Untested until now, which is how e2e 073 kept asserting the OPPOSITE
-    // ("git mode is preserved when switching between git repos") and failing
-    // on every run for as long as this reset has existed.
+    // A repository change invalidates the checkout branch, base branch, and worktree path. It also replaces their source lists.
+    // Reset the mode also, so it cannot retain selections from the previous repository.
     const [mode] = createSignal<GitMode>(GitMode.Current)
     const [path, setPath] = createSignal('/repo')
     const onGitModeChange = vi.fn()
@@ -614,13 +581,9 @@ describe('gitOptions branch name field', () => {
     })
   })
 
-  // Regression guard for the `|| randomSlug()` fallback that used to live
-  // in the derived branchName() accessor: clearing the seeded random name
-  // snapped the displayed value back to the stored slug, so the field
-  // could never be empty and the "must not be empty" validation never
-  // fired. The single-signal model now binds the literal value to the
-  // input (matching the NewWorkspace title field), so an empty input
-  // stays empty and surfaces the validation error instead of resetting.
+  // An empty branch field must remain empty and show its validation error.
+  // A randomSlug fallback previously restored the generated value and made the empty-input path unreachable.
+  // One signal now supplies the literal field value, as the NewWorkspace title field does.
   it('keeps the field empty and shows an error when the default name is cleared', async () => {
     const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
     const onGitModeChange = vi.fn()
@@ -642,26 +605,23 @@ describe('gitOptions branch name field', () => {
     // Seeded with a non-empty random slug.
     expect(input.value).not.toBe('')
 
-    // Clear the field. The fix removes the `|| randomSlug()` fallback, so
-    // the value must stay empty rather than snapping back to the slug.
+    // Clear the field. Its value must remain empty instead of restoring the generated value.
     fireEvent.input(input, { target: { value: '' } })
     await Promise.resolve()
     await Promise.resolve()
     expect(input.value).toBe('')
 
-    // The existing validateBranchName('') error is now reachable and must
-    // render the message below the field (same UX as the NewWorkspace
-    // title field).
+    // An empty value must show the validateBranchName error below the field, as the NewWorkspace title field does.
     expect(screen.getByText('Branch name must not be empty')).toBeInTheDocument()
   })
 
-  // The single-signal refactor changed Randomize from "swap the stored
-  // slug AND clear the typed value" to "replace the field's value". The
-  // observable difference is the post-clear case: after the user empties
-  // the field, Randomize must repopulate it with a fresh slug (and clear
-  // the now-stale empty-name error) rather than leaving it blank because
-  // the empty typed value kept winning the old `||` fallback.
-  it('repopulates the field with a fresh random name on Randomize after clearing', async () => {
+  // Randomize replaces the field value.
+  // After a user clears the field, Randomize must supply a new value and clear the empty-name error.
+  it('replaces a populated name and restores a cleared name when randomize is clicked', async () => {
+    vi.mocked(generateSlug)
+      .mockReturnValueOnce('first-branch')
+      .mockReturnValueOnce('second-branch')
+      .mockReturnValueOnce('third-branch')
     const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
     const onGitModeChange = vi.fn()
 
@@ -679,18 +639,20 @@ describe('gitOptions branch name field', () => {
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
 
     const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
+    expect(input.value).toBe('first-branch')
+    fireEvent.click(screen.getByLabelText('Generate random name'))
+    expect(input.value).toBe('second-branch')
     fireEvent.input(input, { target: { value: '' } })
     await Promise.resolve()
     await Promise.resolve()
     expect(input.value).toBe('')
 
-    // Randomize must write a fresh slug back into the single signal,
-    // displacing the empty value and clearing the validation error. The
-    // button's `title` surfaces as an aria-label via Tooltip.
+    // Randomize must replace the empty value and clear its error.
+    // Tooltip exposes the button description through aria-label.
     fireEvent.click(screen.getByLabelText('Generate random name'))
     await Promise.resolve()
     await Promise.resolve()
-    expect(input.value).not.toBe('')
+    expect(input.value).toBe('third-branch')
     expect(screen.queryByText('Branch name must not be empty')).not.toBeInTheDocument()
   })
 })

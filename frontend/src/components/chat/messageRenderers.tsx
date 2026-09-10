@@ -210,19 +210,28 @@ export function MarkdownText(props: { text: string, context?: RenderContext }): 
   return <div class={markdownContent} ref={cachedInnerHtml(html)} />
 }
 
-/** Shared assistant thinking/reasoning bubble with chevron-controlled body. */
-export function ThinkingBubble(props: {
-  text: string
+type ThinkingBubbleProps = {
   icon: LucideIcon
   label: string
   stateKey: MessageUiKey
   context?: RenderContext
-}): JSX.Element {
+} & (
+  | { text: string, renderBody?: never }
+  | { text?: never, renderBody: () => JSX.Element }
+)
+
+/** Shared assistant thinking/reasoning bubble with chevron-controlled body. */
+export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
   const stateKey = untrack(() => props.stateKey)
   // The default-expanded value comes from the stateKey's MESSAGE_UI_DEFAULTS entry
   // (THINKING / CODEX_REASONING follow expandAgentThoughts; PLAN_EXECUTION collapses)
   // via useSharedExpandedState, so renderer defaults stay centralized.
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
+  const body = (): JSX.Element => {
+    if (props.renderBody)
+      return props.renderBody()
+    return <MarkdownText text={props.text} context={props.context} />
+  }
 
   return (
     <>
@@ -239,7 +248,7 @@ export function ThinkingBubble(props: {
       </div>
       <Show when={expanded()}>
         <div class={thinkingContent}>
-          <MarkdownText text={props.text} context={props.context} />
+          {body()}
         </div>
       </Show>
     </>

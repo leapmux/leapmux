@@ -28,10 +28,12 @@ codexTest.describe('codex tool execution', () => {
 
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'codex-test-output' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-test-output' }).first()).toBeVisible()
+    await expect(page.locator('[data-band="thought"]:visible ul > li').first()).toBeVisible()
     expect(await page.evaluate(() => (window as Window & { __codexReasoningSeen?: boolean }).__codexReasoningSeen)).toBe(true)
 
     await page.reload()
     await expect(page.locator('[data-band="thought"]:visible').filter({ hasText: 'Thinking' }).first()).toBeVisible()
+    await expect(page.locator('[data-band="thought"]:visible ul > li').first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-test-output' }).first()).toBeVisible()
   })
 

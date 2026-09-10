@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
-import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openTerminalViaUI, openTreeContextMenu, openWorkspace, treeRow, workspaceRow } from './helpers/ui'
 import { listAgentsViaAPI, listTerminalsViaAPI } from './helpers/worktree'
@@ -108,17 +108,10 @@ test.describe('workspace archive', () => {
 
     await openContextMenu(workspaceItem)
 
-    // Files and Goals & To-dos are sections, but a workspace cannot live in
-    // them. No item of this menu lists them.
-    //
-    // This does NOT exercise the Move-to submenu, and its old name claimed it
-    // did. The submenu mounts its items only while it is open (see `SubMenu`),
-    // and this fixture has one workspace section, so Move-to is not offered at
-    // all. `isMoveTargetSection`'s filter is covered where it can actually be
-    // driven: `WorkspaceContextMenu.test.tsx` ("lists every other workspace
-    // section, and no other kind"), and in a real browser by 195's
-    // "a custom section can be created, renamed and deleted from the menu",
-    // which creates the second section the submenu needs and then opens it.
+    // Files and Goals & To-dos cannot hold workspaces and must not appear as move destinations.
+    // This case has only one workspace section, so it does not open a Move-to submenu.
+    // WorkspaceContextMenu.test.tsx verifies isMoveTargetSection with multiple sections.
+    // Test 195 also creates another section and opens that submenu in the browser.
     const allLabels = await page.getByRole('menuitem').allTextContents()
     expect(allLabels).not.toContain('Files')
     expect(allLabels).not.toContain('Goals & To-dos')
@@ -405,8 +398,8 @@ processTest.describe('workspace archive reconciliation', () => {
       await page.keyboard.press('Meta+Enter')
       await expectAssistantAnswer(page)
 
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
       const workspaceItem = workspaceRow(page, workspaceId)
       await openContextMenu(workspaceItem)
       await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
@@ -421,7 +414,6 @@ processTest.describe('workspace archive reconciliation', () => {
     }
     finally {
       await restartWorker(separateHubWorker).catch(() => {})
-      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId).catch(() => {})
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
     }
   })

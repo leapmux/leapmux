@@ -1,48 +1,51 @@
 import type { ChildProcess } from 'node:child_process'
+import { finishCleanup } from './cleanup'
 
-/**
- * Terminate `proc` with SIGTERM and wait for it to actually exit, escalating
- * to SIGKILL if it has not gone within `killAfterMs`.
- *
- * This replaces the "SIGTERM, sleep a flat second, SIGKILL" shape the suite
- * used wherever it tore down a spawned server. That shape is wrong in both
- * directions: a clean shutdown finishes well inside the second, so the rest of
- * it is dead wall time paid by every Playwright worker and every dev server;
- * and a wedged one needs longer than a second, so the SIGKILL landed while the
- * process was still draining. Waiting on the exit event gets both cases right
- * and costs nothing in the common one.
- */
+/** Stop a process and wait for its exit. Escalate after the graceful shutdown deadline. */
 export function stopProcess(proc: ChildProcess, killAfterMs = 5000): Promise<void> {
-  try {
-    proc.kill('SIGTERM')
-  }
-  catch { /* already dead */ }
+  if (!Number.isFinite(killAfterMs) || killAfterMs <= 0 || killAfterMs > 2_147_483_647)
+    return Promise.reject(new RangeError('The shutdown delay must fit a positive Node timer delay'))
+  if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined)
+    return Promise.resolve()
 
-  return new Promise<void>((resolve) => {
-    if (proc.exitCode !== null || proc.signalCode !== null) {
-      resolve()
-      return
+  return new Promise<void>((resolve, reject) => {
+    let finished = false
+    let timer: ReturnType<typeof setTimeout>
+    function finish(error?: Error) {
+      if (finished)
+        return
+      finished = true
+      clearTimeout(timer)
+      proc.off('exit', onExit)
+      proc.off('error', finish)
+      if (error)
+        reject(error)
+      else
+        resolve()
     }
-    const escalate = setTimeout(() => {
+    function onExit() {
+      finish()
+    }
+    const signal = (value: NodeJS.Signals) => {
       try {
-        proc.kill('SIGKILL')
+        proc.kill(value)
       }
-      catch { /* already dead */ }
+      catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    proc.once('exit', onExit)
+    proc.once('error', finish)
+    timer = setTimeout(() => {
+      signal('SIGKILL')
+      if (!finished)
+        timer = setTimeout(() => finish(new Error(`Test process ${proc.pid} did not exit after SIGKILL`)), killAfterMs)
     }, killAfterMs)
-    // Give SIGKILL the same grace again, then give up waiting.
-    const abandon = setTimeout(() => {
-      console.warn(`[e2e] pid ${proc.pid} did not exit after SIGKILL; abandoning it`)
-      resolve()
-    }, killAfterMs * 2)
-    proc.once('exit', () => {
-      clearTimeout(escalate)
-      clearTimeout(abandon)
-      resolve()
-    })
+    signal('SIGTERM')
   })
 }
 
-/** Terminate every process concurrently and wait for all of them to exit. */
-export function stopProcesses(procs: ChildProcess[], killAfterMs = 5000): Promise<void[]> {
-  return Promise.all(procs.map(p => stopProcess(p, killAfterMs)))
+/** Stop every process concurrently. Wait for every result before reporting failures. */
+export async function stopProcesses(procs: ChildProcess[], killAfterMs = 5000): Promise<void> {
+  await finishCleanup(procs.map(proc => stopProcess(proc, killAfterMs)))
 }

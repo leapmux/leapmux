@@ -2,16 +2,17 @@ import { expect, test } from './fixtures'
 import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
   authedHeaders,
-  backdatePendingEmailIssuedAt,
   clearSmtpViaAPI,
   configureBrokenSmtpViaAPI,
+  expirePendingEmailCooldown,
   readPendingEmailToken,
   signUpViaAPI,
   waitForEmailEnabled,
 } from './helpers/api'
+import { solveCaptchaViaUI } from './helpers/captcha'
 import { withCaptureSmtp } from './helpers/mail'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI } from './helpers/ui'
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
@@ -46,7 +47,7 @@ test.describe('Email verification', () => {
       // The cooldown seed lives in memory (set by the signup response), so a
       // reload drops it; the backdated row then lets the server accept the
       // resend immediately.
-      await backdatePendingEmailIssuedAt(hubDataDir(leapmuxServer.dataDir), username)
+      await expirePendingEmailCooldown(hubDataDir(leapmuxServer.dataDir), username)
       await page.reload()
       await expect(page.getByTestId('verify-email-resend')).toBeEnabled()
       await page.getByTestId('verify-email-resend').click()
@@ -135,16 +136,11 @@ test.describe('Email verification', () => {
 })
 
 /**
- * The account panel points an unverified address at `/verify-email` with the
- * router's own `<A>`, and that link renders only on a hub with SMTP
- * configured and an address nobody confirmed.
- *
- * The app mounts its dialogs beside the route outlet. Mounted OUTSIDE the
- * router they had no router context, so `<A>` threw and the whole app went to
- * its error boundary the moment this row appeared -- with the Preferences
- * dialog never opening and a rapid series of "email verification required"
- * toasts as the only clue. The bug needs both halves, which is why nobody
- * noticed it.
+ * The account panel links an unverified address to /verify-email with the router A component.
+ * The link appears only when SMTP is configured and the address remains unverified.
+ * Dialogs require router context. A dialog outside the router previously threw when it rendered this link.
+ * The app then displayed its error boundary and repeated verification toasts before Preferences could open.
+ * This test requires both the unverified address and SMTP configuration.
  */
 test.describe('the account panel on an unverified address', () => {
   test('offers verification without tearing the app down', async ({ page, leapmuxServer }) => {

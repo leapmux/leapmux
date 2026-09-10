@@ -10,11 +10,11 @@ import type { IncomingMessage, RequestOptions } from 'node:http'
 import type { Server as HttpsServer } from 'node:https'
 import type { Socket } from 'node:net'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createTestDirectory } from './runDirectory'
 import { findFreePort } from './server'
 
 export interface TlsProxyHandle {
@@ -26,7 +26,7 @@ export interface TlsProxyHandle {
 }
 
 function mintSelfSignedCert(): { key: Buffer, cert: Buffer, dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-tls-'))
+  const dir = createTestDirectory('leapmux-e2e-tls-')
   const keyPath = join(dir, 'key.pem')
   const certPath = join(dir, 'cert.pem')
   const result = spawnSync('openssl', [

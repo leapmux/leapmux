@@ -27,8 +27,8 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await expect(thinkingIndicator).toBeVisible()
 
       // Stop the worker while agent is working
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
 
       // Thinking indicator should disappear (agent status becomes INACTIVE)
       await expect(thinkingIndicator).not.toBeVisible()
@@ -64,8 +64,8 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await expectAssistantAnswer(page)
 
       // Stop the worker
-      await stopWorker()
-      await waitForWorkerOffline(hubUrl, adminToken)
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
 
       // Thinking indicator should not be visible
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')

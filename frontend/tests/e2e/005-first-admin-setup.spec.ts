@@ -1,8 +1,9 @@
 import type { UnseededDevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
 import { getCurrentUser, listPasskeysViaAPI } from './helpers/api'
+import { solveCaptchaViaUI } from './helpers/captcha'
 import { startUnseededDevServer, stopDevServer } from './helpers/devServer'
-import { loginWithPasskeyViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginWithPasskeyViaUI, logoutViaUI } from './helpers/ui'
 import { enableVirtualAuthenticator } from './helpers/webauthn'
 
 /**
@@ -47,11 +48,9 @@ test.describe('First-admin setup', () => {
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'default')
   })
 
-  // Every address, not only `/`. A hub with no account has nothing to sign in
-  // to, nothing to sign up beside, no address to reset and no session to
-  // verify or elevate, so each of these used to serve a form that cannot
-  // succeed -- and four of them carried no check of any kind. SetupGate now
-  // answers all of them from one place above the router outlet.
+  // SetupGate must protect every credential route while no account exists.
+  // Login, signup, and recovery forms cannot succeed in that state. Neither session verification nor elevation can succeed.
+  // The shared check above the router outlet sends every route to setup.
   const DEAD_END_PATHS = [
     '/',
     '/login',
