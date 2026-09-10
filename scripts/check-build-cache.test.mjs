@@ -162,18 +162,26 @@ describe('native build cache check', () => {
     expect(logs(dir)[0].stderr).toContain('build-error')
   })
 
-  it('retains compiler output larger than the default subprocess buffer', () => {
+  it.each(['false', 'true'])('retains compiler output larger than the default subprocess buffer with GITHUB_ACTIONS=%s', (githubActions) => {
     const dir = fixture((config) => {
       config.tasks.compile.cmds = ['bun compiler-output.mjs']
     })
     const bytes = 2 * 1024 * 1024
     writeFileSync(join(dir, 'compiler-output.mjs'), `process.stdout.write('x'.repeat(${bytes}) + '\\ncompiler-output-end\\n'); process.exitCode = 7\n`)
-    const result = run(dir, 'check-build-cache')
+    const result = run(dir, 'check-build-cache', { GITHUB_ACTIONS: githubActions })
     expect(result.error).toBeUndefined()
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('compiler-output-end')
     expect(result.stderr).toContain('Build failed')
-    expect(logs(dir)[0].stdout).toBe(`${'x'.repeat(bytes)}\ncompiler-output-end\n`)
+    const compilerOutput = `${'x'.repeat(bytes)}\ncompiler-output-end\n`
+    const output = logs(dir)[0].stdout
+    expect(output.startsWith(compilerOutput), 'The log must retain every compiler output byte').toBe(true)
+    // Task appends GitHub Actions annotations to stdout after compiler output.
+    const diagnostics = output.slice(compilerOutput.length)
+    if (githubActions === 'true')
+      expect(diagnostics).toContain('::error title=Task \'build\' failed::')
+    else
+      expect(diagnostics).toBe('')
   })
 
   it('fails when Task cannot start', () => {

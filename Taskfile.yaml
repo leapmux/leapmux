@@ -305,6 +305,8 @@ tasks:
         - exclude: frontend/node_modules/.cache/**/*
         - exclude: frontend/node_modules/.vite/**/*
         - exclude: frontend/node_modules/.vite-temp/**/*
+        # The frontend build owns TanStack's generated server-function manifests.
+        - exclude: frontend/node_modules/.tanstack-start/**/*
     generates: *outputs_install_frontend_deps
     status: *artifact_status
     cmds:

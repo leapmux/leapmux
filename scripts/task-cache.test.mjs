@@ -115,15 +115,18 @@ function fixture(platform = hostPlatform) {
     })
   }
   write(dir, 'Taskfile.yaml', Bun.YAML.stringify(config))
+  // Resolve output paths before creating parent directories.
+  // Bun 1.4 on Windows rejects recursive mkdir for "." and "..".
   write(dir, 'fixture.mjs', `
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 const outputs = ${JSON.stringify(outputs)}
 const task = process.argv[2]
 appendFileSync('executed', task + '\\n')
 for (const path of outputs[task] ?? []) {
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, 'generated-' + task)
+  const output = resolve(path)
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, 'generated-' + task)
 }
 `)
   // Keep the helper at the same relative location as the production task.
@@ -162,11 +165,11 @@ function useGoCommandRecipes(dir, platform) {
   writeFileSync(path, Bun.YAML.stringify(config))
   write(dir, 'compiler.mjs', `
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 const [task, ...args] = process.argv.slice(2)
 const index = args.indexOf('-o')
 if (index < 0 || !args[index + 1]) throw new Error('The compiler needs an output path')
-const output = args[index + 1]
+const output = resolve(args[index + 1])
 appendFileSync(new URL('./executed', import.meta.url), task + '\\n')
 mkdirSync(dirname(output), { recursive: true })
 writeFileSync(output, 'compiled-' + task)
@@ -221,6 +224,22 @@ describe('task build cache', () => {
     rmSync(join(dir, 'frontend/.npmrc'))
     expect(run(dir, 'build-frontend')).toContain('build-frontend')
     expect(run(dir, 'build-frontend')).toEqual([])
+  })
+
+  it('ignores generated server-function manifests but still repairs changed dependencies', () => {
+    const dir = fixture()
+    expect(run(dir, 'install-frontend-deps')).toEqual(['install-frontend-deps'])
+    const manifest = 'frontend/node_modules/.tanstack-start/server-functions-manifest.json'
+    write(dir, manifest, '{}')
+    expect(run(dir, 'install-frontend-deps')).toEqual([])
+    write(dir, manifest, '{"function":"generated"}')
+    expect(run(dir, 'install-frontend-deps')).toEqual([])
+    rmSync(join(dir, manifest))
+    expect(run(dir, 'install-frontend-deps')).toEqual([])
+    write(dir, 'frontend/node_modules/package/index.js', 'changed dependency')
+    expect(run(dir, 'install-frontend-deps')).toEqual(['install-frontend-deps'])
+    expect(readFileSync(join(dir, 'frontend/node_modules/package/index.js'), 'utf8')).toBe('generated-install-frontend-deps')
+    expect(run(dir, 'install-frontend-deps')).toEqual([])
   })
 
   it.each(['generate-sqlc-hub', 'generate-sqlc-worker', 'build-backend', 'build-backend-docker', 'build-desktop-sidecar', 'lint-backend', 'lint-desktop'])('checks every Go workspace manifest for %s', (target) => {
