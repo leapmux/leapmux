@@ -18,8 +18,9 @@ FROM golang:${GOLANG_VERSION}-alpine AS builder
 ARG VERSION=dev
 ARG COMMIT_HASH
 ARG COMMIT_TIME
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# Import BuildKit's target values without defaults that override --platform.
+ARG TARGETOS
+ARG TARGETARCH
 ARG BUF_VERSION
 ARG TASK_VERSION
 ARG BUN_VERSION
@@ -29,10 +30,10 @@ WORKDIR /src
 # Copy the pinned Node.js runtime from the node stage
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-# Install build tools. Go tools (sqlc, golangci-lint, gotestsum) are
-# declared as `tool` deps in backend/go.mod and desktop/go/go.mod, and
-# invoked via `go tool <name>` — no `go install` step needed.
-RUN apk add --no-cache bash curl libgcc libstdc++ rsync && \
+# Git supplies the spinner sources that Task requires.
+# Go tool dependencies reside in backend/go.mod and desktop/go/go.mod.
+# Task invokes them through go tool, so no separate go install step is needed.
+RUN apk add --no-cache bash curl git libgcc libstdc++ rsync && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
 
@@ -56,10 +57,6 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 # Copy all remaining source
 COPY . .
-
-# Create empty spinners directory to satisfy generate-spinners status check
-# (avoids git clone in Docker; spinners are optional)
-RUN mkdir -p frontend/src/spinners
 
 # Build the backend binary via task (single source of truth).
 # NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
