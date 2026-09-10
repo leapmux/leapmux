@@ -540,6 +540,9 @@ func (t *Terminal) SendInput(data []byte) error {
 		return fmt.Errorf("terminal is stopped")
 	}
 	t.mu.Unlock()
+	if len(data) == 0 {
+		return nil
+	}
 
 	// ptyMu, not t.mu: `stopped` covers only a Stop, and a terminal that exited
 	// on its own tore its child side down without setting it. See ptyMu.
