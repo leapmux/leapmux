@@ -14,10 +14,11 @@ dotenv: ['versions.env']
 vars:
   SPINNERS_CACHE_DIR:
     sh: echo "${HOME:-$USERPROFILE}/.cache/awesome-claude-spinners"
-  GO_CONTEXT:
-    sh: go env -json GOOS GOARCH GOAMD64 GOARM GOARM64 GOEXPERIMENT GO386 GOPPC64 GOMIPS GOMIPS64 GORISCV64 GOWASM CGO_ENABLED CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_FFLAGS CGO_LDFLAGS CC CXX GOFLAGS GOTOOLCHAIN GOVERSION GOWORK
-  JS_CONTEXT:
-    sh: bun --version && node --version
+  # Task evaluates each global dynamic variable before it selects a task.
+  # Keep tool probes as static anchors. Each consumer defines its dynamic variable in task scope.
+  GO_CONTEXT_COMMAND: &go_context_command >-
+    go env -json GOOS GOARCH GOAMD64 GOARM GOARM64 GOEXPERIMENT GO386 GOPPC64 GOMIPS GOMIPS64 GORISCV64 GOWASM CGO_ENABLED CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_FFLAGS CGO_LDFLAGS CC CXX GOFLAGS GOTOOLCHAIN GOVERSION GOWORK
+  JS_CONTEXT_COMMAND: &js_context_command bun --version && node --version
   # The versions.env value for VERSION, which an environment override never
   # reaches. It is the default that VERSION falls back to, never the answer.
   VERSION_DEFAULT: '{{.VERSION}}'
@@ -144,6 +145,8 @@ tasks:
     vars:
       BUF_CONTEXT:
         sh: buf --version
+      JS_CONTEXT:
+        sh: *js_context_command
       CACHE_CONTEXT: '{{.BUF_CONTEXT}}/{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_generate_contracts
         - backend/generated/contracts/**/*
@@ -181,6 +184,8 @@ tasks:
     desc: Generate type-safe SQL code for Hub
     deps: [generate-proto]
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       CACHE_CONTEXT: '{{.GO_CONTEXT}}'
       OUTPUTS: &outputs_generate_sqlc_hub
         - backend/internal/hub/store/*/generated/db/**/*
@@ -232,6 +237,8 @@ tasks:
       - backend/internal/worker/sqlc.yaml
       - backend/internal/worker/db/**/*.sql
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       CACHE_CONTEXT: '{{.GO_CONTEXT}}'
       OUTPUTS: &outputs_generate_sqlc_worker
         - backend/internal/worker/generated/db/**/*
@@ -309,6 +316,8 @@ tasks:
       - frontend/package.json
       - frontend/bun.lock
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_install_frontend_deps
         - frontend/node_modules/**/*
@@ -348,6 +357,8 @@ tasks:
       - frontend/package.json
       - frontend/bun.lock
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_generate_frontend_icons
         - frontend/public/icons/leapmux-icon.ico
@@ -436,6 +447,8 @@ tasks:
       - frontend/package.json
       - frontend/bun.lock
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_generate_desktop_icons
         # Include both platform sets and the tray icons from icon-set.mjs.
@@ -494,6 +507,8 @@ tasks:
     env:
       LEAPMUX_DEV: '{{.LEAPMUX_DEV | default ""}}'
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.JS_CONTEXT}}/{{.LEAPMUX_DEV | default ""}}/{{.NODE_ENV | default ""}}'
       OUTPUTS: &outputs_build_frontend
         - frontend/.output/**/*
@@ -525,6 +540,8 @@ tasks:
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
       - exclude: backend/**/*_test.go
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
       OUTPUTS: &outputs_build_backend
         - leapmux{{if eq OS "windows"}}.exe{{end}}
@@ -553,6 +570,8 @@ tasks:
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
       - exclude: backend/**/*_test.go
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
       OUTPUTS: &outputs_build_backend_docker
         - leapmux
@@ -590,6 +609,8 @@ tasks:
       - frontend/node_modules/macos-alias/src/**/*
       - frontend/node_modules/nan/**/*
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       SDK_CONTEXT:
         sh: xcrun clang --version && xcrun --show-sdk-version
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.SDK_CONTEXT}}/{{.MACOSX_DEPLOYMENT_TARGET | default ""}}'
@@ -630,6 +651,8 @@ tasks:
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       RUST_CONTEXT:
         sh: cd desktop/rust && rustc -vV && cargo --version
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}/{{.MACOS_CODESIGN_IDENTITY | default ""}}'
@@ -763,6 +786,8 @@ tasks:
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       RUST_CONTEXT:
         sh: cd desktop/rust && rustc -vV && cargo --version
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}'
@@ -869,6 +894,8 @@ tasks:
       - backend/internal/hub/generated/frontend/public/**/*
       - leapmux.exe
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       RUST_CONTEXT:
         sh: cd desktop/rust && rustc -vV && cargo --version
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{OS}}/{{ARCH}}/{{.RUST_CONTEXT}}/{{.RUSTFLAGS | default ""}}/{{.CARGO_ENCODED_RUSTFLAGS | default ""}}/{{.CARGO_BUILD_TARGET | default ""}}'
@@ -1050,6 +1077,8 @@ tasks:
       - scripts/license-overrides/**/*
       - scripts/validate-json.mjs
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.JS_CONTEXT}}'
     status: *artifact_status
@@ -1077,6 +1106,8 @@ tasks:
       - eslint.config.mjs
       - frontend/eslint.config.ts
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.JS_CONTEXT}}'
     status: *artifact_status
@@ -1098,6 +1129,8 @@ tasks:
       - desktop/go/go.mod
       - site/go.mod
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.JS_CONTEXT}}'
     status: *artifact_status
@@ -1116,6 +1149,8 @@ tasks:
     vars:
       BUF_CONTEXT:
         sh: buf --version
+      JS_CONTEXT:
+        sh: *js_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.BUF_CONTEXT}}/{{.JS_CONTEXT}}'
     status: *artifact_status
@@ -1142,6 +1177,8 @@ tasks:
       - frontend/patches/**/*
       - frontend/public/**/*
     vars:
+      JS_CONTEXT:
+        sh: *js_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.JS_CONTEXT}}'
     status: *artifact_status
@@ -1169,6 +1206,8 @@ tasks:
       - backend/go.sum
       - backend/**/*.go
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       OUTPUTS: []
       CACHE_CONTEXT: '{{.GO_CONTEXT}}'
     status: *artifact_status
@@ -1214,6 +1253,8 @@ tasks:
       - desktop/rust/src/**/*.rs
       - exclude: desktop/rust/target/**/*
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       RUST_CONTEXT:
         sh: cd desktop/rust && rustc -vV && cargo --version
       OUTPUTS: []
@@ -1309,6 +1350,8 @@ tasks:
       - exclude: desktop/go/**/*_test.go
       - exclude: desktop/go/bin/**/*
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       SIDECAR_LDFLAGS: '{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}'
       CACHE_CONTEXT: '{{.BUILD_CONTEXT}}/{{.GO_CONTEXT}}/{{.GOOS | default ""}}/{{.GOARCH | default ""}}'
       OUTPUTS: &outputs_build_desktop_sidecar
@@ -1442,6 +1485,8 @@ tasks:
       - site/assets/**/*
       - site/i18n/**/*
     vars:
+      GO_CONTEXT:
+        sh: *go_context_command
       HUGO_CONTEXT:
         sh: >-
           bun -e 'console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("HUGO_")).sort(([a], [b]) => a.localeCompare(b)))))'

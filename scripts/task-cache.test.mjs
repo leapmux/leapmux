@@ -70,7 +70,7 @@ function fixture(platform = hostPlatform) {
   fixtures.push(dir)
   const config = platformTemplates(Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8')), platform)
   // Keep the baseline independent of the parent task's development environment.
-  config.vars = { ...config.vars, VERSION: '1.0.0', COMMIT_HASH: 'abc123', COMMIT_TIME: 'commit-time', BUILD_TIME: '', BRANCH: 'main', LEAPMUX_DEV: '', NODE_ENV: '', JS_CONTEXT: 'js-test', GO_CONTEXT: 'go-test', SPINNERS_CACHE_DIR: join(dir, 'spinner-cache') }
+  config.vars = { ...config.vars, VERSION: '1.0.0', COMMIT_HASH: 'abc123', COMMIT_TIME: 'commit-time', BUILD_TIME: '', BRANCH: 'main', LEAPMUX_DEV: '', NODE_ENV: '', SPINNERS_CACHE_DIR: join(dir, 'spinner-cache') }
   delete config.dotenv
   const outputs = {
     'install-frontend-deps': ['frontend/node_modules/package/index.js'],
@@ -100,7 +100,7 @@ function fixture(platform = hostPlatform) {
     .map(file => `desktop/rust/icons/${file}`)
   outputs['prepare-dmg-tools'] = ['frontend/node_modules/macos-alias/build/Release/volume.node']
   for (const [name, task] of Object.entries(config.tasks)) {
-    for (const key of ['BUF_CONTEXT', 'RUST_CONTEXT', 'SDK_CONTEXT']) {
+    for (const key of ['BUF_CONTEXT', 'GO_CONTEXT', 'JS_CONTEXT', 'RUST_CONTEXT', 'SDK_CONTEXT']) {
       if (task.vars?.[key])
         task.vars[key] = `fixture-${key}`
     }
@@ -179,6 +179,29 @@ writeFileSync(output, 'compiled-' + task)
 afterEach(() => {
   for (const dir of fixtures.splice(0))
     rmSync(dir, { recursive: true, force: true })
+})
+
+describe('Task tool contexts', () => {
+  it('restricts tool probes to tasks that use each context', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    for (const [context, commandPattern] of [
+      ['GO_CONTEXT', /^go env /],
+      ['JS_CONTEXT', /^bun --version /],
+    ]) {
+      expect(config.vars[context]).toBeUndefined()
+      const command = config.vars[`${context}_COMMAND`]
+      expect(command).toMatch(commandPattern)
+      const consumers = Object.entries(config.tasks)
+        .filter(([, task]) => JSON.stringify(task).includes(`.${context}`))
+      expect(consumers.length).toBeGreaterThan(0)
+      const definitions = Object.entries(config.tasks)
+        .filter(([, task]) => task.vars?.[context])
+        .map(([taskName]) => taskName)
+      expect(definitions).toEqual(consumers.map(([taskName]) => taskName))
+      for (const [taskName, task] of consumers)
+        expect(task.vars?.[context], taskName).toEqual({ sh: command })
+    }
+  })
 })
 
 describe('task build cache', () => {
