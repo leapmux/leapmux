@@ -345,7 +345,7 @@ func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	_, err := svc.InputQueue.TurnStarted(ctx, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID, false)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "queued", AgentID: agentID, Text: "after unarchive",
@@ -383,7 +383,7 @@ func TestWorkspaceArchive_PreservesAManualQueuePause(t *testing.T) {
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	_, err := svc.InputQueue.TurnStarted(ctx, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID, false)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.SetPaused(ctx, agentID, true)
 	require.NoError(t, err)
@@ -849,7 +849,7 @@ func TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree(t *testing.T) {
 	// dispatching it. Without the turn the enqueue dispatches at once, fails on
 	// an owner that runs no process, and pauses the queue for that reason --
 	// which is the state this test must not start from.
-	_, err := svc.InputQueue.TurnStarted(ctx, childID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
+	_, err := svc.InputQueue.TurnStarted(ctx, childID, false)
 	require.NoError(t, err)
 	inputID := newTestAgentInputID()
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{

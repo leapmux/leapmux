@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
+func newOpenCodeAgentWithSink(sink ProviderServices) *OpenCodeAgent {
 	a := &OpenCodeAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
@@ -92,11 +92,9 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_TokenCoalescing(t *testing.T) {
 	require.Equal(t, "tc-1", sink.Messages()[1].SpanID)
 }
 
-// Replay (opencode/src/acp/agent.ts:1087) sends each complete reasoning part
-// as one notification with no leading newline. Coalescing must insert a
-// paragraph break between adjacent markdown-heading sections, otherwise the
-// next title gets glued onto the previous body's last sentence.
-func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing.T) {
+// Replay and live streaming use the same ACP chunk variant. The live variant
+// can split anywhere, so assembly must preserve both paths verbatim.
+func TestHandleOpenCodeOutput_AgentThoughtChunk_ReplayUsesDeltaJoining(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -115,15 +113,13 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &parsed))
 	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
 	require.Equal(t,
-		"**Analyzing tiles**\n\nbody one\n\n**Refining grid**\n\nbody two",
+		"**Analyzing tiles**\n\nbody one**Refining grid**\n\nbody two",
 		parsed["content"].(map[string]interface{})["text"],
 	)
 	require.True(t, sink.Messages()[1].TurnEnd)
 }
 
-// Sentence-end + capital letter at the seam ("feedback.The") is the other
-// replay-style boundary that needs separation.
-func TestHandleOpenCodeOutput_AgentThoughtChunk_SentenceBoundary(t *testing.T) {
+func TestHandleOpenCodeOutput_AgentThoughtChunk_DoesNotInferAParagraph(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -140,7 +136,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_SentenceBoundary(t *testing.T) {
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &parsed))
 	require.Equal(t,
-		"I'll validate before giving feedback.\n\nThe proposed hook point exists.",
+		"I'll validate before giving feedback.The proposed hook point exists.",
 		parsed["content"].(map[string]interface{})["text"],
 	)
 }

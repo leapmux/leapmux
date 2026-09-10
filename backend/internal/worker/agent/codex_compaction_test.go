@@ -179,7 +179,7 @@ func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 		"item/completed is the compaction boundary now; thread/compacted stays a plain threadable notification")
 }
 
-// blockingTurnFlagSink blocks inside SetTurnActive until the test releases it,
+// blockingTurnFlagSink blocks inside SetTurnState until the test releases it,
 // which is what tells a synchronous publish apart from one a goroutine carries.
 // Asserting the recorded order alone cannot: a spawned goroutine usually wins
 // the race to the slice, so the same sequence appears either way.
@@ -190,14 +190,14 @@ type blockingTurnFlagSink struct {
 	once    sync.Once
 }
 
-func (s *blockingTurnFlagSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
-	if !active {
+func (s *blockingTurnFlagSink) SetTurnState(state TurnState, seq uint64) {
+	if !state.Active {
 		s.once.Do(func() {
 			close(s.entered)
 			<-s.release
 		})
 	}
-	s.testSink.SetTurnActive(active, kind, seq)
+	s.testSink.SetTurnState(state, seq)
 }
 
 func TestHandleCodexOutput_TurnCompletionPublishesTheClearBeforeItReturns(t *testing.T) {

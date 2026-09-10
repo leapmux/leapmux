@@ -432,7 +432,7 @@ func claudeSpanForEnvelope(msgType string, env *messageEnvelope, spanTypeFor fun
 // Shared by the parent transcript (handlePersistableMessage) and the child one
 // (routeSubagentMessage), which differ only in the sink and the parent span id.
 // They held two copies of this rule, so the spawn guard had to be written twice.
-func claudeSpanInfoFor(sink OutputSink, msgType string, env *messageEnvelope, parentSpanID string) SpanInfo {
+func claudeSpanInfoFor(sink SpanServices, msgType string, env *messageEnvelope, parentSpanID string) SpanInfo {
 	spanID, spanType, closing := claudeSpanForEnvelope(msgType, env, sink.GetSpanType)
 	spawns := spanID != "" && claudeToolSpawnsSubagent(spanType)
 
@@ -460,7 +460,7 @@ func claudeSpanInfoFor(sink OutputSink, msgType string, env *messageEnvelope, pa
 // claudeCloseToolResultSpans closes the span of EVERY tool_result in a user
 // envelope. One user message can carry parallel tool calls, so closing only the
 // first would leak the rest until the turn's bulk ResetSpans.
-func claudeCloseToolResultSpans(sink OutputSink, env *messageEnvelope) {
+func claudeCloseToolResultSpans(sink SpanServices, env *messageEnvelope) {
 	for _, block := range env.ContentBlocks() {
 		if block.Type == "tool_result" && block.ToolUseID != "" {
 			sink.CloseSpan(block.ToolUseID)

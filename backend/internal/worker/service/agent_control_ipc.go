@@ -151,7 +151,7 @@ func (svc *Service) remintAgentControlIPC(opts agent.Options, phase string) ([]s
 // agentLauncher is the shape of the ways a relaunch reaches a process:
 // startAgent for a tab with no live process, restartAgentLocked for one that
 // must be stopped first, and startBackgroundAgent for a start nobody waits on.
-type agentLauncher func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+type agentLauncher func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 
 // startPriority states whether a user is waiting on a cold start. It decides
 // two things: whether the spawn draws on the manager's startup permit pool
@@ -217,7 +217,7 @@ func (svc *Service) mintAndLaunch(
 	ctx context.Context,
 	phase string,
 	opts agent.Options,
-	sink agent.OutputSink,
+	sink agent.ProviderServices,
 	launch agentLauncher,
 ) (map[string]string, error) {
 	confirmed, _, err := svc.mintAndLaunchReportingStep(ctx, phase, opts, sink, launch)
@@ -236,7 +236,7 @@ func (svc *Service) mintAndLaunchReportingStep(
 	ctx context.Context,
 	phase string,
 	opts agent.Options,
-	sink agent.OutputSink,
+	sink agent.ProviderServices,
 	launch agentLauncher,
 ) (confirmed map[string]string, launched bool, err error) {
 	remoteEnvs, err := svc.remintAgentControlIPC(opts, phase)

@@ -1,8 +1,9 @@
 import type { Accessor, Component, JSX } from 'solid-js'
+import type { ThinkingStatusCounter } from './ThinkingStatusRow'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, untrack } from 'solid-js'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
@@ -13,8 +14,10 @@ import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
+import { ThinkingCompass } from './ThinkingCompass'
 import * as styles from './ThinkingIndicator.css'
 import { ThinkingOutputCount } from './ThinkingOutputCount'
+import { ThinkingStatusRow } from './ThinkingStatusRow'
 import { ThinkingTokenCount } from './ThinkingTokenCount'
 
 export interface ThinkingIndicatorProps {
@@ -137,12 +140,12 @@ function createFadingValue<T>(
 // Updating an existing key is in-place — the map's insertion-order
 // queue isn't disturbed — so only first-seen ids advance the FIFO.
 //
-// Size is bounded by MAX_CACHE_ENTRIES with FIFO eviction. Eviction
+// MAX_CACHE_ENTRIES caps the size with first-in, first-out eviction. Eviction
 // kicks in only when a NEW id arrives past the cap; an evicted
 // agent's next re-mount simply falls back to a fresh verb / zero
 // angle, which is the same behaviour as the very first mount of any
 // id. There's no explicit "agent closed" hook because the cap
-// catches it within a bounded number of subsequent agent opens
+// catches it after a limited number of subsequent agent opens
 // regardless.
 interface IndicatorSnapshot {
   verb?: string
@@ -511,7 +514,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
    * One entry per trailing counter, in render order. Constant for the life of
    * the component -- see the <For> below for why that matters.
    */
-  const counters: Array<{ show: () => boolean, render: () => JSX.Element }> = [
+  const counters: ThinkingStatusCounter[] = [
     {
       // Background tasks: shown while there are active subagents/shells.
       // Clicking opens a popover with the full registry.
@@ -615,6 +618,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     },
   ]
 
+  const verb = (
+    <span class={styles.verbStack} data-testid="thinking-verb">
+      <span class={styles.baselineStrut} aria-hidden="true">{'\u00A0'}</span>
+      {verbSpan(true, charsA, highlightPosA)}
+      {verbSpan(false, charsB, highlightPosB)}
+    </span>
+  )
+
   return (
     <div
       class={styles.wrapper}
@@ -630,101 +641,8 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     >
       <div class={styles.wrapperInner}>
         <div class={styles.container}>
-          <svg class={styles.compass} viewBox="0 0 401.294 401.294">
-            <g transform={`translate(100.666,-852.275) rotate(${angleDeg()},100,1052.922)`}>
-              {/* Tertiary intercardinal points */}
-              <g transform="matrix(0.41544,-0.17208,0.17208,0.41544,-122.740,632.706)">
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-              {/* Secondary intercardinal points */}
-              <g transform="matrix(0.17208,-0.41544,0.41544,0.17208,-354.645,913.272)">
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" stroke-width="2.224" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-              {/* Annulus ring */}
-              <path fill="currentColor" stroke="currentColor" stroke-width="1" transform="translate(0,852.362)" d="M100,37.15A162.85,162.85 0 0 0-62.85,200 162.85,162.85 0 0 0 100,362.85 162.85,162.85 0 0 0 262.85,200 162.85,162.85 0 0 0 100,37.15zM100,65.5A134.5,134.5 0 0 1 234.5,200 134.5,134.5 0 0 1 100,334.5 134.5,134.5 0 0 1-34.5,200 134.5,134.5 0 0 1 100,65.5z" />
-              {/* Intermediate intercardinal points (NE, SE, SW, NW) */}
-              <g>
-                <path fill="currentColor" stroke="currentColor" d="m185.055,967.864-84.828,59.38 0,25.448 84.828-84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m185.039,967.848-59.38,84.828-25.448,0 84.828-84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m14.907,1137.98 84.829-59.38 0-25.448-84.829,84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m14.923,1137.996 59.38-84.828 25.448,0-84.828,84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m185.039,1137.996-59.38-84.828-25.448,0 84.828,84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m185.055,1137.98-84.828-59.38 0-25.448 84.828,84.828z" />
-                <path fill="currentColor" stroke="currentColor" d="m14.923,967.848 59.38,84.828 25.448,0-84.828-84.828z" />
-                <path fill="var(--background)" stroke="currentColor" d="m14.907,967.864 84.829,59.38 0,25.448-84.829-84.828z" />
-              </g>
-              {/* Cardinal points (N, S, E, W) */}
-              <g>
-                <path fill="currentColor" stroke="currentColor" d="m100,852.362-30,170 30,30 0-200z" />
-                <path fill="var(--background)" stroke="currentColor" d="m99.962,852.362 30,170-30,30 0-200z" />
-                <path fill="currentColor" stroke="currentColor" d="m99.962,1253.482 30-170-30-30 0,200z" />
-                <path fill="var(--background)" stroke="currentColor" d="m100,1253.482-30-170 30-30 0,200z" />
-                <path fill="currentColor" stroke="currentColor" d="m300.541,1052.941-170-30-30,30 200,0z" />
-                <path fill="var(--background)" stroke="currentColor" d="m300.541,1052.904-170,30-30-30 200,0z" />
-                <path fill="currentColor" stroke="currentColor" d="m-100.579,1052.904 170,30 30-30-200,0z" />
-                <path fill="var(--background)" stroke="currentColor" d="m-100.579,1052.941 170-30 30,30-200,0z" />
-              </g>
-            </g>
-          </svg>
-          <span class={styles.verbRow}>
-            {/* The verb LEADS the row and the counters trail it, so it reads
-                "<verb>… <background tasks> · <to-dos> · <tokens> · <output>". Every counter
-                is optional, so each one draws its own leading `·` only when
-                another counter already precedes it — a separator included in a
-                counter's own text would dangle whenever its neighbour is gone.
-                The verb is outside that chain: the row's own gap divides it from
-                the first counter, so no `·` sits between them. */}
-            <span class={styles.verbStack} data-testid="thinking-verb">
-              {/* Stable baseline anchor -- see baselineStrut in the CSS.
-                  A NON-BREAKING space (U+00A0), not an ASCII one: the strut is
-                  the first thing in its box, and white-space processing
-                  collapses a leading ASCII space away entirely, which drops the
-                  box's height to 0 and leaves no baseline to anchor to. */}
-              <span class={styles.baselineStrut} aria-hidden="true">{'\u00A0'}</span>
-              {verbSpan(true, charsA, highlightPosA)}
-              {verbSpan(false, charsB, highlightPosB)}
-            </span>
-            {/* The counters that trail the verb, in render order.
-                A CONSTANT array driven by <For>, so each counter owns its own
-                <Show>: a predicate flip re-creates only THAT counter and leaves
-                its neighbours mounted, so a neighbour's DropdownMenu keeps an
-                open popover and a neighbour's ThinkingTokenCount keeps its
-                odometer. (A counter's own flip does dispose and rebuild it --
-                <Show> is not keyed -- so the token count restarts its roll when
-                it reappears at the start of a turn.)
-
-                The separator rule lives here, once, derived from position: draw
-                a leading middot when any EARLIER counter is showing. Spelling it
-                per counter meant each one had to name every predecessor
-                (`showBgTasks() || showTodos()` ...), so another counter would
-                have to be added to every later condition -- and forgetting one
-                leaves a dangling `·` or drops one. The verb stays outside the
-                chain: the row's own gap divides it from the first counter. */}
-            <For each={counters}>
-              {(counter, index) => (
-                <Show when={counter.show()}>
-                  <Show when={counters.slice(0, index()).some(earlier => earlier.show())}>
-                    <span class={styles.countSeparator} aria-hidden="true">·</span>
-                  </Show>
-                  {counter.render()}
-                </Show>
-              )}
-            </For>
-          </span>
+          <ThinkingCompass angleDeg={angleDeg()} />
+          <ThinkingStatusRow verb={verb} counters={counters} />
         </div>
       </div>
     </div>

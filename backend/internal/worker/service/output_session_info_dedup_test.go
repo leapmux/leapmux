@@ -77,13 +77,13 @@ func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 
 // newSessionInfoFixture is the two-value shape the dedup tests want. The replay
 // tests need the service as well, so the build lives in the wider one below.
-func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturingWriter) {
+func newSessionInfoFixture(t *testing.T) (agent.ProviderServices, *sessionInfoCapturingWriter) {
 	t.Helper()
 	_, sink, mock := newSessionInfoServiceFixture(t)
 	return sink, mock
 }
 
-func newSessionInfoServiceFixture(t *testing.T) (*Service, agent.OutputSink, *sessionInfoCapturingWriter) {
+func newSessionInfoServiceFixture(t *testing.T) (*Service, agent.ProviderServices, *sessionInfoCapturingWriter) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
@@ -334,9 +334,10 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		contracts.SessionInfoKeyGoalProgress: {},
 	}
 	progress := map[string]struct{}{
-		contracts.SessionInfoKeyThinkingTokens:     {},
-		contracts.SessionInfoKeyOutputBytes:        {},
-		contracts.SessionInfoKeyOutputBytesMinimum: {},
+		contracts.SessionInfoKeyThinkingTokens:             {},
+		contracts.SessionInfoKeyOutputBytes:                {},
+		contracts.SessionInfoKeyOutputBytesMinimum:         {},
+		contracts.SessionInfoKeyGenerationProgressRevision: {},
 	}
 
 	_, thisFile, _, ok := runtime.Caller(0)

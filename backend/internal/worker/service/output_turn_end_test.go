@@ -64,7 +64,8 @@ func newTurnEndFixture(t *testing.T) (*agentOutputSink, *turnEndCapturingWriter)
 	mock := &turnEndCapturingWriter{channelID: "ch-turn-end"}
 	registerAgentWatch(svc, "ch-turn-end", "agent-turn-end", leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, mock)
 
-	sink := svc.Output.NewSink("agent-turn-end", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
+	svc.Output.NewSink("agent-turn-end", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := requireRootOutputSink(t, svc.Output, "agent-turn-end")
 	return sink, mock
 }
 

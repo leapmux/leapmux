@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
+func newCopilotAgentWithSink(sink ProviderServices) *CopilotCLIAgent {
 	a := newCopilotCLIAgent("", false)
 	a.jsonrpcBase = jsonrpcBase{processBase: processBase{
 		agentID:      "test-agent",

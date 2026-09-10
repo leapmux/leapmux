@@ -5,8 +5,8 @@ import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
-import { renderMarkdownForContext } from '../messageRenderers'
-import { ToolUseLayout } from '../toolRenderers'
+import { renderMarkdownForContext } from '../markdownRendering'
+import { ToolUseLayout } from './ToolUseLayout'
 
 export interface MarkdownPlanLayoutProps {
   /** Tool name shown in the header chip (e.g. "Plan", "ExitPlanMode"). */

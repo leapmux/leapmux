@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,11 +37,46 @@ func TestAnnotateMessageCompletionPreservesExistingMetadata(t *testing.T) {
 	}`, string(raw))
 }
 
-func TestAnnotateMessageCompletionRejectsNonObjectMetadata(t *testing.T) {
+func TestAnnotateMessageCompletionReplacesProviderCollision(t *testing.T) {
 	t.Parallel()
 
-	_, err := AnnotateMessageCompletion([]byte(`{"_leapmux":"reserved"}`), MessageCompletionInterrupted)
-	require.ErrorContains(t, err, "completion metadata")
+	raw, err := AnnotateMessageCompletion([]byte(`{"_leapmux":"provider value"}`), MessageCompletionInterrupted)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"_leapmux":{"completion":"interrupted"}}`, string(raw))
+}
+
+func TestMessageMetadataDerivesAssembledAndProviderCompletion(t *testing.T) {
+	t.Parallel()
+
+	kind, completion := MessageMetadata([]byte(`{"type":"assembled_message","kind":"plan","text":"x","completion":"complete"}`))
+	assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN, kind)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE, completion)
+
+	kind, completion = MessageMetadata([]byte(`{"type":"tool","_leapmux":{"completion":"error"}}`))
+	assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED, kind)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR, completion)
+}
+
+func TestMessageMetadataDoesNotReuseKindAsCompletion(t *testing.T) {
+	t.Parallel()
+
+	kind, completion := MessageMetadata([]byte(`{"type":"assembled_message","kind":"error","text":"x"}`))
+	assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED, kind)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED, completion)
+}
+
+func TestMessageMetadataUsesTheAssembledCompletion(t *testing.T) {
+	t.Parallel()
+
+	kind, completion := MessageMetadata([]byte(`{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"x",
+		"completion":"complete",
+		"_leapmux":{"completion":"error"}
+	}`))
+	assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT, kind)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE, completion)
 }
 
 func TestAnnotateMessageCompletionAcceptsNullMetadata(t *testing.T) {

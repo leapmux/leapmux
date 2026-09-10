@@ -221,6 +221,23 @@ func TestHandleZCodeOutput_TextDeltaPersistsWhenTurnFails(t *testing.T) {
 	}`, string(sink.Messages()[0].Content))
 }
 
+func TestHandleZCodeOutput_KeepsReasoningDeltasVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"**Verifying terminal release synchronization"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"reasoning_delta","delta":"Analyzing lock acquisition order and concurrency**"}`))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed,
+		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content),
+		`"text":"**Verifying terminal release synchronizationAnalyzing lock acquisition order and concurrency**"`)
+}
+
 func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T) {
 	t.Parallel()
 
@@ -461,8 +478,9 @@ func TestHandleZCodeOutput_ToolProgress_RoutesToChild(t *testing.T) {
 	child, ok := sink.ChildSink(childIDs[0]).(*testSink)
 	require.True(t, ok)
 	updates := child.ProgressUpdates()
-	require.Len(t, updates, 1)
-	assert.Equal(t, int64(3), updates[0].Value)
+	require.Len(t, updates, 2)
+	assert.Equal(t, ProgressModelReset, updates[0].Operation)
+	assert.Equal(t, int64(3), updates[1].Value)
 }
 
 // --- tool completion ---

@@ -18,22 +18,26 @@ type CumulativeOutputCounter struct {
 }
 
 func (c *CumulativeOutputCounter) Observe(value string, limited bool) CumulativeOutputObservation {
-	hasLimitPrefix := strings.HasPrefix(value, limitedOutputPrefix)
-	limited = limited || hasLimitPrefix
-	visible := strings.TrimPrefix(value, limitedOutputPrefix)
+	visible := value
 	if c.previous == "" {
 		c.total = int64(len(visible))
-	} else if strings.HasPrefix(visible, c.previous) {
-		c.total = saturatingAdd(c.total, int64(len(visible)-len(c.previous)))
 	} else if limited {
-		overlap := suffixPrefixOverlap(c.previous, visible)
-		if overlap > 0 {
+		if strings.HasPrefix(visible, c.previous) {
+			c.total = saturatingAdd(c.total, int64(len(visible)-len(c.previous)))
+		} else if overlap := suffixPrefixOverlap(c.previous, visible); overlap > 0 {
 			c.total = saturatingAdd(c.total, int64(len(visible)-overlap))
 		} else {
+			c.total = max(c.total, int64(len(visible)))
 			c.minimum = true
 		}
-	} else {
+	} else if len(visible) <= len(c.previous) && visible != c.previous {
 		c.minimum = true
+		c.total = max(c.total, int64(len(visible)))
+	} else {
+		// Providers specify a non-limited update as the complete append-only
+		// snapshot. Its length is the exact total, so a growing update needs no
+		// scan of all prior bytes.
+		c.total = max(c.total, int64(len(visible)))
 	}
 	c.minimum = c.minimum || limited
 	c.previous = visible

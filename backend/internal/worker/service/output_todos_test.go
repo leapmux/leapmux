@@ -19,14 +19,14 @@ import (
 // setupTodoTest provisions a worker service with one Claude-code agent and
 // returns the sink, the agent_id, and a row-listing helper bound to that
 // agent. Used by the to-do persistence/broadcast tests.
-func setupTodoTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentTodo) {
+func setupTodoTest(t *testing.T) (agent.ProviderServices, string, func() []db.AgentTodo) {
 	return setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 
 // setupTodoTestForProvider is setupTodoTest for an agent of a stated provider. The
 // provider decides which extractor reads the message, so a test that feeds one
 // provider's shape has to create an agent of THAT provider.
-func setupTodoTestForProvider(t *testing.T, provider leapmuxv1.AgentProvider) (agent.OutputSink, string, func() []db.AgentTodo) {
+func setupTodoTestForProvider(t *testing.T, provider leapmuxv1.AgentProvider) (agent.ProviderServices, string, func() []db.AgentTodo) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)

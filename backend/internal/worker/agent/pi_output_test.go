@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newPiAgentWithSink(sink OutputSink) *PiAgent {
+func newPiAgentWithSink(sink ProviderServices) *PiAgent {
 	a := &PiAgent{
 		processBase: processBase{agentID: "test-agent"},
 		sink:        sink,
@@ -274,6 +275,126 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 		"isError":true,
 		"_leapmux":{"completion":"error"}
 	}`, string(result.Content))
+}
+
+func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-empty","toolName":"bash","args":{"command":"sleep 10"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+
+	require.Len(t, sink.Messages(), 3)
+	closing := sink.Messages()[1]
+	assert.True(t, closing.Closing)
+	assert.Equal(t, "tool-empty", closing.SpanID)
+	assert.JSONEq(t, `{
+		"type":"tool_execution_end",
+		"toolCallId":"tool-empty",
+		"toolName":"bash",
+		"args":{"command":"sleep 10"},
+		"result":{"content":[]},
+		"isError":true,
+		"_leapmux":{"completion":"error"}
+	}`, string(closing.Content))
+}
+
+func TestHandlePiOutput_InterruptedGenerationPreservesContentOrder(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	for _, raw := range []string{
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"first reason"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"answer"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":2,"delta":"second reason"}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`,
+	} {
+		handlePiOutput(a, parseLine([]byte(raw)))
+	}
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 4)
+	assert.Contains(t, string(sink.Messages()[0].Content), "first reason")
+	assert.Contains(t, string(sink.Messages()[1].Content), "answer")
+	assert.Contains(t, string(sink.Messages()[2].Content), "second reason")
+}
+
+func TestHandlePiOutput_KeepsThinkingDeltasVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	for _, raw := range []string{
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"**Verifying terminal release synchronization"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Analyzing lock acquisition order and concurrency**"}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`,
+	} {
+		handlePiOutput(a, parseLine([]byte(raw)))
+	}
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content),
+		`"text":"**Verifying terminal release synchronizationAnalyzing lock acquisition order and concurrency**"`)
+}
+
+func TestHandlePiOutput_MessagePersistFailureKeepsFallbackText(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{persistErr: errors.New("database unavailable")}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"recover me"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recover me"}]}}`)))
+
+	sink.persistErr = nil
+	a.flushPiGeneration(MessageCompletionError)
+	require.Len(t, sink.Messages(), 2)
+	assert.Contains(t, string(sink.Messages()[1].Content), "recover me")
+}
+
+func TestHandlePiOutput_DiscardedTurnDoesNotPersistIncompleteTool(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"discarded","toolName":"bash"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_update","toolCallId":"discarded","partialResult":{"content":[{"type":"text","text":"old output"}]}}`)))
+	before := sink.MessageCount()
+	a.DiscardOutput()
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`)))
+
+	assert.Equal(t, before+1, sink.MessageCount(), "only the agent-end divider can persist")
+	for _, message := range sink.Messages()[before:] {
+		assert.NotContains(t, string(message.Content), "tool_execution_end")
+	}
+}
+
+func TestPiPromptFailureKeepsActiveTurnForRejectedSteer(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.generationBuffer.Append("answer", AssembledMessageKindText, "still active", joinVerbatim)
+	a.handlePiPromptFailure(errors.New("steer rejected"), true)
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Len(t, sink.Notifications(), 1)
+	a.flushPiGeneration(MessageCompletionInterrupted)
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), "still active")
+}
+
+func TestPiPromptFailureSuppressesIntentionalStopError(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.mu.Lock()
+	a.stopped = true
+	a.mu.Unlock()
+	a.handlePiPromptFailure(errors.New("process closed"), false)
+
+	assert.Empty(t, sink.Notifications())
 }
 
 // Pi retries the WebSocket failure itself when it says willRetry, so LeapMux

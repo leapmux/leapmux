@@ -8,7 +8,7 @@ export type CodexFinishedStatus = typeof CODEX_STATUS.COMPLETED | typeof CODEX_S
  * progress.
  */
 export function isCodexFinishedStatus(status: string | null | undefined): boolean {
-  return status === CODEX_STATUS.COMPLETED || status === CODEX_STATUS.FAILED
+  return parseCodexStatus(status) !== CODEX_STATUS.IN_PROGRESS
 }
 
 /**

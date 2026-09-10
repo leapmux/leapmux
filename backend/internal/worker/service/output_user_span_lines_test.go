@@ -47,7 +47,7 @@ func parseSpanLinesJSON(t *testing.T, raw string) []*SpanLine {
 // registers a watcher on it, and arranges for shutdown via t.Cleanup.
 // Returns the sink so callers that drive the OutputHandler directly can
 // reach it.
-func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, agentID string, provider leapmuxv1.AgentProvider) agent.OutputSink {
+func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, agentID string, provider leapmuxv1.AgentProvider) agent.ProviderServices {
 	t.Helper()
 	ctx := context.Background()
 
@@ -74,7 +74,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 // persistNotif persists a notification through the sink and asserts no error,
 // discarding the broadcast flag PersistNotification returns. Keeps the many
 // notification-thread tests terse now that the signature returns (bool, error).
-func persistNotif(t *testing.T, sink agent.OutputSink, source leapmuxv1.MessageSource, content []byte) {
+func persistNotif(t *testing.T, sink agent.ProviderServices, source leapmuxv1.MessageSource, content []byte) {
 	t.Helper()
 	_, err := sink.PersistNotification(source, content)
 	require.NoError(t, err)

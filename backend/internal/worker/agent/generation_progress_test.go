@@ -64,6 +64,24 @@ func TestProgressResetSinkKeepsOutputWhenAMessagePersists(t *testing.T) {
 	assert.Equal(t, int64(512), snapshot.OutputBytes)
 }
 
+func TestProgressResetSinkDecoratesChildTranscriptFacets(t *testing.T) {
+	t.Parallel()
+
+	inner := &testSink{}
+	sink := newModelProgressResetSink(inner)
+	child := sink.ChildSink("child")
+	child.ReportProgress(ModelTextProgress("model", "abcdefgh"))
+	require.NoError(t, child.PersistMessage(
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		[]byte(`{"type":"assistant"}`),
+		SpanInfo{},
+	))
+
+	childSink, ok := inner.ChildSink("child").(*testSink)
+	require.True(t, ok)
+	assert.Zero(t, childSink.progressCount.Snapshot().ThinkingTokens)
+}
+
 func TestProgressCounterRetainsCompletedContributionUntilOverlappingScopeEnds(t *testing.T) {
 	t.Parallel()
 

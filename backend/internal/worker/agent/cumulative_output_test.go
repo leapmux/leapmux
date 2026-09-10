@@ -23,10 +23,19 @@ func TestCumulativeOutputCounterDoesNotInventBytesWithoutOverlap(t *testing.T) {
 	t.Parallel()
 
 	var counter CumulativeOutputCounter
-	counter.Observe("abcdef", false)
-	observed := counter.Observe("...\n\nXYZ", true)
-	assert.Equal(t, int64(6), observed.Total)
+	counter.Observe("abc", false)
+	observed := counter.Observe(strings.Repeat("X", 64<<10), true)
+	assert.Equal(t, int64(64<<10), observed.Total)
 	assert.True(t, observed.Minimum)
+}
+
+func TestCumulativeOutputCounterKeepsLiteralLimitPrefix(t *testing.T) {
+	t.Parallel()
+
+	var counter CumulativeOutputCounter
+	observed := counter.Observe("...\n\nreal output", false)
+	assert.Equal(t, int64(len("...\n\nreal output")), observed.Total)
+	assert.False(t, observed.Minimum)
 }
 
 func TestCumulativeOutputCounterMarksAnUnexpectedReplacementAsMinimum(t *testing.T) {

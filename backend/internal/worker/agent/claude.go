@@ -94,7 +94,7 @@ type ClaudeCodeAgent struct {
 	effort     string
 	workingDir string
 	homeDir    string
-	sink       OutputSink
+	sink       ProviderServices
 
 	// Claude Code-specific state.
 	contextUsage    *contextUsageSnapshot
@@ -255,7 +255,7 @@ func claudeAgentEnv(environ []string, loginShell bool) []string {
 // StartClaudeCode returns immediately without waiting for output. The session ID is
 // extracted later from the init message when the first user message triggers
 // output from Claude.
-func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (*ClaudeCodeAgent, error) {
 	TraceStartupPhase(opts.AgentID, "claude_begin")
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -727,12 +727,12 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 // reach the sink unordered -- the reader that ends a turn, and the drain that a
 // refusal answers -- so without it the older value can land second and latch a
 // turn that is over.
-func (a *ClaudeCodeAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
+func (a *ClaudeCodeAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	return publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // armTurn records a turn that the CLI runs and this Worker did not start. The
@@ -805,7 +805,7 @@ func (a *ClaudeCodeAgent) noteSessionIdle() {
 }
 
 // disarmTurn records the end of the turn and publishes it, the way armTurn
-// records the start. OutputSink.SetTurnActive requires the mutation and the
+// records the start. ProviderServices.SetTurnState requires the mutation and the
 // publish at ONE site, and the falling edge kept them twenty lines apart in the
 // middle of the output handler.
 //
@@ -2585,7 +2585,7 @@ func (r effortResolver) resolveEffort(model, effort string) string {
 func init() {
 	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+		func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 			return StartClaudeCode(ctx, opts, sink)
 		},
 		claudeCodeAvailableModels,

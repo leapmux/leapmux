@@ -81,7 +81,7 @@ type CodexAgent struct {
 	model      string
 	effort     string
 	workingDir string
-	sink       OutputSink
+	sink       ProviderServices
 	// resumingThread is true only while a thread/resume handshake is in flight.
 	//
 	// It is what tells a goal RESTATEMENT from a goal EVENT. Codex marks the
@@ -118,8 +118,13 @@ type CodexAgent struct {
 	// would otherwise double-count. Locking onto whichever arrives first keeps the
 	// counter moving for models that stream only one of the two.
 	reasoningStreamKind    map[string]string
+	reasoningRetainedKind  map[string]string
+	reasoningSummaryIndex  map[string]int
+	reasoningSummarySeen   map[string]bool
+	reasoningSummaryBreak  map[string]bool
 	generationBuffer       GenerationBuffer
 	childGenerationBuffers map[string]*GenerationBuffer
+	unresolvedChildBuffers map[string]*GenerationBuffer
 	incompleteTools        map[string]*codexIncompleteTool
 	incompleteToolOrder    uint64
 	availableModels        []*ModelInfo
@@ -168,7 +173,7 @@ type codexInterruptCall struct {
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
-func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Codex doesn't have third-party provider detection or model/effort
@@ -646,6 +651,10 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.turnPlanText = ""
 	a.turnAssistantText = ""
 	clear(a.reasoningStreamKind)
+	clear(a.reasoningRetainedKind)
+	clear(a.reasoningSummaryIndex)
+	clear(a.reasoningSummarySeen)
+	clear(a.reasoningSummaryBreak)
 	// Clear the collab child index: a new thread means prior child threads are
 	// gone. Entries are otherwise only removed on a final collab status.
 	clear(a.collabThreadSpans)
@@ -660,6 +669,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.generationBuffer.Reset()
 	a.mu.Lock()
 	clear(a.childGenerationBuffers)
+	clear(a.unresolvedChildBuffers)
 	a.mu.Unlock()
 	a.PublishTurnActive()
 	a.sink.ReportProgress(ResetProgress())
@@ -684,7 +694,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 //
 // Never called with a.mu held: the sink broadcasts, and a broadcast can block
 // on a slow transport.
-func (a *CodexAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
+func (a *CodexAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnID != ""
 	seq := a.nextTurnSeq()

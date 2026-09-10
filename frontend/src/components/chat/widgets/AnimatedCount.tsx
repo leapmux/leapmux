@@ -11,14 +11,11 @@ import * as styles from './AnimatedCount.css'
 // its lower copy render the same digit. The strip keeps RESET_HEADROOM cells
 // below its top as slack for update bursts that outpace the roll.
 //
-// Load-bearing invariant tying these together: after the eager reset (which
-// fires when pos + delta >= STRIP_CELLS - RESET_HEADROOM), pos is folded into
-// [0, 9] and then advanced by delta <= 9, so the post-update pos is at most 18;
-// without a reset it is at most (STRIP_CELLS - RESET_HEADROOM - 1) + 9. Both
-// must stay < STRIP_CELLS so the target cell exists. That holds as long as
-// RESET_HEADROOM >= max-delta (9) AND STRIP_CELLS - RESET_HEADROOM > max-delta,
-// i.e. RESET_HEADROOM in [9, STRIP_CELLS - 10]. The 30/10 split satisfies it
-// with margin; a runtime assert below fails fast if someone breaks it.
+// The eager reset folds pos into [0, 9]. The next delta is at most 9,
+// so the updated position is at most 18.
+// Without a reset, the updated position stays below STRIP_CELLS when
+// RESET_HEADROOM is between 9 and STRIP_CELLS - 10. The runtime check
+// protects this invariant.
 const STRIP_CELLS = 30
 const RESET_HEADROOM = 10
 const MAX_FORWARD_DELTA = 9
@@ -298,7 +295,7 @@ export const AnimatedCount: Component<{
   display: string
   unit: string
   family?: string
-  starPower?: boolean
+  rootClass?: string
   paused?: boolean
 }> = (props) => {
   const display = createMemo(() => props.display)
@@ -307,10 +304,6 @@ export const AnimatedCount: Component<{
     family: props.family ?? shapeFamily(props.display),
   }))
   const unit = createMemo(() => props.unit)
-  // Easter egg: a "star power" rainbow pulse when the count reads exactly 777.
-  // Keyed on the displayed string (like `unit`) so it triggers iff the digits
-  // shown are "777" -- never on 7.77k / 777.00k, which format differently.
-  const starPower = createMemo(() => props.starPower === true)
   // Single-item list keyed by the unit family: For reuses the live layer while
   // the family is stable (so digits roll and a new leading column fades in) and
   // remounts it — for the unit crossfade — only when the family changes.
@@ -331,7 +324,7 @@ export const AnimatedCount: Component<{
 
   return (
     <span
-      classList={{ [styles.root]: true, [styles.starPower]: starPower() }}
+      class={`${styles.root}${props.rootClass ? ` ${props.rootClass}` : ''}`}
       data-animated-count
       data-paused={props.paused === true ? 'true' : undefined}
     >

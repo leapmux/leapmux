@@ -114,7 +114,7 @@ func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("boom: forced start failure")
 	}
 
@@ -167,7 +167,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 		ID:           agentID,
 	}))
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 
@@ -194,7 +194,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("doom")
 	}
 
@@ -274,7 +274,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, errors.New("kaput")
 	}
 

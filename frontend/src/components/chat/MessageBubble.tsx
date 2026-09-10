@@ -399,7 +399,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // unrecognized or legacy shape) -- so the message surfaces as raw JSON rather
   // than an empty bubble.
   const renderContent = () =>
-    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider)
+    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider, props.message.completion)
 
   // The raw-JSON last-resort block (highlighted as token spans via the async
   // token worker), shared by the `hidden` category and the unsupported-provider

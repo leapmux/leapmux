@@ -1,6 +1,5 @@
-// Package service output provides agent output persistence and broadcasting.
-// It implements the agent.OutputSink interface, backing the generic primitives
-// with DB queries, notification threading, and WatcherManager fan-out.
+// Package service persists and broadcasts agent output. OutputHandler supplies
+// the focused facets that agent.NewProviderServices composes.
 package service
 
 import (
@@ -149,7 +148,7 @@ type cachedTodo struct {
 }
 
 // OutputHandler manages agent output persistence and broadcasting.
-// It holds shared state accessed by per-agent OutputSink instances.
+// It holds shared state accessed by per-agent ProviderServices instances.
 type OutputHandler struct {
 	queries *db.Queries
 	// db backs the agent_todos snapshot transaction (delete-all + N
@@ -232,6 +231,8 @@ type OutputHandler struct {
 	// otherwise retain the child's SpanTracker + OutputHandler ref for the
 	// parent's lifetime). Populated by NewSink; entry per root.
 	rootSinks sync.Map // rootAgentID -> *agentOutputSink
+	// sinksByAgent indexes both root and child sinks for replay lookup.
+	sinksByAgent sync.Map // agentID -> *agentOutputSink
 
 	// shuttingDown is set by Service.Shutdown so a shutdown-driven StopAll
 	// leaves background-task rows active (the next boot marks them
@@ -277,7 +278,7 @@ type OutputHandler struct {
 	// The queue's dispatch guard must follow the SAME signal that SendInput
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
-	turnActive func(agentID string, active bool, kind leapmuxv1.AgentInputKind)
+	turnState func(agentID string, state agent.TurnState)
 
 	// turnPublisher holds, for each root agent id, the sink whose turn flag
 	// counts. A launch adopts one; a publish from any other sink comes from a
@@ -367,10 +368,10 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
 }
 
-// SetTurnActiveFunc wires the input queue's turn state to the turn flag every
+// SetTurnStateFunc wires the input queue's turn state to the turn flag every
 // provider publishes. Call it before any agent output is processed.
-func (h *OutputHandler) SetTurnActiveFunc(fn func(agentID string, active bool, kind leapmuxv1.AgentInputKind)) {
-	h.turnActive = fn
+func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, state agent.TurnState)) {
+	h.turnState = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -400,8 +401,13 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// its whole childSinks map (every child dies with the root). A child id is
 	// pruned from whichever root sink cached it.
 	if root, ok := h.rootSinks.LoadAndDelete(agentID); ok {
-		h.clearProgressFor(root.(*agentOutputSink).closeProgressTree())
+		agentIDs := root.(*agentOutputSink).closeProgressTree()
+		for _, id := range agentIDs {
+			h.sinksByAgent.Delete(id)
+		}
+		h.clearProgressFor(agentIDs)
 	} else {
+		h.sinksByAgent.Delete(agentID)
 		h.rootSinks.Range(func(_, v any) bool {
 			if child := v.(*agentOutputSink).detachChildSink(agentID); child != nil {
 				h.clearProgressFor(child.closeProgressTree())
@@ -430,7 +436,7 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 
 // cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
 // CleanupChildAgents (root close, many children) and CleanupChildAgent (a single
-// child's closing update driven from a provider's OutputSink). Does NOT touch
+// child's closing update driven from a provider's ProviderServices). Does NOT touch
 // rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
 	h.notifMu.Delete(childID)
@@ -460,7 +466,11 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
 		for _, child := range children {
-			h.clearProgressFor(child.closeProgressTree())
+			agentIDs := child.closeProgressTree()
+			for _, id := range agentIDs {
+				h.sinksByAgent.Delete(id)
+			}
+			h.clearProgressFor(agentIDs)
 		}
 	}
 }
@@ -646,8 +656,8 @@ func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
 	return lines
 }
 
-// NewSink creates a per-agent OutputSink backed by this OutputHandler.
-func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
+// NewSink creates a per-agent ProviderServices backed by this OutputHandler.
+func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.ProviderServices {
 	s := &agentOutputSink{
 		h:             h,
 		agentID:       agentID,
@@ -659,15 +669,22 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	})
+	h.sinksByAgent.Store(agentID, s)
 	if previous, replaced := h.rootSinks.Swap(agentID, s); replaced {
-		h.clearProgressFor(previous.(*agentOutputSink).closeProgressTree())
+		agentIDs := previous.(*agentOutputSink).closeProgressTree()
+		for _, id := range agentIDs {
+			if id != agentID {
+				h.sinksByAgent.Delete(id)
+			}
+		}
+		h.clearProgressFor(agentIDs)
 	}
-	return s
+	return agent.NewProviderServices(s)
 }
 
 func (h *OutputHandler) clearProgressFor(agentIDs []string) {
 	for _, agentID := range agentIDs {
-		h.broadcastAgentSessionInfo(agentID, progressInfo(agent.ProgressSnapshot{}))
+		h.broadcastAgentSessionInfo(agentID, progressInfo(agent.ProgressSnapshot{}, generationProgressRevision.Add(1)))
 	}
 }
 
@@ -716,7 +733,7 @@ func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
 	return nil
 }
 
-// agentOutputSink implements agent.OutputSink for a single agent.
+// agentOutputSink supplies every provider-service facet for one agent.
 type agentOutputSink struct {
 	h *OutputHandler
 	// agentID is THIS sink's agent id (a child id for a child sink).
@@ -768,7 +785,7 @@ type agentOutputSink struct {
 	catalogMu sync.Mutex
 }
 
-// --- OutputSink interface implementation ---
+// --- Provider-service facets ---
 
 func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
@@ -832,7 +849,7 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	return nil
 }
 
-// SetTurnActive publishes the provider's own turn bookkeeping. Providers call
+// SetTurnState publishes the provider's own turn bookkeeping. Providers call
 // it from the same site that mutates their private flag, so the two cannot
 // drift.
 //
@@ -847,7 +864,7 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 // record at every process boundary, and a reconciliation that the reset drops
 // leaves the queue on a turn state the provider no longer reports. The queue
 // answers idempotently instead, and reports its own change.
-func (s *agentOutputSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
+func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	// Both consumers are downstream of ONE ordering test, because both latch: a
 	// stale value that reaches either one is never corrected by a later publish
 	// of the same state. A child publishes through its own sink, so the test
@@ -856,9 +873,9 @@ func (s *agentOutputSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKi
 	if !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
 		return
 	}
-	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
-	if s.h.turnActive != nil {
-		s.h.turnActive(s.agentID, active, kind)
+	s.h.setTurnActive(s.agentID, s.rootAgentID, state.Active)
+	if s.h.turnState != nil {
+		s.h.turnState(s.agentID, state)
 	}
 }
 
@@ -935,11 +952,15 @@ func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte
 }
 
 func (s *agentOutputSink) DeleteControlRequest(requestID string) {
-	_ = s.h.queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
-		AgentID:   s.agentID,
+	s.h.deleteControlRequest(s.agentID, s.rootAgentID, requestID)
+}
+
+func (h *OutputHandler) deleteControlRequest(agentID, rootAgentID, requestID string) {
+	_ = h.queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
+		AgentID:   agentID,
 		RequestID: requestID,
 	})
-	s.h.noteControlRequestsRemoved(s.agentID, s.rootAgentID, requestID)
+	h.noteControlRequestsRemoved(agentID, rootAgentID, requestID)
 }
 
 func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
@@ -1691,6 +1712,14 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	default:
 		return 0, fmt.Errorf("refusing to persist message %q for agent %q with unknown mark_type %d", params.ID, params.AgentID, params.MarkType)
 	}
+	if params.AssembledKind < int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED) ||
+		params.AssembledKind > int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN) {
+		return 0, fmt.Errorf("refusing to persist message %q with unknown assembled kind %d", params.ID, params.AssembledKind)
+	}
+	if params.Completion < int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED) ||
+		params.Completion > int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR) {
+		return 0, fmt.Errorf("refusing to persist message %q with unknown completion %d", params.ID, params.Completion)
+	}
 	return q.CreateMessage(ctx, params)
 }
 
@@ -1723,6 +1752,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	}
 
 	msgID := id.Generate()
+	assembledKind, completion := agent.MessageMetadata(contentJSON)
 	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := nowMillis()
 
@@ -1740,6 +1770,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
 		MarkType:           span.MarkType,
+		AssembledKind:      int64(assembledKind),
+		Completion:         int64(completion),
 		CreatedAt:          sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
@@ -1764,6 +1796,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanColor:          spanColor,
 		SpanLines:          spanLines,
 		MarkType:           span.MarkType,
+		AssembledKind:      assembledKind,
+		Completion:         completion,
 	})
 
 	// Update the provider-neutral to-do list off the just-persisted
@@ -2465,34 +2499,11 @@ func (h *OutputHandler) SessionInfoReplayEvent(agentID string) *leapmuxv1.AgentE
 }
 
 func (h *OutputHandler) sinkForAgent(agentID string) *agentOutputSink {
-	if root, ok := h.rootSinks.Load(agentID); ok {
-		return root.(*agentOutputSink)
+	value, ok := h.sinksByAgent.Load(agentID)
+	if !ok {
+		return nil
 	}
-	var found *agentOutputSink
-	h.rootSinks.Range(func(_, value any) bool {
-		found = findChildSink(value.(*agentOutputSink), agentID)
-		return found == nil
-	})
-	return found
-}
-
-func findChildSink(parent *agentOutputSink, agentID string) *agentOutputSink {
-	parent.childMu.Lock()
-	if child := parent.childSinks[agentID]; child != nil {
-		parent.childMu.Unlock()
-		return child
-	}
-	children := make([]*agentOutputSink, 0, len(parent.childSinks))
-	for _, child := range parent.childSinks {
-		children = append(children, child)
-	}
-	parent.childMu.Unlock()
-	for _, child := range children {
-		if found := findChildSink(child, agentID); found != nil {
-			return found
-		}
-	}
-	return nil
+	return value.(*agentOutputSink)
 }
 
 // PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.

@@ -14,7 +14,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
-import type { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
@@ -60,6 +60,8 @@ export interface ClassificationInput extends ParsedMessageContent {
    * row LeapMux wrote.
    */
   source?: MessageSource
+  assembledKind?: AssembledMessageKind
+  completion?: MessageCompletion
   spanId?: string
   spanType?: string
   parentSpanId?: string

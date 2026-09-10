@@ -37,10 +37,13 @@ codexTest.describe('codex tool execution', () => {
 
   codexTest('command execution shows command, output, and exit code', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    await sendMessage(page, 'Run this exact command: echo "hello-from-codex" && echo "done"')
+    await sendMessage(page, `Run this exact command and report its result: sh -c 'echo "hello-from-codex"; echo "done"; exit 7'`)
     await waitForAgentIdle(page, 120_000)
 
-    await expect(assistantBubbles(page).filter({ hasText: 'hello-from-codex' }).first()).toBeVisible()
+    const toolMessages = page.locator('[data-tool-message]:visible')
+    await expect(toolMessages.filter({ hasText: 'hello-from-codex' }).first()).toBeVisible()
+    await expect(toolMessages.filter({ hasText: 'done' }).first()).toBeVisible()
+    await expect(toolMessages.filter({ hasText: 'Error (exit 7)' }).first()).toBeVisible()
   })
 
   codexTest('file edit triggers file change rendering', async ({ authenticatedCodexWorkspace, page }) => {

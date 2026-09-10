@@ -14,10 +14,12 @@ export const ThinkingOutputCount: Component<{ bytes: number, minimum?: boolean, 
   })
   const content = () => <AnimatedCount display={split().display} unit={split().unit} family={split().unit} paused={props.paused} />
   return (
-    <Show when={props.minimum} fallback={content()}>
-      <Tooltip text={MINIMUM_OUTPUT_TOOLTIP}>
-        {content()}
-      </Tooltip>
-    </Show>
+    <span data-testid="thinking-output-count">
+      <Show when={props.minimum} fallback={content()}>
+        <Tooltip text={MINIMUM_OUTPUT_TOOLTIP}>
+          {content()}
+        </Tooltip>
+      </Show>
+    </span>
   )
 }

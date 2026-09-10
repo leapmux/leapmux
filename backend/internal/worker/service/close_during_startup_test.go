@@ -55,7 +55,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 		closeOnce    sync.Once
 		startEntered = make(chan string, 1)
 	)
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		closeOnce.Do(func() {
 			startEntered <- opts.AgentID
 			// Subscribe here — by this point the DB row exists, so
@@ -143,7 +143,7 @@ func closeAgentDuringStartup(t *testing.T, repoDir, branchName, worktreePath str
 	t.Cleanup(func() { drainAllInFlight(svc) })
 
 	var closeOnce sync.Once
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		closeOnce.Do(func() {
 			// Worktree must exist by the time we get here — phase 0
 			// ran to completion before phase 2 was entered.
@@ -202,7 +202,7 @@ func TestCloseAgent_DuringStartup_UnlinkedRemoveStillRollsBack(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	var closeOnce sync.Once
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		closeOnce.Do(func() {
 			require.DirExists(t, worktreePath)
 			// Drop the link phase 0 just wrote, so the close below is the

@@ -876,7 +876,7 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 
 // setupActivityRegistryTest gives a root, one linked child and a handler whose
 // process check answers true, so the registry is the only input that moves.
-func setupActivityRegistryTest(t *testing.T) (*Service, agent.OutputSink, string, string) {
+func setupActivityRegistryTest(t *testing.T) (*Service, agent.ProviderServices, string, string) {
 	t.Helper()
 	svc, _, childID, rootID := setupChildAgentTest(t)
 	// A running process is a precondition of every busy answer, and this suite
@@ -1074,7 +1074,7 @@ func TestActivity_AClearThatDoesNotSettleDropsTheCount(t *testing.T) {
 // true, so a case drives the registry inputs in isolation.
 func setupRunningSubagent(
 	t *testing.T, rootID string, status bgtask.Status,
-) (*Service, agent.OutputSink, string) {
+) (*Service, agent.ProviderServices, string) {
 	t.Helper()
 	svc, sink := setupRootSink(t, rootID)
 	svc.Output.processRunning = func(string) bool { return true }
@@ -1458,7 +1458,7 @@ func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
 func TestActivity_AChildTurnFlagKeepsTheCountItsTurnEndRecorded(t *testing.T) {
 	t.Parallel()
 
-	// A collab child publishes SetTurnActive on its OWN sink, because the input
+	// A collab child publishes SetTurnState on its OWN sink, because the input
 	// queue follows that flag and a child owns a queue of its own. The publish
 	// must not touch the settle count: activityStateLocked answers a child from
 	// its registry row and never reads the flag, so the refresh cannot spend the

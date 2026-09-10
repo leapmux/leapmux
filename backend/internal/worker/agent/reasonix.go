@@ -9,6 +9,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+const (
+	reasonixSteerNamespace = "reasonix.io"
+	reasonixSteerMethod    = "_reasonix.io/session/steer"
+)
+
 // ReasonixAgent manages a single Reasonix (DeepSeek) ACP process.
 //
 // Reasonix is an unusually minimal ACP agent: session/new returns only a
@@ -43,7 +48,7 @@ func (a *ReasonixAgent) SteerInput(content string, attachments []*leapmuxv1.Atta
 // -- matching the service, which already resolves the model before launch.
 // It inherits the default prompt sender and the default nil-group
 // AvailableOptionGroups from acpBase.
-func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartReasonix(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	model := opts.Model()
 	if model == "" {
 		model = DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX)
@@ -56,6 +61,9 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		newAgent:     func() *ReasonixAgent { return &ReasonixAgent{} },
 		base:         func(a *ReasonixAgent) *acpBase { return &a.acpBase },
 		configure: func(a *ReasonixAgent) {
+			a.advertisedSteerMethod = func(response []byte) string {
+				return parseACPAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
+			}
 			// Pin the stored model to the launched one (acpStart set it from the
 			// possibly-empty model option). modeChannel stays unmapped, and Reasonix
 			// exposes no modes/configOptions channel, so opt out of the shared

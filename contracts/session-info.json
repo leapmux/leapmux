@@ -7,6 +7,7 @@
     "ThinkingTokens": "thinking_tokens",
     "OutputBytes": "output_bytes",
     "OutputBytesMinimum": "output_bytes_minimum",
+    "GenerationProgressRevision": "generation_progress_revision",
     "RunningTool": "running_tool",
     "GoalProgress": "goal_progress"
   },

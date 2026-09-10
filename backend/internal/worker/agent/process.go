@@ -40,6 +40,10 @@ type processBase struct {
 
 	mu      sync.Mutex
 	stopped bool
+	// processExited freezes exitCompletion at the instant cmd.Wait returns.
+	// A later cleanup call must not reclassify a natural failure as a stop.
+	processExited  bool
+	exitCompletion MessageCompletion
 	// intentionalStop is set before a provider sends its graceful stop request.
 	// Wait can then classify retained content while Stop still owns that request.
 	intentionalStop atomic.Bool
@@ -181,14 +185,34 @@ func (p *processBase) IsStopped() bool {
 }
 
 func (p *processBase) processExitCompletion() MessageCompletion {
-	if p.intentionalStop.Load() || p.IsStopped() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.processExited {
+		return p.exitCompletion
+	}
+	if p.intentionalStop.Load() || p.stopped {
 		return MessageCompletionInterrupted
 	}
 	return MessageCompletionError
 }
 
 func (p *processBase) noteIntentionalStop() {
-	p.intentionalStop.Store(true)
+	p.mu.Lock()
+	if !p.processExited {
+		p.intentionalStop.Store(true)
+	}
+	p.mu.Unlock()
+}
+
+func (p *processBase) recordProcessExit(err error) {
+	p.mu.Lock()
+	p.waitErr = err
+	p.processExited = true
+	p.exitCompletion = MessageCompletionError
+	if p.intentionalStop.Load() || p.stopped {
+		p.exitCompletion = MessageCompletionInterrupted
+	}
+	p.mu.Unlock()
 }
 
 // Interrupt is a default no-op implementation. Providers that have a
@@ -543,7 +567,7 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 		)
 	}
 
-	p.waitErr = p.cmd.Wait()
+	p.recordProcessExit(p.cmd.Wait())
 	if err := p.jobObject.Close(); err != nil {
 		slog.Debug("job object close failed", "agent_id", p.agentID, "error", err)
 	}

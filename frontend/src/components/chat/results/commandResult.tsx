@@ -27,6 +27,8 @@ export interface CommandResultSource {
   stderr?: string
   exitCode?: number | null
   durationMs?: number | null
+  /** The provider retained only a suffix of the command output. */
+  truncated?: boolean
   /** True when the command was interrupted by the user (Ctrl-C). */
   interrupted?: boolean
   /** Resolved error state. */
@@ -137,12 +139,17 @@ export function CommandResultBody(props: {
   })
 
   const content = () => (
-    <Show
-      when={normalized()}
-      fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
-    >
-      <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} context={props.context} />
-    </Show>
+    <>
+      <Show
+        when={normalized()}
+        fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
+      >
+        <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} context={props.context} />
+      </Show>
+      <Show when={props.source.truncated}>
+        <div class={toolInputSummary}>[output truncated]</div>
+      </Show>
+    </>
   )
 
   // Keep the status branch under <Show> so it re-runs when isError or

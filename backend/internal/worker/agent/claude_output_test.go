@@ -96,7 +96,7 @@ func TestOutputTestSink_MirrorsTheSpanBookkeepingItExtends(t *testing.T) {
 }
 
 // newTestAgent creates a minimal ClaudeCodeAgent for unit-testing HandleOutput.
-func newTestAgent(sink OutputSink) *ClaudeCodeAgent {
+func newTestAgent(sink ProviderServices) *ClaudeCodeAgent {
 	return &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID: "test-agent",

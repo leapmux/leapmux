@@ -124,7 +124,7 @@ func TestSessionInfoReplay_SurvivesControlRequestCleanup(t *testing.T) {
 
 	svc, sink, _ := newSessionInfoServiceFixture(t)
 	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
-	svc.deleteControlRequest("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+	svc.deleteControlRequest("agent-1",
 		controlResponseRequestMetadata{RequestID: "request-1"}, false)
 
 	event := svc.Output.SessionInfoReplayEvent("agent-1")
@@ -137,13 +137,14 @@ func TestNewSinkClosesTheReplacedProgressTree(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, broadcasts := newSessionInfoServiceFixture(t)
-	root := sink.(*agentOutputSink)
-	child := sink.ChildSink("child-1").(*agentOutputSink)
+	root := requireRootOutputSink(t, svc.Output, "agent-1")
+	child := requireChildOutputSink(t, root, "child-1")
 	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
 	child.ReportProgress(agent.OutputDeltaProgress("tool", 512))
 
-	replacement := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
-	require.NotSame(t, sink, replacement)
+	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	replacementRoot := requireRootOutputSink(t, svc.Output, "agent-1")
+	require.NotSame(t, root, replacementRoot)
 
 	for _, publisher := range []*generationProgressPublisher{root.progress, child.progress} {
 		publisher.mu.Lock()
@@ -165,9 +166,10 @@ func TestCleanupAgentClosesNestedProgressPublishers(t *testing.T) {
 		cleanupID := cleanupID
 		t.Run(cleanupID, func(t *testing.T) {
 			t.Parallel()
-			svc, sink, _ := newSessionInfoServiceFixture(t)
-			child := sink.ChildSink("child-1").(*agentOutputSink)
-			grandchild := child.ChildSink("grandchild-1").(*agentOutputSink)
+			svc, _, _ := newSessionInfoServiceFixture(t)
+			root := requireRootOutputSink(t, svc.Output, "agent-1")
+			child := requireChildOutputSink(t, root, "child-1")
+			grandchild := requireChildOutputSink(t, child, "grandchild-1")
 			grandchild.ReportProgress(agent.NativeTokenProgress("model", 9))
 
 			svc.Output.CleanupAgent(cleanupID)

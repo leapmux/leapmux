@@ -4,7 +4,14 @@ import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBu
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
-import { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+
+it('classifies an assembled plan from typed row metadata', () => {
+  expect(classifyMessage({
+    ...input({ type: 'assembled_message', text: 'plan' }),
+    assembledKind: AssembledMessageKind.PLAN,
+  })).toEqual({ kind: 'assistant_plan' })
+})
 
 /**
  * Every kind the classifier can produce. The `satisfies Record<...>` annotation is
@@ -15,6 +22,7 @@ const ALL_MESSAGE_KINDS = Object.keys({
   agent_prompt: true,
   assistant_text: true,
   assistant_thinking: true,
+  assistant_plan: true,
   compact_summary: true,
   control_response: true,
   hidden: true,

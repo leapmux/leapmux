@@ -11,6 +11,7 @@ import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { diffStatsFromHunks } from '../../../diff'
+import { CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, fileEditDiffFromHunks, fileEditDiffFromNewFile } from '../../../results/fileEditDiff'
 import { ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import {
@@ -31,6 +32,7 @@ import {
 interface FileChangeRenderArgs {
   shape: FileChangeShape
   context: RenderContext | undefined
+  output: string
 }
 
 function renderCompletedFileChange(args: FileChangeRenderArgs): JSX.Element {
@@ -119,7 +121,11 @@ function renderInProgressFileChange(args: FileChangeRenderArgs): JSX.Element {
       <span class={toolInputPath}>{relativizePath(header.path, context?.workingDir, context?.homeDir)}</span>
     )
     return (
-      <ToolUseLayout icon={header.icon} toolName="File Change" title={title} context={context} alwaysVisible />
+      <ToolUseLayout icon={header.icon} toolName="File Change" title={title} context={context} alwaysVisible>
+        <Show when={args.output}>
+          <CommandResultBody source={{ output: args.output, isError: false }} context={context} />
+        </Show>
+      </ToolUseLayout>
     )
   }
 
@@ -153,6 +159,9 @@ function renderInProgressFileChange(args: FileChangeRenderArgs): JSX.Element {
           }}
         </For>
       </Show>
+      <Show when={args.output}>
+        <CommandResultBody source={{ output: args.output, isError: false }} context={context} />
+      </Show>
     </ToolUseLayout>
   )
 }
@@ -170,6 +179,7 @@ defineCodexRenderer({
     const renderArgs = (): FileChangeRenderArgs => ({
       shape: shape(),
       context: props.context,
+      output: pickString(props.item, 'aggregatedOutput') || '',
     })
     return (
       <Show

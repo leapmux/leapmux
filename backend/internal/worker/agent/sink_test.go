@@ -43,7 +43,7 @@ type childSpawnSpanTable struct {
 	byChildID map[string]string
 }
 
-// testSink is a test implementation of OutputSink that records calls.
+// testSink is a test implementation of ProviderServices that records calls.
 type testSink struct {
 	// persistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
@@ -60,14 +60,14 @@ type testSink struct {
 	sessionInfos      []map[string]interface{}
 	openSpans         []testSinkSpanOpen
 	closedSpans       []string
-	// TurnActiveCalls records every SetTurnActive value in order. The ORDER is
+	// TurnActiveCalls records every SetTurnState value in order. The ORDER is
 	// the observable that matters: a provider that clears its turn flag before
 	// it publishes the turn-end envelope, or that never clears it on a path the
 	// happy case does not reach, latches the agent busy forever.
 	TurnActiveCalls []bool
 	// turnKinds records the queue classification that accompanied each turn
 	// state.
-	turnKinds []leapmuxv1.AgentInputKind
+	turnStates []TurnState
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -145,6 +145,8 @@ type testSink struct {
 	notifSuppressBroadcast bool
 }
 
+func (*testSink) providerServices() {}
+
 type testSinkMessage struct {
 	Source          leapmuxv1.MessageSource
 	Content         []byte
@@ -221,15 +223,15 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 	return nil
 }
 
-// SetTurnActive records the provider's turn flag transitions in order, so a
+// SetTurnState records the provider's turn flag transitions in order, so a
 // provider test can assert the exact sequence it published.
-func (s *testSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq uint64) {
+func (s *testSink) SetTurnState(state TurnState, seq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
-	s.turnKinds = append(s.turnKinds, kind)
+	s.TurnActiveCalls = append(s.TurnActiveCalls, state.Active)
+	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
-	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", active))
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
 }
 
 // TurnKinds returns the queue classification of each publish, in arrival
@@ -238,7 +240,13 @@ func (s *testSink) SetTurnActive(active bool, kind leapmuxv1.AgentInputKind, seq
 func (s *testSink) TurnKinds() []leapmuxv1.AgentInputKind {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]leapmuxv1.AgentInputKind(nil), s.turnKinds...)
+	kinds := make([]leapmuxv1.AgentInputKind, len(s.turnStates))
+	for i, state := range s.turnStates {
+		if state.Steerable {
+			kinds[i] = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+		}
+	}
+	return kinds
 }
 
 // TurnSeqs returns the ordering token of each publish, in arrival order. A
@@ -673,7 +681,7 @@ func (s *testSink) ChildSpawnSpan(childAgentID string) (string, error) {
 // ChildSink returns the per-child testSink created by EnsureChildAgent (or a
 // fresh empty one), so messages routed into a subagent transcript are recorded
 // on a distinct sink a test can assert against.
-func (s *testSink) ChildSink(childAgentID string) OutputSink {
+func (s *testSink) ChildSink(childAgentID string) ProviderServices {
 	s.childSinkMu.Lock()
 	defer s.childSinkMu.Unlock()
 	for _, c := range s.children {
@@ -1154,15 +1162,17 @@ func (s *testSink) LastAutoCancel() AutoContinueReason {
 	return s.autoCancels[len(s.autoCancels)-1]
 }
 
-// noopSink is a no-op implementation of OutputSink for tests that don't
+// noopSink is a no-op implementation of ProviderServices for tests that don't
 // need to verify output.
 type noopSink struct{}
+
+func (noopSink) providerServices() {}
 
 func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil
 }
 func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
-func (noopSink) SetTurnActive(bool, leapmuxv1.AgentInputKind, uint64)              {}
+func (noopSink) SetTurnState(TurnState, uint64)                                    {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}
@@ -1192,7 +1202,7 @@ func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                      
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}
 func (noopSink) EnsureChildAgent(string, string, string) (string, error)           { return "", nil }
 func (noopSink) ChildSpawnSpan(string) (string, error)                             { return "", nil }
-func (noopSink) ChildSink(string) OutputSink                                       { return noopSink{} }
+func (noopSink) ChildSink(string) ProviderServices                                 { return noopSink{} }
 func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil
 }

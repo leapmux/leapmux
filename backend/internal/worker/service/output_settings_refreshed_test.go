@@ -15,7 +15,7 @@ import (
 
 type refreshTestFixture struct {
 	svc  *Service
-	sink agent.OutputSink
+	sink agent.ProviderServices
 	mock *mockResponseWriter
 }
 
@@ -150,7 +150,7 @@ func TestPersistSettingsRefresh_CASPreservesConcurrentWrite(t *testing.T) {
 		ID: "agent-1",
 	}))
 
-	sink := f.sink.(*agentOutputSink)
+	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
 	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "low"})
 	require.NoError(t, err)
 	require.True(t, wrote)
@@ -194,7 +194,7 @@ func TestPersistSettingsRefresh_CASStaleClearDoesNotClobberConcurrentSet(t *test
 
 	// Our refresh CLEARS permissionMode -- but our snapshot never held it, so the clear is a no-op
 	// against the snapshot and therefore stale relative to the concurrent set.
-	sink := f.sink.(*agentOutputSink)
+	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
 	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDPermissionMode: ""})
 	require.NoError(t, err)
 	assert.False(t, wrote, "a stale clear of a key absent from our snapshot is a no-op, not a write")
@@ -229,7 +229,7 @@ func TestPersistSettingsRefresh_CASReassertStillAppliesOverConcurrentClear(t *te
 
 	// Our refresh re-asserts effort=high. Against our snapshot it is a no-op (effort already high),
 	// but against the live row (effort cleared) it must re-apply.
-	sink := f.sink.(*agentOutputSink)
+	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
 	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "high"})
 	require.NoError(t, err)
 	assert.True(t, wrote, "the re-assert is applied over the concurrent clear")
@@ -270,7 +270,7 @@ func TestPersistSettingsRefresh_CASMixedSetAndStaleClearDoesNotClobber(t *testin
 
 	// Our refresh pairs a GENUINE set (effort high->low) with a STALE clear of permissionMode (a
 	// key our snapshot never held). The set forces the CAS retry path; the clear must be ignored.
-	sink := f.sink.(*agentOutputSink)
+	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
 	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{
 		agent.OptionIDEffort:         "low",
 		agent.OptionIDPermissionMode: "",
@@ -305,7 +305,7 @@ func TestPersistSettingsRefresh_CASGenuineClearAlongsideSetStillApplies(t *testi
 	require.NoError(t, err)
 
 	// Our snapshot holds permissionMode=plan, so clearing it is genuine; pair it with an effort set.
-	sink := f.sink.(*agentOutputSink)
+	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
 	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{
 		agent.OptionIDEffort:         "low",
 		agent.OptionIDPermissionMode: "",
@@ -543,7 +543,8 @@ func TestPersistCatalogIfChanged(t *testing.T) {
 		ID:           "agent-1",
 	}))
 
-	sink := svc.Output.NewSink("agent-1", copilot).(*agentOutputSink)
+	svc.Output.NewSink("agent-1", copilot)
+	sink := requireRootOutputSink(t, svc.Output, "agent-1")
 	existing, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 

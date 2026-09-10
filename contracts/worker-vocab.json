@@ -37,14 +37,16 @@
     "GoalCleared"
   ],
   "assembledMessage": {
-    "Type": "assembled_message",
-    "KindText": "text",
-    "KindReasoning": "reasoning",
-    "KindPlan": "plan",
-    "CompletionComplete": "complete",
-    "CompletionInterrupted": "interrupted",
-    "CompletionError": "error",
-    "MetadataKey": "_leapmux"
+    "fields": {
+      "Type": "type",
+      "Kind": "kind",
+      "Text": "text",
+      "Completion": "completion"
+    },
+    "types": { "Assembled": "assembled_message" },
+    "kinds": { "Text": "text", "Reasoning": "reasoning", "Plan": "plan" },
+    "completions": { "Complete": "complete", "Interrupted": "interrupted", "Error": "error" },
+    "metadata": { "Field": "_leapmux" }
   },
   "notificationThreadWrapperType": "notification_thread",
   "codexRateLimitReachedTimeWindow": "rate_limit_reached",

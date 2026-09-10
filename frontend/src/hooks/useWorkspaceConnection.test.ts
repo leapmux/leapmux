@@ -1395,10 +1395,10 @@ describe('agentMessage sub-handlers', () => {
   it('handleAgentSessionInfo clears a stale thinking-token estimate on a 0 (per-phase reset)', () => {
     createRoot((dispose) => {
       const stores = sessionInfoStores()
-      stores.agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
-      const msg = agentMessage({ type: 'agent_session_info', info: { thinking_tokens: 0 } })
+      stores.agentSessionStore.applyProgress('a1', { revision: 1, thinkingTokens: 500 })
+      const msg = agentMessage({ type: 'agent_session_info', info: { generation_progress_revision: 2, thinking_tokens: 0, output_bytes: 0 } })
       handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
-      expect(stores.agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      expect(stores.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
       dispose()
     })
   })
@@ -2136,13 +2136,9 @@ describe('wireSessionInfoToUpdates', () => {
     const updates = wireSessionInfoToUpdates({
       total_cost_usd: 1.5,
       context_usage: { input_tokens: 100 },
-      output_bytes: 2048,
-      output_bytes_minimum: true,
     })
     expect(updates.totalCostUsd).toBe(1.5)
     expect(updates.contextUsage).toMatchObject({ inputTokens: 100 })
-    expect(updates.outputBytes).toBe(2048)
-    expect(updates.outputBytesMinimum).toBe(true)
   })
 
   it('deep-maps rate_limits tiers', () => {
@@ -2229,19 +2225,6 @@ describe('wireSessionInfoToUpdates', () => {
       rate_limits: { five_hour: { status: 'allowed' }, weekly: 'nonsense', monthly: null },
     })
     expect(updates.rateLimits).toEqual({ five_hour: { status: 'allowed' } })
-  })
-
-  it('only forwards a positive numeric thinking_tokens estimate', () => {
-    expect(wireSessionInfoToUpdates({ thinking_tokens: 230 }).thinkingTokens).toBe(230)
-    // 0 (the zero-estimate first delta), NaN, and non-numbers are all dropped,
-    // so the indicator never has to defend against "0 tokens" or a NaN.
-    expect('thinkingTokens' in wireSessionInfoToUpdates({ thinking_tokens: 0 })).toBe(false)
-    expect('thinkingTokens' in wireSessionInfoToUpdates({ thinking_tokens: Number.NaN })).toBe(false)
-    expect('thinkingTokens' in wireSessionInfoToUpdates({ thinking_tokens: '5' })).toBe(false)
-  })
-
-  it('does not retain an output minimum flag after an output clear', () => {
-    expect(wireSessionInfoToUpdates({ output_bytes: 0, output_bytes_minimum: false })).toEqual({})
   })
 
   it('skips keys that are absent or fail their type guard', () => {
@@ -2346,7 +2329,7 @@ describe('clearOfflineAgentState', () => {
     const agentActivityStore = createAgentActivityStore()
     chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
     chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
-    agentSessionStore.updateInfo('a1', { thinkingTokens: 500, outputBytes: 4096, outputBytesMinimum: true })
+    agentSessionStore.applyProgress('a1', { revision: 1, thinkingTokens: 500, output: { bytes: 4096, minimum: true } })
     agentActivityStore.apply('a1', AgentActivityState.WORKING)
     return { chatStore, agentSessionStore, agentActivityStore }
   }
@@ -2360,8 +2343,8 @@ describe('clearOfflineAgentState', () => {
       // "1m 30s" for as long as the worker stayed away.
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toBeUndefined()
       expect(s.chatStore.getToolProgress('a1', 'toolu_B')).toBeUndefined()
-      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
-      expect(s.agentSessionStore.getInfo('a1').outputBytes).toBeUndefined()
+      expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+      expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
       // The worker that was going to report the settle is gone, so a retained
       // busy flag would pin the spinner and keep the Interrupt button on an
       // agent nothing can interrupt.
@@ -2374,13 +2357,13 @@ describe('clearOfflineAgentState', () => {
     createRoot((dispose) => {
       const s = seededStores()
       s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 60 })
-      s.agentSessionStore.updateInfo('a2', { thinkingTokens: 700 })
+      s.agentSessionStore.applyProgress('a2', { revision: 1, thinkingTokens: 700 })
       s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
 
       clearOfflineAgentState('a1', s)
 
       expect(s.chatStore.getToolProgress('a2', 'toolu_A')?.elapsedSeconds).toBe(60)
-      expect(s.agentSessionStore.getInfo('a2').thinkingTokens).toBe(700)
+      expect(s.agentSessionStore.getProgress('a2').thinkingTokens).toBe(700)
       expect(s.agentActivityStore.isBusy('a2')).toBe(true)
       dispose()
     })

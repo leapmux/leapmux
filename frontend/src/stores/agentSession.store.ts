@@ -1,4 +1,4 @@
-import { createStore } from 'solid-js/store'
+import { createStore, reconcile } from 'solid-js/store'
 import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
 import { shallowEqual } from '~/lib/shallowEqual'
 
@@ -28,16 +28,12 @@ export interface AgentSessionInfo {
   contextUsage?: ContextUsageInfo
   rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
   planFilePath?: string
-  /**
-   * Running estimate of the in-flight turn's thinking (reasoning) tokens.
-   * Broadcast-only telemetry (never persisted as a timeline message); cleared
-   * at each turn boundary so a stale per-turn count never lingers.
-   */
+}
+
+export interface LiveGenerationProgress {
+  revision: number
   thinkingTokens?: number
-  /** Bytes produced by live tool and process output. */
-  outputBytes?: number
-  /** True when the provider limits its live output and the count is a minimum. */
-  outputBytesMinimum?: boolean
+  output?: { bytes: number, minimum: boolean }
 }
 
 /**
@@ -62,33 +58,23 @@ export function compactionContextUsage(
   }
 }
 
-// The Worker sends these live counters at a fixed maximum rate. Persisting
-// them would cause needless storage writes and restore stale values after a
-// reload. The store removes them from each storage write.
-const EPHEMERAL_KEYS = [
-  'thinkingTokens',
-  'outputBytes',
-  'outputBytesMinimum',
-] as const satisfies readonly (keyof AgentSessionInfo)[]
-
 async function loadFromStorage(agentId: string): Promise<AgentSessionInfo> {
   return (await localStorageLoad<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`)) ?? {}
 }
 
 function saveToStorage(agentId: string, info: AgentSessionInfo) {
-  const persisted = { ...info }
-  for (const key of EPHEMERAL_KEYS)
-    delete persisted[key]
-  localStorageStore(`${PREFIX_AGENT_SESSION}${agentId}`, persisted)
+  localStorageStore(`${PREFIX_AGENT_SESSION}${agentId}`, info)
 }
 
 interface AgentSessionStoreState {
   infoByAgent: Record<string, AgentSessionInfo>
+  progressByAgent: Record<string, LiveGenerationProgress>
 }
 
 export function createAgentSessionStore() {
   const [state, setState] = createStore<AgentSessionStoreState>({
     infoByAgent: {},
+    progressByAgent: {},
   })
 
   /**
@@ -188,6 +174,17 @@ export function createAgentSessionStore() {
       return state.infoByAgent[agentId] ?? {}
     },
 
+    getProgress(agentId: string): LiveGenerationProgress {
+      return state.progressByAgent[agentId] ?? { revision: 0 }
+    },
+
+    applyProgress(agentId: string, progress: LiveGenerationProgress) {
+      const current = state.progressByAgent[agentId]
+      if (current && progress.revision < current.revision)
+        return
+      setState('progressByAgent', agentId, reconcile(progress))
+    },
+
     updateInfo(agentId: string, partial: Partial<AgentSessionInfo>) {
       ensureLoaded(agentId)
       // Set by the updater, acted on AFTER it: `persist` reads the store, and
@@ -196,9 +193,6 @@ export function createAgentSessionStore() {
       setState('infoByAgent', agentId, (prev = {}) => {
         const merged = { ...prev }
         let changed = false
-        // Tracks whether a persisted key changed. A live-counter update
-        // mutates the reactive store but must not reach storage.
-        let persistedChanged = false
         for (const [key, value] of Object.entries(partial)) {
           if (value === undefined || value === null)
             continue
@@ -217,7 +211,6 @@ export function createAgentSessionStore() {
             if (rlChanged) {
               merged.rateLimits = next
               changed = true
-              persistedChanged = true
             }
             continue
           }
@@ -225,13 +218,11 @@ export function createAgentSessionStore() {
           if (!shallowEqual(current, value)) {
             (merged as Record<string, unknown>)[key] = value
             changed = true
-            if (!(EPHEMERAL_KEYS as readonly string[]).includes(key))
-              persistedChanged = true
           }
         }
         if (!changed)
           return prev
-        shouldPersist = persistedChanged
+        shouldPersist = true
         return merged
       })
       if (shouldPersist)
@@ -267,18 +258,17 @@ export function createAgentSessionStore() {
       // tracked value — see clearContextUsage for the same rationale. No
       // storage write: thinkingTokens is an EPHEMERAL_KEY that is never
       // persisted, so there is nothing on disk to scrub.
-      if (state.infoByAgent[agentId]?.thinkingTokens === undefined)
+      const progress = state.progressByAgent[agentId]
+      if (!progress?.thinkingTokens)
         return
-      setState('infoByAgent', agentId, 'thinkingTokens', undefined)
+      setState('progressByAgent', agentId, 'thinkingTokens', undefined)
     },
 
     clearOutputBytes(agentId: string) {
-      if (state.infoByAgent[agentId]?.outputBytes === undefined
-        && state.infoByAgent[agentId]?.outputBytesMinimum === undefined) {
+      if (state.progressByAgent[agentId]?.output === undefined) {
         return
       }
-      setState('infoByAgent', agentId, 'outputBytes', undefined)
-      setState('infoByAgent', agentId, 'outputBytesMinimum', undefined)
+      setState('progressByAgent', agentId, 'output', undefined)
     },
   }
 }

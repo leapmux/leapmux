@@ -211,7 +211,7 @@ func (m *Manager) LockAgent(agentID string) func() {
 // onExit cleanup (ClearPendingControlRequests, keyed by agent id) -- BEFORE returning, so the
 // new provider started here can never have its freshly-persisted control requests wiped by the
 // old process's late onExit.
-func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
+func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
 	unlock := m.LockAgent(opts.AgentID)
 	defer unlock()
 
@@ -220,14 +220,14 @@ func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink OutputSin
 }
 
 // startFunc is the function signature for starting an agent process.
-type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Agent, error)
+type startFunc func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error)
 
 // StartAgent spawns an agent for the given agent ID, dispatching based on
 // opts.AgentProvider.
 // The sink receives parsed output events.
 // Returns the confirmed option values from the startup handshake (e.g.
 // permission mode, discovered model), keyed by option-group id.
-func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
+func (m *Manager) StartAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
 	return m.startAgent(ctx, opts, sink, false)
 }
 
@@ -236,11 +236,11 @@ func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink)
 // startup permit pool, so a machine restoring two hundred tabs cannot run two
 // hundred handshakes at once, while a tab the user opens by hand never waits
 // behind them.
-func (m *Manager) StartBackgroundAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
+func (m *Manager) StartBackgroundAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
 	return m.startAgent(ctx, opts, sink, true)
 }
 
-func (m *Manager) startAgent(ctx context.Context, opts Options, sink OutputSink, background bool) (map[string]string, error) {
+func (m *Manager) startAgent(ctx context.Context, opts Options, sink ProviderServices, background bool) (map[string]string, error) {
 	reg, ok := agentFactoryRegistry[opts.AgentProvider]
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
@@ -248,7 +248,7 @@ func (m *Manager) startAgent(ctx context.Context, opts Options, sink OutputSink,
 	return m.startAgentWith(ctx, opts, sink, reg.start, background)
 }
 
-func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc, background bool) (map[string]string, error) {
+func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink ProviderServices, start startFunc, background bool) (map[string]string, error) {
 	m.mu.Lock()
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
@@ -305,7 +305,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 
 	// The first moment SupportedGoalActions can answer for this process: it
 	// type-asserts the agent this map now holds, and every earlier publication
-	// ran while the lookup still missed. See OutputSink.PublishGoalCapabilities
+	// ran while the lookup still missed. See ProviderServices.PublishGoalCapabilities
 	// for why an early answer is worse than a late one here.
 	sink.PublishGoalCapabilities()
 
@@ -417,10 +417,8 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		// in each provider's SendInput stops another provider from
 		// leaving it out. SendChildInput does NOT do this: a collab child's
 		// activity comes from its background-task registry row.
-		kind := p.PublishTurnActive()
-		steerer, supportsSteering := p.(InputSteerer)
-		kind = ClassifyTurnForSteering(kind, supportsSteering && steerer.SupportsSteering())
-		return &AgentBusyError{Err: err, ActiveTurnKind: kind}
+		state := p.PublishTurnActive()
+		return &AgentBusyError{Err: err, ActiveTurnSteerable: state.Steerable}
 	}
 	if err == nil {
 		observeGoalCommand(p, GoalDeliverySend, content)
@@ -554,7 +552,7 @@ func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachme
 	}
 	err = steerer.SendChildInput(childKey, content, attachments)
 	if errors.Is(err, ErrAgentBusy) {
-		return &AgentBusyError{Err: err, ActiveTurnKind: steerer.ActiveChildTurnKind(childKey)}
+		return &AgentBusyError{Err: err, ActiveTurnSteerable: steerer.ActiveChildTurnState(childKey).Steerable}
 	}
 	return err
 }

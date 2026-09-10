@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
+func newCursorAgentWithSink(sink ProviderServices) *CursorCLIAgent {
 	a := &CursorCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{

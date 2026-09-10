@@ -130,7 +130,7 @@ type AttachmentMetadata struct {
 	Order    int32
 }
 
-type Item struct {
+type StoredItem struct {
 	ID               string
 	AgentID          string
 	Kind             leapmuxv1.AgentInputKind
@@ -138,31 +138,36 @@ type Item struct {
 	TargetMode       string
 	PrepareContext   bool
 	ReclassifyOnEdit bool
-	Attachments      []Attachment
-	Metadata         []AttachmentMetadata
 	Order            int64
 	State            leapmuxv1.AgentInputState
 	Error            string
 	EditOwner        string
 	Version          uint64
 	ReservedSeq      int64
-	// CanSteer answers whether SteerQueuedAgentInput accepts this item right
-	// now. The Worker computes it from the same predicate the store's steering
-	// guard applies, so the browser never offers an operation the Worker
-	// refuses. Only a snapshot carries it.
-	CanSteer  bool
-	CreatedAt string
-	UpdatedAt string
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+type DispatchItem struct {
+	StoredItem
+	Attachments []Attachment
+}
+
+type SnapshotItem struct {
+	StoredItem
+	Metadata []AttachmentMetadata
+	// CanSteer uses the same predicate as the store's steering guard.
+	CanSteer bool
 }
 
 type Snapshot struct {
-	AgentID        string
-	Revision       uint64
-	Paused         bool
-	PauseReason    leapmuxv1.AgentInputQueuePauseReason
-	ActiveTurn     bool
-	ActiveTurnKind leapmuxv1.AgentInputKind
-	Items          []Item
+	AgentID             string
+	Revision            uint64
+	Paused              bool
+	PauseReason         leapmuxv1.AgentInputQueuePauseReason
+	ActiveTurn          bool
+	ActiveTurnSteerable bool
+	Items               []SnapshotItem
 }
 
 type NewItem struct {
@@ -177,7 +182,7 @@ type NewItem struct {
 }
 
 type PreparedDispatch struct {
-	Item        Item
+	Item        DispatchItem
 	ReservedSeq int64
 }
 
@@ -197,18 +202,19 @@ type AcceptedTranscript struct {
 }
 
 type DispatchResult struct {
-	StartsTurn  bool
-	SpanLines   string
-	Steering    bool
-	AfterAccept func()
+	StartsTurn    bool
+	TurnSteerable bool
+	SpanLines     string
+	Steering      bool
+	AfterAccept   func()
 }
 
 // DeliveryError carries a refused dispatch and what the queue must do. A busy
 // refusal also carries the provider's turn classification when one exists.
 type DeliveryError struct {
-	Err            error
-	Outcome        DispatchOutcome
-	ActiveTurnKind leapmuxv1.AgentInputKind
+	Err                 error
+	Outcome             DispatchOutcome
+	ActiveTurnSteerable bool
 }
 
 func (e *DeliveryError) Error() string {
@@ -242,8 +248,8 @@ func (e *DeliveryError) Unwrap() error {
 }
 
 type Dispatcher interface {
-	Dispatch(item Item) (DispatchResult, error)
-	Steer(item Item) (DispatchResult, error)
+	Dispatch(item DispatchItem) (DispatchResult, error)
+	Steer(item DispatchItem) (DispatchResult, error)
 	SupportsSteering(agentID string) bool
 	// AcceptsKind answers whether this agent accepts the kind at all. Enqueue
 	// and Update ask before they store the item, so an input that dispatch can

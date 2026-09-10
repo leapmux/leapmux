@@ -17,6 +17,70 @@ import (
 
 // --- Tests for refreshFromSession via ClearContext ---
 
+func TestCopilotClearContextPersistsOutgoingBufferedText(t *testing.T) {
+	t.Parallel()
+
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	sink := &testSink{}
+	agent.sink = sink
+	agent.appendAssistant("unfinished answer")
+
+	_, ok := agent.ClearContext()
+	require.True(t, ok)
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, `{
+		"type":"assembled_message",
+		"kind":"text",
+		"text":"unfinished answer",
+		"completion":"interrupted"
+	}`, string(sink.Messages()[0].Content))
+}
+
+func TestCopilotClearContextReleasesATerminalCreatedDuringSessionNew(t *testing.T) {
+	t.Parallel()
+
+	sessionNewReceived := make(chan struct{})
+	releaseSessionResponse := make(chan struct{})
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			close(sessionNewReceived)
+			<-releaseSessionResponse
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.sink = &testSink{}
+	agent.bind(&agent.acpBase)
+	t.Cleanup(agent.releaseAllTerminals)
+
+	cleared := make(chan bool, 1)
+	go func() {
+		_, ok := agent.ClearContext()
+		cleared <- ok
+	}()
+	<-sessionNewReceived
+
+	params, err := json.Marshal(acpTerminalCreateParams{
+		SessionID: "session-1",
+		Command:   "sleep 30",
+		Cwd:       t.TempDir(),
+	})
+	require.NoError(t, err)
+	agent.terminalCreate(json.RawMessage(`1`), params)
+	close(releaseSessionResponse)
+	require.True(t, <-cleared)
+
+	agent.terminalsMu.Lock()
+	terminalCount := len(agent.terminals)
+	agent.terminalsMu.Unlock()
+	assert.Zero(t, terminalCount, "the new session must not inherit an old-session terminal")
+}
+
 func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 	t.Parallel()
 

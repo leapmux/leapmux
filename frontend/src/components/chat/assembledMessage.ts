@@ -1,4 +1,5 @@
 import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
+import { MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 export type MessageCompletion = 'complete' | 'interrupted' | 'error'
@@ -12,6 +13,19 @@ export interface AssembledMessage {
   completion: MessageCompletion
 }
 
+export function messageCompletionFromProto(value: ProtoMessageCompletion | undefined): MessageCompletion | null {
+  switch (value) {
+    case ProtoMessageCompletion.COMPLETE:
+      return ASSEMBLED_MESSAGE.CompletionComplete
+    case ProtoMessageCompletion.INTERRUPTED:
+      return ASSEMBLED_MESSAGE.CompletionInterrupted
+    case ProtoMessageCompletion.ERROR:
+      return ASSEMBLED_MESSAGE.CompletionError
+    default:
+      return null
+  }
+}
+
 function parseCompletion(value: unknown): MessageCompletion | null {
   if (value !== ASSEMBLED_MESSAGE.CompletionComplete
     && value !== ASSEMBLED_MESSAGE.CompletionInterrupted
@@ -22,10 +36,10 @@ function parseCompletion(value: unknown): MessageCompletion | null {
 }
 
 export function parseAssembledMessage(value: unknown): AssembledMessage | null {
-  if (!isObject(value) || value.type !== ASSEMBLED_MESSAGE.Type)
+  if (!isObject(value) || value[ASSEMBLED_MESSAGE.FieldType] !== ASSEMBLED_MESSAGE.Type)
     return null
-  const kind = pickString(value, 'kind')
-  const completion = parseCompletion(pickString(value, 'completion'))
+  const kind = pickString(value, ASSEMBLED_MESSAGE.FieldKind)
+  const completion = parseCompletion(pickString(value, ASSEMBLED_MESSAGE.FieldCompletion))
   if (kind !== ASSEMBLED_MESSAGE.KindText
     && kind !== ASSEMBLED_MESSAGE.KindReasoning
     && kind !== ASSEMBLED_MESSAGE.KindPlan) {
@@ -33,13 +47,16 @@ export function parseAssembledMessage(value: unknown): AssembledMessage | null {
   }
   if (!completion)
     return null
-  return { kind, text: pickString(value, 'text'), completion }
+  return { kind, text: pickString(value, ASSEMBLED_MESSAGE.FieldText), completion }
 }
 
 export function parseProviderMessageCompletion(value: unknown): MessageCompletion | null {
   if (!isObject(value))
     return null
-  return parseCompletion(pickString(pickObject(value, ASSEMBLED_MESSAGE.MetadataKey), 'completion'))
+  return parseCompletion(pickString(
+    pickObject(value, ASSEMBLED_MESSAGE.MetadataField),
+    ASSEMBLED_MESSAGE.FieldCompletion,
+  ))
 }
 
 export function completionMarker(completion: MessageCompletion | null): string | null {

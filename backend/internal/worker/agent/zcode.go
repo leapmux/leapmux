@@ -31,7 +31,7 @@ type zcodeAgent struct {
 	// re-subscribe. See that function for why the whole body needs it.
 	dispatchMu sync.Mutex
 
-	sink       OutputSink
+	sink       ProviderServices
 	workingDir string
 	workspace  zcodeWorkspace
 
@@ -131,7 +131,7 @@ const (
 )
 
 // StartZCode starts a ZCode app-server and performs the startup handshake.
-func StartZCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Resolve the launch FIRST. A machine with no ZCode at all fails both this and the

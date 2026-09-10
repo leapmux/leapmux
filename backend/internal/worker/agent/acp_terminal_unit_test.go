@@ -34,8 +34,11 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
 	t.Parallel()
 
-	b := &acpBase{completedTerminals: map[string]acpTerminalResult{
-		"term-1": {Output: "stdout\nstderr\n", ExitCode: ptrTo(0)},
+	exitCode := 0
+	b := &acpBase{acpTerminalHost: acpTerminalHost{
+		completedTerminals: map[string]acpTerminalResult{
+			"term-1": {Output: "stdout\nstderr\n", ExitCode: &exitCode},
+		},
 	}}
 	raw := b.expandACPTerminalResult(json.RawMessage(`{
 		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed",
@@ -51,6 +54,7 @@ func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {
 
 	sink := &testSink{}
 	b := &acpBase{sink: sink}
+	b.bind(b)
 	session := &acpTerminalSession{id: "term-1", byteLimit: 0}
 	b.copyTerminalOutput(session, strings.NewReader("éx"))
 
@@ -60,8 +64,6 @@ func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {
 	require.Len(t, sink.ProgressUpdates(), 1)
 	assert.Equal(t, int64(3), sink.ProgressUpdates()[0].Value)
 }
-
-func ptrTo[T any](value T) *T { return &value }
 
 func TestTruncateACPTerminalOutput_AllGOOS(t *testing.T) {
 	// "xy" + "é" (2-byte UTF-8) + "abc". Keeping the last 4 bytes starts on
@@ -101,6 +103,19 @@ func TestAppendOutput_ZeroByteLimitDiscards(t *testing.T) {
 	assert.True(t, truncated)
 }
 
+func TestAppendOutputKeepsACircularTail(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 8}
+	for _, chunk := range []string{"abcd", "efgh", "ijkl"} {
+		sess.appendOutput([]byte(chunk))
+	}
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "efghijkl", output)
+	assert.True(t, truncated)
+	assert.Len(t, sess.buf, 8)
+}
+
 func TestExitStatusFromProcessState_Nil(t *testing.T) {
 	code, sig := exitStatusFromProcessState(nil)
 	assert.Nil(t, code)
@@ -113,14 +128,4 @@ func TestTruncateACPTerminalOutput_DropsIncompleteTrailingStart(t *testing.T) {
 	in := []byte{0x80, 0x80, 0x80}
 	out := truncateACPTerminalOutput(in, 2)
 	assert.Nil(t, out)
-}
-
-func TestSplitEnvKV(t *testing.T) {
-	name, value, ok := splitEnvKV("FOO=bar=baz")
-	assert.True(t, ok)
-	assert.Equal(t, "FOO", name)
-	assert.Equal(t, "bar=baz", value)
-
-	_, _, ok = splitEnvKV("NOEQUALS")
-	assert.False(t, ok)
 }

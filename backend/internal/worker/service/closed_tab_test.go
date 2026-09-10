@@ -843,7 +843,7 @@ func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
 	// An agent startup that never finishes on its own: this is what Shutdown's
 	// AgentStartup.WaitForInFlight parks on.
 	release := make(chan struct{})
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		<-release
 		return nil, nil
 	}

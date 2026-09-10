@@ -59,7 +59,7 @@ type agentActivity struct {
 	rootAgentID string
 
 	// turnActive is what the provider last reported through
-	// OutputSink.SetTurnActive. The DERIVED state reads it for a root only:
+	// ProviderServices.SetTurnState. The DERIVED state reads it for a root only:
 	// activityStateLocked answers a child from its background-task registry
 	// row, which IS the child's run.
 	//
@@ -1105,7 +1105,7 @@ func (h *OutputHandler) treeChildIDs(rootAgentID string, rows []bgtask.Item) []s
 }
 
 // setTurnActive records the provider's turn bookkeeping and republishes.
-// Providers reach it through OutputSink.SetTurnActive.
+// Providers reach it through ProviderServices.SetTurnState.
 func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) {
 	// The settle count belongs to the ROOT's turn. A child publishes this flag
 	// too, because the input queue follows it, but activityStateLocked answers

@@ -134,6 +134,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		} `json:"turn"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
+		a.clearReasoningStateForThread(notif.ThreadID)
 		a.clearInterruptCallsForThread(notif.ThreadID)
 		// A collaboration subagent turn carries a child thread ID. It must not
 		// replace the primary turn ID used for interrupt and steering.
@@ -178,25 +179,97 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.turnToolUses = 0
 		a.turnSawPlan = false
 		a.turnPlanText = ""
-		// Drop any per-item reasoning-stream locks from a prior turn so itemIds
-		// can't leak across turns (e.g. a reasoning item left open by an abort).
-		clear(a.reasoningStreamKind)
 		a.mu.Unlock()
 		a.PublishTurnActive()
 		a.sink.ReportProgress(ResetModelProgress())
 	}
 }
 
+func (a *CodexAgent) clearReasoningStateForThread(threadID string) {
+	prefix := threadID + "\x00"
+	a.mu.Lock()
+	for key := range a.reasoningStreamKind {
+		if strings.HasPrefix(key, prefix) {
+			delete(a.reasoningStreamKind, key)
+			delete(a.reasoningRetainedKind, key)
+			delete(a.reasoningSummaryIndex, key)
+			delete(a.reasoningSummarySeen, key)
+			delete(a.reasoningSummaryBreak, key)
+		}
+	}
+	a.mu.Unlock()
+}
+
 // bufferCodexModelText routes one model delta to its counter and buffer.
-func (a *CodexAgent) bufferCodexModelText(scopeID, threadID, text string, kind AssembledMessageKind) {
+func (a *CodexAgent) bufferCodexModelText(
+	scopeID, threadID, text string,
+	kind AssembledMessageKind,
+	join textJoin,
+	reportProgress bool,
+) {
 	sink := a.sink
 	buffer := &a.generationBuffer
-	if childID := a.routeChildItemIfApplicable(threadID); childID != "" {
+	if !a.isMainThreadID(threadID) {
+		childID := a.routeChildItemIfApplicable(threadID)
+		if childID == "" {
+			a.unresolvedChildGenerationBuffer(threadID).Append(scopeID, kind, text, join)
+			return
+		}
 		sink = a.sink.ChildSink(childID)
 		buffer = a.childGenerationBuffer(childID)
 	}
+	if reportProgress {
+		sink.ReportProgress(ModelTextProgress(scopeID, text))
+	}
+	buffer.Append(scopeID, kind, text, join)
+}
+
+func (a *CodexAgent) reportCodexModelProgress(scopeID, threadID, text string) {
+	sink := a.sink
+	if !a.isMainThreadID(threadID) {
+		childID := a.routeChildItemIfApplicable(threadID)
+		if childID == "" {
+			return
+		}
+		sink = a.sink.ChildSink(childID)
+	}
 	sink.ReportProgress(ModelTextProgress(scopeID, text))
-	buffer.Append(scopeID, kind, text)
+}
+
+func (a *CodexAgent) discardCodexModelText(scopeID, threadID string) {
+	if a.isMainThreadID(threadID) {
+		a.generationBuffer.Discard(scopeID)
+		return
+	}
+	if childID := a.routeChildItemIfApplicable(threadID); childID != "" {
+		a.childGenerationBuffer(childID).Discard(scopeID)
+		return
+	}
+	a.unresolvedChildGenerationBuffer(threadID).Discard(scopeID)
+}
+
+func (a *CodexAgent) unresolvedChildGenerationBuffer(threadID string) *GenerationBuffer {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.unresolvedChildBuffers == nil {
+		a.unresolvedChildBuffers = make(map[string]*GenerationBuffer)
+	}
+	buffer := a.unresolvedChildBuffers[threadID]
+	if buffer == nil {
+		buffer = &GenerationBuffer{}
+		a.unresolvedChildBuffers[threadID] = buffer
+	}
+	return buffer
+}
+
+func (a *CodexAgent) adoptUnresolvedChildGeneration(threadID, childID string) {
+	a.mu.Lock()
+	buffer := a.unresolvedChildBuffers[threadID]
+	delete(a.unresolvedChildBuffers, threadID)
+	a.mu.Unlock()
+	if buffer != nil {
+		buffer.MoveAllTo(a.childGenerationBuffer(childID))
+	}
 }
 
 func (a *CodexAgent) childGenerationBuffer(childID string) *GenerationBuffer {
@@ -213,11 +286,11 @@ func (a *CodexAgent) childGenerationBuffer(childID string) *GenerationBuffer {
 	return buffer
 }
 
-// childSinkForItem resolves the child OutputSink that owns an item
+// childSinkForItem resolves the child ProviderServices that owns an item
 // (commandExecution/fileChange), or nil when the item belongs to the parent.
 // Output-delta notifications carry only an itemID (no threadId), so this map --
 // populated by persistItemStartedChild -- is how those observations reach the child.
-func (a *CodexAgent) childSinkForItem(itemID string) OutputSink {
+func (a *CodexAgent) childSinkForItem(itemID string) ProviderServices {
 	if itemID == "" {
 		return nil
 	}
@@ -238,24 +311,30 @@ const (
 	codexReasoningKindRaw       = "raw"
 	codexAssistantFallbackScope = "codex:assistant"
 	codexPlanFallbackScope      = "codex:plan"
+	codexIncompleteOutputLimit  = 8 << 20
 )
 
+type codexToolOutputEvent struct {
+	text string
+}
+
 type codexIncompleteTool struct {
-	params       json.RawMessage
-	itemType     string
-	childID      string
-	output       strings.Builder
-	interactions []string
-	order        uint64
+	params          json.RawMessage
+	itemType        string
+	childID         string
+	outputEvents    []codexToolOutputEvent
+	outputBytes     int
+	outputTruncated bool
+	order           uint64
 }
 
 type codexIncompleteToolSnapshot struct {
-	params       json.RawMessage
-	itemType     string
-	childID      string
-	output       string
-	interactions []string
-	order        uint64
+	params          json.RawMessage
+	itemType        string
+	childID         string
+	output          string
+	outputTruncated bool
+	order           uint64
 }
 
 // observeReasoningText feeds a reasoning delta into the token counter,
@@ -265,105 +344,140 @@ type codexIncompleteToolSnapshot struct {
 // would roughly double the estimate. Locking onto whichever kind arrives first
 // avoids the double count while still moving the counter for models that stream
 // only one kind.
-func (a *CodexAgent) observeReasoningText(itemID, kind, threadID, text string) {
-	if a.shouldCountReasoningKind(itemID, kind) {
-		a.bufferCodexModelText(itemID, threadID, text, AssembledMessageKindReasoning)
+func (a *CodexAgent) observeReasoningText(itemID, kind, threadID, text string, summaryIndex *int) {
+	key := codexReasoningKey(threadID, itemID)
+	a.mu.Lock()
+	if a.reasoningStreamKind == nil {
+		a.reasoningStreamKind = make(map[string]string)
+		a.reasoningRetainedKind = make(map[string]string)
+		a.reasoningSummaryIndex = make(map[string]int)
+		a.reasoningSummarySeen = make(map[string]bool)
+		a.reasoningSummaryBreak = make(map[string]bool)
+	}
+	countKind := a.reasoningStreamKind[key]
+	if countKind == "" {
+		countKind = kind
+		a.reasoningStreamKind[key] = kind
+	}
+	retainedKind := a.reasoningRetainedKind[key]
+	resetRetained := kind == codexReasoningKindSummary && retainedKind == codexReasoningKindRaw
+	retainText := retainedKind == "" || retainedKind == kind || resetRetained
+	if kind == codexReasoningKindRaw && retainedKind == codexReasoningKindSummary {
+		retainText = false
+	}
+	if retainText {
+		a.reasoningRetainedKind[key] = kind
+	}
+	join := joinVerbatim
+	if kind == codexReasoningKindSummary && retainText {
+		// summaryTextDelta is a verbatim delta inside one summary part.
+		// summaryPartAdded and a changed summaryIndex start a new paragraph.
+		if a.reasoningSummarySeen[key] && (a.reasoningSummaryBreak[key] ||
+			summaryIndex != nil && *summaryIndex != a.reasoningSummaryIndex[key]) {
+			join = joinParagraph
+		}
+		if summaryIndex != nil {
+			a.reasoningSummaryIndex[key] = *summaryIndex
+		}
+		a.reasoningSummarySeen[key] = true
+		a.reasoningSummaryBreak[key] = false
+	}
+	a.mu.Unlock()
+
+	if resetRetained {
+		a.discardCodexModelText(itemID, threadID)
+	}
+	if retainText {
+		a.bufferCodexModelText(itemID, threadID, text, AssembledMessageKindReasoning, join, countKind == kind)
+	} else if countKind == kind {
+		a.reportCodexModelProgress(itemID, threadID, text)
 	}
 }
 
-// shouldCountReasoningKind records the first reasoning sub-stream kind seen for
-// itemID and reports whether kind is that first-seen kind. Separating the locked
-// map bookkeeping from observeReasoningText's delegation lets the lock use a plain
-// defer: observeMainThreadText re-acquires a.mu (via isMainThreadID), so the
-// inline form had to unlock manually before delegating. See observeReasoningText
-// for why only the first-seen kind is counted.
-func (a *CodexAgent) shouldCountReasoningKind(itemID, kind string) bool {
+func codexReasoningKey(threadID, itemID string) string {
+	return threadID + "\x00" + itemID
+}
+
+type codexModelDelta struct {
+	ItemID       string `json:"itemId"`
+	Delta        string `json:"delta"`
+	ThreadID     string `json:"threadId"`
+	SummaryIndex *int   `json:"summaryIndex"`
+}
+
+func parseCodexModelDelta(params json.RawMessage) (codexModelDelta, bool) {
+	var delta codexModelDelta
+	if json.Unmarshal(params, &delta) != nil || delta.Delta == "" {
+		return codexModelDelta{}, false
+	}
+	return delta, true
+}
+
+func (a *CodexAgent) markReasoningSummaryBreak(itemID, threadID string, summaryIndex *int) {
+	key := codexReasoningKey(threadID, itemID)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.reasoningStreamKind == nil {
-		a.reasoningStreamKind = make(map[string]string)
+	if a.reasoningSummaryBreak == nil {
+		a.reasoningSummaryBreak = make(map[string]bool)
 	}
-	locked, ok := a.reasoningStreamKind[itemID]
-	if !ok {
-		a.reasoningStreamKind[itemID] = kind
-		return true
+	if a.reasoningSummaryIndex == nil {
+		a.reasoningSummaryIndex = make(map[string]int)
 	}
-	return locked == kind
+	if summaryIndex == nil {
+		a.reasoningSummaryBreak[key] = a.reasoningSummarySeen[key]
+	} else {
+		if a.reasoningSummarySeen[key] && *summaryIndex != a.reasoningSummaryIndex[key] {
+			a.reasoningSummaryBreak[key] = true
+		}
+		a.reasoningSummaryIndex[key] = *summaryIndex
+	}
+	a.mu.Unlock()
 }
 
 // handleAgentMessageDelta counts and buffers item/agentMessage/delta.
 func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
-	var delta struct {
-		ItemID   string `json:"itemId"`
-		Delta    string `json:"delta"`
-		ThreadID string `json:"threadId"`
-	}
-	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
+	if delta, ok := parseCodexModelDelta(params); ok {
 		if delta.ItemID == "" {
 			delta.ItemID = codexAssistantFallbackScope
 		}
-		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindText)
+		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindText, joinVerbatim, true)
 	}
 }
 
 // handlePlanDelta counts and buffers item/plan/delta.
 func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
-	var delta struct {
-		ItemID   string `json:"itemId"`
-		Delta    string `json:"delta"`
-		ThreadID string `json:"threadId"`
-	}
-	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
+	if delta, ok := parseCodexModelDelta(params); ok {
 		if delta.ItemID == "" {
 			delta.ItemID = codexPlanFallbackScope
 		}
-		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindPlan)
+		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, AssembledMessageKindPlan, joinVerbatim, true)
 	}
 }
 
 func (a *CodexAgent) handleReasoningSummaryTextDelta(params json.RawMessage) {
-	var notif struct {
-		ItemID   string `json:"itemId"`
-		Delta    string `json:"delta"`
-		ThreadID string `json:"threadId"`
-	}
-	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
-		a.observeReasoningText(notif.ItemID, codexReasoningKindSummary, notif.ThreadID, notif.Delta)
+	if notif, ok := parseCodexModelDelta(params); ok && notif.ItemID != "" {
+		a.observeReasoningText(notif.ItemID, codexReasoningKindSummary, notif.ThreadID, notif.Delta, notif.SummaryIndex)
 	}
 }
 
 func (a *CodexAgent) handleReasoningSummaryPartAdded(params json.RawMessage) {
 	var notif struct {
-		ItemID   string `json:"itemId"`
-		ThreadID string `json:"threadId"`
+		ItemID       string `json:"itemId"`
+		ThreadID     string `json:"threadId"`
+		SummaryIndex *int   `json:"summaryIndex"`
 	}
-	_ = json.Unmarshal(params, &notif)
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" {
+		a.markReasoningSummaryBreak(notif.ItemID, notif.ThreadID, notif.SummaryIndex)
+	}
 }
 
 func (a *CodexAgent) handleReasoningTextDelta(params json.RawMessage) {
-	var notif struct {
-		ItemID   string `json:"itemId"`
-		Delta    string `json:"delta"`
-		ThreadID string `json:"threadId"`
-	}
-	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
-		a.observeReasoningText(notif.ItemID, codexReasoningKindRaw, notif.ThreadID, notif.Delta)
+	if notif, ok := parseCodexModelDelta(params); ok && notif.ItemID != "" {
+		a.observeReasoningText(notif.ItemID, codexReasoningKindRaw, notif.ThreadID, notif.Delta, nil)
 	}
 }
 
 func (a *CodexAgent) handleCommandExecutionOutputDelta(params json.RawMessage) {
-	var notif struct {
-		ItemID string `json:"itemId"`
-		Delta  string `json:"delta"`
-	}
-	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
-		a.appendCodexToolOutput(notif.ItemID, notif.Delta)
-		sink := a.sink
-		if child := a.childSinkForItem(notif.ItemID); child != nil {
-			sink = child
-		}
-		sink.ReportProgress(OutputDeltaProgress(notif.ItemID, int64(len([]byte(notif.Delta)))))
-	}
+	a.handleCodexToolOutputDelta(params)
 }
 
 func (a *CodexAgent) handleCommandExecutionTerminalInteraction(params json.RawMessage) {
@@ -373,14 +487,16 @@ func (a *CodexAgent) handleCommandExecutionTerminalInteraction(params json.RawMe
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Stdin != "" {
 		a.mu.Lock()
-		if tool := a.incompleteTools[notif.ItemID]; tool != nil {
-			tool.interactions = append(tool.interactions, notif.Stdin)
-		}
+		a.appendCodexToolEventLocked(notif.ItemID, notif.Stdin, true)
 		a.mu.Unlock()
 	}
 }
 
 func (a *CodexAgent) handleFileChangeOutputDelta(params json.RawMessage) {
+	a.handleCodexToolOutputDelta(params)
+}
+
+func (a *CodexAgent) handleCodexToolOutputDelta(params json.RawMessage) {
 	var notif struct {
 		ItemID string `json:"itemId"`
 		Delta  string `json:"delta"`
@@ -409,7 +525,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	}
 
 	childID := a.routeChildItemIfApplicable(threadID)
-	if itemType == "commandExecution" || itemType == "fileChange" {
+	if codexItemIsTool(itemType) {
 		a.rememberCodexIncompleteTool(itemID, itemType, childID, params)
 	}
 
@@ -597,10 +713,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		return
 	}
 
+	completion := codexTurnCompletion(params)
+	a.flushCodexGeneration(completion)
+	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
+
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
-	numToolUses := a.turnToolUses
+	numToolUses := a.turnToolUses + incompleteToolUses
 	sawPlan := a.turnSawPlan
 	planText := a.turnPlanText
 	collaborationMode := a.collaborationMode
@@ -634,9 +754,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			params = json.RawMessage(b)
 		}
 	}
-	a.flushCodexGeneration(codexTurnCompletion(params))
-	a.persistIncompleteCodexTools("", false, codexTurnCompletion(params))
-
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.mu.Lock()
@@ -719,25 +836,16 @@ func (a *CodexAgent) flushAllCodexGeneration(completion MessageCompletion) {
 	}
 }
 
-func (a *CodexAgent) persistCodexGeneration(buffer *GenerationBuffer, sink OutputSink, completion MessageCompletion) {
+func (a *CodexAgent) persistCodexGeneration(buffer *GenerationBuffer, sink generationServices, completion MessageCompletion) {
 	if a.isDiscardingOutput() {
 		buffer.Reset()
 		sink.ReportProgress(ResetModelProgress())
 		return
 	}
-	rows, err := buffer.FinishAll(completion)
-	if err != nil {
-		slog.Warn("codex marshal partial generation", "agent_id", a.agentID, "error", err)
-		sink.ReportProgress(ResetModelProgress())
-		return
-	}
-	// A child sink has no provider decorator to clear its model counter when a
-	// turn ends. Clear the scope before the completed rows reach the transcript.
-	sink.ReportProgress(ResetModelProgress())
-	for _, raw := range rows {
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-			slog.Error("codex persist partial generation", "agent_id", a.agentID, "error", err)
-		}
+	if err := buffer.PersistAll(completion, func(raw []byte) error {
+		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+	}); err != nil {
+		slog.Error("codex persist partial generation", "agent_id", a.agentID, "error", err)
 	}
 }
 
@@ -780,13 +888,32 @@ func (a *CodexAgent) rememberCodexIncompleteTool(itemID, itemType, childID strin
 
 func (a *CodexAgent) appendCodexToolOutput(itemID, output string) {
 	a.mu.Lock()
-	if tool := a.incompleteTools[itemID]; tool != nil {
-		tool.output.WriteString(output)
-	}
+	a.appendCodexToolEventLocked(itemID, output, false)
 	a.mu.Unlock()
 }
 
-func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, completion MessageCompletion) {
+func (a *CodexAgent) appendCodexToolEventLocked(itemID, text string, stdin bool) {
+	tool := a.incompleteTools[itemID]
+	if tool == nil || text == "" {
+		return
+	}
+	if stdin {
+		text = "> " + text
+	}
+	remaining := codexIncompleteOutputLimit - tool.outputBytes
+	if remaining <= 0 {
+		tool.outputTruncated = true
+		return
+	}
+	if len(text) > remaining {
+		text = text[:remaining]
+		tool.outputTruncated = true
+	}
+	tool.outputEvents = append(tool.outputEvents, codexToolOutputEvent{text: text})
+	tool.outputBytes += len(text)
+}
+
+func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, completion MessageCompletion) int {
 	a.mu.Lock()
 	itemIDs := make([]string, 0, len(a.incompleteTools))
 	tools := make(map[string]codexIncompleteToolSnapshot)
@@ -796,18 +923,22 @@ func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, compl
 		}
 		itemIDs = append(itemIDs, itemID)
 		tools[itemID] = codexIncompleteToolSnapshot{
-			params:       append(json.RawMessage(nil), tool.params...),
-			itemType:     tool.itemType,
-			childID:      tool.childID,
-			output:       tool.output.String(),
-			interactions: append([]string(nil), tool.interactions...),
-			order:        tool.order,
+			params:          append(json.RawMessage(nil), tool.params...),
+			itemType:        tool.itemType,
+			childID:         tool.childID,
+			output:          renderCodexToolOutput(tool.outputEvents, tool.outputTruncated),
+			outputTruncated: tool.outputTruncated,
+			order:           tool.order,
 		}
 		delete(a.incompleteTools, itemID)
 	}
 	a.mu.Unlock()
 	if a.isDiscardingOutput() {
-		return
+		return 0
+	}
+	retainedCompletion := completion
+	if retainedCompletion == MessageCompletionComplete {
+		retainedCompletion = MessageCompletionInterrupted
 	}
 	sort.Slice(itemIDs, func(left, right int) bool {
 		leftTool, rightTool := tools[itemIDs[left]], tools[itemIDs[right]]
@@ -818,7 +949,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, compl
 	})
 	for _, itemID := range itemIDs {
 		tool := tools[itemID]
-		raw, err := buildIncompleteCodexTool(tool, completion)
+		raw, err := buildIncompleteCodexTool(tool, retainedCompletion)
 		if err != nil {
 			slog.Warn("marshal incomplete codex tool", "agent_id", a.agentID, "item_id", itemID, "error", err)
 			continue
@@ -835,6 +966,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childID string, all bool, compl
 		sink.CloseSpan(itemID)
 		sink.ReportProgress(CompleteOutputProgress(itemID))
 	}
+	return len(itemIDs)
 }
 
 func buildIncompleteCodexTool(tool codexIncompleteToolSnapshot, completion MessageCompletion) ([]byte, error) {
@@ -849,23 +981,39 @@ func buildIncompleteCodexTool(tool codexIncompleteToolSnapshot, completion Messa
 	if output := tool.output; output != "" {
 		item["aggregatedOutput"] = output
 	}
+	if tool.outputTruncated {
+		item["outputTruncated"] = true
+	}
 	encodedItem, err := json.Marshal(item)
 	if err != nil {
 		return nil, err
 	}
 	params["item"] = encodedItem
-	if len(tool.interactions) > 0 {
-		metadata, marshalErr := json.Marshal(map[string]interface{}{"stdin": tool.interactions})
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-		params[contracts.AssembledMessageMetadataKey] = metadata
-	}
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
 	}
 	return AnnotateMessageCompletion(raw, completion)
+}
+
+func renderCodexToolOutput(events []codexToolOutputEvent, truncated bool) string {
+	var output strings.Builder
+	if truncated {
+		output.WriteString(limitedOutputPrefix)
+	}
+	for _, event := range events {
+		output.WriteString(event.text)
+	}
+	return output.String()
+}
+
+func codexItemIsTool(itemType string) bool {
+	switch itemType {
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
+		return true
+	default:
+		return false
+	}
 }
 
 func isRetryableCodexTurnFailure(message string) bool {
@@ -1275,11 +1423,12 @@ func (a *CodexAgent) rememberChildAgent(threadID, childID string) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.collabChildAgents == nil {
 		a.collabChildAgents = make(map[string]string)
 	}
 	a.collabChildAgents[threadID] = childID
+	a.mu.Unlock()
+	a.adoptUnresolvedChildGeneration(threadID, childID)
 }
 
 func (a *CodexAgent) rememberedChildAgent(threadID string) string {
@@ -1333,7 +1482,7 @@ func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID 
 }
 
 // persistSharedItemStarted applies item starts that share parent and child behavior.
-func persistSharedItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
+func persistSharedItemStarted(sink ToolSpanServices, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
@@ -1349,7 +1498,7 @@ func persistSharedItemStarted(sink OutputSink, params json.RawMessage, itemType,
 }
 
 // persistSharedItemCompleted applies item completions that need no agent state.
-func persistSharedItemCompleted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
+func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessage, itemType, itemID, agentID string) {
 	sink.ReportProgress(CompleteModelProgress(itemID))
 	sink.ReportProgress(CompleteOutputProgress(itemID))
 	switch itemType {
@@ -1370,13 +1519,22 @@ func persistSharedItemCompleted(sink OutputSink, params json.RawMessage, itemTyp
 }
 
 // persistCompletedReasoningItem stores the provider's authoritative item.
-func (a *CodexAgent) persistCompletedReasoningItem(sink OutputSink, params json.RawMessage, itemID, agentID string) {
+func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, params json.RawMessage, itemID, agentID string) {
 	sink.ReportProgress(CompleteModelProgress(itemID))
 	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 		SpanID: itemID, SpanType: "reasoning",
 	})
 	a.mu.Lock()
-	delete(a.reasoningStreamKind, itemID)
+	suffix := "\x00" + itemID
+	for key := range a.reasoningStreamKind {
+		if strings.HasSuffix(key, suffix) {
+			delete(a.reasoningStreamKind, key)
+			delete(a.reasoningRetainedKind, key)
+			delete(a.reasoningSummaryIndex, key)
+			delete(a.reasoningSummarySeen, key)
+			delete(a.reasoningSummaryBreak, key)
+		}
+	}
 	a.mu.Unlock()
 	if err != nil {
 		slog.Error("codex persist reasoning/completed", "agent_id", agentID, "error", err)

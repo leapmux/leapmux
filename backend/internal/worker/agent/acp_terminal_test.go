@@ -95,6 +95,7 @@ func newTerminalTestBase(t *testing.T, sink *testSink) (*acpBase, *responseRecor
 		sessionID:  "sess-1",
 		workingDir: t.TempDir(),
 	}
+	b.bind(b)
 	return b, rec
 }
 
@@ -243,6 +244,7 @@ func TestACPTerminal_OutputByteLimitTruncates(t *testing.T) {
 		"terminalId": termID,
 	})
 	_ = rec.wait(t, 2, 5*time.Second)
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("terminal:"+termID))
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
 		"sessionId":  "sess-1",
@@ -260,6 +262,24 @@ func TestACPTerminal_OutputByteLimitTruncates(t *testing.T) {
 		"terminalId": termID,
 	})
 	_ = rec.wait(t, 4, 3*time.Second)
+}
+
+func TestACPTerminal_ClampsRequestedOutputLimit(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	hugeLimit := acpMaxOutputByteLimit * 1024
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId":       "sess-1",
+		"command":         "printf x",
+		"cwd":             b.workingDir,
+		"outputByteLimit": hugeLimit,
+	})
+	responses := rec.wait(t, 1, 3*time.Second)
+	termID := responses[0]["result"].(map[string]interface{})["terminalId"].(string)
+	session, ok := b.getTerminal(termID)
+	require.True(t, ok)
+	assert.Equal(t, acpMaxOutputByteLimit, session.byteLimit)
+	b.releaseAllTerminals()
 }
 
 func TestACPTerminal_UnknownTerminalID(t *testing.T) {

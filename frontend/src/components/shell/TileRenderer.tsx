@@ -886,9 +886,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // the same pattern for the same reason.
             const agentLifecycle: AgentLifecycleProps = {
               get agentWorking() { return agentThinking(agentId) },
-              get thinkingTokens() { return agentSessionStore.getInfo(agentId).thinkingTokens },
-              get outputBytes() { return agentSessionStore.getInfo(agentId).outputBytes },
-              get outputBytesMinimum() { return agentSessionStore.getInfo(agentId).outputBytesMinimum },
+              get thinkingTokens() { return agentSessionStore.getProgress(agentId).thinkingTokens },
+              get outputBytes() { return agentSessionStore.getProgress(agentId).output?.bytes },
+              get outputBytesMinimum() { return agentSessionStore.getProgress(agentId).output?.minimum },
               get agentStatus() { return agent()?.agentStatus },
               get startupError() { return agent()?.startupError },
               get startupMessage() { return agent()?.startupMessage },
@@ -908,7 +908,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               // and fires on the bubble. The image would then be registered
               // against a worker that has no such agent.
               onOpenImage: onOpenChatImage
-                // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: this closure is an event handler, so the worker must be the one the tab holds when the user clicks, not the one it held when the row rendered
+              // eslint-disable-next-line solid/reactivity -- the click must read the tab's current worker
                 ? image => onOpenChatImage({
                   ...image,
                   agentId,
@@ -1238,7 +1238,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const branchMenuActions = (): BranchMenuActions | undefined => {
       const actions = branchCallbacks?.actions
       return actions
-        // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: an untracked read here would freeze the ref at bind time, which is the staleness this closure exists to avoid
+      // eslint-disable-next-line solid/reactivity -- the click must read the current ref
         ? bindBranchActions(actions, () => branchAction().buildRef?.())
         : undefined
     }

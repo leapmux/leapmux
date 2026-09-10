@@ -33,3 +33,13 @@ func TestProcessExitCompletion(t *testing.T) {
 	assert.Equal(t, MessageCompletionInterrupted, process.processExitCompletion())
 	assert.Equal(t, MessageCompletionInterrupted, (&processBase{stopped: true}).processExitCompletion())
 }
+
+func TestProcessExitCompletionDoesNotChangeAfterExit(t *testing.T) {
+	t.Parallel()
+
+	process := &processBase{}
+	process.recordProcessExit(errors.New("provider crashed"))
+	process.noteIntentionalStop()
+
+	assert.Equal(t, MessageCompletionError, process.processExitCompletion())
+}

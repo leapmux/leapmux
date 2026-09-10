@@ -3,12 +3,10 @@ import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
-import { classifyMessage } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
-import { input } from './providers/testUtils'
 import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
@@ -234,79 +232,23 @@ describe('renderMessageContent provider resolution', () => {
 
   it('renders the durable interruption marker after retained provider output', () => {
     const parsed = {
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'tc-1',
-      status: 'in_progress',
-      kind: 'execute',
-      content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
-      _leapmux: { completion: 'interrupted' },
+      type: 'assembled_message',
+      kind: 'text',
+      text: 'partial output',
+      completion: 'interrupted',
     }
-    const category = { kind: 'tool_use', toolName: 'execute', toolUse: parsed, content: [] } as MessageCategory
-    const result = renderMessageContent(parsed, undefined, category, AgentProvider.OPENCODE)
+    const result = renderMessageContent(parsed, undefined, { kind: 'assistant_text' })
     const { container } = render(() => result)
     expect(container.textContent).toContain('partial output')
     expect(container.textContent).toContain('Text truncated by interruption.')
   })
 
-  it('renders retained output and completion markers for each provider shape', () => {
-    const cases: Array<{
-      provider: AgentProvider
-      parsed: Record<string, unknown>
-      output: string
-    }> = [
-      {
-        provider: AgentProvider.CODEX,
-        parsed: {
-          item: {
-            type: 'commandExecution',
-            id: 'command-1',
-            status: 'inProgress',
-            command: 'printf partial',
-            aggregatedOutput: 'partial codex output',
-          },
-          _leapmux: { completion: 'interrupted' },
-        },
-        output: 'partial codex output',
-      },
-      {
-        provider: AgentProvider.PI,
-        parsed: {
-          type: 'tool_execution_end',
-          toolCallId: 'tool-1',
-          toolName: 'bash',
-          args: { command: 'printf partial' },
-          result: { content: [{ type: 'text', text: 'partial pi output' }] },
-          isError: true,
-          _leapmux: { completion: 'error' },
-        },
-        output: 'partial pi output',
-      },
-      {
-        provider: AgentProvider.ZCODE,
-        parsed: {
-          type: 'tool.updated',
-          payload: {
-            kind: 'result',
-            toolCallId: 'tool-1',
-            toolName: 'Bash',
-            result: { success: false, content: 'partial zcode output' },
-          },
-          _leapmux: { completion: 'interrupted' },
-        },
-        output: 'partial zcode output',
-      },
-    ]
-
-    for (const testCase of cases) {
-      const category = classifyMessage(input(testCase.parsed, null, testCase.provider))
-      const { container, unmount } = render(() =>
-        renderMessageContent(testCase.parsed, {
-          getMessageUiState: () => true,
-        }, category, testCase.provider))
-      expect(container.textContent).toContain(testCase.output)
-      expect(container.textContent).toMatch(/Text truncated by (?:an error|interruption)\./)
-      unmount()
-    }
+  it('uses typed completion metadata when provider content has no metadata object', () => {
+    const parsed = { type: 'tool', output: 'partial' }
+    const category = { kind: 'unknown' } as MessageCategory
+    const result = renderMessageContent(parsed, undefined, category, AgentProvider.CODEX, MessageCompletion.ERROR)
+    const { container } = render(() => result)
+    expect(container.textContent).toContain('Text truncated by an error.')
   })
 })
 

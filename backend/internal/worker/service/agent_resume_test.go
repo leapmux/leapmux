@@ -57,7 +57,7 @@ func (r *startRecorder) install(svc *Service) {
 	// Both seams: a cold start the user triggered goes through startAgentFn, and
 	// the resume sweep goes through startBackgroundAgentFn. Stubbing only one
 	// would let a test believe it drove the sweep while it drove the other path.
-	start := func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+	start := func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		defer testutil.TrackPeak(&r.inFlight, &r.peak)()
 		r.mu.Lock()
 		r.started = append(r.started, opts.AgentID)
@@ -288,11 +288,11 @@ func TestAgentResume_UsesTheBackgroundStartPath(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 
 	var interactive, background int
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		interactive++
 		return map[string]string{}, nil
 	}
-	svc.startBackgroundAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startBackgroundAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		background++
 		return map[string]string{}, nil
 	}
@@ -312,11 +312,11 @@ func TestEnsureAgentRunning_UsesTheInteractiveStartPath(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 
 	var interactive, background int
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		interactive++
 		return map[string]string{}, nil
 	}
-	svc.startBackgroundAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startBackgroundAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		background++
 		return map[string]string{}, nil
 	}

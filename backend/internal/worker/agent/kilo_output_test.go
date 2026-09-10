@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
+func newKiloAgentWithSink(sink ProviderServices) *KiloAgent {
 	a := &KiloAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{

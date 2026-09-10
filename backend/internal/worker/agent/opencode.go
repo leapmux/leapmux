@@ -49,7 +49,7 @@ func (a *OpenCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Atta
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
-func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+func StartOpenCode(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[OpenCodeAgent]{
 		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		providerName:   "opencode",

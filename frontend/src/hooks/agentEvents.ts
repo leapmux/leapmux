@@ -10,7 +10,7 @@ import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentSt
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
-import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
+import type { createAgentSessionStore, LiveGenerationProgress, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
@@ -114,21 +114,25 @@ export function wireSessionInfoToUpdates(
   const rateLimits = info[SESSION_INFO_KEY.RateLimits]
   if (rateLimits !== undefined)
     updates.rateLimits = wireRateLimitsToCamel(rateLimits)
-  // Only positive estimates: `> 0` rejects both the zero-estimate first delta
-  // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
-  // false), so the indicator never has to defend against "0 tokens" or a NaN
-  // serialized to null in storage.
-  const thinkingTokens = info[SESSION_INFO_KEY.ThinkingTokens]
-  if (typeof thinkingTokens === 'number' && thinkingTokens > 0)
-    updates.thinkingTokens = thinkingTokens
-  const outputBytes = info[SESSION_INFO_KEY.OutputBytes]
-  if (typeof outputBytes === 'number' && outputBytes > 0) {
-    updates.outputBytes = outputBytes
-    const outputBytesMinimum = info[SESSION_INFO_KEY.OutputBytesMinimum]
-    if (typeof outputBytesMinimum === 'boolean')
-      updates.outputBytesMinimum = outputBytesMinimum
-  }
   return updates
+}
+
+function wireGenerationProgress(info: Record<string, unknown> | undefined): LiveGenerationProgress | null {
+  const revision = info?.[SESSION_INFO_KEY.GenerationProgressRevision]
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision <= 0)
+    return null
+  const progress: LiveGenerationProgress = { revision }
+  const thinkingTokens = info?.[SESSION_INFO_KEY.ThinkingTokens]
+  if (typeof thinkingTokens === 'number' && thinkingTokens > 0)
+    progress.thinkingTokens = thinkingTokens
+  const outputBytes = info?.[SESSION_INFO_KEY.OutputBytes]
+  if (typeof outputBytes === 'number' && outputBytes > 0) {
+    progress.output = {
+      bytes: outputBytes,
+      minimum: info?.[SESSION_INFO_KEY.OutputBytesMinimum] === true,
+    }
+  }
+  return progress
 }
 
 /**
@@ -257,14 +261,9 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
-  // A non-positive value is the Worker's explicit lifecycle clear.
-  // wireSessionInfoToUpdates forwards positive values only.
-  const thinkingTokens = info?.[SESSION_INFO_KEY.ThinkingTokens]
-  if (typeof thinkingTokens === 'number' && thinkingTokens <= 0)
-    agentSessionStore.clearThinkingTokens(agentId)
-  const outputBytes = info?.[SESSION_INFO_KEY.OutputBytes]
-  if (typeof outputBytes === 'number' && outputBytes <= 0)
-    agentSessionStore.clearOutputBytes(agentId)
+  const generationProgress = wireGenerationProgress(info)
+  if (generationProgress)
+    agentSessionStore.applyProgress(agentId, generationProgress)
   // running_tool is span-keyed accumulating state, not an AgentSessionInfo field,
   // so it goes to the chat store rather than through
   // wireSessionInfoToUpdates.

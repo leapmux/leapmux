@@ -175,7 +175,7 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 // winner's delete + cancel clears the stale one from every window. The row is persisted here BEFORE
 // the caller forwards, so the user's answer precedes any async plan-execution rows.
 func (svc *Service) applyWinningControlResponse(agentID string, dbAgent db.Agent, plan controlResponsePlan) {
-	svc.deleteControlRequest(agentID, dbAgent.AgentProvider, plan.requestMeta, plan.resolution.SelfDisplayed)
+	svc.deleteControlRequest(agentID, plan.requestMeta, plan.resolution.SelfDisplayed)
 	if plan.isPlanPrompt() {
 		svc.handleControlResponsePromptPlan(agentID, dbAgent, plan)
 	} else {
@@ -245,21 +245,19 @@ func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, con
 	return plan.resolution.Content, true
 }
 
-func (svc *Service) deleteControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
+func (svc *Service) deleteControlRequest(agentID string, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
 	if requestMeta.RequestID == "" {
 		return
 	}
-	var sink agent.OutputSink
-	if current := svc.Output.sinkForAgent(agentID); current != nil {
-		sink = current
-	} else {
-		sink = svc.Output.NewSink(agentID, provider)
+	rootAgentID := agentID
+	if sink := svc.Output.sinkForAgent(agentID); sink != nil {
+		rootAgentID = sink.rootAgentID
+		if requestMeta.ToolUseID != "" && selfDisplayed {
+			sink.SetSpanType(requestMeta.ToolUseID, requestMeta.ToolName)
+		}
 	}
-	if requestMeta.ToolUseID != "" && selfDisplayed {
-		sink.SetSpanType(requestMeta.ToolUseID, requestMeta.ToolName)
-	}
-	sink.DeleteControlRequest(requestMeta.RequestID)
-	sink.BroadcastControlCancel(requestMeta.RequestID)
+	svc.Output.deleteControlRequest(agentID, rootAgentID, requestMeta.RequestID)
+	svc.Output.broadcastControlCancel(agentID, requestMeta.RequestID)
 }
 
 // persistControlResponseAnswerRow persists the single synthetic control-response row that carries

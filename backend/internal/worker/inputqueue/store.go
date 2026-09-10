@@ -59,13 +59,6 @@ func validKind(kind leapmuxv1.AgentInputKind) bool {
 		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
-func normalizedTurnKind(kind leapmuxv1.AgentInputKind) leapmuxv1.AgentInputKind {
-	if !validKind(kind) {
-		return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
-	}
-	return kind
-}
-
 func validateIdentity(value string) bool {
 	return value != "" && len(value) <= maxQueueIdentityByteCount && !strings.ContainsRune(value, '\x00')
 }
@@ -114,10 +107,6 @@ func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
 		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE ||
 		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
-}
-
-func regularTurnKind(kind leapmuxv1.AgentInputKind) bool {
-	return steerableInputKind(kind) || kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION
 }
 
 func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
@@ -606,7 +595,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, proces
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE agent_input_queue_state
 			SET paused = ?, pause_reason = ?, pause_owner = ?, active_turn = ?,
-				active_turn_kind = CASE WHEN ? THEN active_turn_kind ELSE 0 END,
+				active_turn_steerable = CASE WHEN ? THEN active_turn_steerable ELSE 0 END,
 				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
 				revision = revision + 1, updated_at = ?
 			WHERE agent_id = ?`,
@@ -646,9 +635,8 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
-	var paused, active, restarting bool
-	var activeKind leapmuxv1.AgentInputKind
-	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_kind FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &restarting, &active, &activeKind); err != nil {
+	var paused, active, activeTurnSteerable, restarting bool
+	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &restarting, &active, &activeTurnSteerable); err != nil {
 		return nil, Snapshot{}, err
 	}
 	// allowPaused lets retry and steering dispatch through a pause. A restart
@@ -667,7 +655,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if expectedInputID != "" && (!found || item.ID != expectedInputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	if requireActive && active && (!steerableInputKind(item.Kind) || !regularTurnKind(activeKind)) {
+	if requireActive && active && (!steerableInputKind(item.Kind) || !activeTurnSteerable) {
 		return nil, Snapshot{}, ErrSteeringState
 	}
 	blockedByTurn := active
@@ -684,11 +672,10 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 		}
 		return nil, snapshot, nil
 	}
-	attachments, metadata, err := loadItemAttachments(ctx, tx, item.ID, true)
+	attachments, _, err := loadItemAttachments(ctx, tx, item.ID, true)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
-	item.Metadata = metadata
 	var reservedSeq int64
 	if item.ReservedSeq > 0 {
 		reservedSeq = item.ReservedSeq
@@ -710,13 +697,12 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	stateUpdate := `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`
 	stateArgs := []any{nowText(), agentID}
 	if !requireActive {
-		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-		stateArgs = []any{item.Kind, item.ID, nowText(), agentID}
+		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 0, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`
+		stateArgs = []any{item.ID, nowText(), agentID}
 	}
 	if _, err := tx.ExecContext(ctx, stateUpdate, stateArgs...); err != nil {
 		return nil, Snapshot{}, err
 	}
-	item.Attachments = attachments
 	item.State = leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING
 	item.ReservedSeq = reservedSeq
 	snapshot, err := snapshotTx(ctx, tx, agentID)
@@ -726,13 +712,16 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err := tx.Commit(); err != nil {
 		return nil, Snapshot{}, err
 	}
-	return &PreparedDispatch{Item: item, ReservedSeq: reservedSeq}, snapshot, nil
+	return &PreparedDispatch{
+		Item:        DispatchItem{StoredItem: item, Attachments: attachments},
+		ReservedSeq: reservedSeq,
+	}, snapshot, nil
 }
 
 // RequeuePrepared returns a prepared item to the queue. The steer path uses it,
 // and PrepareSteer claims no turn identity, so there is none to release.
 func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, false, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
+	return s.requeuePrepared(ctx, agentID, inputID, false, false)
 }
 
 // RequeueBusy returns a prepared item to the queue after the provider refused
@@ -750,11 +739,11 @@ func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (S
 // the provider read its flag, and the same refusal publishes that flag. But a
 // turn that ended inside the provider call already committed its clear, and a
 // write here would restore a turn that no envelope ever ends again.
-func (s *Store) RequeueBusy(ctx context.Context, agentID, inputID string, activeTurnKind leapmuxv1.AgentInputKind) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, true, activeTurnKind)
+func (s *Store) RequeueBusy(ctx context.Context, agentID, inputID string, activeTurnSteerable bool) (Snapshot, error) {
+	return s.requeuePrepared(ctx, agentID, inputID, true, activeTurnSteerable)
 }
 
-func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, releaseTurnIdentity bool, activeTurnKind leapmuxv1.AgentInputKind) (Snapshot, error) {
+func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, releaseTurnIdentity bool, activeTurnSteerable bool) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, err
@@ -770,8 +759,7 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, re
 		return Snapshot{}, ErrConflict
 	}
 	if releaseTurnIdentity {
-		activeTurnKind = normalizedTurnKind(activeTurnKind)
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnKind, nowText(), agentID, inputID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_steerable = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnSteerable, nowText(), agentID, inputID); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -859,7 +847,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if err := compactOrder(ctx, tx, item.AgentID); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`
+	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`
 	stateArgs := []any{nowText(), item.AgentID}
 	if result.StartsTurn && !result.Steering {
 		// The turn is asserted only while the state still holds THIS dispatch.
@@ -869,8 +857,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		// A write of the turn here would restore one that no envelope ever ends
 		// again, and the queue would then hold every later message for the life
 		// of the process.
-		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
-		stateArgs = []any{item.Kind, item.ID, nowText(), item.AgentID, item.ID}
+		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = ?, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
+		stateArgs = []any{result.TurnSteerable, item.ID, nowText(), item.AgentID, item.ID}
 	} else if result.Steering {
 		stateUpdate = `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`
 	}
@@ -922,7 +910,7 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ?`, state, errText, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -931,7 +919,7 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 // TurnEnded clears the active turn.
 //
 // The clear carries no turn identity, because the provider signal that reports
-// a turn end carries none either: OutputSink.SetTurnActive identifies only the
+// a turn end carries none either: ProviderServices.SetTurnState identifies only the
 // agent. Order is what keeps the clear correct. Every provider publishes its
 // turn flag on its own single reader goroutine, in wire order, and drain never
 // starts the next turn before Accept commits, so a turn end for turn N always
@@ -943,14 +931,14 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 //
 // One case stays open: a turn end that an agent process emits AFTER the Worker
 // replaced it clears the new process's turn. Only a provider generation
-// threaded through SetTurnActiveFunc can reject that, and the signal does not
+// threaded through SetTurnStateFunc can reject that, and the signal does not
 // carry one today.
 //
 // The Boolean reports whether the durable state moved. Every publish of the
 // provider's turn flag reaches here, and a provider republishes the unchanged
 // value freely, so a call that changes nothing must leave the revision alone.
 func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, bool, error) {
-	return s.setTurnState(ctx, agentID, false, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED)
+	return s.setTurnState(ctx, agentID, false, false)
 }
 
 // TurnStarted records a turn that the agent process began on its own. It keeps
@@ -959,8 +947,8 @@ func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, bool, 
 // steering. An unclassified provider passes UNSPECIFIED.
 //
 // The Boolean reports whether the durable state moved. See TurnEnded.
-func (s *Store) TurnStarted(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind) (Snapshot, bool, error) {
-	return s.setTurnState(ctx, agentID, true, kind)
+func (s *Store) TurnStarted(ctx context.Context, agentID string, steerable bool) (Snapshot, bool, error) {
+	return s.setTurnState(ctx, agentID, true, steerable)
 }
 
 // AbandonUnownedTurn clears a turn that no dispatch owns. A process boundary
@@ -982,7 +970,7 @@ func (s *Store) TurnStarted(ctx context.Context, agentID string, kind leapmuxv1.
 // is exactly the one a boundary must clear.
 func (s *Store) AbandonUnownedTurn(ctx context.Context, agentID string) (Snapshot, bool, error) {
 	return s.execTurnState(ctx, agentID,
-		`UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = '' AND (active_turn = 1 OR active_turn_kind <> 0)`,
+		`UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = '' AND (active_turn = 1 OR active_turn_steerable <> 0)`,
 		[]any{nowText(), agentID})
 }
 
@@ -995,13 +983,12 @@ func (s *Store) AbandonUnownedTurn(ctx context.Context, agentID string) (Snapsho
 // makes Snapshot.CanSteer and PrepareSteer refuse the operation. A later
 // classified publish can replace UNSPECIFIED, but it cannot replace a kind
 // that a queue dispatch already recorded.
-func (s *Store) setTurnState(ctx context.Context, agentID string, active bool, kind leapmuxv1.AgentInputKind) (Snapshot, bool, error) {
-	statement := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR active_turn_kind <> 0 OR active_input_id <> '')`
+func (s *Store) setTurnState(ctx context.Context, agentID string, active, steerable bool) (Snapshot, bool, error) {
+	statement := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR active_turn_steerable <> 0 OR active_input_id <> '')`
 	args := []any{nowText(), agentID}
 	if active {
-		kind = normalizedTurnKind(kind)
-		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 0 OR (active_turn_kind = 0 AND ? <> 0))`
-		args = []any{kind, nowText(), agentID, kind}
+		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 0 OR active_turn_steerable <> ?)`
+		args = []any{steerable, nowText(), agentID, steerable}
 	}
 	return s.execTurnState(ctx, agentID, statement, args)
 }
@@ -1071,7 +1058,7 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner int) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
+		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '',
 			paused = 1,
 			pause_reason = CASE WHEN paused = 1 THEN pause_reason ELSE ? END,
 			pause_owner = CASE WHEN paused = 0 OR pause_owner = ? THEN ? ELSE pause_owner END,
@@ -1148,7 +1135,7 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	// Lift the pause that the failure created, so the items behind the retried
@@ -1217,12 +1204,12 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 				_ = tx.Rollback()
 				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
 		} else if active {
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
@@ -1281,8 +1268,8 @@ func attachmentsEqual(a, b []Attachment) bool {
 	return true
 }
 
-func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttachments bool) (Item, []Attachment, bool, error) {
-	var item Item
+func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
+	var item StoredItem
 	var kind, state int32
 	var version int64
 	err := tx.QueryRowContext(ctx, `
@@ -1291,10 +1278,10 @@ func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttac
 		&item.ID, &item.AgentID, &kind, &item.Text, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order, &state, &item.Error,
 		&item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Item{}, nil, false, nil
+		return StoredItem{}, nil, false, nil
 	}
 	if err != nil {
-		return Item{}, nil, false, err
+		return StoredItem{}, nil, false, err
 	}
 	item.Kind = leapmuxv1.AgentInputKind(kind)
 	item.State = leapmuxv1.AgentInputState(state)
@@ -1302,22 +1289,21 @@ func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttac
 	if !loadAttachments {
 		return item, nil, true, nil
 	}
-	attachments, metadata, err := loadItemAttachments(ctx, tx, inputID, true)
-	item.Metadata = metadata
+	attachments, _, err := loadItemAttachments(ctx, tx, inputID, true)
 	return item, attachments, true, err
 }
 
 // headItem reads the first item in queue order. loadAttachments controls
 // whether it also reads every attachment's DATA, which one item can carry up
 // to MaxItemBytes of; a caller that only tests the item's state passes false.
-func headItem(ctx context.Context, tx *sql.Tx, agentID string, loadAttachments bool) (Item, []Attachment, bool, error) {
+func headItem(ctx context.Context, tx *sql.Tx, agentID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
 	var inputID string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index LIMIT 1`, agentID).Scan(&inputID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Item{}, nil, false, nil
+		return StoredItem{}, nil, false, nil
 	}
 	if err != nil {
-		return Item{}, nil, false, err
+		return StoredItem{}, nil, false, err
 	}
 	return getItem(ctx, tx, agentID, inputID, loadAttachments)
 }
@@ -1359,8 +1345,7 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	var snapshot Snapshot
 	var revision int64
 	var reason int32
-	var activeKind int32
-	err := tx.QueryRowContext(ctx, `SELECT agent_id, revision, paused, pause_reason, active_turn, active_turn_kind FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&snapshot.AgentID, &revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &activeKind)
+	err := tx.QueryRowContext(ctx, `SELECT agent_id, revision, paused, pause_reason, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&snapshot.AgentID, &revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{AgentID: agentID}, nil
 	}
@@ -1369,7 +1354,6 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	}
 	snapshot.Revision = uint64(revision)
 	snapshot.PauseReason = leapmuxv1.AgentInputQueuePauseReason(reason)
-	snapshot.ActiveTurnKind = leapmuxv1.AgentInputKind(activeKind)
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, kind,
 			CASE WHEN length(text) > ? THEN substr(text, 1, ?) || '…' ELSE text END,
@@ -1380,7 +1364,7 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 		return Snapshot{}, err
 	}
 	for rows.Next() {
-		var item Item
+		var item StoredItem
 		var kind, state int32
 		var version int64
 		item.AgentID = agentID
@@ -1391,7 +1375,7 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 		item.Kind = leapmuxv1.AgentInputKind(kind)
 		item.State = leapmuxv1.AgentInputState(state)
 		item.Version = uint64(version)
-		snapshot.Items = append(snapshot.Items, item)
+		snapshot.Items = append(snapshot.Items, SnapshotItem{StoredItem: item})
 	}
 	if err := rows.Close(); err != nil {
 		return Snapshot{}, err
@@ -1413,7 +1397,7 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 			snapshot.Items[i].EditOwner == "" &&
 			snapshot.ActiveTurn &&
 			steerableInputKind(snapshot.Items[i].Kind) &&
-			regularTurnKind(snapshot.ActiveTurnKind)
+			snapshot.ActiveTurnSteerable
 	}
 	return snapshot, nil
 }
@@ -1495,7 +1479,7 @@ func writeOrder(ctx context.Context, tx *sql.Tx, agentID string, itemIDs []strin
 // independent: a plan-execution input keeps its marker whether or not it
 // carries attachments, because each renderer keys the collapsible bubble off
 // that marker alone.
-func transcriptContent(item Item, attachments []Attachment) ([]byte, error) {
+func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error) {
 	content := map[string]any{"content": item.Text}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION {
 		content["planExecution"] = true

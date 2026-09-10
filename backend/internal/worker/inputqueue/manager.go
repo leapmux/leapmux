@@ -378,13 +378,13 @@ func (m *Manager) TurnAbandoned(ctx context.Context, agentID string) (Snapshot, 
 	})
 }
 
-func (m *Manager) TurnStarted(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind) (Snapshot, error) {
+func (m *Manager) TurnStarted(ctx context.Context, agentID string, steerable bool) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
 	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
-		return m.store.TurnStarted(ctx, agentID, kind)
+		return m.store.TurnStarted(ctx, agentID, steerable)
 	})
 }
 
@@ -764,13 +764,13 @@ func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDi
 	var record func() (Snapshot, error)
 	switch dispatchOutcome(dispatchErr) {
 	case DispatchBusy:
-		activeTurnKind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+		activeTurnSteerable := false
 		var deliveryErr *DeliveryError
 		if errors.As(dispatchErr, &deliveryErr) {
-			activeTurnKind = deliveryErr.ActiveTurnKind
+			activeTurnSteerable = deliveryErr.ActiveTurnSteerable
 		}
 		record = func() (Snapshot, error) {
-			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnKind)
+			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnSteerable)
 		}
 	case DispatchNotReady:
 		record = func() (Snapshot, error) {

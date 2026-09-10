@@ -116,7 +116,9 @@ const (
 // (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink OutputSink
+	sink ProviderServices
+	acpTurnOutput
+	acpTerminalHost
 	// availableCommands is the last command set that the ACP process
 	// advertised. Goal-capable providers read their command token from it.
 	//
@@ -147,6 +149,8 @@ type acpBase struct {
 	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
 	toolOutputProgress         func(tcu acpToolCallUpdateEnvelope) (total int64, minimum bool, ok bool)
 	toolOutputComplete         func(toolCallID string)
+	sessionMetadataHandler     func(updateType string, metadata map[string]json.RawMessage) bool
+	advertisedSteerMethod      func(initializeResponse []byte) string
 	// subagentPrompts holds each spawn's prompt until the child transcript that
 	// should open with it exists (see acpSubagentObservation.Prompt). Keyed by
 	// the registry RowKey. Guarded by subagentPromptMu; entries are spent when
@@ -220,20 +224,15 @@ type acpBase struct {
 	// as internal pseudo-agents to hide from the picker (OpenCode's
 	// compaction/title/summary). Applied wherever the primary-agent list is built.
 	primaryAgentHiddenFilter func(string) bool
-	// spawnSpansReleased holds the tool calls whose span was already given back
-	// by the late-spawn path, so a re-reported spawn does not re-run the release
-	// on every update. Keyed by toolCallId, dropped when the call ends and
-	// cleared with the session. Guarded by mu.
-	spawnSpansReleased  map[string]struct{}
-	clearProviderState  func()                // called by ClearContext to drop provider state keyed by the OUTGOING session's tool-call ids
-	reapplySettings     func()                // called by ClearContext after session/new to re-apply model, mode, etc.
-	refreshFromSession  func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
-	sessionID           string
-	workingDir          string
-	model               string
-	permissionMode      string
-	currentPrimaryAgent string
-	availableModels     []*ModelInfo
+	clearProviderState       func()                // called by ClearContext to drop provider state keyed by the OUTGOING session's tool-call ids
+	reapplySettings          func()                // called by ClearContext after session/new to re-apply model, mode, etc.
+	refreshFromSession       func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
+	sessionID                string
+	workingDir               string
+	model                    string
+	permissionMode           string
+	currentPrimaryAgent      string
+	availableModels          []*ModelInfo
 	// modelsFieldInfos holds the models reported through the SessionModelState
 	// `models` field at the last full session response (handshake or ClearContext).
 	// A runtime config_option_update carries only the configOptions `model` select,
@@ -271,69 +270,54 @@ type acpBase struct {
 	// targeting a torn-down session. It is acquired BEFORE b.mu, and BELOW optionWriteMu in
 	// the lock order (optionWriteMu -> sessionMu -> b.mu); ClearContext releases it before
 	// reapplySettings, whose RPCs re-acquire the read lock per call.
-	sessionMu         sync.RWMutex
-	turnAssistantText strings.Builder
-	// turnThoughtText buffers consecutive agent_thought_chunk notifications
-	// so token-sized notifications coalesce into one persisted message.
-	// Flushed when interrupted by any non-thought event (preserves chronology
-	// with tool calls) and at end-of-turn.
-	turnThoughtText strings.Builder
-	// terminals holds live ACP host terminal sessions keyed by terminalId.
-	// Guarded by terminalsMu (not b.mu) so wait_for_exit / output readers are
-	// not serialized behind the agent state lock. Tear down in Stop/Wait.
-	// terminalsClosed latches after Stop/Wait so a racing terminal/create
-	// cannot re-seed the map and orphan processes after teardown.
-	terminalsMu         sync.Mutex
-	terminals           map[string]*acpTerminalSession
-	completedTerminals  map[string]acpTerminalResult
-	terminalsClosed     bool
-	toolUpdateState     map[string]map[string]json.RawMessage
-	toolUpdateOrder     map[string]uint64
-	nextToolUpdateOrder uint64
+	sessionMu sync.RWMutex
 }
 
-// handleACPPromptResponse extracts accumulated turn text, persists the prompt
-// response, and resets the tool-use count.
+// handleACPPromptResponse drains one turn and persists its prompt response.
 func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	if resp == nil {
 		b.finishIncompleteACPPrompt(MessageCompletionInterrupted)
 		return
 	}
 
-	// Flush the final segment before the result divider.
-	b.flushThoughtBuffer()
-	b.flushAssistantBuffer()
-	incompleteToolUses := b.persistIncompleteACPTools(MessageCompletionError)
-
-	b.mu.Lock()
-	numToolUses := b.turnToolUses + incompleteToolUses
-	b.turnToolUses = 0
-	b.mu.Unlock()
+	turn := b.drainTurn()
+	b.persistCompletedACPText(AssembledMessageKindReasoning, turn.thoughtText)
+	b.persistCompletedACPText(AssembledMessageKindText, turn.assistantText)
+	b.persistIncompleteACPTools(turn.incompleteTools, MessageCompletionError)
+	b.clearCompletedTerminals()
+	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
 	b.persistPromptResponse("", resp, func(resp json.RawMessage) json.RawMessage {
 		return enrichWithToolUseCount(resp, numToolUses)
 	})
 }
 
+func (b *acpBase) persistCompletedACPText(kind AssembledMessageKind, text string) {
+	if text == "" {
+		return
+	}
+	sessionUpdate := acpUpdateAgentMessageChunk
+	if kind == AssembledMessageKindReasoning {
+		sessionUpdate = acpUpdateAgentThoughtChunk
+	}
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
+	b.persistTextMessage(sessionUpdate, text)
+}
+
 func (b *acpBase) finishIncompleteACPPrompt(completion MessageCompletion) {
-	b.mu.Lock()
-	assistantText := b.turnAssistantText.String()
-	thoughtText := b.turnThoughtText.String()
-	b.turnAssistantText.Reset()
-	b.turnThoughtText.Reset()
-	b.turnToolUses = 0
-	b.mu.Unlock()
+	b.finishACPTurn(b.drainTurn(), completion)
+}
+
+func (b *acpBase) finishACPTurn(turn acpTurnSnapshot, completion MessageCompletion) {
 	if b.isDiscardingOutput() {
-		b.mu.Lock()
-		b.toolUpdateState = nil
-		b.mu.Unlock()
 		b.resetCumulativeOutput()
 		b.sink.ReportProgress(ResetProgress())
 		return
 	}
-	b.persistIncompleteACPText(AssembledMessageKindReasoning, thoughtText, completion)
-	b.persistIncompleteACPText(AssembledMessageKindText, assistantText, completion)
-	b.persistIncompleteACPTools(completion)
+	b.persistIncompleteACPText(AssembledMessageKindReasoning, turn.thoughtText, completion)
+	b.persistIncompleteACPText(AssembledMessageKindText, turn.assistantText, completion)
+	b.persistIncompleteACPTools(turn.incompleteTools, completion)
+	b.clearCompletedTerminals()
 	b.sink.ReportProgress(ResetProgress())
 }
 
@@ -351,87 +335,62 @@ func (b *acpBase) persistIncompleteACPText(kind AssembledMessageKind, text strin
 	}
 }
 
-func (b *acpBase) persistIncompleteACPTools(completion MessageCompletion) int {
-	b.mu.Lock()
-	toolCallIDs := make([]string, 0, len(b.toolUpdateState))
-	updates := make(map[string][]byte, len(b.toolUpdateState))
-	orders := make(map[string]uint64, len(b.toolUpdateState))
-	for toolCallID, fields := range b.toolUpdateState {
-		if _, present := fields["status"]; !present {
-			fields["status"] = json.RawMessage(`"in_progress"`)
+func (b *acpBase) persistIncompleteACPTools(tools []acpIncompleteTool, completion MessageCompletion) {
+	for _, tool := range tools {
+		if tool.encodeErr != nil {
+			slog.Warn("marshal incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
+		} else if annotated, err := AnnotateMessageCompletion(tool.content, completion); err != nil {
+			slog.Warn("annotate incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
+		} else {
+			annotated = b.expandACPTerminalResult(annotated)
+			spanType := b.sink.GetSpanType(tool.toolCallID)
+			if spanType == "" {
+				spanType = acpUpdateToolCall
+			}
+			if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, annotated, SpanInfo{
+				SpanID: tool.toolCallID, SpanType: spanType, Closing: true,
+			}); err != nil {
+				slog.Error("persist incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
+			}
 		}
-		encoded, err := json.Marshal(fields)
-		if err != nil {
-			slog.Warn("marshal incomplete acp tool", "agent_id", b.agentID, "tool_call_id", toolCallID, "error", err)
-			continue
+		b.sink.CloseSpan(tool.toolCallID)
+		b.completeACPToolOutput(tool.toolCallID)
+		if tool.rowKey != "" {
+			if err := b.sink.CloseBackgroundTask(tool.rowKey, incompleteTaskStatus(completion)); err != nil {
+				slog.Warn("close incomplete acp subagent", "agent_id", b.agentID, "row_key", tool.rowKey, "error", err)
+			}
 		}
-		toolCallIDs = append(toolCallIDs, toolCallID)
-		updates[toolCallID] = encoded
-		orders[toolCallID] = b.toolUpdateOrder[toolCallID]
 	}
-	b.toolUpdateState = nil
-	b.toolUpdateOrder = nil
-	b.nextToolUpdateOrder = 0
-	b.mu.Unlock()
-	sort.Slice(toolCallIDs, func(left, right int) bool {
-		if orders[toolCallIDs[left]] != orders[toolCallIDs[right]] {
-			return orders[toolCallIDs[left]] < orders[toolCallIDs[right]]
-		}
-		return toolCallIDs[left] < toolCallIDs[right]
-	})
+}
 
-	for _, toolCallID := range toolCallIDs {
-		annotated, err := AnnotateMessageCompletion(updates[toolCallID], completion)
-		if err != nil {
-			slog.Warn("annotate incomplete acp tool", "agent_id", b.agentID, "tool_call_id", toolCallID, "error", err)
-			continue
-		}
-		annotated = b.expandACPTerminalResult(annotated)
-		spanType := b.sink.GetSpanType(toolCallID)
-		if spanType == "" {
-			spanType = acpUpdateToolCall
-		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, annotated, SpanInfo{
-			SpanID: toolCallID, SpanType: spanType, Closing: true,
-		}); err != nil {
-			slog.Error("persist incomplete acp tool", "agent_id", b.agentID, "tool_call_id", toolCallID, "error", err)
-		}
-		b.sink.CloseSpan(toolCallID)
-		b.clearCumulativeOutput(toolCallID)
-		b.sink.ReportProgress(CompleteOutputProgress(toolCallID))
-		if b.toolOutputComplete != nil {
-			b.toolOutputComplete(toolCallID)
-		}
-		b.forgetSpawnSpanReleased(toolCallID)
+func (b *acpBase) completeACPToolOutput(toolCallID string) {
+	b.clearCumulativeOutput(toolCallID)
+	b.sink.ReportProgress(CompleteOutputProgress(toolCallID))
+	if b.toolOutputComplete != nil {
+		b.toolOutputComplete(toolCallID)
 	}
-	return len(toolCallIDs)
+}
+
+func incompleteTaskStatus(completion MessageCompletion) bgtask.Status {
+	if completion == MessageCompletionInterrupted {
+		return bgtask.StatusStopped
+	}
+	if completion == MessageCompletionComplete {
+		return bgtask.StatusCompleted
+	}
+	return bgtask.StatusFailed
+}
+
+func (b *acpBase) rememberACPToolSubagentRow(toolCallID string, obs *acpSubagentObservation) {
+	if toolCallID == "" || obs == nil || obs.RowKey == "" || obs.CloseRow {
+		return
+	}
+	b.rememberSubagentRow(toolCallID, obs.RowKey)
 }
 
 // acpSessionUpdateHandler is called for session update types not handled by
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
-
-func (b *acpBase) captureGooseSteerRunID(updateType string, metadata map[string]json.RawMessage) bool {
-	if b.providerName != "goose" || updateType != "session_info_update" {
-		return false
-	}
-	var goose map[string]json.RawMessage
-	if json.Unmarshal(metadata["goose"], &goose) != nil {
-		return false
-	}
-	rawRunID, ok := goose["activeRunId"]
-	if !ok {
-		return false
-	}
-	var runID string
-	if string(rawRunID) != "null" && json.Unmarshal(rawRunID, &runID) != nil {
-		return false
-	}
-	b.mu.Lock()
-	b.steerRunID = runID
-	b.mu.Unlock()
-	return true
-}
 
 // acpMethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
@@ -454,6 +413,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	var header struct {
 		SessionUpdate string                     `json:"sessionUpdate"`
 		Role          string                     `json:"role"`
+		Status        string                     `json:"status"`
 		Content       json.RawMessage            `json:"content"`
 		Meta          map[string]json.RawMessage `json:"_meta"`
 	}
@@ -461,7 +421,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		slog.Warn("acp session update unmarshal header failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
-	if b.captureGooseSteerRunID(header.SessionUpdate, header.Meta) {
+	if b.sessionMetadataHandler != nil && b.sessionMetadataHandler(header.SessionUpdate, header.Meta) {
 		return
 	}
 
@@ -479,8 +439,12 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	case acpUpdateToolCall, acpUpdatePlan:
 		b.flushThoughtBuffer()
 		b.flushAssistantBuffer()
-	case acpUpdateToolCallUpdate,
-		acpUpdateUsageUpdate,
+	case acpUpdateToolCallUpdate:
+		if acpStatusIsFinal(header.Status) {
+			b.flushThoughtBuffer()
+			b.flushAssistantBuffer()
+		}
+	case acpUpdateUsageUpdate,
 		acpUpdateUserMessageChunk,
 		acpUpdateAvailableCommandsUpdate,
 		acpUpdateConfigOptionUpdate:
@@ -492,7 +456,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
-		b.bufferACPChunk(header.Content, &b.turnAssistantText, acpUpdateAgentMessageChunk)
+		b.bufferACPChunk(header.Content, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
 		b.handleAgentThoughtChunk(header.Content)
 	case acpUpdateToolCall:
@@ -563,28 +527,23 @@ func (b *acpBase) hasAvailableCommand(command string) bool {
 // created, the reapplySettings callback (if set) re-applies provider-
 // specific settings such as model and permission mode.
 func (b *acpBase) ClearContext() (string, bool) {
-	// Host terminals are bound to the outgoing sessionId; release them before
-	// the swap so requireSession cannot strand them under a mismatch. Do not
-	// latch the store closed — the new session may create terminals again.
+	b.sessionMu.Lock()
+	// Host terminals belong to the outgoing session. Release the current set
+	// before session/new. The session swap releases any set created during it.
 	b.releaseSessionTerminals()
 
-	sessionID, resp, ok := b.newSessionLocked()
+	sessionID, resp, outgoingTurn, ok := b.newSessionLocked()
+	b.sessionMu.Unlock()
 	if !ok {
 		return "", false
 	}
-	b.finishIncompleteACPPrompt(MessageCompletionInterrupted)
-	b.sink.ReportProgress(ResetProgress())
+	b.finishACPTurn(outgoingTurn, MessageCompletionInterrupted)
 	// Same for an unspent spawn prompt. Its row belongs to the OUTGOING session
 	// and will never produce a closing observation to drop it, so without this
 	// it is held for the life of the agent process -- and if the new session
 	// ever reuses the tool-call id, it would open the next transcript on the
 	// previous session's instruction. Codex clears its equivalent map here too.
 	b.subagentPrompts.clear()
-	// Same for the late-spawn notes: they are keyed by the OUTGOING session's
-	// tool-call ids, which will never report again.
-	b.mu.Lock()
-	clear(b.spawnSpansReleased)
-	b.mu.Unlock()
 	// A provider that keys its own state by tool-call id has the same exposure,
 	// for the same reason, so it clears that state here.
 	if b.clearProviderState != nil {
@@ -614,35 +573,34 @@ func (b *acpBase) ClearContext() (string, bool) {
 	return sessionID, true
 }
 
-// newSessionLocked sends session/new and atomically swaps b.sessionID, holding
-// sessionMu.Lock for the whole exchange so no concurrent session/* RPC (each holding
-// sessionMu.RLock around its own capture-and-send via withSessionID) can straddle the
-// replacement -- such a write would otherwise target the just-replaced session. Returns
-// the new session id and the raw response (for refreshFromSession), or ok=false on failure.
-func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ok bool) {
-	b.sessionMu.Lock()
-	defer b.sessionMu.Unlock()
-
+// newSessionLocked sends session/new and atomically swaps b.sessionID. The
+// caller holds sessionMu for the complete exchange. Thus, a concurrent
+// session request cannot target the replaced session.
+func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, outgoing acpTurnSnapshot, ok bool) {
 	_, params := buildACPSessionRequest("", b.currentWorkingDir(), acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return "", nil, false
+		return "", nil, acpTurnSnapshot{}, false
 	}
 	var session struct {
 		SessionID string `json:"sessionId"`
 	}
 	if err := json.Unmarshal(resp, &session); err != nil || session.SessionID == "" {
 		slog.Error("acp ClearContext: invalid response", "provider", b.providerName, "agent_id", b.agentID, "error", err, "response", string(resp))
-		return "", nil, false
+		return "", nil, acpTurnSnapshot{}, false
 	}
 
-	b.mu.Lock()
-	b.sessionID = session.SessionID
-	b.turnAssistantText.Reset()
-	b.turnThoughtText.Reset()
-	b.mu.Unlock()
-	return session.SessionID, resp, true
+	// Lock order: sessionMu -> terminal lifecycle -> turn output -> protocol
+	// state. The second release catches a terminal created during session/new.
+	b.replaceTerminalSession(func() {
+		outgoing = b.replaceSession(func() {
+			b.mu.Lock()
+			b.sessionID = session.SessionID
+			b.mu.Unlock()
+		})
+	})
+	return session.SessionID, resp, outgoing, true
 }
 
 // withSessionID runs fn with the agent's current session id, holding sessionMu.RLock for
@@ -1419,10 +1377,15 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 // startACPHandshake REPLACES that field with a decorator (thinkingResetSink),
 // and a hook that captured the raw sink would keep publishing past the
 // decorator for the life of the process. That flag is the input queue's only
-// dispatch guard, so a decorator that ever overrides SetTurnActive would then
+// dispatch guard, so a decorator that ever overrides SetTurnState would then
 // hold every later message of every ACP provider, silently.
 func (b *acpBase) wireTurnActive() {
-	b.publishTurnActive = func(active bool, seq uint64) { publishTurnActiveTo(b.sink, active, seq) }
+	b.publishTurnActive = func(active bool, seq uint64) {
+		b.mu.Lock()
+		steerable := active && b.steerMethod != ""
+		b.mu.Unlock()
+		publishTurnStateTo(b.sink, TurnState{Active: active, Steerable: steerable}, seq)
+	}
 }
 
 // notePromptActive republishes the turn state from promptActive, the single
@@ -1601,14 +1564,12 @@ func (b *acpBase) extractACPChunkText(content json.RawMessage, kind string) stri
 }
 
 // bufferACPChunk extracts text from a pre-parsed content envelope and counts it.
-func (b *acpBase) bufferACPChunk(content json.RawMessage, builder *strings.Builder, eventType string) {
+func (b *acpBase) bufferACPChunk(content json.RawMessage, eventType string) {
 	text := b.extractACPChunkText(content, eventType)
 	if text == "" {
 		return
 	}
-	b.mu.Lock()
-	builder.WriteString(text)
-	b.mu.Unlock()
+	b.appendAssistant(text)
 	b.sink.ReportProgress(ModelTextProgress("acp:"+eventType, text))
 }
 
@@ -1621,16 +1582,8 @@ func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 	if text == "" {
 		return
 	}
-	b.mu.Lock()
 	// A chunk opens a segment when the thought buffer was empty before it.
-	freshSegment := b.turnThoughtText.Len() == 0
-	if !freshSegment {
-		if sep := thoughtChunkSeparator(b.turnThoughtText.String(), text); sep != "" {
-			b.turnThoughtText.WriteString(sep)
-		}
-	}
-	b.turnThoughtText.WriteString(text)
-	b.mu.Unlock()
+	freshSegment := b.appendThought(text)
 	// A new reasoning segment completes the preceding assistant counter scope.
 	if freshSegment {
 		b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
@@ -1641,28 +1594,21 @@ func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 // flushThoughtBuffer persists the buffered thought text (if any) as one
 // agent_thought_chunk message and resets the buffer.
 func (b *acpBase) flushThoughtBuffer() {
-	b.mu.Lock()
-	text := b.turnThoughtText.String()
-	b.turnThoughtText.Reset()
-	b.mu.Unlock()
-	if text == "" {
-		return
-	}
-	b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentThoughtChunk))
-	b.persistTextMessage(acpUpdateAgentThoughtChunk, text)
+	b.flushTextBuffer(AssembledMessageKindReasoning, acpUpdateAgentThoughtChunk)
 }
 
 // flushAssistantBuffer persists one completed assistant-text segment.
 func (b *acpBase) flushAssistantBuffer() {
-	b.mu.Lock()
-	text := b.turnAssistantText.String()
-	b.turnAssistantText.Reset()
-	b.mu.Unlock()
+	b.flushTextBuffer(AssembledMessageKindText, acpUpdateAgentMessageChunk)
+}
+
+func (b *acpBase) flushTextBuffer(kind AssembledMessageKind, sessionUpdate string) {
+	text := b.takeText(kind)
 	if text == "" {
 		return
 	}
-	b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
-	b.persistTextMessage(acpUpdateAgentMessageChunk, text)
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
+	b.persistTextMessage(sessionUpdate, text)
 }
 
 func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
@@ -1849,20 +1795,14 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	if b.subagentFromToolCall != nil {
 		obs = b.subagentFromToolCall(tc)
 	}
+	b.rememberACPToolSubagentRow(tc.ToolCallID, obs)
 
 	// Persist a final tool call as a closing row. It closes an earlier pending
 	// call when one exists. A call that first arrives final opens no span.
 	if acpStatusIsFinal(tc.Status) {
 		opened := b.sink.GetSpanType(tc.ToolCallID) != ""
-		b.mu.Lock()
-		b.turnToolUses++
-		b.mu.Unlock()
-		b.forgetIncompleteACPTool(tc.ToolCallID)
-		b.clearCumulativeOutput(tc.ToolCallID)
-		b.sink.ReportProgress(CompleteOutputProgress(tc.ToolCallID))
-		if b.toolOutputComplete != nil {
-			b.toolOutputComplete(tc.ToolCallID)
-		}
+		b.completeTool(tc.ToolCallID)
+		b.completeACPToolOutput(tc.ToolCallID)
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
@@ -1871,7 +1811,6 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		if opened {
 			b.sink.CloseSpan(tc.ToolCallID)
 		}
-		b.forgetSpawnSpanReleased(tc.ToolCallID)
 		b.applySubagentObservation(obs)
 		return
 	}
@@ -1895,39 +1834,13 @@ func (b *acpBase) rememberIncompleteACPTool(toolCallID string, update json.RawMe
 	delete(incoming, "status")
 	incoming["sessionUpdate"] = json.RawMessage(`"tool_call_update"`)
 
-	b.mu.Lock()
-	if b.toolUpdateState == nil {
-		b.toolUpdateState = make(map[string]map[string]json.RawMessage)
-	}
-	state := b.toolUpdateState[toolCallID]
-	if state == nil {
-		state = make(map[string]json.RawMessage, len(incoming))
-		b.toolUpdateState[toolCallID] = state
-		if b.toolUpdateOrder == nil {
-			b.toolUpdateOrder = make(map[string]uint64)
-		}
-		b.toolUpdateOrder[toolCallID] = b.nextToolUpdateOrder
-		b.nextToolUpdateOrder++
-	}
-	for key, value := range incoming {
-		if _, exists := state[key]; !exists {
-			state[key] = append(json.RawMessage(nil), value...)
-		}
-	}
-	b.mu.Unlock()
-}
-
-func (b *acpBase) forgetIncompleteACPTool(toolCallID string) {
-	b.mu.Lock()
-	delete(b.toolUpdateState, toolCallID)
-	delete(b.toolUpdateOrder, toolCallID)
-	b.mu.Unlock()
+	b.rememberIncompleteTool(toolCallID, incoming)
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
-	var tcu acpToolCallUpdateEnvelope
-	if err := json.Unmarshal(update, &tcu); err != nil {
-		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+	incoming, tcu, ok := parseACPToolCallUpdate(update)
+	if !ok {
+		slog.Warn("acp tool_call_update decode failed", "provider", b.providerName, "agent_id", b.agentID)
 		return
 	}
 	if tcu.ToolCallID == "" {
@@ -1938,8 +1851,8 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 			b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, total, minimum))
 		}
 	}
-	update = b.mergeACPToolCallUpdate(tcu.ToolCallID, update, acpStatusIsFinal(tcu.Status))
-	if json.Unmarshal(update, &tcu) != nil {
+	update, tcu, ok = b.mergeACPToolCallUpdate(tcu.ToolCallID, incoming, acpStatusIsFinal(tcu.Status))
+	if !ok {
 		return
 	}
 
@@ -1948,6 +1861,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	// Kilo final updates close on the final-status arm below.
 	if b.subagentFromToolCallUpdate != nil {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
+			b.rememberACPToolSubagentRow(tcu.ToolCallID, obs)
 			b.applySubagentObservation(obs)
 			// A spawn recognized only HERE already opened a span at its
 			// tool_call, so give that span back now. Kilo is why: it opens the
@@ -1981,18 +1895,15 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		if full == "" {
 			return
 		}
-		observed := b.observeCumulativeOutput(tcu.ToolCallID, full, strings.HasPrefix(full, limitedOutputPrefix))
+		limited := strings.HasPrefix(full, limitedOutputPrefix)
+		if limited {
+			full = strings.TrimPrefix(full, limitedOutputPrefix)
+		}
+		observed := b.observeCumulativeOutput(tcu.ToolCallID, full, limited)
 		b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, observed.Total, observed.Minimum))
 	case "completed", "failed", "cancelled":
-		b.mu.Lock()
-		b.turnToolUses++
-		b.mu.Unlock()
-		b.clearCumulativeOutput(tcu.ToolCallID)
-		b.sink.ReportProgress(CompleteOutputProgress(tcu.ToolCallID))
-		if b.toolOutputComplete != nil {
-			b.toolOutputComplete(tcu.ToolCallID)
-		}
-		b.forgetSpawnSpanReleased(tcu.ToolCallID)
+		b.completeTool(tcu.ToolCallID)
+		b.completeACPToolOutput(tcu.ToolCallID)
 
 		spanType := b.sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
@@ -2008,42 +1919,35 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 }
 
-func (b *acpBase) mergeACPToolCallUpdate(toolCallID string, update json.RawMessage, final bool) json.RawMessage {
-	var incoming map[string]json.RawMessage
-	if json.Unmarshal(update, &incoming) != nil {
-		return update
+func (b *acpBase) mergeACPToolCallUpdate(
+	toolCallID string,
+	incoming map[string]json.RawMessage,
+	final bool,
+) (json.RawMessage, acpToolCallUpdateEnvelope, bool) {
+	return b.mergeToolUpdate(toolCallID, incoming, final)
+}
+
+func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage, acpToolCallUpdateEnvelope, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(update, &fields) != nil {
+		return nil, acpToolCallUpdateEnvelope{}, false
 	}
-	b.mu.Lock()
-	_, existed := b.toolUpdateState[toolCallID]
-	merged := make(map[string]json.RawMessage)
-	for key, value := range b.toolUpdateState[toolCallID] {
-		merged[key] = append(json.RawMessage(nil), value...)
+	tcu, ok := decodeACPToolCallUpdate(fields)
+	return fields, tcu, ok
+}
+
+func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (acpToolCallUpdateEnvelope, bool) {
+	var update acpToolCallUpdateEnvelope
+	if json.Unmarshal(fields["toolCallId"], &update.ToolCallID) != nil {
+		return acpToolCallUpdateEnvelope{}, false
 	}
-	for key, value := range incoming {
-		merged[key] = append(json.RawMessage(nil), value...)
-	}
-	if final {
-		delete(b.toolUpdateState, toolCallID)
-		delete(b.toolUpdateOrder, toolCallID)
-	} else {
-		if b.toolUpdateState == nil {
-			b.toolUpdateState = make(map[string]map[string]json.RawMessage)
-		}
-		if !existed {
-			if b.toolUpdateOrder == nil {
-				b.toolUpdateOrder = make(map[string]uint64)
-			}
-			b.toolUpdateOrder[toolCallID] = b.nextToolUpdateOrder
-			b.nextToolUpdateOrder++
-		}
-		b.toolUpdateState[toolCallID] = merged
-	}
-	b.mu.Unlock()
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		return update
-	}
-	return encoded
+	_ = json.Unmarshal(fields["status"], &update.Status)
+	_ = json.Unmarshal(fields["content"], &update.Content)
+	_ = json.Unmarshal(fields["title"], &update.Title)
+	update.RawInput = fields["rawInput"]
+	update.RawOutput = fields["rawOutput"]
+	update.Meta = fields["_meta"]
+	return update, true
 }
 
 func (b *acpBase) expandACPTerminalResult(update json.RawMessage) json.RawMessage {
@@ -2066,7 +1970,16 @@ func (b *acpBase) expandACPTerminalResult(update json.RawMessage) json.RawMessag
 			"type":    "content",
 			"content": map[string]interface{}{"type": "text", "text": result.Output},
 		}
-		value["rawOutput"] = result
+		metadata := map[string]interface{}{
+			"exit":      result.ExitCode,
+			"signal":    result.Signal,
+			"truncated": result.Truncated,
+		}
+		value["rawOutput"] = map[string]interface{}{
+			"output":    result.Output,
+			"truncated": result.Truncated,
+			"metadata":  metadata,
+		}
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -2199,24 +2112,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 // true, so the release runs once however many times the detector re-reports the
 // spawn.
 func (b *acpBase) markSpawnSpanReleased(toolCallID string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.spawnSpansReleased == nil {
-		b.spawnSpansReleased = make(map[string]struct{})
-	}
-	if _, done := b.spawnSpansReleased[toolCallID]; done {
-		return false
-	}
-	b.spawnSpansReleased[toolCallID] = struct{}{}
-	return true
-}
-
-// forgetSpawnSpanReleased drops the note when the tool call ends, mirroring the
-// per-tool-call cleanup of cumulativeBroadcast beside it.
-func (b *acpBase) forgetSpawnSpanReleased(toolCallID string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.spawnSpansReleased, toolCallID)
+	return b.markSpanReleased(toolCallID)
 }
 
 // acpStatusIsFinal reports whether an ACP tool_call status ends the call. These
@@ -2424,7 +2320,10 @@ func (b *acpBase) startACPHandshake(
 	}
 	// Write under the lock. The note at the session-ID write below gives the
 	// reason.
-	steerMethod := advertisedACPSteerMethod(b.providerName, initResp)
+	steerMethod := ""
+	if b.advertisedSteerMethod != nil {
+		steerMethod = b.advertisedSteerMethod(initResp)
+	}
 	b.mu.Lock()
 	b.steerMethod = steerMethod
 	b.mu.Unlock()
@@ -2475,19 +2374,7 @@ func (b *acpBase) startACPHandshake(
 	return session, nil
 }
 
-func advertisedACPSteerMethod(providerName string, initializeResponse []byte) string {
-	var namespace, candidate string
-	switch providerName {
-	case "goose":
-		namespace = "goose"
-		candidate = "_goose/unstable/session/steer"
-	case "reasonix":
-		namespace = "reasonix.io"
-		candidate = "_reasonix.io/session/steer"
-	}
-	if candidate == "" {
-		return ""
-	}
+func parseACPAdvertisedMethod(initializeResponse []byte, namespace, expectedMethod string) string {
 	var response struct {
 		AgentCapabilities struct {
 			Meta map[string]json.RawMessage `json:"_meta"`
@@ -2501,8 +2388,8 @@ func advertisedACPSteerMethod(providerName string, initializeResponse []byte) st
 			Method string `json:"method"`
 		} `json:"sessionSteer"`
 	}
-	if json.Unmarshal(response.AgentCapabilities.Meta[namespace], &capability) == nil && capability.SessionSteer.Method == candidate {
-		return candidate
+	if json.Unmarshal(response.AgentCapabilities.Meta[namespace], &capability) == nil && capability.SessionSteer.Method == expectedMethod {
+		return expectedMethod
 	}
 	return ""
 }
@@ -2528,7 +2415,7 @@ type acpStartSpec[T any] struct {
 // (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
 // the acpStartSpec fields: the binary/args, an optional rc marker, the session
 // config, the hooks set in configure, and the post-handshake apply step.
-func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (_ Agent, retErr error) {
+func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, spec acpStartSpec[T]) (_ Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, spec.provider)
@@ -2572,6 +2459,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	// so assigning it to the embedded processBase doesn't copy a held lock.
 	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
 	b.sink = sink
+	b.bind(b)
 	b.wireTurnActive()
 	b.model = opts.Model()
 	// Default settings-lifecycle hooks shared by every mode-bearing ACP provider:
@@ -3917,7 +3805,11 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 // PublishTurnActive satisfies Agent for every ACP provider. The base already
 // republishes promptActive from one place, so this only gives that place the
 // interface's name.
-func (b *acpBase) PublishTurnActive() leapmuxv1.AgentInputKind {
+func (b *acpBase) PublishTurnActive() TurnState {
+	b.mu.Lock()
+	active := b.promptActive
+	steerable := active && b.steerMethod != ""
+	b.mu.Unlock()
 	b.notePromptActive()
-	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
+	return TurnState{Active: active, Steerable: steerable}
 }

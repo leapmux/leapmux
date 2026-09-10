@@ -153,9 +153,8 @@ describe('createAgentSessionStore', () => {
   it('should keep a false output minimum value', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('agent-1', { outputBytes: 2048, outputBytesMinimum: false })
-      const info = store.getInfo('agent-1')
-      expect(info.outputBytesMinimum).toBe(false)
+      store.applyProgress('agent-1', { revision: 1, output: { bytes: 2048, minimum: false } })
+      expect(store.getProgress('agent-1').output?.minimum).toBe(false)
       dispose()
     })
   })
@@ -174,14 +173,24 @@ describe('createAgentSessionStore', () => {
 })
 
 describe('agentSessionStore thinkingTokens', () => {
+  it('rejects a stale replay after a newer progress reset', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.applyProgress('ordered', { revision: 2 })
+      store.applyProgress('ordered', { revision: 1, thinkingTokens: 500 })
+      expect(store.getProgress('ordered')).toEqual({ revision: 2 })
+      dispose()
+    })
+  })
+
   it('merges the thinking-token estimate without clobbering other keys', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-merge', { totalCostUsd: 0.5 })
-      store.updateInfo('a-merge', { thinkingTokens: 230 })
+      store.applyProgress('a-merge', { revision: 1, thinkingTokens: 230 })
 
       const info = store.getInfo('a-merge')
-      expect(info.thinkingTokens).toBe(230)
+      expect(store.getProgress('a-merge').thinkingTokens).toBe(230)
       expect(info.totalCostUsd).toBe(0.5)
       dispose()
     })
@@ -190,12 +199,13 @@ describe('agentSessionStore thinkingTokens', () => {
   it('clearThinkingTokens drops only the estimate', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-clear', { totalCostUsd: 0.5, thinkingTokens: 230 })
+      store.updateInfo('a-clear', { totalCostUsd: 0.5 })
+      store.applyProgress('a-clear', { revision: 1, thinkingTokens: 230 })
 
       store.clearThinkingTokens('a-clear')
 
       const info = store.getInfo('a-clear')
-      expect(info.thinkingTokens).toBeUndefined()
+      expect(store.getProgress('a-clear').thinkingTokens).toBeUndefined()
       expect(info.totalCostUsd).toBe(0.5)
       dispose()
     })
@@ -204,19 +214,18 @@ describe('agentSessionStore thinkingTokens', () => {
   it('clearOutputBytes drops both output fields and keeps other state', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-output', {
-        totalCostUsd: 0.5,
+      store.updateInfo('a-output', { totalCostUsd: 0.5 })
+      store.applyProgress('a-output', {
+        revision: 1,
         thinkingTokens: 20,
-        outputBytes: 2048,
-        outputBytesMinimum: true,
+        output: { bytes: 2048, minimum: true },
       })
 
       store.clearOutputBytes('a-output')
 
       const info = store.getInfo('a-output')
-      expect(info.outputBytes).toBeUndefined()
-      expect(info.outputBytesMinimum).toBeUndefined()
-      expect(info.thinkingTokens).toBe(20)
+      expect(store.getProgress('a-output').output).toBeUndefined()
+      expect(store.getProgress('a-output').thinkingTokens).toBe(20)
       expect(info.totalCostUsd).toBe(0.5)
       dispose()
     })
@@ -247,7 +256,8 @@ describe('agentSessionStore thinkingTokens', () => {
   it('persists the cleared state so a reload does not resurrect the count', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-persist', { totalCostUsd: 0.5, thinkingTokens: 230 })
+      store.updateInfo('a-persist', { totalCostUsd: 0.5 })
+      store.applyProgress('a-persist', { revision: 1, thinkingTokens: 230 })
       store.clearThinkingTokens('a-persist')
       dispose()
     })
@@ -263,11 +273,15 @@ describe('agentSessionStore thinkingTokens', () => {
   it('writes nothing at all for an estimate-only update', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-eph-only', { thinkingTokens: 500, outputBytes: 2048, outputBytesMinimum: true })
+      store.applyProgress('a-eph-only', {
+        revision: 1,
+        thinkingTokens: 500,
+        output: { bytes: 2048, minimum: true },
+      })
 
       // The estimate is live in the reactive store...
-      expect(store.getInfo('a-eph-only').thinkingTokens).toBe(500)
-      expect(store.getInfo('a-eph-only').outputBytes).toBe(2048)
+      expect(store.getProgress('a-eph-only').thinkingTokens).toBe(500)
+      expect(store.getProgress('a-eph-only').output?.bytes).toBe(2048)
       dispose()
     })
     // ...but an estimate-only update skips the write entirely (no entry is even
@@ -280,8 +294,9 @@ describe('agentSessionStore thinkingTokens', () => {
       const store = createAgentSessionStore()
       // A single update carrying both a persisted key and the ephemeral
       // estimate: the estimate is live in memory but must never reach disk.
-      store.updateInfo('a-ephemeral', { totalCostUsd: 0.5, thinkingTokens: 230 })
-      expect(store.getInfo('a-ephemeral').thinkingTokens).toBe(230)
+      store.updateInfo('a-ephemeral', { totalCostUsd: 0.5 })
+      store.applyProgress('a-ephemeral', { revision: 1, thinkingTokens: 230 })
+      expect(store.getProgress('a-ephemeral').thinkingTokens).toBe(230)
       dispose()
     })
 

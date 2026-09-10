@@ -82,11 +82,11 @@ type Service struct {
 	// contract.
 	ControlIPC ControlIPCFactory
 
-	startAgentFn func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+	startAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	// startBackgroundAgentFn is startAgentFn's sibling for a spawn nobody waits
 	// on. The two are separate seams because they reach different manager entry
 	// points, and only the background one takes a startup permit.
-	startBackgroundAgentFn func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+	startBackgroundAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
@@ -596,17 +596,12 @@ func New(cfg Config) *Service {
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
-	svc.Output.SetTurnActiveFunc(func(agentID string, active bool, kind leapmuxv1.AgentInputKind) {
+	svc.Output.SetTurnStateFunc(func(agentID string, state agent.TurnState) {
 		var err error
 		what := "turn end"
-		if active {
+		if state.Active {
 			what = "turn start"
-			// A provider-reported turn can lack an input kind. The live steering
-			// capability supplies the missing fact: such a provider accepts an
-			// explicit steer during any active turn. A known kind still wins, so a
-			// queue-dispatched compaction stays non-steerable.
-			kind = agent.ClassifyTurnForSteering(kind, queueAdapter.SupportsSteering(agentID))
-			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, kind)
+			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, state.Steerable)
 		} else {
 			_, err = svc.InputQueue.TurnEnded(bgCtx(), agentID)
 		}
@@ -640,15 +635,25 @@ func New(cfg Config) *Service {
 	return svc
 }
 
-func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 	// A new process owns no turn. See NoteAgentProcessStarted for why this does
 	// not wait for the old process's exit handler to have said so.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
 	svc.abandonUnownedTurn(opts.AgentID)
+	var settings map[string]string
+	var err error
 	if svc.startAgentFn != nil {
-		return svc.startAgentFn(ctx, opts, sink)
+		settings, err = svc.startAgentFn(ctx, opts, sink)
+	} else {
+		settings, err = svc.Agents.StartAgent(ctx, opts, sink)
 	}
-	return svc.Agents.StartAgent(ctx, opts, sink)
+	if err == nil {
+		// A handshake can publish provider activity before the process accepts
+		// input. Clear that unowned state after the handshake. A concurrent queue
+		// dispatch records its input ID, so TurnAbandoned preserves its turn.
+		svc.abandonUnownedTurn(opts.AgentID)
+	}
+	return settings, err
 }
 
 // startBackgroundAgent is startAgent for a spawn nobody is waiting on. It is the
@@ -659,14 +664,21 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // It has its own test seam. Sharing startAgentFn would let a resume test stub
 // the interactive entry point and then quietly exercise the wrong one, which is
 // exactly the distinction this pair exists to make.
-func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 	// Same rule as startAgent: a new process owns no turn.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
 	svc.abandonUnownedTurn(opts.AgentID)
+	var settings map[string]string
+	var err error
 	if svc.startBackgroundAgentFn != nil {
-		return svc.startBackgroundAgentFn(ctx, opts, sink)
+		settings, err = svc.startBackgroundAgentFn(ctx, opts, sink)
+	} else {
+		settings, err = svc.Agents.StartBackgroundAgent(ctx, opts, sink)
 	}
-	return svc.Agents.StartBackgroundAgent(ctx, opts, sink)
+	if err == nil {
+		svc.abandonUnownedTurn(opts.AgentID)
+	}
+	return settings, err
 }
 
 // restartAgentLocked preserves Manager.RestartAgent's stop-before-start ordering
@@ -679,7 +691,7 @@ func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options
 // same tab id, and two relaunches for one tab that interleaved those two steps
 // would leave one socket registered to nobody. LockAgent is not reentrant, so
 // the mint and the restart cannot each take it.
-func (svc *Service) restartAgentLocked(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+func (svc *Service) restartAgentLocked(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 	svc.Agents.StopAndWaitAgent(opts.AgentID)
 	return svc.startAgent(ctx, opts, sink)
 }

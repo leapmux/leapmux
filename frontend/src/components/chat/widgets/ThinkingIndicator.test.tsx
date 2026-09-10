@@ -68,10 +68,10 @@ describe('thinking indicator token count', () => {
   })
 
   it('renders no output count when the byte count is absent or zero', () => {
-    const { queryByText: queryAbsent } = renderVisible(undefined, undefined)
-    expect(queryAbsent(/\b(?:B|KB|MB|GB)\b/)).toBeNull()
-    const { queryByText: queryZero } = renderVisible(undefined, 0)
-    expect(queryZero(/\b(?:B|KB|MB|GB)\b/)).toBeNull()
+    const { queryByTestId: queryAbsent } = renderVisible(undefined, undefined)
+    expect(queryAbsent('thinking-output-count')).toBeNull()
+    const { queryByTestId: queryZero } = renderVisible(undefined, 0)
+    expect(queryZero('thinking-output-count')).toBeNull()
   })
 
   it('renders token and output counters together', () => {

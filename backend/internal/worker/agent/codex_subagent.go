@@ -95,6 +95,22 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
 		if finished {
+			if childAgentID == "" {
+				childAgentID = a.rememberedChildAgent(threadID)
+			}
+			if childAgentID != "" {
+				completion := MessageCompletionError
+				switch status {
+				case bgtask.StatusCompleted:
+					completion = MessageCompletionComplete
+				case bgtask.StatusStopped, bgtask.StatusInterrupted:
+					completion = MessageCompletionInterrupted
+				default:
+					// Failed and unexpected active states keep the error completion.
+				}
+				a.flushCodexChildGeneration(childAgentID, completion)
+				a.persistIncompleteCodexTools(childAgentID, false, completion)
+			}
 			if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
 				slog.Warn("codex collab registry close failed", "thread", threadID, "error", err)
 			}
@@ -328,11 +344,9 @@ func (a *CodexAgent) SteerChildInput(childKey, content string, attachments []*le
 	return nil
 }
 
-func (a *CodexAgent) ActiveChildTurnKind(childKey string) leapmuxv1.AgentInputKind {
-	if a.childTurnID(childKey) == "" {
-		return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED
-	}
-	return leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE
+func (a *CodexAgent) ActiveChildTurnState(childKey string) TurnState {
+	active := a.childTurnID(childKey) != ""
+	return TurnState{Active: active, Steerable: active}
 }
 
 func codexChildInput(content string, attachments []*leapmuxv1.Attachment) string {

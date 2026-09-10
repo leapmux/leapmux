@@ -62,6 +62,14 @@ func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 
+	if event.SessionID != "" {
+		a.mu.Lock()
+		currentSessionID := a.sessionID
+		a.mu.Unlock()
+		if currentSessionID != "" && event.SessionID != currentSessionID {
+			return
+		}
+	}
 	if event.Seq > 0 {
 		a.mu.Lock()
 		// An event at or below the watermark was already dispatched. A subscribe replays
@@ -182,12 +190,12 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
-func (a *zcodeAgent) PublishTurnActive() leapmuxv1.AgentInputKind {
+func (a *zcodeAgent) PublishTurnActive() TurnState {
 	a.mu.Lock()
 	active := a.turnActive
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	return publishTurnActiveTo(a.sink, active, seq)
+	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.
@@ -336,6 +344,12 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 		return
 	}
 	if background {
+		completion := MessageCompletionError
+		if event.Type == contracts.ZCodeEventTurnCompleted {
+			completion = MessageCompletionComplete
+		}
+		a.flushZCodeGeneration(completion)
+		a.persistIncompleteZCodeTools(completion)
 		// The background turn's own outcome is still worth recording, as a notification
 		// rather than as the user's turn end.
 		a.persistZCodeNotification(event)
@@ -405,14 +419,14 @@ func (a *zcodeAgent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		}
 		a.flushZCodeGenerationScope(zcodeReasoningScope(payload.AssistantMessageID), MessageCompletionComplete)
 		textScope := zcodeTextScope(payload.AssistantMessageID)
-		a.generationBuffer.Append(textScope, AssembledMessageKindText, payload.Delta)
+		a.generationBuffer.Append(textScope, AssembledMessageKindText, payload.Delta, joinVerbatim)
 		a.sink.ReportProgress(ModelTextProgress(textScope, payload.Delta))
 	case ZCodeStreamReasoningDelta:
 		if payload.Delta == "" {
 			return
 		}
 		reasoningScope := zcodeReasoningScope(payload.AssistantMessageID)
-		a.generationBuffer.Append(reasoningScope, AssembledMessageKindReasoning, payload.Delta)
+		a.generationBuffer.Append(reasoningScope, AssembledMessageKindReasoning, payload.Delta, joinVerbatim)
 		a.sink.ReportProgress(ModelTextProgress(reasoningScope, payload.Delta))
 
 	case ZCodeStreamToolInputStart:
@@ -600,6 +614,7 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	// its predecessor's byte totals as already-broadcast. Both streams are keyed
 	// separately, so both are dropped.
 	a.clearCumulativeOutput(payload.ToolCallID)
+	a.zcodeSinkForToolCall(payload.ToolCallID).ReportProgress(ResetOutputProgress(payload.ToolCallID))
 	// This used to broadcast a `zcode_running_tool` session-info key that nothing
 	// read. The shared channel for "which tool is running" is now
 	// contracts.SessionInfoKeyRunningTool, which the tool card renders as a live
@@ -704,6 +719,11 @@ func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
 		sink.CloseSpan(toolCallID)
 		a.clearCumulativeOutput(toolCallID)
 		sink.ReportProgress(CompleteOutputProgress(toolCallID))
+		a.applyZCodeSubagentEnd(tool)
+		a.closeZCodeSubagentChild(tool)
+		a.children.forgetTool(toolCallID)
+		a.children.forgetTitle(toolCallID)
+		a.toolCallPrompts.take(toolCallID)
 	}
 }
 
@@ -832,18 +852,17 @@ func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion Messag
 		a.generationBuffer.Reset()
 		return
 	}
-	raw, ok, err := a.generationBuffer.Finish(scopeID, completion)
+	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+	})
 	if err != nil {
-		slog.Warn("zcode marshal reasoning", "agent_id", a.agentID, "error", err)
+		slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
 		return
 	}
 	if !ok {
 		return
 	}
 	a.sink.ReportProgress(CompleteModelProgress(scopeID))
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-		slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
-	}
 }
 
 func (a *zcodeAgent) flushZCodeGenerationKind(kind AssembledMessageKind, completion MessageCompletion) {
@@ -851,12 +870,7 @@ func (a *zcodeAgent) flushZCodeGenerationKind(kind AssembledMessageKind, complet
 		a.generationBuffer.Reset()
 		return
 	}
-	rows, err := a.generationBuffer.FinishKind(kind, completion)
-	if err != nil {
-		slog.Warn("zcode marshal generation", "agent_id", a.agentID, "error", err)
-		return
-	}
-	a.persistZCodeGenerationRows(rows)
+	a.persistZCodeGenerationKind(kind, completion)
 }
 
 func (a *zcodeAgent) flushZCodeGeneration(completion MessageCompletion) {
@@ -864,20 +878,19 @@ func (a *zcodeAgent) flushZCodeGeneration(completion MessageCompletion) {
 		a.generationBuffer.Reset()
 		return
 	}
-	rows, err := a.generationBuffer.FinishAll(completion)
-	if err != nil {
-		slog.Warn("zcode marshal reasoning", "agent_id", a.agentID, "error", err)
-		return
+	if err := a.generationBuffer.PersistAll(completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.agentID, "error", err)
 	}
-	a.persistZCodeGenerationRows(rows)
 }
 
-func (a *zcodeAgent) persistZCodeGenerationRows(rows [][]byte) {
-	for _, raw := range rows {
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-			slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
-		}
+func (a *zcodeAgent) persistZCodeGenerationKind(kind AssembledMessageKind, completion MessageCompletion) {
+	if err := a.generationBuffer.PersistKind(kind, completion, a.persistZCodeGenerationRow); err != nil {
+		slog.Error("zcode persist generation", "agent_id", a.agentID, "error", err)
 	}
+}
+
+func (a *zcodeAgent) persistZCodeGenerationRow(raw []byte) error {
+	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
 }
 
 func zcodeReasoningScope(assistantMessageID string) string {

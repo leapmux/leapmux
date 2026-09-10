@@ -562,6 +562,16 @@ ${blocks.join('\n\n')}
 // worker-vocab: the worker's wire vocabulary
 // ---------------------------------------------------------------------------
 
+function assembledMessageEntries(v) {
+  return [
+    ...Object.entries(v.fields).map(([key, token]) => [`Field${key}`, token]),
+    ['Type', v.types.Assembled],
+    ...Object.entries(v.kinds).map(([key, token]) => [`Kind${key}`, token]),
+    ...Object.entries(v.completions).map(([key, token]) => [`Completion${key}`, token]),
+    ['MetadataField', v.metadata.Field],
+  ]
+}
+
 export function checkWorkerVocab(v) {
   const entries = Object.entries(v.notificationTypes)
   const tokens = entries.map(([, token]) => token)
@@ -579,9 +589,11 @@ export function checkWorkerVocab(v) {
   mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the agents row stores "" for "no goal", and every reader tests for it')
   const transitions = Object.values(v.goalTransitions)
   mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
-  const assembledTokens = Object.values(v.assembledMessage ?? {})
-  mustBe(assembledTokens.length > 0, 'worker-vocab.json', 'assembledMessage must hold at least one entry')
-  mustBe(new Set(assembledTokens).size === assembledTokens.length, 'worker-vocab.json', 'two assembled-message entries share one wire token')
+  for (const [group, values] of Object.entries(v.assembledMessage ?? {})) {
+    const tokens = Object.values(values)
+    mustBe(tokens.length > 0, 'worker-vocab.json', `assembledMessage.${group} must hold at least one entry`)
+    mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', `two assembled-message ${group} entries share one wire token`)
+  }
   return {}
 }
 
@@ -592,7 +604,7 @@ export function emitGoWorkerVocab(v) {
     .map(([key, token]) => ({ name: `GoalStatusToken${key}`, value: jsonString(token) })))
   const goalTransitionBlock = goConstBlock(Object.entries(v.goalTransitions)
     .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
-  const assembledMessageBlock = goConstBlock(Object.entries(v.assembledMessage)
+  const assembledMessageBlock = goConstBlock(assembledMessageEntries(v.assembledMessage)
     .map(([key, token]) => ({ name: `AssembledMessage${key}`, value: jsonString(token) })))
   return `${GO_HEADER('worker-vocab.json')}package contracts
 
@@ -658,7 +670,7 @@ export function emitTsWorkerVocab(v) {
   const goalTransitionEntries = Object.entries(v.goalTransitions)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
-  const assembledMessageEntries = Object.entries(v.assembledMessage)
+  const assembledEntries = assembledMessageEntries(v.assembledMessage)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   return `${TS_HEADER('worker-vocab.json')}
@@ -703,7 +715,7 @@ export type GoalTransitionToken = typeof GOAL_TRANSITION[keyof typeof GOAL_TRANS
 
 /** Fields and values of Worker-assembled text rows. */
 export const ASSEMBLED_MESSAGE = {
-${assembledMessageEntries}
+${assembledEntries}
 } as const
 
 /** Model sentinels: the account-default model, and the auto effort. */

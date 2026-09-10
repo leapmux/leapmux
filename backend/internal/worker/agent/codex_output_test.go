@@ -24,7 +24,7 @@ func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, 
 	return nil
 }
 
-func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
+func newCodexAgentWithSink(sink ProviderServices) *CodexAgent {
 	a := &CodexAgent{
 		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID: "test-agent",
@@ -905,13 +905,14 @@ func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) 
 
 	sink := &testSink{persistErr: fmt.Errorf("database unavailable")}
 	agent := newCodexAgentWithSink(sink)
-	agent.reasoningStreamKind = map[string]string{"reason-1": codexReasoningKindSummary}
+	key := codexReasoningKey("main-thread", "reason-1")
+	agent.reasoningStreamKind = map[string]string{key: codexReasoningKindSummary}
 
 	completedParams := `{"threadId":"main-thread","turnId":"turn1","item":{"type":"reasoning","id":"reason-1","summary":["durable summary"],"content":[]}}`
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":`+completedParams+`}`)))
 
 	agent.mu.Lock()
-	_, stillLocked := agent.reasoningStreamKind["reason-1"]
+	_, stillLocked := agent.reasoningStreamKind[key]
 	agent.mu.Unlock()
 	assert.False(t, stillLocked, "a completed reasoning item must release bookkeeping after a persist error")
 }
@@ -1149,7 +1150,7 @@ func TestFlushCodexGenerationHonorsDiscardOutput(t *testing.T) {
 
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
-	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "restart noise")
+	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "restart noise", joinVerbatim)
 	agent.DiscardOutput()
 	agent.flushCodexGeneration(MessageCompletionInterrupted)
 
@@ -1166,7 +1167,7 @@ func TestCodexWaitMarksAnIntentionalStopAsInterrupted(t *testing.T) {
 	agent.mu.Lock()
 	agent.stopped = true
 	agent.mu.Unlock()
-	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "partial answer")
+	agent.generationBuffer.Append("message-1", AssembledMessageKindText, "partial answer", joinVerbatim)
 
 	require.NoError(t, agent.Wait())
 	require.Len(t, sink.Messages(), 1)
@@ -1192,6 +1193,117 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"},
 		"_leapmux":{"completion":"interrupted"}
 	}`, string(result.Content))
+}
+
+func TestHandleCodexOutput_InterruptedReasoningPreservesSummaryParts(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	for _, raw := range []string{
+		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"**Verifying terminal release synchronization"}}`,
+		`{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":1}}`,
+		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":1,"delta":"Analyzing lock acquisition order and concurrency**"}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`,
+	} {
+		handleCodexOutput(agent, parseLine([]byte(raw)))
+	}
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content),
+		`"text":"**Verifying terminal release synchronization\n\nAnalyzing lock acquisition order and concurrency**"`)
+}
+
+func TestHandleCodexOutput_DuplicateSummaryPartDoesNotAddAParagraph(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	for _, raw := range []string{
+		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"one"}}`,
+		`{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0}}`,
+		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"two"}}`,
+		`{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":1}}`,
+		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":1,"delta":"three"}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`,
+	} {
+		handleCodexOutput(agent, parseLine([]byte(raw)))
+	}
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content), `"text":"onetwo\n\nthree"`)
+}
+
+func TestHandleCodexOutput_KeepsReasoningTextDeltasVerbatim(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	for _, raw := range []string{
+		`{"method":"item/reasoning/textDelta","params":{"threadId":"main-thread","itemId":"reason-1","delta":"**Verifying terminal release synchronization"}}`,
+		`{"method":"item/reasoning/textDelta","params":{"threadId":"main-thread","itemId":"reason-1","delta":"Analyzing lock acquisition order and concurrency**"}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`,
+	} {
+		handleCodexOutput(agent, parseLine([]byte(raw)))
+	}
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content),
+		`"text":"**Verifying terminal release synchronizationAnalyzing lock acquisition order and concurrency**"`)
+}
+
+func TestHandleCodexOutput_InterruptedReasoningPrefersLateSummary(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"threadId":"main-thread","itemId":"reason-1","delta":"raw detail"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"summary"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`)))
+
+	require.NotEmpty(t, sink.Messages())
+	assert.Contains(t, string(sink.Messages()[0].Content), `"text":"summary"`)
+	assert.NotContains(t, string(sink.Messages()[0].Content), "raw detail")
+}
+
+func TestHandleCodexOutput_InterruptedMCPItemGetsAClosingRowAndToolCount(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"mcpToolCall","id":"mcp-1","status":"inProgress","server":"docs","tool":"search"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[]}}}`)))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 3)
+	assert.True(t, sink.Messages()[1].Closing)
+	assert.Contains(t, string(sink.Messages()[1].Content), `"completion":"interrupted"`)
+	assert.Contains(t, string(sink.Messages()[2].Content), `"num_tool_uses":1`)
+}
+
+func TestHandleCodexOutput_LateChildRegistrationMovesBufferedText(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"child-1","itemId":"message-1","delta":"early child text"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"completed","receiverThreadIds":["child-1"],"prompt":"work","agentsStates":{"child-1":{"status":"running"}}}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"interrupted","items":[]}}}`)))
+
+	for _, message := range sink.Messages() {
+		assert.NotContains(t, string(message.Content), "early child text")
+	}
+	child := sink.ChildSink("child-of-spawn-1").(*testSink)
+	combined := ""
+	for _, message := range child.Messages() {
+		combined += string(message.Content)
+	}
+	assert.Contains(t, combined, "early child text")
 }
 
 func TestHandleCodexOutput_CompletedItemDiscardsTheIdlessDeltaFallback(t *testing.T) {
@@ -1439,7 +1551,7 @@ func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T
 	// AND releases r1's stream-kind lock so the map stays bounded.
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"reasoning","id":"r1","summary":[{"text":"done"}]}}}`)))
 	agent.mu.Lock()
-	_, stillLocked := agent.reasoningStreamKind["r1"]
+	_, stillLocked := agent.reasoningStreamKind[codexReasoningKey("main-thread", "r1")]
 	agent.mu.Unlock()
 	assert.False(t, stillLocked, "the completed item's stream-kind lock is released")
 }
@@ -1551,7 +1663,8 @@ func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly
 			// Lock reasoning item r1 onto its first-seen sub-stream kind.
 			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
 			agent.mu.Lock()
-			_, locked := agent.reasoningStreamKind["r1"]
+			key := codexReasoningKey("main-thread", "r1")
+			_, locked := agent.reasoningStreamKind[key]
 			agent.mu.Unlock()
 			require.True(t, locked, "the reasoning item is locked before the turn boundary")
 
@@ -1562,7 +1675,7 @@ func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly
 			handleCodexOutput(agent, parseLine([]byte(tc.turnStarted)))
 
 			agent.mu.Lock()
-			_, stillLocked := agent.reasoningStreamKind["r1"]
+			_, stillLocked := agent.reasoningStreamKind[key]
 			agent.mu.Unlock()
 			assert.Equal(t, !tc.wantCleared, stillLocked)
 		})

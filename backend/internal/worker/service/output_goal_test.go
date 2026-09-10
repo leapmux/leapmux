@@ -24,7 +24,7 @@ import (
 
 // setupGoalTest provisions a worker service with one agent and returns the
 // sink, the agent id, and a reader for the stored goal columns.
-func setupGoalTest(t *testing.T) (*Service, agent.OutputSink, string, func() db.Agent) {
+func setupGoalTest(t *testing.T) (*Service, agent.ProviderServices, string, func() db.Agent) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)

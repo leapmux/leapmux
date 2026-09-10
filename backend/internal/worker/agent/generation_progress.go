@@ -19,6 +19,7 @@ const (
 	ProgressOutputTotal
 	ProgressModelComplete
 	ProgressOutputComplete
+	ProgressOutputReset
 	ProgressModelReset
 	ProgressReset
 )
@@ -61,6 +62,10 @@ func CompleteOutputProgress(scopeID string) ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressOutputComplete, ScopeID: scopeID}
 }
 
+func ResetOutputProgress(scopeID string) ProgressUpdate {
+	return ProgressUpdate{Operation: ProgressOutputReset, ScopeID: scopeID}
+}
+
 func ResetProgress() ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressReset}
 }
@@ -90,13 +95,15 @@ type ProgressSnapshot struct {
 
 // ProgressCounter applies provider observations and produces monotonic counters.
 type ProgressCounter struct {
-	scopes map[string]*progressScope
-	last   ProgressSnapshot
+	scopes              map[string]*progressScope
+	last                ProgressSnapshot
+	outputMinimumScopes int
 }
 
 func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) {
 	if update.Operation == ProgressReset {
 		c.scopes = nil
+		c.outputMinimumScopes = 0
 		changed := c.last != (ProgressSnapshot{})
 		c.last = ProgressSnapshot{}
 		return c.last, changed
@@ -127,6 +134,8 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		scope = &progressScope{}
 		c.scopes[update.ScopeID] = scope
 	}
+	oldModel, oldOutput := scope.currentModelTotal(), scope.currentOutputTotal()
+	oldMinimum := scope.hasOutputMinimum()
 	switch update.Operation {
 	case ProgressModelText:
 		if update.Text != "" {
@@ -175,12 +184,37 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 			scope.outputMinimum = false
 		}
 		scope.outputActive = false
+	case ProgressOutputReset:
+		scope.outputActive = false
+		scope.outputRetained = 0
+		scope.outputBytes = 0
+		scope.outputMinimum = false
+		scope.outputRetainedMinimum = false
 	case ProgressModelReset, ProgressReset:
 		return c.last, false
 	}
-	c.dropFinishedKind(ProgressModelComplete)
-	c.dropFinishedKind(ProgressOutputComplete)
-	next := c.snapshot()
+	var next ProgressSnapshot
+	switch update.Operation {
+	case ProgressModelComplete:
+		c.dropFinishedKind(ProgressModelComplete)
+		next = c.snapshot()
+	case ProgressOutputComplete, ProgressOutputReset:
+		c.dropFinishedKind(ProgressOutputComplete)
+		next = c.snapshot()
+	default:
+		next = c.last
+		next.ThinkingTokens = replaceAggregate(next.ThinkingTokens, oldModel, scope.currentModelTotal())
+		next.OutputBytes = replaceAggregate(next.OutputBytes, oldOutput, scope.currentOutputTotal())
+		newMinimum := scope.hasOutputMinimum()
+		if oldMinimum != newMinimum {
+			if newMinimum {
+				c.outputMinimumScopes++
+			} else {
+				c.outputMinimumScopes--
+			}
+		}
+		next.OutputBytesMinimum = c.outputMinimumScopes > 0
+	}
 	changed := next != c.last
 	c.last = next
 	return next, changed
@@ -227,15 +261,37 @@ func (s *progressScope) currentModelTokens() int64 {
 	return tokens
 }
 
+func (s *progressScope) currentModelTotal() int64 {
+	return saturatingAdd(s.modelRetained, s.currentModelTokens())
+}
+
+func (s *progressScope) currentOutputTotal() int64 {
+	return saturatingAdd(s.outputRetained, s.outputBytes)
+}
+
+func (s *progressScope) hasOutputMinimum() bool {
+	return s.outputRetainedMinimum || s.outputMinimum
+}
+
+func replaceAggregate(total, oldValue, newValue int64) int64 {
+	if oldValue >= total {
+		return newValue
+	}
+	return saturatingAdd(total-oldValue, newValue)
+}
+
 func (c *ProgressCounter) snapshot() ProgressSnapshot {
 	var snapshot ProgressSnapshot
+	minimumScopes := 0
 	for _, scope := range c.scopes {
-		snapshot.ThinkingTokens = saturatingAdd(snapshot.ThinkingTokens, scope.modelRetained)
-		snapshot.ThinkingTokens = saturatingAdd(snapshot.ThinkingTokens, scope.currentModelTokens())
-		snapshot.OutputBytes = saturatingAdd(snapshot.OutputBytes, scope.outputRetained)
-		snapshot.OutputBytes = saturatingAdd(snapshot.OutputBytes, scope.outputBytes)
-		snapshot.OutputBytesMinimum = snapshot.OutputBytesMinimum || scope.outputRetainedMinimum || scope.outputMinimum
+		snapshot.ThinkingTokens = saturatingAdd(snapshot.ThinkingTokens, scope.currentModelTotal())
+		snapshot.OutputBytes = saturatingAdd(snapshot.OutputBytes, scope.currentOutputTotal())
+		if scope.hasOutputMinimum() {
+			minimumScopes++
+		}
 	}
+	c.outputMinimumScopes = minimumScopes
+	snapshot.OutputBytesMinimum = minimumScopes > 0
 	return snapshot
 }
 
@@ -249,34 +305,79 @@ func saturatingAdd(left, right int64) int64 {
 	return left + right
 }
 
-// modelProgressResetSink clears model progress at visible message boundaries.
-type modelProgressResetSink struct{ OutputSink }
-
-func newModelProgressResetSink(inner OutputSink) *modelProgressResetSink {
-	return &modelProgressResetSink{OutputSink: inner}
+// modelProgressResetTranscript clears model progress at transcript boundaries.
+type modelProgressResetTranscript struct {
+	TranscriptServices
+	progress ProgressServices
 }
 
-func (s *modelProgressResetSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+func (s modelProgressResetTranscript) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	if source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && span.ParentSpanID == "" {
-		s.ReportProgress(ResetModelProgress())
+		s.progress.ReportProgress(ResetModelProgress())
 	}
-	return s.OutputSink.PersistMessage(source, content, span)
+	return s.TranscriptServices.PersistMessage(source, content, span)
 }
 
-func (s *modelProgressResetSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
-	broadcast, err := s.OutputSink.PersistNotification(source, content)
+func (s modelProgressResetTranscript) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
+	broadcast, err := s.TranscriptServices.PersistNotification(source, content)
 	if err == nil && broadcast && source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-		s.ReportProgress(ResetModelProgress())
+		s.progress.ReportProgress(ResetModelProgress())
 	}
 	return broadcast, err
 }
 
-func (s *modelProgressResetSink) PersistTurnEnd(content []byte, span SpanInfo) error {
-	s.ReportProgress(ResetModelProgress())
-	return s.OutputSink.PersistTurnEnd(content, span)
+func (s modelProgressResetTranscript) PersistTurnEnd(content []byte, span SpanInfo) error {
+	s.progress.ReportProgress(ResetModelProgress())
+	return s.TranscriptServices.PersistTurnEnd(content, span)
 }
 
-func (s *modelProgressResetSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
-	s.ReportProgress(ResetModelProgress())
-	s.OutputSink.BroadcastControlRequest(requestID, payload, claimToken)
+type modelProgressResetControl struct {
+	ControlServices
+	progress ProgressServices
+}
+
+func (s modelProgressResetControl) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
+	s.progress.ReportProgress(ResetModelProgress())
+	s.ControlServices.BroadcastControlRequest(requestID, payload, claimToken)
+}
+
+type modelProgressResetChildren struct{ ChildServices }
+
+func (s modelProgressResetChildren) ChildSink(childAgentID string) ProviderServices {
+	return newModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
+}
+
+func (s modelProgressResetChildren) PersistChildMessage(
+	childAgentID string,
+	source leapmuxv1.MessageSource,
+	content []byte,
+	span SpanInfo,
+) error {
+	return s.ChildSink(childAgentID).PersistMessage(source, content, span)
+}
+
+func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error {
+	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
+}
+
+func newModelProgressResetSink(inner ProviderServices) ProviderServices {
+	return providerServices{
+		TranscriptServices: modelProgressResetTranscript{
+			TranscriptServices: inner,
+			progress:           inner,
+		},
+		TurnServices:     inner,
+		SpanServices:     inner,
+		ProgressServices: inner,
+		ControlServices: modelProgressResetControl{
+			ControlServices: inner,
+			progress:        inner,
+		},
+		SessionServices:        inner,
+		PlanServices:           inner,
+		GoalServices:           inner,
+		AutoContinueServices:   inner,
+		ChildServices:          modelProgressResetChildren{ChildServices: inner},
+		BackgroundTaskServices: inner,
+	}
 }

@@ -2,7 +2,7 @@ import type { MessageBandKind } from './chatRowGeometry'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
 import { parseAssembledMessage } from './assembledMessage'
@@ -28,6 +28,7 @@ export type MessageCategory
     | { kind: 'agent_prompt' }
     | { kind: 'assistant_text' }
     | { kind: 'assistant_thinking' }
+    | { kind: 'assistant_plan' }
     | { kind: 'user_text' }
     | { kind: 'user_content' }
     | { kind: 'plan_execution' }
@@ -58,6 +59,8 @@ export function toClassificationInput(
     wrapper: parsed.wrapper,
     agentProvider: message.agentProvider,
     source: message.source,
+    assembledKind: message.assembledKind,
+    completion: message.completion,
     spanId: message.spanId,
     spanType: message.spanType,
     parentSpanId: message.parentSpanId,
@@ -101,9 +104,25 @@ export function classifyMessage(
   input: ClassificationInput,
   context?: ClassificationContext,
 ): MessageCategory {
+  switch (input.assembledKind) {
+    case AssembledMessageKind.REASONING:
+      return { kind: 'assistant_thinking' }
+    case AssembledMessageKind.PLAN:
+      return { kind: 'assistant_plan' }
+    case AssembledMessageKind.TEXT:
+      return { kind: 'assistant_text' }
+  }
   const assembled = parseAssembledMessage(input.parentObject)
-  if (assembled)
-    return assembled.kind === 'reasoning' ? { kind: 'assistant_thinking' } : { kind: 'assistant_text' }
+  if (assembled) {
+    switch (assembled.kind) {
+      case 'reasoning':
+        return { kind: 'assistant_thinking' }
+      case 'plan':
+        return { kind: 'assistant_plan' }
+      case 'text':
+        return { kind: 'assistant_text' }
+    }
+  }
   const plugin = pluginFor(input.agentProvider)
   if (!plugin) {
     // A USER row is the one message no plugin is needed to read: LeapMux writes
@@ -209,6 +228,7 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'tool_use',
   'tool_result',
   'agent_prompt',
+  'assistant_plan',
   'control_response',
   'compact_summary',
   'notification',

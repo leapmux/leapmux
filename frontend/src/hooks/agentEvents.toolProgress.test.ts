@@ -238,7 +238,11 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     // The thinking counter is the OTHER live per-turn indicator, and it has to
     // go at exactly the same boundaries. Seeded here so each case below can
     // assert the pair, not just the badges.
-    agentSessionStore.updateInfo('a1', { thinkingTokens: 500, outputBytes: 2048, outputBytesMinimum: true })
+    agentSessionStore.applyProgress('a1', {
+      revision: 1,
+      thinkingTokens: 500,
+      output: { bytes: 2048, minimum: true },
+    })
     return {
       agentSessionStore,
       chatStore,
@@ -269,9 +273,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
    */
   function expectNothingLive(s: ReturnType<typeof boundaryStores>) {
     expect(running(s.chatStore)).toHaveLength(0)
-    expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
-    expect(s.agentSessionStore.getInfo('a1').outputBytes).toBeUndefined()
-    expect(s.agentSessionStore.getInfo('a1').outputBytesMinimum).toBeUndefined()
+    expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+    expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
   }
 
   it('the turn-end result divider clears every live indicator', () => {
@@ -319,8 +322,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       handleControlRequest('a1', req, 'live', s)
       expect(running(s.chatStore)).toHaveLength(2)
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
-      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBe(500)
-      expect(s.agentSessionStore.getInfo('a1').outputBytes).toBe(2048)
+      expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBe(500)
+      expect(s.agentSessionStore.getProgress('a1').output?.bytes).toBe(2048)
       dispose()
     })
   })

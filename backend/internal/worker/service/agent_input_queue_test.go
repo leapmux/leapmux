@@ -34,10 +34,11 @@ func TestQueueSnapshotFitsDefaultWireBudgetWithLargeTextItems(t *testing.T) {
 			MimeType: strings.Repeat("m", inputqueue.MaxAttachmentMIMETypeBytes),
 		}
 	}
-	items := make([]inputqueue.Item, inputqueue.MaxItems)
+	items := make([]inputqueue.SnapshotItem, inputqueue.MaxItems)
 	for i := range items {
-		items[i] = inputqueue.Item{
-			ID: fmt.Sprintf("input-%d", i), AgentID: "agent-1", Text: largeText, Metadata: metadata,
+		items[i] = inputqueue.SnapshotItem{
+			StoredItem: inputqueue.StoredItem{ID: fmt.Sprintf("input-%d", i), AgentID: "agent-1", Text: largeText},
+			Metadata:   metadata,
 		}
 	}
 	snapshot := queueSnapshotProto(inputqueue.Snapshot{AgentID: "agent-1", Items: items})
@@ -176,9 +177,9 @@ func TestCompactOperationFallsBackToProviderInputWhenNativeCompactionIsUnsupport
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
-	result, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.Item{
-		ID: "compact", AgentID: "agent-1", Text: "/compact",
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT,
+	result, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "compact", AgentID: "agent-1", Text: "/compact",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT},
 	})
 	require.NoError(t, err)
 	assert.True(t, result.StartsTurn)
@@ -268,7 +269,7 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 		_, err := svc.InputQueue.SetPaused(ctx, agentID, false)
 		require.NoError(t, err)
 	}
-	_, err := svc.DB.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?`, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
+	_, err := svc.DB.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 1`)
 	require.NoError(t, err)
 
 	svc.HandleAgentProcessExit("root-1", 1, assert.AnError, false)
@@ -337,7 +338,7 @@ func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	var starts atomic.Int32
-	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		starts.Add(1)
 		return svc.Agents.MockStartAgent(ctx, opts, sink)
 	}
@@ -421,7 +422,7 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 		return nil, assert.AnError
 	}
 	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
@@ -444,8 +445,8 @@ func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {
 	t.Parallel()
 
 	svc, _, childID, _ := setupChildAgentTest(t)
-	_, err := (&agentInputQueueAdapter{svc: svc}).Steer(inputqueue.Item{
-		ID: "input-1", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "guide",
+	_, err := (&agentInputQueueAdapter{svc: svc}).Steer(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "input-1", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "guide"},
 	})
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
@@ -485,13 +486,13 @@ func TestClassifyQueueDeliveryErrorPreservesTheBusyTurnKind(t *testing.T) {
 	t.Parallel()
 
 	err := classifyQueueDeliveryError(&agent.AgentBusyError{
-		Err:            agent.ErrAgentBusy,
-		ActiveTurnKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Err:                 agent.ErrAgentBusy,
+		ActiveTurnSteerable: true,
 	})
 	var deliveryErr *inputqueue.DeliveryError
 	require.ErrorAs(t, err, &deliveryErr)
 	assert.Equal(t, inputqueue.DispatchBusy, deliveryErr.Outcome)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, deliveryErr.ActiveTurnKind)
+	assert.True(t, deliveryErr.ActiveTurnSteerable)
 }
 
 // dispatchOutcomeOf reads the outcome a classified refusal carries. Every case
@@ -710,7 +711,9 @@ func TestQueueSnapshotProtoCapsAnUntruncatedItem(t *testing.T) {
 
 	snapshot := queueSnapshotProto(inputqueue.Snapshot{
 		AgentID: "agent-1",
-		Items:   []inputqueue.Item{{ID: "one", AgentID: "agent-1", Text: strings.Repeat("x", inputqueue.MaxItemBytes)}},
+		Items: []inputqueue.SnapshotItem{{StoredItem: inputqueue.StoredItem{
+			ID: "one", AgentID: "agent-1", Text: strings.Repeat("x", inputqueue.MaxItemBytes),
+		}}},
 	})
 	require.Len(t, snapshot.GetItems(), 1)
 	assert.LessOrEqual(t, len(snapshot.GetItems()[0].GetText()), inputqueue.SnapshotTextPreviewBytes+len("…"))
@@ -885,9 +888,10 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 		"fixture check: only the in-memory check can refuse this dispatch")
 
 	adapter := &agentInputQueueAdapter{svc: svc}
-	result, err := adapter.Dispatch(inputqueue.Item{
+	result, err := adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		ID: newTestAgentInputID(), AgentID: failedAgentID, Text: "hello",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent failed to start")
@@ -895,10 +899,10 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 
 	// The same fixture without the failed startup delivers, so the refusal
 	// above comes from the registry and not from the process the test started.
-	healthy, err := adapter.Dispatch(inputqueue.Item{
+	healthy, err := adapter.Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		ID: newTestAgentInputID(), AgentID: healthyAgentID, Text: "hello",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-	})
+	}})
 	require.NoError(t, err)
 	assert.True(t, healthy.StartsTurn)
 }

@@ -1217,10 +1217,11 @@ describe('checkWorkerVocab / checkDesktop', () => {
     goalStatusTokens: { None: '', Running: 'running' },
     goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
     assembledMessage: {
-      Type: 'assembled_message',
-      KindText: 'text',
-      CompletionInterrupted: 'interrupted',
-      MetadataKey: '_leapmux',
+      fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
+      types: { Assembled: 'assembled_message' },
+      kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
+      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error' },
+      metadata: { Field: '_leapmux' },
     },
     notificationThreadWrapperType: 'notification_thread',
     codexRateLimitReachedTimeWindow: 'rate_limit_reached',
@@ -1308,9 +1309,13 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('rejects duplicate assembled-message tokens', () => {
+    const assembledMessage = workerVocab({}).assembledMessage
     expectContractError(() => checkWorkerVocab(workerVocab({
-      assembledMessage: { Type: 'same', KindText: 'same' },
-    })), 'assembled-message entries share one wire token')
+      assembledMessage: {
+        ...assembledMessage,
+        kinds: { Text: 'same', Reasoning: 'same', Plan: 'plan' },
+      },
+    })), 'assembled-message kinds entries share one wire token')
   })
 
   it('emits assembled-message constants for Go and TypeScript', () => {
