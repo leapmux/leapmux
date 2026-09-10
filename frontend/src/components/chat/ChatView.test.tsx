@@ -1809,6 +1809,83 @@ describe('chatView', () => {
     expect(screen.getByText('persisted raw reasoning')).toBeInTheDocument()
   })
 
+  it('ignores empty codex summary entries and renders raw reasoning', () => {
+    const messages = [
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        summary: ['', '   '],
+        content: ['persisted raw reasoning'],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('persisted raw reasoning')).toBeInTheDocument()
+    expect(view.container.querySelector('ul')).toBeNull()
+  })
+
+  it('renders each persisted codex summary entry as an unordered list item', () => {
+    const messages = [
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        summary: [
+          '**Researching Windows panic recovery**',
+          '**Checking Windows reproduction tools**',
+        ],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+
+    const list = view.container.querySelector('ul')
+    expect(list).not.toBeNull()
+    expect(list?.querySelectorAll(':scope > li')).toHaveLength(2)
+    expect(list?.querySelectorAll(':scope > li > div strong')).toHaveLength(2)
+    expect(list?.children[0]).toHaveTextContent('Researching Windows panic recovery')
+    expect(list?.children[1]).toHaveTextContent('Checking Windows reproduction tools')
+  })
+
+  it('keeps nested markdown blocks inside their codex summary list item', () => {
+    const messages = [
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        summary: [
+          '**Researching panic recovery**\n\n- Catch panics\n- Record stacks',
+          '**Checking reproduction tools**\n\n> Keep the failure output.',
+        ],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+
+    const outerList = view.container.querySelector('ul')
+    const outerItems = outerList?.querySelectorAll(':scope > li')
+    expect(outerItems).toHaveLength(2)
+    expect(outerList?.querySelectorAll(':scope > li > div')).toHaveLength(2)
+    expect(outerItems?.[0]?.querySelectorAll('ul > li')).toHaveLength(2)
+    expect(outerItems?.[0]).toHaveTextContent('Catch panics')
+    expect(outerItems?.[0]).toHaveTextContent('Record stacks')
+    expect(outerItems?.[1]?.querySelector('blockquote')).toHaveTextContent('Keep the failure output.')
+  })
+
   it('prefers a persisted codex summary to duplicate raw reasoning', () => {
     const messages = [
       makeCodexReasoningMessage({
@@ -1820,7 +1897,7 @@ describe('chatView', () => {
       }),
     ]
 
-    render(() => (
+    const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} />
       </PreferencesProvider>
@@ -1828,6 +1905,7 @@ describe('chatView', () => {
 
     expect(screen.getByText('persisted summary')).toBeInTheDocument()
     expect(screen.queryByText('duplicate persisted raw reasoning')).not.toBeInTheDocument()
+    expect(view.container.querySelectorAll('ul > li')).toHaveLength(1)
   })
 
   it('starts codex reasoning collapsed when expandAgentThoughts is disabled', () => {

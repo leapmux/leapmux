@@ -5,7 +5,10 @@ method: checksum
 
 # versions.env supplies tool and image versions through Task's dotenv support.
 # Each entry supplies a template variable ({{.KEY}}) and a shell variable ($KEY).
-# An existing environment variable takes precedence, such as VERSION=1.2.3 task build.
+# An existing environment variable overrides the shell variable ONLY. The template
+# variable always holds the versions.env value, because dotenv does not consult the
+# environment. A var that must honor an override therefore reads $KEY inside a
+# shell, which is what VERSION below does.
 dotenv: ['versions.env']
 
 vars:
@@ -15,12 +18,21 @@ vars:
     sh: go env -json GOOS GOARCH GOAMD64 GOARM GOARM64 GOEXPERIMENT GO386 GOPPC64 GOMIPS GOMIPS64 GORISCV64 GOWASM CGO_ENABLED CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_FFLAGS CGO_LDFLAGS CC CXX GOFLAGS GOTOOLCHAIN GOVERSION GOWORK
   JS_CONTEXT:
     sh: bun --version && node --version
+  # The versions.env value for VERSION, which an environment override never
+  # reaches. It is the default that VERSION falls back to, never the answer.
+  VERSION_DEFAULT: '{{.VERSION}}'
   # Use VERSION from the environment when set, including CI overrides.
-  # Otherwise, use the value from versions.env. Task's dotenv supplies command shells.
+  # Otherwise, use the value from versions.env. A var's sh block sees the real
+  # environment and NOT the dotenv values, so the default arrives as a template.
+  #
+  # This reads VERSION_DEFAULT and not {{.VERSION}}: a var whose own definition
+  # refers to its own name resolves to no string, and shellQuote then fails every
+  # target that needs a version with "invalid value; expected string".
+  #
   # Quote the dotenv default before the shell evaluates the environment fallback.
   VERSION:
     sh: |
-      task_default_version={{.VERSION | shellQuote}}
+      task_default_version={{.VERSION_DEFAULT | shellQuote}}
       printf '%s' "${VERSION:-$task_default_version}"
   COMMIT_HASH:
     sh: printf '%s' "${COMMIT_HASH:-$(git rev-parse --short HEAD 2>/dev/null)}"

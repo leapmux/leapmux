@@ -156,7 +156,7 @@ CREATE TABLE agent_input_queue_state (
     -- flight.
     restarting      INTEGER NOT NULL DEFAULT 0 CHECK (restarting IN (0, 1)),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
-	active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
+    active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
     active_input_id TEXT NOT NULL DEFAULT '',
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
