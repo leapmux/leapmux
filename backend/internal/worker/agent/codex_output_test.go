@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,66 @@ import (
 type startupStatusGuardSink struct {
 	testSink
 	t *testing.T
+}
+
+type transientCodexCloseFailureSink struct {
+	*testSink
+	closeFailures int
+	closeAttempts int
+}
+
+type transientCodexEnsureFailureSink struct {
+	*testSink
+	ensureFailures int
+}
+
+type blockingCodexEnsureSink struct {
+	*testSink
+	started chan struct{}
+	release chan struct{}
+}
+
+type codexEnsureCall struct {
+	spawnSpanID      string
+	providerChildKey string
+	title            string
+}
+
+type recordingCodexEnsureSink struct {
+	*testSink
+	ensureCalls []codexEnsureCall
+}
+
+func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+	s.ensureCalls = append(s.ensureCalls, codexEnsureCall{
+		spawnSpanID:      spawnSpanID,
+		providerChildKey: providerChildKey,
+		title:            title,
+	})
+	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+}
+
+func (s *transientCodexCloseFailureSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.closeAttempts++
+	if s.closeFailures > 0 {
+		s.closeFailures--
+		return fmt.Errorf("transient registry close failure")
+	}
+	return s.testSink.CloseBackgroundTask(rowKey, status)
+}
+
+func (s *transientCodexEnsureFailureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+	if s.ensureFailures > 0 {
+		s.ensureFailures--
+		return "", fmt.Errorf("transient child creation failure")
+	}
+	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+}
+
+func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+	close(s.started)
+	<-s.release
+	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
 }
 
 func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
@@ -171,7 +232,7 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"t1","turnId":"turn1"}}`
+	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"main-thread","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
@@ -562,6 +623,362 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
+// Current Codex models select Multi-Agent V2. That protocol does not emit a
+// spawnAgent collab item. The parent receives a subAgentActivity pair first,
+// then the child thread's own lifecycle, then a completed activity pair.
+// Replaying that exact order must create one readable child, keep its output
+// out of the parent transcript, and close its registry row.
+func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingCodexEnsureSink{testSink: &testSink{}}
+	agent := newCodexAgentWithSink(sink)
+
+	activityStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
+	activityStartedCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
+	handleCodexOutput(agent, parseLine([]byte(activityStarted)))
+	handleCodexOutput(agent, parseLine([]byte(activityStartedCompleted)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1, "one activity pair creates one registry row")
+	assert.Equal(t, "child-thread", rows[0].RowKey)
+	assert.Equal(t, "probe_child", rows[0].Title, "the task path supplies the readable title")
+	assert.Equal(t, "child-of-call-spawn", rows[0].ChildAgentID, "the row links to a transcript")
+	assert.Equal(t, "test-agent", rows[0].ParentAgentID)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+	require.Len(t, sink.ensureCalls, 1)
+	assert.Equal(t, codexEnsureCall{
+		spawnSpanID:      "call-spawn",
+		providerChildKey: "child-thread",
+		title:            "probe_child",
+	}, sink.ensureCalls[0], "child creation receives the same readable title")
+	agent.mu.Lock()
+	childState := agent.collabChildren["child-thread"]
+	agent.mu.Unlock()
+	assert.Equal(t, "call-spawn", childState.spawnCorrelationID)
+	assert.Equal(t, "main-thread", childState.parentThreadID)
+	assert.Equal(t, "/root/probe_child", childState.agentPath)
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"child-thread","turnId":"child-turn","item":{"type":"agentMessage","id":"child-message","text":"","phase":"final_answer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-thread","turnId":"child-turn","item":{"type":"agentMessage","id":"child-message","text":"CHILD_DONE","phase":"final_answer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"completed","items":[],"error":null}}}`)))
+
+	activityCompleted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"subagent-completed-child-turn","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
+	activityCompletedCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"subagent-completed-child-turn","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
+	handleCodexOutput(agent, parseLine([]byte(activityCompleted)))
+	handleCodexOutput(agent, parseLine([]byte(activityCompletedCompleted)))
+
+	assert.Empty(t, sink.Messages(), "the parent transcript receives no child output")
+	child := sink.ChildSink("child-of-call-spawn").(*testSink)
+	childMessages := child.Messages()
+	require.Len(t, childMessages, 2, "the child receives its answer and turn end")
+	assert.Contains(t, string(childMessages[0].Content), "CHILD_DONE")
+	assert.True(t, childMessages[1].TurnEnd)
+
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+}
+
+func TestHandleCodexOutput_MultiAgentV2DoesNotRegisterTheRootPath(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"root-call","kind":"started","agentThreadId":"main-thread","agentPath":"/root"}}}`)))
+
+	assert.Empty(t, sink.BackgroundTasks(), "the canonical root path is the primary agent, not a subagent")
+	assert.Empty(t, agent.collabChildren)
+}
+
+func TestHandleCodexOutput_MultiAgentV2FailedTurnClosesWithoutAnActivity(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","items":[],"error":{"message":"child failed"}}}}`)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusFailed, rows[0].Status,
+		"V2 sends no failed activity, so the child turn closes the row")
+	child := sink.ChildSink("child-of-call-spawn").(*testSink)
+	require.Len(t, child.Messages(), 1)
+	assert.True(t, child.Messages()[0].TurnEnd)
+}
+
+func TestHandleCodexOutput_MultiAgentV2CompletedActivityClosesWithoutATurnEnd(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/completing_child"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"subagent-completed-child-turn","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/completing_child"}}}`)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Empty(t, agent.childTurnID("child-thread"), "the final activity clears steering state")
+	child := sink.ChildSink("child-of-call-spawn").(*testSink)
+	assert.Equal(t, []bool{true, false}, child.TurnActives())
+}
+
+func TestHandleCodexOutput_MultiAgentV2DuplicateCompletionRetriesARegistryFailure(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexCloseFailureSink{
+		testSink:      &testSink{},
+		closeFailures: 1,
+	}
+	agent := newCodexAgentWithSink(sink)
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/retry_child"}}}`
+	completed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"child-completed","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/retry_child"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	_, status, found, err := sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, status, "the failed close leaves the row active")
+
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	_, status, found, err = sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusCompleted, status, "the duplicate completion retries the close")
+	assert.Equal(t, 2, sink.closeAttempts)
+}
+
+func TestHandleCodexOutput_MultiAgentV2LateDuplicateStartDoesNotReviveCompletedRun(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/idempotent_child"}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"completed","items":[],"error":null}}}`)))
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+
+	_, status, found, err := sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusCompleted, status)
+	assert.Empty(t, sink.RevivedTasks(), "a duplicate spawn activity cannot start a second run")
+}
+
+func TestHandleCodexOutput_MultiAgentV2ReplaysChildItemsAfterRouteRecovery(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexEnsureFailureSink{
+		testSink:       &testSink{},
+		ensureFailures: 2,
+	}
+	agent := newCodexAgentWithSink(sink)
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/recovered_child"}}}`
+	childAnswer := `{"method":"item/completed","params":{"threadId":"child-thread","turnId":"child-turn","item":{"type":"agentMessage","id":"child-message","text":"RECOVERED_CHILD_DONE","phase":"final_answer"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(childAnswer)))
+	assert.Empty(t, sink.Messages(), "a child item must never fall through to the root after a route error")
+
+	// The duplicate activity retries child creation. The retained child item
+	// must then replay into the child transcript in provider order.
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	child := sink.ChildSink("child-of-call-spawn").(*testSink)
+	require.Len(t, child.Messages(), 1)
+	assert.Contains(t, string(child.Messages()[0].Content), "RECOVERED_CHILD_DONE")
+}
+
+func TestHandleCodexOutput_MultiAgentV2CompletionBeforeStartStillClosesTheRun(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"completion-call","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/reordered_child"}}}`
+	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/reordered_child"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	handleCodexOutput(agent, parseLine([]byte(started)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status,
+		"the authoritative start must apply a completion that arrived first")
+	assert.Equal(t, "child-of-spawn-call", rows[0].ChildAgentID)
+}
+
+func TestHandleCodexOutput_MultiAgentV2StartOwnsIdentityAfterEarlierInteraction(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	interacted := `{"method":"item/completed","params":{"threadId":"unrelated-thread","turnId":"other-turn","item":{"type":"subAgentActivity","id":"interaction-call","kind":"interacted","agentThreadId":"child-thread","agentPath":"/root/identity_child"}}}`
+	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/identity_child"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(interacted)))
+	handleCodexOutput(agent, parseLine([]byte(started)))
+
+	agent.mu.Lock()
+	state := agent.collabChildren["child-thread"]
+	agent.mu.Unlock()
+	assert.Equal(t, "spawn-call", state.spawnCorrelationID)
+	assert.Equal(t, "main-thread", state.parentThreadID)
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "child-of-spawn-call", rows[0].ChildAgentID)
+	assert.Equal(t, "test-agent", rows[0].ParentAgentID)
+}
+
+func TestHandleCodexOutput_MultiAgentV2CompletionClearsTurnWhenRouteRecoveryFails(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexEnsureFailureSink{
+		testSink:       &testSink{},
+		ensureFailures: 3,
+	}
+	agent := newCodexAgentWithSink(sink)
+	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_route"}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"completion-call","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/failing_route"}}}`)))
+
+	assert.Empty(t, agent.childTurnID("child-thread"),
+		"a final activity must release child input even when child creation still fails")
+}
+
+func TestHandleCodexOutput_NestedV2CollaborationToolUsesTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-parent","kind":"started","agentThreadId":"parent-thread","agentPath":"/root/parent"}}}`)))
+	waitStarted := `{"method":"item/started","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"collabAgentToolCall","id":"wait-call","tool":"wait","status":"inProgress","senderThreadId":"parent-thread","receiverThreadIds":[],"prompt":null,"agentsStates":{}}}}`
+	waitCompleted := `{"method":"item/completed","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"collabAgentToolCall","id":"wait-call","tool":"wait","status":"completed","senderThreadId":"parent-thread","receiverThreadIds":[],"prompt":null,"agentsStates":{}}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(waitStarted)))
+	handleCodexOutput(agent, parseLine([]byte(waitCompleted)))
+
+	assert.Empty(t, sink.Messages())
+	parent := sink.ChildSink("child-of-spawn-parent").(*testSink)
+	require.Len(t, parent.Messages(), 2, "the child transcript retains both collaboration tool boundaries")
+	assert.Equal(t, []string{"wait-call"}, parent.ClosedSpans())
+}
+
+func TestHandleCodexOutput_UnresolvedChildGenerationHasAMemoryCap(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	chunk := strings.Repeat("x", 768<<10)
+	for range 2 {
+		raw, err := json.Marshal(map[string]any{
+			"method": "item/agentMessage/delta",
+			"params": map[string]any{
+				"threadId": "unknown-child",
+				"itemId":   "message-1",
+				"delta":    chunk,
+			},
+		})
+		require.NoError(t, err)
+		handleCodexOutput(agent, parseLine(raw))
+	}
+
+	buffer := agent.codexChildGenerationBuffer("unknown-child")
+	buffer.mu.Lock()
+	retained := buffer.segments["message-1"].text.Len()
+	buffer.mu.Unlock()
+	assert.LessOrEqual(t, retained, 1<<20,
+		"an unresolved child cannot retain model output without a fixed limit")
+}
+
+func TestCodex_ReplayReportsAFullPendingQueueWithNoRetainedEvent(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/limited_child"}}}`)))
+	route, routed := agent.lookupCodexChildRoute("child-thread")
+	require.True(t, routed)
+	agent.mu.Lock()
+	agent.collabChildren["child-thread"].pendingOutputDropped = true
+	agent.mu.Unlock()
+
+	agent.replayPendingCodexChildEvents("child-thread", route)
+
+	agent.mu.Lock()
+	dropped := agent.collabChildren["child-thread"].pendingOutputDropped
+	agent.mu.Unlock()
+	assert.False(t, dropped, "the route recovery must consume the overflow signal")
+}
+
+func TestHandleCodexOutput_MultiAgentV2ReusesTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/reuse_child"}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn-1"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-thread","turnId":"child-turn-1","item":{"type":"agentMessage","id":"child-message-1","text":"FIRST_DONE","phase":"final_answer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn-1","status":"completed","items":[],"error":null}}}`)))
+
+	interacted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"child-input","kind":"interacted","agentThreadId":"child-thread","agentPath":"/root/reuse_child"}}}`
+	handleCodexOutput(agent, parseLine([]byte(interacted)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn-2"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-thread","turnId":"child-turn-2","item":{"type":"agentMessage","id":"child-message-2","text":"SECOND_DONE","phase":"final_answer"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn-2","status":"completed","items":[],"error":null}}}`)))
+
+	assert.Empty(t, sink.Messages())
+	child := sink.ChildSink("child-of-call-spawn").(*testSink)
+	messages := child.Messages()
+	require.Len(t, messages, 4, "both turns use one child transcript")
+	assert.Contains(t, string(messages[0].Content), "FIRST_DONE")
+	assert.True(t, messages[1].TurnEnd)
+	assert.Contains(t, string(messages[2].Content), "SECOND_DONE")
+	assert.True(t, messages[3].TurnEnd)
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "child-of-call-spawn", rows[0].ChildAgentID)
+	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+}
+
+func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-parent","kind":"started","agentThreadId":"parent-thread","agentPath":"/root/parent_child"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"subAgentActivity","id":"call-grandchild","kind":"started","agentThreadId":"grandchild-thread","agentPath":"/root/parent_child/grandchild"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"grandchild-thread","turnId":"grandchild-turn","item":{"type":"agentMessage","id":"grandchild-message","text":"NESTED_DONE","phase":"final_answer"}}}`)))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 2)
+	var grandchildRow bgtask.Item
+	foundGrandchild := false
+	for _, row := range rows {
+		if row.RowKey == "grandchild-thread" {
+			grandchildRow = row
+			foundGrandchild = true
+		}
+	}
+	require.True(t, foundGrandchild)
+	assert.Equal(t, "grandchild", grandchildRow.Title)
+	assert.Equal(t, "child-of-call-parent", grandchildRow.ParentAgentID)
+	assert.Equal(t, "child-of-call-grandchild", grandchildRow.ChildAgentID)
+	assert.Empty(t, sink.Messages(), "nested output does not reach the root")
+
+	parent := sink.ChildSink("child-of-call-parent").(*testSink)
+	assert.Empty(t, parent.Messages(), "nested output does not reach the direct parent transcript")
+	grandchild := parent.ChildSink("child-of-call-grandchild").(*testSink)
+	require.Len(t, grandchild.Messages(), 1)
+	assert.Contains(t, string(grandchild.Messages()[0].Content), "NESTED_DONE")
+}
+
 // A spawnAgent tool call owns NO span: the subagent's output lives in its own
 // child transcript, so a rail held open for the whole run would only push every
 // concurrent tool one column right. The row still carries the span id (the
@@ -640,10 +1057,9 @@ func TestHandleCodexOutput_ARerunCollabChildReopensItsRow(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// A replayed snapshot that still calls an old child running must NOT resurrect
-// it. The close dropped the child index, and nothing re-registered it, so the
-// row stays final and keeps its closer.
-func TestHandleCodexOutput_AReplayedRunningStateDoesNotReopenARow(t *testing.T) {
+// A replayed snapshot that still calls an old child running must not reopen it.
+// A later child turn is live evidence and must reopen the same transcript.
+func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -655,19 +1071,21 @@ func TestHandleCodexOutput_AReplayedRunningStateDoesNotReopenARow(t *testing.T) 
 	// old child as running.
 	stale := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-2"],"prompt":"other","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running"},"child-2":{"status":"completed"}}}}}`
 
-	// A child turn/started for the closed child, with no re-registration before
-	// it: knownCollabChild is false, so nothing reopens the row.
-	orphanTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c9"}}}`
-
 	handleCodexOutput(agent, parseLine([]byte(started)))
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 	handleCodexOutput(agent, parseLine([]byte(stale)))
-	handleCodexOutput(agent, parseLine([]byte(orphanTurn)))
 
 	assert.Empty(t, sink.RevivedTasks(), "a snapshot alone cannot prove a restart")
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusCompleted, status, "the row keeps its final status")
+
+	liveTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c9"}}}`
+	handleCodexOutput(agent, parseLine([]byte(liveTurn)))
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "a live child turn reopens the row")
+	_, status, ok, _ = sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
 // A subagent spawn that starts while an unrelated command is running draws that
@@ -783,7 +1201,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
 
 	// The child's command routed to the child transcript (late receiver
-	// registration at spawn completion made the child index resolve).
+	// registration at spawn completion made the child route resolve).
 	parentMessages := sink.Messages()
 	require.Len(t, parentMessages, 2, "parent keeps spawn started + completed")
 	child := sink.ChildSink("child-of-call-1").(*testSink)
@@ -808,7 +1226,7 @@ func TestHandleCodexOutput_WaitCompletedClosesFinalSubagentSpan(t *testing.T) {
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	// wait is a flat tool span that CLOSES at completion (like every other collab
-	// tool). The old code gated CloseSpan behind `collab.Tool == "spawnAgent"`,
+	// tool). The old code ran CloseSpan only for `collab.Tool == "spawnAgent"`,
 	// leaving wait/sendInput/resumeAgent/closeAgent spans open until turn reset.
 	require.Contains(t, sink.ClosedSpans(), "call-2", "wait span closes at completion")
 }
@@ -948,14 +1366,14 @@ func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 		{
 			itemType:  "imageGeneration",
 			id:        "img-1",
-			started:   `{"method":"item/started","params":{"threadId":"t1","item":{"type":"imageGeneration","id":"img-1","status":"inProgress","prompt":"a cat"}}}`,
-			completed: `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"imageGeneration","id":"img-1","status":"completed","result":"aVZ","revisedPrompt":"a cat, photoreal"}}}`,
+			started:   `{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"imageGeneration","id":"img-1","status":"inProgress","prompt":"a cat"}}}`,
+			completed: `{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"imageGeneration","id":"img-1","status":"completed","result":"aVZ","revisedPrompt":"a cat, photoreal"}}}`,
 		},
 		{
 			itemType:  "imageView",
 			id:        "view-1",
-			started:   `{"method":"item/started","params":{"threadId":"t1","item":{"type":"imageView","id":"view-1","status":"inProgress","path":"/tmp/a.png"}}}`,
-			completed: `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"imageView","id":"view-1","status":"completed","path":"/tmp/a.png"}}}`,
+			started:   `{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"imageView","id":"view-1","status":"inProgress","path":"/tmp/a.png"}}}`,
+			completed: `{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"imageView","id":"view-1","status":"completed","path":"/tmp/a.png"}}}`,
 		},
 	}
 
@@ -1083,7 +1501,7 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 // registered child thread's turn/completed persists a turn-end divider into the
 // CHILD transcript (mirrors the main-thread PersistTurnEnd), rather than being
 // a silent no-op. The child must be registered first via a spawnAgent
-// item/started so routeChildItemIfApplicable can resolve the child agent id.
+// item/started so the route can resolve the child agent ID.
 func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) {
 	t.Parallel()
 
@@ -1091,7 +1509,7 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
 
-	// Register child-1 -> call-1 in the child index (spawnAgent item/started).
+	// Register child-1 -> call-1 in the child route (spawnAgent item/started).
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-1"}}}`)))
@@ -1115,9 +1533,9 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's own turn opens and releases the child input queue")
 	assert.Equal(t, []leapmuxv1.AgentInputKind{
-		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
-	}, child.TurnKinds(), "a Codex child turn accepts steering until it ends")
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+	}, child.TurnKinds(), "a Multi-Agent V2 child reports activity without direct-input steering")
 }
 
 func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T) {
@@ -1135,12 +1553,20 @@ func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T
 
 	child := sink.ChildSink("child-of-call-1").(*testSink)
 	require.NotEmpty(t, child.Messages())
+	var bufferedMessage []byte
+	for _, message := range child.Messages() {
+		if strings.Contains(string(message.Content), "partial child answer") {
+			bufferedMessage = message.Content
+			break
+		}
+	}
+	require.NotEmpty(t, bufferedMessage)
 	assert.JSONEq(t, `{
 		"type":"assembled_message",
 		"kind":"text",
 		"text":"partial child answer",
 		"completion":"interrupted"
-	}`, string(child.Messages()[0].Content))
+	}`, string(bufferedMessage))
 	assert.Equal(t, ProgressSnapshot{}, child.progressCount.Snapshot(),
 		"the completed child turn must not replay an active token count")
 }
@@ -1548,7 +1974,7 @@ func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T
 	require.Equal(t, int64(2), lastThinkingTokens(sink))
 
 	// Completing the reasoning item resets the estimate (a main-scope AGENT commit)
-	// AND releases r1's stream-kind lock so the map stays bounded.
+	// AND releases r1's stream-kind lock so the map does not grow.
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"reasoning","id":"r1","summary":[{"text":"done"}]}}}`)))
 	agent.mu.Lock()
 	_, stillLocked := agent.reasoningStreamKind[codexReasoningKey("main-thread", "r1")]
@@ -1759,18 +2185,53 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 		tc := tc
 		t.Run(tc.status, func(t *testing.T) {
 			t.Parallel()
-			gotStatus, gotFinal, gotActivity := codexCollabStatusToRegistry(tc.status)
-			assert.Equal(t, tc.wantStatus, gotStatus)
-			assert.Equal(t, tc.wantFinal, gotFinal)
+			transition := codexCollabTransition(tc.status)
+			assert.Equal(t, tc.wantStatus, transition.status)
+			assert.Equal(t, tc.wantFinal, transition.finished())
 			if tc.wantNonBlank {
-				assert.NotEmpty(t, gotActivity, "resumable interrupted carries a paused activity line")
+				assert.NotEmpty(t, transition.activity, "resumable interrupted carries a paused activity line")
 			}
 			// The mapped status must NOT be final for a resumable interrupt.
 			if !tc.wantFinal {
-				assert.False(t, gotStatus.IsFinished(), "%s must not map to a final status", tc.status)
+				assert.False(t, transition.status.IsFinished(), "%s must not map to a final status", tc.status)
 			}
 		})
 	}
+}
+
+func TestCodexChildTurnRegistryStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		providerStatus string
+		wantStatus     bgtask.Status
+		wantFinished   bool
+		wantActivity   string
+	}{
+		{providerStatus: "completed", wantStatus: bgtask.StatusCompleted, wantFinished: true},
+		{providerStatus: "failed", wantStatus: bgtask.StatusFailed, wantFinished: true},
+		{providerStatus: "cancelled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "canceled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "interrupted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "aborted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "futureStatus", wantStatus: bgtask.StatusRunning},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.providerStatus, func(t *testing.T) {
+			t.Parallel()
+			params := json.RawMessage(`{"turn":{"status":"` + test.providerStatus + `"}}`)
+			transition := codexChildTurnTransition(params)
+			assert.Equal(t, test.wantStatus, transition.status)
+			assert.Equal(t, test.wantFinished, transition.finished())
+			assert.Equal(t, test.wantActivity, transition.activity)
+		})
+	}
+
+	transition := codexChildTurnTransition(json.RawMessage(`{"turn":`))
+	assert.Equal(t, bgtask.StatusRunning, transition.status)
+	assert.False(t, transition.finished())
+	assert.Empty(t, transition.activity)
 }
 
 // TestCodexSubAgentActivity_InterruptedStaysRunning verifies the
@@ -1782,7 +2243,7 @@ func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
 	sink := &testSink{}
 	a := newCodexAgentWithSink(sink)
 	item := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"interrupted"}`)
-	assert.True(t, a.handleCodexSubAgentActivity(item), "consumed the activity item")
+	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1, "interrupted activity upserts one row")
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "interrupted stays Running (resumable)")
@@ -1791,7 +2252,7 @@ func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
 
 	// A subsequent started activity must update the SAME row (not be absorbed).
 	started := json.RawMessage(`{"type":"subAgentActivity","agentThreadId":"thr-1","kind":"started"}`)
-	assert.True(t, a.handleCodexSubAgentActivity(started))
+	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
@@ -1829,9 +2290,9 @@ func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) 
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// The negative half: an activity for a child nothing re-registered must NOT
-// reopen the row. The close dropped the child index, so the proof is absent.
-func TestHandleCodexOutput_ASubAgentActivityAloneDoesNotReopenARow(t *testing.T) {
+// A V2 interaction is itself live restart evidence. It does not need a legacy
+// resumeAgent collab item before it can reopen the durable child route.
+func TestHandleCodexOutput_ASubAgentActivityReopensWithoutALegacyCollabItem(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1845,20 +2306,18 @@ func TestHandleCodexOutput_ASubAgentActivityAloneDoesNotReopenARow(t *testing.T)
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 	handleCodexOutput(agent, parseLine([]byte(interacted)))
 
-	assert.Empty(t, sink.RevivedTasks(), "an activity with no re-registration is not proof of a restart")
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "the activity reopens the child")
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
-	assert.True(t, status.IsFinished(), "the row keeps its final status")
+	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
 func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 	t.Parallel()
 
-	// The child's turn end is the ONLY thing that clears the child's own input
-	// queue. It resolves the child agent id through the span index, and a
-	// ClearContext wipes that index -- so a turn that ends after one left the
-	// child holding every later message with a turn nothing would clear. The
-	// agent id does not change once assigned, so it is remembered.
+	// The child's turn end is the only event that clears its input queue. The
+	// durable child ID must still route that event when the spawn correlation is
+	// missing. Otherwise, the child holds all later input behind a stale turn.
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1869,9 +2328,11 @@ func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 	child := sink.ChildSink("child-of-call-1").(*testSink)
 	require.Equal(t, []bool{true}, child.TurnActives(), "the child's turn opened")
 
-	// The span index goes away, the way ClearContext wipes it.
+	// Lose only the spawn correlation. The durable child ID still routes the
+	// turn end, which is the split state this regression covers.
 	agent.mu.Lock()
-	clear(agent.collabThreadSpans)
+	state := agent.collabChildren["child-1"]
+	state.spawnCorrelationID = ""
 	agent.mu.Unlock()
 
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`)))

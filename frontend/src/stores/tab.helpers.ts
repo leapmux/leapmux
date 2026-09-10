@@ -340,12 +340,19 @@ export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string
     return true
   // acceptsMessages (backend-authoritative) wins when present. Before
   // hydration, fall back to the provider plugin's supportsSubagentSend so
-  // "which providers can steer a subagent" has a single source of truth (the
-  // Codex plugin sets it true; all others omit it). Adding a second steerable
-  // provider then needs no edit here.
+  // "which providers can steer a subagent" has a single source of truth.
   if (tab.acceptsMessages !== undefined)
     return tab.acceptsMessages
   return pluginFor(tab.agentProvider)?.supportsSubagentSend ?? false
+}
+
+/** Whether an agent tab can send a direct interrupt to its process owner. */
+export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string, agentProvider?: AgentProvider } | undefined): boolean {
+  if (tab?.type !== TabType.AGENT)
+    return false
+  if (!tab.parentAgentId)
+    return true
+  return pluginFor(tab.agentProvider)?.supportsSubagentInterrupt ?? false
 }
 
 /**

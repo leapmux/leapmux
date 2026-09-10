@@ -715,8 +715,8 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	//
 	// Inside the run loop the CLI forwards a message only when it holds a tool_use
 	// or a tool_result block, so every other forwarded user envelope is a
-	// tool_result; and a Claude subagent cannot be steered (only Codex implements
-	// ChildSteerer), so no TYPED user message reaches a child transcript either.
+	// tool_result. Claude does not implement ChildSteerer, so no typed user
+	// message reaches a child transcript either.
 	//
 	// A SendMessage the parent addresses to a subagent does not reach a child
 	// transcript this way either, and a live recipient is not an exception.

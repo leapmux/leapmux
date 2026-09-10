@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,8 @@ const (
 	CodexDefaultNetworkAccess     = "restricted"
 	CodexDefaultCollaborationMode = "default"
 	CodexDefaultServiceTier       = "default"
+	codexMemoriesFeature          = "memories"
+	codexMultiAgentV2Feature      = "multi_agent_v2"
 )
 
 const (
@@ -77,6 +80,7 @@ func StringOrDefault(value, fallback string) string {
 // CodexAgent manages a single Codex app-server process.
 type CodexAgent struct {
 	jsonrpcBase // shared process lifecycle + JSON-RPC plumbing
+	outputMu    sync.Mutex
 
 	model      string
 	effort     string
@@ -117,45 +121,27 @@ type CodexAgent struct {
 	// SAME reasoning item (they are the same generation surfaced two ways), which
 	// would otherwise double-count. Locking onto whichever arrives first keeps the
 	// counter moving for models that stream only one of the two.
-	reasoningStreamKind    map[string]string
-	reasoningRetainedKind  map[string]string
-	reasoningSummaryIndex  map[string]int
-	reasoningSummarySeen   map[string]bool
-	reasoningSummaryBreak  map[string]bool
-	generationBuffer       GenerationBuffer
-	childGenerationBuffers map[string]*GenerationBuffer
-	unresolvedChildBuffers map[string]*GenerationBuffer
-	incompleteTools        map[string]*codexIncompleteTool
-	incompleteToolOrder    uint64
-	availableModels        []*ModelInfo
-	collabThreadSpans      map[string]string // child thread ID -> owning spawnAgent span ID (child index)
-	// collabChildAgents remembers the child AGENT id each thread resolved to.
-	// The span index above answers the same question, but it is torn down on a
-	// ClearContext and a registry write can fail, and a thread whose id cannot
-	// be resolved publishes no turn end -- which holds that child's own input
-	// queue with a turn that nothing will ever clear. The agent id does not
-	// change once assigned, so remembering it makes the clear survive both.
-	collabChildAgents map[string]string // child thread ID -> child agent ID
-	// collabChildItems records the child agent ID that owns an item
-	// (commandExecution/fileChange itemID -> childID). Populated when
-	// persistItemStartedChild routes the item/started to a child; consulted by
-	// the output-delta handlers (which carry only an itemID, no threadID) so a
-	// subagent's command output contributes to its own counter.
+	reasoningStreamKind   map[string]string
+	reasoningRetainedKind map[string]string
+	reasoningSummaryIndex map[string]int
+	reasoningSummarySeen  map[string]bool
+	reasoningSummaryBreak map[string]bool
+	generationBuffer      GenerationBuffer
+	incompleteTools       map[string]*codexIncompleteTool
+	incompleteToolOrder   uint64
+	availableModels       []*ModelInfo
+	// collabChildren is the durable in-process route from each Codex child
+	// thread to its LeapMux transcript. The route survives completed runs, so
+	// a follow-up turn reuses the same transcript. ClearContext removes it,
+	// because the new root thread owns a different child tree.
+	collabChildren map[string]*codexChildState
+	// retiredCodexThreads prevents notifications from a replaced context from
+	// creating routes or transcript rows in the new context.
+	retiredCodexThreads map[string]struct{}
+	// collabChildItems records the child thread that owns a tool item. Output
+	// deltas carry only an item ID, so this index restores the transcript route.
 	// Guarded by mu.
 	collabChildItems map[string]string
-	// collabChildTitles records the spawn prompt's first line per child thread
-	// (the registry + child tab title). Guarded by mu.
-	collabChildTitles map[string]string
-	// collabChildPrompts records the FULL spawn prompt per child thread (the
-	// title above keeps only its first line). Spent when the child transcript is
-	// created, so the subagent tab opens on the instruction it was given.
-	collabChildPrompts pendingPrompts
-	// childTurnIDs records the active turn id per child thread (for steering).
-	// Guarded by mu. Cleared on child turn/completed.
-	childTurnIDs map[string]string
-	// childTurnStartAcks records the turn/started notification that accepts a
-	// queued child input. Guarded by mu.
-	childTurnStartAcks map[string]chan struct{}
 	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by mu.
@@ -188,8 +174,10 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 		LoginShell:   opts.LoginShell,
 		Launch:       launch,
 		StripEnvKeys: []string{"CODEX_CI"},
-		BaseArgs:     []string{"app-server"},
-		WorkingDir:   opts.WorkingDir,
+		// Codex leaves Multi-Agent V2 and memories off by default. Enable both
+		// stable features for every app-server process, independent of user config.
+		BaseArgs:   codexBaseArgs(),
+		WorkingDir: opts.WorkingDir,
 	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
@@ -318,6 +306,14 @@ func StartCodex(ctx context.Context, opts Options, sink ProviderServices) (Agent
 	a.publishSettings()
 
 	return a, nil
+}
+
+func codexBaseArgs() []string {
+	return []string{
+		"--enable", codexMultiAgentV2Feature,
+		"--enable", codexMemoriesFeature,
+		"app-server",
+	}
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
@@ -557,8 +553,10 @@ func (a *CodexAgent) Interrupt() error {
 // Stop retains unfinished model output before it stops the process.
 func (a *CodexAgent) Stop() {
 	a.processBase.Stop()
+	a.outputMu.Lock()
 	a.flushAllCodexGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
+	a.outputMu.Unlock()
 	a.sink.ReportProgress(ResetProgress())
 }
 
@@ -566,8 +564,10 @@ func (a *CodexAgent) Stop() {
 func (a *CodexAgent) Wait() error {
 	err := a.processBase.Wait()
 	completion := a.processExitCompletion()
+	a.outputMu.Lock()
 	a.flushAllCodexGeneration(completion)
 	a.persistIncompleteCodexTools("", true, completion)
+	a.outputMu.Unlock()
 	a.sink.ReportProgress(ResetProgress())
 	return err
 }
@@ -623,6 +623,7 @@ func (a *CodexAgent) clearInterruptCallsForThread(threadID string) {
 // replacing the current thread with a fresh one.
 func (a *CodexAgent) ClearContext() (string, bool) {
 	a.mu.Lock()
+	oldThreadID := a.threadID
 	approvalPolicy := a.approvalPolicy
 	sandboxPolicy := a.sandboxPolicy
 	serviceTier := a.serviceTier
@@ -640,10 +641,20 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
+	a.outputMu.Lock()
 	a.flushAllCodexGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteCodexTools("", true, MessageCompletionInterrupted)
 
 	a.mu.Lock()
+	if a.retiredCodexThreads == nil {
+		a.retiredCodexThreads = make(map[string]struct{})
+	}
+	if oldThreadID != "" {
+		a.retiredCodexThreads[oldThreadID] = struct{}{}
+	}
+	for childThreadID := range a.collabChildren {
+		a.retiredCodexThreads[childThreadID] = struct{}{}
+	}
 	a.applyThreadResult(thread)
 	a.threadID = thread.ID
 	a.turnID = ""
@@ -655,22 +666,15 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.reasoningSummaryIndex)
 	clear(a.reasoningSummarySeen)
 	clear(a.reasoningSummaryBreak)
-	// Clear the collab child index: a new thread means prior child threads are
-	// gone. Entries are otherwise only removed on a final collab status.
-	clear(a.collabThreadSpans)
+	// Clear the child routes: a new root thread owns a different child tree. A
+	// completed run keeps its route only while its root thread lives.
+	clear(a.collabChildren)
 	clear(a.collabChildItems)
-	clear(a.collabChildTitles)
-	a.collabChildPrompts.clear()
-	clear(a.childTurnIDs)
-	clear(a.childTurnStartAcks)
 	clear(a.incompleteTools)
 	a.incompleteToolOrder = 0
 	a.mu.Unlock()
 	a.generationBuffer.Reset()
-	a.mu.Lock()
-	clear(a.childGenerationBuffers)
-	clear(a.unresolvedChildBuffers)
-	a.mu.Unlock()
+	a.outputMu.Unlock()
 	a.PublishTurnActive()
 	a.sink.ReportProgress(ResetProgress())
 
@@ -699,9 +703,8 @@ func (a *CodexAgent) PublishTurnActive() TurnState {
 	active := a.turnID != ""
 	seq := a.nextTurnSeq()
 	a.mu.Unlock()
-	// Codex tracks collab child turns in childTurnIDs, deliberately not here: a
-	// child's own run is its background-task registry row, and the Worker reads
-	// that for the child tab. This is the MAIN thread's turn only.
+	// Each child route tracks its own turn. The background-task registry supplies
+	// that state to the child tab. This method reports the main thread only.
 	return publishSteerableTurnActiveTo(a.sink, active, seq)
 }
 

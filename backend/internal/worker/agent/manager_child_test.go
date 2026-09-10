@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// steerableStub implements both the Agent provider surface (via stubProvider)
-// and ChildSteerer, so Manager.SendChildInput/InterruptChild can reach it.
+// steerableStub implements the Agent provider surface, ChildSteerer, and
+// ChildInterrupter.
 type steerableStub struct {
 	stubProvider
 	sendInputErr        error
@@ -59,6 +59,7 @@ func (s *steerableStub) ActiveChildTurnState(string) TurnState {
 // compile time). steerableStub embeds stubProvider; adding ChildSteerer makes
 // it satisfy the type-assert in Manager.SendChildInput.
 var _ ChildSteerer = (*steerableStub)(nil)
+var _ ChildInterrupter = (*steerableStub)(nil)
 var _ Agent = (*steerableStub)(nil)
 
 func TestManager_SendChildInputNotRunning(t *testing.T) {
@@ -75,7 +76,7 @@ func TestManager_SendChildInputUnsupportedProvider(t *testing.T) {
 	m.agents["root"] = &stubProvider{}
 	m.mu.Unlock()
 	err := m.SendChildInput("root", "child-1", "hello", nil)
-	assert.ErrorIs(t, err, ErrChildSteeringUnsupported)
+	assert.ErrorIs(t, err, ErrChildOperationUnsupported)
 }
 
 func TestManager_SendChildInputDispatch(t *testing.T) {
@@ -146,5 +147,5 @@ func TestManager_InterruptChildUnsupportedProvider(t *testing.T) {
 	m.agents["root"] = &stubProvider{}
 	m.mu.Unlock()
 	err := m.InterruptChild("root", "child-1")
-	assert.ErrorIs(t, err, ErrChildSteeringUnsupported)
+	assert.ErrorIs(t, err, ErrChildOperationUnsupported)
 }

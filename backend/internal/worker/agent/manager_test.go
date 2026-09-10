@@ -290,7 +290,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 		// The mock provider steers no child, so the ERROR is expected. What
 		// matters is that the call got past the lock to a live process at all,
 		// rather than resolving against the one the restart was destroying.
-		assert.ErrorIs(t, err, ErrChildSteeringUnsupported)
+		assert.ErrorIs(t, err, ErrChildOperationUnsupported)
 	case <-time.After(5 * time.Second):
 		t.Fatal("child send never completed after the restart finished")
 	}

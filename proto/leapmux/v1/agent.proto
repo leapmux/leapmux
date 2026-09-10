@@ -257,10 +257,10 @@ message AgentInfo {
   string parent_agent_id = 16;
   string spawn_span_id = 17;
   // Whether this agent accepts a user message sent directly to it. Roots:
-  // always true. Children: true only when the feeding provider supports
-  // steering a subagent conversation inside the same process (Codex); false
-  // for read-only transcripts (Claude, ACP, Pi). The frontend gates the
-  // composer on this.
+  // always true. Children: true only when the feeding provider supports direct
+  // input to a subagent conversation. Codex Multi-Agent V2 rejects that input,
+  // so its child transcripts are read-only. The frontend gates the composer on
+  // this field.
   bool accepts_messages = 18;
   // The ROOT owner agent id (the top of the parent_agent_id chain). For a root
   // agent this equals its own id. The background-task registry and the root's

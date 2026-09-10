@@ -104,7 +104,7 @@ describe('insertIntoMruAgentEditor', () => {
   it('skips a non-steerable child agent and reaches the steerable root behind it', () => {
     const setRoot = vi.fn()
     const activate = vi.fn()
-    // A non-steerable child: parentAgentId set, acceptsMessages false, non-Codex
+    // A non-steerable child has a parent and an explicit read-only capability.
     // provider. Its composer is disabled and it must never receive an inserted
     // mention or quote.
     const nonSteerableChild: Tab = {
@@ -134,10 +134,10 @@ describe('insertIntoMruAgentEditor', () => {
     }
   })
 
-  it('targets a steerable child (Codex, accepts messages) directly', () => {
+  it('targets a child that accepts messages directly', () => {
     const setChild = vi.fn()
     const activate = vi.fn()
-    // A steerable child: Codex child that accepts messages.
+    // The backend-authoritative field permits direct child input.
     const steerableChild: Tab = {
       type: TabType.AGENT,
       id: 'c1',
@@ -160,12 +160,11 @@ describe('insertIntoMruAgentEditor', () => {
     }
   })
 
-  it('optimistically targets a Codex child before hydration (acceptsMessages undefined)', () => {
+  it('uses the provider fallback before child hydration', () => {
     const setChild = vi.fn()
     const activate = vi.fn()
-    // A Codex child whose acceptsMessages is not yet known (before listAgents
-    // hydration). isSteerableAgentTab routes the pre-hydration fallback through
-    // the provider plugin's supportsSubagentSend, so register Codex's capability.
+    // acceptsMessages is unknown before listAgents hydration. Register a
+    // synthetic provider capability to exercise the fallback.
     registerProvider(AgentProvider.CODEX, { classify: () => ({} as never), supportsSubagentSend: true })
     const codexChildUnhydrated: Tab = {
       type: TabType.AGENT,
@@ -180,7 +179,7 @@ describe('insertIntoMruAgentEditor', () => {
         { mruTabs: () => [codexChildUnhydrated], activate },
         'hello',
       )
-      expect(setChild, 'a Codex child is optimistically steerable pre-hydration').toHaveBeenCalled()
+      expect(setChild, 'the provider fallback permits the pre-hydration child').toHaveBeenCalled()
     }
     finally {
       unregisterEditorRef('c1')

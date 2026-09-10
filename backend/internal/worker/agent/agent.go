@@ -876,48 +876,52 @@ func (e *AgentBusyError) Unwrap() error {
 	return e.Err
 }
 
-// ChildSteerer lets a provider address a child conversation in its process.
-// Queue dispatch resolves the child registry row and drives the owner process.
-// Providers that cannot steer a child do not implement this interface.
+// ChildSteerer lets a provider send input to a child conversation in its
+// process. Queue dispatch resolves the child registry row and drives the owner.
+// Providers that cannot send direct child input do not implement this interface.
 type ChildSteerer interface {
 	// SendChildInput sends a user message to a child conversation identified by
 	// childKey (the provider linkage key stored in the registry row_key). Returns
-	// ErrChildSteeringUnsupported only via the Manager's type-assertion path.
+	// ErrChildOperationUnsupported only via the Manager's capability check.
 	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
 	// SteerChildInput adds input to the child's active turn.
 	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
 	// ActiveChildTurnState classifies the child's current turn after
 	// SendChildInput returns ErrAgentBusy.
 	ActiveChildTurnState(childKey string) TurnState
-	// InterruptChild stops the child's current turn inside the owner process.
+}
+
+// ChildInterrupter lets a provider stop a child turn without claiming that the
+// provider can send direct input to that child.
+type ChildInterrupter interface {
 	InterruptChild(childKey string) error
 }
 
-// ErrChildSteeringUnsupported is returned by the Manager when a running Agent
-// does not implement ChildSteerer, which means that the provider cannot address
-// a subagent at all.
+// ErrChildOperationUnsupported is returned when a running agent lacks the
+// requested child capability. Input uses ChildSteerer. Interrupt uses
+// ChildInterrupter.
 //
 // Each caller maps it on its own, and the three mappings differ. The
 // InterruptChild handler maps it to FailedPrecondition, so the client shows the
 // reason. Queue steer maps it to inputqueue.ErrSteeringUnsupported, through
 // classifyQueueSteerError. Queue dispatch (SendChildInput) has no case for it
 // and passes it to classifyQueueDeliveryError with every other delivery error.
-var ErrChildSteeringUnsupported = errors.New("agent provider does not support steering a subagent")
+var ErrChildOperationUnsupported = errors.New("agent provider does not support this subagent operation")
 
-// ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process
-// runs but does not yet know the child thread. A worker restart empties the
-// in-memory spawn index, so the registry row resolves before the provider
+// ErrChildRouteNotReady is returned by a child capability when the owner
+// process does not yet know the child thread. A worker restart empties the
+// in-memory child routes, so the registry row resolves before the provider
 // reports the spawn again. The condition is transient: the same call
 // succeeds after the owner process reports the spawn.
 //
-// ErrChildSteeringUnsupported is the opposite condition. That provider cannot
-// address a subagent at all. This provider does address one, but not yet.
+// ErrChildOperationUnsupported is the opposite condition. The provider lacks
+// the requested capability. This provider supports it, but its route is not ready.
 //
 // Each caller maps it on its own. The InterruptChild handler maps it to
 // UNAVAILABLE, so the client sends the interrupt again. Queue dispatch
 // (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
 // the queue records the failed delivery.
-var ErrChildNotSteerableYet = errors.New("subagent not yet steerable in the running owner process; retry")
+var ErrChildRouteNotReady = errors.New("subagent route is not ready in the running owner process; retry")
 
 // turnSeqSource issues the ordering token that goes with a provider's turn
 // flag. Read the token in the SAME critical section that reads the flag: the

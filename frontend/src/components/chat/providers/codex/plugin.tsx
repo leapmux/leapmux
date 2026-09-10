@@ -317,10 +317,10 @@ const codexPlugin: Provider = {
   // Codex accepts an option selection AND a free-text note together, so the
   // AskUserQuestion UI keeps both instead of treating them as mutually exclusive.
   preservesSelectionNotes: true,
-  // Codex collab child threads accept host-initiated turns inside the same
-  // process, so a child tab keeps an enabled composer. AgentInfo.accepts_messages
-  // (the backend-authoritative field) wins when present; this is the fallback.
-  supportsSubagentSend: true,
+  // Multi-Agent V2 rejects direct app-server input for spawned child threads.
+  // The child tab is a read-only transcript.
+  supportsSubagentSend: false,
+  supportsSubagentInterrupt: true,
   attachments: {
     text: true,
     image: true,
