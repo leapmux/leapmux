@@ -62,6 +62,7 @@ type errorSend struct {
 	requestID uint64
 	code      int32
 	message   string
+	afterSend func(error)
 }
 
 // channelSession tracks an active encrypted channel.
@@ -570,7 +571,19 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 		sess.handleRekeyRequest(requestID, kind.RekeyRequest)
 
 	case *leapmuxv1.InnerMessage_StreamRequest:
-		sess.streams.deliver(requestID, kind.StreamRequest)
+		if cleanup, err := sess.streams.deliver(requestID, kind.StreamRequest); err != nil {
+			afterSend := func(sendErr error) {
+				if sendErr != nil {
+					// Stop sends before cancellation can report success for this failed stream.
+					sess.cancel()
+					m.HandleClose(sess.ChannelID)
+				}
+				cleanup()
+			}
+			if !sess.sender.enqueueError(errorSend{requestID: requestID, code: int32(codes.ResourceExhausted), message: err.Error(), afterSend: afterSend}) {
+				afterSend(ErrStreamInboxFull)
+			}
+		}
 
 	default:
 		slog.Warn("unexpected inner message kind",
@@ -929,13 +942,20 @@ type channelSender struct {
 // -- the caller's own RPC timeout is the backstop, exactly as if the frame
 // had been lost in flight.
 func (s *channelSender) queueError(requestID uint64, code int32, message string) {
-	select {
-	case s.errorSends <- errorSend{requestID: requestID, code: code, message: message}:
-	default:
+	if !s.enqueueError(errorSend{requestID: requestID, code: code, message: message}) {
 		slog.Debug("dropping error response: error-send queue is full",
 			"channel_id", s.channelID,
 			"correlation_id", requestID,
 		)
+	}
+}
+
+func (s *channelSender) enqueueError(response errorSend) bool {
+	select {
+	case s.errorSends <- response:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -952,7 +972,11 @@ func (s *channelSender) drainErrorSends() {
 		case <-life:
 			return
 		case es := <-s.errorSends:
-			if err := s.sendError(es.requestID, es.code, es.message); err != nil {
+			err := s.sendError(es.requestID, es.code, es.message)
+			if es.afterSend != nil {
+				es.afterSend(err)
+			}
+			if err != nil {
 				// The one send path with no boundSender behind it, so nothing
 				// else would report this. Classified like the others rather
 				// than dropped: a marshal or encrypt failure here is a real
@@ -1071,9 +1095,27 @@ func (s *channelSender) sendStream(requestID uint64, msg *leapmuxv1.InnerStreamM
 // This is needed because the channelSender is shared per channel but each
 // incoming message has its own ID, and dispatch runs in goroutines concurrently.
 type boundSender struct {
-	sender    *channelSender
-	requestID uint64
-	method    string
+	sender      *channelSender
+	requestID   uint64
+	method      string
+	streamInbox *StreamInbox
+}
+
+func (b *boundSender) prepareStream() (func(), bool) {
+	if b.sender.streams == nil {
+		return nil, false
+	}
+	inbox, ok := b.sender.streams.reserve(b.requestID)
+	if !ok {
+		return nil, false
+	}
+	b.streamInbox = inbox
+	return func() {
+		if !inbox.IsBound() {
+			b.sender.streams.remove(b.requestID, inbox)
+			inbox.Release()
+		}
+	}, true
 }
 
 // sendFailureLevel picks the level a failed send is reported at.
@@ -1201,11 +1243,14 @@ func (b *boundSender) BindStream(ctrl StreamController) (release func(), ok bool
 	if b.sender.streams == nil {
 		return nil, false
 	}
-	return b.sender.bindStream(b.requestID, ctrl), true
-}
-
-func (s *channelSender) bindStream(requestID uint64, ctrl StreamController) func() {
-	return s.streams.bind(requestID, ctrl)
+	if b.streamInbox != nil {
+		return b.sender.streams.bindReserved(b.requestID, b.streamInbox, ctrl)
+	}
+	inbox, prepared := b.sender.streams.reserve(b.requestID)
+	if !prepared {
+		return nil, false
+	}
+	return b.sender.streams.bindReserved(b.requestID, inbox, ctrl)
 }
 
 // Caller pairs this session's identity with its grant, which is what every

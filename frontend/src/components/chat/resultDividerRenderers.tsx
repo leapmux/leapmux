@@ -1,6 +1,6 @@
 import type { JSXElement } from 'solid-js'
 import type { ResultDividerModel } from './providers/registry'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { resultDivider, resultErrorDetail } from './messageStyles.css'
 import { pluginFor } from './providers/registry'
 
@@ -40,8 +40,8 @@ function ResultDivider(props: { model: ResultDividerModel }): JSXElement {
  * only reaches here after classifyMessage produced `result_divider`, which it
  * does only for a registered provider, so there is no Claude fallback.
  */
-export function renderResultDivider(parsed: unknown, agentProvider?: AgentProvider): JSXElement | null {
+export function renderResultDivider(parsed: unknown, agentProvider?: AgentProvider, completion?: MessageCompletion): JSXElement | null {
   const plugin = pluginFor(agentProvider)
-  const model = plugin?.resultDivider?.(parsed)
+  const model = plugin?.resultDivider?.(parsed, completion)
   return model ? <ResultDivider model={model} /> : null
 }

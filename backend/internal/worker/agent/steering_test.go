@@ -102,8 +102,8 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		{
 			name: "codex",
 			send: func(t *testing.T, sink ProviderServices) (Agent, error) {
-				agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-					return json.RawMessage(`{}`)
+				agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+					return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 				})
 				agent.sink = sink
 				agent.threadID = "thread-1"
@@ -253,8 +253,8 @@ func TestGooseSessionUpdateTracksActiveRunForSteering(t *testing.T) {
 func TestAdvertisedACPSteerMapsEndedTurnResponse(t *testing.T) {
 	t.Parallel()
 
-	response := func(string) json.RawMessage {
-		return json.RawMessage(`{"code":-32602,"message":"session has no active prompt"}`)
+	response := func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"session has no active prompt"}`)}
 	}
 	reasonix, _ := newACPAgentForRPCWithResponder(t,
 		func() *ReasonixAgent { return &ReasonixAgent{} },
@@ -284,9 +284,9 @@ func TestAdvertisedACPSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 	reasonix, _ := newACPAgentForRPCWithResponder(t,
 		func() *ReasonixAgent { return &ReasonixAgent{} },
 		func(agent *ReasonixAgent) *acpBase { return &agent.acpBase },
-		func(string) json.RawMessage {
+		func(string) jsonrpcResponsePayload {
 			<-release
-			return json.RawMessage(`{}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 		},
 	)
 	reasonix.steerMethod = "_reasonix.io/session/steer"
@@ -296,12 +296,14 @@ func TestAdvertisedACPSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 	assert.ErrorIs(t, reasonix.SteerInput("guide", nil), ErrDeliveryUncertain)
 }
 
-func TestUnsupportedACPProvidersDoNotImplementSteering(t *testing.T) {
+func TestProvidersWithoutSteeringDoNotImplementIt(t *testing.T) {
 	t.Parallel()
 
 	for provider, candidate := range map[string]any{
-		"Kilo":    &KiloAgent{},
-		"Copilot": &CopilotCLIAgent{},
+		"Kilo": &KiloAgent{},
+		// Copilot's native protocol offers no operation that adds text to a running
+		// turn: `session.send` starts one, and it refuses a second while one runs.
+		"Copilot": &copilotAgent{},
 		"Cursor":  &CursorCLIAgent{},
 	} {
 		_, supports := candidate.(InputSteerer)
@@ -312,7 +314,7 @@ func TestUnsupportedACPProvidersDoNotImplementSteering(t *testing.T) {
 func TestCodexSteerUsesExpectedActiveTurn(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.threadID = "thread-1"
 	agent.turnID = "turn-1"
 	require.NoError(t, agent.SteerInput("guide", nil))
@@ -324,8 +326,8 @@ func TestCodexSteerUsesExpectedActiveTurn(t *testing.T) {
 func TestCodexSteerMapsEndedTurnResponse(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{"code":-32602,"message":"turn is no longer active"}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"turn is no longer active"}`)}
 	})
 	agent.threadID = "thread-1"
 	agent.turnID = "turn-1"
@@ -337,9 +339,9 @@ func TestCodexSteerProcessExitIsDeliveryUncertain(t *testing.T) {
 
 	release := make(chan struct{})
 	defer close(release)
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
 		<-release
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.threadID = "thread-1"
 	agent.turnID = "turn-1"

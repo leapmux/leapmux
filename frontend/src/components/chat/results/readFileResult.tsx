@@ -5,6 +5,7 @@ import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
 import { toolMessage, toolResultCollapsed, toolResultContentPre } from '../toolStyles.css'
+import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ReadResultView } from './ReadResultView'
 import { useCollapsedItems } from './useCollapsedLines'
 
@@ -83,7 +84,7 @@ export function ReadFileResultBody(props: {
       </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
-        fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || 'Empty file'}</div>}
+        fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || EMPTY_RESULT_NOTICE}</div>}
       >
         <ReadResultView
           lines={displayItems()}

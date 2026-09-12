@@ -1,73 +1,46 @@
 import type { Component, JSX } from 'solid-js'
-import { Show } from 'solid-js'
+import { children, Show } from 'solid-js'
 import { compactControl } from '~/components/common/CompactControl.css'
 import * as styles from '../ControlRequestBanner.css'
 
-/**
- * The action row a control request renders inside the composer box.
- *
- * Every provider's actions land here, so the row's shape is declared once: a
- * full-width three-zone grid of `[secondary | centre | primary]` with the
- * separator above it. Before this, eight components hand-wrote the same
- * `controlFooter` > `controlFooterRight` wrapper pair, most of them only to
- * reach the right-hand zone — and only two carried the `control-footer` test id,
- * so nothing noticed when one of them differed.
- *
- * The LAYOUT is shared; the BUTTONS are not. Each provider passes its own
- * actions as slot content, so nothing about a provider's wire format or its
- * decision vocabulary moves into this file.
- */
+/** Providers supply their native actions to one shared, wrapping row. */
 export interface ControlActionRowProps {
-  /**
-   * The left-end actions that are NOT a decision on the request: Stop, YOLO.
-   *
-   * A decision button belongs in `primary`, next to the one it opposes, however
-   * it is worded — Reject, Cancel, or Deny. Several providers
-   * emit their allow and deny buttons from ONE runtime list inside a connected
-   * `ButtonGroup`, so a zone split by polarity would break that segmented control
-   * and would put the same-named button at opposite ends of the row depending on
-   * which provider answered.
-   */
+  /** Actions that do not answer the request, such as Stop and YOLO. */
   secondary?: JSX.Element
-  /**
-   * The centre zone, for a control that is neither a secondary nor a primary
-   * action. Today only the multi-question pagination uses it.
-   */
-  centre?: JSX.Element
-  /** Controls that qualify the decision, before the decision buttons. */
+  /** Question pagination. */
+  navigation?: JSX.Element
+  /** Options that qualify the decision. */
   leading?: JSX.Element
-  /** The right-end decision buttons. */
+  /** Decisions on the request. */
   primary: JSX.Element
 }
 
-/**
- * The class every action button in the composer's footer slot carries — the
- * control-request decisions here, and the composer's own Pause, Interrupt and
- * Send.
- *
- * The shared compact-control style supplies the metrics. `CompactSwitch`, the
- * `PillGroup` small variant, and the editor height use the same source.
- *
- * One function keeps the current call sites on the same class string.
- */
+/** Action buttons use the compact metrics that switches and small pill groups share. */
 export function actionButtonClass(outline?: boolean): string {
   return outline === true ? `${compactControl} outline` : compactControl
 }
 
-export const ControlActionRow: Component<ControlActionRowProps> = props => (
-  <div
-    class={props.centre ? `${styles.controlFooter} ${styles.controlFooterCentred}` : styles.controlFooter}
-    data-testid="control-footer"
-  >
-    <Show when={props.secondary}>
-      <div class={styles.controlFooterLeft}>{props.secondary}</div>
-    </Show>
-    <Show when={props.centre}>
-      <div class={styles.controlFooterCentre}>{props.centre}</div>
-    </Show>
-    <div class={styles.controlFooterRight}>
-      <Show when={props.leading}>{props.leading}</Show>
-      {props.primary}
+export const ControlActionRow: Component<ControlActionRowProps> = (props) => {
+  const secondary = children(() => props.secondary)
+  const navigation = children(() => props.navigation)
+  const leading = children(() => props.leading)
+  const primary = children(() => props.primary)
+  return (
+    <div class={styles.controlFooter} data-testid="control-footer">
+      <Show when={secondary.toArray().length > 0}>
+        <div class={styles.controlFooterSecondary}>{secondary()}</div>
+      </Show>
+      <Show when={navigation.toArray().length > 0}>
+        <div class={styles.controlFooterNavigation}>{navigation()}</div>
+      </Show>
+      <Show when={leading.toArray().length > 0 || primary.toArray().length > 0}>
+        <div class={styles.controlFooterDecisions}>
+          <Show when={leading.toArray().length > 0}>
+            <div class={styles.controlRequestSwitches}>{leading()}</div>
+          </Show>
+          {primary()}
+        </div>
+      </Show>
     </div>
-  </div>
-)
+  )
+}

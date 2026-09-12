@@ -56,7 +56,7 @@ func NewAdminIdPService(st store.Store, ks *keystore.Keystore, cache providerCac
 func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAuthProvider {
 	return &leapmuxv1.AdminOAuthProvider{
 		Id:           p.ID,
-		ProviderType: p.ProviderType,
+		ProviderType: oauth.ProviderTypeWire(p.ProviderType),
 		Name:         p.Name,
 		IssuerUrl:    p.IssuerURL,
 		ClientId:     p.ClientID,

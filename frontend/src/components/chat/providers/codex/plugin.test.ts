@@ -524,14 +524,37 @@ describe('codex result divider', () => {
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
-  it('maps a completed turn to a "Turn completed" divider model', () => {
+  // Every provider states a turn end in one shared vocabulary, so the runtime's own
+  // status word never reaches the label on its own. Codex said "Turn completed" where
+  // the Agent Client Protocol providers said "Turn ended".
+  it('maps a completed turn to the shared turn-end label', () => {
     expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
-      .toEqual({ label: 'Turn completed' })
+      .toEqual({ label: 'Turn ended' })
+  })
+
+  it('maps the statuses that mean the reader stopped the turn', () => {
+    for (const status of ['interrupted', 'cancelled', 'aborted']) {
+      expect(plugin.resultDivider!({ turn: { id: 'turn-1', status } }), status)
+        .toEqual({ label: 'Turn interrupted' })
+    }
+  })
+
+  // A word this build does not know still reads as a turn end, with the word itself
+  // kept so nothing the runtime reported is lost.
+  it('qualifies the turn end with a status this build does not know', () => {
+    expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'compacted' } }))
+      .toEqual({ label: 'Turn ended (compacted)' })
   })
 
   it('maps a failed turn to a danger divider with the error inline', () => {
     expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
-      .toEqual({ label: 'Boom — timeout', isError: true })
+      .toEqual({ label: 'Turn failed — Boom', isError: true, detail: 'timeout' })
+  })
+
+  // A failure the runtime reports with no error object at all still reads as one.
+  it('marks a failed turn that carries no error object', () => {
+    expect(plugin.resultDivider!({ turn: { status: 'failed' } }))
+      .toEqual({ label: 'Turn failed', isError: true })
   })
 
   it('falls back to "Unknown error" for a failed turn whose error.message is empty', () => {
@@ -539,7 +562,7 @@ describe('codex result divider', () => {
     // missing-key fallback does not apply -- guard with `|| 'Unknown error'` so
     // the divider never renders a label-less red row.
     expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: '' } } }))
-      .toEqual({ label: 'Unknown error', isError: true })
+      .toEqual({ label: 'Turn failed — Unknown error', isError: true })
   })
 
   it('returns null when the turn carries no status', () => {
@@ -553,7 +576,7 @@ describe('codex result divider', () => {
       { turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } },
       AgentProvider.CODEX,
     )
-    expect(text).toBe('Boom — timeout')
+    expect(text).toBe('Turn failed — Boomtimeout')
     expect(isError).toBe(true)
   })
 })
@@ -587,7 +610,7 @@ describe('sendCodexDecision', () => {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
-  it('sends accept decision with numeric id', async () => {
+  it('sends accept decision with the unchanged worker request ID', async () => {
     let captured: Uint8Array | undefined
     const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
@@ -599,7 +622,7 @@ describe('sendCodexDecision', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 42,
+      id: '42',
       result: { decision: 'accept' },
     })
   })
@@ -615,7 +638,7 @@ describe('sendCodexDecision', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 7,
+      id: '7',
       result: { decision: 'decline' },
     })
   })
@@ -632,7 +655,7 @@ describe('sendCodexDecision', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 9,
+      id: '9',
       result: { decision },
     })
   })
@@ -675,7 +698,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 42,
+      id: '42',
       result: {
         answers: {
           q1: { answers: ['A'] },
@@ -700,7 +723,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 5,
+      id: '5',
       result: {
         answers: {
           MyHeader: { answers: ['X'] },
@@ -725,7 +748,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 10,
+      id: '10',
       result: {
         answers: {
           q1: { answers: ['user_note: my custom answer'] },
@@ -750,7 +773,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 11,
+      id: '11',
       result: {
         answers: {
           q1: { answers: ['A', 'C'] },
@@ -775,7 +798,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 13,
+      id: '13',
       result: {
         answers: {
           q1: { answers: ['B', 'user_note: note for B'] },
@@ -805,7 +828,7 @@ describe('sendCodexUserInputResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 14,
+      id: '14',
       result: {
         answers: {
           q1: { answers: ['None of the above', 'user_note: my custom answer'] },
@@ -885,7 +908,7 @@ describe('codex control response builder', () => {
       params: { availableDecisions: ['accept', 'cancel'] },
     }, 'do something else', '7')).toEqual({
       jsonrpc: '2.0',
-      id: 7,
+      id: '7',
       result: { decision: 'cancel' },
     })
   })
@@ -896,7 +919,7 @@ describe('codex control response builder', () => {
       params: { permissions: { network: { enabled: true } } },
     }, 'do something else', '7')).toEqual({
       jsonrpc: '2.0',
-      id: 7,
+      id: '7',
       result: { permissions: {}, scope: 'turn' },
     })
   })
@@ -1014,5 +1037,26 @@ describe('codex resultSubtype', () => {
 
   it('returns undefined without a turn object', () => {
     expect(plugin.resultSubtype!(parsed({ type: 'result', subtype: 'turn_end' }))).toBeUndefined()
+  })
+})
+
+// Which related half a Codex row wants. An MCP result carries no server or tool name
+// of its own; an image view and a collaboration call draw from both rows; a command
+// execution carries its whole body in each row and wants nothing.
+describe('codex relatedMessages', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+  const item = (fields: Record<string, unknown>) => ({ item: { id: 'call', ...fields } })
+
+  it('an MCP result wants its request', () => {
+    expect(plugin.relatedMessages!(input(item({ type: 'mcpToolCall', status: 'completed', server: 's', tool: 't' })))).toEqual(['request'])
+  })
+
+  it('an image view and a collaboration call want both halves', () => {
+    expect(plugin.relatedMessages!(input(item({ type: 'imageView', status: 'completed', path: '/a.png' })))).toEqual(['request', 'result'])
+    expect(plugin.relatedMessages!(input(item({ type: 'collabAgentToolCall', status: 'completed', tool: 'spawnAgent' })))).toEqual(['request', 'result'])
+  })
+
+  it('a command execution wants nothing, because each row carries its own body', () => {
+    expect(plugin.relatedMessages!(input(item({ type: 'commandExecution', status: 'completed', command: 'ls' })))).toEqual([])
   })
 })

@@ -14,11 +14,11 @@ import (
 )
 
 // acpEffortConfigOptionIDs are the well-known ids ACP providers use for a reasoning-effort
-// axis: OpenCode/Kilo "effort", Copilot "reasoning_effort", Goose "thinking_effort". They
-// are the id-fallback for the effort axis, mirroring the model/mode channels' well-known-id
-// fallback (acpConfigOptionIDModel/Mode) -- so the effort override and the strongest-first
-// sort fire whether or not the daemon sets the `thought_level` category.
-var acpEffortConfigOptionIDs = []string{OptionIDEffort, CopilotConfigReasoningEffort, GooseConfigThinkingEffort}
+// axis: OpenCode/Kilo "effort", Goose "thinking_effort". They are the id-fallback for the
+// effort axis, mirroring the model/mode channels' well-known-id fallback
+// (acpConfigOptionIDModel/Mode) -- so the effort override and the strongest-first sort fire
+// whether or not the daemon sets the `thought_level` category.
+var acpEffortConfigOptionIDs = []string{OptionIDEffort, GooseConfigThinkingEffort}
 
 // isEffortConfigOption reports whether option is a reasoning-effort axis -- by its ACP
 // `category` ("thought_level"), or, for a provider that omits category, by a well-known

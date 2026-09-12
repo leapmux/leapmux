@@ -24,8 +24,8 @@ describe('default mark preview', () => {
     // A control-response row classifies as `control_response` and the rail resolves its preview
     // through the plugin's controlResponseDisplay (chatMarkPreview.ts), NOT this neutral default.
     expect(defaultMarkPreview(
-      { kind: 'control_response' },
-      parsedOf({ isSynthetic: true, controlResponse: { provider: 'CODEX', response: { result: { decision: 'accept' } } } }),
+      { kind: 'control_response', response: { requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: { result: { decision: 'accept' } } } },
+      parsedOf({ result: { decision: 'accept' } }),
     )).toBeNull()
   })
 

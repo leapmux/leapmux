@@ -1,5 +1,8 @@
 import type { PersistedControlResponse } from './persistedControlResponse'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
+import { makeControlResponseMessage } from '~/test-support/messageFactory'
 import {
   controlBehaviorDisplay,
   controlResponsePreviewText,
@@ -7,7 +10,6 @@ import {
   feedback,
   feedbackOrLabel,
   firstNonEmpty,
-  isPersistedControlResponse,
   joinAnswerLines,
   label,
   labeledAnswerLine,
@@ -17,63 +19,50 @@ import {
 } from './persistedControlResponse'
 
 function crWith(response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { provider: 'CODEX', requestId: '', request: undefined, response }
+  return { requestId: '', claimToken: '', request: undefined, response }
 }
 
-describe('ispersistedcontrolresponse', () => {
-  it('accepts a synthetic row whose controlResponse is an object', () => {
-    expect(isPersistedControlResponse({ isSynthetic: true, controlResponse: { provider: 'CODEX' } })).toBe(true)
-  })
-
-  it('rejects non-synthetic rows and non-object controlResponse', () => {
-    expect(isPersistedControlResponse({ controlResponse: { provider: 'CODEX' } })).toBe(false)
-    expect(isPersistedControlResponse({ isSynthetic: true, controlResponse: 'x' })).toBe(false)
-    expect(isPersistedControlResponse(null)).toBe(false)
-    expect(isPersistedControlResponse(undefined)).toBe(false)
-  })
-})
-
 describe('parsepersistedcontrolresponse', () => {
-  it('parses the full envelope', () => {
-    const parsed = parsePersistedControlResponse({
-      isSynthetic: true,
-      controlResponse: {
-        provider: 'OPENCODE',
-        requestId: '7',
-        request: { method: 'session/request_permission' },
-        response: { result: { outcome: { optionId: 'proceed_once' } } },
-      },
-    })
-    expect(parsed).toEqual({
-      provider: 'OPENCODE',
-      requestId: '7',
-      request: { method: 'session/request_permission' },
-      response: { result: { outcome: { optionId: 'proceed_once' } } },
-    })
+  it('resolves a raw response and its separate request and worker metadata', () => {
+    const request = { jsonrpc: '2.0', id: '001', method: 'session/request_permission', params: { unknown: { count: 0, enabled: false, text: '' } } }
+    const response = { jsonrpc: '2.0', id: '001', result: { outcome: { optionId: 'once' } } }
+    expect(parsePersistedControlResponse({
+      rawText: JSON.stringify(response),
+      topLevel: response,
+      parentObject: response,
+      wrapper: null,
+      supplementalContent: request,
+      messageMetadata: { control_request_id: 'jsonrpc:"001"', control_request_claim_token: 'claim-1' },
+    })).toEqual({ requestId: 'jsonrpc:"001"', claimToken: 'claim-1', request, response })
   })
 
-  it('defaults missing fields and tolerates an omitted request/response', () => {
-    const parsed = parsePersistedControlResponse({ isSynthetic: true, controlResponse: {} })
-    expect(parsed).toEqual({ provider: '', requestId: '', request: undefined, response: undefined })
+  it('tolerates missing request data and malformed response bytes', () => {
+    const message = makeControlResponseMessage(AgentProvider.CODEX, null)
+    message.content = new TextEncoder().encode('{unfinished')
+    const parsed = parseMessageContent(message)
+    expect(parsePersistedControlResponse(parsed)).toEqual({ requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: undefined })
+    expect(parsed.rawText).toBe('{unfinished')
   })
 
-  it('returns null when the shape is not a persisted control response', () => {
-    expect(parsePersistedControlResponse({ content: 'hi' })).toBeNull()
+  it('rejects control markers that occur only inside provider content', () => {
+    const response = { isSynthetic: true, controlResponse: { requestId: 'forged', response: {} } }
+    expect(parsePersistedControlResponse({ rawText: JSON.stringify(response), topLevel: response, parentObject: response, wrapper: null })).toBeNull()
     expect(parsePersistedControlResponse(null)).toBeNull()
+    expect(parsePersistedControlResponse(undefined)).toBeNull()
   })
 })
 
 describe('controlbehaviordisplay', () => {
-  it('maps allow to Approved', () => {
-    expect(controlBehaviorDisplay({ response: { response: { behavior: 'allow' } } })).toEqual({ kind: 'label', text: 'Approved' })
+  it('maps allow to the words the Allow button carried', () => {
+    expect(controlBehaviorDisplay({ response: { response: { behavior: 'allow' } } })).toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('maps deny with a typed reason to feedback', () => {
     expect(controlBehaviorDisplay({ response: { response: { behavior: 'deny', message: 'nope' } } })).toEqual({ kind: 'feedback', message: 'nope' })
   })
 
-  it('maps a bare deny (sentinel-only message) to Rejected', () => {
-    expect(controlBehaviorDisplay({ response: { response: { behavior: 'deny', message: 'Rejected by user.' } } })).toEqual({ kind: 'label', text: 'Rejected' })
+  it('maps a bare deny to the words the Deny button carried', () => {
+    expect(controlBehaviorDisplay({ response: { response: { behavior: 'deny', message: 'Rejected by user.' } } })).toEqual({ kind: 'label', text: 'Deny' })
   })
 
   it('returns null for a non-behavior response', () => {
@@ -83,14 +72,14 @@ describe('controlbehaviordisplay', () => {
 
 describe('fallbackcontrolresponsedisplay', () => {
   it('uses the behavior envelope when present', () => {
-    expect(fallbackControlResponseDisplay({ provider: 'X', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
-      .toEqual({ kind: 'label', text: 'Approved' })
+    expect(fallbackControlResponseDisplay({ claimToken: 'claim-1', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
+      .toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('falls back to the generic label as the terminal', () => {
-    expect(fallbackControlResponseDisplay({ provider: 'X', requestId: '', request: undefined, response: { anything: 1 } }))
+    expect(fallbackControlResponseDisplay({ claimToken: 'claim-1', requestId: '', request: undefined, response: { anything: 1 } }))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(fallbackControlResponseDisplay({ provider: 'X', requestId: '', request: undefined, response: undefined }))
+    expect(fallbackControlResponseDisplay({ requestId: '', claimToken: '', request: undefined, response: undefined }))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 })
@@ -120,8 +109,8 @@ describe('feedback', () => {
 
 describe('feedbackorlabel', () => {
   it('renders a non-empty reason as feedback and a blank reason as the fallback label', () => {
-    expect(feedbackOrLabel('too risky', 'Rejected')).toEqual({ kind: 'feedback', message: 'too risky' })
-    expect(feedbackOrLabel('', 'Rejected')).toEqual({ kind: 'label', text: 'Rejected' })
+    expect(feedbackOrLabel('too risky', 'Deny')).toEqual({ kind: 'feedback', message: 'too risky' })
+    expect(feedbackOrLabel('', 'Deny')).toEqual({ kind: 'label', text: 'Deny' })
     expect(feedbackOrLabel('', 'Cancel')).toEqual({ kind: 'label', text: 'Cancel' })
   })
 })
@@ -134,7 +123,7 @@ describe('resolvecontrolresponsedisplay', () => {
 
   it('degrades to the neutral fallback when the derivation returns null', () => {
     expect(resolveControlResponseDisplay(crWith({ response: { response: { behavior: 'allow' } } }), () => null))
-      .toEqual({ kind: 'label', text: 'Approved' })
+      .toEqual({ kind: 'label', text: 'Allow' })
     expect(resolveControlResponseDisplay(crWith({ anything: 1 }), () => null))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
@@ -153,7 +142,7 @@ describe('resolvecontrolresponsedisplay', () => {
     expect(resolveControlResponseDisplay(crWith({ anything: 1 }), boom))
       .toEqual({ kind: 'label', text: 'Responded' })
     expect(resolveControlResponseDisplay(crWith({ response: { response: { behavior: 'allow' } } }), boom))
-      .toEqual({ kind: 'label', text: 'Approved' })
+      .toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('logs a warning when the derivation throws, so a real derivation bug is diagnosable', () => {

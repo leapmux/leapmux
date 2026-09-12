@@ -62,7 +62,7 @@ describe('mcp tool_use rendering', () => {
 
     const text = container.textContent || ''
     // Should show humanized server name and tool name
-    expect(text).toContain('Claude Ai Tavily')
+    expect(text).toContain('claude_ai_Tavily')
     expect(text).toContain('tavily_research')
     // Should show the first input string as a hint
     expect(text).toContain('Go OIDC libraries comparison')
@@ -86,7 +86,7 @@ describe('mcp tool_use rendering', () => {
 
     const text = container.textContent || ''
     // Server is "github", tool is "search__repos" (preserves __ in tool name)
-    expect(text).toContain('Github')
+    expect(text).toContain('github')
     expect(text).toContain('search__repos')
   })
 

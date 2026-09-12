@@ -4,7 +4,7 @@ import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
-import { sendJsonRpcResult, sendResponse } from '../../controls/types'
+import { sendJsonRpcResult } from '../../controls/types'
 import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 
 export type CodexDecision
@@ -48,7 +48,7 @@ export function codexDecisionLabel(value: unknown): string {
     switch (decision) {
       case 'accept': return 'Allow'
       case 'acceptForSession': return 'Allow for Session'
-      case 'decline': return 'Reject'
+      case 'decline': return 'Deny'
       case 'cancel': return 'Cancel'
       default: return decision
     }
@@ -84,17 +84,6 @@ export function sendCodexDecision(
   decision: CodexDecision,
 ): Promise<void> {
   return sendJsonRpcResult(onRespond, requestId, { decision })
-}
-
-export function markCodexPlanPromptResponse(response: Record<string, unknown>): Record<string, unknown> {
-  return { ...response, codexPlanModePrompt: true }
-}
-
-export function sendCodexPlanPromptResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
-  response: Record<string, unknown>,
-): Promise<void> {
-  return sendResponse(onRespond, markCodexPlanPromptResponse(response))
 }
 
 const CODEX_OTHER_OPTION_LABEL = 'None of the above'

@@ -18,12 +18,9 @@ export function getToolInput(payload: Record<string, unknown>): Record<string, u
 export function buildAllowResponse(
   requestId: string,
   updatedInput: Record<string, unknown>,
-  opts?: { permissionMode?: PermissionMode, clearContext?: boolean },
 ): Record<string, unknown> {
   return {
     type: 'control_response',
-    permissionMode: opts?.permissionMode,
-    ...(opts?.clearContext ? { clearContext: true } : {}),
     response: {
       subtype: 'success',
       request_id: requestId,

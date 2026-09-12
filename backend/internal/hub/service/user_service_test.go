@@ -1877,12 +1877,12 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 
 	// Create two OAuth providers.
 	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "github-1", ProviderType: "github", Name: "GitHub",
+		ID: "github-1", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub",
 		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
 	err = env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "google-1", ProviderType: "oidc", Name: "Google",
+		ID: "google-1", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC, Name: "Google",
 		ClientID: "c2", ClientSecret: []byte("s2"), Scopes: "openid", Enabled: true,
 	})
 	require.NoError(t, err)
@@ -1917,7 +1917,7 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 
 	// User has password_set = 1 (default from setupUserTest).
 	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "github-2", ProviderType: "github", Name: "GitHub",
+		ID: "github-2", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub",
 		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
@@ -1943,7 +1943,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 	env := setupOAuthUserTest(t).elevated(t)
 
 	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "github-3", ProviderType: "github", Name: "GitHub",
+		ID: "github-3", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub",
 		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
@@ -1985,7 +1985,7 @@ func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *te
 	// removing BOTH is not.
 	for _, id := range []string{"gh-a", "gh-b"} {
 		require.NoError(t, env.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
-			ID: id, ProviderType: "github", Name: id,
+			ID: id, ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: id,
 			ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 		}))
 		require.NoError(t, env.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
@@ -2037,7 +2037,7 @@ func TestUnlinkOAuthProvider_ADisabledLinkIsNotALoginMethod(t *testing.T) {
 		{"gh-dead", false},
 	} {
 		require.NoError(t, env.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
-			ID: p.id, ProviderType: "github", Name: p.id,
+			ID: p.id, ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: p.id,
 			ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: p.enabled,
 		}))
 		require.NoError(t, env.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
@@ -2433,7 +2433,7 @@ func TestUnlinkOAuthProvider_UnelevatedIsRefused(t *testing.T) {
 
 	env := setupUserTest(t)
 	require.NoError(t, env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "github-1", ProviderType: "github", Name: "GitHub",
+		ID: "github-1", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub",
 		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	}))
 	require.NoError(t, env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
@@ -2471,7 +2471,7 @@ func TestUnlinkOAuthProvider_UnelevatedCannotProbeWhichProvidersAreLinked(t *tes
 
 	env := setupUserTest(t)
 	require.NoError(t, env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID: "github-1", ProviderType: "github", Name: "GitHub",
+		ID: "github-1", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub",
 		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	}))
 	require.NoError(t, env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
@@ -2499,7 +2499,7 @@ func TestUnlinkOAuthProvider_SlidesTheWindow(t *testing.T) {
 	env.setElevationRow(t, anchor, anchor.Add(5*time.Minute))
 	for _, p := range []string{"github-1", "google-1"} {
 		require.NoError(t, env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-			ID: p, ProviderType: "oidc", Name: p,
+			ID: p, ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC, Name: p,
 			ClientID: "c-" + p, ClientSecret: []byte("s"), Scopes: "openid", Enabled: true,
 		}))
 		require.NoError(t, env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{

@@ -44,9 +44,6 @@ const (
 // and `user-execution`), so the read loop answers it rather than any one call site.
 const (
 	ZCodeMethodRequestRuntimePreferences = "session/requestRuntimePreferences"
-
-	ZCodeMethodRequestPermission = "interaction/requestPermission"
-	ZCodeMethodRequestUserInput  = "interaction/requestUserInput"
 	// ZCodeMethodRequestProviderRuntimeHeaders asks the client for freshly-minted
 	// OAuth headers for a start-plan provider. LeapMux mints none -- it reads the
 	// desktop configuration and forwards the API key it finds there -- so the reply
@@ -140,43 +137,9 @@ const (
 // ZCode tool names LeapMux reasons about by name are generated: see
 // contracts/zcode-protocol.json. The renderer plugin dispatches on the same names.
 
-// ZCode interaction schema discriminator for the plan-approval flow. An
-// interaction/requestUserInput carrying it is the "approve this plan" prompt;
-// every other one is an AskUserQuestion.
-const ZCodeInteractionPlanApproval = "plan_approval"
-
-// ZCodePlanApproveSentinel is the answer value the app-server reads as "the plan is
-// approved". Any other non-empty answer is treated as a DENIAL that carries the text
-// as reviewer feedback (`plan_approval_feedback`), which is exactly the shape
-// LeapMux's reject-with-a-reason control response needs.
-const ZCodePlanApproveSentinel = "approve"
-
-// ZCodePlanApprovalQuestion is the question text of the app-server's DEFAULT plan
-// approval prompt, and the first key its reader looks for in `content.answers`.
-//
-// A plan approval that carries a reason states that reason as the question text
-// instead, so this constant is not a reliable key -- which is why the reply also
-// carries the positional `answer_0` form. See zcodeUserInputResult.
-const ZCodePlanApprovalQuestion = "Review this implementation plan."
-
-// ZCode's `content` answer field names.
-//
-// The app-server's reader accepts three spellings, in this order:
-// `content.answers[<question text>]`, `content.answer_<index>`, and
-// `content.answer` (only when the request has exactly one question). A reply that
-// uses none of them reads as NO ANSWER, which the plan path turns into a silent
-// denial -- so LeapMux sends the keyed map AND the positional fallback.
-const (
-	ZCodeAnswerMapField      = "answers"
-	ZCodeAnswerField         = "answer"
-	ZCodeAnswerIndexedPrefix = "answer_"
-)
-
-// The two fields of a requestUserInput reply.
-const (
-	ZCodeReplyActionField  = "action"
-	ZCodeReplyContentField = "content"
-)
+// The shared contract supplies native plan answers and response fields.
+// Plan approval requires the exact approval sentinel. Other nonempty answers become rejection feedback.
+// Question replies prefer keyed answers, then positional answers, then a single answer for one question.
 
 // ZCode interaction decisions (interaction/requestPermission replies).
 //
@@ -217,12 +180,6 @@ const (
 
 // ZCode turn results (turn.completed.resultType).
 // The values are generated: see contracts/zcode-protocol.json.
-
-// ZCode interaction actions (interaction/requestUserInput replies).
-const (
-	ZCodeActionAccept  = "accept"
-	ZCodeActionDecline = "decline"
-)
 
 // ZCode error codes observed on the wire.
 const (
@@ -337,15 +294,19 @@ type zcodeEventEnvelope struct {
 	DeliveryKind string          `json:"deliveryKind"`
 	Type         string          `json:"type"`
 	Payload      json.RawMessage `json:"payload"`
+	raw          json.RawMessage
 }
 
-// zcodeEventNotification decodes both spellings of a session/event's params: the
-// flat envelope the app-server sends, and a nested `event` object. The nested form
-// is accepted because session/subscribe returns its replayed events under a field
-// of that name, so one decoder serves both arrival paths.
-type zcodeEventNotification struct {
-	Event *zcodeEventEnvelope `json:"event"`
-	zcodeEventEnvelope
+// UnmarshalJSON retains fields that the provider adds and the exact original bytes.
+func (e *zcodeEventEnvelope) UnmarshalJSON(data []byte) error {
+	type envelope zcodeEventEnvelope
+	var parsed envelope
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*e = zcodeEventEnvelope(parsed)
+	e.raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // parseZCodeEvent decodes a session/event notification's params into the event
@@ -355,15 +316,21 @@ func parseZCodeEvent(params json.RawMessage) (zcodeEventEnvelope, bool) {
 	if len(params) == 0 {
 		return zcodeEventEnvelope{}, false
 	}
-	var notif zcodeEventNotification
-	if err := json.Unmarshal(params, &notif); err != nil {
+	var event zcodeEventEnvelope
+	if err := json.Unmarshal(params, &event); err != nil {
 		return zcodeEventEnvelope{}, false
 	}
-	if notif.Type != "" {
-		return notif.zcodeEventEnvelope, true
+	if event.Type != "" {
+		// UnmarshalJSON receives the JSON value without surrounding whitespace.
+		// Keep the exact supplied event bytes at this boundary.
+		event.raw = append(json.RawMessage(nil), params...)
+		return event, true
 	}
-	if notif.Event != nil && notif.Event.Type != "" {
-		return *notif.Event, true
+	var nested struct {
+		Event json.RawMessage `json:"event"`
+	}
+	if json.Unmarshal(params, &nested) == nil && json.Unmarshal(nested.Event, &event) == nil && event.Type != "" {
+		return event, true
 	}
 	return zcodeEventEnvelope{}, false
 }

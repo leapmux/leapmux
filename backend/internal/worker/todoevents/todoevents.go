@@ -30,21 +30,33 @@ type Item struct {
 	Description string
 }
 
-// Status is the canonical to-do status. Mirrors leapmuxv1.TodoStatus
-// with friendlier zero-value semantics (zero == pending instead of
-// "unspecified"). StatusDeleted is a tombstone: KindDelete events set
-// it instead of removing the row, so the chat thread can keep
-// rendering the deletion event and the sidebar can show the deleted
-// row with a distinct visual. Cap eviction treats StatusCompleted and
-// StatusDeleted as a single "finished" pool.
-type Status int
+// Status is the canonical to-do status: a DEFINED type over
+// leapmuxv1.TodoStatus, so this package, the agent_todos.status column
+// and the browser share one numbering and every conversion is a cast.
+// A defined type rather than an alias, because an alias cannot carry
+// IsFinished.
+//
+// The zero value is StatusUnspecified, not a real status. It used to be
+// StatusPending; the column's CHECK now refuses 0, so a write that
+// never set a status fails rather than recording a pending row.
+//
+// StatusDeleted is a tombstone: KindDelete events set it instead of
+// removing the row, so the chat thread can keep rendering the deletion
+// event and the sidebar can show the deleted row with a distinct
+// visual. Cap eviction treats StatusCompleted and StatusDeleted as a
+// single "finished" pool.
+type Status leapmuxv1.TodoStatus
 
 const (
-	StatusPending Status = iota
-	StatusInProgress
-	StatusCompleted
-	StatusDeleted
+	StatusUnspecified = Status(leapmuxv1.TodoStatus_TODO_STATUS_UNSPECIFIED)
+	StatusPending     = Status(leapmuxv1.TodoStatus_TODO_STATUS_PENDING)
+	StatusInProgress  = Status(leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS)
+	StatusCompleted   = Status(leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED)
+	StatusDeleted     = Status(leapmuxv1.TodoStatus_TODO_STATUS_DELETED)
 )
+
+// String names the status with the proto enum's own generated name, for logs.
+func (s Status) String() string { return leapmuxv1.TodoStatus(s).String() }
 
 // IsFinished reports whether s is a final status — one that makes a
 // row eligible for cap-eviction (Completed | Deleted). Pending and
@@ -117,12 +129,14 @@ func ApplyPatch(base Item, patch Patch) Item {
 
 // MergeDetail overlays the non-zero fields of detail onto base.
 // KindDetail carries a full snapshot of one row; a missing field maps
-// to an empty string via StatusFromWire or a json zero value, which we
-// treat as "preserve". StatusPending is the zero value of Status and
-// the default for an empty wire string, so base wins there too — the
-// read-only query that produces a KindDetail never legitimately
-// downgrades a row from in_progress or completed back to pending. A
-// real status transition arrives as a KindUpdate.
+// to an empty string or a json zero value, which we treat as
+// "preserve".
+//
+// StatusUnspecified is the zero value and means the detail reported no
+// status, so base wins there. This is sharper than the rule it
+// replaced: while zero meant PENDING, an explicitly reported `pending`
+// was indistinguishable from an absent one and both were dropped. A
+// real status transition still arrives as a KindUpdate.
 func MergeDetail(base, detail Item) Item {
 	out := base
 	if detail.Content != "" {
@@ -134,7 +148,7 @@ func MergeDetail(base, detail Item) Item {
 	if detail.Description != "" {
 		out.Description = detail.Description
 	}
-	if detail.Status != StatusPending {
+	if detail.Status != StatusUnspecified {
 		out.Status = detail.Status
 	}
 	return out
@@ -145,10 +159,62 @@ func (i Item) ToProto() *leapmuxv1.TodoItem {
 	return &leapmuxv1.TodoItem{
 		Id:          i.ID,
 		Content:     i.Content,
-		Status:      statusToProto(i.Status),
+		Status:      leapmuxv1.TodoStatus(i.Status),
 		ActiveForm:  i.ActiveForm,
 		Description: i.Description,
 	}
+}
+
+// StatusFromProviderWord parses a PROVIDER's own status word onto the neutral
+// status. Every provider that reports to-dos spells these four states in
+// roughly the same lowercase words, so one parser serves all of them and no
+// plugin carries a copy.
+//
+// It is not a storage or payload codec, and it has no inverse: agent_todos
+// stores the ordinal, and clients read the proto enum. It reads only inward,
+// from a vocabulary this project does not own.
+//
+// The EMPTY word and an unrecognized one are different answers, and keeping
+// them apart is what lets MergeDetail preserve a row.
+//
+//   - "" means the provider's payload carried no status at all, which is
+//     StatusUnspecified. A KindDetail built from it must leave the row's status
+//     alone -- Claude's TaskGet omits the field on a task whose status did not
+//     change, and reading that as `pending` silently downgraded a row that was
+//     in progress.
+//   - Any other unrecognized word is a real report this parser does not know,
+//     so it reads as StatusPending, the state that claims the least about it.
+//
+// StatusUnspecified is an in-flight value only: the column refuses it, and
+// OrPending resolves it wherever an Item becomes a row.
+func StatusFromProviderWord(word string) Status {
+	switch word {
+	case "in_progress", "inProgress":
+		return StatusInProgress
+	case "completed":
+		return StatusCompleted
+	case "deleted":
+		return StatusDeleted
+	case "":
+		return StatusUnspecified
+	default:
+		return StatusPending
+	}
+}
+
+// OrPending resolves s for STORAGE: a persisted row always carries a real
+// state, so a status no provider reported becomes StatusPending.
+//
+// It runs at the write, never at the parse, and the order matters. MergeDetail
+// reads StatusUnspecified as "keep the row's own status", so resolving earlier
+// would turn every silent detail into a downgrade to pending -- which is the
+// regression TestMergeDetail_PreservesStatusWhenTheDetailReportedNone covers.
+// The agent_todos CHECK is the backstop for a path that skips this.
+func (s Status) OrPending() Status {
+	if s == StatusUnspecified {
+		return StatusPending
+	}
+	return s
 }
 
 // ItemsToProto bulk-converts a slice for proto-shaped responses.
@@ -158,48 +224,4 @@ func ItemsToProto(items []Item) []*leapmuxv1.TodoItem {
 		out[i] = it.ToProto()
 	}
 	return out
-}
-
-// StatusWire returns the lowercase wire-format string used by the
-// agent_todos.status column and the TS reducer ("pending" |
-// "in_progress" | "completed" | "deleted").
-func StatusWire(s Status) string {
-	switch s {
-	case StatusInProgress:
-		return "in_progress"
-	case StatusCompleted:
-		return "completed"
-	case StatusDeleted:
-		return "deleted"
-	default:
-		return "pending"
-	}
-}
-
-// StatusFromWire parses the lowercase wire-format string; unknown
-// values fall through to StatusPending.
-func StatusFromWire(s string) Status {
-	switch s {
-	case "in_progress", "inProgress":
-		return StatusInProgress
-	case "completed":
-		return StatusCompleted
-	case "deleted":
-		return StatusDeleted
-	default:
-		return StatusPending
-	}
-}
-
-func statusToProto(s Status) leapmuxv1.TodoStatus {
-	switch s {
-	case StatusInProgress:
-		return leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS
-	case StatusCompleted:
-		return leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED
-	case StatusDeleted:
-		return leapmuxv1.TodoStatus_TODO_STATUS_DELETED
-	default:
-		return leapmuxv1.TodoStatus_TODO_STATUS_PENDING
-	}
 }

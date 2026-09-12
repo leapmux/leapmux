@@ -641,7 +641,7 @@ func TestRouter_UpdateStream_DeliversToController(t *testing.T) {
 			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
 	}()
 	<-ready
-	r.UpdateStream("req-update", []byte("revision"))
+	require.NoError(t, r.UpdateStream("req-update", []byte("revision")))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
@@ -668,7 +668,7 @@ func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) 
 		_, ok := r.StreamCancellers.Load("req-xw-update")
 		return ok
 	}, time.Second, 10*time.Millisecond)
-	r.UpdateStream("req-xw-update", []byte("sibling-revision"))
+	require.NoError(t, r.UpdateStream("req-xw-update", []byte("sibling-revision")))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
@@ -710,8 +710,8 @@ func TestRouter_CancelStream_CrossWorkerCallsOnCancel(t *testing.T) {
 func TestRouter_UpdateStream_UnknownOrEmptyIdIsNoop(t *testing.T) {
 	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
 	// Must not panic — empty and unbound ids are quiet no-ops.
-	r.UpdateStream("", []byte("x"))
-	r.UpdateStream("no-such-req", []byte("x"))
+	require.NoError(t, r.UpdateStream("", []byte("x")))
+	require.NoError(t, r.UpdateStream("no-such-req", []byte("x")))
 }
 
 func TestRouter_CancelStream_CallsOnCancel(t *testing.T) {

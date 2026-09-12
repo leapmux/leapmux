@@ -37,9 +37,10 @@ type goalServicesRecorder struct {
 	update GoalUpdate
 }
 
-func (s *goalServicesRecorder) UpsertGoal(update GoalUpdate) { s.update = update }
-func (*goalServicesRecorder) ClearGoal(bool)                 {}
-func (*goalServicesRecorder) PublishGoalCapabilities()       {}
+func (s *goalServicesRecorder) UpsertGoal(update GoalUpdate)          { s.update = update }
+func (*goalServicesRecorder) UpdateGoalStatus(GoalStatus, GoalStatus) {}
+func (*goalServicesRecorder) ClearGoal(bool)                          {}
+func (*goalServicesRecorder) PublishGoalCapabilities()                {}
 
 func TestGoalTextRouteAcceptsOnlyGoalServices(t *testing.T) {
 	t.Parallel()

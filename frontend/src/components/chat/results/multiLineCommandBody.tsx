@@ -3,7 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import { createEffect, createMemo, createSignal, on, onCleanup } from 'solid-js'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT, commandInputNeedsExpansion as commandInputNeedsExpansionShared, isMultiLineCommand as isMultiLineCommandShared } from '../chatHeightShared'
-import { BashHighlightHtml } from '../toolRenderers'
+import { CommandHighlightHtml } from '../toolRenderers'
 import { commandInputCollapsed, commandInputCollapsedFade, toolInputSummary, toolResultContentAnsi } from '../toolStyles.css'
 
 function joinClasses(...classes: Array<string | false | null | undefined>): string {
@@ -53,6 +53,7 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
 /** Collapsed command summary: full text, clipped to three visual rows. */
 export function CommandInputSummary(props: {
   command: string
+  language?: 'bash' | 'powershell'
   context?: RenderContext
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
@@ -100,7 +101,8 @@ export function CommandInputSummary(props: {
   })
 
   return (
-    <BashHighlightHtml
+    <CommandHighlightHtml
+      language={props.language}
       class={joinClasses(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflowing() && commandInputCollapsedFade)}
       code={displayCommand()}
       context={props.context}
@@ -116,9 +118,10 @@ export function CommandInputSummary(props: {
 }
 
 /** Full command body shown after expanding a command input summary. */
-export function CommandInputBody(props: { command: string, context?: RenderContext }): JSX.Element {
+export function CommandInputBody(props: { command: string, language?: 'bash' | 'powershell', context?: RenderContext }): JSX.Element {
   return (
-    <BashHighlightHtml
+    <CommandHighlightHtml
+      language={props.language}
       class={toolResultContentAnsi}
       code={props.command}
       context={props.context}

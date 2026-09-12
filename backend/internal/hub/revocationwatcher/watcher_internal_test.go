@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
@@ -584,7 +585,9 @@ func TestApplyEventSkipsUnknownKind(t *testing.T) {
 		w.applyEvent(store.PublishedRevocationEvent{
 			Seq: 7,
 			Event: store.RevocationEvent{
-				ID: "event", Kind: "future_kind",
+				// An ordinal no RevocationEventKind declares, which is what a hub running
+				// an older build sees after a newer one adds a kind.
+				ID: "event", Kind: 999,
 			},
 		})
 	})
@@ -631,7 +634,7 @@ func (*recordingCloser) RestampSessionGeneration(string, int64)          {}
 // the next validate -- the unknown-kind branch logs and skips rather than
 // fencing, so nothing else would report it.
 func TestApplyEventClosesStreamsForBothSessionKinds(t *testing.T) {
-	for _, kind := range []string{
+	for _, kind := range []leapmuxv1.RevocationEventKind{
 		store.RevocationEventKindSession,
 		store.RevocationEventKindSessionRevoked,
 	} {

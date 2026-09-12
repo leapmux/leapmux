@@ -1,5 +1,6 @@
 import type { CommandResultSource } from '../../../results/commandResult'
 import { pickBool, pickString } from '~/lib/jsonPick'
+import { splitExitCodeMarker } from '../../../results/exitCodeMarker'
 
 interface ClaudeBashArgs {
   toolUseResult?: Record<string, unknown> | null
@@ -9,18 +10,25 @@ interface ClaudeBashArgs {
 
 /**
  * Build a CommandResultSource from a Claude `Bash` tool_result. Claude's
- * structured Bash payload carries `stdout`/`stderr`/`interrupted`. There is
- * no exit code on the wire, so the status label collapses to "Interrupted"
- * / "Error" / "Success" via `commandStatusLabel`.
+ * structured Bash payload carries `stdout`/`stderr`/`interrupted` and no exit
+ * code, so the status label collapses to "Interrupted" / "Error" / "Success"
+ * via `commandStatusLabel`.
  *
  * When `toolUseResult` is missing, this falls back to the raw text content
- * (preserving today's behavior for subagent-style payloads).
+ * (preserving today's behavior for subagent-style payloads). A FAILED command
+ * takes that path, and its text states the exit code in the first line. Reading
+ * it there is the only way this row can say "Error (exit 1)" like OpenCode, Pi
+ * and ZCode do for the same failure.
  */
 export function claudeBashFromToolResult(args: ClaudeBashArgs): CommandResultSource {
   const { toolUseResult, resultContent, isError } = args
   if (!toolUseResult) {
+    // Zero is a real exit code, not an absent one. `commandStatusLabel` already
+    // refuses to call it a failure, so carrying it changes no label.
+    const { output, exitCode } = splitExitCodeMarker(resultContent)
     return {
-      output: resultContent,
+      output,
+      ...(exitCode === undefined ? {} : { exitCode }),
       isError: isError === true,
     }
   }

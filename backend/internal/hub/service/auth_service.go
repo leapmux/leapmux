@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -779,7 +780,7 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 		pbProviders = append(pbProviders, &leapmuxv1.OAuthProviderInfo{
 			Id:           p.ID,
 			Name:         p.Name,
-			ProviderType: p.ProviderType,
+			ProviderType: huboauth.ProviderTypeWire(p.ProviderType),
 			LoginUrl:     fmt.Sprintf("%s/auth/idp/%s/login", baseURL, p.ID),
 		})
 	}

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
@@ -350,7 +351,7 @@ func (h *IdPHandler) providerMayElevateAccount(w http.ResponseWriter, ctx contex
 // the browser leaves the app, and loadEnabledProvider reads the
 // oauth_providers row on every call -- so a load here as well made that leg
 // read the row twice, off two different snapshots.
-func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, providerID string, provider huboauth.Provider, purpose, sessionID string) {
+func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, providerID string, provider huboauth.Provider, purpose leapmuxv1.OAuthStatePurpose, sessionID string) {
 	ctx := r.Context()
 
 	verifier := oauth2.GenerateVerifier()

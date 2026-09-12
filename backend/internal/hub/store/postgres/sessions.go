@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -89,7 +90,7 @@ func (s *sessionStore) Revoke(ctx context.Context, id string) (int64, error) {
 // deleteEmitting removes one session row and records who ended it. The two
 // callers differ in the event kind ALONE, so the delete stays one
 // implementation and cannot drift between a sign-out and a revoke.
-func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int64, error) {
+func (s *sessionStore) deleteEmitting(ctx context.Context, id string, kind leapmuxv1.RevocationEventKind) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.DeleteUserSession(ctx, id)
 		if err != nil {

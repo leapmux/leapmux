@@ -12,7 +12,7 @@ import (
 
 // Init / buffer helpers run on all platforms (no process spawn).
 func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) {
-	raw, err := acpStandardInitParams()
+	raw, err := acpStandardInitParams(nil)
 	require.NoError(t, err)
 
 	var params map[string]interface{}
@@ -24,6 +24,8 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 	caps, ok := params["clientCapabilities"].(map[string]interface{})
 	require.True(t, ok, "clientCapabilities must be present")
 	assert.Equal(t, true, caps["terminal"])
+	assert.NotContains(t, caps, "_meta")
+	assert.Equal(t, map[string]any{"form": map[string]any{}, "url": map[string]any{}}, caps["elicitation"])
 
 	fs, ok := caps["fs"].(map[string]interface{})
 	require.True(t, ok)
@@ -40,13 +42,80 @@ func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
 			"term-1": {Output: "stdout\nstderr\n", ExitCode: &exitCode},
 		},
 	}}
-	raw := b.expandACPTerminalResult(json.RawMessage(`{
+	original := json.RawMessage(`{
 		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed",
 		"content":[{"type":"terminal","terminalId":"term-1"}]
-	}`))
-	assert.Contains(t, string(raw), "stdout\\nstderr")
+	}`)
+	content := b.acpMessageContent(original, original)
+	assert.Equal(t, []byte(original), content.Original)
+	assert.Contains(t, string(content.Supplemental), "stdout\\nstderr")
 	_, present := b.takeCompletedTerminal("term-1")
 	assert.False(t, present)
+}
+
+// A row that names a terminal still RUNNING carried NO output, and said so in a word
+// that means something else.
+//
+// Goose runs its commands in a host terminal. A stop cuts the turn, the agent sends its
+// final tool update at once, and the process is still alive when that row is stored --
+// so `takeCompletedTerminal` found nothing and the card read
+// `Interrupted Terminal term_... [output unavailable]`. LeapMux owns that process and
+// holds every byte it printed, so "unavailable" was never true.
+func TestExpandACPTerminalResultSnapshotsATerminalStillRunning(t *testing.T) {
+	t.Parallel()
+
+	session := &acpTerminalSession{id: "term-1", byteLimit: 1 << 10}
+	session.appendOutput([]byte("half a line\n"))
+	b := &acpBase{acpTerminalHost: acpTerminalHost{
+		terminals: map[string]*acpTerminalSession{"term-1": session},
+	}}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.Equal(t, []byte(original), content.Original)
+	assert.Contains(t, string(content.Supplemental), "half a line",
+		"the bytes the terminal printed before the stop are LeapMux's own, so the row carries them")
+}
+
+// A terminal that printed NOTHING yet is a different statement from one whose output
+// cannot be read, and the two render differently: `[no output]` against
+// `[output unavailable]`. The row states the first, because it is what happened.
+func TestExpandACPTerminalResultReportsATerminalThatPrintedNothing(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{acpTerminalHost: acpTerminalHost{
+		terminals: map[string]*acpTerminalSession{"term-1": {id: "term-1", byteLimit: 1 << 10}},
+	}}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-1"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.Contains(t, string(content.Supplemental), `"term-1":{"output":""`,
+		"the terminal is known and printed nothing, which is not the same as output nobody can read")
+}
+
+// A terminal LeapMux no longer holds is the one case that stays unavailable: the
+// process is gone, its buffer went with it, and no answer is better than a made-up one.
+func TestExpandACPTerminalResultLeavesAReleasedTerminalUnresolved(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{}
+	original := json.RawMessage(`{
+		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"failed",
+		"content":[{"type":"terminal","terminalId":"term-gone"}]
+	}`)
+
+	content := b.acpMessageContent(original, original)
+
+	assert.NotContains(t, string(content.Supplemental), "terminals",
+		"LeapMux has nothing for this terminal, so it claims nothing")
 }
 
 func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {

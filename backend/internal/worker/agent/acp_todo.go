@@ -51,7 +51,7 @@ func (acpProvider) ExtractTodoEvent(_ string, content []byte, _ func() []byte) (
 	for _, entry := range notification.Entries {
 		items = append(items, todoevents.Item{
 			Content: entry.Content,
-			Status:  todoevents.StatusFromWire(entry.Status),
+			Status:  todoevents.StatusFromProviderWord(entry.Status),
 		})
 	}
 	return todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: items}, true

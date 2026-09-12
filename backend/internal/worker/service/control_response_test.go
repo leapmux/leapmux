@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -28,30 +30,51 @@ func decodeMessageContent(t *testing.T, content []byte, compression leapmuxv1.Co
 	return body.Content
 }
 
-// decodedControlResponse is the structured `{isSynthetic, controlResponse:{provider, requestId,
-// request, response}}` row (issue #258): the provider-native response as sent to the agent plus the
-// pruned request context the frontend renders labels from. `request` is nil when the row omitted it
-// (the stored request was unavailable or unrecognized). Its json tags INDEPENDENTLY spell the
-// persisted wire field names -- the backend->DB->frontend contract -- so a production tag rename is
-// caught here rather than silently round-tripping through the shared struct that wrote the row.
+// decodedControlResponse keeps independent wire field names in the storage assertions.
 type decodedControlResponse struct {
-	Provider  string          `json:"provider"`
-	RequestID string          `json:"requestId"`
-	Request   json.RawMessage `json:"request"`
-	Response  json.RawMessage `json:"response"`
+	Provider   string
+	RequestID  string
+	ClaimToken string
+	Request    json.RawMessage
+	Response   json.RawMessage
 }
 
-func decodeStructuredControlResponse(t *testing.T, content []byte, compression leapmuxv1.ContentCompression) decodedControlResponse {
+func decodeStructuredControlResponse(t *testing.T, row db.Message) decodedControlResponse {
 	t.Helper()
-	raw, err := msgcodec.Decompress(content, compression)
+	raw, err := msgcodec.Decompress(row.Content, row.ContentCompression)
 	require.NoError(t, err)
-	var body struct {
-		IsSynthetic     bool                   `json:"isSynthetic"`
-		ControlResponse decodedControlResponse `json:"controlResponse"`
+	supplement, err := msgcodec.Decompress(row.SupplementalContent, row.SupplementalContentCompression)
+	require.NoError(t, err)
+	var fields struct {
+		Provider json.RawMessage `json:"provider"`
+		Metadata struct {
+			RequestID  string `json:"control_request_id"`
+			ClaimToken string `json:"control_request_claim_token"`
+		} `json:"metadata"`
 	}
-	require.NoError(t, json.Unmarshal(raw, &body))
-	require.True(t, body.IsSynthetic, "a structured control-response row must be marked isSynthetic")
-	return body.ControlResponse
+	require.NoError(t, json.Unmarshal(supplement, &fields))
+	return decodedControlResponse{
+		Provider:   strings.TrimPrefix(row.AgentProvider.String(), "AGENT_PROVIDER_"),
+		RequestID:  fields.Metadata.RequestID,
+		ClaimToken: fields.Metadata.ClaimToken,
+		Request:    fields.Provider,
+		Response:   raw,
+	}
+}
+
+func persistControlResponseForTest(t *testing.T, svc *Service, agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+	t.Helper()
+	content, err := controlResponseMessageContent(plan)
+	require.NoError(t, err)
+	require.NoError(t, svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content,
+		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil))
+}
+
+func persistControlResponseAnswerForTest(t *testing.T, svc *Service, agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) {
+	t.Helper()
+	if plan.needsTranscriptRow() {
+		persistControlResponseForTest(t, svc, agentID, provider, plan)
+	}
 }
 
 // controlResponseRows returns the CONTROL_RESPONSE-marked rows, isolating the single structured
@@ -78,8 +101,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "7",
 		Payload: []byte(`{
@@ -93,7 +115,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -128,15 +150,40 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CODEX", cr.Provider)
 	assert.Equal(t, "7", cr.RequestID)
 	assert.JSONEq(t, `{
+		"jsonrpc":"2.0","id":7,
 		"method":"item/tool/requestUserInput",
 		"params":{"questions":[{"id":"task","header":"Task"},{"id":"reason","header":"Reason"}]}
-	}`, string(cr.Request), "the pruned question context lets the frontend label the answers")
-	assert.JSONEq(t, string(response), string(cr.Response), "the native answer payload is retained verbatim")
+	}`, string(cr.Request), "the complete request retains the native identity and question labels")
+	assert.Equal(t, string(response), string(cr.Response), "the native answer payload is retained verbatim")
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
+}
+
+func TestControlResponseRejectsAnUnansweredOlderInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	first := agent.ControlRequest{RequestID: "7", Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"command":"first"}}`)}
+	require.NoError(t, sink.PublishControlRequest(first))
+	old, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	second := agent.ControlRequest{RequestID: "7", Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"command":"second"}}`)}
+	require.NoError(t, sink.PublishControlRequest(second))
+	current, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`), old.ClaimToken)
+	require.NoError(t, responseErr)
+	assert.False(t, forward)
+	remaining, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	assert.Equal(t, current.ClaimToken, remaining.ClaimToken)
+	assert.Equal(t, second.Payload, remaining.Payload)
 }
 
 func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
@@ -151,8 +198,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "req-1",
 		Payload: []byte(`{
@@ -160,7 +206,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 			"request_id":"req-1",
 			"request":{"tool_name":"ExitPlanMode"}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -196,11 +242,11 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CODEX", cr.Provider)
 	assert.Equal(t, "req-1", cr.RequestID)
 	// The typed feedback lives inside the native response; the frontend extracts and renders it.
-	assert.JSONEq(t, string(response), string(cr.Response))
+	assert.Equal(t, string(response), string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
 }
 
@@ -220,17 +266,18 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-		AgentID:   "agent-1",
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", AgentSessionID: "plan-session",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID:    "agent-1",
-		Options:    map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir: t.TempDir(),
+		ResumeSessionID: "plan-session",
+		AgentID:         "agent-1",
+		Options:         map[string]string{agent.OptionIDModel: "opus"},
+		WorkingDir:      t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -274,11 +321,11 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -303,12 +350,12 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source,
 		"a bare denial persists the structured control-response row (USER-sourced), identified by its {controlResponse} shape rather than a forwarded {content} feedback row")
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CODEX", cr.Provider)
 	assert.JSONEq(t, `{"request":{"tool_name":"CodexPlanModePrompt"}}`, string(cr.Request))
 	// The native response is retained verbatim -- the placeholder is not collapsed backend-side;
 	// the frontend collapses it to render "Rejected".
-	assert.JSONEq(t, string(response), string(cr.Response))
+	assert.Equal(t, string(response), string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
 
@@ -325,20 +372,24 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-		AgentID:   "agent-1",
-		RequestID: "plan-1",
-		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentSessionID: "plan-session",
+		AgentID:        "agent-1",
+		RequestID:      "plan-1",
+		Payload:        []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID:    "agent-1",
-		Options:    map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir: t.TempDir(),
+		ResumeSessionID: "plan-session",
+		AgentID:         "agent-1",
+		Options:         map[string]string{agent.OptionIDModel: "opus"},
+		WorkingDir:      t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
+
+	confirmPlanCollaborationForTest(t, svc)
 
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
@@ -354,7 +405,7 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 
 	rows := waitForMessageCount(t, svc, "agent-1", 2)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CODEX", cr.Provider)
 	assert.JSONEq(t, `{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`, string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType,
@@ -382,23 +433,20 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 			agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 		}),
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "gpt-5.6-sol"}, WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	})
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
-	defer svc.Agents.StopAgent("agent-1")
 
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
-			"permissionMode":"never",
 			"response":{"request_id":"plan-1","response":{"behavior":"allow"}}
 		}`),
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: "never"},
 	}, w)
 	require.Empty(t, w.errors)
 
@@ -426,15 +474,18 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
 	storeRequest := func() {
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "plan-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentSessionID: "plan-session",
+			AgentID:        "agent-1", RequestID: "plan-1",
 			Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-		}))
+		})
 	}
 	storeRequest()
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+		ResumeSessionID: "plan-session",
+		AgentID:         "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -443,6 +494,8 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 		AgentId: "agent-1",
 		Content: []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`),
 	}
+	confirmPlanCollaborationForTest(t, svc)
+
 	dispatch(d, "SendControlResponse", answer, w)
 	// The first answer deleted the request; re-store it so the duplicate ALSO resolves as a loaded
 	// plan-prompt. The idempotency claim -- not a request-gone short-circuit -- must stop the reapply.
@@ -467,15 +520,15 @@ func TestBuildControlResponsePlan_MalformedPlanPromptHasNoDecision(t *testing.T)
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	plan := svc.buildControlResponsePlan("agent-1", dbAgent, []byte(`{"response":{"request_id":"plan-1"},"clearContext":true}`))
+	plan := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, []byte(`{"response":{"request_id":"plan-1"},"clearContext":true}`))
 
 	assert.True(t, plan.requestMeta.Loaded)
 	assert.Equal(t, agent.PlanModeControlPrompt, plan.resolution.PlanModeControl)
@@ -494,18 +547,18 @@ func TestBuildControlResponsePlan_WhitespacePaddedBehaviorStillDecides(t *testin
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
 	// A behavior string with surrounding whitespace must still resolve to a decision: the envelope is
 	// normalized at construction (mirroring agent.DecodeControlBehavior's trimming read), so behavior()
 	// reads the trimmed value, hasDecision holds, and the plan-mode handling is not silently skipped.
-	plan := svc.buildControlResponsePlan("agent-1", dbAgent, []byte(`{"response":{"request_id":"plan-1","response":{"behavior":" allow "}}}`))
+	plan := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, []byte(`{"response":{"request_id":"plan-1","response":{"behavior":" allow "}}}`))
 
 	assert.True(t, plan.requestMeta.Loaded)
 	assert.Equal(t, agent.ControlBehaviorAllow, plan.behavior(), "behavior() reads the value trimmed at construction")
@@ -530,23 +583,23 @@ func TestBuildControlResponsePlan_RequestIDNormalizedConsistently(t *testing.T) 
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
 	// A padded-but-nonempty request_id trims to the loaded id, so it decides and its plan-mode
 	// mutation gate would match (both read "plan-1").
-	padded := svc.buildControlResponsePlan("agent-1", dbAgent, []byte(`{"response":{"request_id":" plan-1 ","response":{"behavior":"allow"}}}`))
+	padded := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, []byte(`{"response":{"request_id":" plan-1 ","response":{"behavior":"allow"}}}`))
 	assert.Equal(t, "plan-1", padded.decision.Response.RequestID, "request_id is trimmed at construction")
 	assert.True(t, padded.hasDecision, "a padded-nonempty request_id still counts as a decision")
 
 	// An all-whitespace request_id normalizes to "" -> no decision, consistently on both gates (the
 	// hasDecision gate no longer reads it untrimmed-nonempty while the mutation gate trims it to "").
-	blank := svc.buildControlResponsePlan("agent-1", dbAgent, []byte(`{"response":{"request_id":"   ","response":{"behavior":"allow"}}}`))
+	blank := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, []byte(`{"response":{"request_id":"   ","response":{"behavior":"allow"}}}`))
 	assert.Equal(t, "", blank.decision.Response.RequestID, "an all-whitespace request_id normalizes to empty")
 	assert.False(t, blank.hasDecision, "an all-whitespace request_id is no decision on the hasDecision gate too")
 }
@@ -563,8 +616,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "req-1",
 		Payload: []byte(`{
@@ -572,7 +624,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 			"request_id":"req-1",
 			"request":{"tool_name":"ExitPlanMode"}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -627,8 +679,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "que-1",
 		Payload: []byte(`{
@@ -640,7 +691,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -672,14 +723,14 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "OPENCODE", cr.Provider)
 	assert.Equal(t, "que-1", cr.RequestID)
 	assert.JSONEq(t, `{
 		"type":"question.asked",
 		"properties":{"questions":[{"header":"Task","question":"Pick a task"},{"header":"Env","question":"Pick an environment"}]}
 	}`, string(cr.Request), "the question headers let the frontend label the structured answers")
-	assert.JSONEq(t, string(response), string(cr.Response))
+	assert.Equal(t, string(response), string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
 }
 
@@ -695,8 +746,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "7",
 		Payload: []byte(`{
@@ -710,7 +760,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -742,16 +792,17 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "GITHUB_COPILOT", cr.Provider)
 	assert.JSONEq(t, `{
+		"jsonrpc":"2.0","id":7,
 		"method":"requestPermission",
 		"params":{"options":[
-			{"optionId":"proceed_once","name":"Allow once"},
-			{"optionId":"cancel","name":"Deny"}
+			{"optionId":"proceed_once","name":"Allow once","kind":"allow_once"},
+			{"optionId":"cancel","name":"Deny","kind":"reject_once"}
 		]}
-	}`, string(cr.Request), "the option names let the frontend resolve the selected optionId to a label (kind is pruned)")
-	assert.JSONEq(t, string(response), string(cr.Response))
+	}`, string(cr.Request), "the complete permission options retain their native values and labels")
+	assert.Equal(t, string(response), string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
 }
 
@@ -767,10 +818,10 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -788,11 +839,11 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CLAUDE_CODE", cr.Provider)
 	assert.Equal(t, "req-1", cr.RequestID)
-	assert.JSONEq(t, `{"request":{"tool_name":"Bash"}}`, string(cr.Request))
-	assert.JSONEq(t, string(response), string(cr.Response))
+	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`, string(cr.Request))
+	assert.Equal(t, string(response), string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "the structured row draws the rail jump dot")
 }
 
@@ -809,10 +860,10 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -829,8 +880,8 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
-	assert.JSONEq(t, string(response), string(cr.Response),
+	cr := decodeStructuredControlResponse(t, rows[0])
+	assert.Equal(t, string(response), string(cr.Response),
 		"the backend retains the native deny response verbatim; the frontend collapses the placeholder")
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
@@ -846,10 +897,10 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -866,8 +917,8 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
-	assert.JSONEq(t, string(response), string(cr.Response), "a genuine typed rejection reason survives verbatim into the native response")
+	cr := decodeStructuredControlResponse(t, rows[0])
+	assert.Equal(t, string(response), string(cr.Response), "a genuine typed rejection reason survives verbatim into the native response")
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
 
@@ -880,10 +931,10 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -903,78 +954,37 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID, "the nested control-response request_id keys the row, not the top-level JSON-RPC id")
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
 
-// TestSendControlResponse_PersistsRowWithRequestOmittedWhenRequestUnknown covers the #258
-// improvement: even when the pending control request row is gone (already deleted, or never stored),
-// the user's answer is NOT lost -- the structured row persists with `request` omitted and a
-// resolvable request id, and the frontend degrades gracefully. (A DUPLICATE answer for the same
-// request draws no second row -- see TestSendControlResponse_WithholdsDuplicateAnswerRow below.)
-func TestSendControlResponse_PersistsRowWithRequestOmittedWhenRequestUnknown(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
-	require.NoError(t, err)
-	defer svc.Agents.StopAgent("agent-1")
-
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
-		AgentId: "agent-1",
-		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"missing","response":{"behavior":"allow"}}}`),
-	}, w)
-	require.Empty(t, w.errors)
-
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, rows, 1, "the answer persists even without the stored request")
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
-	assert.Equal(t, "missing", cr.RequestID)
-	assert.Nil(t, cr.Request, "request context is omitted when the stored request is unavailable")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
-}
-
-// TestSendControlResponse_PersistsRequestGoneClaudeOrphanRow pins that the #258 request-gone
-// persistence now extends to Claude too: a SINGLE request-gone Claude answer (a genuine orphan --
-// the request was deleted before this first answer, so no tool_result was ever marked for it) is NOT
-// lost, it persists the structured row. Deduping a "same request answered twice" case is the
-// idempotency claim's job (see the duplicate test below), not a blanket provider-capability withhold.
-func TestSendControlResponse_PersistsRequestGoneClaudeOrphanRow(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
-	require.NoError(t, err)
-	defer svc.Agents.StopAgent("agent-1")
-
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
-		AgentId: "agent-1",
-		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"missing","response":{"behavior":"allow"}}}`),
-	}, w)
-	require.Empty(t, w.errors, "the response is still forwarded to the agent")
-
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, rows, 1, "a genuine request-gone Claude orphan answer persists (#258), not withheld")
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
-	assert.Equal(t, "missing", cr.RequestID)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+func TestSendControlResponseRejectsUnknownRequests(t *testing.T) {
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	} {
+		t.Run(provider.String(), func(t *testing.T) {
+			svc, dispatcher, writer := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+			}))
+			sends := 0
+			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+				AgentId: "agent-1",
+				Content: []byte(`{"response":{"request_id":"missing","response":{"behavior":"allow"}}}`),
+			}, writer)
+			require.Empty(t, writer.errors)
+			response := decodeQueueResponse(t, writer, &leapmuxv1.SendControlResponseResponse{})
+			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, response.State)
+			require.NotEmpty(t, response.Error)
+			require.Zero(t, sends)
+			rows, err := svc.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
+			require.NoError(t, err)
+			require.Empty(t, rows)
+		})
+	}
 }
 
 // TestSendControlResponse_WithholdsDuplicateAnswerRow pins the idempotency claim: the SAME control
@@ -991,6 +1001,9 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "", Payload: []byte(`{"request":{"tool_name":"Bash"}}`),
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -1026,10 +1039,10 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -1077,22 +1090,27 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-		AgentID: "agent-1", RequestID: "plan-1",
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentSessionID: "plan-session",
+		AgentID:        "agent-1", RequestID: "plan-1",
 		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
-		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+		ResumeSessionID: "plan-session",
+		AgentID:         "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 
 	// A plan-mode prompt approval with the DEFAULT clearContext=false. The winner handles it
 	// server-side (never forwarded) and deletes the request, so the duplicate below reads request-gone
-	// -- the exact case where withholdsForward is false and the old code re-forwarded the stray frame.
+	// A duplicate must not forward this LeapMux-handled response.
 	answer := &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`),
 	}
+	confirmPlanCollaborationForTest(t, svc)
+
 	dispatch(d, "SendControlResponse", answer, w)
 	require.Empty(t, w.errors)
 	_ = waitForMessageCount(t, svc, "agent-1", 2)
@@ -1109,10 +1127,7 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 		"the duplicate is a no-op: only the winner's one structured row + 'Implement the plan.' prompt, undoubled")
 }
 
-// TestSendControlResponse_GarbageContentPersistsNothing covers a response with no extractable
-// request id: it draws no structured row (there is nothing to attribute the answer to) but is still
-// forwarded to the agent.
-func TestSendControlResponse_GarbageContentPersistsNothing(t *testing.T) {
+func TestSendControlResponseRejectsUnattributableContent(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1131,7 +1146,7 @@ func TestSendControlResponse_GarbageContentPersistsNothing(t *testing.T) {
 		AgentId: "agent-1",
 		Content: []byte(`{"foo":"bar"}`),
 	}, w)
-	require.Empty(t, w.errors, "the response is still forwarded to the agent")
+	require.Len(t, w.errors, 1)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
@@ -1150,10 +1165,10 @@ func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1181,10 +1196,10 @@ func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-ask",
 		Payload: []byte(`{"type":"control_request","request_id":"req-ask","request":{"tool_name":"AskUserQuestion","tool_use_id":"toolu-ask"}}`),
-	}))
+	})
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	sink.ResetSpans()
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -1212,19 +1227,27 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	writeTestPlanFile(t, planPath, "# Plan\n\nKeep the approval in the transcript.\n")
+	require.NoError(t, svc.Queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
+		ID: "agent-1", PlanFilePath: planPath, PlanTitle: "Plan",
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","tool_use_id":"toolu-exit"}}`),
-	}))
-	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+	})
+	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
-		AgentId: "agent-1",
-		Content: []byte(`{"type":"control_response","clearContext":true,"response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
+		AgentId:      "agent-1",
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: true},
+		Content:      []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
 	}, w)
 	require.Empty(t, w.errors)
 
@@ -1236,9 +1259,9 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 	controlRows := controlResponseRows(rows)
 	require.Len(t, controlRows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, controlRows[0].Source)
-	cr := decodeStructuredControlResponse(t, controlRows[0].Content, controlRows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, controlRows[0])
 	assert.Equal(t, "CLAUDE_CODE", cr.Provider)
-	assert.JSONEq(t, `{"request":{"tool_name":"ExitPlanMode"}}`, string(cr.Request))
+	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","tool_use_id":"toolu-exit"}}`, string(cr.Request))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, controlRows[0].MarkType,
 		"clear-context skips Claude's self-displayed tool_result, so the structured row must carry the rail dot")
 }
@@ -1255,10 +1278,10 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1279,46 +1302,6 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 		"a whitespace-padded request_id must still apply the EnterPlanMode transition")
 }
 
-// TestControlResponsePlan_WithholdsForward pins the forward-withhold predicate the handler applies to
-// BOTH the winner and a duplicate: ONLY an APPROVED context-clearing plan approval withholds (the
-// agent is about to be restarted via initiatePlanExecution, so forwarding would race the restart). It
-// is content-derived, so it never depends on whether the stored request is still loaded -- a duplicate
-// that raced past the winner's delete (request-gone) withholds identically. It is the one pure
-// predicate the handler's forward decision keys off for winner and duplicate alike (loaded /
-// request-gone clear-context withhold, request-gone non-clearing forwards).
-func TestControlResponsePlan_WithholdsForward(t *testing.T) {
-	t.Parallel()
-
-	mk := func(behavior string, clear bool) controlResponsePlan {
-		var plan controlResponsePlan
-		plan.hasDecision = behavior == agent.ControlBehaviorAllow || behavior == agent.ControlBehaviorDeny
-		plan.decision.Response.Response.Behavior = behavior
-		plan.decision.ClearContext = clear
-		return plan
-	}
-
-	assert.True(t, mk(agent.ControlBehaviorAllow, true).withholdsForward(),
-		"an approved context-clearing plan approval withholds its forward")
-	assert.False(t, mk(agent.ControlBehaviorAllow, false).withholdsForward(),
-		"an ordinary approval (no clearContext) forwards -- only restart answers withhold")
-	assert.False(t, mk(agent.ControlBehaviorDeny, true).withholdsForward(),
-		"a denial never withholds, even with clearContext -- a rejection doesn't restart the agent")
-
-	// No recognized decision -> no withhold (an empty/unknown behavior is not a decision).
-	var noDecision controlResponsePlan
-	noDecision.decision.ClearContext = true
-	assert.False(t, noDecision.withholdsForward(), "no decision -> no withhold")
-
-	// The predicate reads ONLY the response envelope, never requestMeta, so it is identical whether the
-	// stored request is loaded or gone -- the property that lets a request-gone duplicate withhold like
-	// the winner. Prove it by flipping Loaded and asserting the decision is unchanged.
-	clearExit := mk(agent.ControlBehaviorAllow, true)
-	clearExit.requestMeta.Loaded = true
-	assert.True(t, clearExit.withholdsForward())
-	clearExit.requestMeta.Loaded = false
-	assert.True(t, clearExit.withholdsForward(), "withholdsForward is request-independent (holds request-gone)")
-}
-
 // TestApplyControlResponsePlanModeMutations pins the once-only plan-mode side effects the WINNER
 // applies (the handler calls this inside `if firstAnswer`, so a duplicate never reaches it): an
 // approved EnterPlanMode switches the agent into plan mode, while a request-gone answer -- which
@@ -1332,10 +1315,10 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1345,14 +1328,14 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 	content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	plan := svc.buildControlResponsePlan("agent-1", dbAgent, content)
+	plan := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, content)
 	require.True(t, plan.requestMeta.Loaded)
 	require.Equal(t, agent.PlanModeControlEnter, plan.resolution.PlanModeControl)
 
 	before := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode]
 	require.NotEqual(t, contracts.ClaudeModePlan, before, "sanity: the agent is not already in plan mode")
 
-	svc.applyControlResponsePlanModeMutations("agent-1", dbAgent, plan)
+	require.NoError(t, svc.applyControlResponsePlanModeMutations(dbAgent, plan))
 	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
@@ -1360,11 +1343,11 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 
 	// A request-gone answer (no stored request to resolve the transition) mutates nothing.
 	svc.Output.ClearPendingControlRequests("agent-1")
-	gonePlan := svc.buildControlResponsePlan("agent-1", dbAgent, content)
+	gonePlan := buildControlResponsePlanForTest(t, svc, "agent-1", dbAgent, content)
 	require.False(t, gonePlan.requestMeta.Loaded, "sanity: the request is gone")
 	// Reset to Default so a no-op is distinguishable from a re-applied Enter transition (which sets Plan).
 	dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, contracts.ClaudeModeDefault)
-	svc.applyControlResponsePlanModeMutations("agent-1", dbAgent, gonePlan)
+	require.NoError(t, svc.applyControlResponsePlanModeMutations(dbAgent, gonePlan))
 	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, contracts.ClaudeModeDefault, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
@@ -1389,6 +1372,9 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instA", Payload: []byte(`{"request":{"tool_name":"Bash"}}`),
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -1418,7 +1404,7 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 
 // TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists is the counterpart: after a relaunch,
 // the new subprocess re-issues a request that REUSES the id (its JSON-RPC counter restarted from
-// scratch). PersistControlRequest mints a FRESH claim_token for that new instance, which the frontend
+// scratch). PublishControlRequest mints a FRESH claim_token for that new instance, which the frontend
 // echoes back, so the genuine post-relaunch answer claims a distinct key and persists its OWN row --
 // while a stale duplicate of the PRE-relaunch instance (old token) is still deduped, so the reuse
 // window stays closed. The distinct claim_token -- not a release step -- is what tells the two apart.
@@ -1432,6 +1418,9 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instA", Payload: []byte(`{"request":{"tool_name":"Bash"}}`),
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, sink)
@@ -1442,11 +1431,11 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 	// Instance A answers with its echoed token.
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
 
-	// Relaunch, then the new subprocess re-issues a request that reuses id "req-1" -- PersistControlRequest
+	// Relaunch, then the new subprocess re-issues a request that reuses id "req-1" -- PublishControlRequest
 	// mints a fresh token, which the frontend would echo. Read it back (as the frontend does via the
 	// broadcast) and answer with it: this genuine post-relaunch answer claims a distinct key and persists.
 	svc.Output.ClearPendingControlRequests("agent-1")
-	sink.PersistControlRequest("req-1", []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`))
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-1", Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`)}))
 	reissued, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
 	require.NoError(t, err)
 	require.NotEqual(t, "instA", reissued.ClaimToken, "the reissued instance minted a distinct token")
@@ -1476,10 +1465,10 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "7",
 		Payload: []byte(`{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
@@ -1498,9 +1487,9 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "exactly the structured answer row -- no double-render")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CURSOR", cr.Provider)
-	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(cr.Request))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`, string(cr.Request))
 	// The response is the TRANSFORMED ACP outcome that was forwarded to Cursor, not the raw envelope.
 	var outcome struct {
 		Result struct {
@@ -1529,10 +1518,10 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan-7",
 		Payload: []byte(`{"jsonrpc":"2.0","id":"plan-7","method":"cursor/create_plan","params":{}}`),
-	}))
+	})
 	before, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -1553,7 +1542,7 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "exactly the structured answer row -- no double-render")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	var outcome struct {
 		Result struct {
 			Outcome struct {
@@ -1582,7 +1571,7 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 func TestNeedsStructuredRow(t *testing.T) {
 	t.Parallel()
 
-	// mk sets only the fields needsStructuredRow reads: the resolvable request id and the resolved
+	// mk sets only the fields needsTranscriptRow reads: the resolvable request id and the resolved
 	// self-display flag. requestMeta.Loaded no longer participates -- the "answered twice" duplicate
 	// is deduped one layer up by SendControlResponse's idempotency claim, not here.
 	mk := func(requestID string, selfDisplayed bool) controlResponsePlan {
@@ -1596,39 +1585,39 @@ func TestNeedsStructuredRow(t *testing.T) {
 		plan := mk("req-1", true)
 		plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
 		plan.resolution.PlanModeControl = agent.PlanModeControlExit
-		plan.decision.ClearContext = clear
+		plan.settings = &leapmuxv1.PlanApprovalSettings{ClearContext: clear}
 		return plan
 	}
 
-	assert.False(t, mk("", false).needsStructuredRow(),
+	assert.False(t, mk("", false).needsTranscriptRow(),
 		"no request id -> the answer is unattributable and draws no row")
 
 	// Not self-displayed: the answer gets the row for EVERY provider -- Claude permission answers
 	// included, and even when the stored request is gone (#258, a genuine orphan). No
 	// provider-capability guard here: a request-gone duplicate whose first answer already carries
 	// the mark is stopped earlier by the idempotency claim, so it never reaches this decision twice.
-	assert.True(t, mk("req-1", false).needsStructuredRow(),
+	assert.True(t, mk("req-1", false).needsTranscriptRow(),
 		"not self-displayed -> structured row")
 
 	// A genuinely self-displayed answer: its own tool_result owns the mark, except a context-clearing
 	// plan exit wipes that row, where the structured row carries it instead.
-	assert.False(t, selfDisplayedExit(false).needsStructuredRow(),
+	assert.False(t, selfDisplayedExit(false).needsTranscriptRow(),
 		"self-displayed, not clearing context -> tool_result owns the mark, no structured row")
-	assert.True(t, selfDisplayedExit(true).needsStructuredRow(),
+	assert.True(t, selfDisplayedExit(true).needsTranscriptRow(),
 		"self-displayed, context-clearing plan exit wipes the tool_result -> structured row carries the mark")
 }
 
 func TestExitPlanClearingContext(t *testing.T) {
 	t.Parallel()
 
-	// The single triple that needsStructuredRow keys the mark-carrying row off (and that controls the
+	// The single triple that needsTranscriptRow keys the mark-carrying row off (and that controls the
 	// once-only initiatePlanExecution): an APPROVED ExitPlanMode that ALSO clears context (the
 	// transcript row is wiped, so the structured row carries the mark and the approval is not
-	// forwarded). It is the loaded-answer equivalent of the request-independent withholdsForward.
+	// forwarded). The stored request must identify a plan exit.
 	mk := func(behavior string, ctrl agent.PlanModeControlKind, clear bool) controlResponsePlan {
 		var plan controlResponsePlan
 		plan.decision.Response.Response.Behavior = behavior
-		plan.decision.ClearContext = clear
+		plan.settings = &leapmuxv1.PlanApprovalSettings{ClearContext: clear}
 		plan.resolution.PlanModeControl = ctrl
 		return plan
 	}
@@ -1649,12 +1638,7 @@ func TestResolveTargetMode(t *testing.T) {
 	assert.Equal(t, contracts.ClaudeModeAcceptEdits, resolveTargetMode("", contracts.ClaudeModeAcceptEdits))
 }
 
-// TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped pins the marshal-boundary
-// backstop: a plan whose resolution.Content is empty-but-non-nil ([]byte{}) must NOT silently drop
-// the user's answer row. json.RawMessage of empty bytes makes json.Marshal(row) fail ("unexpected
-// end of JSON input"), so persistControlResponseRow coalesces empty Content to nil -- the response
-// marshals as `null` and the row (with its CONTROL_RESPONSE rail mark) still persists. Without the
-// coalesce this persists ZERO rows.
+// An empty response must remain empty and retain its transcript row.
 func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.T) {
 	t.Parallel()
 
@@ -1667,26 +1651,20 @@ func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.
 
 	var plan controlResponsePlan
 	plan.requestMeta.RequestID = "req-1"
-	plan.resolution.Content = []byte{} // empty, non-nil -- the json.RawMessage marshal footgun
+	plan.resolution.Content = []byte{}
 
-	svc.persistControlResponseRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
+	persistControlResponseForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "an empty-but-non-nil Content must not silently drop the answer row")
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID)
-	assert.JSONEq(t, "null", string(cr.Response), "empty Content coalesces to a null response, not a dropped row")
+	assert.Empty(t, cr.Response)
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
 
-// TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped pins the same marshal-boundary
-// backstop for the OTHER way json.RawMessage marshaling fails: a resolution.Content that is non-empty
-// but NOT valid JSON. A json.RawMessage marshals only valid JSON -- malformed bytes error with
-// "invalid character ...", which (without the json.Valid coalesce) makes json.Marshal(row) fail and
-// silently drops the user's answer row. No current provider forwards non-JSON control bytes, so this
-// guards the documented "a resolvable answer always persists a row" invariant against a future one.
-// Without the coalesce this persists ZERO rows.
+// Malformed response bytes must remain available in the transcript and Raw JSON view.
 func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *testing.T) {
 	t.Parallel()
 
@@ -1699,16 +1677,16 @@ func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *te
 
 	var plan controlResponsePlan
 	plan.requestMeta.RequestID = "req-1"
-	plan.resolution.Content = []byte("not json at all") // non-empty but invalid JSON -- the other marshal footgun
+	plan.resolution.Content = []byte("not json at all")
 
-	svc.persistControlResponseRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
+	persistControlResponseForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "a non-empty but invalid-JSON Content must not silently drop the answer row")
-	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
+	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID)
-	assert.JSONEq(t, "null", string(cr.Response), "invalid Content coalesces to a null response, not a dropped row")
+	assert.Equal(t, "not json at all", string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 }
 
@@ -1734,7 +1712,7 @@ func TestPersistControlResponseRow_IsUserSourcedCountsAsUserMessage(t *testing.T
 	var plan controlResponsePlan
 	plan.requestMeta.RequestID = "req-1"
 	plan.resolution.Content = []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	svc.persistControlResponseRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
+	persistControlResponseForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
@@ -1779,7 +1757,7 @@ func TestPersistControlResponseRow_MakesSessionResumable(t *testing.T) {
 	var plan controlResponsePlan
 	plan.requestMeta.RequestID = "req-1"
 	plan.resolution.Content = []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	svc.persistControlResponseRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
+	persistControlResponseForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, plan)
 
 	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
@@ -1803,21 +1781,23 @@ func TestProcessControlResponse(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tok-1",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent, content, "tok-1")
+		require.NoError(t, responseErr)
 		require.True(t, forward, "a plain permission answer is forwarded to the agent")
 		assert.Equal(t, content, bytes, "the forwarded bytes are the (unrewritten) response content")
 
 		// The duplicate echoes the SAME instance token, so it lost the idempotency claim taken by the
 		// first call and forwards nothing.
-		bytes, forward = svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr = processControlResponseForTest(svc, "agent-1", dbAgent, content, "tok-1")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "a duplicate answer (same claim token) is a deduped no-op and is not re-forwarded")
 		assert.Nil(t, bytes)
 	})
@@ -1831,27 +1811,29 @@ func TestProcessControlResponse(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instA",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 
-		_, forward := svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		_, forward, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent, content, "instA")
+		require.NoError(t, responseErr)
 		require.True(t, forward, "instance A's answer forwards")
-
 		// Re-store req-1 (the reissued instance) and answer with a DIFFERENT token.
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instB",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
-		_, forward = svc.processControlResponse("agent-1", dbAgent, content, "instB")
+		})
+		_, forward, responseErr = processControlResponseForTest(svc, "agent-1", dbAgent, content, "instB")
+		require.NoError(t, responseErr)
 		assert.True(t, forward, "the reissued instance's answer (fresh token) forwards -- not withheld as a duplicate of the reused id")
 
 		// A stale duplicate of instance A (old token) is STILL deduped.
-		_, forward = svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		_, forward, responseErr = processControlResponseForTest(svc, "agent-1", dbAgent, content, "instA")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "instance A's stale duplicate stays deduped even after instance B answered")
 	})
 
@@ -1862,15 +1844,16 @@ func TestProcessControlResponse(t *testing.T) {
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 			Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 			AgentID: "agent-1", RequestID: "plan-1",
 			Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent,
+		bytes, forward, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent,
 			[]byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`), "plan-tok")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "a plan-mode prompt is handled server-side, never forwarded")
 		assert.Nil(t, bytes)
 	})
@@ -1885,13 +1868,16 @@ func TestProcessControlResponse(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		}))
-		// NO stored control request: it is gone (a teardown, or a persist that failed),
-		// so ZCode has no wire id to address a reply to.
+		// The stored request has no native wire ID, so the provider must refuse delivery.
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-gone", ClaimToken: "tok-1", Payload: []byte(`{"request":{"tool_name":"Bash"}}`),
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"request_id":"req-gone","response":{"behavior":"allow"}}}`)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent, content, "tok-1")
+		require.ErrorContains(t, responseErr, "could not read")
 		assert.False(t, forward, "no frame may reach the app-server's stdin")
 		assert.Nil(t, bytes)
 	})
@@ -1925,17 +1911,18 @@ func TestProcessControlResponse(t *testing.T) {
 				payload := `{"type":"control_request","request_id":"plan-1","id":7,` +
 					`"method":"interaction/requestUserInput",` +
 					`"request":{"tool_name":"` + tc.toolName + `","tool_use_id":"call-1"}}`
-				require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload),
-				}))
+				createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload), ClaimToken: "plan-tok",
+				})
 				dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 				require.NoError(t, err)
 
 				// Approve with NO permissionMode: the banner's unchecked state, which is
 				// what makes the provider's own fallback the answer.
-				svc.processControlResponse("agent-1", dbAgent,
+				_, _, responseErr := processControlResponseForTest(svc, "agent-1", dbAgent,
 					[]byte(`{"type":"control_response","response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`),
 					"plan-tok")
+				require.NoError(t, responseErr)
 
 				updated, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 				require.NoError(t, err)
@@ -1945,4 +1932,88 @@ func TestProcessControlResponse(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+		request  string
+		invalid  string
+		valid    string
+	}{
+		{
+			name:     "mcp elicitation",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			request:  `{"id":"req-1","method":"mcpServer/elicitation/request","params":{"message":"Choose a value","requestedSchema":{"type":"object"}}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"action":"invalid"}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"action":"decline"}}}`,
+		},
+		{
+			name:     "pi mcp approval",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+			request:  `{"type":"extension_ui_request","id":"req-1","method":"select","title":"MCP: form_probe_echo\n\nArguments:\n{}","options":["Allow once","Allow for session","Deny"]}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"action":"accept","_meta":{"persist":"always"}}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"action":"decline"}}}`,
+		},
+		{
+			name:     "zcode permission",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+			request:  `{"type":"control_request","request_id":"req-1","id":7,"method":"interaction/requestUserInput","request":{"tool_name":"Bash","tool_use_id":"call-1"}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"invalid"}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"behavior":"deny"}}}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, dispatcher, writer := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: test.provider,
+			}))
+			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+				AgentID: "agent-1", RequestID: "req-1", ClaimToken: "claim-1", Payload: []byte(test.request),
+			})
+			row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+				AgentId: "agent-1", Content: []byte(test.invalid), ClaimToken: "claim-1",
+			}, writer)
+			require.Empty(t, writer.errors)
+			response := decodeQueueResponse(t, writer, &leapmuxv1.SendControlResponseResponse{})
+			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, response.State)
+			require.NotEmpty(t, response.Error)
+			pending, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
+			require.NoError(t, err, "the provider still waits for a valid response")
+			assert.Equal(t, "claim-1", pending.ClaimToken)
+			_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, []byte(test.valid), "claim-1")
+			require.NoError(t, responseErr)
+			assert.True(t, forward, "the invalid answer must not consume the response claim")
+		})
+	}
+}
+
+func buildControlResponsePlanForTest(t *testing.T, svc *Service, agentID string, row db.Agent, content []byte) controlResponsePlan {
+	t.Helper()
+	plugin := agent.ProviderFor(row.AgentProvider)
+	meta, err := svc.loadControlResponseRequestMetadata(agentID, plugin.ControlResponseRequestID(content))
+	require.NoError(t, err)
+	return resolveControlResponsePlan(plugin, meta, content, nil)
+}
+
+// confirmPlanCollaborationForTest acknowledges only the expected Codex plan-mode change.
+// The process fixture supplies input delivery; this callback supplies the separate settings protocol.
+func confirmPlanCollaborationForTest(t *testing.T, svc *Service) {
+	t.Helper()
+	svc.updateAgentSettingsFn = func(agentID string, options OptionMap) agent.SettingsApplyResult {
+		assert.Equal(t, "agent-1", agentID)
+		assert.Equal(t, OptionMap{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}, options)
+		value := agent.CodexCollaborationDefault
+		return agent.SettingsApplyResult{
+			AppliedLive:     true,
+			Settlements:     agent.OptionSettlements{agent.CodexOptionCollaborationMode: {State: agent.OptionSettlementConfirmed, Value: &value}},
+			SurfacedOptions: OptionMap{agent.CodexOptionCollaborationMode: value},
+		}
+	}
 }

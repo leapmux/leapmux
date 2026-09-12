@@ -1,7 +1,7 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { buildAskAnswers, controlQuestion, trySubmitAskUserQuestion } from './AskUserQuestionControl'
+import { buildAskAnswers, controlQuestion, submitBlockedReason, trySubmitAskUserQuestion } from './AskUserQuestionControl'
 import { createControlAnswerState } from './types'
 import '../providers'
 
@@ -120,5 +120,48 @@ describe('controlQuestion', () => {
   it('returns nothing when the provider has no plugin registered', () => {
     expect(controlQuestion(question(), AgentProvider.UNSPECIFIED)).toBeUndefined()
     expect(controlQuestion(question(), undefined)).toBeUndefined()
+  })
+})
+
+describe('submitBlockedReason', () => {
+  const options = [{ label: 'Build' }]
+  const answered = () => true
+  const unanswered = () => false
+
+  it('states nothing when every question is answered', () => {
+    expect(submitBlockedReason([{ question: 'Pick a task', options }], answered)).toBe('')
+  })
+
+  // The census that measured this control read a disabled submit beside preset
+  // options as "these options are the only answer", and reported the typed
+  // answer as unreachable. Both routes are named here for that reason.
+  it('names both routes when the waiting question offers options', () => {
+    expect(submitBlockedReason([{ question: 'Pick a task', options }], unanswered))
+      .toBe('Choose an option, or type a custom answer below.')
+  })
+
+  it('names only the typed route when the waiting question offers no option', () => {
+    expect(submitBlockedReason([{ question: 'Name it', options: [] }], unanswered))
+      .toBe('Type a custom answer below.')
+  })
+
+  it('adds the every-question sentence when the control carries more than one', () => {
+    expect(submitBlockedReason([
+      { question: 'Pick a task', options },
+      { question: 'Pick an env', options },
+    ], unanswered)).toBe('Every question needs an answer. Choose an option, or type a custom answer below.')
+  })
+
+  // The reason describes the question the submit WAITS for, which is the first
+  // unanswered one -- not whichever page the reader happens to be reading.
+  it('describes the first unanswered question, not the current page', () => {
+    expect(submitBlockedReason([
+      { question: 'Name it', options: [] },
+      { question: 'Pick an env', options },
+    ], index => index === 1)).toBe('Every question needs an answer. Type a custom answer below.')
+  })
+
+  it('states the empty case for a request that carries no question', () => {
+    expect(submitBlockedReason([], unanswered)).toBe('This request carries no question to answer.')
   })
 })

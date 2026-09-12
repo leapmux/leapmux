@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,11 +42,16 @@ type PiAgent struct {
 
 	sessionID   string // Pi's runtime sessionId (rotates on new_session)
 	sessionFile string // Pi's persistent session file path (durable identifier)
+	sessionMu   sync.Mutex
 	// currentTurnActive is true while the turn is open. A run that Pi will
 	// auto-retry (agent_end with willRetry) keeps it true, because Pi restarts
 	// that run itself: Interrupt must still send an abort, and a user message
 	// must still steer rather than queue.
 	currentTurnActive bool
+	// interruptRequested records that the user stopped the running turn, so the
+	// agent_end that ends it reads as an interruption rather than as the failure
+	// its stop reason claims. Guarded by a.mu. See noteInterruptRequested.
+	interruptRequested bool
 	// turnStartedAt marks when the turn's FIRST agent_start arrived, so
 	// agent_end can report the turn's wall time. Pi's agent_end carries no
 	// duration of its own. Zero between turns, and zero for a turn whose start
@@ -54,13 +60,19 @@ type PiAgent struct {
 	// Pi exposes token/cost information in assistant messages and via
 	// get_session_stats. Keep the latest normalized snapshot here so persisted
 	// message_end / agent_end events can rehydrate the frontend after reconnect.
-	sessionCostUsd     float64
-	sessionCostKnown   bool
-	latestContextUsage map[string]any
-	usageGeneration    uint64
-	generationBuffer   GenerationBuffer
-	toolStates         map[string]*piToolState
-	nextToolOrder      uint64
+	sessionCostUsd        float64
+	sessionCostKnown      bool
+	latestContextUsage    map[string]any
+	usageGeneration       uint64
+	sessionStatsMu        sync.Mutex
+	generationBuffer      GenerationBuffer
+	toolStates            map[string]*piToolState
+	nextToolOrder         uint64
+	questionDialogs       map[string]*piQuestionSource
+	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
+	questionGeneration    uint64
+	goal                  piGoalSync
+	extensionCommands     map[string]bool
 
 	availableModels []*ModelInfo
 	// modelProviders maps modelID -> underlying provider (e.g.
@@ -192,7 +204,7 @@ func StartPi(ctx context.Context, opts Options, sink ProviderServices) (Agent, e
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
 	}
-	a.sink = newModelProgressResetSink(a.sink)
+	a.sink = newModelProgressResetSink(newPiToolTranscript(ctx, a.sink))
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -220,6 +232,8 @@ func StartPi(ctx context.Context, opts Options, sink ProviderServices) (Agent, e
 		return nil, a.formatStartupError(PiCommandGetState, err)
 	}
 	a.applyStateResponse(stateRaw)
+	a.refreshPiCommands(timeout)
+	a.schedulePiGoalRefresh(true)
 
 	// 2. get_available_models — best-effort; failure logs and continues.
 	modelsRaw, err := a.sendPiCommand(PiCommandGetAvailableModels, nil, timeout)
@@ -290,6 +304,8 @@ func (a *PiAgent) applyStateResponse(raw json.RawMessage) {
 		slog.Warn("pi get_state unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
+	a.goal.publishMu.Lock()
+	defer a.goal.publishMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if state.Model.ID != "" {
@@ -301,12 +317,23 @@ func (a *PiAgent) applyStateResponse(raw json.RawMessage) {
 	if state.ThinkingLevel != "" {
 		a.thinkingLevel = state.ThinkingLevel
 	}
-	if state.SessionID != "" {
-		a.sessionID = state.SessionID
+	a.applyPiSessionIdentityLocked(state.SessionID, state.SessionFile)
+}
+
+// applyPiSessionIdentityLocked shares native identity handling between state and usage replies.
+// The caller holds a.mu and goal.publishMu.
+func (a *PiAgent) applyPiSessionIdentityLocked(sessionID, sessionFile string) bool {
+	changed := (sessionID != "" && sessionID != a.sessionID) || (sessionFile != "" && sessionFile != a.sessionFile)
+	if sessionID != "" {
+		a.sessionID = sessionID
 	}
-	if state.SessionFile != "" {
-		a.sessionFile = state.SessionFile
+	if sessionFile != "" {
+		a.sessionFile = sessionFile
 	}
+	if changed {
+		a.goal.revision++
+	}
+	return changed
 }
 
 // SendInput starts a regular Pi prompt. SteerInput sends explicit guidance
@@ -325,18 +352,40 @@ func (a *PiAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment
 }
 
 func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	return a.sendInputForSession(nil, content, attachments, steer)
+}
+
+func (a *PiAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	wait, err := a.preparePiInput(expected, content, attachments, steer)
+	if err != nil {
+		return err
+	}
+	if wait != nil {
+		return wait()
+	}
+	return nil
+}
+
+// preparePiInput holds the session lock through validation and the command write, never through its response wait.
+func (a *PiAgent) preparePiInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) (func() error, error) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.mu.Lock()
+	if err := checkInputSession(expected, a.sessionHandleLocked()); err != nil {
+		a.mu.Unlock()
+		return nil, err
+	}
 	if a.stopped {
 		a.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return nil, fmt.Errorf("agent is stopped")
 	}
 	turnActive := a.currentTurnActive
 	a.mu.Unlock()
 	if steer && !turnActive {
-		return ErrNoActiveTurn
+		return nil, ErrNoActiveTurn
 	}
 	if !steer && turnActive {
-		return ErrAgentBusy
+		return nil, ErrAgentBusy
 	}
 
 	classified := classifyAttachments(attachments)
@@ -374,10 +423,22 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 	if steer {
 		payload["streamingBehavior"] = PiStreamingBehaviorSteer
 	}
+	if a.isPiExtensionCommand(messageBuilder.String()) {
+		wait, err := a.beginPiCommand(PiCommandPrompt, payload)
+		if err != nil {
+			return nil, err
+		}
+		return func() error {
+			_, err := wait(0)
+			// Commands can finish without agent_end. Settle this dispatch before returning.
+			a.PublishTurnActive()
+			return err
+		}, nil
+	}
 
 	// The prompt response arrives at turn end. The queue needs only the stdin
 	// write as delivery acceptance, so the response wait runs separately.
-	return a.sendPiCommandDetached(PiCommandPrompt, payload, func(err error) {
+	return nil, a.sendPiCommandDetached(PiCommandPrompt, payload, func(err error) {
 		if err != nil {
 			a.handlePiPromptFailure(err, steer)
 		}
@@ -409,9 +470,11 @@ func (a *PiAgent) handlePiPromptFailure(err error, steer bool) {
 // sendPiCommand and drop the abort in the common case.
 func (a *PiAgent) Stop() {
 	a.noteIntentionalStop()
+	a.stopPiGoalRefresh()
 	a.mu.Lock()
 	stopped := a.stopped
 	turnActive := a.currentTurnActive
+	a.clearPiQuestionStateLocked()
 	a.mu.Unlock()
 	if !stopped && turnActive {
 		// Best-effort. Failures (timeout, write error, server-side false)
@@ -427,6 +490,7 @@ func (a *PiAgent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *PiAgent) Wait() error {
 	err := a.processBase.Wait()
+	a.stopPiGoalRefresh()
 	completion := a.processExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
@@ -442,9 +506,11 @@ func (a *PiAgent) Wait() error {
 // No-op when no turn is active so scripts can invoke this without
 // probing currentTurnActive first.
 func (a *PiAgent) Interrupt() error {
+	a.noteInterruptRequested()
 	a.mu.Lock()
 	stopped := a.stopped
 	turnActive := a.currentTurnActive
+	a.clearPiQuestionStateLocked()
 	a.mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
@@ -458,19 +524,63 @@ func (a *PiAgent) Interrupt() error {
 	return err
 }
 
+// noteInterruptRequested records that the user stopped the RUNNING turn.
+//
+// Pi spells one stop two ways. A turn it aborts cleanly reports
+// `stopReason: "aborted"`, and a turn whose tool was still running reports
+// `stopReason: "error"` with `errorMessage: "This operation was aborted"` -- the
+// same shape as a genuine failure. The frame therefore cannot tell an
+// interruption from a failure, and the second read as "Turn failed" in the
+// danger color for a stop the reader asked for. LeapMux can tell them apart,
+// because it sent the abort.
+//
+// The note is taken only while a turn runs. Pi acknowledges an abort sent
+// outside a turn and ends no turn for it, so a note taken there would wait and
+// then mislabel the NEXT turn.
+func (a *PiAgent) noteInterruptRequested() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentTurnActive {
+		a.interruptRequested = true
+	}
+}
+
+// takeInterruptRequest reports whether the turn that is ending was interrupted,
+// and clears the note. One agent_end ends one turn, so the note is spent there.
+func (a *PiAgent) takeInterruptRequest() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	interrupted := a.interruptRequested
+	a.interruptRequested = false
+	return interrupted
+}
+
 // ClearContext starts a fresh Pi session in-place.
 //
 // Pi's new_session response only includes a cancellation flag; we follow it
 // with a get_state to pick up the new sessionFile path.
-func (a *PiAgent) ClearContext() (string, bool) {
-	if _, err := a.sendPiCommand(PiCommandNewSession, nil, a.APITimeout()); err != nil {
-		slog.Error("pi ClearContext: new_session failed", "agent_id", a.agentID, "error", err)
-		return "", false
+func (a *PiAgent) ClearContext() (string, error) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	raw, err := a.sendPiCommand(PiCommandNewSession, nil, a.APITimeout())
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		Cancelled *bool `json:"cancelled"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("read Pi new_session response: %w", err)
+	}
+	if response.Cancelled == nil {
+		return "", fmt.Errorf("the Pi new_session response has no cancellation status")
+	}
+	if *response.Cancelled {
+		return "", ErrContextClearCancelled
 	}
 	stateRaw, err := a.sendPiCommand(PiCommandGetState, nil, a.APITimeout())
 	if err != nil {
-		slog.Error("pi ClearContext: get_state failed", "agent_id", a.agentID, "error", err)
-		return "", false
+		return "", fmt.Errorf("read the new Pi session: %w", err)
 	}
 	a.flushPiGeneration(MessageCompletionInterrupted)
 	a.persistIncompletePiTools(MessageCompletionInterrupted)
@@ -493,6 +603,7 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	// transcript on the previous session's instruction (mirrors
 	// acpBase.ClearContext).
 	clear(a.toolStates)
+	a.clearPiQuestionStateLocked()
 	a.nextToolOrder = 0
 	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()
@@ -501,10 +612,11 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	// The session was replaced. Clear all live progress before the next turn.
 	a.sink.ReportProgress(ResetProgress())
 	if handle == "" {
-		return "", false
+		return "", fmt.Errorf("the new Pi session has no handle")
 	}
 	a.sink.UpdateSessionID(handle)
-	return handle, true
+	a.schedulePiGoalRefresh(true)
+	return handle, nil
 }
 
 func init() {

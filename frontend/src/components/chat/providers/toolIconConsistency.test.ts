@@ -2,7 +2,7 @@ import { render } from '@solidjs/testing-library'
 import Eye from 'lucide-solid/icons/eye'
 import { describe, expect, it } from 'vitest'
 import { ACP_TOOL_KIND, CLAUDE_TOOL } from '~/types/toolMessages'
-import { kindIcon } from './acp/renderers/helpers'
+import { toolKindIcon } from '../results/toolKind'
 import { toolIconFor } from './claude/toolUse/icons'
 import { PiToolExecutionRenderer } from './pi/renderers/toolExecution'
 
@@ -24,6 +24,6 @@ describe('read tool icons', () => {
   })
 
   it('uses the Eye icon for ACP read tool uses', () => {
-    expect(kindIcon(ACP_TOOL_KIND.READ)).toBe(Eye)
+    expect(toolKindIcon(ACP_TOOL_KIND.READ)).toBe(Eye)
   })
 })

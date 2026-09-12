@@ -1,6 +1,14 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 
+/** Keep the newer supplement when both values identify the same message row. */
+export function preferNewerSupplement(previous: AgentChatMessage, incoming: AgentChatMessage): AgentChatMessage {
+  return previous.id === incoming.id && previous.seq === incoming.seq
+    && previous.supplementalRevision > incoming.supplementalRevision
+    ? previous
+    : incoming
+}
+
 /** The first message sequence, or undefined for an empty window. */
 export function firstMessageSeq(messages: AgentChatMessage[]): bigint | undefined {
   return messages[0]?.seq
@@ -125,21 +133,28 @@ export function mergeWindow(
   side: 'older' | 'newer',
 ): AgentChatMessage[] {
   const previousByID = new Map(previous.map(message => [message.id, message]))
+  const replacements = new Map<string, AgentChatMessage>()
   const incoming = fetched.filter((message) => {
     const existing = previousByID.get(message.id)
-    return existing ? existing.seq !== message.seq : true
+    if (!existing || existing.seq !== message.seq)
+      return true
+    const current = replacements.get(message.id) ?? existing
+    if (message.supplementalRevision > current.supplementalRevision)
+      replacements.set(message.id, message)
+    return false
   })
+  const updated = replacements.size > 0 ? previous.map(message => replacements.get(message.id) ?? message) : previous
   if (incoming.length === 0)
-    return previous
+    return updated
 
   const incomingIDs = new Set(incoming.map(message => message.id))
   const incomingSeqs = new Set(incoming.map(message => message.seq))
   const collides = (message: AgentChatMessage) =>
     incomingSeqs.has(message.seq) && !incomingIDs.has(message.id)
-  const mustFilter = previous.some(message => incomingIDs.has(message.id) || collides(message))
+  const mustFilter = updated.some(message => incomingIDs.has(message.id) || collides(message))
   const base = mustFilter
-    ? previous.filter(message => !incomingIDs.has(message.id) && !collides(message))
-    : previous
+    ? updated.filter(message => !incomingIDs.has(message.id) && !collides(message))
+    : updated
 
   if (side === 'older') {
     if (olderRowsPrecedeWindowHead(incoming, base))

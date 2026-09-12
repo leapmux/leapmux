@@ -1,8 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/renderers'
+import { describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -13,24 +15,19 @@ import './plugin'
 describe('opencode extractQuotableText (acpExtractQuotableText)', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
-  it('reads parent.content.text for assistant_text', () => {
-    const parent = { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '  Hello  ' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBe('Hello')
-  })
-
-  it('reads parent.content.text for assistant_thinking', () => {
-    const parent = { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_thinking' }, input(parent))).toBe('thinking')
-  })
-
   it('reads parent.content string for user_content / plan_execution', () => {
     expect(plugin.extractQuotableText!({ kind: 'user_content' }, input({ content: 'hi' }))).toBe('hi')
     expect(plugin.extractQuotableText!({ kind: 'plan_execution' }, input({ content: 'plan' }))).toBe('plan')
   })
 
-  it('returns null when content.text is empty', () => {
-    const parent = { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '   ' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBeNull()
+  // An assistant row carries the assembled-message envelope, which MessageBubble
+  // quotes before it consults any plugin. The plugin returns null so the two paths
+  // cannot disagree about the same text.
+  it('leaves assistant text and reasoning to the assembled-message path', () => {
+    const text = assembledMessageRow('text', 'Hello')
+    const reasoning = assembledMessageRow('reasoning', 'thinking')
+    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(text))).toBeNull()
+    expect(plugin.extractQuotableText!({ kind: 'assistant_thinking' }, input(reasoning))).toBeNull()
   })
 
   it('returns null for non-quotable categories', () => {
@@ -41,47 +38,26 @@ describe('opencode extractQuotableText (acpExtractQuotableText)', () => {
 describe('opencode classify', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
-  it('exposes attachment capabilities', () => {
-    expect(plugin.attachments).toEqual({
-      text: true,
-      image: true,
-      pdf: true,
-      binary: true,
-    })
-  })
-
-  it('classifies agent_message_chunk as assistant_text', () => {
-    const parent = {
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: 'Hello' },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
-  })
+  // Attachment caps, assembled-text handling and config_option_update hiding are the
+  // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
+  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, binary: true })
 
   // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
   // agnostic and lives in classifyMessage (see messageClassification.test.ts); this plugin test
   // covers only OpenCode's own controlResponseDisplay derivation.
   it('wires controlResponseDisplay: question answers, else the ACP permission path', () => {
     expect(plugin.controlResponseDisplay!({
-      provider: 'OPENCODE',
+      claimToken: 'claim-1',
       requestId: 'q1',
       request: { type: 'question.asked', properties: { questions: [{ header: 'Task' }] } },
       response: { result: { answers: [['Build']] } },
     })).toEqual({ kind: 'label', text: 'Task: Build' })
     expect(plugin.controlResponseDisplay!({
-      provider: 'OPENCODE',
+      claimToken: 'claim-1',
       requestId: '7',
       request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
       response: { result: { outcome: { optionId: 'proceed_once' } } },
     })).toEqual({ kind: 'label', text: 'Allow once' })
-  })
-
-  it('classifies agent_thought_chunk as assistant_thinking', () => {
-    const parent = {
-      sessionUpdate: 'agent_thought_chunk',
-      content: { type: 'text', text: 'thinking...' },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_thinking' })
   })
 
   it('classifies tool_call as tool_use with kind', () => {
@@ -165,9 +141,8 @@ describe('opencode classify', () => {
       toolCallId: 'tc-1',
       status: 'in_progress',
       kind: 'execute',
-      _leapmux: { completion: 'interrupted' },
     }
-    expect(plugin.classify(input(parent))).toEqual({
+    expect(plugin.classify({ ...input(parent), completion: MessageCompletion.INTERRUPTED })).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,
@@ -561,7 +536,7 @@ describe('sendOpenCodePermissionResponse', () => {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
-  it('sends allow_once outcome with numeric id', async () => {
+  it('sends allow_once outcome with the unchanged worker request ID', async () => {
     let captured: Uint8Array | undefined
     const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
@@ -573,7 +548,7 @@ describe('sendOpenCodePermissionResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 5,
+      id: '5',
       result: { outcome: { outcome: 'selected', optionId: 'once' } },
     })
   })
@@ -589,7 +564,7 @@ describe('sendOpenCodePermissionResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 7,
+      id: '7',
       result: { outcome: { outcome: 'selected', optionId: 'reject' } },
     })
   })
@@ -605,7 +580,7 @@ describe('sendOpenCodePermissionResponse', () => {
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 9,
+      id: '9',
       result: { outcome: { outcome: 'selected', optionId: 'always' } },
     })
   })

@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   claudeMcpFromToolResult,
-  formatClaudeMcpDisplayName,
-  formatClaudeMcpServerName,
   isClaudeMcpTool,
   parseClaudeMcpToolName,
 } from './mcp'
@@ -41,24 +39,11 @@ describe('parseClaudeMcpToolName', () => {
   })
 })
 
-describe('formatClaudeMcpServerName', () => {
-  it('humanizes underscore-separated parts', () => {
-    expect(formatClaudeMcpServerName('claude_ai_Tavily')).toBe('Claude Ai Tavily')
-  })
-
-  it('handles single words', () => {
-    expect(formatClaudeMcpServerName('github')).toBe('Github')
-  })
-})
-
-describe('formatClaudeMcpDisplayName', () => {
-  it('joins server and tool with " / "', () => {
-    expect(formatClaudeMcpDisplayName('claude_ai_Tavily', 'tavily_research'))
-      .toBe('Claude Ai Tavily / tavily_research')
-  })
-})
-
 describe('claudeMcpFromToolResult', () => {
+  it('keeps the same server identifier that other providers render', () => {
+    expect(claudeMcpFromToolResult({ toolName: 'mcp__render_probe__echo', resultContent: 'Result' })?.server).toBe('render_probe')
+  })
+
   it('returns null for non-MCP tool names', () => {
     expect(claudeMcpFromToolResult({
       toolName: 'Bash',
@@ -73,7 +58,7 @@ describe('claudeMcpFromToolResult', () => {
       resultContent: 'A research summary.',
     })
     expect(source).toMatchObject({
-      server: 'Claude Ai Tavily',
+      server: 'claude_ai_Tavily',
       tool: 'tavily_search',
       content: [{ type: 'text', text: 'A research summary.' }],
       status: 'completed',

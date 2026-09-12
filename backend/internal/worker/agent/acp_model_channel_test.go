@@ -282,7 +282,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *te
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, "openai/gpt-5", agent.model)
@@ -316,7 +316,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateNoBroadcastWhenUnchanged(t *test
 		{Id: "openai/gpt-5", DisplayName: "GPT-5", IsDefault: true},
 	}
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	assert.Equal(t, "openai/gpt-5", agent.model)
@@ -338,7 +338,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateBroadcastsListChange(t *testing.
 	}
 
 	// Same current model, but a new option appears in the list.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"openai/gpt-5","name":"GPT-5"},{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"openai/gpt-5","name":"GPT-5"},{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	assert.Equal(t, "openai/gpt-5", agent.model)
@@ -388,7 +388,7 @@ func TestHandleKiloOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testin
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.currentPrimaryAgent = KiloPrimaryAgentCode
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, "openai/gpt-5", agent.model)
@@ -443,7 +443,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdatePrimaryAgentListOnlyBroadcasts(t
 	}
 
 	// Same currentValue ("build"), but "review" is added to the list; no model option.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"build","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"review","name":"Review"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"build","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"review","name":"Review"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Len(t, agent.availablePrimaryAgents, 3)
@@ -464,7 +464,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateNormalizesAgentName(t *testing.T
 
 	// "plan" reports a whitespace-only name; the runtime path must blank and
 	// title-case the id, matching the handshake.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"build","options":[{"value":"build","name":"Build"},{"value":"plan","name":" "}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"build","options":[{"value":"build","name":"Build"},{"value":"plan","name":" "}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Len(t, agent.availablePrimaryAgents, 2)
@@ -488,7 +488,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateIgnoresHiddenCurrentAgent(t *tes
 	}
 
 	// currentValue is the hidden "compaction" pseudo-agent.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"compaction","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"compaction","name":"Compaction"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"compaction","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"compaction","name":"Compaction"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	assert.Equal(t, OpenCodePrimaryAgentBuild, agent.currentPrimaryAgent,
@@ -521,7 +521,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateSyncsPrimaryAgent(t *testing.T) 
 	agent.availableModels = []*ModelInfo{{Id: "anthropic/claude-sonnet-4"}}
 
 	// `mode` select changes build -> plan and lists a hidden pseudo-agent.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"compaction","name":"Compaction"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"},{"value":"compaction","name":"Compaction"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	assert.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
@@ -550,7 +550,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateReseedsOrphanedCurrent(t *testin
 	}
 
 	// The `mode` select drops the active "plan" and reports no current value.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"","options":[{"value":"build","name":"Build"},{"value":"review","name":"Review"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"","options":[{"value":"build","name":"Build"},{"value":"review","name":"Review"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	// The orphaned "plan" is re-seeded to the default-or-first option ("build"), so the
@@ -1299,7 +1299,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
 
 	// No model/mode change; a new thought_level axis appears.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	// The option group is surfaced after the mapped primary-agent group.
@@ -1336,7 +1336,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateGenericListOnlyBroadcasts(t *tes
 	agent.options.values = map[string]string{"thoughtLevel": "low"}
 
 	// Same current value ("low"), but "max" is added; no model/mode option.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","name":"Thought Level","currentValue":"low","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","name":"Thought Level","currentValue":"low","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Len(t, agent.options.groups[0].GetOptions(), 3)
@@ -1362,13 +1362,13 @@ func TestOptionStateStructureGen_TracksStructuralFoldsForLiveBroadcast(t *testin
 	gen0 := agent.options.structureGen
 
 	// Fold 1: surface a new thoughtLevel group -- a structural change.
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`))
 	gen1 := agent.options.structureGen
 	require.Len(t, agent.options.groups, 1)
 	assert.Greater(t, gen1, gen0, "surfacing a new group is a structural fold")
 
 	// Fold 2: change ONLY the current value (same group, same option set) -- not structural.
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"low","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"low","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`))
 	gen2 := agent.options.structureGen
 	assert.Equal(t, "low", agent.options.groups[0].GetCurrentValue(), "the value-only fold landed")
 	assert.Equal(t, gen1, gen2, "a pure current-value change is not a structural fold")
@@ -1377,7 +1377,7 @@ func TestOptionStateStructureGen_TracksStructuralFoldsForLiveBroadcast(t *testin
 	// and it returns the set to its original (empty) structure. The generation must STILL move, so a
 	// live UpdateSettings that surfaced the group sees before != after even though a concurrent
 	// reader fold reverted the structure (the net-comparison suppression this fix closes).
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"openai/gpt-5","name":"GPT-5"}]}]}}}`))
 	gen3 := agent.options.structureGen
 	assert.Empty(t, agent.options.groups, "the dropped group is gone")
 	assert.Greater(t, gen3, gen2, "dropping a group is a structural fold even when it restores the prior structure")
@@ -1410,7 +1410,7 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateDropsNoLongerApplicableGeneric(t
 	// A complete config_option_update switches to a model that no longer carries the
 	// thoughtLevel option -- per the verified ACP contract this is the complete current
 	// set, so the absent option no longer applies and must be dropped.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"anthropic/claude-sonnet-4","options":[{"value":"openai/gpt-5","name":"GPT-5"},{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}]}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"anthropic/claude-sonnet-4","options":[{"value":"openai/gpt-5","name":"GPT-5"},{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, "anthropic/claude-sonnet-4", agent.model)

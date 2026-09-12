@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 )
@@ -17,7 +18,7 @@ func fromDBOAuthProvider(p gendb.OauthProvider) *store.OAuthProvider {
 	return &store.OAuthProvider{
 		OAuthProviderSummary: store.OAuthProviderSummary{
 			ID:           p.ID,
-			ProviderType: p.ProviderType,
+			ProviderType: leapmuxv1.IdentityProviderType(p.ProviderType),
 			Name:         p.Name,
 			IssuerURL:    p.IssuerUrl,
 			ClientID:     p.ClientID,
@@ -37,7 +38,7 @@ func fromDBOAuthProviders(rows []gendb.OauthProvider) []store.OAuthProvider {
 func fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) store.OAuthProviderSummary {
 	return store.OAuthProviderSummary{
 		ID:           r.ID,
-		ProviderType: r.ProviderType,
+		ProviderType: leapmuxv1.IdentityProviderType(r.ProviderType),
 		Name:         r.Name,
 		IssuerURL:    r.IssuerUrl,
 		ClientID:     r.ClientID,
@@ -51,7 +52,7 @@ func fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) st
 func fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) store.OAuthProviderSummary {
 	return store.OAuthProviderSummary{
 		ID:           r.ID,
-		ProviderType: r.ProviderType,
+		ProviderType: leapmuxv1.IdentityProviderType(r.ProviderType),
 		Name:         r.Name,
 		IssuerURL:    r.IssuerUrl,
 		ClientID:     r.ClientID,
@@ -65,7 +66,7 @@ func fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) store.OAut
 func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProviderParams) error {
 	return mapErr(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
-		ProviderType: p.ProviderType,
+		ProviderType: int16(p.ProviderType),
 		Name:         p.Name,
 		IssuerUrl:    p.IssuerURL,
 		ClientID:     p.ClientID,

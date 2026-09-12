@@ -7,7 +7,7 @@ import { MessageContextMenuHostProvider } from '~/components/chat/MessageContext
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 
@@ -47,6 +47,20 @@ beforeEach(() => {
 function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
   return makeMessage({ createdAt: '2025-01-15T10:00:00.000Z', ...overrides })
 }
+
+describe('standalone MCP result actions', () => {
+  const output = Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n')
+  it.each([
+    { provider: AgentProvider.ZCODE, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: output, display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } } } } },
+    { provider: AgentProvider.CODEX, content: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: output }] } } } },
+    { provider: AgentProvider.PI, content: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [{ type: 'text', text: output }], details: { server: 'docs', tool: 'lookup' } } } },
+  ])('renders one result toolbar for provider $provider', ({ provider, content }) => {
+    render(() => <PreferencesProvider><MessageBubble message={makeMsg({ agentProvider: provider, source: MessageSource.AGENT, spanId: 'call', content: rawContent(content) })} /></PreferencesProvider>)
+    expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Expand', hidden: true })).toHaveLength(1)
+    expect(screen.getAllByTestId('message-copy-json')).toHaveLength(1)
+  })
+})
 
 /** Click the "Copy Raw JSON" button and return the parsed clipboard content. */
 async function copyRawJson(): Promise<Record<string, unknown>> {
@@ -135,7 +149,7 @@ describe('askUserQuestion thread rendering', () => {
 describe('result_divider dispatch', () => {
   it('renders a turn-end divider for a registered provider result', () => {
     // Happy path: a CLAUDE_CODE result classifies as result_divider and renders
-    // through the shared renderResultDivider as the "Took Xs" turn-end row.
+    // through the shared renderResultDivider as the turn-end row.
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.CLAUDE_CODE,
@@ -149,7 +163,7 @@ describe('result_divider dispatch', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble).toHaveTextContent('Took 1.1s')
+    expect(bubble).toHaveTextContent('Turn ended (1.1s)')
     expect(bubble).not.toHaveTextContent('duration_ms')
   })
 
@@ -198,7 +212,7 @@ describe('unsupported_provider rendering', () => {
     // classifyMessage no longer guesses Claude for an unspecified/unregistered
     // provider: the message is classified unsupported_provider and shown as a
     // visible error plus raw JSON, never silently rendered through Claude's
-    // renderers. So a `result` envelope here must NOT become a "Took Xs" divider.
+    // renderers. So a `result` envelope here must NOT become a turn-end divider.
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.UNSPECIFIED,
@@ -215,7 +229,7 @@ describe('unsupported_provider rendering', () => {
     // The banner names the provider via agentProviderLabel ("Unknown" for the
     // proto-0 default) alongside the numeric value, not just the bare number.
     expect(bubble).toHaveTextContent('Unsupported agent provider: Unknown (0)')
-    expect(bubble).not.toHaveTextContent('Took 1.1s')
+    expect(bubble).not.toHaveTextContent('Turn ended (1.1s)')
   })
 
   it('labels an UNSPECIFIED-source message as "unknown" rather than masquerading as agent', () => {
@@ -239,6 +253,21 @@ describe('unsupported_provider rendering', () => {
 // ---------------------------------------------------------------------------
 // rawJson (Copy Raw JSON feature)
 // ---------------------------------------------------------------------------
+
+describe('raw message bytes', () => {
+  it('copies invalid original and supplemental bytes without replacement characters', async () => {
+    const message = makeMsg({
+      source: MessageSource.AGENT,
+      content: new Uint8Array([0xFF, 0xFE]),
+      supplementalContent: new Uint8Array([0xFE, 0xFF]),
+    })
+    render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
+    const copied = await copyRawJson()
+    expect(copied.content).toEqual({ compression: ContentCompression.NONE, base64: '//4=' })
+    expect(copied.supplemental_content).toEqual({ compression: ContentCompression.NONE, base64: '/v8=' })
+    expect(copied.content_decode_failed).toBe(true)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Thinking message toolbar buttons (Quote / Copy Markdown)
@@ -540,8 +569,9 @@ describe('messageBubble rawJson', () => {
     ))
 
     const envelope = await copyRawJson()
-    expect(envelope.old_seqs).toEqual([5, 8])
-    expect((envelope.messages as unknown[]).length).toBe(2)
+    const content = envelope.content as { old_seqs: number[], messages: unknown[] }
+    expect(content.old_seqs).toEqual([5, 8])
+    expect(content.messages.length).toBe(2)
   })
 
   it('renders the raw JSON block without crashing when span_lines is malformed', async () => {
@@ -683,10 +713,12 @@ describe('notification rendering', () => {
     expect(bubble).not.toHaveTextContent('settings_changed')
   })
 
-  it('falls back to raw JSON when a notification produces no renderable entries', () => {
+  it('falls back to the last-resort card when a notification produces no renderable entries', () => {
     // settings_changed with no actual changes yields zero thread entries. Rather
-    // than render an empty bubble, MessageBubble surfaces the raw payload via the
-    // last-resort renderer so the message never silently vanishes.
+    // than render an empty bubble, MessageBubble surfaces the row through the
+    // last-resort renderer so the message never silently vanishes. That card states
+    // the absence and keeps the frame in a body the expand control opens; it used to
+    // print the frame itself, which is the raw-JSON row the shared standard forbids.
     const parent = { type: 'settings_changed', changes: {} }
     const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
 
@@ -697,7 +729,8 @@ describe('notification rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble).toHaveTextContent('settings_changed')
+    expect(bubble).toHaveTextContent('LeapMux has no display for this row')
+    expect(bubble).not.toHaveTextContent('settings_changed')
   })
 
   it('renders a consolidated notification thread, then falls back only when empty', () => {

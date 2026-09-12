@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -47,7 +48,7 @@ WHERE event.id = pending.id
 func insertRevocationEvent(
 	ctx context.Context,
 	conn *sqliteConn,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
 	revokedAt time.Time,
@@ -55,7 +56,7 @@ func insertRevocationEvent(
 ) error {
 	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
 		ID:                 id.Generate(),
-		Kind:               kind,
+		Kind:               int64(kind),
 		SubjectID:          subjectID,
 		UserID:             userID,
 		RevokedAt:          sqltime.NewSQLiteTime(revokedAt),
@@ -78,7 +79,7 @@ func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.Cred
 func revokedCredentialEvent(
 	subjectID, userID string,
 	revokedAt sqltime.SQLiteNullTime,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	err error,
 ) (*store.CredentialEvent, error) {
 	if errors.Is(err, sql.ErrNoRows) {
@@ -166,7 +167,7 @@ func (s *revocationEventStore) ListPublishedAfter(
 			Seq: seq,
 			Event: store.RevocationEvent{
 				ID:                 row.ID,
-				Kind:               row.Kind,
+				Kind:               leapmuxv1.RevocationEventKind(row.Kind),
 				SubjectID:          row.SubjectID,
 				UserID:             row.UserID,
 				RevokedAt:          row.RevokedAt.UTC(),

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"sort"
@@ -20,6 +19,9 @@ import (
 func handleZCodeOutput(a *zcodeAgent, line *parsedLine) {
 	switch line.Method {
 	case ZCodeNotifySessionEvent:
+		// A frame is proof the turn is alive, so it restarts the window a stop armed.
+		// Telemetry notifications do not, which is why this sits on the event case.
+		a.refreshStoppedZCodeTurn()
 		event, ok := parseZCodeEvent(line.Params)
 		if !ok {
 			slog.Warn("zcode session/event carried no event type", "agent_id", a.agentID, "len", len(line.Raw))
@@ -142,12 +144,11 @@ func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	}
 }
 
-// persistBytes re-marshals the envelope for persistence.
-//
-// Both arrival paths (a session/event notification and the events array a
-// session/subscribe returns) are normalized to this ONE shape, so the frontend has a
-// single envelope to classify: `{type, payload, ...}`.
+// persistBytes preserves a native envelope. Synthetic events use the same JSON shape.
 func (e zcodeEventEnvelope) persistBytes() []byte {
+	if len(e.raw) > 0 {
+		return e.raw
+	}
 	encoded, err := json.Marshal(e)
 	if err != nil {
 		slog.Warn("zcode marshal event for persist failed", "type", e.Type, "error", err)
@@ -156,11 +157,24 @@ func (e zcodeEventEnvelope) persistBytes() []byte {
 	return encoded
 }
 
-// withPayload returns a copy of the envelope carrying a different payload, so a
-// handler can persist a payload it completed (a tool input recovered from the
-// stream) without mutating the value it was given.
+// withPayload creates a synthetic event without changing the original envelope.
 func (e zcodeEventEnvelope) withPayload(payload json.RawMessage) zcodeEventEnvelope {
 	e.Payload = payload
+	if len(e.raw) > 0 {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(e.raw, &fields) == nil && fields != nil {
+			fields["payload"] = payload
+			encoded, err := json.Marshal(fields)
+			if err != nil {
+				// persistBytes reports the invalid replacement through its normal error path.
+				e.raw = nil
+			} else {
+				e.raw = encoded
+			}
+		} else {
+			e.raw = nil
+		}
+	}
 	return e
 }
 
@@ -317,6 +331,8 @@ func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
 func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
+	// The turn reported its own end, so the stop's window has nothing left to watch.
+	a.cancelStoppedZCodeTurn()
 	a.mu.Lock()
 	background := a.backgroundTurn
 	// A turn ends whichever kind it was, so the flag clears either way. Leaving it set
@@ -365,7 +381,7 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	a.resetCumulativeOutput()
 	a.sink.ReportProgress(ResetModelProgress())
 
-	if err := a.sink.PersistTurnEnd(zcodeAugmentWithUsage(content, a.usageSnapshot()), SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(zcodeTurnContent(content, a.usageSnapshot()), SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.agentID, "type", event.Type, "error", err)
 	}
 	a.sink.ResetSpans()
@@ -534,6 +550,8 @@ func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 		return
 	}
 
+	a.rememberZCodeToolFrame(payload.ToolCallID, event)
+
 	switch payload.Kind {
 	case contracts.ZCodeToolKindScheduled:
 		// A subagent's own tool calls get a transcript of their own -- see
@@ -556,53 +574,29 @@ func (a *zcodeAgent) handleZCodeToolUpdated(event zcodeEventEnvelope) {
 	}
 }
 
+// rememberZCodeToolFrame records the agent's own bytes for one tool call.
+//
+// Every kind that names a call passes through here, so a new kind cannot forget it.
+// A batch update names a LIST of calls rather than one, and its toolCallId is empty,
+// so it records nothing.
+func (a *zcodeAgent) rememberZCodeToolFrame(toolCallID string, event zcodeEventEnvelope) {
+	if toolCallID == "" {
+		return
+	}
+	raw := event.persistBytes()
+	if raw == nil {
+		return
+	}
+	a.mu.Lock()
+	a.zcodeToolCallLocked(toolCallID).lastFrame = raw
+	a.mu.Unlock()
+}
+
 // openZCodeToolCall persists the tool call's opening row into this agent's own
 // transcript. A subagent's call goes to its child transcript instead -- see
 // zcode_subagent.go.
 func (a *zcodeAgent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
 	a.openZCodeToolCallInto(a.sink, event, payload)
-}
-
-// zcodeInputIsAbsent reports whether a tool call's `input` states nothing.
-//
-// A field the app-server omits, one it sends as JSON `null`, and one it sends as an
-// empty object all mean the same thing: the input was not delivered here, and the model
-// stream is the only copy. Reading only `len(raw) == 0` misses the other two, because a
-// `null` decodes into a json.RawMessage as the four bytes `null` -- non-empty, so the
-// recovery is skipped and the persisted row carries no command at all.
-//
-// One predicate, so the caller that decides to substitute and the helper that performs
-// the substitution can never disagree about what "absent" means.
-func zcodeInputIsAbsent(raw json.RawMessage) bool {
-	trimmed := string(bytes.TrimSpace(raw))
-	return trimmed == "" || trimmed == "null" || trimmed == "{}"
-}
-
-// zcodeCompleteToolInput returns the scheduled payload with its `input` filled in
-// from the stream cache, and the omission markers removed so the persisted row does
-// not claim an input it now carries.
-//
-// Returns the payload unchanged when there is nothing to fill in, which keeps the
-// common path free of a decode/encode round trip.
-func zcodeCompleteToolInput(payload, input json.RawMessage) json.RawMessage {
-	if zcodeInputIsAbsent(input) || !json.Valid(input) {
-		return payload
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
-		return payload
-	}
-	if existing, ok := obj["input"]; ok && !zcodeInputIsAbsent(existing) {
-		return payload
-	}
-	obj["input"] = input
-	delete(obj, "inputOmitted")
-	delete(obj, "inputRef")
-	encoded, err := json.Marshal(obj)
-	if err != nil {
-		return payload
-	}
-	return encoded
 }
 
 // recordZCodeToolStarted notes that a scheduled call began running.
@@ -657,32 +651,44 @@ func (a *zcodeAgent) streamZCodeToolProgress(payload zcodeToolUpdated) {
 	sink.ReportProgress(OutputExactTotalProgress(payload.ToolCallID, total))
 }
 
+// zcodeRecoveredClose ends a tool call whose own result the agent never sent.
+//
+// Its presence is what redirects the row to the call's own last frame, so a nil
+// outcome note cannot quietly store the event that triggered the close instead.
+type zcodeRecoveredClose struct {
+	// outcome is the tool-outcome metadata, which states what LeapMux concluded.
+	outcome []byte
+	// status is what the subagent registry row becomes. The payload cannot supply it,
+	// because there is no result to read it from.
+	status bgtask.Status
+}
+
 // closeZCodeToolCall persists the tool call's final row into the transcript that
 // holds its opening row -- this agent's own, or a subagent's child transcript.
 func (a *zcodeAgent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUpdated) {
-	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload)
+	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
 }
 
 func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
 	a.mu.Lock()
 	toolCallIDs := make([]string, 0, len(a.toolCalls))
+	frames := make(map[string][]byte)
 	tools := make(map[string]zcodeToolUpdated)
 	orders := make(map[string]uint64)
 	for toolCallID, tool := range a.toolCalls {
-		if tool == nil || tool.final || tool.name == "" {
+		// An agent that never announced the call opened no row and reserved no span,
+		// so there is nothing to close and no frame of its own to store.
+		if tool == nil || tool.final || tool.name == "" || len(tool.lastFrame) == 0 {
 			continue
 		}
 		progress := tool.progress
-		progress.Kind = contracts.ZCodeToolKindResult
 		progress.ToolCallID = toolCallID
 		progress.ToolName = tool.name
-		progress.Result, _ = json.Marshal(map[string]interface{}{
-			"success": false,
-			"content": progress.StdoutTail + progress.StderrTail,
-		})
 		tool.final = true
+		frames[toolCallID] = tool.lastFrame
 		tool.name = ""
 		tool.input = nil
+		tool.lastFrame = nil
 		toolCallIDs = append(toolCallIDs, toolCallID)
 		tools[toolCallID] = progress
 		orders[toolCallID] = tool.order
@@ -698,20 +704,11 @@ func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
 		return toolCallIDs[left] < toolCallIDs[right]
 	})
 	for _, toolCallID := range toolCallIDs {
-		payload, err := json.Marshal(tools[toolCallID])
-		if err != nil {
-			slog.Warn("marshal incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
-			continue
-		}
-		raw := (zcodeEventEnvelope{Type: contracts.ZCodeEventToolUpdated, Payload: payload}).persistBytes()
-		raw, err = AnnotateMessageCompletion(raw, completion)
-		if err != nil {
-			slog.Warn("annotate incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
-			continue
-		}
 		sink := a.zcodeSinkForToolCall(toolCallID)
 		tool := tools[toolCallID]
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+		// The row is the agent's own last frame. Its partial output is already in that
+		// frame, and LeapMux's completion column states that the call did not finish.
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: frames[toolCallID], Completion: completion}, SpanInfo{
 			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
 		}); err != nil {
 			slog.Error("persist incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
@@ -719,7 +716,10 @@ func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
 		sink.CloseSpan(toolCallID)
 		a.clearCumulativeOutput(toolCallID)
 		sink.ReportProgress(CompleteOutputProgress(toolCallID))
-		a.applyZCodeSubagentEnd(tool)
+		// The turn ended before the call did, so the registry row takes the turn's own
+		// outcome. Reading Completed out of a missing result would claim work that
+		// never ended, which is what this path used to do.
+		a.applyZCodeSubagentEnd(tool, &zcodeRecoveredClose{status: incompleteTaskStatus(completion)})
 		a.closeZCodeSubagentChild(tool)
 		a.children.forgetTool(toolCallID)
 		a.children.forgetTitle(toolCallID)
@@ -739,16 +739,16 @@ func (a *zcodeAgent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcode
 		}
 		a.mu.Lock()
 		tc := a.toolCalls[id]
-		// `seen` is "a name is known", which is what marks a call that was OPENED as a
-		// span. A call known only from a stream fragment has none, and closing it would
-		// close a span nothing opened.
-		final, toolName := false, ""
+		// A retained frame is what marks a call the agent ANNOUNCED, which is the call
+		// that opened a span. A call known only from a model-stream fragment has no
+		// frame, no opening row and no span, so closing it would close a span that
+		// nothing opened -- and it would leave no frame of the agent's own to store.
+		final, toolName, announced := false, "", false
 		if tc != nil {
-			final, toolName = tc.final, tc.name
+			final, toolName, announced = tc.final, tc.name, len(tc.lastFrame) > 0
 		}
-		seen := toolName != ""
 		a.mu.Unlock()
-		if final || !seen {
+		if final || !announced {
 			continue
 		}
 		recovered := zcodeToolUpdated{
@@ -756,42 +756,48 @@ func (a *zcodeAgent) applyZCodeToolBatch(event zcodeEventEnvelope, payload zcode
 			ToolCallID: id,
 			ToolName:   toolName,
 		}
-		a.closeZCodeToolCall(event.withPayload(zcodeBatchResultPayload(id, toolName, payload)), recovered)
+		a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(id), event, recovered, &zcodeRecoveredClose{
+			outcome: zcodeBatchOutcome(payload),
+			status:  zcodeBatchTaskStatus(payload),
+		})
 	}
 }
 
-// zcodeBatchResultPayload synthesizes the result payload for a call the batch summary
-// recovered.
+// zcodeBatchOutcome states what the batch summary lets LeapMux conclude about ONE of
+// the calls it names.
 //
-// The BATCH payload cannot be persisted as the call's own result: it is addressed to a
-// list (`toolCallIds`) and carries no `toolCallId`, so every frontend extractor refuses
-// it and the row renders as an empty bubble that closes the span and shows nothing. This
-// builds the one-call shape those extractors read instead.
-//
-// The batch states aggregate counts only, so it cannot say WHICH call failed. A batch
-// with no error at all makes every recovered call a success; otherwise the outcome is
-// unknown, and saying so is better than claiming either one.
-func zcodeBatchResultPayload(toolCallID, toolName string, batch zcodeToolUpdated) json.RawMessage {
-	content := "This tool's own result was lost. The batch summary reports it finished."
+// The summary reports aggregate counts, so it cannot say WHICH call failed. A batch
+// with no error means every call in it succeeded; a batch with one means this call's
+// outcome is unknown. Neither answer is the agent's own, so it travels as LeapMux
+// metadata and never as a result the agent did not send.
+func zcodeBatchOutcome(batch zcodeToolUpdated) []byte {
+	result := contracts.ToolOutcomeOutcomeSucceeded
 	if batch.ErrorCount > 0 {
-		content = "This tool's own result was lost. The batch summary reports that some call in the batch failed."
+		result = contracts.ToolOutcomeOutcomeUnknown
 	}
 	encoded, err := json.Marshal(map[string]any{
-		"kind":       contracts.ZCodeToolKindResult,
-		"toolCallId": toolCallID,
-		"toolName":   toolName,
-		"result": map[string]any{
-			"success": batch.ErrorCount == 0,
-			"content": content,
+		contracts.MessageMetadataFieldToolOutcome: map[string]string{
+			contracts.ToolOutcomeFieldSource:  contracts.ToolOutcomeSourceBatchSummary,
+			contracts.ToolOutcomeFieldOutcome: result,
 		},
 	})
 	if err != nil {
-		// Every field is a plain string or bool, so this cannot fail; returning the batch
-		// payload keeps the span closing rather than leaving the card open for good.
-		slog.Error("zcode marshal batch result", "tool_call_id", toolCallID, "error", err)
-		return batch.Result
+		// Every value is a constant string, so this cannot fail. An empty note still
+		// closes the span, which is what keeps the card from staying open for good.
+		slog.Error("zcode marshal batch outcome", "error", err)
+		return nil
 	}
 	return encoded
+}
+
+// zcodeBatchTaskStatus is what a subagent row becomes when only a batch summary
+// reports its call. A batch that counted an error cannot say which call failed, so
+// the row stops rather than claiming either outcome.
+func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
+	if batch.ErrorCount > 0 {
+		return bgtask.StatusStopped
+	}
+	return bgtask.StatusCompleted
 }
 
 // --- session.updated ---
@@ -853,7 +859,7 @@ func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion Messag
 		return
 	}
 	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
-		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 	})
 	if err != nil {
 		slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
@@ -890,7 +896,7 @@ func (a *zcodeAgent) persistZCodeGenerationKind(kind AssembledMessageKind, compl
 }
 
 func (a *zcodeAgent) persistZCodeGenerationRow(raw []byte) error {
-	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 }
 
 func zcodeReasoningScope(assistantMessageID string) string {
@@ -915,7 +921,7 @@ func (a *zcodeAgent) persistZCodeAssistantMessage(event zcodeEventEnvelope, cont
 	if raw == nil {
 		return
 	}
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
 		slog.Error("zcode persist assistant message", "agent_id", a.agentID, "error", err)
 	}
 }

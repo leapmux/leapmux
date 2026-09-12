@@ -9,6 +9,7 @@
 
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
+import type { ElicitationRequest } from '../controls/elicitationForm'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
@@ -18,7 +19,11 @@ import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSou
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
+import type { ToolMessageSide } from '~/stores/chatTypes'
 import type { ControlRequest } from '~/stores/control.store'
+import { isObject } from '~/lib/jsonPick'
+import { messageCompletionFromProto } from '../assembledMessage'
+import { applyMessageMetadata } from '../messageMetadata'
 
 export interface AttachmentCapabilities {
   text: boolean
@@ -29,7 +34,7 @@ export interface AttachmentCapabilities {
 
 export interface ProviderAskUserQuestion {
   isRequest: (payload: Record<string, unknown>) => boolean
-  extractQuestions: (payload: Record<string, unknown>) => Question[]
+  extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => Question[]
   /**
    * Answers ONE request instance.
    *
@@ -105,6 +110,14 @@ export interface ToolResultMeta {
   copyableContent: () => string | null
 }
 
+/** Parsed provider content and supplemental content remain separate inside each message. */
+export interface ToolMessageInput {
+  parsed: ParsedMessageContent
+  spanType: string | undefined
+  request: ParsedMessageContent | undefined
+  role?: SpanRole
+}
+
 /**
  * One entry inside a notification_thread wrapper, after the provider has
  * inspected a single message. The shared thread renderer concatenates entries
@@ -147,7 +160,25 @@ export interface ResultDividerModel {
  */
 export type SpanRole = 'opener' | 'result' | 'other'
 
+/**
+ * True when this row is the final row of its tool span whatever its provider bytes
+ * say.
+ *
+ * A turn that ends while a tool call runs leaves no final frame, so the worker
+ * stores the agent's own LAST frame and states the outcome in its completion column
+ * instead. That frame still reads as pending, running or started, so a span role
+ * read from the provider status alone would call the closing row an opener.
+ *
+ * The rule is LeapMux's, not any provider's, so every `spanRole` hook reads it from
+ * here rather than spelling the completion test again.
+ */
+export function retainedRowIsFinal(completion: MessageCompletion | undefined): boolean {
+  return messageCompletionFromProto(completion) !== null
+}
+
 export interface Provider {
+  /** Combine separate supplemental data with the provider payload for display only. */
+  resolveMessage?: (parsed: ParsedMessageContent) => Record<string, unknown> | undefined
   /**
    * Extra per-provider settings to seed into a new agent's OpenAgent request.
    * Omit when the provider needs none. Codex seeds its collaboration mode.
@@ -203,10 +234,12 @@ export interface Provider {
    * Classify a message's role within a tool span (opener / result / other) from this provider's
    * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
    * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
-   * Omit for providers whose spans have no distinct opener/result marker (Codex / ACP emit only
-   * tool_use openers) -- the caller defaults to `'other'` and files them first-seen-is-opener.
+   * Omit for providers whose spans have no distinct opener/result marker (such as Codex) -- the caller defaults to `'other'` and files them first-seen-is-opener.
    */
   spanRole?: (parsed: ParsedMessageContent) => SpanRole
+
+  /** Linked messages that this row needs for rendering. Omit for self-contained rows. */
+  relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolMessageSide[]
 
   /**
    * Render a message given its category and parsed content.
@@ -230,9 +263,7 @@ export interface Provider {
    */
   toolResultMeta?: (
     category: MessageCategory,
-    parsed: unknown,
-    spanType: string | undefined,
-    toolUseParsed: ParsedMessageContent | undefined,
+    input: ToolMessageInput,
   ) => ToolResultMeta | null
 
   /**
@@ -249,9 +280,7 @@ export interface Provider {
    * empty array when the message carries no image.
    */
   toolResultImages?: (
-    parsed: unknown,
-    spanType: string | undefined,
-    toolUseParsed: ParsedMessageContent | undefined,
+    input: ToolMessageInput,
   ) => ImageResultSource[]
 
   /**
@@ -303,6 +332,9 @@ export interface Provider {
   /** Complete support for the shared question UI. */
   askUserQuestion?: ProviderAskUserQuestion
 
+  /** Extract a native MCP input request for the shared form. */
+  elicitation?: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ElicitationRequest | undefined
+
   /**
    * Convert one message inside a notification_thread wrapper into thread
    * entries. The shared `renderNotificationThread` consults each provider's
@@ -323,7 +355,13 @@ export interface Provider {
    * message isn't a recognizable turn-end for this provider (the caller falls
    * back to the raw-JSON renderer).
    */
-  resultDivider?: (parsed: unknown) => ResultDividerModel | null
+  /**
+   * `completion` is LeapMux's OWN reading of how the turn ended, which a provider
+   * frame can contradict: Claude reports an interrupted turn with the same error
+   * subtype it uses for a genuine failure, and only LeapMux knows it asked for the
+   * stop. A plugin that needs no such correction ignores the parameter.
+   */
+  resultDivider?: (parsed: unknown, completion?: MessageCompletion) => ResultDividerModel | null
 
   // --- Session-metadata extraction ------------------------------------------------------------
   // These hooks let the connection pipeline (useWorkspaceConnection) fold provider-native
@@ -364,9 +402,8 @@ export interface Provider {
    *
    * Receives the editor `content` (empty when the user hit Send with no
    * input), the original `payload`, and the `requestId`. Each provider
-   * decides whether the response is allow vs deny, what shape the response
-   * takes, and whether to add provider-specific markers (e.g. Codex's
-   * `codexPlanModePrompt` flag, or Claude's force-deny on `ExitPlanMode`).
+   * selects the native response shape and its decision or feedback fields.
+   * LeapMux settings travel separately through ControlResponseOptions.
    *
    * ACP-based providers can delegate to `acpBuildControlResponse` from
    * `providers/acp/classification`.
@@ -379,6 +416,9 @@ export interface Provider {
 
   /** Reports whether typed feedback needs a separate user message. */
   controlFeedbackAsFollowUpMessage?: (payload: Record<string, unknown>) => boolean
+
+  /** Select the shared editor's purpose when the request uses native controls. */
+  controlEditorPurpose?: (payload: Record<string, unknown>) => 'answer' | 'feedback' | 'none'
 
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets
@@ -472,4 +512,11 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  */
 export function pluginFor(provider: AgentProvider | undefined): Provider | undefined {
   return provider != null ? providerFor(provider) : undefined
+}
+
+/** Resolve display data without changing the parsed original used by the Raw JSON view. */
+export function parsedMessageForRendering(parsed: ParsedMessageContent, provider: AgentProvider): ParsedMessageContent {
+  const providerData = providerFor(provider)?.resolveMessage?.(parsed) ?? parsed.parentObject
+  const parentObject = providerData && isObject(parsed.messageMetadata) ? applyMessageMetadata(providerData, parsed.messageMetadata) : providerData
+  return parentObject === parsed.parentObject ? parsed : { ...parsed, parentObject }
 }

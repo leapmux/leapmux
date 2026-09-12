@@ -97,7 +97,6 @@ func TestACPExtractTodoEvent_ServesEveryACPProvider(t *testing.T) {
 	const plan = `{"sessionUpdate":"plan","entries":[{"content":"one","status":"pending"}]}`
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
@@ -106,21 +105,5 @@ func TestACPExtractTodoEvent_ServesEveryACPProvider(t *testing.T) {
 		ev, ok := ProviderFor(provider).ExtractTodoEvent("", []byte(plan), nil)
 		require.True(t, ok, "provider %s", provider)
 		require.Len(t, ev.Snapshot, 1)
-	}
-}
-
-// Pi's CLI states no to-do list, so its plugin reports none rather than guessing at
-// another provider's shape.
-func TestPiExtractTodoEvent_ReportsNothing(t *testing.T) {
-	t.Parallel()
-
-	for _, content := range []string{
-		`{"sessionUpdate":"plan","entries":[{"content":"one"}]}`,
-		`{"method":"turn/plan/updated","params":{"plan":[{"step":"x"}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[]}}]}}`,
-	} {
-		_, ok := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI).
-			ExtractTodoEvent("TodoWrite", []byte(content), nil)
-		assert.False(t, ok)
 	}
 }

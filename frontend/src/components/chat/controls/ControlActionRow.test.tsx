@@ -1,4 +1,5 @@
 import { render, screen } from '@solidjs/testing-library'
+import { createSignal, Show } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
@@ -15,7 +16,18 @@ describe('actionButtonClass', () => {
 })
 
 describe('controlActionRow', () => {
-  it('puts the primary actions in the right-hand zone', () => {
+  it('renders navigation only while its conditional content exists', () => {
+    const [visible, setVisible] = createSignal(false)
+    render(() => <ControlActionRow navigation={<Show when={visible()}><span>Page 1</span></Show>} primary={<button>Submit</button>} />)
+    const row = screen.getByTestId('control-footer')
+    expect(row.children).toHaveLength(1)
+    setVisible(true)
+    expect(row.children).toHaveLength(2)
+    setVisible(false)
+    expect(row.children).toHaveLength(1)
+  })
+
+  it('puts the primary actions in the decision group', () => {
     render(() => <ControlActionRow primary={<button data-testid="allow">Allow</button>} />)
 
     const row = screen.getByTestId('control-footer')
@@ -23,9 +35,8 @@ describe('controlActionRow', () => {
     expect(screen.getByTestId('allow').parentElement?.parentElement).toBe(row)
   })
 
-  it('renders no secondary zone when the row has only a primary action', () => {
-    // Seven of the nine provider rows offer one action. An empty left zone
-    // would still occupy its grid column and pull the primary action inward.
+  it('omits an absent secondary group', () => {
+    // An absent group must not reserve a layout gap.
     const { container } = render(() => (
       <ControlActionRow primary={<button data-testid="allow">Allow</button>} />
     ))
@@ -33,11 +44,11 @@ describe('controlActionRow', () => {
     expect(container.querySelector('[data-testid="control-footer"]')?.children).toHaveLength(1)
   })
 
-  it('keeps the secondary, centre, and primary zones in reading order', () => {
+  it('keeps secondary actions, navigation, and decisions in reading order', () => {
     render(() => (
       <ControlActionRow
         secondary={<button data-testid="reject">Reject</button>}
-        centre={<span data-testid="pagination">1 2 3</span>}
+        navigation={<span data-testid="pagination">1 2 3</span>}
         primary={<button data-testid="submit">Submit</button>}
       />
     ))
@@ -47,7 +58,7 @@ describe('controlActionRow', () => {
     expect(text.indexOf('1 2 3')).toBeLessThan(text.indexOf('Submit'))
   })
 
-  it('puts leading controls before decisions in the right-hand zone', () => {
+  it('groups leading controls before the decisions', () => {
     render(() => (
       <ControlActionRow
         leading={<span data-testid="choice">Choice</span>}
@@ -57,16 +68,15 @@ describe('controlActionRow', () => {
 
     const choice = screen.getByTestId('choice')
     const allow = screen.getByTestId('allow')
-    expect(choice.parentElement).toBe(allow.parentElement)
+    expect(choice.parentElement?.parentElement).toBe(allow.parentElement)
     expect(choice.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('marks every row with one test id, whatever zones it fills', () => {
-    // Only two of the nine rows carried this marker before the extraction, so
-    // nothing noticed when one of them differed from the rest.
+  it('identifies the row once for every group combination', () => {
+    // One marker identifies the row for each combination of groups.
     const { container: onlyPrimary } = render(() => <ControlActionRow primary={<span>a</span>} />)
     const { container: allZones } = render(() => (
-      <ControlActionRow secondary={<span>a</span>} centre={<span>b</span>} primary={<span>c</span>} />
+      <ControlActionRow secondary={<span>a</span>} navigation={<span>b</span>} primary={<span>c</span>} />
     ))
 
     expect(onlyPrimary.querySelectorAll('[data-testid="control-footer"]')).toHaveLength(1)

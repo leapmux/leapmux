@@ -178,7 +178,7 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 
 	require.NoError(t, sink.PersistMessage(
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"isSynthetic":true,"controlResponse":{"provider":"CLAUDE_CODE","requestId":"r","response":{"behavior":"allow"}}}`),
+		agent.MessageContent{Original: []byte(`{"isSynthetic":true,"controlResponse":{"provider":"CLAUDE_CODE","requestId":"r","response":{"behavior":"allow"}}}`)},
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE},
 	))
 
@@ -201,9 +201,7 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, broadcastMark, "broadcast must carry the mark")
 }
 
-// TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked asserts the synthetic-user-message
-// writer -- now used ONLY for the interrupt notice, since genuine control answers persist through
-// persistControlResponseRow -- writes an UNSPECIFIED-mark row so the interrupt draws no rail dot.
+// Interrupt notices do not carry the mark that identifies a control response.
 func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T) {
 	t.Parallel()
 
@@ -239,7 +237,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 		plan.requestMeta.Loaded = true
 		plan.hasDecision = true
 		plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
-		plan.decision.ClearContext = clear
+		plan.settings = &leapmuxv1.PlanApprovalSettings{ClearContext: clear}
 		plan.resolution.PlanModeControl = agent.PlanModeControlExit
 		plan.resolution.SelfDisplayed = selfDisplayed
 		plan.resolution.Content = []byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`)
@@ -252,7 +250,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(false, false))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(false, false))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
@@ -265,7 +263,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, true))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, true))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1, "the wiped tool_result's mark moves to the single structured row, never a second echo")
@@ -278,7 +276,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		svc.persistControlResponseAnswerRow("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, false))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, false))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Empty(t, rows, "the ingested tool_result owns the mark; no synthetic row")
@@ -296,12 +294,12 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "request-1",
 		Payload:    []byte(`{"type":"permission","id":"request-1"}`),
 		ClaimToken: "instance-token-1",
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 

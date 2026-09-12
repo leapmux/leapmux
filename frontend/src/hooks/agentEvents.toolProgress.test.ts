@@ -317,9 +317,11 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       const req = {
         requestId: 'r1',
         agentId: 'a1',
+        agentProvider: AgentProvider.REASONIX,
         payload: new TextEncoder().encode(JSON.stringify({ method: 'x' })),
       } as unknown as AgentControlRequest
       handleControlRequest('a1', req, 'live', s)
+      expect(s.controlStore.getRequests('a1')[0]?.agentProvider).toBe(AgentProvider.REASONIX)
       expect(running(s.chatStore)).toHaveLength(2)
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
       expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBe(500)

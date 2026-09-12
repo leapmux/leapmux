@@ -239,52 +239,90 @@ func CleanTitleRunes(s string, max int) string {
 
 // Kind discriminates subagent rows (an openable transcript tab) from shell
 // rows (a background process with no transcript).
-type Kind int
+//
+// It is a DEFINED type over the proto enum, not an independent numbering, so
+// the ordinal this package holds, the ordinal agent_background_tasks.kind
+// stores and the ordinal the browser reads are one value. The conversion in
+// each direction is a cast, which is why no kindToProto exists. A defined type
+// rather than an alias, because a type alias cannot carry this package's
+// methods.
+type Kind leapmuxv1.BackgroundTaskKind
 
 const (
-	KindUnspecified Kind = iota
-	KindSubagent
-	KindShell
+	KindUnspecified = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_UNSPECIFIED)
+	KindSubagent    = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT)
+	KindShell       = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL)
 )
+
+// String names the kind with the proto enum's own generated name
+// ("BACKGROUND_TASK_KIND_SHELL"). It is what a log line prints, and it is the
+// registry's cap-pool key -- generated, so a renamed enumerator carries the
+// pool key with it, and never "", which the registry cache reserves for a
+// single-pool registry.
+func (k Kind) String() string { return leapmuxv1.BackgroundTaskKind(k).String() }
+
+// String names the status with the proto enum's own generated name, for logs.
+// The payload vocabulary the browser reads is StatusWire, not this.
+func (s Status) String() string { return leapmuxv1.BackgroundTaskStatus(s).String() }
+
+// KindBuckets returns every cap pool's key, in Kinds order. The registry seeds
+// and caps by this list, and the seed query filters `kind` by the same value,
+// so the pool key is the ordinal itself rather than a name something would have
+// to parse back.
+func KindBuckets() []int64 {
+	out := make([]int64, len(Kinds))
+	for i, k := range Kinds {
+		out[i] = int64(k)
+	}
+	return out
+}
 
 // Kinds lists every real (non-unspecified) kind, in declaration order. It is the
 // single source of truth for the registry's cap pools: the cold-start seed loads
 // each one to its own cap, so adding a kind here gives it a pool automatically.
 //
-// Add a new kind to BOTH this array and KindWire. KindWire's default arm maps an
-// unrecognized kind onto "subagent", which is the safe answer for a
-// KindUnspecified row but the WRONG pool for a real new kind, so the two must
-// stay in step. KindWires() below is what the seed reads, so a kind missing from
-// KindWire seeds the wrong pool rather than none.
+// A kind missing from this array gets no pool at all, which is a row the seed
+// never loads rather than one it files under the wrong heading.
 var Kinds = [...]Kind{KindSubagent, KindShell}
 
-// KindWires returns every pool's wire name, in Kinds order. The registry seeds
-// and caps by this list.
-func KindWires() []string {
-	out := make([]string, len(Kinds))
-	for i, k := range Kinds {
-		out[i] = KindWire(k)
-	}
-	return out
-}
-
-// Status is the canonical background-task status. Zero == pending (friendlier
-// than the proto's UNSPECIFIED). Interrupted is set at worker boot for tasks
-// the previous process left active (an honest "worker restarted" label).
-type Status int
+// Status is the canonical background-task status, a defined type over the proto
+// enum for the same reason Kind is one: agent_background_tasks.status stores
+// this ordinal verbatim, so the package, the column and the browser share one
+// numbering and the conversion is a cast.
+//
+// The zero value is StatusUnspecified, NOT a real status. It used to be
+// StatusPending, and the column's CHECK now refuses 0 outright -- so an upsert
+// that forgets to set a status fails its write instead of quietly recording a
+// pending row nothing ever closes.
+//
+// Interrupted is set at worker boot for tasks the previous process left active
+// (an honest "worker restarted" label).
+type Status leapmuxv1.BackgroundTaskStatus
 
 const (
-	StatusPending Status = iota
-	StatusRunning
-	StatusCompleted
-	StatusFailed
-	StatusStopped
-	StatusInterrupted
+	StatusUnspecified = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
+	StatusPending     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
+	StatusRunning     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
+	StatusCompleted   = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED)
+	StatusFailed      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
+	StatusStopped     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
+	StatusInterrupted = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED)
 )
 
+// MinFinalStatus is the lowest FINAL ordinal, and the whole predicate the SQL
+// needs: `status >= MinFinalStatus` selects the final rows and `status <`
+// selects the active ones. The queries bind it rather than listing four status
+// words, so the split follows a renumber instead of going stale.
+//
+// It states a property of the ORDER of the enum, which nothing in proto
+// enforces, so TestBackgroundTaskFinalStatusesAreTheTopOfTheRange checks it
+// against IsFinished for every value. A new status on the wrong side of the
+// boundary fails that test rather than silently joining the other pool.
+const MinFinalStatus = StatusCompleted
+
 // IsFinished reports whether s is a final status -- one that makes a row
-// eligible for cap-eviction. Pending and Running rows are never evicted; they
-// only leave through a transition into a final status.
+// eligible for cap-eviction. Unspecified, Pending and Running rows are never
+// evicted; a row leaves only through a transition into a final status.
 func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
 }
@@ -320,8 +358,9 @@ type Item struct {
 // GroupKey and GroupLabel are preserved together as a pair: a blank incoming
 // GroupKey keeps BOTH the existing key and label (a partial upsert cannot clear
 // a group), and a blank incoming LABEL under the SAME key keeps the existing
-// label. Status is NOT preserved: callers set it deliberately, and
-// StatusPending is a valid value, not a sentinel for "keep". Centralizes the
+// label. Status is NOT preserved: callers set it deliberately, and an unset one
+// is StatusUnspecified, which the column refuses rather than silently keeping
+// the existing row's status. Centralizes the
 // "blank means keep" rule so adding a descriptive field cannot silently regress
 // a partial upsert.
 func (i Item) PreservingBlanksFrom(existing Item) Item {
@@ -542,7 +581,7 @@ func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
 		// the guard above. `GroupLabel` keeps the wireString repair because it
 		// is prose: nothing joins on it.
 		Id:             i.RowKey,
-		Kind:           kindToProto(i.Kind),
+		Kind:           leapmuxv1.BackgroundTaskKind(i.Kind),
 		ChildAgentId:   i.ChildAgentID,
 		ParentAgentId:  i.ParentAgentID,
 		GroupKey:       groupKey,
@@ -551,7 +590,7 @@ func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
 		TitleIsCommand: i.TitleIsCommand,
 		Description:    wireString(i.Description),
 		ActiveForm:     wireString(i.ActiveForm),
-		Status:         statusToProto(i.Status),
+		Status:         leapmuxv1.BackgroundTaskStatus(i.Status),
 		CreatedAt:      formatTime(i.CreatedAt),
 		UpdatedAt:      formatTime(i.UpdatedAt),
 		EndedAt:        formatTime(i.EndedAt),
@@ -577,30 +616,18 @@ func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
 	return out
 }
 
-// KindWire returns the lowercase DB-column string used by
-// agent_background_tasks.kind ("subagent" | "shell").
-func KindWire(k Kind) string {
-	switch k {
-	case KindShell:
-		return "shell"
-	default:
-		return "subagent"
-	}
-}
-
-// KindFromWire parses the DB-column string; unknown values fall through to
-// KindSubagent.
-func KindFromWire(s string) Kind {
-	switch s {
-	case "shell":
-		return KindShell
-	default:
-		return KindSubagent
-	}
-}
-
-// StatusWire returns the lowercase DB-column string used by
-// agent_background_tasks.status.
+// StatusWire returns the lowercase token the worker writes as the `status`
+// field of a subagent_ended notification, which the browser's
+// notificationRenderers reads to word the closing transcript divider.
+//
+// It is NOT the storage format: agent_background_tasks.status holds the ordinal
+// directly. This is a payload vocabulary with a reader in another language, and
+// the only caller is the divider that applyBackgroundTaskClose writes.
+//
+// StatusUnspecified yields "", not "pending". The browser renders an
+// unrecognized token as a plain "ended" divider, which is the honest line for a
+// status nobody set; wording it "pending" would state a live state on the row
+// that just closed.
 func StatusWire(s Status) string {
 	switch s {
 	case StatusRunning:
@@ -613,53 +640,10 @@ func StatusWire(s Status) string {
 		return "stopped"
 	case StatusInterrupted:
 		return "interrupted"
-	default:
+	case StatusPending:
 		return "pending"
-	}
-}
-
-// StatusFromWire parses the DB-column string; unknown values fall through to
-// StatusPending.
-func StatusFromWire(s string) Status {
-	switch s {
-	case "running":
-		return StatusRunning
-	case "completed":
-		return StatusCompleted
-	case "failed":
-		return StatusFailed
-	case "stopped":
-		return StatusStopped
-	case "interrupted":
-		return StatusInterrupted
 	default:
-		return StatusPending
-	}
-}
-
-func kindToProto(k Kind) leapmuxv1.BackgroundTaskKind {
-	switch k {
-	case KindShell:
-		return leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL
-	default:
-		return leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT
-	}
-}
-
-func statusToProto(s Status) leapmuxv1.BackgroundTaskStatus {
-	switch s {
-	case StatusRunning:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING
-	case StatusCompleted:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED
-	case StatusFailed:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED
-	case StatusStopped:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED
-	case StatusInterrupted:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED
-	default:
-		return leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING
+		return ""
 	}
 }
 

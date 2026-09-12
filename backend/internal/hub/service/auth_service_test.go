@@ -296,7 +296,10 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(
 	require.NoError(t, err)
 	userID := loginResp.Msg.GetUser().GetId()
 
-	for _, p := range []struct{ id, providerType string }{
+	for _, p := range []struct {
+		id           string
+		providerType leapmuxv1.IdentityProviderType
+	}{
 		{"gh", huboauth.ProviderTypeGitHub},
 		{"okta", huboauth.ProviderTypeOIDC},
 	} {
@@ -355,7 +358,10 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))
 
-	for _, p := range []struct{ id, providerType string }{
+	for _, p := range []struct {
+		id           string
+		providerType leapmuxv1.IdentityProviderType
+	}{
 		{"gh", huboauth.ProviderTypeGitHub},
 		{"okta", huboauth.ProviderTypeOIDC},
 	} {

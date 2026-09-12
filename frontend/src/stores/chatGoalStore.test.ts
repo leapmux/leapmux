@@ -23,6 +23,29 @@ function protoGoal(over: Partial<ProtoAgentGoal> = {}): ProtoAgentGoal {
 }
 
 describe('createGoalStore', () => {
+  it('resets progress for a different native goal with the same text and time', () => {
+    createRoot((dispose) => {
+      const store = createGoalStore()
+      store.replace('a', protoGoal({ nativeId: 'first', createdAt: 'same-time' }), [], STAMP_1)
+      store.setProgress('a', { tokensUsed: 100 })
+      store.replace('a', protoGoal({ nativeId: 'second', createdAt: 'same-time' }), [], STAMP_2)
+      expect(store.get('a')?.nativeId).toBe('second')
+      expect(store.progress('a')).toEqual({})
+      dispose()
+    })
+  })
+
+  it('keeps progress when a report adds the native identity of the same goal', () => {
+    createRoot((dispose) => {
+      const store = createGoalStore()
+      store.replace('a', protoGoal({ createdAt: 'same-time' }), [], STAMP_1)
+      store.setProgress('a', { tokensUsed: 100 })
+      store.replace('a', protoGoal({ nativeId: 'native', createdAt: 'same-time' }), [], STAMP_2)
+      expect(store.progress('a').tokensUsed).toBe(100)
+      dispose()
+    })
+  })
+
   it('holds a goal per agent and reports undefined for one with none', () => {
     createRoot((dispose) => {
       const store = createGoalStore()

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -431,12 +432,12 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 
 		// publishedKinds drains whatever is pending and reports the kinds,
 		// so each step below observes ONLY the events it caused.
-		publishedKinds := func() []string {
+		publishedKinds := func() []leapmuxv1.RevocationEventKind {
 			_, err := st.RevocationEvents().PublishPending(ctx, 100)
 			require.NoError(t, err)
 			events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 100)
 			require.NoError(t, err)
-			return store.MapSlice(events, func(e store.PublishedRevocationEvent) string { return e.Event.Kind })
+			return store.MapSlice(events, func(e store.PublishedRevocationEvent) leapmuxv1.RevocationEventKind { return e.Event.Kind })
 		}
 		baseline := len(publishedKinds())
 

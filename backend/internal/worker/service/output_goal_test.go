@@ -116,7 +116,7 @@ func TestGoal_FirstReportStoresAndAnnounces(t *testing.T) {
 
 	row := readRow()
 	assert.Equal(t, "Make the tests pass", row.GoalObjective)
-	assert.Equal(t, "active", row.GoalStatus)
+	assert.Equal(t, int64(agent.GoalStatusActive), row.GoalStatus)
 	assert.Equal(t, "active", row.GoalStatusDetail)
 	require.True(t, row.GoalCreatedAt.Valid)
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID))
@@ -151,7 +151,7 @@ func TestGoal_StatusChangeAnnounces(t *testing.T) {
 
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
 	row := readRow()
-	assert.Equal(t, "done", row.GoalStatus)
+	assert.Equal(t, int64(agent.GoalStatusDone), row.GoalStatus)
 	assert.Equal(t, "complete", row.GoalStatusDetail)
 }
 
@@ -171,6 +171,52 @@ func TestGoal_SameObjectiveWithNewCreatedAtIsANewGoal(t *testing.T) {
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID),
 		"a restarted goal is a transition, not a repeat")
 	assert.Equal(t, second.Unix(), readRow().GoalCreatedAt.Time.Unix())
+}
+
+func TestGoal_ReplacingAnObjectiveWithoutNativeTimeStartsANewIdentity(t *testing.T) {
+	t.Parallel()
+	svc, sink, _, readRow := setupGoalTest(t)
+	now := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	svc.Output.now = func() time.Time { return now }
+	sink.UpsertGoal(agent.GoalUpdate{Objective: "First objective", Status: agent.GoalStatusActive})
+	first := readRow().GoalCreatedAt
+	now = now.Add(time.Minute)
+	sink.UpsertGoal(agent.GoalUpdate{Objective: "Second objective", Status: agent.GoalStatusActive})
+	second := readRow().GoalCreatedAt
+	assert.False(t, first.Time.Equal(second.Time))
+	assert.True(t, now.Equal(second.Time))
+}
+
+func TestGoal_NativeIdentityDistinguishesEqualObjectives(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	now := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	svc.Output.now = func() time.Time { return now }
+	sink.UpsertGoal(agent.GoalUpdate{NativeID: "first", Objective: "Same objective", Status: agent.GoalStatusActive})
+	first := readRow()
+	now = now.Add(time.Minute)
+	sink.UpsertGoal(agent.GoalUpdate{NativeID: "second", Objective: "Same objective", Status: agent.GoalStatusActive})
+	second := readRow()
+	assert.Equal(t, "second", second.GoalNativeID)
+	assert.False(t, first.GoalCreatedAt.Time.Equal(second.GoalCreatedAt.Time))
+	assert.Equal(t, []string{contracts.GoalTransitionSet, contracts.GoalTransitionReplaced}, goalTransitionKinds(t, svc, agentID))
+	assert.Equal(t, "second", goalProto(GoalColumnsOfAgent(second)).NativeId)
+	sink.ClearGoal(false)
+	assert.Empty(t, readRow().GoalNativeID)
+}
+
+func TestGoal_LearningNativeIdentityPreservesTheExistingGoal(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(agent.GoalUpdate{Objective: "Same objective", Status: agent.GoalStatusActive})
+	created := readRow().GoalCreatedAt
+	sink.UpsertGoal(agent.GoalUpdate{NativeID: "native", Objective: "Same objective", Status: agent.GoalStatusActive})
+	row := readRow()
+	assert.Equal(t, "native", row.GoalNativeID)
+	assert.True(t, created.Time.Equal(row.GoalCreatedAt.Time))
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+	sink.UpsertGoal(agent.GoalUpdate{Objective: "Same objective", Status: agent.GoalStatusPaused})
+	assert.Equal(t, "native", readRow().GoalNativeID)
 }
 
 // A resume snapshot restates a goal that may be hours old. It must update the
@@ -332,6 +378,8 @@ func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 
 	childSink.UpsertGoal(activeGoal("Subagent objective", 1, time.Unix(1_700_005_000, 0).UTC()))
 	childSink.ClearGoal(false)
+	childSink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
+	assert.Equal(t, int64(agent.GoalStatusActive), readRow().GoalStatus)
 
 	assert.Equal(t, "Root objective", readRow().GoalObjective,
 		"a child's goal must not overwrite the session's, and a child's clear must not erase it")
@@ -392,7 +440,7 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 	// there: GoalUpdate.Clean strips them on every path into the sink.
 	require.NoError(t, svc.Queries.UpdateAgentGoal(ctx, db.UpdateAgentGoalParams{
 		GoalObjective:    "ship \xff it",
-		GoalStatus:       "active",
+		GoalStatus:       int64(agent.GoalStatusActive),
 		GoalStatusDetail: "wait\xfe",
 		GoalCreatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
 		GoalUpdatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
@@ -676,7 +724,7 @@ func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
 	// And nothing was written to reach that answer, which is the whole point:
 	// there is no stored copy left to go stale.
 	row := readRow()
-	assert.Equal(t, "active", row.GoalStatus, "the row still holds the provider's last word")
+	assert.Equal(t, int64(agent.GoalStatusActive), row.GoalStatus, "the row still holds the provider's last word")
 	assert.Equal(t, "verifying", row.GoalStatusDetail)
 }
 
@@ -733,7 +781,7 @@ func TestGoal_TheFirstReportAfterARestartAnnouncesNothing(t *testing.T) {
 
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
 		"restating a goal that outlived the worker is not a new transition")
-	assert.Equal(t, "active", readRow().GoalStatus)
+	assert.Equal(t, int64(agent.GoalStatusActive), readRow().GoalStatus)
 }
 
 // A process that exits mid-session leaves a goal nothing pursues. The exit
@@ -806,9 +854,9 @@ func TestGoal_AnAbsentManagerNeverClaimsDormant(t *testing.T) {
 	h := NewOutputHandler(nil, nil, nil, nil, nil)
 
 	snapshot := h.GoalSnapshotFrom(GoalColumns{
-		AgentID:    "agent-1",
-		Objective:  "Ship it",
-		StatusWire: "active",
+		AgentID:   "agent-1",
+		Objective: "Ship it",
+		Status:    agent.GoalStatusActive,
 	})
 
 	require.NotNil(t, snapshot.Goal)
@@ -823,11 +871,75 @@ func TestGoal_AChildProjectsNoGoalAtAll(t *testing.T) {
 	svc, _, _, _ := setupGoalTest(t)
 
 	snapshot := svc.Output.GoalSnapshotFrom(GoalColumns{
-		AgentID:    "child-1",
-		IsChild:    true,
-		Objective:  "the root's objective",
-		StatusWire: "active",
+		AgentID:   "child-1",
+		IsChild:   true,
+		Objective: "the root's objective",
+		Status:    agent.GoalStatusActive,
 	})
 
 	assert.Nil(t, snapshot.Goal)
+}
+
+func TestGoalStatusUpdatePreservesStoredIdentityAfterSinkRestart(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	original := activeGoal("Keep this objective", 12, time.Unix(1_700_000_000, 0).UTC())
+	original.NativeID = "native-goal"
+	sink.UpsertGoal(original)
+	before := readRow()
+
+	restarted := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
+	restarted.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
+
+	after := readRow()
+	assert.Equal(t, before.GoalObjective, after.GoalObjective)
+	assert.Equal(t, before.GoalNativeID, after.GoalNativeID)
+	assert.Equal(t, before.GoalCreatedAt, after.GoalCreatedAt)
+	assert.Equal(t, int64(agent.GoalStatusPaused), after.GoalStatus)
+	assert.Empty(t, after.GoalStatusDetail)
+	assert.Equal(t, []string{"set", "paused"}, goalTransitionKinds(t, svc, agentID))
+
+	restarted.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
+	assert.Equal(t, after.GoalUpdatedAt, readRow().GoalUpdatedAt)
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
+}
+
+func TestGoalStatusUpdateLeavesAbsentAndClearedGoalsAbsent(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
+	assert.Empty(t, readRow().GoalObjective)
+	assert.Zero(t, goalNotificationCount(t, svc, agentID))
+
+	sink.UpsertGoal(activeGoal("Remove this objective", 0, time.Unix(123, 0)))
+	sink.ClearGoal(false)
+	before := readRow()
+	sink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
+	assert.Equal(t, before, readRow())
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
+}
+
+func TestGoalStatusUpdateRejectsInvalidStatuses(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Keep this objective", 0, time.Unix(123, 0)))
+	before := readRow()
+	for _, status := range []agent.GoalStatus{agent.GoalStatusNone, agent.GoalStatusDormant, -1, 99} {
+		sink.UpdateGoalStatus(agent.GoalStatusActive, status)
+		assert.Equal(t, before, readRow())
+	}
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+}
+
+func TestGoalStatusUpdateRacesClearWithoutRestoringTheGoal(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Keep this objective", 0, time.Unix(123, 0)))
+	var writers sync.WaitGroup
+	writers.Go(func() { sink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused) })
+	writers.Go(func() { sink.ClearGoal(false) })
+	writers.Wait()
+	assert.Empty(t, readRow().GoalObjective)
+	assert.Empty(t, readRow().GoalStatus)
+	assert.LessOrEqual(t, goalNotificationCount(t, svc, agentID), 3)
 }

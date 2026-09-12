@@ -2,9 +2,10 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { allowChoicePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { CONTROL_ALLOW_CHOICE_ID, createControlAnswerState } from '../../controls/types'
-import { CodexControlActions } from './CodexControlRequest'
+import { CodexControlActions, CodexControlContent } from './CodexControlRequest'
 
 function makeRequest(params: Record<string, unknown> = {}): ControlRequest {
   return {
@@ -42,11 +43,20 @@ function renderActions(
   return { onRespond, onSettingChange }
 }
 
+describe('codex control request content', () => {
+  it('uses Fractured JSON for requested permissions', () => {
+    const permissions = { network: { enabled: true } }
+    const request = { ...makeRequest({ permissions }), payload: { method: 'item/permissions/requestApproval', params: { permissions } } }
+    const { container } = render(() => <CodexControlContent request={request} answerState={createControlAnswerState()} />)
+    expect(container.querySelector('pre')?.textContent).toBe(prettifyJson(permissions))
+  })
+})
+
 describe('codex control request actions', () => {
   it('renders Deny and Allow with allow-choice and permission pills', () => {
     renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
 
-    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' })).not.toBeChecked()
@@ -83,6 +93,7 @@ describe('codex control request actions', () => {
     expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(allowChoices.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
     expect(allowChoices.getByRole('radio', { name: 'Host rule' })).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('control-more-actions'))
     expect(screen.getByTestId('control-decision-cancel')).toHaveTextContent('Cancel')
     expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-accept')).not.toBeInTheDocument()
@@ -159,11 +170,12 @@ describe('codex control request actions', () => {
     expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
     for (const name of ['a', 'b', 'c'])
       expect(allowChoices.getByRole('radio', { name: `Host: ${name}.example.com` })).toBeInTheDocument()
-    // The fourth host is past the cut, so it answers from its own button.
+    // The fourth host remains available in the additional-actions menu.
+    fireEvent.click(screen.getByTestId('control-more-actions'))
     expect(screen.getByTestId('control-decision-applyNetworkPolicyAmendment')).toBeInTheDocument()
   })
 
-  it('keeps allow decisions beyond the four-pill limit as buttons', async () => {
+  it('keeps allow decisions beyond the four-pill limit in the menu', async () => {
     const overflowHostRule = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'overflow.example.com', action: 'allow' } } }
     const { onRespond } = renderActions(makeRequest({
       availableDecisions: [
@@ -177,6 +189,7 @@ describe('codex control request actions', () => {
     }))
 
     expect(allowChoicePillGroup('Allow as').getAllByRole('radio')).toHaveLength(4)
+    fireEvent.click(screen.getByTestId('control-more-actions'))
     const overflow = screen.getByTestId('control-decision-applyNetworkPolicyAmendment')
     expect(overflow).toHaveTextContent('Allow Host & Remember')
     await fireEvent.click(overflow)
@@ -323,7 +336,7 @@ describe('codex control request actions', () => {
     renderActions(makeRequest({ availableDecisions: ['decline', 'cancel'] }))
 
     expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
-    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
   })
 
   it('draws no Deny when every offered decision approves', () => {
@@ -399,28 +412,29 @@ describe('codex control request actions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const [bytes, options] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-      codexPlanModePrompt: true,
-      clearContext: true,
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('clearContext')
+    expect(options).toMatchObject({ planApproval: { clearContext: true } })
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('codexPlanModePrompt')
   })
 
-  it('embeds the bypass mode in a plan approval when Bypass is selected', async () => {
+  it('sends the bypass mode separately from the provider response', async () => {
     const { onRespond, onSettingChange } = renderActions(makePlanRequest())
 
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const [bytes, options] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-      codexPlanModePrompt: true,
-      permissionMode: 'never',
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })
-    // The mode travels INSIDE the response; a second settings change would race
-    // the restart a context-clearing approval triggers, so the handler never fires.
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
+    expect(options).toMatchObject({ planApproval: { permissionMode: 'never', clearContext: false } })
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('codexPlanModePrompt')
+    // One RPC carries the response and its plan settings, so a separate setting change cannot race the restart.
     expect(onSettingChange).not.toHaveBeenCalled()
   })
 })

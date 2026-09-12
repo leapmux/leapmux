@@ -2,14 +2,84 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
-// SupportedGoalActions reports no writes. Reasonix reports a goal over ACP but
-// exposes no safe client command that sets or clears it.
-func (a *ReasonixAgent) SupportedGoalActions() []GoalAction { return nil }
+// SupportedGoalActions reports each operation that the advertised modes support.
+// ACP exposes no explicit operation to pause or resume an existing goal.
+// See https://github.com/esengine/DeepSeek-Reasonix/issues/10201.
+func (a *ReasonixAgent) SupportedGoalActions() []GoalAction {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !hasACPOption(a.availableModes, contracts.ReasonixModeNormal) {
+		return nil
+	}
+	if hasACPOption(a.availableModes, contracts.ReasonixModeGoal) {
+		return []GoalAction{GoalActionSet, GoalActionClear}
+	}
+	return []GoalAction{GoalActionClear}
+}
 
-var _ GoalCapable = (*ReasonixAgent)(nil)
+var _ GoalWriter = (*ReasonixAgent)(nil)
+
+func (a *ReasonixAgent) PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error) {
+	if !slices.Contains(a.SupportedGoalActions(), action) {
+		return GoalOutcome{}, ErrGoalControlUnsupported
+	}
+	if action == GoalActionSet {
+		if strings.TrimSpace(objective) == "" {
+			return GoalOutcome{}, fmt.Errorf("a goal objective must not be empty")
+		}
+		var goalSessionID string
+		err := a.sendPreparedPrompt(objective, nil, func(sessionID string) error {
+			goalSessionID = sessionID
+			// Normal mode removes the previous objective before Goal mode accepts another one.
+			if err := a.setReasonixGoalMode(sessionID, contracts.ReasonixModeNormal); err != nil {
+				return err
+			}
+			return a.setReasonixGoalMode(sessionID, contracts.ReasonixModeGoal)
+		})
+		if err == nil {
+			err = a.confirmReasonixGoal(goalSessionID, objective)
+		}
+		return GoalOutcome{}, err
+	}
+	err := a.withSessionID(func(sessionID string) error {
+		return a.setReasonixGoalMode(sessionID, contracts.ReasonixModeNormal)
+	})
+	return GoalOutcome{}, err
+}
+
+// The caller holds the session lock. Do not use sendSessionRPC here because it takes that lock again.
+func (a *ReasonixAgent) setReasonixGoalMode(sessionID, mode string) error {
+	if sessionID == "" || a.IsStopped() {
+		return fmt.Errorf("the Reasonix session is unavailable")
+	}
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID, "modeId": mode})
+	if err != nil {
+		return err
+	}
+	if _, err := a.sendRequest(acpMethodSessionSetMode, params, a.APITimeout()); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.permissionMode = mode
+	a.mu.Unlock()
+	a.broadcastSettingsRefresh()
+	if mode == contracts.ReasonixModeNormal {
+		a.goalStatusMu.Lock()
+		a.goalStatusRevision++
+		a.sink.ClearGoal(false)
+		a.goalStatusMu.Unlock()
+	}
+	return nil
+}
 
 // Reasonix's session goal.
 //
@@ -21,16 +91,75 @@ var _ GoalCapable = (*ReasonixAgent)(nil)
 //	   goal:{status, objective?, runtime?:{turnsUsed, tokensUsed, requestsUsed,
 //	                                       workDurationMs, lastReason, stopCause}}}
 //
-// READ ONLY. Reasonix can be told to adopt a goal, but only by switching to its
-// `goal` session mode and then letting the NEXT prompt become the objective --
-// and clearing means switching back to whichever mode the session was in
-// before. LeapMux never tracked that mode (Reasonix leaves modeChannel
-// unmapped and exposes no option groups), so a clear would drop the user into
-// an arbitrary mode. A goal panel that reports honestly and offers no control
-// is better than one whose Clear button silently changes something else, so
-// ReasonixAgent implements no GoalWriter at all and the browser disables
-// every action.
+// Reasonix adopts the next prompt as its objective after entering goal mode.
+// Switching to normal or plan mode clears the goal.
 const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
+
+const reasonixMethodSessionStatus = "_reasonix.io/session/status"
+
+// Reasonix publishes its starting status before SetGoal stores the objective.
+// Read the native status because another notification may not arrive until the model responds.
+func (a *ReasonixAgent) confirmReasonixGoal(sessionID, objective string) error {
+	expires := time.Now().Add(min(a.APITimeout(), 5*time.Second))
+	deadline := time.NewTimer(time.Until(expires))
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		a.goalStatusMu.Lock()
+		revision := a.goalStatusRevision
+		a.goalStatusMu.Unlock()
+		var raw json.RawMessage
+		err := a.withSessionID(func(current string) error {
+			if current != sessionID {
+				return ErrContextClearCancelled
+			}
+			params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+			if err != nil {
+				return err
+			}
+			remaining := time.Until(expires)
+			if remaining <= 0 {
+				return ErrDeliveryUncertain
+			}
+			raw, err = a.sendRequest(reasonixMethodSessionStatus, params, remaining)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		var status reasonixStatusUpdate
+		if err := json.Unmarshal(raw, &status); err != nil {
+			return fmt.Errorf("read Reasonix goal status: %w", err)
+		}
+		if status.SessionID != sessionID || status.Goal == nil || status.Goal.Status == "" {
+			return fmt.Errorf("the Reasonix goal status is invalid")
+		}
+		a.goalStatusMu.Lock()
+		current := revision == a.goalStatusRevision && a.isCurrentACPSession(sessionID)
+		if current && status.Goal.Objective != "" {
+			if status.Goal.Objective != objective {
+				a.goalStatusMu.Unlock()
+				return fmt.Errorf("the Reasonix goal objective differs from the request")
+			}
+			a.applyReasonixGoal(status.Goal)
+			a.goalStatusRevision++
+			a.goalStatusMu.Unlock()
+			return nil
+		}
+		a.goalStatusMu.Unlock()
+		if current && status.Mode != contracts.ReasonixModeGoal {
+			return fmt.Errorf("the Reasonix goal changed before Set completed")
+		}
+		select {
+		case <-a.ctx.Done():
+			return a.ctx.Err()
+		case <-deadline.C:
+			return ErrDeliveryUncertain
+		case <-ticker.C:
+		}
+	}
+}
 
 // Reasonix's own goal status words, as they reach the WIRE.
 //
@@ -51,6 +180,7 @@ const (
 
 type reasonixStatusUpdate struct {
 	SessionID string `json:"sessionId"`
+	Mode      string `json:"mode"`
 	Status    *struct {
 		Goal *reasonixGoal `json:"goal"`
 	} `json:"status"`
@@ -92,23 +222,11 @@ func reasonixGoalStatus(wire string) GoalStatus {
 	// They are listed rather than left to the default so the vocabulary this
 	// build knows is visible, and an unrecognized word still reads as blocked --
 	// a state LeapMux cannot understand is one it must not offer Pause for.
-	case reasonixGoalStatusBlocked, reasonixGoalStatusCancelled, reasonixGoalStatusFailed:
+	case reasonixGoalStatusNone, reasonixGoalStatusBlocked, reasonixGoalStatusCancelled, reasonixGoalStatusFailed:
 		return GoalStatusBlocked
 	default:
 		return GoalStatusBlocked
 	}
-}
-
-// handleExtraMethod claims Reasonix's own notification namespace.
-//
-// It returns true for every `_reasonix.io/` method so the shared ACP reader
-// stops treating them as unknown, and false for anything else.
-func (a *ReasonixAgent) handleExtraMethod(line *parsedLine) bool {
-	if line.Method != reasonixMethodStatusUpdate {
-		return false
-	}
-	a.handleReasonixStatusUpdate(line.Params)
-	return true
 }
 
 func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
@@ -120,6 +238,8 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 		slog.Warn("reasonix status_update unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
+	a.goalStatusMu.Lock()
+	defer a.goalStatusMu.Unlock()
 	// The status bus is not per-connection by construction, and ClearContext
 	// mints a NEW sessionId. Without this check a notification still in flight
 	// for the old session would be applied to the new one, and a goal the user
@@ -131,10 +251,17 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 	if update.Status != nil && update.Status.Goal != nil {
 		goal = update.Status.Goal
 	}
-	if goal == nil {
+	a.goalStatusRevision++
+	a.applyReasonixGoal(goal)
+}
+
+func (a *ReasonixAgent) applyReasonixGoal(goal *reasonixGoal) {
+	if goal == nil || goal.Status == "" {
 		return
 	}
-	if goal.Status == "" || goal.Status == reasonixGoalStatusNone {
+	// The full snapshot omits the objective after Clear. A previous turn can
+	// still supply a cancelled or failed status through Reasonix's telemetry override.
+	if strings.TrimSpace(goal.Objective) == "" {
 		// Not a snapshot, for the reason the upsert below is not one: Reasonix
 		// reports a change only by restating its whole status, so marking this
 		// a restatement would silence every Reasonix goal removal.

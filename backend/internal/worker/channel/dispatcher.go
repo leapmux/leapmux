@@ -43,6 +43,11 @@ type errorQueuer interface {
 	QueueError(code int32, message string)
 }
 
+// Prepare the stream before dispatch can race a client update or cancellation.
+type streamPreparer interface {
+	prepareStream() (releaseUnbound func(), ok bool)
+}
+
 // HandlerFunc is the signature for an inner RPC method handler.
 //
 // `caller` carries the identity the Hub established AND the grant that identity
@@ -241,10 +246,26 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, caller Caller, req *leap
 		}
 		return
 	}
+	var releaseUnbound func()
+	if h.streaming {
+		if preparer, supports := w.(streamPreparer); supports {
+			var prepared bool
+			releaseUnbound, prepared = preparer.prepareStream()
+			if !prepared {
+				if queue, ok := w.(errorQueuer); ok {
+					queue.QueueError(int32(codes.FailedPrecondition), "the stream request is closed or its ID is already in use")
+				}
+				return
+			}
+		}
+	}
 	if h.tracked && d.cleanup != nil {
 		d.cleanup.Add(1)
 	}
 	go func() {
+		if releaseUnbound != nil {
+			defer releaseUnbound()
+		}
 		if h.tracked && d.cleanup != nil {
 			defer d.cleanup.Done()
 		}
@@ -268,9 +289,7 @@ func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.I
 				"stack", string(debug.Stack()),
 			)
 			if h.streaming {
-				// The caller registered this correlation id as a stream, so
-				// it has no pending request an InnerRpcResponse could
-				// resolve; report in-band instead.
+				// Report handler failures with the stream's normal response envelope.
 				_ = w.SendStream(&leapmuxv1.InnerStreamMessage{
 					IsError:      true,
 					ErrorCode:    int32(codes.Internal),

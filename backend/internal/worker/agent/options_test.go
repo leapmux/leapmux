@@ -507,8 +507,8 @@ func TestIsEffortConfigOption(t *testing.T) {
 
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "x", Category: "thought_level"}), "category match")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: OptionIDEffort}), "OpenCode/Kilo effort id (no category)")
-	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "reasoning_effort"}), "Copilot effort id (no category)")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "thinking_effort"}), "Goose effort id (no category)")
+	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "reasoning_effort"}), "an id no ACP provider claims is not matched")
 	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "allow_all"}), "a non-effort config option is not matched")
 	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "model", Category: "model"}), "the model channel is not effort")
 }
@@ -520,7 +520,7 @@ func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
 	t.Parallel()
 
 	grp := buildOptionGroup(acpConfigOption{
-		ID: "reasoning_effort", Name: "Reasoning Effort", // no Category
+		ID: GooseConfigThinkingEffort, Name: "Thinking Effort", // no Category
 		Options: []acpConfigOptionValue{{Value: "low"}, {Value: "medium"}, {Value: "high"}},
 	}, "high")
 	var order []string

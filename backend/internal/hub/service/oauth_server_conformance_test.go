@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
@@ -40,7 +41,7 @@ func seedTestApp(t *testing.T, env *apiAuthEnv, p store.CreateOAuthClientParams)
 	if p.GrantTypes == "" {
 		p.GrantTypes = "authorization_code refresh_token"
 	}
-	if p.RegistrationSource == "" {
+	if p.RegistrationSource == leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_UNSPECIFIED {
 		p.RegistrationSource = store.OAuthClientSourceAdmin
 	}
 	_, err := env.store.OAuthClients().Create(context.Background(), p)

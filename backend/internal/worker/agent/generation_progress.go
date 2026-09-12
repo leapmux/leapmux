@@ -311,7 +311,7 @@ type modelProgressResetTranscript struct {
 	progress ProgressServices
 }
 
-func (s modelProgressResetTranscript) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+func (s modelProgressResetTranscript) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
 	if source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && span.ParentSpanID == "" {
 		s.progress.ReportProgress(ResetModelProgress())
 	}
@@ -326,7 +326,7 @@ func (s modelProgressResetTranscript) PersistNotification(source leapmuxv1.Messa
 	return broadcast, err
 }
 
-func (s modelProgressResetTranscript) PersistTurnEnd(content []byte, span SpanInfo) error {
+func (s modelProgressResetTranscript) PersistTurnEnd(content MessageContent, span SpanInfo) error {
 	s.progress.ReportProgress(ResetModelProgress())
 	return s.TranscriptServices.PersistTurnEnd(content, span)
 }
@@ -336,9 +336,9 @@ type modelProgressResetControl struct {
 	progress ProgressServices
 }
 
-func (s modelProgressResetControl) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
+func (s modelProgressResetControl) PublishControlRequest(request ControlRequest) error {
 	s.progress.ReportProgress(ResetModelProgress())
-	s.ControlServices.BroadcastControlRequest(requestID, payload, claimToken)
+	return s.ControlServices.PublishControlRequest(request)
 }
 
 type modelProgressResetChildren struct{ ChildServices }
@@ -353,10 +353,10 @@ func (s modelProgressResetChildren) PersistChildMessage(
 	content []byte,
 	span SpanInfo,
 ) error {
-	return s.ChildSink(childAgentID).PersistMessage(source, content, span)
+	return s.ChildSink(childAgentID).PersistMessage(source, MessageContent{Original: content}, span)
 }
 
-func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error {
+func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error {
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 

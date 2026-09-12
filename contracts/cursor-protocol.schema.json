@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cursor-protocol.schema.json",
+  "title": "Cursor ACP tool vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "toolNames"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "toolNames": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  }
+}

@@ -148,6 +148,11 @@ type StoredItem struct {
 	UpdatedAt        string
 }
 
+// requiresContextReplacement identifies a plan approval that replaces the blocked provider turn.
+func (item StoredItem) requiresContextReplacement() bool {
+	return item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION && item.PrepareContext
+}
+
 type DispatchItem struct {
 	StoredItem
 	Attachments []Attachment

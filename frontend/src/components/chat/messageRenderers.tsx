@@ -1,17 +1,17 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
+import type { MessageRenderSources } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
-import type { ControlResponseDeriver } from './persistedControlResponse'
+import type { ControlResponseDeriver, PersistedControlResponse } from './persistedControlResponse'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { TodoItem } from '~/stores/chatTodos'
-import type { ToolProgressEntry } from '~/stores/chatToolProgress'
+import Braces from 'lucide-solid/icons/braces'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
@@ -19,21 +19,27 @@ import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { inlineFlex } from '~/styles/shared.css'
-import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
+import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { renderMarkdownForContext } from './markdownRendering'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
-import { CONTROL_RESPONSE_FEEDBACK_LEAD, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
+import { CONTROL_RESPONSE_FEEDBACK_LEAD, resolveControlResponseDisplay } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
+import { ToolStatusHeader } from './results/ToolStatusHeader'
+import { toolOutcomeNote } from './toolOutcome'
+import { toolOutcomeLabel } from './toolOutcomeLabel'
 import {
   toolInputText,
+  toolResultContentPre,
   toolUseIcon,
 } from './toolStyles.css'
 import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
+import { ToolUseLayout } from './widgets/ToolUseLayout'
 
 export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHighlighting } from './markdownRendering'
 
@@ -51,8 +57,16 @@ const logger = createLogger('messageRenderers')
 export interface RenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
-  /** O(1) live-todo lookup for this bubble's agent (resolves subjects for status-only TaskUpdate patches). */
-  getTodoById?: (taskId: string) => TodoItem | undefined
+  /** Original, supplemental, linked, and live data resolved for this row. */
+  sources?: MessageRenderSources
+  /** The enclosing renderer displays the retained tool completion. */
+  completionHeader?: boolean
+  /**
+   * The agent sent no result for this tool call, and LeapMux says so in a note of
+   * its own. A result renderer must draw NO body: an empty body reads as "the tool
+   * returned nothing", which asserts something the agent never reported.
+   */
+  resultAbsent?: boolean
   workingDir?: string
   /** Worker's home directory for tilde (~) path simplification. */
   homeDir?: string
@@ -75,10 +89,6 @@ export interface RenderContext {
    * (isolated tests/previews), where each renderer falls back to its own literal.
    */
   expandUiKey?: MessageUiKey
-  /** Pre-parsed tool_use message for tool_result bubbles to inspect (cached by the store). */
-  toolUseParsed?: ParsedMessageContent
-  /** Pre-parsed tool_result message for tool_use bubbles to inspect (cached by the store). */
-  toolResultParsed?: ParsedMessageContent
   /** Per-row/content-version pure render-derivation cache shared by visible + premeasure mounts. */
   renderCache?: MessageRenderCache
   /** Color index assigned to this message's span (−1 = no color). */
@@ -87,17 +97,10 @@ export interface RenderContext {
   spanType?: string
   /** Current message span id. */
   spanId?: string
-  /**
-   * Live progress for THIS row's still-running tool (elapsed time, subagent
-   * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
-   * reading it here would subscribe the whole renderer to a value that changes
-   * while the row is on screen, and re-rendering the row drops any text
-   * selection the user holds across it. Only the leaf that displays it
-   * calls it -- see ToolRunningBadge.
-   */
-  toolProgress?: () => ToolProgressEntry | undefined
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
+  /** The message host supplies an outer toolbar with shared result actions. */
+  hasOuterToolbar?: boolean
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: MessageUiKey, value: boolean) => void
   /**
@@ -124,16 +127,6 @@ export interface RenderContext {
    * scrolled in (see createWorkerPriorityGate).
    */
   rowOffscreen?: () => boolean
-  /**
-   * Resolve a provider registry row key to its background-task row, so a tool
-   * card that identifies an agent by id can link to that subagent's transcript.
-   *
-   * The key is `BackgroundTaskItem.rowKey` (the proto item calls it `id`) — the
-   * same string Claude's SendMessage carries in `to`. Returns undefined when the
-   * key identifies no row of this root, which is the answer for every recipient
-   * outside this session's subagents.
-   */
-  resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /**
@@ -325,13 +318,10 @@ export function UserContentMessage(props: { parsed: unknown, context?: RenderCon
  * its raw-JSON safety net.
  */
 export function renderControlResponseRow(
-  parsed: unknown,
+  cr: PersistedControlResponse,
   context: RenderContext | undefined,
   display: ControlResponseDeriver | undefined,
-): JSX.Element | null {
-  const cr = parsePersistedControlResponse(parsed)
-  if (!cr)
-    return null
+): JSX.Element {
   const d = resolveControlResponseDisplay(cr, display)
   if (d.kind === 'feedback') {
     return (
@@ -343,7 +333,64 @@ export function renderControlResponseRow(
       </div>
     )
   }
-  return <div class={`${controlResponseMessage} ${controlResponseLabel}`}>{d.text}</div>
+  return <div class={`${controlResponseMessage} ${controlResponseLabel}`} data-testid="control-response-text">{d.text}</div>
+}
+
+/**
+ * The row that produced no display.
+ *
+ * Three things arrive here: a row no plugin claimed, a row a plugin claimed and then
+ * drew nothing for -- a `settings_changed` notification with no changes in it -- and a
+ * row whose renderer threw. The first two are one statement to the reader, because
+ * LeapMux has nothing to show either way. The third is a defect in LeapMux, and calling
+ * that "no display" would send the next reader hunting the provider instead.
+ *
+ * A live census found the first case: GitHub Copilot's `session.task_complete` reached
+ * here, and the reader saw the whole JSON-RPC frame as a paragraph of text.
+ *
+ * The frame itself stays, because it is the only content this row has and hiding it
+ * would lose whatever the provider did send. It starts COLLAPSED: an unrecognized row
+ * is nearly always a frame the transcript has no use for, and the reader who wants it
+ * is one click away. The toolbar's own Copy JSON action holds the same bytes.
+ *
+ * A plugin that can name its own unrecognized rows does not need this: `renderMessage`
+ * already receives the `unknown` kind, so a provider renders its own card there and
+ * never reaches this one. This card therefore reads NOTHING out of the payload, which
+ * keeps every provider's wire shape inside that provider's plugin.
+ *
+ * It lives HERE rather than in `results/`, where the other row bodies live, because
+ * `renderMessageContent` below must import it: every module under `results/` reaches
+ * this one again through `toolRenderers`, and `src/test-support/noImportCycles.test.ts`
+ * fails the suite for that cycle. `ToolUseLayout` comes from its own widget module for
+ * the same reason -- the `toolRenderers` re-export would close the cycle.
+ */
+export function UnrecognizedMessage(props: {
+  payload: unknown
+  /** True when a renderer threw for this row, rather than no renderer claiming it. */
+  renderFailed?: boolean
+  context?: RenderContext
+}): JSX.Element {
+  const text = (): string => typeof props.payload === 'string' ? props.payload : prettifyJson(props.payload)
+  const title = (): string => props.renderFailed
+    ? 'LeapMux could not render this row'
+    : 'LeapMux has no display for this row'
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.UNRECOGNIZED_ROW)
+
+  // The layout gets NO context on purpose. It would draw a second Copy JSON action from
+  // it, and the message host already supplies that one in the bubble's own toolbar --
+  // two controls with one test id, and the reader with two buttons that do one thing.
+  // The expand control stays, because the layout draws that from `onToggleExpand`.
+  return (
+    <ToolUseLayout
+      icon={Braces}
+      toolName="Unrecognized row"
+      title={title()}
+      expanded={expanded()}
+      onToggleExpand={() => setExpanded(v => !v)}
+    >
+      <div class={toolResultContentPre}>{text()}</div>
+    </ToolUseLayout>
+  )
 }
 
 /**
@@ -356,8 +403,8 @@ export function renderControlResponseRow(
  * UNSPECIFIED/unregistered provider yields no plugin (matching
  * `classifyMessage`, which routes such a message to `unsupported_provider`).
  *
- * Returns a raw-text `<span>` when no plugin handles the message at all
- * (or when JSON parsing fails) — the absolute last-resort safety net.
+ * Returns an `UnrecognizedMessage` card when no plugin handles the message at all,
+ * when JSON parsing fails, or when a renderer throws — the last-resort safety net.
  */
 export function renderMessageContent(
   parsedOrRawJson: unknown,
@@ -366,7 +413,11 @@ export function renderMessageContent(
   agentProvider?: AgentProvider,
   messageCompletion?: MessageCompletion,
 ): JSX.Element {
+  let renderFailed = false
   try {
+    if (category?.kind === 'control_response')
+      return renderControlResponseRow(category.response, context, pluginFor(agentProvider)?.controlResponseDisplay)
+
     const parsed = typeof parsedOrRawJson === 'string'
       ? JSON.parse(parsedOrRawJson)
       : parsedOrRawJson
@@ -376,7 +427,11 @@ export function renderMessageContent(
       const text = appendCompletionMarker(assembled.text, messageCompletionFromProto(messageCompletion) ?? assembled.completion)
       switch (assembled.kind) {
         case 'reasoning':
-          return <ThinkingBubble text={text} icon={Brain} label="Thinking" stateKey={MESSAGE_UI_KEY.THINKING} context={context} />
+          // ThinkingMessage, not a ThinkingBubble of its own: it already resolves the
+          // expand key from the shared classification mapper, which is the key
+          // ChatView premeasures the row under. A second spelling here drifted from
+          // that once already, and Codex resolves to CODEX_REASONING, not THINKING.
+          return <ThinkingMessage text={text} context={context} />
         case 'plan':
           return <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText={text} context={context} />
         case 'text':
@@ -390,28 +445,51 @@ export function renderMessageContent(
     // Claude's renderers (classifyMessage routes such messages to
     // `unsupported_provider`, which MessageBubble surfaces explicitly).
     const plugin = pluginFor(agentProvider)
-    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
+    const completion = messageCompletionFromProto(messageCompletion) ?? messageCompletionFromProto(context?.sources?.current()?.completion)
+    const toolCompletion = (category?.kind === 'tool_use' || category?.kind === 'tool_result')
+      && (completion === 'interrupted' || completion === 'error')
+    // The outcome note is LeapMux's own statement about a tool row, so it is drawn
+    // here rather than by any plugin, and the plugin is told to draw no result body
+    // of its own.
+    const note = toolOutcomeNote(context?.sources?.current()?.messageMetadata)
+    const contextOverrides: PropertyDescriptorMap = {}
+    if (toolCompletion)
+      contextOverrides.completionHeader = { value: true }
+    if (note !== null)
+      contextOverrides.resultAbsent = { value: true }
+    const providerContext = Object.keys(contextOverrides).length === 0
+      ? context
+      : Object.create(context ?? null, contextOverrides) as RenderContext
+    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, providerContext) ?? null
     if (result !== null) {
-      const marker = completionMarker(messageCompletionFromProto(messageCompletion) ?? parseProviderMessageCompletion(parsed))
+      // A tool row that is interrupted or failed already says so in its header, so
+      // only the note rides inside that header -- the truncation marker would repeat
+      // what the header states.
+      const withNote = note === null
+        ? result
+        : (
+            <>
+              {result}
+              <div role="note">{note}</div>
+            </>
+          )
+      if (toolCompletion) {
+        return (
+          <ToolStatusHeader icon={CircleAlert} title={toolOutcomeLabel(completion === 'interrupted' ? 'interrupted' : 'failed')} dataToolMessage>
+            {withNote}
+          </ToolStatusHeader>
+        )
+      }
+      const marker = completionMarker(completion)
       if (marker) {
         return (
           <>
-            {result}
+            {withNote}
             <div role="note">{marker}</div>
           </>
         )
       }
-      return result
-    }
-
-    // A persisted control-response row is provider-neutral in the renderer layer: every plugin's
-    // classify maps it to `control_response`, and the plugin's controlResponseDisplay (when set)
-    // supplies the per-provider label. Dispatched here -- once -- rather than in each plugin's
-    // renderMessage, so a plugin only implements the derivation, not the markup.
-    if (category?.kind === 'control_response') {
-      const row = renderControlResponseRow(parsed, context, plugin?.controlResponseDisplay)
-      if (row !== null)
-        return row
+      return withNote
     }
 
     // A user row is provider-neutral in the renderer layer for the same reason it
@@ -423,8 +501,14 @@ export function renderMessageContent(
     if (category?.kind === 'user_content')
       return <UserContentMessage parsed={parsed} context={context} />
   }
-  catch (err) { logger.warn('Failed to render message content:', err) }
-  const fallback = <span>{typeof parsedOrRawJson === 'string' ? parsedOrRawJson : JSON.stringify(parsedOrRawJson)}</span>
+  catch (err) {
+    logger.warn('Failed to render message content:', err)
+    renderFailed = true
+  }
+  // The row reached no renderer, so it says so and keeps its frame in a collapsed body.
+  // It used to print the frame itself as a paragraph of text, which is the raw-JSON row
+  // the shared standard forbids -- a live census caught one on GitHub Copilot.
+  const fallback = <UnrecognizedMessage payload={parsedOrRawJson} renderFailed={renderFailed} context={context} />
   const marker = completionMarker(messageCompletionFromProto(messageCompletion))
   return marker
     ? (

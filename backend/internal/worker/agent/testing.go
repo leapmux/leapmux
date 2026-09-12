@@ -16,6 +16,22 @@ func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink Provide
 	return m.startAgentWith(ctx, opts, sink, mockStartForTest, false)
 }
 
+// MockStartSilentAgent registers a mock agent that reads stdin and writes
+// NOTHING back.
+//
+// MockStartAgent's echo is the reason it exists. That mock returns every frame
+// the worker writes, so the worker's own interrupt control_request comes back as
+// a control_request FROM the agent and lands as a pending permission prompt. A
+// test that observes the derived activity state then reads WAITING_FOR_USER for
+// a prompt no agent ever asked -- an artifact of the harness, and one that
+// arrives asynchronously, so it cannot even be waited out.
+//
+// Use this one to observe state, and MockStartAgent to observe what the worker
+// wrote to stdin.
+func (m *Manager) MockStartSilentAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
+	return m.startAgentWith(ctx, opts, sink, silentMockStartForTest, false)
+}
+
 // mockStartForTest spawns a plain "cat" process and wires it up as a
 // ClaudeCodeAgent. Unlike the in-package spawnMockClaudeAgent (which runs
 // TestHelperProcess to simulate the Claude Code protocol), this helper is
@@ -23,6 +39,16 @@ func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink Provide
 func mockStartForTest(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "cat")
+	cmd.Env = os.Environ()
+	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink)
+}
+
+// silentMockStartForTest is mockStartForTest with the echo removed: the process
+// still drains stdin, so every write the worker makes succeeds, and it produces
+// no output for the reader loop to interpret.
+func silentMockStartForTest(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null")
 	cmd.Env = os.Environ()
 	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink)
 }
@@ -62,6 +88,7 @@ func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *ex
 		// in the normalized alias space" invariant (e.g. a stored "opus" becomes
 		// "opus[1m]") that the real launch path establishes.
 		model:          normalizeClaudeCodeModel(opts.Model()),
+		sessionID:      opts.ResumeSessionID,
 		workingDir:     opts.WorkingDir,
 		homeDir:        opts.HomeDir,
 		sink:           sink,

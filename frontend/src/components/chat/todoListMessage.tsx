@@ -6,7 +6,8 @@ import { Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { todosToMarkdown } from '~/lib/messageParser'
-import { EmptyTodoLayout, ToolUseLayout } from './toolRenderers'
+import { toolInputSummary } from './toolStyles.css'
+import { ToolMessageLayout } from './widgets/ToolMessageLayout'
 
 /**
  * Provider-neutral source for todo-list-style tool messages
@@ -19,8 +20,14 @@ export interface TodoListSource {
   /** Header title (e.g. "5 tasks", "Plan", "Plan Update — fix login bug"). */
   title: string
   todos: TodoItem[]
+  emptyText?: string
   /** Whether the body section gets a left border. Default: true. */
   bordered?: boolean
+}
+
+/** Render the checklist or its explicit empty state. */
+export function TodoListBody(props: { todos: TodoItem[], emptyText?: string }): JSX.Element {
+  return <Show when={props.todos.length > 0} fallback={<div class={toolInputSummary}>{props.emptyText ?? 'To-do list cleared'}</div>}><TodoList todos={props.todos} variant="full" /></Show>
 }
 
 /**
@@ -31,6 +38,9 @@ export interface TodoListSource {
 export function TodoListMessage(props: {
   source: TodoListSource
   context?: RenderContext
+  role?: 'request' | 'result'
+  hasRequest?: boolean
+  showBody?: boolean
 }): JSX.Element {
   const todos = () => props.source.todos
   const md = () => todosToMarkdown(todos())
@@ -39,27 +49,22 @@ export function TodoListMessage(props: {
   const reply = () => props.context?.onReply ? onReplyClick : undefined
 
   return (
-    <Show
-      when={todos().length > 0}
-      fallback={<EmptyTodoLayout toolName={props.source.toolName} context={props.context} />}
+    <ToolMessageLayout
+      role={props.role ?? 'request'}
+      hasRequest={props.hasRequest}
+      icon={ListTodo}
+      toolName={props.source.toolName}
+      title={todos().length > 0 ? props.source.title : 'To-do list'}
+      alwaysVisible={true}
+      bordered={props.source.bordered}
+      context={props.context}
+      headerActions={{
+        onReply: reply(),
+        onCopyMarkdown: copy,
+        markdownCopied: copied(),
+      }}
     >
-      <ToolUseLayout
-        icon={ListTodo}
-        toolName={props.source.toolName}
-        title={props.source.title}
-        alwaysVisible={true}
-        bordered={props.source.bordered}
-        context={props.context}
-        headerActions={{
-          onReply: reply(),
-          onCopyMarkdown: copy,
-          markdownCopied: copied(),
-        }}
-      >
-        {/* `full`: a tool card stretches to the tile, so it has the room to
-            show a whole to-do. The sidebar section and the popover do not. */}
-        <TodoList todos={todos()} variant="full" />
-      </ToolUseLayout>
-    </Show>
+      <Show when={props.showBody !== false}><TodoListBody todos={todos()} emptyText={props.source.emptyText} /></Show>
+    </ToolMessageLayout>
   )
 }

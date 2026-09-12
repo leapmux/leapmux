@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -20,7 +21,7 @@ var _ store.WebAuthnSessionStore = (*webAuthnSessionStore)(nil)
 func fromDBWebAuthnSession(s gendb.WebauthnSession) store.WebAuthnSession {
 	out := store.WebAuthnSession{
 		ID:          s.ID,
-		Kind:        s.Kind,
+		Kind:        leapmuxv1.WebAuthnSessionKind(s.Kind),
 		PayloadJSON: s.PayloadJson,
 		SessionData: s.SessionData,
 		ExpiresAt:   s.ExpiresAt.Time,
@@ -43,7 +44,7 @@ func (s *webAuthnSessionStore) Create(ctx context.Context, p store.CreateWebAuth
 	}
 	return mapErr(s.conn.q.CreateWebAuthnSession(ctx, gendb.CreateWebAuthnSessionParams{
 		ID:          p.ID,
-		Kind:        p.Kind,
+		Kind:        int64(p.Kind),
 		UserID:      userID,
 		PayloadJson: p.PayloadJSON,
 		SessionData: p.SessionData,
@@ -65,10 +66,10 @@ func (s *webAuthnSessionStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteWebAuthnSession(ctx, id))
 }
 
-func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id, kind string, now time.Time) (int64, error) {
+func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id string, kind leapmuxv1.WebAuthnSessionKind, now time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.ConsumeWebAuthnCeremonySession(ctx, gendb.ConsumeWebAuthnCeremonySessionParams{
 		ID:   id,
-		Kind: kind,
+		Kind: int64(kind),
 		Now:  sqltime.NewSQLiteTime(now),
 	}))
 }
@@ -84,13 +85,13 @@ func (s *webAuthnSessionStore) DeleteAllByUser(ctx context.Context, userID strin
 	}))
 }
 
-func (s *webAuthnSessionStore) DeleteByUserAndKind(ctx context.Context, userID, kind string) error {
+func (s *webAuthnSessionStore) DeleteByUserAndKind(ctx context.Context, userID string, kind leapmuxv1.WebAuthnSessionKind) error {
 	owner, ok := userid.New(userID)
 	if !ok {
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteWebAuthnSessionsByUserAndKind(ctx, gendb.DeleteWebAuthnSessionsByUserAndKindParams{
 		UserID: sql.NullString{String: owner.String(), Valid: true},
-		Kind:   kind,
+		Kind:   int64(kind),
 	}))
 }

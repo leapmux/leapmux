@@ -1,6 +1,8 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { testMessageSources } from '~/test-support/messageRenderSources'
+import { toolBodyContent, toolUseHeader } from '../../../toolStyles.css'
 import { ZCODE_DISPLAY } from '../protocol'
 import { ZCodeAssistantMessage } from './assistantMessage'
 import { ZCodeToolExecutionRenderer } from './toolExecution'
@@ -43,6 +45,18 @@ describe('zcode assistant renderer', () => {
 })
 
 describe('zcode tool execution renderer', () => {
+  it('shows the grep path below the pattern without repeating the arguments as JSON', () => {
+    const { container } = render(() => <ZCodeToolExecutionRenderer parsed={scheduled(ZCODE_TOOL.Grep, { pattern: 'answer', path: '/project/src' })} context={{ workingDir: '/project' }} />)
+    expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('"answer"')
+    expect(container.querySelector(`.${toolBodyContent}`)?.textContent).toBe('src')
+  })
+
+  it('shows a glob header without a repeated JSON body', () => {
+    const { container } = render(() => <ZCodeToolExecutionRenderer parsed={scheduled(ZCODE_TOOL.Glob, { pattern: '*.ts', path: '/project/src' })} context={{ workingDir: '/project' }} />)
+    expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('*.ts src')
+    expect(container.querySelector(`.${toolBodyContent}`)).toBeNull()
+  })
+
   it('renders a Bash command in the title', () => {
     const { container } = render(() => (
       <ZCodeToolExecutionRenderer parsed={scheduled(ZCODE_TOOL.Bash, { command: 'ls -la /tmp' })} />
@@ -61,20 +75,18 @@ describe('zcode tool execution renderer', () => {
     ))
     expect(container.textContent).toContain('/tmp/a.ts')
     // `limit` is a line COUNT, so the inclusive last line is offset + limit - 1.
-    expect(container.textContent).toContain('10-14')
+    expect(container.textContent).toContain('10–14')
   })
 
   it('renders a Write and an Edit with the file path', () => {
     const { container: write } = render(() => (
       <ZCodeToolExecutionRenderer parsed={scheduled(ZCODE_TOOL.Write, { file_path: '/tmp/new.ts' })} />
     ))
-    expect(write.textContent).toContain('Write')
     expect(write.textContent).toContain('/tmp/new.ts')
 
     const { container: edit } = render(() => (
       <ZCodeToolExecutionRenderer parsed={scheduled(ZCODE_TOOL.Edit, { file_path: '/tmp/a.ts' })} />
     ))
-    expect(edit.textContent).toContain('Edit')
     expect(edit.textContent).toContain('/tmp/a.ts')
   })
 
@@ -86,7 +98,8 @@ describe('zcode tool execution renderer', () => {
       })}
       />
     ))
-    expect(container.textContent).toContain('Agent: check tests')
+    expect(container.textContent).toContain('check tests')
+    expect(container.textContent).not.toContain('Agent: check tests')
     expect(container.textContent).toContain('run the failing ones')
   })
 
@@ -175,14 +188,11 @@ describe('zcode tool result renderer', () => {
             },
           },
         })}
-        context={{
-          spanType: ZCODE_TOOL.Edit,
-          toolUseParsed: parsedOf(scheduled(ZCODE_TOOL.Edit, {
-            file_path: '/tmp/a.ts',
-            old_string: 'wouldHaveBeenOld',
-            new_string: 'wouldHaveBeenNew',
-          })),
-        }}
+        context={{ spanType: ZCODE_TOOL.Edit, sources: testMessageSources({ request: () => (parsedOf(scheduled(ZCODE_TOOL.Edit, {
+          file_path: '/tmp/a.ts',
+          old_string: 'wouldHaveBeenOld',
+          new_string: 'wouldHaveBeenNew',
+        }))) }) }}
       />
     ))
     expect(container.textContent).toContain('old_string not found')

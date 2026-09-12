@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -497,7 +498,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 // seedApp registers one app. An EMPTY owner is hub-wide, which is the same
 // convention the column carries.
-func seedApp(t *testing.T, st store.Store, name, owner, source string) string {
+func seedApp(t *testing.T, st store.Store, name, owner string, source leapmuxv1.AppRegistrationSource) string {
 	t.Helper()
 	clientID := id.Generate()
 	_, err := st.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{

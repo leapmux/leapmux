@@ -35,7 +35,7 @@ func TestStreamRegistry_BindDeliver(t *testing.T) {
 	release := r.bind(7, ctrl)
 	defer release()
 
-	r.deliver(7, &leapmuxv1.InnerStreamRequest{Payload: []byte("hello")})
+	assertStreamDelivery(t, &r, 7, &leapmuxv1.InnerStreamRequest{Payload: []byte("hello")})
 	assert.Equal(t, int32(1), ctrl.frames.Load())
 	ctrl.mu.Lock()
 	assert.Equal(t, []byte("hello"), ctrl.last)
@@ -48,20 +48,20 @@ func TestStreamRegistry_DeliverCancel(t *testing.T) {
 	ctrl := &recordingController{}
 	_ = r.bind(3, ctrl)
 
-	r.deliver(3, &leapmuxv1.InnerStreamRequest{Cancel: true})
+	assertStreamDelivery(t, &r, 3, &leapmuxv1.InnerStreamRequest{Cancel: true})
 	assert.Equal(t, int32(1), ctrl.cancels.Load())
 	assert.Equal(t, int32(0), ctrl.frames.Load())
 
 	// Second cancel is a no-op (entry already removed).
-	r.deliver(3, &leapmuxv1.InnerStreamRequest{Cancel: true})
+	assertStreamDelivery(t, &r, 3, &leapmuxv1.InnerStreamRequest{Cancel: true})
 	assert.Equal(t, int32(1), ctrl.cancels.Load())
 }
 
 func TestStreamRegistry_UnboundDeliver(t *testing.T) {
 	var r streamRegistry
 	// Must neither panic nor call anything.
-	r.deliver(99, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
-	r.deliver(99, &leapmuxv1.InnerStreamRequest{Cancel: true})
+	assertStreamDelivery(t, &r, 99, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
+	assertStreamDelivery(t, &r, 99, &leapmuxv1.InnerStreamRequest{Cancel: true})
 }
 
 func TestStreamRegistry_ReleaseAll(t *testing.T) {
@@ -76,7 +76,7 @@ func TestStreamRegistry_ReleaseAll(t *testing.T) {
 	assert.Equal(t, int32(1), b.cancels.Load())
 
 	// Map emptied — further deliver is a no-op.
-	r.deliver(1, &leapmuxv1.InnerStreamRequest{Cancel: true})
+	assertStreamDelivery(t, &r, 1, &leapmuxv1.InnerStreamRequest{Cancel: true})
 	assert.Equal(t, int32(1), a.cancels.Load())
 }
 
@@ -87,7 +87,7 @@ func TestStreamRegistry_ReleaseWithoutCancel(t *testing.T) {
 	release()
 	assert.Equal(t, int32(0), ctrl.cancels.Load())
 
-	r.deliver(5, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
+	assertStreamDelivery(t, &r, 5, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
 	assert.Equal(t, int32(0), ctrl.frames.Load())
 }
 
@@ -105,7 +105,7 @@ func TestStreamRegistry_ConcurrentDeliverReleaseAll(t *testing.T) {
 	for i := range n {
 		go func(id uint64) {
 			defer wg.Done()
-			r.deliver(id, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
+			assertStreamDelivery(t, &r, id, &leapmuxv1.InnerStreamRequest{Payload: []byte("x")})
 		}(uint64(i + 1))
 	}
 	go func() {
@@ -118,5 +118,15 @@ func TestStreamRegistry_ConcurrentDeliverReleaseAll(t *testing.T) {
 	// also received a frame). Cancels must be exactly 1.
 	for i, c := range ctrls {
 		require.Equal(t, int32(1), c.cancels.Load(), "controller %d", i)
+	}
+}
+
+func assertStreamDelivery(t *testing.T, registry *streamRegistry, id uint64, frame *leapmuxv1.InnerStreamRequest) {
+	t.Helper()
+	cleanup, err := registry.deliver(id, frame)
+	assert.NoError(t, err)
+	assert.Nil(t, cleanup)
+	if cleanup != nil {
+		cleanup()
 	}
 }

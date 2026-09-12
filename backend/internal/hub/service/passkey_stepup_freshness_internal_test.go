@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -504,7 +505,7 @@ func TestFirstCredentialDurableIdentityNeedsAnAddress(t *testing.T) {
 	// other branch, so the narrowing left that route open.
 	linked := seed(t, "linked", "", false)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
-		ID: "gh", ProviderType: "github", Name: "GitHub", ClientID: "cid",
+		ID: "gh", ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB, Name: "GitHub", ClientID: "cid",
 		ClientSecret: []byte("secret"), Enabled: true,
 	}))
 	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{

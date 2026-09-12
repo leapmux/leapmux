@@ -1,0 +1,821 @@
+{
+  "_readme": "The Go and frontend resolvers must preserve the original event and accept only matching supplemental tool input.",
+  "cases": [
+    {
+      "name": "omitted input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "null input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": null
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "empty input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {}
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "explicit input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "original"
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "original",
+            "enabled": false,
+            "count": 0
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "invalid array input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": []
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": []
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "invalid numeric input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": 0
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": 0
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "absent supplement",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": null,
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "invalid supplement",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": [],
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "scalar supplement",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": "text",
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "different tool",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "other",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "different lifecycle",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "result",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "empty extra input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {}
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "invalid extra input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": []
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "different event",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "session.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "unrelated original",
+      "original": {
+        "type": "session.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        }
+      },
+      "expected": {
+        "type": "session.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "unrelated supplemental fields cannot replace original fields",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream"
+        },
+        "futureField": {
+          "keep": true
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          },
+          "toolName": "Other"
+        },
+        "futureField": {
+          "keep": false
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "toolName": "Bash",
+          "inputOmitted": true,
+          "inputRef": "model_stream",
+          "input": {
+            "command": "printf \"한글\"",
+            "enabled": false,
+            "count": 0
+          }
+        },
+        "futureField": {
+          "keep": true
+        }
+      }
+    },
+    {
+      "name": "partial plan input",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "allowedPrompts": []
+          }
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "plan": "# Stored plan",
+            "allowedPrompts": [
+              "changed"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "plan": "# Stored plan",
+            "allowedPrompts": []
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit empty and null fields",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "plan": "",
+            "enabled": false,
+            "count": 0,
+            "optional": null
+          }
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "plan": "changed",
+            "enabled": true,
+            "count": 1,
+            "optional": "changed",
+            "newField": "recovered"
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "plan": "",
+            "enabled": false,
+            "count": 0,
+            "optional": null,
+            "newField": "recovered"
+          }
+        }
+      }
+    },
+    {
+      "name": "nested input remains authoritative",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "options": {
+              "original": true
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "options": {
+              "added": true
+            },
+            "plan": "# Plan"
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "options": {
+              "original": true
+            },
+            "plan": "# Plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "own property keys",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "constructor": "original"
+          }
+        }
+      },
+      "supplemental": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "constructor": "changed",
+            "__proto__": {
+              "keep": true
+            },
+            "toString": "native"
+          }
+        }
+      },
+      "expected": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call",
+          "input": {
+            "constructor": "original",
+            "__proto__": {
+              "keep": true
+            },
+            "toString": "native"
+          }
+        }
+      }
+    }
+  ]
+}

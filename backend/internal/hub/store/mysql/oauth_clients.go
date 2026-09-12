@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -35,7 +36,7 @@ func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
 		Scopes:             c.Scopes,
 		GrantTypes:         c.GrantTypes,
 		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
+		RegistrationSource: leapmuxv1.AppRegistrationSource(c.RegistrationSource),
 		VerifiedAt:         c.VerifiedAt.Ptr(),
 		VerifiedBy:         c.VerifiedByUserID.String,
 		CreatedAt:          c.CreatedAt.Time,
@@ -57,7 +58,7 @@ func fromListRow(c gendb.ListOAuthClientsRow) store.OAuthClient {
 		Scopes:             c.Scopes,
 		GrantTypes:         c.GrantTypes,
 		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
+		RegistrationSource: leapmuxv1.AppRegistrationSource(c.RegistrationSource),
 		VerifiedAt:         c.VerifiedAt.Ptr(),
 		VerifiedBy:         c.VerifiedByUserID.String,
 		CreatedAt:          c.CreatedAt.Time,
@@ -86,7 +87,7 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 		Scopes:             p.Scopes,
 		GrantTypes:         p.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
-		RegistrationSource: p.RegistrationSource,
+		RegistrationSource: int16(p.RegistrationSource),
 		VerifiedAt:         sqltime.NewMySQLNullTime(p.VerifiedAt),
 		VerifiedByUserID:   sqlutil.NullNonEmpty(p.VerifiedBy),
 	})); err != nil {
@@ -113,7 +114,7 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 		IconBlob:           row.IconBlob,
 		IconMediaType:      row.IconMediaType,
 		VerifiedAt:         row.VerifiedAt.Ptr(),
-		RegistrationSource: row.RegistrationSource,
+		RegistrationSource: leapmuxv1.AppRegistrationSource(row.RegistrationSource),
 		RevokedAt:          row.RevokedAt.Ptr(),
 	}, nil
 }
@@ -127,7 +128,7 @@ func (s *oauthClientStore) UpsertBuiltIn(ctx context.Context, p store.UpsertBuil
 		Scopes:             p.Scopes,
 		GrantTypes:         p.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
-		RegistrationSource: p.RegistrationSource,
+		RegistrationSource: int16(p.RegistrationSource),
 		CreatedAt:          sqltime.NewMySQLTime(p.CreatedAt),
 		UpdatedAt:          sqltime.NewMySQLTime(p.UpdatedAt),
 	}))
@@ -159,6 +160,7 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
+		BuiltinSource:    int16(store.OAuthClientSourceBuiltin),
 		ClientID:         p.ClientID,
 		ClientName:       p.ClientName,
 		ClientUri:        p.ClientURI,
@@ -204,6 +206,7 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.SetOAuthClientIcon(ctx, gendb.SetOAuthClientIconParams{
+		BuiltinSource: int16(store.OAuthClientSourceBuiltin),
 		ClientID:      p.ClientID,
 		IconBlob:      p.IconBlob,
 		IconMediaType: p.IconMediaType,
@@ -232,6 +235,7 @@ func (s *oauthClientStore) Revoke(ctx context.Context, p store.OAuthClientOwners
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.RevokeOAuthClient(ctx, gendb.RevokeOAuthClientParams{
+		BuiltinSource: int16(store.OAuthClientSourceBuiltin),
 		ClientID:      p.ClientID,
 		CallerIsAdmin: p.CallerIsAdmin,
 		CallerUserID:  sql.NullString{String: owner, Valid: true},
@@ -271,6 +275,7 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 			return err
 		}
 		n, err := rowsAffected(q.DeleteOAuthClient(ctx, gendb.DeleteOAuthClientParams{
+			BuiltinSource: int16(store.OAuthClientSourceBuiltin),
 			ClientID:      p.ClientID,
 			CallerIsAdmin: p.CallerIsAdmin,
 			CallerUserID:  sql.NullString{String: owner, Valid: true},

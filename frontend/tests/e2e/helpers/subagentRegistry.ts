@@ -13,6 +13,7 @@
  * of the `:visible` rule as a source-level guard.
  */
 import type { Locator, Page } from '@playwright/test'
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
@@ -484,16 +485,15 @@ export async function countGoalTransitions(
 }
 
 /**
- * Call the worker's `ListAgents` RPC over the E2EE test channel. Returns null
- * while the channel is re-establishing (caller polls). Reads the full agent
- * info including parentAgentId / spawnSpanId / acceptsMessages.
+ * Read full agent information through the encrypted test channel.
+ * Return null after a failed read so the caller can wait for reconnection.
  */
 export async function listAgents(
   hubUrl: string,
   token: string,
   workerId: string,
   tabIds: string[],
-): Promise<Array<{ id: string, parentAgentId: string, spawnSpanId: string, acceptsMessages: boolean }> | null> {
+): Promise<AgentInfo[] | null> {
   const channel = await getTestChannel(hubUrl, token)
   try {
     const resp = await channel.callWorker(
@@ -503,14 +503,10 @@ export async function listAgents(
       ListAgentsResponseSchema,
       { tabIds },
     )
-    return (resp.agents ?? []).map(a => ({
-      id: a.id,
-      parentAgentId: a.parentAgentId,
-      spawnSpanId: a.spawnSpanId,
-      acceptsMessages: a.acceptsMessages,
-    }))
+    return resp.agents
   }
-  catch {
+  catch (error) {
+    console.warn('Could not list agents:', error instanceof Error ? error.message : typeof error)
     return null
   }
 }

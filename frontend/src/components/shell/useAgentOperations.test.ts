@@ -8,7 +8,7 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentActivityState, AgentInfoSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentProvider, ControlResponseState, SendControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
@@ -31,6 +31,7 @@ const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
+const mockUpdateAgentGoal = vi.fn()
 
 vi.mock('~/api/workerRpc', async importOriginal => ({
   ...await importOriginal<typeof import('~/api/workerRpc')>(),
@@ -40,6 +41,7 @@ vi.mock('~/api/workerRpc', async importOriginal => ({
   interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
+  updateAgentGoal: (...args: unknown[]) => mockUpdateAgentGoal(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -168,6 +170,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
 
 describe('useAgentOperations', () => {
   beforeEach(() => {
+    vi.mocked(workerRpc.sendControlResponse).mockResolvedValue(create(SendControlResponseResponseSchema, { state: ControlResponseState.COMPLETED }))
     mockOpenAgent.mockReset()
     mockListAvailableProviders.mockReset()
     mockListAvailableProviders.mockResolvedValue({ providers: [] })
@@ -1034,6 +1037,72 @@ describe('useAgentOperations', () => {
     const request = (requestId: string, claimToken?: string): ControlRequest =>
       ({ requestId, agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken })
 
+    it('sends plan settings separately and retains explicit empty and false values', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          const pending = request('plan', 'claim')
+          pending.payload = { request: { tool_name: 'ExitPlanMode' } }
+          const bytes = answer('plan')
+          await ops.handleControlResponse(pending, bytes, { planApproval: { permissionMode: '', clearContext: false } })
+          expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+            requestId: 'plan',
+            claimToken: 'claim',
+            content: bytes,
+            planApproval: { permissionMode: '', clearContext: false },
+          }))
+          expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
+          expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('clearContext')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('keeps a delivered request until its recording-only retry completes', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          const pending = request('r1', 'claim')
+          controlStore.addRequest('a1', pending)
+          vi.mocked(workerRpc.sendControlResponse).mockResolvedValueOnce(create(SendControlResponseResponseSchema, {
+            state: ControlResponseState.DELIVERED,
+            error: 'storage unavailable',
+          }))
+          await expect(ops.handleControlResponse(pending, answer('r1'))).rejects.toThrow('Could not save the response: storage unavailable')
+          expect(controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.DELIVERED)
+          await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(true)
+          expect(workerRpc.sendControlResponse).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
+            requestId: 'r1',
+            claimToken: 'claim',
+            recordOnly: true,
+            content: new Uint8Array(),
+          }))
+          expect(controlStore.getRequests('a1')).toEqual([])
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('retains a request when a status check finds no previous response', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          const pending = request('r1', 'claim')
+          controlStore.addRequest('a1', pending)
+          vi.mocked(workerRpc.sendControlResponse).mockResolvedValueOnce(create(SendControlResponseResponseSchema, { state: ControlResponseState.READY }))
+          await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(false)
+          expect(controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.READY)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('echoes the answered instance\'s per-instance claimToken so the worker dedups per instance', async () => {
       await createRoot(async (dispose) => {
         try {
@@ -1117,19 +1186,57 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('rejects after reporting a transport failure', async () => {
+    it('passes a transport failure to the request UI without a duplicate toast', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
           const failure = new Error('send failed')
           vi.mocked(workerRpc.sendControlResponse).mockRejectedValueOnce(failure)
-
+          const toastCount = mockShowWarnToast.mock.calls.length
           await expect(ops.handleControlResponse(request('r1'), answer('r1'))).rejects.toBe(failure)
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to send response', failure)
+          expect(mockShowWarnToast).toHaveBeenCalledTimes(toastCount)
         }
         finally {
           dispose()
         }
+      })
+    })
+  })
+
+  describe('a session goal the provider refuses', () => {
+    // A provider states its own reason for a refusal -- ZCode answers "Cannot manage
+    // goals while a prompt is running". The reader has to read it, and where they read
+    // it depends on which surface asked: the Set dialog stays open and has a slot for a
+    // refusal, while a verb from the card's menu has no dialog to land in. See RL-004.
+    it('propagates the refusal to the caller, so the Set dialog can state it', async () => {
+      await createRoot(async (dispose) => {
+        const { ops } = setup()
+        mockUpdateAgentGoal.mockRejectedValueOnce(new Error('Cannot manage goals while a prompt is running'))
+        await expect(ops.updateGoal('a1', 'set', 'Keep NOTES.md accurate')).rejects.toThrow('Cannot manage goals while a prompt is running')
+        dispose()
+      })
+    })
+
+    it('reports a refused menu verb, which has no dialog to state it', async () => {
+      await createRoot(async (dispose) => {
+        const { ops } = setup()
+        mockUpdateAgentGoal.mockRejectedValueOnce(new Error('Cannot manage goals while a prompt is running'))
+        await expect(ops.handleGoalAction('a1', 'pause')).resolves.toBe(false)
+        expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to update the session goal', expect.any(Error))
+        dispose()
+      })
+    })
+
+    it('reports success for a verb the provider accepts', async () => {
+      await createRoot(async (dispose) => {
+        const { ops } = setup()
+        // The toast spy is shared by the whole file and never reset, so this reads only
+        // what THIS verb reported.
+        mockShowWarnToast.mockClear()
+        mockUpdateAgentGoal.mockResolvedValueOnce({})
+        await expect(ops.handleGoalAction('a1', 'clear')).resolves.toBe(true)
+        expect(mockShowWarnToast).not.toHaveBeenCalledWith('Failed to update the session goal', expect.anything())
+        dispose()
       })
     })
   })

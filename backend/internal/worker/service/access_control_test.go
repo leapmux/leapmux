@@ -121,6 +121,9 @@ var agentHandlerCases = []agentHandlerCase{
 	{"GetAgentMessage", func(id string) proto.Message {
 		return &leapmuxv1.GetAgentMessageRequest{AgentId: id, Seq: 1}
 	}},
+	{"GetAgentSpanMessages", func(id string) proto.Message {
+		return &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: id, SpanId: "call"}
+	}},
 	{"ListMessageMarks", func(id string) proto.Message {
 		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}
 	}},

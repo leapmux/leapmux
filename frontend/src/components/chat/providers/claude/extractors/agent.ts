@@ -1,3 +1,4 @@
+import type { AgentResultSource } from '../../../results/agentResult'
 import { asContentArray, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 
@@ -124,4 +125,36 @@ function agentReportText(toolUseResult: Record<string, unknown>): string {
  */
 export function claudeAgentResultBody(source: ClaudeAgentResult): string {
   return source.content || source.prompt
+}
+
+/** Adapt Claude's launch and completion records to the shared agent body. */
+export function claudeAgentResultSource(source: ClaudeAgentResult): AgentResultSource {
+  const launch = claudeAgentResultIsLaunch(source)
+  const metadata: AgentResultSource['metadata'] = []
+  if (source.agentId)
+    metadata.push({ label: 'Agent ID', value: source.agentId })
+  if (source.taskId)
+    metadata.push({ label: 'Task ID', value: source.taskId })
+  if (source.sessionUrl)
+    metadata.push({ label: 'Session', value: source.sessionUrl })
+  // Keep every model when a run changes models before its launch result.
+  if (source.modelsUsed.length > 1)
+    metadata.push({ label: 'Models', value: source.modelsUsed.join(' → ') })
+  else if (source.resolvedModel)
+    metadata.push({ label: 'Model', value: source.resolvedModel })
+  if (source.worktreeBranch)
+    metadata.push({ label: 'Branch', value: source.worktreeBranch })
+  if (source.worktreePath)
+    metadata.push({ label: 'Worktree', value: source.worktreePath })
+  if (source.outputFile)
+    metadata.push({ label: 'Output', value: source.outputFile })
+  return {
+    description: source.description,
+    agentId: source.agentId || source.taskId,
+    status: source.status === 'async_launched' ? 'launched asynchronously' : source.status === 'remote_launched' ? 'launched remotely' : source.status,
+    outcome: source.status === 'completed' ? 'completed' : source.status === 'failed' || source.status === 'error' ? 'failed' : launch ? 'running' : 'unknown',
+    metadata,
+    body: claudeAgentResultBody(source),
+    bodyLabel: launch ? 'Prompt' : undefined,
+  }
 }

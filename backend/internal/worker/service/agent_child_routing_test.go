@@ -410,7 +410,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	require.GreaterOrEqual(t, len(rowsBefore), 2, "spawn row + seeded shell row")
 	hasActiveBefore := false
 	for _, r := range rowsBefore {
-		if !bgtask.StatusFromWire(r.Status).IsFinished() {
+		if !bgtask.Status(r.Status).IsFinished() {
 			hasActiveBefore = true
 		}
 	}
@@ -451,9 +451,9 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	require.Len(t, rowsAfter, len(rowsBefore),
 		"rows are retained (not deleted) -- only given a final status")
 	for _, r := range rowsAfter {
-		status := bgtask.StatusFromWire(r.Status)
+		status := bgtask.Status(r.Status)
 		assert.True(t, status.IsFinished(),
-			"row %s must be final after root close, got %s", r.RowKey, r.Status)
+			"row %s must be final after root close, got %s", r.RowKey, bgtask.Status(r.Status))
 		if r.RowKey == "bg-shell-1" {
 			assert.Equal(t, bgtask.StatusStopped, status,
 				"the active shell row must be given a final status as 'stopped' (explicit close)")

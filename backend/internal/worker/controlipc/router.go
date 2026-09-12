@@ -19,54 +19,33 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
-// LocalDispatcher is the subset of channel.Dispatcher the router needs.
-// Mirrors the existing dispatcher's DispatchWith signature so the
-// router can inject local-IPC ResponseWriters.
+// LocalDispatcher exposes the dispatcher operation that accepts a local inter-process communication (IPC) response writer.
 type LocalDispatcher interface {
 	DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
 }
 
-// CrossWorkerClient sends a unary inner RPC to a sibling worker via the
-// hub's E2EE channel relay. The implementation lives in
-// internal/worker/crossworker.
-//
-// The delegation bearer it authenticates with is scoped to (user, minting
-// worker), so the channel pool keys on (target, user) alone.
-//
-// StreamInner's bindCtrl, when non-nil, receives a StreamController that
-// forwards InnerStreamRequest frames onto the dedicated cross-worker
-// channel so UpdateStream / CancelStream work for sibling WatchEvents
-// the same way they do for local-IPC.
+// CrossWorkerClient sends remote procedure calls (RPCs) through the hub's end-to-end encrypted channel relay.
+// The delegation bearer applies to one user and minting worker. The channel pool key contains the target and user.
+// StreamInner supplies a controller for revisions and cancellation on the dedicated stream channel.
 type CrossWorkerClient interface {
 	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error)
 	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error
 }
 
-// HubClient is the subset of the worker's hub-bound client the router
-// uses. Lets the router make user-scoped calls to hub services on
-// behalf of the spawning user (with a delegation token, when minted).
-//
-// It carries a userid rather than a channel.Caller, deliberately. What limits a
-// HUB call is the delegation token this worker mints for that user, and the
-// hub applies its own ceiling to it (auth.CeilingFor) -- so a grant announced
-// here would be a second, unenforced statement of the same limit.
+// HubClient sends hub requests for the spawning user with a delegation token.
+// The hub enforces the token's grant through auth.CeilingFor. A channel.Caller grant here would add an unenforced second authority.
 type HubClient interface {
 	CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
 }
 
-// HubStreamer forwards a server-streaming hub RPC. The implementation
-// authenticates with a delegation-token bearer minted for the spawned
-// agent's user. payload is a marshalled request proto;
-// onPayload receives marshalled response protos.
+// HubStreamer forwards a server-streaming hub RPC with the spawning user's delegation token.
+// payload contains the serialized request protobuf. onPayload receives serialized response protobufs.
 type HubStreamer interface {
 	StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error
 }
 
-// LocalStreams is the subset of service.Service the router uses to retire
-// the per-stream state a local-IPC dispatch leaves behind (today, the event
-// subscriptions keyed by the synthetic stream id). Local-IPC ids never reach
-// the channel manager's close callback, so nothing else would ever sweep them
-// -- see service.ReleaseLocalStream.
+// LocalStreams releases subscriptions for a synthetic local stream ID.
+// Local stream IDs do not reach the channel manager's close callback. ReleaseLocalStream supplies their cleanup.
 type LocalStreams interface {
 	ReleaseLocalStream(streamID string)
 }
@@ -93,27 +72,16 @@ type Router struct {
 	// streamCancelEntry. Entries are stored on stream registration
 	// and deleted via defer on stream exit — but a panicking handler
 	// or a partial teardown can leave an entry behind. The Server
-	// janitor calls SweepStaleCancellers periodically to bound the
+	// janitor calls SweepStaleCancellers periodically to limit the
 	// worst-case lifetime of an orphaned cancel function.
 	StreamCancellers sync.Map // string → *streamCancelEntry
 }
 
-// streamCancelEntry pairs a stream's cancel function with the time it
-// was registered so the defense-in-depth sweep can drop entries left
-// behind by abnormal teardowns. ctrl, when set by BindStream, receives
-// client follow-up frames (UpdateStream) and OnCancel on CancelStream.
-//
-// Stored as a POINTER in StreamCancellers so BindStream can install ctrl
-// without a Load-mutate-Store that races CancelStream's LoadAndDelete
-// (and without sync.Map.CompareAndSwap, which panics on non-comparable
-// values containing funcs/interfaces).
+// streamCancelEntry retains frames before binding and cancels its stream context on retirement.
 type streamCancelEntry struct {
 	cancel       context.CancelFunc
 	registeredAt time.Time
-
-	mu        sync.Mutex
-	ctrl      channel.StreamController
-	cancelled bool // set under mu when CancelStream/Sweep retires the entry
+	inbox        channel.StreamInbox
 }
 
 func (r *Router) now() time.Time {
@@ -153,41 +121,19 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 	}
 }
 
-// relayError preserves the originating connect code when relaying a hub or
-// cross-worker failure back to the caller.
-//
-// It used to be a flat connect.CodeInternal wrap, and that silently disabled
-// every code-sensitive decision the CLI makes on this transport. The code is
-// the only machine-readable part of the answer -- the message survives, but
-// nothing may parse it -- so flattening turned "no such workspace"
-// (CodeNotFound) and "worker is offline" (CodeUnavailable) into an
-// indistinguishable internal error. Downstream that made
-// cmd.isNotFoundOrForbidden and cmd.isWorkerUnreachable unable to match at all
-// for a worker-spawned agent, so `tab close` on an offline sibling worker
-// reported inspect_failed instead of falling back to a CRDT-only tombstone --
-// while the identical command over the hub transport, and the frontend's
-// mirrored predicate, both fell back correctly.
-//
-// Note this is NOT the in-band CallInnerResponse.ErrorCode path: hub and
-// cross-worker failures return a nil response and a non-nil error, so they
-// never reach the IsError branch that dispatchLocal populates. The two also
-// carry different enums (ErrorCode is a grpc code, this is a connect.Code);
-// they must not be conflated.
+// relayError preserves Connect error codes from the hub or a sibling worker.
+// Callers use these codes to distinguish missing resources from unavailable workers.
+// These failures carry a nil response. They do not use dispatchLocal's gRPC ErrorCode field.
 func relayError(err error) error {
-	// CodeOf answers CodeUnknown for a plain error. Only a real upstream code is
-	// worth preserving; an uncoded failure keeps the old CodeInternal, which is
-	// what distinguishes "the relay broke" from "no hub configured"
-	// (Unimplemented) and "workspace out of scope" (PermissionDenied).
+	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
 	if code := connect.CodeOf(err); code != connect.CodeUnknown {
 		return connect.NewError(code, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }
 
-// withLocalStream mints a synthetic stream id for one local-IPC dispatch,
-// runs fn under it, then retires whatever the dispatch registered against it.
-// Pairs the dispatchLocal / streamLocal lifecycle in one place so both call
-// sites can't drift on mint/release symmetry.
+// withLocalStream creates one synthetic stream ID and releases its subscriptions after dispatch.
+// Unary and streaming local calls share this lifecycle.
 func (r *Router) withLocalStream(info TokenInfo, fn func(streamID string)) {
 	streamID := newLocalStreamID(info)
 	if r.Streams != nil {
@@ -196,11 +142,8 @@ func (r *Router) withLocalStream(info TokenInfo, fn func(streamID string)) {
 	fn(streamID)
 }
 
-// dispatchLocal runs a same-worker inner-RPC and synchronously
-// collects the response. Streams aren't expected here — StreamInner
-// handles that path. The caller's ctx propagates to the handler so a
-// cancelled connect-RPC tears down `exec.CommandContext` subprocesses
-// the handler started.
+// dispatchLocal collects a same-worker unary response synchronously.
+// The handler receives the caller's context, so cancellation stops subprocesses that use exec.CommandContext.
 func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method string, payload []byte) *leapmuxv1.CallInnerResponse {
 	if r.LocalDispatcher == nil {
 		return &leapmuxv1.CallInnerResponse{
@@ -221,22 +164,18 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var entry *streamCancelEntry
 	if clientReqID != "" {
-		r.StreamCancellers.Store(clientReqID, &streamCancelEntry{cancel: cancel, registeredAt: r.now()})
-		// Retire the controller on transport drop — Delete alone leaves
-		// BindStream'd watchSession / privateEventsController running on bgCtx.
-		defer func() {
-			if v, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
-				if entry, ok := v.(*streamCancelEntry); ok {
-					entry.mu.Lock()
-					ctrl := entry.ctrl
-					entry.ctrl = nil
-					entry.mu.Unlock()
-					if ctrl != nil {
-						ctrl.OnCancel()
-					}
-				}
+		entry = &streamCancelEntry{cancel: cancel, registeredAt: r.now()}
+		if previous, loaded := r.StreamCancellers.Swap(clientReqID, entry); loaded {
+			if old, ok := previous.(*streamCancelEntry); ok {
+				old.inbox.Cancel()
+				old.cancel()
 			}
+		}
+		defer func() {
+			r.StreamCancellers.CompareAndDelete(clientReqID, entry)
+			entry.inbox.Cancel()
 		}()
 	}
 
@@ -244,7 +183,7 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 	case namespaceWorker:
 		bare := stripNamespace(method)
 		if targetWorkerID == "" || targetWorkerID == r.WorkerID {
-			return r.streamLocal(streamCtx, info, bare, payload, clientReqID, onMsg)
+			return r.streamLocal(streamCtx, info, bare, payload, entry, onMsg)
 		}
 		if r.CrossWorker == nil {
 			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
@@ -258,7 +197,9 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 				ErrorCode:    m.GetErrorCode(),
 			})
 		}, func(ctrl channel.StreamController) {
-			r.bindStreamController(clientReqID, ctrl)
+			if !entry.bind(ctrl) {
+				ctrl.OnCancel()
+			}
 		})
 	case namespaceHub:
 		if r.HubStreams == nil {
@@ -273,97 +214,55 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 	}
 }
 
-func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
+func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, entry *streamCancelEntry, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
 	if r.LocalDispatcher == nil {
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("local dispatcher not configured"))
 	}
 	var collector *streamCollector
 	r.withLocalStream(info, func(streamID string) {
 		collector = newStreamCollector(ctx, streamID, onMsg)
-		collector.router = r
-		collector.clientReqID = clientReqID
+		collector.entry = entry
 		r.LocalDispatcher.DispatchWith(ctx, r.caller(), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
 	})
 	return collector.outcome()
 }
 
-// bindStreamController installs ctrl on the StreamCancellers entry for
-// clientReqID. Used by local-IPC BindStream and by the cross-worker
-// StreamInner bindCtrl so both paths share one UpdateStream lookup.
-//
-// Returns true when ctrl was installed on a LIVE entry, false when the entry
-// was already retired (CancelStream/Sweep beat the bind). The caller MUST
-// treat false as "the controller will never receive OnCancel from this
-// registry" and arrange its own retirement (e.g. cancel its ctx) — otherwise
-// a controller bound to a dead entry leaks for the process lifetime, since the
-// entry is no longer in the map for a future CancelStream/UpdateStream to find.
-//
-// Mutates the pointed-to entry under its mutex so a concurrent
-// CancelStream LoadAndDelete cannot be resurrected by a late Store.
-func (r *Router) bindStreamController(clientReqID string, ctrl channel.StreamController) bool {
-	if clientReqID == "" || ctrl == nil {
-		return false
-	}
-	v, loaded := r.StreamCancellers.Load(clientReqID)
-	if !loaded {
-		return false
-	}
-	entry, ok := v.(*streamCancelEntry)
-	if !ok {
-		return false
-	}
-	entry.mu.Lock()
-	if entry.cancelled {
-		entry.mu.Unlock()
-		return false
-	}
-	entry.ctrl = ctrl
-	entry.mu.Unlock()
-	return true
+// bind uses the entry that this stream created. A replacement owns a different inbox.
+// StreamInbox serializes binding and cancellation. A refused controller needs its own cleanup.
+func (entry *streamCancelEntry) bind(ctrl channel.StreamController) bool {
+	return entry != nil && entry.inbox.Bind(ctrl)
 }
 
-// UpdateStream delivers a follow-up payload to an in-flight stream's controller.
-func (r *Router) UpdateStream(clientReqID string, payload []byte) {
+// UpdateStream retains a revision until its controller is ready.
+func (r *Router) UpdateStream(clientReqID string, payload []byte) error {
 	if clientReqID == "" {
-		return
+		return nil
 	}
-	if v, ok := r.StreamCancellers.Load(clientReqID); ok {
-		if entry, ok := v.(*streamCancelEntry); ok {
-			entry.mu.Lock()
-			ctrl := entry.ctrl
-			entry.mu.Unlock()
-			if ctrl != nil {
-				ctrl.OnClientFrame(payload)
+	if value, ok := r.StreamCancellers.Load(clientReqID); ok {
+		if entry, ok := value.(*streamCancelEntry); ok {
+			if err := entry.inbox.Deliver(payload); err != nil {
+				entry.cancel()
+				entry.inbox.Cancel()
+				return err
 			}
 		}
 	}
+	return nil
 }
 
 // CancelStream cancels an active stream by client_request_id.
 func (r *Router) CancelStream(clientReqID string) {
 	if v, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
 		if entry, ok := v.(*streamCancelEntry); ok {
-			entry.mu.Lock()
-			ctrl := entry.ctrl
-			entry.ctrl = nil
-			entry.cancelled = true
-			entry.mu.Unlock()
-			if ctrl != nil {
-				ctrl.OnCancel()
-			}
+			entry.inbox.Cancel()
 			entry.cancel()
 		}
 	}
 }
 
-// SweepStaleCancellers drops StreamCancellers entries whose
-// registeredAt is before `cutoff`, invoking each cancel function so a
-// dangling stream goroutine gets a context-cancellation signal on its
-// way out. Defense-in-depth pass: the canonical lifecycle is Store +
-// defer Delete inside StreamInner, which under healthy operation keeps
-// the map bounded by the number of in-flight streams. The sweep
-// catches entries that survived an abnormal teardown.
+// SweepStaleCancellers cancels entries that predate cutoff and still occupy the same map slot.
+// StreamInner uses Swap for registration and CompareAndDelete for cleanup. The sweep removes entries that survive abnormal cleanup.
 func (r *Router) SweepStaleCancellers(cutoff time.Time) int {
 	dropped := 0
 	r.StreamCancellers.Range(func(key, value any) bool {
@@ -371,15 +270,8 @@ func (r *Router) SweepStaleCancellers(cutoff time.Time) int {
 		if !ok {
 			return true
 		}
-		if entry.registeredAt.Before(cutoff) {
-			r.StreamCancellers.Delete(key)
-			entry.mu.Lock()
-			ctrl := entry.ctrl
-			entry.ctrl = nil
-			entry.mu.Unlock()
-			if ctrl != nil {
-				ctrl.OnCancel()
-			}
+		if entry.registeredAt.Before(cutoff) && r.StreamCancellers.CompareAndDelete(key, entry) {
+			entry.inbox.Cancel()
 			entry.cancel()
 			dropped++
 		}
@@ -449,30 +341,15 @@ func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
 	}
 }
 
-// streamCollector adapts SendStream calls into onMsg invocations and
-// blocks until the handler emits a non-streaming terminal response or
-// the ctx is cancelled.
-//
-// Terminating is two steps, and the ORDER is the whole contract: claim() takes
-// sole ownership of err via CAS, then settle(err) records it and only then
-// closes done. Doing it the other way -- close first, assign after -- released
-// wait() BEFORE the write, so the reader raced the writer and a stream error
-// could be reported to the caller as success. That is reachable whenever a
-// terminal frame arrives from a goroutine other than the handler's own (a
-// WatchEvents broadcast, a rejected streaming request), which this commit made
-// commonplace by answering streaming denials as stream frames.
-//
-// err is additionally mutex-guarded so the read in streamLocal is ordered
-// against the write even when wait() returns via ctx cancellation rather than
-// via done.
+// streamCollector forwards stream frames and waits for completion or context cancellation.
+// claim gives one caller ownership of the result. settle records that result before it releases wait.
+// The result mutex also protects readers that return through context cancellation before settle finishes.
 type streamCollector struct {
 	ctx      context.Context
 	onMsg    func(*leapmuxv1.StreamInnerEnvelope) error
 	streamID string
-	// router + clientReqID let BindStream fill the StreamCancellers entry so
-	// UpdateStream / CancelStream can reach the controller.
-	router      *Router
-	clientReqID string
+	// Retain the original entry even if another stream reuses its request ID.
+	entry *streamCancelEntry
 
 	finished atomic.Bool
 	done     chan struct{}
@@ -490,18 +367,14 @@ func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmu
 	}
 }
 
-// claim marks the collector terminal and returns true when the caller is the
-// first to reach this state. Only that caller may call settle; anyone observing
-// false MUST NOT touch err (someone else owns it now).
-//
-// claim does NOT release wait() -- settle does. Every claim must be followed by
-// exactly one settle, or a caller blocks until its own context expires.
+// claim gives the first caller sole ownership of the result.
+// That caller must call settle exactly once. claim alone does not release wait.
 func (c *streamCollector) claim() bool {
 	return c.finished.CompareAndSwap(false, true)
 }
 
-// settle records the terminal error (nil for success) and releases wait().
-// Called exactly once, by whoever won claim.
+// settle records the final error, or nil for success, and releases wait.
+// Only the caller that succeeds at claim can call settle.
 func (c *streamCollector) settle(err error) {
 	c.mu.Lock()
 	c.err = err
@@ -509,8 +382,7 @@ func (c *streamCollector) settle(err error) {
 	close(c.done)
 }
 
-// outcome reports the terminal error, or nil when the stream ended cleanly or
-// the context was cancelled before any terminal frame arrived.
+// outcome returns the recorded error. It returns nil if cancellation precedes a final result.
 func (c *streamCollector) outcome() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -529,23 +401,16 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		c.settle(fmt.Errorf("rpc error: %s", resp.GetErrorMessage()))
 		return nil
 	}
-	// A streaming handler that signals completion via SendResponse may
-	// still carry a final payload (a fast-path that produced a single
-	// terminal frame, a unary-shaped result over a streaming
-	// ResponseWriter, or a handler reusing the same ResponseWriter for
-	// both unary and stream surfaces). Forwarding the payload through
-	// onMsg keeps that frame observable to the IPC caller; dropping it
-	// silently corrupted the stream end. Skip the forward only when
-	// there is no payload — an empty SendResponse is the documented
-	// "done, nothing more" signal.
-	var terminal error
+	// SendResponse can complete a stream with a final payload. Forward that payload before completion.
+	// An empty response carries only the completion signal.
+	var outcome error
 	if len(resp.GetPayload()) > 0 {
-		terminal = c.onMsg(&leapmuxv1.StreamInnerEnvelope{
+		outcome = c.onMsg(&leapmuxv1.StreamInnerEnvelope{
 			Payload: resp.GetPayload(),
 			End:     true,
 		})
 	}
-	c.settle(terminal)
+	c.settle(outcome)
 	return nil
 }
 
@@ -569,28 +434,15 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 		ErrorCode:    m.GetErrorCode(),
 	})
 
-	// A terminal frame finishes the collector, exactly as SendResponse and
-	// SendError do.
-	//
-	// Only those two used to, which was enough while every handler answered
-	// unary. Now that a streaming handler reports its failures as stream
-	// frames -- a rejected request, a panic -- a caller would sit in wait()
-	// until its own context expired, because the frame that WAS the ending
-	// did not look like one to this type.
+	// End and error frames complete the collector, as SendResponse and SendError do.
 	if m.GetEnd() || m.GetIsError() {
 		if c.claim() {
-			// `terminal` starts as onMsg's error, so a delivery failure on a CLEAN
-			// End frame is reported rather than settled as success. SendResponse
-			// already assigns onMsg's result straight to its terminal outcome; this
-			// path used to look only at IsError, so the outcome a caller saw
-			// depended on which of two equivalent reply shapes the handler chose.
-			terminal := err
+			// Preserve delivery failures on a clean End. An explicit provider error takes precedence.
+			outcome := err
 			if m.GetIsError() {
-				// An explicit error frame names the failure better than a local
-				// send error would, so it wins.
-				terminal = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
+				outcome = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
 			}
-			c.settle(terminal)
+			c.settle(outcome)
 		}
 	}
 	return err
@@ -599,42 +451,18 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 func (c *streamCollector) ChannelID() string   { return c.streamID }
 func (*streamCollector) MaxPayloadBudget() int { return 0 }
 
-// BindStream installs ctrl on the StreamCancellers entry for this IPC stream.
-// ok is false when the entry has already been retired (CancelStream/Sweep beat
-// the bind): the handler MUST then run its own retirement (cancel its ctx /
-// release ownership), since no future UpdateStream/CancelStream will reach a
-// controller never installed in the map.
+// BindStream installs the controller on this stream's original entry.
+// If binding fails, the handler must cancel its context and release its ownership.
 func (c *streamCollector) BindStream(ctrl channel.StreamController) (release func(), ok bool) {
-	if c.router == nil || c.clientReqID == "" {
+	if !c.entry.bind(ctrl) {
 		return func() {}, false
 	}
-	if !c.router.bindStreamController(c.clientReqID, ctrl) {
-		return func() {}, false
-	}
-	return func() {
-		// Clear ctrl without cancelling -- the handler is already unwinding.
-		v, ok := c.router.StreamCancellers.Load(c.clientReqID)
-		if !ok {
-			return
-		}
-		e, ok := v.(*streamCancelEntry)
-		if !ok {
-			return
-		}
-		e.mu.Lock()
-		e.ctrl = nil
-		e.mu.Unlock()
-	}, true
+	// Capture this inbox so an old release cannot alter a replacement stream.
+	return c.entry.inbox.Release, true
 }
 
-// wait blocks until either the handler signals completion or the request
-// context is cancelled.
-//
-// Three paths settle the collector, each through claim/settle so only the first
-// wins: SendResponse, SendError, and a terminal SendStream frame (an End or an
-// IsError). Observing that lets withLocalStream release the stream's registered
-// watchers and event subscriptions as soon as the handler returns, rather than
-// waiting for the connect-rpc client to close the stream.
+// wait blocks until the handler settles its result or the request context ends.
+// withLocalStream then releases the subscriptions without waiting for the client to close the connection.
 func (c *streamCollector) wait() {
 	select {
 	case <-c.done:

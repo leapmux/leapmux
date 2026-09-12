@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -110,7 +111,7 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 			// the connected-app list is the one surface that labels rows
 			// with whether somebody vouched for the app.
 			out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
-			out.ClientRegistrationSource = r.ClientRegistrationSource
+			out.ClientRegistrationSource = leapmuxv1.AppRegistrationSource(r.ClientRegistrationSource)
 			return out
 		})
 }

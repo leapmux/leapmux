@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reasonix-protocol.schema.json",
+  "title": "Reasonix tool vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "toolNames",
+    "capabilityActions",
+    "capabilityPrefixes",
+    "modes",
+    "configIds",
+    "approvalValues"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "capabilityActions": {
+      "$ref": "#/$defs/table"
+    },
+    "capabilityPrefixes": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "configIds": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalValues": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

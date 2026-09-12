@@ -8,7 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
-import { AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
@@ -82,8 +82,9 @@ interface RenderPanelOptions {
   onControlResponse?: AgentEditorPanelProps['onControlResponse']
   onSettingChange?: AgentEditorPanelProps['onSettingChange']
   onInterrupt?: AgentEditorPanelProps['onInterrupt']
-  agentWorking?: boolean
+  agentActivity?: AgentActivityState
   optionGroups?: AgentInfo['optionGroups']
+  inputQueue?: AgentEditorPanelProps['inputQueue']
 }
 
 function renderPanel(options: RenderPanelOptions = {}) {
@@ -112,7 +113,8 @@ function renderPanel(options: RenderPanelOptions = {}) {
         onControlResponse={options.onControlResponse}
         onSettingChange={options.onSettingChange}
         onInterrupt={options.onInterrupt}
-        agentWorking={options.agentWorking}
+        agentActivity={options.agentActivity}
+        inputQueue={options.inputQueue}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -184,6 +186,62 @@ async function waitForControlActionsReady() {
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
 describe('agentEditorPanel control request lifecycle', () => {
+  it('reports an unavailable response handler without accepting the request', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })
+    renderPanel({ controlStore })
+    await waitForControlActionsReady()
+    fireEvent.click(screen.getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response handler is unavailable'))
+    expect(controlStore.getRequests('a1')).toHaveLength(1)
+  })
+
+  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CURSOR, AgentProvider.PI])('disables pending decisions and retains the request after failed delivery for provider %s', async (agentProvider) => {
+    const controlStore = createControlStore()
+    const payload = agentProvider === AgentProvider.CURSOR
+      ? { method: 'cursor/create_plan', params: { name: 'Plan', overview: 'Keep the response.' } }
+      : agentProvider === AgentProvider.PI
+        ? { type: 'extension_ui_request', method: 'confirm', title: 'Confirm the request.' }
+        : toolRequestPayload('Bash')
+    addControlRequest(controlStore, { requestId: 'permission', payload, claimToken: 'claim' })
+    let resolveDelivery!: () => void
+    let rejectDelivery!: (error: Error) => void
+    const delivery = new Promise<void>((resolve, reject) => {
+      resolveDelivery = resolve
+      rejectDelivery = reject
+    })
+    const onControlResponse = vi.fn().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
+    renderPanel({ controlStore, onControlResponse, agentProvider })
+    try {
+      await waitForControlActionsReady()
+      fireEvent.click(screen.getByTestId('control-allow-btn'))
+      expect(screen.getByTestId('control-actions')).toBeDisabled()
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      rejectDelivery(new Error('offline'))
+      await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('offline'))
+      expect(screen.getByTestId('control-actions')).not.toBeDisabled()
+      expect(controlStore.getRequests('a1')).toHaveLength(1)
+      fireEvent.click(screen.getByTestId('control-allow-btn'))
+      await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledTimes(2))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.getByTestId('control-allow-btn')).toHaveTextContent(agentProvider === AgentProvider.CLAUDE_CODE ? 'Allow' : 'Approve')
+    }
+    finally {
+      resolveDelivery()
+    }
+  })
+
+  it.each([false, true])('hides the queue toggle during a control request and restores its state (paused=%s)', (paused) => {
+    const controlStore = createControlStore()
+    renderPanel({ controlStore, inputQueue: create(AgentInputQueueSnapshotSchema, { agentId: 'a1', paused }) })
+    const label = paused ? 'Resume Queue' : 'Pause Queue'
+    expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
+    addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash') })
+    expect(screen.queryByTestId('queue-pause-button')).not.toBeInTheDocument()
+    controlStore.removeRequest('a1', 'permission')
+    expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
+  })
+
   it('removes the active control request without reading a null request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
@@ -210,7 +268,7 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     controlStore.removeRequest('a1', 'plan-1')
 
-    expect(screen.getByTestId('control-banner')).toHaveTextContent(/Permission Required:\s*Bash/)
+    expect(screen.getByTestId('control-banner')).toHaveTextContent(/Permission Required\s*Bash/)
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
   })
@@ -258,7 +316,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(clearContext())
     expect(clearContext()).toBeChecked()
 
-    controlStore.removeRequest('a1', 'plan-1')
+    controlStore.removeRequest('a1', 'plan-1', 'claim-1')
     addControlRequest(controlStore, plan('claim-2'))
 
     expect(clearContext()).not.toBeChecked()
@@ -318,9 +376,8 @@ describe('agentEditorPanel control request lifecycle', () => {
     expect(request.claimToken).toBeUndefined()
   })
 
-  // The panel's `onControlResponse` is optional, and the chat views that omit it
-  // still render the footer. Answering there must resolve rather than throw.
-  it('answers without a response handler and still clears the draft', async () => {
+  // An unavailable handler must not discard a response that the user cannot deliver.
+  it('retains the draft when the response handler is unavailable', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     saveDraft('a1-ctrl-plan-1', 'no handler', 0)
@@ -334,7 +391,8 @@ describe('agentEditorPanel control request lifecycle', () => {
     })
     expect(() => fireEvent.click(feedback)).not.toThrow()
 
-    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response handler is unavailable'))
+    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('no handler')
   })
 
   // Answering discards the drafts of the ANSWERED request only: its editor text
@@ -359,7 +417,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
+    await vi.waitFor(async () => expect((await loadDraft('a1-ctrl-plan-1')).content).toBe(''))
     expect((await loadDraft('a1-ctrl-plan-1-q-3')).content).toBe('not a key this request can write')
     expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:plan-1`)).toBeUndefined()
     expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
@@ -501,9 +559,10 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(approve)
 
     await waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
-    const [, content] = onControlResponse.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toHaveProperty(
-      'permissionMode',
+    const [, content, options] = onControlResponse.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('permissionMode')
+    expect(options).toHaveProperty(
+      'planApproval.permissionMode',
       CLAUDE_MODE.BypassPermissions,
     )
   })
@@ -568,10 +627,11 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(await localStorageLoad(key)).toBeUndefined()
+    await vi.waitFor(async () => expect(await localStorageLoad(key)).toBeUndefined())
     // The choice still reached the response; only the saved copy is gone.
-    const [, content] = onControlResponse.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toHaveProperty('clearContext', true)
+    const [, content, options] = onControlResponse.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
+    expect(options).toHaveProperty('planApproval.clearContext', true)
   })
 
   // A cancel and re-ask reuses the request id with a FRESH claim token, so the
@@ -592,7 +652,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(screen.getByTestId('question-option-Postgres'))
     expect(screen.getByTestId('control-question-group')).toHaveTextContent('Which runtime?')
 
-    controlStore.removeRequest('a1', 'ask-1')
+    controlStore.removeRequest('a1', 'ask-1', 'claim-1')
 
     expect(screen.getByTestId('control-question-group')).toHaveTextContent('Which cache?')
     expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
@@ -685,7 +745,7 @@ describe('agent editor panel composer emptiness', () => {
 })
 
 describe('agent editor panel', () => {
-  it('always shows the queue pause control', () => {
+  it('shows the queue pause control without a control request', () => {
     renderPanel()
     expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
   })
@@ -707,7 +767,7 @@ describe('agent editor panel', () => {
     // The footer slot's own rule states no size, so a button that omits this
     // style falls back to the full-size metrics and breaks the row it shares
     // with the `[+]` button, whose height uses the same compact metrics.
-    renderPanel({ agentWorking: true, onInterrupt: vi.fn() })
+    renderPanel({ agentActivity: AgentActivityState.WORKING, onInterrupt: vi.fn() })
 
     expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('interrupt-button')).toHaveClass('outline', compactControl)

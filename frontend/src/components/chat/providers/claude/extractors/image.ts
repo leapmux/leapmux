@@ -3,7 +3,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickFirstNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { extractToolUseInfo, getMessageContentArray } from './assistantContent'
+import { extractPairedToolUseInfo, getMessageContentArray } from './assistantContent'
 
 interface ClaudeImageArgs {
   /** The row's `tool_use_result` payload, when it carries one. */
@@ -116,6 +116,6 @@ export function claudeToolResultImages(
   return claudeImagesFromToolResult({
     toolUseResult: pickObject(parsed, 'tool_use_result') ?? undefined,
     blockImages: blocks ? splitToolResultContent(blocks, { text: 'text' }).images : [],
-    toolInput: toolUseParsed ? extractToolUseInfo(toolUseParsed)?.input : undefined,
+    toolInput: extractPairedToolUseInfo(parsed, toolUseParsed)?.input,
   })
 }

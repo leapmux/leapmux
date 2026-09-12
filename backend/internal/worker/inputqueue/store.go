@@ -110,6 +110,11 @@ func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
 }
 
 func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	return s.enqueue(ctx, input, nil)
+}
+
+// enqueue applies the extra database mutation before committing the input and snapshot.
+func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
 		return Snapshot{}, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
@@ -123,6 +128,14 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	commit := func() (Snapshot, error) {
+		if apply != nil {
+			if err := apply(tx); err != nil {
+				return Snapshot{}, err
+			}
+		}
+		return commitSnapshot(ctx, tx, input.AgentID)
+	}
 	if err := ensureState(ctx, tx, input.AgentID); err != nil {
 		return Snapshot{}, err
 	}
@@ -137,14 +150,7 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 			!attachmentsEqual(existingAttachments, input.Attachments) {
 			return Snapshot{}, ErrConflict
 		}
-		snapshot, err := snapshotTx(ctx, tx, input.AgentID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return Snapshot{}, err
-		}
-		return snapshot, nil
+		return commit()
 	}
 	var acceptedAgentID, acceptedFingerprint string
 	err = tx.QueryRowContext(ctx, `SELECT agent_id, input_fingerprint FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedFingerprint)
@@ -152,14 +158,7 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 		if acceptedAgentID != input.AgentID || acceptedFingerprint == "" || acceptedFingerprint != inputFingerprint(input) {
 			return Snapshot{}, ErrConflict
 		}
-		snapshot, snapshotErr := snapshotTx(ctx, tx, input.AgentID)
-		if snapshotErr != nil {
-			return Snapshot{}, snapshotErr
-		}
-		if err := tx.Commit(); err != nil {
-			return Snapshot{}, err
-		}
-		return snapshot, nil
+		return commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, err
@@ -199,10 +198,15 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
 		return Snapshot{}, err
 	}
+	if input.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+		if err := placeControlFeedback(ctx, tx, input.AgentID, input.ID); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	if err := bumpRevision(ctx, tx, input.AgentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, input.AgentID)
+	return commit()
 }
 
 func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -662,7 +666,8 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if requireActive {
 		blockedByTurn = !active
 	}
-	if !found || (paused && !allowPaused) || blockedByTurn || item.EditOwner != "" || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+	canReplaceTurn := !requireActive && item.requiresContextReplacement()
+	if !found || (paused && !allowPaused) || (blockedByTurn && !canReplaceTurn) || item.EditOwner != "" || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
 		snapshot, err := snapshotTx(ctx, tx, agentID)
 		if err != nil {
 			return nil, Snapshot{}, err
@@ -671,6 +676,22 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 			return nil, Snapshot{}, err
 		}
 		return nil, snapshot, nil
+	}
+	sources, err := db.New(tx).GetControlResponseSourcesForInput(ctx, db.GetControlResponseSourcesForInputParams{
+		AgentID: agentID, InputID: item.ID,
+	})
+	if err != nil {
+		return nil, Snapshot{}, err
+	}
+	pendingApproval := len(sources) > 1
+	for _, source := range sources {
+		pendingApproval = pendingApproval || leapmuxv1.ControlResponseState(source.State) != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
+	}
+	// A recorded approval permits the context replacement that the old turn waits for.
+	// Ordinary input and unconfirmed approvals still wait for that turn to end.
+	if pendingApproval || blockedByTurn && len(sources) != 1 {
+		snapshot, err := commitSnapshot(ctx, tx, agentID)
+		return nil, snapshot, err
 	}
 	attachments, _, err := loadItemAttachments(ctx, tx, item.ID, true)
 	if err != nil {
@@ -1441,6 +1462,43 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, 
 	return snapshot, nil
 }
 
+// placeControlFeedback keeps the current request's feedback before future queued work.
+// Existing feedback and a dispatch or failure at the front retain their order.
+func placeControlFeedback(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	position := -1
+	for rows.Next() {
+		var id string
+		var kind leapmuxv1.AgentInputKind
+		var state leapmuxv1.AgentInputState
+		if err := rows.Scan(&id, &kind, &state); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if id == inputID {
+			continue
+		}
+		if position < 0 && kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK && state == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+			position = len(ids)
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if position < 0 {
+		return nil
+	}
+	ids = append(ids, "")
+	copy(ids[position+1:], ids[position:])
+	ids[position] = inputID
+	return writeOrder(ctx, tx, agentID, ids)
+}
+
 func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
@@ -1455,7 +1513,7 @@ func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
 		}
 		itemIDs = append(itemIDs, itemID)
 	}
-	if err := rows.Close(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
 	return writeOrder(ctx, tx, agentID, itemIDs)

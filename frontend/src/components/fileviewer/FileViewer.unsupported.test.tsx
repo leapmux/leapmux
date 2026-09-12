@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { platformBridgeFileSaveStubs } from '~/test-support/saveActionsMocks'
 import { readResp, statResp } from '~/test-support/workerRpcMocks'
 
@@ -34,8 +35,8 @@ vi.mock('~/components/fileviewer/MarkdownFileView', () => ({
   ),
 }))
 vi.mock('~/components/fileviewer/ImageFileView', () => ({
-  ImageFileView: (props: { filePath: string }) => (
-    <div data-testid="image-view">{props.filePath}</div>
+  ImageFileView: (props: { filePath: string, content: Uint8Array }) => (
+    <div data-testid="image-view" data-first-byte={props.content[0]}>{props.filePath}</div>
   ),
 }))
 vi.mock('~/components/fileviewer/HexView', () => ({
@@ -82,6 +83,32 @@ describe('fileViewer dispatch with unsupported view', () => {
     showWarnToastMock.mockReset()
   })
 
+  it('opens an image larger than the text preview limit', async () => {
+    const bytes = new Uint8Array(1024 * 1024)
+    readFileImpl.mockResolvedValue(readResp(bytes))
+    render(() => <FileViewer workerId="w1" filePath="/repo/screenshot.png" />)
+    await waitFor(() => expect(screen.getByTestId('image-view')).toBeInTheDocument())
+    expect(readFileImpl.mock.calls[0][1].limit).toBeGreaterThanOrEqual(BigInt(bytes.length))
+    expect(screen.queryByText('This image is too large to preview.')).not.toBeInTheDocument()
+  })
+
+  it('does not replace the current image with an earlier file read', async () => {
+    const [path, setPath] = createSignal('/first.png')
+    let finish!: (value: ReturnType<typeof readResp>) => void
+    readFileImpl.mockImplementationOnce(() => new Promise((resolve) => {
+      finish = resolve
+    }))
+      .mockResolvedValue(readResp(new Uint8Array([2])))
+    render(() => <FileViewer workerId="w1" filePath={path()} />)
+    await waitFor(() => expect(readFileImpl).toHaveBeenCalledOnce())
+    setPath('/second.png')
+    await waitFor(() => expect(screen.getByTestId('image-view')).toHaveAttribute('data-first-byte', '2'))
+    finish(readResp(new Uint8Array([1])))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(screen.getByTestId('image-view')).toHaveAttribute('data-first-byte', '2')
+  })
+
   it('renders TextFileView for a small text file', async () => {
     const bytes = new TextEncoder().encode('hello')
     statFileImpl.mockResolvedValue(statResp(bytes.length))
@@ -94,7 +121,7 @@ describe('fileViewer dispatch with unsupported view', () => {
 
   it('renders TextFileView (truncated) for a >256 KiB text file with the existing status bar warning', async () => {
     const partial = new TextEncoder().encode('a'.repeat(1024))
-    const fullSize = 5 * 1024 * 1024
+    const fullSize = MAX_FILE_IMAGE_BYTES + 1
     statFileImpl.mockResolvedValue(statResp(fullSize))
     readFileImpl.mockResolvedValue(readResp(partial, fullSize))
 
@@ -119,12 +146,12 @@ describe('fileViewer dispatch with unsupported view', () => {
     expect(screen.queryByTestId('hex-view')).not.toBeInTheDocument()
   })
 
-  it('renders the unsupported view for a >256 KiB image via metaOnlyIfTruncated (no wasted bytes)', async () => {
+  it('renders the unsupported view for an image above the shared limit via metaOnlyIfTruncated (no wasted bytes)', async () => {
     // The image path now collapses statFile + readFile into a single
     // readFile call with metaOnlyIfTruncated=true. For an oversize
     // image, the server skips the bytes and returns just totalSize —
     // we never download the 256 KiB we'd refuse to render anyway.
-    readFileImpl.mockResolvedValue(readResp(new Uint8Array(0), 5 * 1024 * 1024))
+    readFileImpl.mockResolvedValue(readResp(new Uint8Array(0), MAX_FILE_IMAGE_BYTES + 1))
 
     render(() => <FileViewer workerId="w1" filePath="/repo/huge.png" />)
     await waitFor(() =>
@@ -134,7 +161,7 @@ describe('fileViewer dispatch with unsupported view', () => {
     expect(readFileImpl).toHaveBeenCalledWith('w1', expect.objectContaining({
       path: '/repo/huge.png',
       metaOnlyIfTruncated: true,
-    }))
+    }), { signal: expect.any(AbortSignal) })
     expect(statFileImpl).not.toHaveBeenCalled()
   })
 
@@ -187,8 +214,8 @@ describe('fileViewer dispatch with unsupported view', () => {
     // + oversize totalSize. Second call: Show anyway → partial bytes
     // (the unsupported card lifts metaOnlyIfTruncated to actually fetch).
     const partial = new Uint8Array(1024)
-    readFileImpl.mockResolvedValueOnce(readResp(new Uint8Array(0), 5 * 1024 * 1024))
-    readFileImpl.mockResolvedValueOnce(readResp(partial, 5 * 1024 * 1024))
+    readFileImpl.mockResolvedValueOnce(readResp(new Uint8Array(0), MAX_FILE_IMAGE_BYTES + 1))
+    readFileImpl.mockResolvedValueOnce(readResp(partial, MAX_FILE_IMAGE_BYTES + 1))
 
     render(() => <FileViewer workerId="w1" filePath="/repo/huge.png" />)
     await waitFor(() =>

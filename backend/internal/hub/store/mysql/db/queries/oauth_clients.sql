@@ -105,7 +105,7 @@ SET client_name = sqlc.arg(client_name),
     updated_at = CURRENT_TIMESTAMP(3)
 WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL
-  AND registration_source <> 'builtin'
+  AND registration_source <> sqlc.arg(builtin_source)
   AND (
       (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
       OR owner_user_id = sqlc.arg(caller_user_id)
@@ -133,7 +133,7 @@ SET icon_blob = sqlc.narg(icon_blob),
     updated_at = CURRENT_TIMESTAMP(3)
 WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL
-  AND registration_source <> 'builtin'
+  AND registration_source <> sqlc.arg(builtin_source)
   AND (
       (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
       OR owner_user_id = sqlc.arg(caller_user_id)
@@ -162,7 +162,7 @@ SET revoked_at = CURRENT_TIMESTAMP(3),
     updated_at = CURRENT_TIMESTAMP(3)
 WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL
-  AND registration_source <> 'builtin'
+  AND registration_source <> sqlc.arg(builtin_source)
   AND (
       (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
       OR owner_user_id = sqlc.arg(caller_user_id)
@@ -256,7 +256,7 @@ DELETE FROM oauth_authorization_codes WHERE client_id = ?;
 -- orphaned credentials would be worse than a refusal.
 DELETE FROM oauth_clients
 WHERE client_id = sqlc.arg(client_id)
-  AND registration_source <> 'builtin'
+  AND registration_source <> sqlc.arg(builtin_source)
   AND (
       (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
       OR owner_user_id = sqlc.arg(caller_user_id)

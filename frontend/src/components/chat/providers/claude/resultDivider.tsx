@@ -1,6 +1,10 @@
 import type { ResultDividerModel } from '../registry'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { formatDuration } from '../../rendererUtils'
+import { turnEndLabel } from '../../turnEndLabel'
+
+/** The interface's own word for a turn that stopped before it finished. */
+const CLAUDE_SUBTYPE_CANCELLED = 'cancelled'
 
 const UNDERSCORE = /_/g
 const FIRST_CHAR = /^\w/
@@ -49,17 +53,20 @@ function buildErrorResult(
   subtype: string,
 ): ResultDividerModel {
   const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
-  const durationSuffix = durationMs !== null && durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
+  const duration = durationMs !== null && durationMs > 0 ? durationMs : null
 
   if (subtype && subtype !== 'success') {
-    const label = humanizeSubtype(subtype) + durationSuffix
     const errorDetail = errors.length > 0 ? errors.join('\n') : resultText
     // `detail` must be undefined (never '') so the shared renderer skips the <pre>.
-    return { label, isError: true, detail: errorDetail || undefined }
+    return {
+      label: turnEndLabel('failed', { durationMs: duration, reason: humanizeSubtype(subtype) }),
+      isError: true,
+      detail: errorDetail || undefined,
+    }
   }
 
   const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
-  return { label: cleanAPIErrorMessage(errorMsg) + durationSuffix, isError: true }
+  return { label: turnEndLabel('failed', { durationMs: duration, reason: cleanAPIErrorMessage(errorMsg) }), isError: true }
 }
 
 /**
@@ -78,21 +85,28 @@ function buildPlainResult(
   durationMs: number | null,
   subtype: string,
 ): ResultDividerModel {
+  // A cancelled turn is an interruption, whoever asked for it. The completion column
+  // covers the interrupt LeapMux sent; this covers one the interface reports itself.
+  if (subtype === CLAUDE_SUBTYPE_CANCELLED)
+    return { label: turnEndLabel('interrupted', { durationMs }) }
   const displayText = subtype && subtype !== 'success' ? resultText : ''
-  if (displayText) {
-    const suffix = durationMs !== null ? ` (${formatDuration(durationMs)})` : ''
-    return { label: displayText + suffix }
-  }
-  // Duration-only divider. A missing duration_ms (null) has no meaningful "Took"
-  // value, so fall back to a plain "Turn ended"; a real zero stays "Took 0ms".
-  return { label: durationMs !== null ? `Took ${formatDuration(durationMs)}` : 'Turn ended' }
+  // Any other non-success subtype's own text qualifies the turn end rather than
+  // replacing it, so the row still opens with the words every other provider uses.
+  return { label: turnEndLabel('ended', { durationMs, qualifiers: [displayText] }) }
 }
 
 /**
  * Claude result_divider hook: {"type":"result","duration_ms":865,"is_error":...}.
  * Returns the provider-neutral model; the shared `ResultDivider` draws it.
+ *
+ * A turn the USER stopped comes first, whatever the frame says. The command-line
+ * interface reports an interrupted turn as `error_during_execution` with
+ * `is_error: true` -- the same shape as a genuine failure -- and its `errors` array
+ * carries its own diagnostics, so the row read "Error during execution (12s)
+ * [ede_diagnostic] result_type=user ...". LeapMux asked for the stop, and its
+ * completion column is what records that.
  */
-export function claudeResultDivider(parsed: unknown): ResultDividerModel | null {
+export function claudeResultDivider(parsed: unknown, completion?: MessageCompletion): ResultDividerModel | null {
   if (!isObject(parsed) || parsed.type !== 'result')
     return null
 
@@ -101,6 +115,9 @@ export function claudeResultDivider(parsed: unknown): ResultDividerModel | null 
   const resultText = pickString(parsed, 'result')
   const durationMs = pickNumber(parsed, 'duration_ms')
   const subtype = pickString(parsed, 'subtype')
+
+  if (completion === MessageCompletion.INTERRUPTED)
+    return { label: turnEndLabel('interrupted', { durationMs }) }
 
   return parsed.is_error === true
     ? buildErrorResult(parsed, resultText, durationMs, subtype)

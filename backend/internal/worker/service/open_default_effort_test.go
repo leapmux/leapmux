@@ -60,12 +60,9 @@ func TestOpenAgentAppliesSafePermissionDefaultsToNewSessions(t *testing.T) {
 			want:     map[string]string{agent.OptionIDPermissionMode: contracts.GooseModeSmartApprove},
 		},
 		{
-			name:     "copilot assisted approval",
+			name:     "copilot assisted",
 			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-			want: map[string]string{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-			},
+			want:     map[string]string{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted},
 		},
 	}
 	for _, tc := range cases {
@@ -106,7 +103,7 @@ func TestOpenAgentDoesNotApplySafePermissionDefaultsToResumedSessions(t *testing
 	}{
 		{"claude falls back to default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, agent.OptionIDPermissionMode, contracts.ClaudeModeDefault, false},
 		{"goose falls back to smart approve, never its bypass mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, agent.OptionIDPermissionMode, contracts.GooseModeSmartApprove, true},
-		{"copilot leaves assisted approval unset", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.CopilotPermissionGroupAssistedApproval, "", false},
+		{"copilot falls back to manual, never its assisted default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, agent.OptionIDPermissionMode, contracts.CopilotPermissionModeManual, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,14 +123,11 @@ func TestOpenAgentExplicitPermissionOptionsOverrideSafeDefaults(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		Options: map[string]string{
-			contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn,
+			agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAllowAll,
 		},
 	})
-	assert.Equal(t, contracts.CopilotPermissionValueOn, opts.Get(contracts.CopilotPermissionGroupAllowAll),
+	assert.Equal(t, contracts.CopilotPermissionModeAllowAll, opts.Get(agent.OptionIDPermissionMode),
 		"the explicit request wins over the safe default")
-	// Requesting Allow All leaves Assisted Approval at its safe default: clearing that
-	// axis costs a process restart, and Allow All already supersedes it.
-	assert.Equal(t, contracts.CopilotPermissionValueOn, opts.Get(contracts.CopilotPermissionGroupAssistedApproval))
 }
 
 // TestOpenAgent_DefaultsEffortToAuto verifies that when the OpenAgent

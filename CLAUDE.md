@@ -43,8 +43,10 @@ before building).
   `desktop.json`, and the generator cross-checks the two.
   `worker-vocab.json` — notification-type tokens, the notification-thread
   discriminator, the Codex rate-limit token, and the model sentinels.
-  `goose-protocol.json` — Goose permission modes. `copilot-permissions.json` —
-  the identifiers for Copilot Assisted Approval and Allow All.
+  `goose-protocol.json` — Goose permission modes. `copilot-protocol.json` —
+  Copilot's native event, tool, mode and permission vocabulary, plus the
+  session-mode option-group id and the approval-scope words its control
+  surface sends.
   `providers.json` — AgentProvider display names / CLI aliases / parse
   aliases (agentlabels and agentProviderLabel consume the generated tables).
   `scopes.json` — the scope vocabulary: wire tokens, Preferences
@@ -73,6 +75,10 @@ before building).
   dual-implemented ALGORITHMS — those stay differential: the
   `testdata/*_conformance.json` corpora (and `noise_rekey_vectors.json`)
   remain the executable spec both suites replay.
+- This is a rule about CONTRACTS, not about proto. A single-side enum still
+  takes its numbering from a proto enum — see "Enum columns store proto enum
+  ordinals" below. Crossing a language boundary is what adds a contract entry
+  on top; it is not what earns an enum its numbering.
 
 ### JSON Schema validation (no schemaless JSON)
 
@@ -107,6 +113,49 @@ Never write a bare `*.css.ts` basename inside a `.css.ts` file — not in code, 
 Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. The task builds the Go sidecar binary first, which Tauri's bundle resources point at `../go/bin/*`. Running `cargo clippy` directly fails with a misleading build error.
 
 ## Coding conventions
+
+### Enum columns store proto enum ordinals
+
+A database column whose values are a closed set is an enum, and every enum in
+this project takes its numbering from a proto enum. The column stores the
+ordinal as an integer — never the value's name.
+
+This holds whether or not the value crosses a language boundary. A hub-internal
+vocabulary the browser never sees still gets a proto enum; the ones that had
+none live in `proto/leapmux/v1/hub_storage.proto`, which exists for exactly
+that and carries no message or RPC.
+
+- **Give the column a CHECK that states the range**, and start it at 1. Proto3
+  fixes UNSPECIFIED at 0, an unset Go field holds 0, and no column here has a
+  state 0 could mean — so a write that forgot the value fails instead of
+  recording one nobody chose. `agents.goal_status` is the one exception, where
+  0 is the real state "no goal", and it says so at the column.
+- **Admit less than the enum declares when a value is derived or belongs to
+  another table.** `AGENT_GOAL_STATUS_DORMANT` and the two
+  `ControlResponseState` values that describe a request with no answer row are
+  both outside their column's CHECK, each with the reason at the column.
+- **Bind the ordinal as a query parameter**, from the Go constant, so a
+  renumber propagates. Spell a literal only where a parameter cannot reach: a
+  migration, or a partial-index predicate (SQLite matches those syntactically,
+  so a bound `?` makes the index ineligible). Every such literal needs a test
+  that pins it — `enum_column_numbering_test.go` in `hub/store` and `worker/db`
+  are those tests, and a schema comment names the one that guards it.
+- **The Go domain type is a DEFINED type over the proto enum**
+  (`type Status leapmuxv1.BackgroundTaskStatus`), not an independent iota and
+  not an alias. The ordinals are then one numbering, the conversion each way is
+  a cast, and the type still carries its own methods.
+- **A payload vocabulary is a separate decision from storage.** Some of these
+  values also travel as WORDS inside a notification payload or an RPC field
+  (`bgtask.StatusWire`, `agent.GoalStatusWire`, `oauth.ProviderTypeWire`,
+  `store.AppRegistrationSourceWire`). Those functions stay, and each says at its
+  definition that it is not the storage format. Do not add the inverse unless a
+  caller reads that vocabulary inward.
+
+Why: the alternative spells one vocabulary in Go and again in three dialects of
+SQL, with nothing to keep them in step. Renaming a Go constant used to leave a
+`status IN ('completed','failed',…)` list stale, and a `FromWire` that fell
+through to a default turned the drift into a plausible wrong value rather than
+an error.
 
 ### Provider-specific logic belongs in the provider, not shared code
 

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -132,7 +133,7 @@ func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 
 	row, err := st.WebAuthnSessions().Get(context.Background(), sessionID)
 	require.NoError(t, err)
-	assert.Equal(t, "signup", row.Kind)
+	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_SIGNUP, row.Kind)
 	assert.Empty(t, row.UserID, "signup ceremony row has no users FK yet")
 
 	var draft webauthn.SignupDraft
@@ -249,7 +250,7 @@ func TestBeginRegistration_PersistsEncryptedSession(t *testing.T) {
 
 	row, err := st.WebAuthnSessions().Get(context.Background(), sessionID)
 	require.NoError(t, err)
-	assert.Equal(t, "register", row.Kind)
+	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, row.Kind)
 	assert.Equal(t, userID, row.UserID)
 	assert.NotEmpty(t, row.SessionData)
 	assert.True(t, row.ExpiresAt.After(time.Now().UTC()))

@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -32,12 +28,21 @@ const (
 	acpMethodInitialize               = "initialize"
 	acpMethodSessionUpdate            = "session/update"
 	acpMethodSessionRequestPermission = "session/request_permission"
-	acpMethodSessionCancel            = "session/cancel"
-	acpMethodSessionNew               = "session/new"
-	acpMethodSessionLoad              = "session/load"
-	acpMethodSessionPrompt            = "session/prompt"
-	acpMethodSessionSetModel          = "session/set_model"
-	acpMethodSessionSetMode           = "session/set_mode"
+	// acpPermissionOutcomeCancelled is the protocol's outcome for a request the client
+	// ends without a decision.
+	acpPermissionOutcomeCancelled = "cancelled"
+	acpMethodSessionCancel        = "session/cancel"
+	// The JSON-RPC cancel notification an agent sends for a request it withdraws,
+	// under the two names the roster uses. Goose spells it `$/cancel_request`, and
+	// `$/cancelRequest` is the Language Server Protocol spelling the same
+	// convention comes from. Both identify one request by `params.requestId`.
+	acpMethodCancelRequestSnake = "$/cancel_request"
+	acpMethodCancelRequestCamel = "$/cancelRequest"
+	acpMethodSessionNew         = "session/new"
+	acpMethodSessionLoad        = "session/load"
+	acpMethodSessionPrompt      = "session/prompt"
+	acpMethodSessionSetModel    = "session/set_model"
+	acpMethodSessionSetMode     = "session/set_mode"
 	// acpMethodSessionSetConfigOption is the config-option setter (ACP's
 	// session/set_config_option): params {sessionId, configId, value}, returning the
 	// refreshed configOptions list. Used to write the mutable option groups
@@ -64,30 +69,9 @@ const (
 	acpUpdateUsageUpdate             = "usage_update"
 	acpUpdateUserMessageChunk        = "user_message_chunk"
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
-	acpUpdateCurrentModeUpdate       = "current_mode_update"
 	acpUpdateConfigOptionUpdate      = "config_option_update"
+	acpUpdateSessionInfoUpdate       = "session_info_update"
 )
-
-// jsonrpcBase extends processBase with JSON-RPC request/response plumbing
-// shared by all ACP agents and CodexAgent.
-type jsonrpcBase struct {
-	processBase
-	responseCorrelator[int64]
-	nextReqID atomic.Int64
-
-	// promptActive is true while the provider processes one ACP prompt. The
-	// Worker-owned durable queue holds later input.
-	promptActive bool
-
-	// publishTurnActive, when set, reports promptActive transitions to the
-	// Worker's activity state. ONLY the ACP family sets it: CodexAgent embeds
-	// this base for its JSON-RPC plumbing but drives its turn from turnID and
-	// never writes promptActive, so a nil hook is what stops this base from
-	// publishing a flag Codex does not use.
-	publishTurnActive func(active bool, seq uint64)
-	steerMethod       string
-	steerRunID        string
-}
 
 // acpModeChannel identifies how an ACP provider maps the configOptions `mode` select
 // to its secondary setting, and thereby which provider family it belongs to. The three
@@ -115,6 +99,26 @@ const (
 // acpBase extends jsonrpcBase with fields and methods shared by every ACP agent
 // (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
+	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
+	promptActive bool
+	// interruptRequested records that the reader stopped the running turn, so a
+	// tool result that arrives afterwards reports the stop rather than whatever
+	// status the provider put on it. Cursor and Reasonix send `failed` for a
+	// cancelled command and OpenCode and Kilo send an empty `completed`, so
+	// without this the row names a failure the reader caused by stopping, or
+	// names nothing. Guarded by b.mu. See noteACPInterruptRequested.
+	interruptRequested bool
+	publishTurnActive  func(active bool, seq uint64)
+	steerMethod        string
+	steerRunID         string
+
+	// clientCapabilityMeta advertises supported provider extensions.
+	clientCapabilityMeta map[string]any
+
+	// outstandingPermissions holds the JSON-RPC id of every permission request the
+	// agent is still waiting on, so a cancel can answer them. Guarded by mu.
+	outstandingPermissions map[string]json.RawMessage
+
 	jsonrpcBase
 	sink ProviderServices
 	acpTurnOutput
@@ -133,12 +137,13 @@ type acpBase struct {
 	availableCommands  map[string]struct{}
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
+	// A provider can route a tool message to its child transcript before it changes this transcript.
+	routeToolMessage func(json.RawMessage) bool
 	// subagentFromToolCall / subagentFromToolCallUpdate are optional
 	// provider-specific hooks that translate a tool_call / tool_call_update
 	// into a neutral acpSubagentObservation driving the background-task
-	// registry (and, for Goose, a best-effort tool-request transcript). nil for
-	// a provider that surfaces no subagent activity over ACP (Copilot) -- the
-	// plumbing is then inert. Membership is decided per provider in its
+	// registry and child transcripts. A nil hook leaves that path inactive.
+	// Each provider selects its hooks in its
 	// configure (the registration site), keeping provider-specific
 	// names/shapes out of this shared file.
 	//
@@ -202,16 +207,11 @@ type acpBase struct {
 	// set modeChannel), never copied (acpBase is always used by pointer).
 	secondaryChannelOnce  sync.Once
 	secondaryChannelCache acpSecondaryChannel
-	// modelFixedAtLaunch marks a provider whose model is selected once at process
-	// launch (e.g. Reasonix's `--model` flag) and cannot change over ACP. For such
-	// providers a server config_option_update must not overwrite the model, or the
-	// stored/broadcast model would drift from what the process is actually running.
-	modelFixedAtLaunch bool
 	// effortConfigID is the daemon config-option id this provider drives its reasoning-effort
 	// axis through when that id is a provider CONVENTION rather than the well-known "effort"
 	// (Copilot "reasoning_effort", Goose "thinking_effort"). It is "" for a provider whose
 	// effort axis IS "effort" (OpenCode/Kilo -- the override maps to "effort" directly) or that
-	// has no effort axis (Cursor/Reasonix). applyStartupOptions maps the env-effort override
+	// has no effort axis (Cursor). applyStartupOptions maps the env-effort override
 	// (stored under the well-known "effort" id) onto it, so the operator default is re-pushed
 	// regardless of the daemon's id. Declaring it per provider -- rather than scanning the live
 	// option set for ANY well-known effort id -- means a coincidental second axis a daemon
@@ -270,7 +270,8 @@ type acpBase struct {
 	// targeting a torn-down session. It is acquired BEFORE b.mu, and BELOW optionWriteMu in
 	// the lock order (optionWriteMu -> sessionMu -> b.mu); ClearContext releases it before
 	// reapplySettings, whose RPCs re-acquire the read lock per call.
-	sessionMu sync.RWMutex
+	sessionMu      sync.RWMutex
+	sessionUpdates acpSessionUpdates
 }
 
 // handleACPPromptResponse drains one turn and persists its prompt response.
@@ -283,25 +284,40 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	turn := b.drainTurn()
 	b.persistCompletedACPText(AssembledMessageKindReasoning, turn.thoughtText)
 	b.persistCompletedACPText(AssembledMessageKindText, turn.assistantText)
-	b.persistIncompleteACPTools(turn.incompleteTools, MessageCompletionError)
+	// A tool the turn left unfinished failed -- unless the reader STOPPED the turn,
+	// in which case it was cut rather than broken. A clean cancel returns a prompt
+	// response rather than an error, so Cursor arrives here and not on the error
+	// path: its stopped command stored `completion: error` for work the reader
+	// chose to end.
+	incomplete := MessageCompletionError
+	if b.acpInterruptRequested() {
+		incomplete = MessageCompletionInterrupted
+	}
+	b.persistIncompleteACPTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
-	b.persistPromptResponse("", resp, func(resp json.RawMessage) json.RawMessage {
-		return enrichWithToolUseCount(resp, numToolUses)
-	})
+	b.persistPromptResponse(resp, numToolUses)
 }
 
+// persistCompletedACPText ends one text kind's live counter and stores the segment.
+//
+// The counter closes even when the text is empty, because the caller reaches this
+// point only when the segment ended. A scope that stays open keeps counting its
+// characters into the next segment.
 func (b *acpBase) persistCompletedACPText(kind AssembledMessageKind, text string) {
-	if text == "" {
-		return
-	}
-	sessionUpdate := acpUpdateAgentMessageChunk
+	b.sink.ReportProgress(CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
+	b.persistAssembledACPText(kind, text, MessageCompletionComplete)
+}
+
+// acpTextProgressScope is the live-counter scope for one text kind. The scope is
+// LeapMux's own key, so it keeps the protocol's update name rather than changing
+// with the stored shape.
+func acpTextProgressScope(kind AssembledMessageKind) string {
 	if kind == AssembledMessageKindReasoning {
-		sessionUpdate = acpUpdateAgentThoughtChunk
+		return acpUpdateAgentThoughtChunk
 	}
-	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
-	b.persistTextMessage(sessionUpdate, text)
+	return acpUpdateAgentMessageChunk
 }
 
 func (b *acpBase) finishIncompleteACPPrompt(completion MessageCompletion) {
@@ -322,16 +338,28 @@ func (b *acpBase) finishACPTurn(turn acpTurnSnapshot, completion MessageCompleti
 }
 
 func (b *acpBase) persistIncompleteACPText(kind AssembledMessageKind, text string, completion MessageCompletion) {
+	b.persistAssembledACPText(kind, text, completion)
+}
+
+// persistAssembledACPText stores one assembled text segment.
+//
+// The Agent Client Protocol streams text as a run of chunks, and one transcript row
+// holds the whole segment. That row is therefore LeapMux's ASSEMBLY, not a frame the
+// agent sent, so it carries LeapMux's own assembled-message envelope. Writing a
+// chunk-shaped object instead would put a message the agent never sent into the
+// column that holds the agent's own bytes -- and the interrupted path already used
+// this envelope, so the completed path had a second shape for the same content.
+func (b *acpBase) persistAssembledACPText(kind AssembledMessageKind, text string, completion MessageCompletion) {
 	if text == "" {
 		return
 	}
 	raw, err := MarshalAssembledMessage(kind, text, completion)
 	if err != nil {
-		slog.Warn("marshal incomplete acp text", "agent_id", b.agentID, "error", err)
+		slog.Warn("marshal assembled acp text", "agent_id", b.agentID, "error", err)
 		return
 	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
-		slog.Error("persist incomplete acp text", "agent_id", b.agentID, "error", err)
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
+		slog.Error("persist assembled acp text", "agent_id", b.agentID, "error", err)
 	}
 }
 
@@ -339,15 +367,14 @@ func (b *acpBase) persistIncompleteACPTools(tools []acpIncompleteTool, completio
 	for _, tool := range tools {
 		if tool.encodeErr != nil {
 			slog.Warn("marshal incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", tool.encodeErr)
-		} else if annotated, err := AnnotateMessageCompletion(tool.content, completion); err != nil {
-			slog.Warn("annotate incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
 		} else {
-			annotated = b.expandACPTerminalResult(annotated)
+			content := b.acpMessageContent(tool.original, tool.content)
+			content.Completion = completion
 			spanType := b.sink.GetSpanType(tool.toolCallID)
 			if spanType == "" {
 				spanType = acpUpdateToolCall
 			}
-			if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, annotated, SpanInfo{
+			if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
 				SpanID: tool.toolCallID, SpanType: spanType, Closing: true,
 			}); err != nil {
 				slog.Error("persist incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
@@ -396,20 +423,7 @@ type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) 
 // ACP dispatcher. Return true if the method was consumed.
 type acpMethodHandler func(line *parsedLine) bool
 
-// handleACPSessionUpdate dispatches ACP sessionUpdate notifications by type.
-func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessionUpdateHandler) {
-	var wrapper struct {
-		Update json.RawMessage `json:"update"`
-	}
-	if err := json.Unmarshal(params, &wrapper); err != nil {
-		slog.Warn("acp session update unmarshal wrapper failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return
-	}
-	if len(wrapper.Update) == 0 {
-		return
-	}
-	update := wrapper.Update
-
+func (b *acpBase) handleACPUpdate(update json.RawMessage, extra acpSessionUpdateHandler) {
 	var header struct {
 		SessionUpdate string                     `json:"sessionUpdate"`
 		Role          string                     `json:"role"`
@@ -426,6 +440,10 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	}
 
 	if header.Role == "result" {
+		return
+	}
+	if (header.SessionUpdate == acpUpdateToolCall || header.SessionUpdate == acpUpdateToolCallUpdate) &&
+		b.routeToolMessage != nil && b.routeToolMessage(update) {
 		return
 	}
 
@@ -445,6 +463,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 			b.flushAssistantBuffer()
 		}
 	case acpUpdateUsageUpdate,
+		contracts.ACPUpdateCurrentMode,
 		acpUpdateUserMessageChunk,
 		acpUpdateAvailableCommandsUpdate,
 		acpUpdateConfigOptionUpdate:
@@ -470,15 +489,26 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	case acpUpdateConfigOptionUpdate:
 		// Shared model channel for every ACP provider; mode handled per-provider.
 		b.handleACPConfigOptionUpdate(update)
+	case contracts.ACPUpdateCurrentMode:
+		b.handleACPModeUpdate(update)
 	case acpUpdateUserMessageChunk:
 		// No-op: user_message_chunk is history replay.
 	case acpUpdateAvailableCommandsUpdate:
 		b.observeAvailableCommands(update)
+	case acpUpdateSessionInfoUpdate:
+		// Session metadata: the runtime's own title and its modified time. Neither is
+		// conversation, and one update arrives for every turn, so persisting it put a
+		// raw-JSON row in every transcript. A provider that reads a field of its own
+		// takes the sessionMetadataHandler above, which runs before this switch --
+		// Goose reads its steer run identifier there.
+		//
+		// The title is a real answer the runtime computes, and LeapMux names its tabs
+		// itself. Adopting it is a presentation decision, so it stays unread here.
 	default:
 		if extra != nil && extra(header.SessionUpdate, update) {
 			return
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{}); err != nil {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: update}, SpanInfo{}); err != nil {
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
@@ -526,17 +556,18 @@ func (b *acpBase) hasAvailableCommand(command string) bool {
 // replacing the current session with a fresh one. After the session is
 // created, the reapplySettings callback (if set) re-applies provider-
 // specific settings such as model and permission mode.
-func (b *acpBase) ClearContext() (string, bool) {
+func (b *acpBase) ClearContext() (string, error) {
 	b.sessionMu.Lock()
 	// Host terminals belong to the outgoing session. Release the current set
 	// before session/new. The session swap releases any set created during it.
 	b.releaseSessionTerminals()
 
-	sessionID, resp, outgoingTurn, ok := b.newSessionLocked()
+	sessionID, resp, outgoingTurn, err := b.newSessionLocked()
 	b.sessionMu.Unlock()
-	if !ok {
-		return "", false
+	if err != nil {
+		return "", err
 	}
+	b.notePromptActive()
 	b.finishACPTurn(outgoingTurn, MessageCompletionInterrupted)
 	// Same for an unspent spawn prompt. Its row belongs to the OUTGOING session
 	// and will never produce a closing observation to drop it, so without this
@@ -561,46 +592,60 @@ func (b *acpBase) ClearContext() (string, bool) {
 
 	b.sink.UpdateSessionID(sessionID)
 
-	// reapplySettings re-applies model/mode/options against the NEW session; it runs
-	// AFTER sessionMu is released (newSessionLocked returned) because its RPCs re-acquire
-	// sessionMu.RLock per call -- holding the write lock across them would deadlock.
+	// Release sessionMu before reapplySettings.
+	// Its setters acquire sessionMu for reading through withSessionID.
 	if b.reapplySettings != nil {
 		b.reapplySettings()
 	}
 	if b.refreshFromSession != nil {
 		b.refreshFromSession(resp)
 	}
-	return sessionID, true
+	// The session response precedes these notifications. Replay them after the refresh.
+	b.finishSessionUpdates()
+	return sessionID, nil
 }
 
-// newSessionLocked sends session/new and atomically swaps b.sessionID. The
-// caller holds sessionMu for the complete exchange. Thus, a concurrent
-// session request cannot target the replaced session.
-func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, outgoing acpTurnSnapshot, ok bool) {
+// newSessionLocked sends session/new and swaps the current session.
+// The caller holds sessionMu for writing until this function returns.
+// Success leaves new-session updates buffered for ClearContext.
+// Failure resumes dispatch for the unchanged session.
+func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, outgoing acpTurnSnapshot, err error) {
+	b.beginSessionUpdates()
+	defer func() {
+		if err != nil {
+			b.finishSessionUpdates()
+		}
+	}()
 	_, params := buildACPSessionRequest("", b.currentWorkingDir(), acpMethodSessionNew, "")
-	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
+	resp, err = b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
-		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return "", nil, acpTurnSnapshot{}, false
+		return "", nil, acpTurnSnapshot{}, err
 	}
 	var session struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := json.Unmarshal(resp, &session); err != nil || session.SessionID == "" {
-		slog.Error("acp ClearContext: invalid response", "provider", b.providerName, "agent_id", b.agentID, "error", err, "response", string(resp))
-		return "", nil, acpTurnSnapshot{}, false
+	if err := json.Unmarshal(resp, &session); err != nil {
+		return "", nil, acpTurnSnapshot{}, fmt.Errorf("read new ACP session: %w", err)
+	}
+	if session.SessionID == "" {
+		return "", nil, acpTurnSnapshot{}, fmt.Errorf("the new ACP session has no ID")
 	}
 
-	// Lock order: sessionMu -> terminal lifecycle -> turn output -> protocol
-	// state. The second release catches a terminal created during session/new.
+	// Serialize received updates with the session swap. Preserve the previous session's final updates before its turn drains.
+	b.sessionUpdates.mu.Lock()
+	defer b.sessionUpdates.mu.Unlock()
+	b.flushPreviousSessionUpdates()
+	// Lock order: sessionMu -> sessionUpdates.mu -> lifecycleMu -> turnMu -> b.mu.
 	b.replaceTerminalSession(func() {
 		outgoing = b.replaceSession(func() {
 			b.mu.Lock()
 			b.sessionID = session.SessionID
+			b.promptActive = false
+			b.steerRunID = ""
 			b.mu.Unlock()
 		})
 	})
-	return session.SessionID, resp, outgoing, true
+	return session.SessionID, resp, outgoing, nil
 }
 
 // withSessionID runs fn with the agent's current session id, holding sessionMu.RLock for
@@ -1071,33 +1116,36 @@ func primaryAgentOptions(agent string) map[string]string {
 	return map[string]string{OptionIDPrimaryAgent: agent}
 }
 
-// configurePrimaryAgents sets the available primary agents and current selection
-// from the handshake modes channel, falling back to `fallback`/`defaultAgent` when
-// the server reports no modes, then applies `requestedPrimaryAgent` if it differs
-// from the current and is available. Shared by OpenCode and Kilo, whose
-// primary-agent handling is identical apart from the fallback list, default
-// constant, and hidden-agent filter (set via primaryAgentHiddenFilter). Returns an
-// error only when the requested-agent set_mode RPC fails.
+// configurePrimaryAgents installs the handshake's primary-agent list and selection.
+// It replays buffered updates before it applies the requested primary agent.
+// The requested value must differ from the live selection and remain available.
 func (b *acpBase) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string, fallback []*leapmuxv1.AvailableOption, defaultAgent string) error {
-	available := b.buildPrimaryAgentOptions(modes, currentModeID)
-	hasACPModeList := len(available) > 0
+	reported := b.buildPrimaryAgentOptions(modes, currentModeID)
+	available := reported
 	current := currentModeID
-	if !hasACPModeList {
+	if len(reported) == 0 {
 		available = fallback
 		if current == "" {
 			current = defaultAgent
 		}
 	}
-	// Resolve the current against the (hidden-filtered) available list: drop a value the
-	// list lacks (e.g. a hidden pseudo-agent like OpenCode's "compaction") and re-seed to
-	// the default-or-first option, so the picker is never seeded with a selection that has
-	// no matching option. There is no prior selection at handshake, so stored is "". The
-	// runtime and ClearContext paths share this resolver, so all three seams agree.
+	// Select a visible option, as the runtime and ClearContext paths do.
+	// No stored selection exists at handshake, so the resolver receives an empty prior value.
 	current = reconcileCurrentOptionID(available, current, "")
 
 	b.mu.Lock()
-	b.availablePrimaryAgents = available
+	// Delay the fallback list until replay finishes. Only provider records can establish support for a requested change.
+	b.availablePrimaryAgents = reported
 	b.currentPrimaryAgent = current
+	b.mu.Unlock()
+	b.finishSessionUpdates()
+	b.mu.Lock()
+	hasACPModeList := len(b.availablePrimaryAgents) > 0
+	if !hasACPModeList {
+		b.availablePrimaryAgents = fallback
+	}
+	current = b.currentPrimaryAgent
+	available = b.availablePrimaryAgents
 	b.mu.Unlock()
 
 	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
@@ -1184,17 +1232,19 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 // handlers live in acp_terminal.go and surface KindShell background-task
 // rows. fs.* stays false until separate host filesystem support lands.
 // See https://github.com/leapmux/leapmux/issues/370.
-func acpStandardInitParams() (json.RawMessage, error) {
-	params, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"clientCapabilities": map[string]interface{}{
-			"fs": map[string]bool{
-				"readTextFile":  false,
-				"writeTextFile": false,
-			},
-			"terminal": true,
-		},
+func acpStandardInitParams(meta map[string]any) (json.RawMessage, error) {
+	capabilities := map[string]any{
+		"fs":          map[string]bool{"readTextFile": false, "writeTextFile": false},
+		"terminal":    true,
+		"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
+	}
+	if len(meta) > 0 {
+		capabilities["_meta"] = meta
+	}
+	params, err := json.Marshal(map[string]any{
+		"protocolVersion":    1,
+		"clientInfo":         map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
+		"clientCapabilities": capabilities,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal initialize params: %w", err)
@@ -1218,152 +1268,6 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 		slog.Warn("acp session request marshal failed", "error", err)
 	}
 	return method, params
-}
-
-// jsonrpcMessage is a typed struct for serializing JSON-RPC requests and
-// notifications. ID is omitted for notifications (IDs start at 1 via
-// nextReqID.Add(1), so 0 is safely treated as "absent").
-type jsonrpcMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      int64           `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonrpcResponseMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
-	Error   any             `json:"error,omitempty"`
-}
-
-func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	reqID := b.nextReqID.Add(1)
-
-	ch, release := b.register(reqID)
-	defer release()
-
-	data, err := json.Marshal(jsonrpcMessage{
-		JSONRPC: "2.0",
-		ID:      reqID,
-		Method:  method,
-		Params:  params,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	data = append(data, '\n')
-
-	if err := b.writeStdin(data); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	resp, err := b.awaitResponse(ch, method, timeout)
-	if err != nil {
-		return nil, err
-	}
-	if err := jsonRPCResultError(resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (b *jsonrpcBase) sendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
-	reqID := b.nextReqID.Add(1)
-	ch, release := b.register(reqID)
-	data, err := json.Marshal(jsonrpcMessage{JSONRPC: "2.0", ID: reqID, Method: method, Params: params})
-	if err != nil {
-		release()
-		return fmt.Errorf("marshal request: %w", err)
-	}
-	data = append(data, '\n')
-	if err := b.writeStdin(data); err != nil {
-		release()
-		return fmt.Errorf("write request: %w", err)
-	}
-	go func() {
-		defer release()
-		resp, err := b.awaitResponse(ch, method, 0)
-		if err == nil {
-			err = jsonRPCResultError(resp)
-		}
-		handle(resp, err)
-	}()
-	return nil
-}
-
-func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
-	data, err := json.Marshal(jsonrpcMessage{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  params,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal notification: %w", err)
-	}
-	data = append(data, '\n')
-
-	if err := b.writeStdin(data); err != nil {
-		return fmt.Errorf("write notification: %w", err)
-	}
-
-	return nil
-}
-
-func (b *jsonrpcBase) sendResponse(id json.RawMessage, result any) error {
-	return b.writeJSONRPCResponse(jsonrpcResponseMessage{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	})
-}
-
-func (b *jsonrpcBase) sendErrorResponse(id json.RawMessage, code int, message string) error {
-	return b.writeJSONRPCResponse(jsonrpcResponseMessage{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error: map[string]interface{}{
-			"code":    code,
-			"message": message,
-		},
-	})
-}
-
-func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("marshal response: %w", err)
-	}
-	data = append(data, '\n')
-	if err := b.writeStdin(data); err != nil {
-		return fmt.Errorf("write response: %w", err)
-	}
-	return nil
-}
-
-// handleJSONRPCResponse checks if a parsed line is a JSON-RPC response and
-// routes it to the pending request channel. Returns true if the line was consumed.
-func (b *jsonrpcBase) handleJSONRPCResponse(line *parsedLine) bool {
-	if !line.HasID() || line.Method != "" {
-		return false
-	}
-
-	reqID, ok := line.IDInt64()
-	if !ok {
-		return false
-	}
-
-	body := line.Result
-	if len(line.Error) > 0 && string(line.Error) != "null" {
-		body = line.Error
-	}
-	return b.deliver(reqID, body)
-}
-
-// readOutputLoop reads JSONL lines from stdout, using handleJSONRPCResponse as
-// the interceptor and forwarding remaining lines to the given output handler.
-func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandler) {
-	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
 // wireTurnActive points the base's turn-state hook at b.sink.
@@ -1395,7 +1299,7 @@ func (b *acpBase) wireTurnActive() {
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with b.mu held: the hook broadcasts, and a broadcast can block on
 // a slow transport.
-func (b *jsonrpcBase) notePromptActive() {
+func (b *acpBase) notePromptActive() {
 	if b.publishTurnActive == nil {
 		return
 	}
@@ -1404,69 +1308,6 @@ func (b *jsonrpcBase) notePromptActive() {
 	seq := b.nextTurnSeq()
 	b.mu.Unlock()
 	b.publishTurnActive(active, seq)
-}
-
-// SendInput starts one prompt. The Worker queue holds later input until this
-// prompt ends.
-func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	b.mu.Lock()
-	if b.sessionID == "" {
-		b.mu.Unlock()
-		return fmt.Errorf("agent has no active session")
-	}
-	if b.stopped {
-		b.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
-	}
-	if b.promptActive {
-		b.mu.Unlock()
-		return ErrAgentBusy
-	}
-	b.promptActive = true
-	b.mu.Unlock()
-	b.notePromptActive()
-	err := b.sendACPPromptDetached(content, attachments, func(resp json.RawMessage, err error) {
-		if err != nil {
-			completion := MessageCompletionError
-			if b.IsStopped() {
-				completion = MessageCompletionInterrupted
-			}
-			b.finishIncompleteACPPrompt(completion)
-			if !b.IsStopped() {
-				slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
-				b.sink.PersistLeapMuxNotification(map[string]interface{}{"type": contracts.NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err)})
-			}
-		} else {
-			b.handleACPPromptResponse(resp)
-		}
-		b.mu.Lock()
-		b.promptActive = false
-		b.steerRunID = ""
-		b.mu.Unlock()
-		b.notePromptActive()
-	})
-	if err != nil {
-		b.mu.Lock()
-		b.promptActive = false
-		b.steerRunID = ""
-		b.mu.Unlock()
-		b.notePromptActive()
-	}
-	return err
-}
-
-func (b *acpBase) sendACPPromptDetached(content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
-	b.mu.Lock()
-	sessionID := b.sessionID
-	b.mu.Unlock()
-	params, err := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt":    buildACPPromptBlocks(content, classifyAttachments(attachments)),
-	})
-	if err != nil {
-		return fmt.Errorf("marshal ACP prompt params: %w", err)
-	}
-	return b.sendDetachedRequest(acpMethodSessionPrompt, params, handle)
 }
 
 // SupportsSteering reports whether the handshake found an advertised steer
@@ -1480,6 +1321,8 @@ func (b *acpBase) SupportsSteering() bool {
 }
 
 func (b *acpBase) steerAdvertised(content string, attachments []*leapmuxv1.Attachment) error {
+	b.sessionMu.RLock()
+	defer b.sessionMu.RUnlock()
 	b.mu.Lock()
 	method, active, sessionID := b.steerMethod, b.promptActive, b.sessionID
 	b.mu.Unlock()
@@ -1539,11 +1382,34 @@ func (b *acpBase) stopAndWait() {
 	_ = b.Wait()
 }
 
+// noteACPInterruptRequested records a stop against the turn that is running.
+//
+// A stop that reaches an idle agent notes nothing: there is no turn to cut, and a
+// note left behind would relabel the next turn's first result as interrupted.
+func (b *acpBase) noteACPInterruptRequested() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.promptActive {
+		b.interruptRequested = true
+	}
+}
+
+// acpInterruptRequested reports whether the running turn was stopped.
+//
+// It PEEKS rather than takes, because one stop cuts every tool still in flight and
+// each of them persists its own row. The note is dropped when the turn ends.
+func (b *acpBase) acpInterruptRequested() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.interruptRequested
+}
+
 // clearActivePrompt resets the provider-local active-turn state.
-func (b *jsonrpcBase) clearActivePrompt() {
+func (b *acpBase) clearActivePrompt() {
 	b.mu.Lock()
 	b.promptActive = false
 	b.steerRunID = ""
+	b.interruptRequested = false
 	b.mu.Unlock()
 	b.notePromptActive()
 }
@@ -1591,85 +1457,32 @@ func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 	b.sink.ReportProgress(ModelTextProgress("acp:"+acpUpdateAgentThoughtChunk, text))
 }
 
-// flushThoughtBuffer persists the buffered thought text (if any) as one
-// agent_thought_chunk message and resets the buffer.
+// flushThoughtBuffer persists the buffered thought text (if any) as one assembled
+// reasoning message and resets the buffer.
 func (b *acpBase) flushThoughtBuffer() {
-	b.flushTextBuffer(AssembledMessageKindReasoning, acpUpdateAgentThoughtChunk)
+	b.flushTextBuffer(AssembledMessageKindReasoning)
 }
 
 // flushAssistantBuffer persists one completed assistant-text segment.
 func (b *acpBase) flushAssistantBuffer() {
-	b.flushTextBuffer(AssembledMessageKindText, acpUpdateAgentMessageChunk)
+	b.flushTextBuffer(AssembledMessageKindText)
 }
 
-func (b *acpBase) flushTextBuffer(kind AssembledMessageKind, sessionUpdate string) {
+func (b *acpBase) flushTextBuffer(kind AssembledMessageKind) {
 	text := b.takeText(kind)
 	if text == "" {
 		return
 	}
-	b.sink.ReportProgress(CompleteModelProgress("acp:" + sessionUpdate))
-	b.persistTextMessage(sessionUpdate, text)
+	b.persistCompletedACPText(kind, text)
 }
 
-func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
-	if text == "" {
-		return
-	}
-
-	msgContent, err := json.Marshal(map[string]interface{}{
-		"sessionUpdate": sessionUpdate,
-		"content": map[string]interface{}{
-			"type": "text",
-			"text": text,
-		},
-	})
-	if err != nil {
-		slog.Warn("marshal acp text content", "agent_id", b.agentID, "error", err)
-		return
-	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msgContent, SpanInfo{}); err != nil {
-		slog.Error("persist acp text", "agent_id", b.agentID, "session_update", sessionUpdate, "error", err)
-	}
-}
-
-func (b *acpBase) persistPromptResponse(
-	assistantText string,
-	resp json.RawMessage,
-	enrich func(json.RawMessage) json.RawMessage,
-) {
-	b.sink.ReportProgress(CompleteModelProgress("acp:" + acpUpdateAgentMessageChunk))
-	b.persistTextMessage(acpUpdateAgentMessageChunk, assistantText)
-
-	resp = unwrapACPResult(resp)
-	if enrich != nil {
-		resp = enrich(resp)
-	}
-	if err := b.sink.PersistTurnEnd(resp, SpanInfo{}); err != nil {
+// persistPromptResponse stores the turn-end row. The caller closes each text
+// segment first, so this handles the response frame and the spans alone.
+func (b *acpBase) persistPromptResponse(resp json.RawMessage, numToolUses int) {
+	if err := b.sink.PersistTurnEnd(withToolUseCount(MessageContent{Original: resp}, numToolUses), SpanInfo{}); err != nil {
 		slog.Error("persist acp prompt result", "agent_id", b.agentID, "error", err)
 	}
 	b.sink.ResetSpans()
-}
-
-// unwrapACPResult extracts the inner content from an ACP result message.
-// Some ACP server versions return session/prompt results wrapped in:
-//
-//	{id, role: "result", seq, created_at, content: {stopReason, usage, ...}}
-//
-// The frontend classifier expects stopReason at the top level, so we unwrap
-// the content field. This is a no-op when the response is not wrapped.
-func unwrapACPResult(resp json.RawMessage) json.RawMessage {
-	var wrapper struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(resp, &wrapper); err != nil {
-		slog.Warn("acp unwrap result unmarshal failed", "error", err)
-		return resp
-	}
-	if wrapper.Role != "result" || len(wrapper.Content) == 0 {
-		return resp
-	}
-	return wrapper.Content
 }
 
 // acpToolCallEnvelope is the parsed shape of an ACP session/notification
@@ -1746,15 +1559,12 @@ type acpSubagentObservation struct {
 	// CloseRow true => give a final status to the row after the upsert (Status carries
 	// the final status).
 	CloseRow bool
-	// Spawns true => this tool call STARTS a subagent, so it owns no span: the
-	// subagent's output lands in its own child transcript, and a rail held open
-	// for the whole run only pushes every concurrent tool one column right.
+	// Spawns identifies a subagent launch request, including a request with invalid arguments.
+	// It owns no span, so a long run does not move concurrent tools one column right.
 	//
-	// Only a detector that recognizes its provider's spawn payload sets this. A
-	// progress observation, a tool-request observation, and a closing
-	// observation all leave it false, because each one describes a row that
-	// already exists. The provider states the fact; shared code must not infer
-	// it from which registry fields happen to be filled.
+	// An update that identifies a launch can also set Spawns. Ordinary progress
+	// and completion observations leave it false. The provider supplies this
+	// fact; shared code must not infer it from the registry fields.
 	Spawns bool
 	// Mode selects close-only vs upsert. Defaults to acpModeUpsert (zero value);
 	// set acpModeCloseOnly explicitly when the observation carries no descriptive
@@ -1803,7 +1613,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		opened := b.sink.GetSpanType(tc.ToolCallID) != ""
 		b.completeTool(tc.ToolCallID)
 		b.completeACPToolOutput(tc.ToolCallID)
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: update}, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist final acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
@@ -1820,21 +1630,27 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	// transcript, so a rail held open for the whole subagent run only pushes
 	// every concurrent tool one column right.
 	spawns := acpObservationIsSpawn(obs)
-	if err := openToolSpan(b.sink, update, tc.ToolCallID, spanType, spawns); err != nil {
+	if err := openToolSpan(b.sink, MessageContent{Original: update}, tc.ToolCallID, spanType, spawns); err != nil {
 		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
+	} else {
+		b.rememberACPToolRequest(tc.ToolCallID, update)
 	}
 	b.applySubagentObservation(obs)
 }
 
+// rememberIncompleteACPTool retains a tool call that opened but has not ended.
+//
+// The frame is kept UNCHANGED. An earlier build rewrote `sessionUpdate` to
+// `tool_call_update` and replaced the agent's status with `in_progress`, so an
+// interrupted turn stored a frame the agent never sent. The turn-end row now stores
+// the agent's own last frame, and LeapMux's own completion column states that the
+// call did not finish.
 func (b *acpBase) rememberIncompleteACPTool(toolCallID string, update json.RawMessage) {
 	var incoming map[string]json.RawMessage
 	if json.Unmarshal(update, &incoming) != nil {
 		return
 	}
-	delete(incoming, "status")
-	incoming["sessionUpdate"] = json.RawMessage(`"tool_call_update"`)
-
-	b.rememberIncompleteTool(toolCallID, incoming)
+	b.rememberIncompleteTool(toolCallID, incoming, update)
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
@@ -1846,12 +1662,14 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	if tcu.ToolCallID == "" {
 		return
 	}
+	b.enrichACPToolRequest(tcu.ToolCallID, incoming)
 	if b.toolOutputProgress != nil {
 		if total, minimum, ok := b.toolOutputProgress(tcu); ok {
 			b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, total, minimum))
 		}
 	}
-	update, tcu, ok = b.mergeACPToolCallUpdate(tcu.ToolCallID, incoming, acpStatusIsFinal(tcu.Status))
+	originalUpdate := update
+	update, tcu, ok = b.mergeACPToolCallUpdate(tcu.ToolCallID, incoming, acpStatusIsFinal(tcu.Status), originalUpdate)
 	if !ok {
 		return
 	}
@@ -1909,8 +1727,15 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		if spanType == "" {
 			spanType = acpUpdateToolCall
 		}
-		update = b.expandACPTerminalResult(update)
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
+		content := b.acpMessageContent(originalUpdate, update)
+		// The reader stopped this turn, so the row reports the stop rather than the
+		// status a cancelled call happens to carry. Cursor and Reasonix send
+		// `failed` for a command the reader stopped, and `Error` names the wrong
+		// cause; OpenCode and Kilo send an empty `completed`, which names none.
+		if b.acpInterruptRequested() {
+			content.Completion = MessageCompletionInterrupted
+		}
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
@@ -1923,8 +1748,9 @@ func (b *acpBase) mergeACPToolCallUpdate(
 	toolCallID string,
 	incoming map[string]json.RawMessage,
 	final bool,
+	original json.RawMessage,
 ) (json.RawMessage, acpToolCallUpdateEnvelope, bool) {
-	return b.mergeToolUpdate(toolCallID, incoming, final)
+	return b.mergeToolUpdate(toolCallID, incoming, final, original)
 }
 
 func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage, acpToolCallUpdateEnvelope, bool) {
@@ -1948,44 +1774,6 @@ func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (acpToolCallUpda
 	update.RawOutput = fields["rawOutput"]
 	update.Meta = fields["_meta"]
 	return update, true
-}
-
-func (b *acpBase) expandACPTerminalResult(update json.RawMessage) json.RawMessage {
-	var value map[string]interface{}
-	if json.Unmarshal(update, &value) != nil {
-		return update
-	}
-	content, _ := value["content"].([]interface{})
-	for index, item := range content {
-		block, _ := item.(map[string]interface{})
-		terminalID, _ := block["terminalId"].(string)
-		if terminalID == "" {
-			continue
-		}
-		result, ok := b.takeCompletedTerminal(terminalID)
-		if !ok {
-			continue
-		}
-		content[index] = map[string]interface{}{
-			"type":    "content",
-			"content": map[string]interface{}{"type": "text", "text": result.Output},
-		}
-		metadata := map[string]interface{}{
-			"exit":      result.ExitCode,
-			"signal":    result.Signal,
-			"truncated": result.Truncated,
-		}
-		value["rawOutput"] = map[string]interface{}{
-			"output":    result.Output,
-			"truncated": result.Truncated,
-			"metadata":  metadata,
-		}
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return update
-	}
-	return encoded
 }
 
 // acpObservationIsSpawn reports whether an observation announces that this tool
@@ -2192,56 +1980,6 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 	b.sink.BroadcastSessionInfo(info)
 }
 
-// parseJSONRPCError extracts the code and message from a JSON-RPC error
-// response. Returns ok=false if resp is empty, null, or not an error object.
-func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool) {
-	if len(resp) == 0 || string(resp) == "null" {
-		return 0, "", false
-	}
-	var rpcErr struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(resp, &rpcErr); err != nil {
-		return 0, "", false
-	}
-	if rpcErr.Message == "" {
-		return 0, "", false
-	}
-	return rpcErr.Code, rpcErr.Message, true
-}
-
-type jsonRPCResponseError struct {
-	Code    int
-	Message string
-}
-
-func (e *jsonRPCResponseError) Error() string {
-	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
-}
-
-func hasJSONRPCErrorCode(err error, codes ...int) bool {
-	var responseErr *jsonRPCResponseError
-	return errors.As(err, &responseErr) && slices.Contains(codes, responseErr.Code)
-}
-
-func classifyJSONRPCDeliveryError(operation string, err error) error {
-	var responseErr *jsonRPCResponseError
-	if errors.As(err, &responseErr) {
-		return fmt.Errorf("%s: %w", operation, err)
-	}
-	return fmt.Errorf("%w: provider did not confirm delivery for %s: %v", ErrDeliveryUncertain, operation, err)
-}
-
-// jsonRPCResultError returns an error if resp is a JSON-RPC error response.
-func jsonRPCResultError(resp json.RawMessage) error {
-	code, message, ok := parseJSONRPCError(resp)
-	if !ok {
-		return nil
-	}
-	return &jsonRPCResponseError{Code: code, Message: message}
-}
-
 // ExtractJSONRPCID extracts the JSON-RPC "id" field from a raw JSON payload,
 // returning the raw bytes, its string representation, and whether extraction succeeded.
 func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
@@ -2304,6 +2042,7 @@ func (b *acpBase) startACPHandshake(
 
 	// Install the progress-reset decorator once for every ACP provider.
 	b.sink = newModelProgressResetSink(b.sink)
+	b.beginSessionUpdates()
 
 	scanner := newStdoutScanner(stdout)
 	go b.readOutputLoop(scanner, b.handleOutput)
@@ -2353,16 +2092,9 @@ func (b *acpBase) startACPHandshake(
 		return nil, b.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
 	}
 
-	// Write under the lock. The reader goroutine starts above, before Start*
-	// reaches here, so it runs in parallel with the rest of the handshake. A
-	// server that pushes a config_option_update right after session/new reads
-	// b.sessionID under b.mu (the list-change broadcast in
-	// handleACPConfigOptionUpdate), and the queue goroutine reads b.steerMethod
-	// under b.mu (SupportsSteering, steerAdvertised, GooseCLIAgent.SteerInput).
-	// The invariant, stated once for the whole handshake: every access to
-	// b.steerMethod, b.sessionID, and b.workingDir happens under b.mu. This
-	// matches applyHandshakeModels and applyHandshakeMode, which already write
-	// their shared fields under the lock.
+	// The reader starts before initialization completes.
+	// Buffer session updates until startup installs the session identity and settings.
+	// Protect shared protocol fields with b.mu.
 	b.mu.Lock()
 	b.sessionID = session.SessionID
 	b.workingDir = opts.WorkingDir
@@ -2492,7 +2224,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, s
 		}
 	}()
 
-	initParams, err := acpStandardInitParams()
+	initParams, err := acpStandardInitParams(b.clientCapabilityMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -2510,6 +2242,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, s
 			return nil, err
 		}
 	}
+	b.finishSessionUpdates()
 	// Every concrete ACP agent (*T) implements Agent via its embedded acpBase
 	// plus its own overrides; assert it here so acpStart can stay generic over T.
 	agent, ok := any(a).(Agent)
@@ -2525,7 +2258,6 @@ func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, s
 // launch-time "does not implement Agent".
 var (
 	_ Agent = (*CursorCLIAgent)(nil)
-	_ Agent = (*CopilotCLIAgent)(nil)
 	_ Agent = (*GooseCLIAgent)(nil)
 	_ Agent = (*KiloAgent)(nil)
 	_ Agent = (*OpenCodeAgent)(nil)
@@ -3020,6 +2752,7 @@ func (b *acpBase) applySecondaryStartup(handshake *acpSessionResult, opts Option
 func (b *acpBase) applyPermissionModeStartup(handshake *acpSessionResult, opts Options, defaultMode, requestedModel string) error {
 	return b.applySecondaryStartup(handshake, opts, requestedModel, func() error {
 		b.applyHandshakeMode(handshake, defaultMode)
+		b.finishSessionUpdates()
 		return b.applyStartupPermissionMode(
 			opts.PermissionMode(), opts.NewSessionDefaultOptionIDs[OptionIDPermissionMode])
 	})
@@ -3062,13 +2795,7 @@ func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
 	b.mu.Lock()
 	b.options.clearUnresolved()
 	oldMode := b.permissionMode
-	// A launch-fixed-model provider (e.g. Reasonix) cannot switch model over ACP;
-	// ignore any model select so the stored model stays in sync with the running
-	// process (a model change relaunches instead, via UpdateSettings).
-	var modelChanged, listChanged bool
-	if !b.modelFixedAtLaunch {
-		modelChanged, listChanged = b.applyConfigOptionModelsLocked(options)
-	}
+	modelChanged, listChanged := b.applyConfigOptionModelsLocked(options)
 	// Apply the secondary axis (permission mode or primary agent) through the resolved channel,
 	// so this path no longer hand-picks which family-specific Locked method to call -- that
 	// distinction lives in secondaryChannel(). The returned value/changed are then mapped onto
@@ -3368,7 +3095,7 @@ func parseACPConfigOptions(raw json.RawMessage) []acpConfigOption {
 // sendSessionRPC sends an ACP session/* request under withSessionID, injecting the current
 // sessionId alongside extraParams, and returns the raw response after unwrapping a JSON-RPC
 // result error. It centralizes the three things every session RPC must do -- hold the
-// withSessionID lock discipline, marshal {sessionId, ...}, and unwrap jsonRPCResultError --
+// withSessionID lock discipline, marshal {sessionId, ...}, and decode the JSON-RPC response --
 // so a new session RPC can't forget any of them. Callers that need the response body (e.g.
 // set_config_option folding the refreshed configOptions) use the returned RawMessage; callers
 // that only care about success discard it. (cancelSession is a notification with no response,
@@ -3700,6 +3427,67 @@ func (b *acpBase) applyStartupOptions(opts Options) {
 }
 
 // cancelSession sends a session/cancel notification.
+// rememberOutstandingPermission records a permission request the agent is now waiting
+// on, keyed by its JSON-RPC id.
+//
+// The agent BLOCKS on the answer. A cancel that sends no answer therefore stops
+// nothing: Goose was measured running for the rest of the session after one, with the
+// thinking indicator never stopping.
+func (b *acpBase) rememberOutstandingPermission(raw []byte) {
+	wireID, _, found := ExtractJSONRPCID(raw)
+	if !found {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.outstandingPermissions == nil {
+		b.outstandingPermissions = make(map[string]json.RawMessage)
+	}
+	b.outstandingPermissions[string(wireID)] = append(json.RawMessage(nil), wireID...)
+}
+
+// forgetOutstandingPermission drops the request one outgoing frame answers.
+//
+// Every control response reaches the agent through SendRawInput, so reading the id
+// there is what keeps this list to the requests still waiting. A frame that answers
+// nothing (a notification, a prompt) carries no id and changes nothing.
+func (b *acpBase) forgetOutstandingPermission(raw []byte) {
+	wireID, _, found := ExtractJSONRPCID(raw)
+	if !found {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.outstandingPermissions, string(wireID))
+}
+
+// SendRawInput forwards one frame and notes the request it answers.
+func (b *acpBase) SendRawInput(data []byte) error {
+	b.forgetOutstandingPermission(data)
+	return b.jsonrpcBase.SendRawInput(data)
+}
+
+// cancelOutstandingPermissions answers every permission request still waiting, with
+// the protocol's own word for "the reader gave no decision".
+//
+// It answers rather than drops: the agent is blocked on the response, so a request
+// withdrawn in silence leaves the turn running with nothing left that could end it.
+// `cancelled` is the outcome the protocol defines for exactly this, and it invents no
+// decision the reader did not make.
+func (b *acpBase) cancelOutstandingPermissions() {
+	b.mu.Lock()
+	outstanding := b.outstandingPermissions
+	b.outstandingPermissions = nil
+	b.mu.Unlock()
+	for _, wireID := range outstanding {
+		if err := b.sendResponse(wireID, map[string]any{
+			"outcome": map[string]any{"outcome": acpPermissionOutcomeCancelled},
+		}); err != nil {
+			slog.Warn("cancel outstanding ACP permission", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		}
+	}
+}
+
 func (b *acpBase) cancelSession() error {
 	return b.withSessionID(func(sessionID string) error {
 		params, err := json.Marshal(map[string]interface{}{
@@ -3735,6 +3523,12 @@ func (b *acpBase) Interrupt() error {
 	if sessionID == "" {
 		return nil
 	}
+	// Noted BEFORE the cancel goes out, so a result the provider sends the instant
+	// it receives one is already known to belong to a stop.
+	b.noteACPInterruptRequested()
+	// The answers go FIRST. The agent blocks on them, so a cancel that arrives while
+	// one is outstanding stops nothing until the block is released.
+	b.cancelOutstandingPermissions()
 	return b.cancelSession()
 }
 
@@ -3751,19 +3545,34 @@ func hasACPOption(options []*leapmuxv1.AvailableOption, id string) bool {
 	return false
 }
 
-func (b *acpBase) handlePlan(update json.RawMessage) {
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{}); err != nil {
-		slog.Error("persist acp plan", "agent_id", b.agentID, "error", err)
+// handleACPCancelRequest withdraws the control request an agent cancels.
+//
+// This is a PROTOCOL notification and not transcript content, so it writes no
+// row. Without this case the shared dispatcher's default branch persisted the
+// raw frame, and a reader who stopped a turn saw a line of JSON-RPC where the
+// withdrawn request had been.
+//
+// The withdrawal is separate from the `cancelled` outcome LeapMux sends for its
+// own interrupt (see cancelOutstandingPermissions). An agent may cancel a
+// request nobody asked it to cancel, which is the case only this handler covers.
+func (b *acpBase) handleACPCancelRequest(params json.RawMessage) {
+	var notification struct {
+		RequestID json.RawMessage `json:"requestId"`
 	}
-}
-
-func (b *acpBase) handleRequestPermission(id string, content []byte) {
-	if id == "" {
-		slog.Warn("acp requestPermission missing id", "agent_id", b.agentID)
+	if json.Unmarshal(params, &notification) != nil {
 		return
 	}
-	claimToken := b.sink.PersistControlRequest(id, content)
-	b.sink.BroadcastControlRequest(id, content, claimToken)
+	requestID, valid := JSONRPCControlRequestID(notification.RequestID)
+	if !valid {
+		return
+	}
+	b.sink.CancelControlRequest(requestID)
+}
+
+func (b *acpBase) handlePlan(update json.RawMessage) {
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: update}, SpanInfo{}); err != nil {
+		slog.Error("persist acp plan", "agent_id", b.agentID, "error", err)
+	}
 }
 
 // handleOutput dispatches a single parsed output line using the provider's
@@ -3784,8 +3593,13 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 	switch line.Method {
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
+	case contracts.MCPElicitationMethodACP:
+		b.publishControlRequest(b.sink, line.Raw)
 	case acpMethodSessionRequestPermission:
-		b.handleRequestPermission(line.IDString(), line.Raw)
+		b.rememberOutstandingPermission(line.Raw)
+		b.publishControlRequest(b.sink, line.Raw)
+	case acpMethodCancelRequestSnake, acpMethodCancelRequestCamel:
+		b.handleACPCancelRequest(line.Params)
 	case acpMethodTerminalCreate,
 		acpMethodTerminalOutput,
 		acpMethodTerminalWaitForExit,
@@ -3796,7 +3610,14 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 		if extraMethod != nil && extraMethod(line) {
 			return
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
+		// A request needs a response even if the transcript write fails.
+		// Keep the raw identifier so numeric IDs retain their exact value.
+		if id, _, ok := ExtractJSONRPCID(line.Raw); line.Method != "" && ok {
+			if err := b.sendErrorResponse(id, -32601, "Method not supported: "+line.Method); err != nil {
+				slog.Warn("acp unsupported request response failed", "agent_id", b.agentID, "method", line.Method, "error", err)
+			}
+		}
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
 		}
 	}

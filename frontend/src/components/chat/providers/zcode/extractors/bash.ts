@@ -2,6 +2,7 @@ import type { CommandResultSource } from '../../../results/commandResult'
 import type { ZCodeRow } from './toolCommon'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { splitExitCodeMarker } from '../../../results/exitCodeMarker'
 import { zcodeErrorText, zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
 /** The `perf.detail.kind` that marks a command's telemetry block. */
@@ -68,13 +69,26 @@ export function extractZCodeBash(row: ZCodeRow): ZCodeBashCommand | null {
  * A non-zero exit is an error even when the app-server did not mark the call one:
  * it reports a failed command as a SUCCESSFUL tool call whose content says
  * "Exit code 3", so the exit code is the only signal that the command failed.
+ *
+ * That same line is also the content's first line, so it is consumed here and the
+ * code reaches the reader once. When the app-server sent no telemetry the line is
+ * the only statement of the code, and it supplies it.
  */
 export function zcodeBashToCommandSource(bash: ZCodeBashCommand): CommandResultSource {
+  // ZCode states the exit code TWICE: as this structured field, and as the first
+  // line of the content. The line is consumed so the reader sees the code once, in
+  // the status label.
+  const marked = splitExitCodeMarker(bash.output)
+  // A disagreement between the two is worth showing, so the line survives it. The
+  // structured field stays the one the label uses, because it is the one the
+  // app-server computed rather than formatted.
+  const agrees = marked.exitCode !== undefined && (bash.exitCode === null || marked.exitCode === bash.exitCode)
+  const exitCode = bash.exitCode ?? (agrees ? marked.exitCode : undefined)
   return {
-    output: bash.output,
-    exitCode: bash.exitCode ?? undefined,
+    output: agrees ? marked.output : bash.output,
+    exitCode: exitCode ?? undefined,
     durationMs: bash.durationMs,
     interrupted: bash.timedOut,
-    isError: bash.isError || bash.timedOut || (bash.exitCode != null && bash.exitCode !== 0),
+    isError: bash.isError || bash.timedOut || (exitCode != null && exitCode !== 0),
   }
 }

@@ -1,20 +1,10 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 
-// ---------------------------------------------------------------------------
-// Persisted control-response row -- shared parsing + neutral fallback (issue #258)
-//
-// A LEAF module (only pure json/text utils + the label constants) so provider plugins, the
-// transcript renderer (messageRenderers), and the scroll-rail preview (chatMarkPreview) can all
-// import it without pulling in the plugin registry -- that would be a module-init cycle.
-//
-// The backend persists every non-self-displayed control answer as
-//   {isSynthetic:true, controlResponse:{provider, requestId, request, response}}
-// where `response` is the provider-native payload sent to the agent and `request` is the minimal
-// render context the backend snapshotted before deleting the pending request. This module parses
-// that envelope and provides the provider-NEUTRAL fallback derivation; each provider plugin's
-// `controlResponseDisplay` owns its own native wire shapes and degrades to `fallback*` here.
-// ---------------------------------------------------------------------------
+// This module reads worker metadata separately from the native request and response.
+// Provider plugins derive display text from the native payloads.
 
 // The user-facing labels for a persisted control-response answer, derived by the frontend from the
 // native response payload (issue #258). They live in THIS leaf -- the module that owns
@@ -22,10 +12,24 @@ import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 // messageRenderers, which imports CONTROL_RESPONSE_FEEDBACK_LEAD) AND the scroll-rail dot preview
 // (controlResponsePreviewText below), so the dot reads IDENTICALLY to the row it jumps to and the
 // wording lives in one place instead of being mirrored by hand across the two surfaces.
-/** An approved control request (ExitPlanMode approval, an "allow" permission decision). */
-const CONTROL_RESPONSE_APPROVED_LABEL = 'Approved'
-/** A declined control request with no typed reason. */
-const CONTROL_RESPONSE_REJECTED_LABEL = 'Rejected'
+/**
+ * The words a saved decision shows are the words its own BUTTON carried, so one answer
+ * reads the same before and after the reader gives it. The two pairs below are the two
+ * control families that state no option list of their own:
+ *
+ *   - a bare permission, whose buttons are Allow and Deny (`GenericToolActions`);
+ *   - a plan approval, whose buttons are Approve and Reject (`ExitPlanModeControl`).
+ *
+ * A permission that DOES carry an option list reads its own option back instead, through
+ * `permissionOptionLabel`.
+ */
+export const CONTROL_DECISION_WORDS = {
+  permission: { allow: 'Allow', deny: 'Deny' },
+  plan: { allow: 'Approve', deny: 'Reject' },
+} as const
+
+/** The pair of words one saved decision chooses between. */
+export type ControlDecisionWords = typeof CONTROL_DECISION_WORDS[keyof typeof CONTROL_DECISION_WORDS]
 /** Lead-in shown above the user's typed rejection reason (their feedback follows as markdown). */
 export const CONTROL_RESPONSE_FEEDBACK_LEAD = 'Sent feedback:'
 /**
@@ -34,19 +38,13 @@ export const CONTROL_RESPONSE_FEEDBACK_LEAD = 'Sent feedback:'
  */
 const CONTROL_RESPONSE_GENERIC_LABEL = 'Responded'
 
-/**
- * The parsed neutral envelope of a persisted synthetic control-response row. Fields are
- * tolerant-optional: a malformed or legacy row still parses so the caller can degrade via
- * {@link fallbackControlResponseDisplay} rather than throwing.
- */
+/** A response resolved from the original message and its separate request context. */
 export interface PersistedControlResponse {
-  /** AgentProvider enum name minus its `AGENT_PROVIDER_` prefix (CODEX, OPENCODE, ...); '' when absent. */
-  provider: string
-  /** Id of the control request this answers; '' when absent. */
   requestId: string
-  /** Minimal provider-pruned request context, or undefined when the row omitted it. */
+  claimToken: string
+  /** Complete native request, when available. */
   request: Record<string, unknown> | undefined
-  /** The provider-native response payload as sent to the agent, or undefined when malformed. */
+  /** Native response, or undefined when the original bytes are not a JSON object. */
   response: Record<string, unknown> | undefined
 }
 
@@ -112,45 +110,43 @@ export function feedbackOrLabel(reason: string, fallbackLabel: string): ControlR
   return reason ? feedback(reason) : label(fallbackLabel)
 }
 
-/**
- * Envelope predicate shared by every provider's classify: a synthetic row whose `controlResponse`
- * is an object (the shape persistControlResponseRow writes). Keeping it here means each plugin's
- * classify delegates to one definition rather than re-hardcoding the shape.
- */
-export function isPersistedControlResponse(
-  obj: unknown,
-): obj is { isSynthetic: true, controlResponse: Record<string, unknown> } {
-  return isObject(obj) && obj.isSynthetic === true && isObject(obj.controlResponse)
-}
-
-/** Parse the envelope; null when the shape isn't a persisted control response. */
+/** Resolve one control response without adding fields to either provider payload. */
 export function parsePersistedControlResponse(
-  obj: unknown,
+  parsed: ParsedMessageContent | null | undefined,
 ): PersistedControlResponse | null {
-  if (!isPersistedControlResponse(obj))
+  if (!parsed || parsed.wrapper || !isObject(parsed.messageMetadata))
     return null
-  const cr = obj.controlResponse
+  const requestId = parsed.messageMetadata[MESSAGE_METADATA_FIELD.ControlRequestID]
+  if (typeof requestId !== 'string')
+    return null
   return {
-    provider: pickString(cr, 'provider', ''),
-    requestId: pickString(cr, 'requestId', ''),
-    request: isObject(cr.request) ? cr.request : undefined,
-    response: isObject(cr.response) ? cr.response : undefined,
+    requestId,
+    claimToken: pickString(parsed.messageMetadata, MESSAGE_METADATA_FIELD.ControlRequestClaimToken),
+    request: isObject(parsed.supplementalContent) ? parsed.supplementalContent : undefined,
+    response: parsed.parentObject,
   }
 }
 
 /**
  * Coarse display from the neutral behavior envelope (`{response:{response:{behavior, message}}}`):
- * allow -> "Approved"; deny with typed feedback -> that feedback; bare deny -> "Rejected". Null when
- * `response` isn't that envelope (e.g. a JSON-RPC decision a provider plugin reads instead). This is
- * ALSO Claude's whole derivation -- its native response IS this envelope.
+ * allow -> the positive word; deny with typed feedback -> that feedback; bare deny -> the negative
+ * word. Null when `response` isn't that envelope (e.g. a JSON-RPC decision a provider plugin reads
+ * instead). This is ALSO Claude's whole derivation -- its native response IS this envelope.
+ *
+ * `words` states which control the answer belongs to, because the envelope itself does not: a plan
+ * approval and a bare permission share it, and their buttons say different things. The caller knows
+ * which request it holds; this function cannot.
  */
-export function controlBehaviorDisplay(response: unknown): ControlResponseDisplay | null {
+export function controlBehaviorDisplay(
+  response: unknown,
+  words: ControlDecisionWords = CONTROL_DECISION_WORDS.permission,
+): ControlResponseDisplay | null {
   const env = decodeControlBehaviorEnvelope(response)
   if (!env)
     return null
   if (env.behavior === 'allow')
-    return label(CONTROL_RESPONSE_APPROVED_LABEL)
-  return feedbackOrLabel(env.message, CONTROL_RESPONSE_REJECTED_LABEL)
+    return label(words.allow)
+  return feedbackOrLabel(env.message, words.deny)
 }
 
 /**
@@ -186,7 +182,7 @@ export function resolveControlResponseDisplay(
     // helpers), so a throw here is a real derivation bug, not malformed data. Log it -- otherwise
     // the answer silently renders the generic fallback forever with no trace to the cause -- then
     // fall through to the same degrade below so neither surface leaks raw wire bytes.
-    console.warn('control-response display derivation threw; degrading to fallback', { provider: cr.provider, err })
+    console.warn('Failed to derive the control response display.', { requestId: cr.requestId, err })
   }
   return fallbackControlResponseDisplay(cr)
 }

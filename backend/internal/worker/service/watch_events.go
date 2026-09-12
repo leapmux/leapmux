@@ -120,6 +120,8 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 			return
 		}
 		s := newWatchSession(svc, caller, sender)
+		// Queue the opening request before BindStream can replay newer client frames.
+		s.submit(&r)
 		release, ok := sender.BindStream(s)
 		if !ok {
 			// BindStream refused — the transport has no revise/cancel path for
@@ -134,7 +136,6 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 			return
 		}
 		go s.run(release)
-		s.submit(&r)
 	}
 }
 

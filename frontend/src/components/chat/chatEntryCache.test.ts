@@ -98,7 +98,7 @@ describe('createclassifiedentrycache', () => {
       const messages = [emptyCodexReasoning('r1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolUseSiblingBySpanId: () => hasSibling(),
+        requestRevision: () => hasSibling() ? { id: 'request', seq: 1n, contentVersion: 0, supplementalRevision: 0n } : undefined,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -125,8 +125,7 @@ describe('createclassifiedentrycache', () => {
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolUseSiblingBySpanId: () => true,
-        toolUseSiblingContentVersionBySpanId: () => openerVersion(),
+        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => true, // keep the result row visible regardless of classification
       })
       cache.visibleEntries()
@@ -146,19 +145,18 @@ describe('createclassifiedentrycache', () => {
 
   it('rebuilds a tool_result entry when its paired opener identity changes at the same content version', () => {
     createRoot((dispose) => {
-      const [openerRevision, setOpenerRevision] = createSignal({ id: 'opener-a', seq: 1n, contentVersion: 0 })
+      const [openerRevision, setOpenerRevision] = createSignal({ id: 'opener-a', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
       const messages = [claudeToolResult('tr1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolUseSiblingBySpanId: () => true,
-        toolUseSiblingRevisionBySpanId: () => openerRevision(),
+        requestRevision: () => openerRevision(),
         showHiddenMessages: () => true,
       })
       cache.visibleEntries()
       const before = cache.getEntry('tr1')!
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
-      setOpenerRevision({ id: 'opener-b', seq: 3n, contentVersion: 0 })
+      setOpenerRevision({ id: 'opener-b', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
       cache.visibleEntries()
       const after = cache.getEntry('tr1')!
 
@@ -178,8 +176,7 @@ describe('createclassifiedentrycache', () => {
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolResultSiblingBySpanId: () => true,
-        toolResultSiblingContentVersionBySpanId: () => resultVersion(),
+        resultRevision: () => ({ id: 'result', seq: 2n, contentVersion: resultVersion(), supplementalRevision: 0n }),
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -200,19 +197,18 @@ describe('createclassifiedentrycache', () => {
 
   it('rebuilds a tool_use entry when its paired hidden result identity changes at the same content version', () => {
     createRoot((dispose) => {
-      const [resultRevision, setResultRevision] = createSignal({ id: 'result-a', seq: 5n, contentVersion: 0 })
+      const [resultRevision, setResultRevision] = createSignal({ id: 'result-a', seq: 5n, contentVersion: 0, supplementalRevision: 0n })
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolResultSiblingBySpanId: () => true,
-        toolResultSiblingRevisionBySpanId: () => resultRevision(),
+        resultRevision: () => resultRevision(),
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
-      setResultRevision({ id: 'result-b', seq: 7n, contentVersion: 0 })
+      setResultRevision({ id: 'result-b', seq: 7n, contentVersion: 0, supplementalRevision: 0n })
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
 
@@ -231,8 +227,7 @@ describe('createclassifiedentrycache', () => {
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolResultSiblingBySpanId: () => hasResult(),
-        toolResultSiblingContentVersionBySpanId: () => 0,
+        resultRevision: () => hasResult() ? { id: 'result', seq: 2n, contentVersion: 0, supplementalRevision: 0n } : undefined,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -294,15 +289,13 @@ describe('createclassifiedentrycache', () => {
       const messages = [assistantText('a1', 1n, 'hi')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasToolUseSiblingBySpanId: () => true,
-        toolUseSiblingContentVersionBySpanId: () => {
+        requestRevision: () => {
           openerProbeReads++
-          return openerVersion()
+          return { id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }
         },
-        hasToolResultSiblingBySpanId: () => true,
-        toolResultSiblingContentVersionBySpanId: () => {
+        resultRevision: () => {
           resultProbeReads++
-          return resultVersion()
+          return { id: 'result', seq: 2n, contentVersion: resultVersion(), supplementalRevision: 0n }
         },
         showHiddenMessages: () => false,
       })

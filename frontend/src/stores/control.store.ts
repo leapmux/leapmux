@@ -1,35 +1,68 @@
+import type { AgentControlCancelRequest, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce } from 'solid-js/store'
+import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
+
+/**
+ * Why `payload` is empty although the agent sent bytes.
+ *
+ * `malformed`: the bytes are not JSON at all.
+ * `not-an-object`: the bytes are valid JSON, but a scalar, a null, or an array, and every
+ * reader of a payload expects an object.
+ */
+export type ControlPayloadFault = 'malformed' | 'not-an-object'
 
 export interface ControlRequest {
   requestId: string
   agentId: string
+  agentSessionId?: string
+  /** The provider from the control event remains available before agent metadata loads. */
+  agentProvider?: AgentProvider
   payload: Record<string, unknown>
-  // Per-instance token minted by the worker (AgentControlRequest.claim_token). The answer echoes it
-  // in SendControlResponseRequest so the worker's idempotency claim dedups a reused request_id per
-  // INSTANCE. The real ingestion always sets it (from the event); optional so synthetic fixtures and a
-  // pre-token worker can omit it, in which case the answer degrades to request_id-only dedup.
+  /**
+   * Set when LeapMux could not read the bytes into `payload`, which is then empty. The
+   * request is still kept: the agent BLOCKS on an answer, so dropping it leaves a turn
+   * that never ends and a reader with no question. `originalPayload` holds what arrived.
+   */
+  payloadFault?: ControlPayloadFault
+  /** Original provider bytes remain available for copying and inspection. */
+  originalPayload?: Uint8Array
+  /** The exact transcript message that supplies omitted display fields. */
+  sourceSeq?: bigint
+  /** The worker's delivery evidence for this request instance. */
+  responseState?: ControlResponseState
+  /** The worker's instance token. A response echoes it to identify the exact request. */
   claimToken?: string
 }
 
 /**
- * The request id, made unique per INSTANCE by the worker's claim token.
- *
- * A request_id alone is not unique: the agent reuses one across a restart, and
- * Claude reuses one for a revised prompt after feedback, so this store can hold
- * two instances of one id at the same time (see `respondedKeys` below). Any
- * per-request state that outlives its request -- a saved draft, a saved answer
- * -- must key on this value. A key on the id alone hands the second instance
- * what the user already answered for the first, and one Submit sends it.
- *
- * A synthetic or pre-token request carries no token and keeps the bare id,
- * which is the key it had before the token existed.
+ * Combine the request ID and worker token for drafts and response state.
+ * Providers can reuse IDs. A new token keeps each instance separate.
+ * A local request without a token uses its request ID.
  */
 export function requestInstanceId(request: ControlRequest): string {
   return request.claimToken ? `${request.requestId}:${request.claimToken}` : request.requestId
 }
 
+/** Prefer the provider attached to this request over separately loaded agent metadata. */
+export function controlRequestProvider(request: ControlRequest | null | undefined, fallback?: AgentProvider): AgentProvider | undefined {
+  return request?.agentProvider ?? fallback
+}
+
 interface ControlStoreState {
   pendingByAgent: Record<string, ControlRequest[]>
+}
+
+function mergeResponseState(current: ControlResponseState | undefined, next: ControlResponseState): ControlResponseState {
+  // A late announcement cannot undo confirmed delivery or reopen uncertain delivery.
+  if (current === ControlResponseState.DELIVERED
+    && next !== ControlResponseState.COMPLETED && next !== ControlResponseState.CANCELED) {
+    return current
+  }
+  if (current === ControlResponseState.UNCERTAIN
+    && next !== ControlResponseState.DELIVERED && next !== ControlResponseState.COMPLETED && next !== ControlResponseState.CANCELED) {
+    return current
+  }
+  return next
 }
 
 // Canonical JSON with sorted object keys, used as a payload fingerprint for
@@ -52,23 +85,11 @@ export function createControlStore() {
     pendingByAgent: {},
   })
 
-  // Track recently-responded-to requests so a post-response reconnect cannot
-  // re-add a request the user already handled. request_id alone is NOT globally
-  // unique -- the agent reuses one across a restart (a JSON-RPC / plan-mode counter
-  // that resets) and Claude reuses one for a revised ExitPlanMode prompt after
-  // feedback -- so the key is scoped to the request INSTANCE by its claimToken
-  // (the same per-instance token the worker keys its answer claim on). A genuine
-  // re-ask of the SAME request_id carries a FRESH claimToken, so it is shown rather
-  // than suppressed as a duplicate of the answered prior instance; a reconnect
-  // replay of the SAME instance carries the SAME token and is still suppressed.
-  // Only a pre-token / synthetic row (no claimToken) falls back to the payload
-  // fingerprint, preserving the old "a revised prompt differs by payload" behavior.
-  // Insertion order drives LRU eviction. Non-reactive and intentionally survives
-  // clearAgent / clearAll.
-  const respondedKeys = new Set<string>()
-  const MAX_RESPONDED = 100
+  // Keep completed and canceled instances distinct. A late delivery receipt can restore a canceled prompt for recording.
+  const removedInstances = new Map<string, ControlResponseState>()
+  const MAX_REMOVED = 100
 
-  function respondedKey(agentId: string, requestId: string, claimToken: string | undefined, payloadFp: string): string {
+  function removalKey(agentId: string, requestId: string, claimToken: string | undefined, payloadFp: string): string {
     // The `t:` / `p:` discriminator keeps a token-keyed entry from ever colliding with a
     // fingerprint-keyed one for the same (agent, request_id).
     return claimToken
@@ -76,16 +97,33 @@ export function createControlStore() {
       : `${agentId}:${requestId}:p:${payloadFp}`
   }
 
-  function rememberResponded(key: string) {
+  function rememberRemoval(key: string, state: ControlResponseState) {
     // delete-then-add bumps the entry to the most-recent insertion slot so
     // re-responding to the same key does not age it out prematurely.
-    respondedKeys.delete(key)
-    respondedKeys.add(key)
-    while (respondedKeys.size > MAX_RESPONDED) {
-      const oldest = respondedKeys.values().next().value
+    removedInstances.delete(key)
+    removedInstances.set(key, state)
+    while (removedInstances.size > MAX_REMOVED) {
+      const oldest = removedInstances.keys().next().value
       if (oldest === undefined)
         break
-      respondedKeys.delete(oldest)
+      removedInstances.delete(oldest)
+    }
+  }
+
+  function removeRequest(agentId: string, requestId: string, claimToken: string | undefined, responseState: ControlResponseState) {
+    let removed: ControlRequest | undefined
+    setState(produce((s) => {
+      const list = s.pendingByAgent[agentId]
+      const index = list?.findIndex(request => request.requestId === requestId && (request.claimToken ?? '') === (claimToken ?? '')) ?? -1
+      if (index < 0 || !list)
+        return
+      removed = list[index]
+      list.splice(index, 1)
+    }))
+    if (removed || claimToken) {
+      const key = removalKey(agentId, requestId, claimToken, removed ? canonicalJSON(removed.payload) : '')
+      if (removedInstances.get(key) !== ControlResponseState.COMPLETED)
+        rememberRemoval(key, responseState)
     }
   }
 
@@ -94,30 +132,57 @@ export function createControlStore() {
 
     addRequest(agentId: string, request: ControlRequest) {
       const fp = canonicalJSON(request.payload)
-      if (respondedKeys.has(respondedKey(agentId, request.requestId, request.claimToken, fp)))
+      const key = removalKey(agentId, request.requestId, request.claimToken, fp)
+      const previous = removedInstances.get(key)
+      if (previous !== undefined && !(previous === ControlResponseState.CANCELED && request.responseState === ControlResponseState.DELIVERED))
         return
+      removedInstances.delete(key)
       setState(produce((s) => {
         const list = s.pendingByAgent[agentId] ??= []
-        if (list.some(r => r.requestId === request.requestId && canonicalJSON(r.payload) === fp))
+        const existing = list.find(r => r.requestId === request.requestId && (r.agentSessionId ?? '') === (request.agentSessionId ?? '') && r.claimToken === request.claimToken && canonicalJSON(r.payload) === fp)
+        if (existing) {
+          if (request.responseState !== undefined)
+            existing.responseState = mergeResponseState(existing.responseState, request.responseState)
+          if (existing.originalPayload === undefined && request.originalPayload !== undefined)
+            existing.originalPayload = request.originalPayload.slice()
+          if (existing.agentProvider === undefined && request.agentProvider !== undefined)
+            existing.agentProvider = request.agentProvider
+          if (!existing.sourceSeq && request.sourceSeq && request.sourceSeq > 0n)
+            existing.sourceSeq = request.sourceSeq
           return
-        list.push(request)
+        }
+        list.push({ ...request, originalPayload: request.originalPayload?.slice() })
       }))
     },
 
-    removeRequest(agentId: string, requestId: string) {
-      let removed: ControlRequest | undefined
+    setResponseState(request: ControlRequest, responseState: ControlResponseState) {
       setState(produce((s) => {
-        const list = s.pendingByAgent[agentId]
-        if (!list)
-          return
-        const idx = list.findIndex(r => r.requestId === requestId)
-        if (idx === -1)
-          return
-        removed = list[idx]
-        list.splice(idx, 1)
+        const existing = s.pendingByAgent[request.agentId]?.find(item => item.requestId === request.requestId && item.claimToken === request.claimToken)
+        if (existing)
+          existing.responseState = mergeResponseState(existing.responseState, responseState)
       }))
-      if (removed)
-        rememberResponded(respondedKey(agentId, requestId, removed.claimToken, canonicalJSON(removed.payload)))
+    },
+
+    removeRequest(agentId: string, requestId: string, claimToken?: string) {
+      removeRequest(agentId, requestId, claimToken, ControlResponseState.COMPLETED)
+    },
+
+    cancelRequest(event: Pick<AgentControlCancelRequest, 'agentId' | 'requestId' | 'claimToken' | 'responseState'>) {
+      let retainForRecording = false
+      setState(produce((s) => {
+        const request = s.pendingByAgent[event.agentId]?.find(request => request.requestId === event.requestId && request.claimToken === event.claimToken)
+        retainForRecording = event.responseState !== ControlResponseState.COMPLETED
+          && (event.responseState === ControlResponseState.DELIVERED || request?.responseState === ControlResponseState.DELIVERED)
+        if (retainForRecording && request)
+          request.responseState = ControlResponseState.DELIVERED
+      }))
+      if (retainForRecording)
+        return
+      removeRequest(event.agentId, event.requestId, event.claimToken, event.responseState === ControlResponseState.COMPLETED ? ControlResponseState.COMPLETED : ControlResponseState.CANCELED)
+    },
+
+    clearProviderRequests(agentId: string) {
+      setState('pendingByAgent', agentId, (state.pendingByAgent[agentId] ?? []).filter(request => request.responseState === ControlResponseState.DELIVERED))
     },
 
     getRequests(agentId: string): ControlRequest[] {

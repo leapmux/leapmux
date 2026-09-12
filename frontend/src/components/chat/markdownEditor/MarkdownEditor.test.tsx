@@ -73,6 +73,42 @@ afterEach(() => {
  * rejection instead of a message.
  */
 describe('markdownEditor send', () => {
+  it('retains a hidden input draft and prevents focus and submission until the input returns', async () => {
+    const [hidden, setHidden] = createSignal(true)
+    const onSend = vi.fn()
+    let send: (() => void | Promise<void>) | undefined
+    let focus: (() => void) | undefined
+    let insert: ((text: string) => void) | undefined
+    saveDraft(DRAFT_KEY, 'saved message', -1)
+    const { getByTestId } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: DRAFT_KEY }}
+          hideInput={hidden()}
+          onSend={onSend}
+          imperative={{ sendRef: fn => send = fn, focusRef: fn => focus = fn, insertRef: fn => insert = fn }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    const input = getByTestId('composer-editor')
+    const document = input.querySelector('.ProseMirror') as HTMLElement
+    await waitFor(() => expect(document).toHaveTextContent('saved message'))
+    const focusInput = vi.spyOn(document, 'focus')
+    expect(input).toHaveAttribute('hidden')
+    focus?.()
+    insert?.('hidden insertion')
+    await send?.()
+    expect(focusInput).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
+    expect((await loadDraft(DRAFT_KEY)).content).toBe('saved message')
+    setHidden(false)
+    expect(input).not.toHaveAttribute('hidden')
+    await send?.()
+    expect(onSend).toHaveBeenCalledWith('saved message')
+  })
+
   it('reports a failure of the post-send reset rather than rejecting', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const resetFailure = new Error('reset failed')
@@ -515,6 +551,52 @@ describe('markdownEditor surface', () => {
     await waitFor(() => expect(setContent).toBeTypeOf('function'))
     setContent?.('Stop when 2 * 3 = 6')
     await waitFor(() => expect(seen.at(-1)?.trim()).toBe('Stop when 2 \\* 3 = 6'))
+  })
+
+  /**
+   * A filename is not markup, and the agent is not a markdown reader.
+   *
+   * The GitHub Flavored Markdown autolink rule escapes every dot that follows a `w`
+   * so a bare `www.example.com` cannot be re-read as a link, and it cannot tell that
+   * from the end of an ordinary word. A live census asked ten providers for
+   * `blank-new.txt`; the message they received said `blank-new\.txt`, and two of them
+   * created a file with the backslash in its name (RL-021).
+   */
+  it('reports a filename without the autolink rule escape', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('Create blank-new.txt and raw.json')
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('Create blank-new.txt and raw.json'))
+  })
+
+  /** A backslash inside a code span is the reader's own, so it survives the send. */
+  it('keeps a backslash that a code span holds', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('match `new\\.txt` exactly')
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('match `new\\.txt` exactly'))
   })
 
   /**

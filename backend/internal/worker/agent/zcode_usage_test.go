@@ -213,22 +213,37 @@ func TestZCodeAugmentWithUsage_EmptySnapshotReturnsRaw(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":"turn.completed"}`)
-	assert.Equal(t, raw, zcodeAugmentWithUsage(raw, zcodeUsageSnapshot{}))
+	assert.Equal(t, raw, zcodeTurnContent(raw, zcodeUsageSnapshot{}).Original)
+}
+
+func TestZCodeTurnUsagePreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	raw := []byte(" {\"type\":\"turn.completed\",\"future\":9007199254740993,\"payload\":{\"response\":\"Done\",\"usage\":{\"inputTokens\":2,\"outputTokens\":1,\"totalTokens\":3}}} \n")
+	event, ok := parseZCodeEvent(raw)
+	require.True(t, ok)
+	a.dispatchZCodeEvent(event)
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, raw, messages[0].Content)
+	assert.NotEmpty(t, messages[0].Metadata)
+	assert.True(t, messages[0].TurnEnd)
 }
 
 func TestZCodeAugmentWithUsage_InjectsCostAndContext(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":"turn.completed","payload":{}}`)
-	out := zcodeAugmentWithUsage(raw, zcodeUsageSnapshot{
+	out := zcodeTurnContent(raw, zcodeUsageSnapshot{
 		ContextUsage: map[string]any{"context_tokens": int64(900)},
 		CostUSD:      0.42,
 		HasCost:      true,
 	})
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(out, &got))
-	assert.Equal(t, "turn.completed", got["type"])
+	require.NoError(t, json.Unmarshal(out.Metadata, &got))
+	assert.Equal(t, raw, out.Original)
 	assert.InDelta(t, 0.42, got["total_cost_usd"], 1e-9)
 	usage, ok := got["context_usage"].(map[string]any)
 	require.True(t, ok)
@@ -239,7 +254,7 @@ func TestZCodeAugmentWithUsage_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":`)
-	assert.Equal(t, raw, zcodeAugmentWithUsage(raw, zcodeUsageSnapshot{
+	assert.Equal(t, raw, zcodeTurnContent(raw, zcodeUsageSnapshot{
 		HasCost: true, CostUSD: 1,
-	}))
+	}).Original)
 }

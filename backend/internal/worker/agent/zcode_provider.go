@@ -103,7 +103,7 @@ func (zcodeProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 
 // PlanApprovalOptions is empty: ZCode's plan approval settles no option beyond the
 // permission mode, which the shared plan-mode path already applies.
-func (zcodeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+func (zcodeProvider) PlanApprovalOptions(string) map[string]string { return nil }
 
 // SyntheticInterruptNotice is empty: ZCode is interrupted through the InterruptAgent
 // RPC rather than a forwarded raw frame, and turn.failed records the outcome.

@@ -96,6 +96,42 @@ func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {
 	assert.ErrorIs(t, err, ErrConflict)
 }
 
+func TestControlFeedbackPrecedesFutureInput(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			ctx := t.Context()
+			if active {
+				_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
+				require.NoError(t, err)
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+			}
+			_, err := store.Enqueue(ctx, NewItem{ID: "future", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "future task"})
+			require.NoError(t, err)
+			for _, id := range []string{"feedback-1", "feedback-2"} {
+				_, err = store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback"})
+				require.NoError(t, err)
+			}
+			snapshot, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			var ids []string
+			for _, item := range snapshot.Items {
+				ids = append(ids, item.ID)
+			}
+			expected := []string{"feedback-1", "feedback-2", "future"}
+			if active {
+				expected = append([]string{"active"}, expected...)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, snapshot.Items[0].State)
+			}
+			assert.Equal(t, expected, ids)
+		})
+	}
+}
+
 func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
 	t.Parallel()
 

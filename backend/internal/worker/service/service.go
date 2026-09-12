@@ -90,6 +90,8 @@ type Service struct {
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
+	sendControlResponseFn  func(string, []byte) error
+	updateAgentSettingsFn  func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -615,6 +617,8 @@ func New(cfg Config) *Service {
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
+	svc.sendControlResponseFn = svc.Agents.SendRawInput
+	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 
 	// Wire auto-continue so OutputHandler can send synthetic user messages.
@@ -779,8 +783,10 @@ func (svc *Service) RestoreState() {
 	// indicator that never resolves. When the sweep fails nothing moved, so
 	// nothing is owed a divider and a later boot finds the rows still active.
 	endedChildIDs, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
-		EndedAt:   sqltime.SQLiteNullTimeOf(bootNow),
-		UpdatedAt: sqltime.NewSQLiteTime(bootNow),
+		Status:         int64(bgtask.StatusInterrupted),
+		MinFinalStatus: int64(bgtask.MinFinalStatus),
+		EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
+		UpdatedAt:      sqltime.NewSQLiteTime(bootNow),
 	})
 	if err != nil {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)

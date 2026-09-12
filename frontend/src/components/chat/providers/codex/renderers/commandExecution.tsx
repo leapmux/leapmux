@@ -3,6 +3,7 @@ import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, Show } from 'solid-js'
 import { relativizePath } from '~/lib/paths'
 import { CODEX_ITEM } from '~/types/toolMessages'
+import { messageCompletionFromProto } from '../../../assembledMessage'
 import { cachedRenderValue } from '../../../messageRenderCache'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
@@ -12,7 +13,7 @@ import { ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary, toolResultContentPre } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
-import { codexCommandFromItem, codexUnwrapCommand, stripToolUseHeaderFromOutput } from '../extractors/commandExecution'
+import { codexCommandFromItem, codexUnwrapCommand } from '../extractors/commandExecution'
 import { isCodexFinishedStatus } from '../status'
 
 // Registry-only: dispatched by `item.type === 'commandExecution'` via
@@ -20,23 +21,17 @@ import { isCodexFinishedStatus } from '../status'
 defineCodexRenderer({
   itemTypes: [CODEX_ITEM.COMMAND_EXECUTION],
   render: (props) => {
-    // baseSource + stripped output are the hot work — only re-run when
-    // `props.item` changes, not on UI-only re-renders (expand toggle).
+    // Cache extraction across changes to expansion and other display state.
     const baseSource = createMemo(() => {
       const context = props.context
       const item = props.item
       return cachedRenderValue(context, 'codex.commandExecution.baseSource', () => codexCommandFromItem(item))
     })
-    const output = createMemo(() => {
-      const context = props.context
-      // eslint-disable-next-line solid/reactivity -- cachedRenderValue runs its factory synchronously, so this is read in this same memo evaluation
-      const sourceOutput = baseSource()?.output ?? ''
-      return cachedRenderValue(context, 'codex.commandExecution.strippedOutput', () => stripToolUseHeaderFromOutput(sourceOutput))
-    })
+    const output = () => baseSource()?.output ?? ''
 
     const command = createMemo(() => codexUnwrapCommand((props.item.command as string) || '(command)'))
     const cwd = (): string => (props.item.cwd as string) || ''
-    const isFinished = (): boolean => isCodexFinishedStatus((props.item.status as string) || '')
+    const isFinished = (): boolean => !!messageCompletionFromProto(props.context?.sources?.current()?.completion) || isCodexFinishedStatus((props.item.status as string) || '')
 
     const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION)
     const title = createMemo(() => renderBashTitle('Run command', command()) || 'Run command')

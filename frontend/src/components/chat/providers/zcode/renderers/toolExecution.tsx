@@ -1,20 +1,24 @@
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import Bot from 'lucide-solid/icons/bot'
 import Eye from 'lucide-solid/icons/eye'
 import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
-import Folder from 'lucide-solid/icons/folder'
+import FolderSearch from 'lucide-solid/icons/folder-search'
+import Globe from 'lucide-solid/icons/globe'
 import ListChecks from 'lucide-solid/icons/list-checks'
-import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
+import TextSearch from 'lucide-solid/icons/text-search'
 import Wrench from 'lucide-solid/icons/wrench'
 import { createMemo, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { pickString } from '~/lib/jsonPick'
+import { prettifyArgsJson } from '~/lib/jsonFormat'
+import { pickNumber, pickString } from '~/lib/jsonPick'
+import { relativizePath } from '~/lib/paths'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
+import { AgentRequestMessage } from '../../../results/AgentRequestMessage'
+import { McpToolMessage } from '../../../results/McpToolMessage'
 import {
   CommandInputBody,
   CommandInputSummary,
@@ -23,10 +27,13 @@ import {
 import { TodoListMessage } from '../../../todoListMessage'
 import { ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary } from '../../../toolStyles.css'
-import { renderBashTitle } from '../../../toolTitleRenderers'
+import { renderBashTitle, renderEditTitle, renderGlobTitle, renderReadTitle, renderSearchTitle, renderUrlTitle, renderWriteTitle } from '../../../toolTitleRenderers'
+import { MarkdownPlanLayout } from '../../../widgets/MarkdownPlanLayout'
 import { extractZCodeBash } from '../extractors/bash'
+import { zcodeResultDisplay } from '../extractors/display'
 import { zcodeFilePath } from '../extractors/fileEdit'
-import { zcodeRowFrom, zcodeTodoListFromInput, zcodeToolInput } from '../extractors/toolCommon'
+import { zcodeExtractTool, zcodeRow, zcodeRowFrom, zcodeTodoListFromInput, zcodeToolInput } from '../extractors/toolCommon'
+import { ZCODE_WEB_FETCH } from '../protocol'
 
 interface ToolProps {
   parsed: unknown
@@ -37,7 +44,7 @@ type ZCodeToolRenderer = Component<ToolProps>
 function ZCodeBashRenderer(props: ToolProps): JSX.Element {
   const bash = createMemo(() => extractZCodeBash(zcodeRowFrom(props)))
   const command = () => bash()?.command ?? ''
-  const title = () => renderBashTitle('Run command', command()) || 'Run command'
+  const title = () => renderBashTitle(bash()?.description, command()) || 'Run command'
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.TOOL_USE_LAYOUT)
   const { commandExpandable, setSummaryOverflows } = createCommandInputExpansionState(command)
   return (
@@ -72,26 +79,11 @@ function ZCodeBashRenderer(props: ToolProps): JSX.Element {
 function ZCodeReadRenderer(props: ToolProps): JSX.Element {
   const input = createMemo(() => zcodeToolInput(zcodeRowFrom(props)))
   const path = createMemo(() => zcodeFilePath(zcodeRowFrom(props)))
-  // ZCode's `limit` is a line COUNT, so the inclusive last line is offset + limit - 1.
-  const range = createMemo(() => {
-    const offset = input().offset
-    const limit = input().limit
-    if (typeof offset !== 'number' && typeof limit !== 'number')
-      return null
-    const start = typeof offset === 'number' ? offset : 1
-    const end = typeof limit === 'number' ? start + limit - 1 : null
-    return `range: lines ${start}-${end ?? 'end'}`
-  })
   return (
     <ToolUseLayout
       icon={Eye}
       toolName={ZCODE_TOOL.Read}
-      title={`Read ${path()}`}
-      summary={(
-        <Show when={range()}>
-          <div class={toolInputSummary}>{range()}</div>
-        </Show>
-      )}
+      title={renderReadTitle(path(), pickNumber(input(), 'offset', undefined), pickNumber(input(), 'limit', undefined), props.context?.workingDir, props.context?.homeDir) || 'Read'}
       context={props.context}
       alwaysVisible
     />
@@ -100,11 +92,12 @@ function ZCodeReadRenderer(props: ToolProps): JSX.Element {
 
 function ZCodeWriteRenderer(props: ToolProps): JSX.Element {
   const path = createMemo(() => zcodeFilePath(zcodeRowFrom(props)))
+  const input = createMemo(() => zcodeToolInput(zcodeRowFrom(props)))
   return (
     <ToolUseLayout
       icon={FilePlus}
       toolName={ZCODE_TOOL.Write}
-      title={`Write ${path()}`}
+      title={renderWriteTitle(path(), pickString(input(), 'content'), props.context?.workingDir, props.context?.homeDir) || 'Write'}
       context={props.context}
       alwaysVisible
     />
@@ -113,11 +106,12 @@ function ZCodeWriteRenderer(props: ToolProps): JSX.Element {
 
 function ZCodeEditRenderer(props: ToolProps): JSX.Element {
   const path = createMemo(() => zcodeFilePath(zcodeRowFrom(props)))
+  const input = createMemo(() => zcodeToolInput(zcodeRowFrom(props)))
   return (
     <ToolUseLayout
       icon={FilePen}
       toolName={ZCODE_TOOL.Edit}
-      title={`Edit ${path()}`}
+      title={renderEditTitle(path(), pickString(input(), 'old_string', undefined), pickString(input(), 'new_string', undefined), input().replace_all === true, props.context?.workingDir, props.context?.homeDir) || 'Edit'}
       context={props.context}
       alwaysVisible
     />
@@ -132,67 +126,69 @@ function ZCodeAgentRenderer(props: ToolProps): JSX.Element {
   const input = createMemo(() => zcodeToolInput(zcodeRowFrom(props)))
   const description = () => pickString(input(), 'description')
   const prompt = () => pickString(input(), 'prompt')
-  return (
-    <ToolUseLayout
-      icon={Bot}
-      toolName={ZCODE_TOOL.Agent}
-      title={description() ? `Agent: ${description()}` : 'Agent'}
-      summary={(
-        <Show when={prompt()}>
-          <div class={toolInputSummary}>{prompt()}</div>
-        </Show>
-      )}
-      context={props.context}
-      alwaysVisible
-    />
-  )
+  const hasResult = () => {
+    const request = zcodeExtractTool(props.parsed)
+    const result = zcodeExtractTool(props.context?.sources?.result()?.parentObject)
+    return !!request?.toolCallId && result?.toolCallId === request.toolCallId && (!!result.result || result.isError)
+  }
+  return <AgentRequestMessage source={{ toolName: ZCODE_TOOL.Agent, description: description(), agentType: pickString(input(), 'subagent_type'), prompt: prompt() }} hasResult={hasResult()} context={props.context} />
 }
 
-/**
- * The to-do list, drawn as a checklist rather than as raw JSON.
- *
- * ZCode re-sends the WHOLE list on every call, so the row is a snapshot of the
- * list at that point in the transcript -- which is exactly what TodoListMessage
- * shows. The paired result row is hidden (see the plugin), because it repeats
- * nothing this row does not already say.
- */
+/** Show the requested checklist until the matching successful result supplies its body. */
 function ZCodeTodoWriteRenderer(props: ToolProps): JSX.Element {
   const source = createMemo(() =>
     zcodeTodoListFromInput(zcodeToolInput(zcodeRowFrom(props))))
+  const hasResult = () => {
+    const result = zcodeExtractTool(props.context?.sources?.result()?.parentObject)
+    const request = zcodeExtractTool(props.parsed)
+    return !!request?.toolCallId && result?.toolCallId === request.toolCallId && !!result.result && !result.isError
+  }
   return (
     <Show when={source()} fallback={<ZCodeGenericToolRenderer parsed={props.parsed} context={props.context} />}>
-      {resolved => <TodoListMessage source={resolved()} context={props.context} />}
+      {resolved => <TodoListMessage source={resolved()} showBody={!hasResult()} context={props.context} />}
     </Show>
   )
 }
 
-/** Per-tool title key and label for the generic renderer. */
-const GENERIC_TOOL_TITLE: Record<string, { inputKey: string, label: string }> = {
-  [ZCODE_TOOL.Grep]: { inputKey: 'pattern', label: 'Grep' },
-  [ZCODE_TOOL.Glob]: { inputKey: 'pattern', label: 'Glob' },
-}
-
 const GENERIC_TOOL_ICONS: Record<string, typeof Wrench> = {
-  [ZCODE_TOOL.Grep]: Search,
-  [ZCODE_TOOL.Glob]: Folder,
+  [ZCODE_TOOL.Grep]: TextSearch,
+  [ZCODE_TOOL.Glob]: FolderSearch,
   [ZCODE_TOOL.TaskOutput]: ListChecks,
+  [ZCODE_WEB_FETCH]: Globe,
 }
 
 /**
- * The fallback tool row: a title from the per-tool key when one is known, and the
- * input pretty-printed as the summary. Adding a ZCode tool name to the two tables
- * above is therefore data-only.
+ * The fallback keeps the tool name and arguments.
+ * Known search and fetch tools use the shared title format.
  */
 function ZCodeGenericToolRenderer(props: ToolProps): JSX.Element {
-  const toolName = createMemo(() =>
-    zcodeRowFrom(props).toolName || 'tool')
-  const input = createMemo(() => zcodeToolInput(zcodeRowFrom(props)))
+  const row = createMemo(() => zcodeRowFrom(props))
+  const toolName = () => row().toolName || 'tool'
+  const input = createMemo(() => zcodeToolInput(row()))
+  const mcpSource = createMemo(() => {
+    const current = zcodeExtractTool(row().parsed)
+    const result = props.context?.sources?.result()
+    const completed = zcodeExtractTool(result?.parentObject)
+    if (!current || completed?.toolCallId !== current.toolCallId || !completed.result)
+      return null
+    const display = zcodeResultDisplay(zcodeRow(result?.parentObject, row().spanType, props.context?.sources?.current(), result?.supplementalContent))
+    return display?.kind === 'mcp' ? { ...display.source, argsJson: display.source.argsJson || prettifyArgsJson(input()) } : null
+  })
   const title = createMemo(() => {
-    const meta = GENERIC_TOOL_TITLE[toolName()]
-    return meta ? `${meta.label} ${pickString(input(), meta.inputKey)}` : toolName()
+    const args = input()
+    const context = props.context
+    if (toolName() === ZCODE_TOOL.Grep)
+      return renderSearchTitle(pickString(args, 'pattern'), undefined, context?.workingDir, context?.homeDir) || toolName()
+    if (toolName() === ZCODE_TOOL.Glob)
+      return renderGlobTitle(pickString(args, 'pattern'), pickString(args, 'path'), context?.workingDir, context?.homeDir) || toolName()
+    if (toolName() === ZCODE_WEB_FETCH)
+      return renderUrlTitle(pickString(args, 'url')) || toolName()
+    return toolName()
   })
   const summary = createMemo(() => {
     const value = input()
+    if (toolName() === ZCODE_TOOL.Glob || toolName() === ZCODE_TOOL.Grep || toolName() === ZCODE_WEB_FETCH)
+      return ''
     if (Object.keys(value).length === 0)
       return ''
     try {
@@ -205,22 +201,35 @@ function ZCodeGenericToolRenderer(props: ToolProps): JSX.Element {
     }
   })
   return (
-    <ToolUseLayout
-      icon={GENERIC_TOOL_ICONS[toolName()] ?? Wrench}
-      toolName={toolName()}
-      title={title()}
-      summary={(
-        <Show when={summary()}>
-          <pre class={toolInputSummary}>{summary()}</pre>
-        </Show>
+    <Show
+      when={mcpSource()}
+      fallback={(
+        <ToolUseLayout
+          icon={GENERIC_TOOL_ICONS[toolName()] ?? Wrench}
+          toolName={toolName()}
+          title={title()}
+          summary={(
+            <>
+              <Show when={toolName() === ZCODE_TOOL.Grep && pickString(input(), 'path')}>
+                {path => <div class={toolInputSummary}>{relativizePath(path(), props.context?.workingDir, props.context?.homeDir)}</div>}
+              </Show>
+              <Show when={summary()}>
+                <pre class={toolInputSummary}>{summary()}</pre>
+              </Show>
+            </>
+          )}
+          context={props.context}
+          alwaysVisible
+        />
       )}
-      context={props.context}
-      alwaysVisible
-    />
+    >
+      {source => <McpToolMessage source={source()} role="request" context={props.context} />}
+    </Show>
   )
 }
 
 const DEDICATED_TOOL_RENDERERS: Record<string, ZCodeToolRenderer> = {
+  [ZCODE_TOOL.ExitPlanMode]: props => <MarkdownPlanLayout toolName={ZCODE_TOOL.ExitPlanMode} title="Proposed Plan" planText={pickString(zcodeToolInput(zcodeRowFrom(props)), 'plan')} context={props.context} />,
   [ZCODE_TOOL.Bash]: ZCodeBashRenderer,
   [ZCODE_TOOL.Read]: ZCodeReadRenderer,
   [ZCODE_TOOL.Write]: ZCodeWriteRenderer,

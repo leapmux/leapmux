@@ -1,59 +1,44 @@
 /**
- * The one parser for an image content block, across every agent provider.
- *
- * Each provider states an image in its own shape, and LeapMux renders all of
- * them the same way, so the wire-shape knowledge lives here instead of being
- * re-derived at each render site. Two consumers used to read the same block
- * and disagree -- `markdownImageFormatter` understood the Anthropic `source`
- * shape and `parseMcpContentItem` did not -- so a Claude MCP tool that
- * returned an Anthropic-shaped image rendered as a bare `[image]`. Both now
- * read {@link parseImageBlock}.
+ * The shared image parser supports each provider's content-block format.
+ * Markdown formatting and MCP result rendering both use parseImageBlock.
+ * A shared parser keeps their image support consistent, including Anthropic's nested source format.
  */
 
 import type { ContentBlock } from './contentBlocks'
 import type { ImageDimensions } from './imageDimensions'
 import { isObject, pickString } from './jsonPick'
+import { fileUriToPath } from './paths'
 
-/** A normalized image, however the provider spelled it on the wire. */
+/** A normalized image from any provider's protocol. */
 export interface ImageBlockSource {
-  /** MIME type, when the wire carried one. */
+  /** MIME type, when the provider supplies one. */
   mimeType?: string
   /** Base64 payload, WITHOUT the `data:<mime>;base64,` prefix. */
   data?: string
   /** A complete `data:` or `http(s):` URL. Mutually exclusive with `data`. */
   url?: string
   /**
-   * The file this image was read from, when the provider states one. Drives
-   * the click target: with a path the viewer opens the file itself (full
-   * resolution, straight off the worker); without one it opens the bytes the
-   * agent sent.
+   * The source file, when the provider supplies its path.
+   * The viewer opens the full file through the worker when a path is available.
+   * Otherwise, it opens the image bytes from the provider.
    */
   filePath?: string
 }
 
 /**
- * An image ready to render: the wire block, plus the intrinsic size when the
- * provider states it.
- *
- * Stating the size is worth a field of its own because it is exact and free.
- * Claude's `tool_use_result.file.dimensions` sits beside the payload, so the
- * renderer can reserve the final box without decoding a base64 header, and a
- * row measured off-screen never resizes when the image later decodes.
+ * An image source with its provider-supplied dimensions and description.
+ * Exact dimensions let the renderer reserve the image's space without decoding its header.
+ * Claude supplies these dimensions in tool_use_result.file.dimensions.
  */
-export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimensions }
+export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimensions, description?: string }
 
 /**
- * Parse one content block into an {@link ImageBlockSource}. Returns null only
- * when the block is not an image block at all.
+ * Parse an image content block or an embedded image resource.
+ * Return null for other content, including a resource that lacks image bytes.
  *
- * An image block with no renderable payload yields a source whose `data` and
- * `url` are both absent, rather than null. A block can be a legitimate image
- * and still carry nothing -- an Anthropic `source:{type:'file'}` states a file
- * on Anthropic's servers, and an MCP server may state a MIME type with no
- * payload. Keeping it lets the renderer say "an image was returned, and here
- * is why you cannot see it" (`imageRenderInfo` answers `no-data`) instead of
- * dropping the block without a trace -- and it keeps that block's INDEX, which
- * an image tab addresses by.
+ * Explicit image blocks without data remain image sources with absent data and URL fields.
+ * Anthropic file IDs and MIME-only MCP blocks need this behavior.
+ * The renderer shows a no-data placeholder, and the image keeps its index for the image tab.
  *
  * The shapes, and who emits each:
  *
@@ -64,20 +49,26 @@ export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimension
  *   - `{type:'image', source:{type:'url', url}}` -- Anthropic, URL variant.
  *   - `{type:'image', data, mimeType}` -- the MCP content shape, which ACP's
  *     `ImageContent` and Pi's `ImageContent` both reuse verbatim.
+ *   - `{type:'resource', resource:{mimeType, blob}}` -- an embedded MCP image.
  *   - `{type:'image', mimeType?, url}` -- the MCP variant that points at a
  *     fetchable URL instead of inlining the bytes.
- *   - `{type:'image', mimeType?, urlOrData}` -- the already-normalized MCP
- *     shape `parseMcpContentItem` produces.
+ *   - `{type:'image', mimeType?, urlOrData}` -- a normalized MCP image.
  *   - `{type:'inputImage', imageUrl}` -- Codex `dynamicToolCall.contentItems`.
- *   - `{type:'image', mediaType, dataUrl}` -- ZCode's internal part shape.
- *     ZCode's app-server text-ifies images before they reach LeapMux, so this
- *     branch is defensive: it costs two lines and means a future app-server that
- *     forwards the part renders instead of printing a data URL.
+ *   - `{type:'image', mediaType, dataUrl}` -- ZCode's internal part format.
+ *     ZCode transcript recovery can supply native image data omitted from its event stream.
  */
 export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   if (!isObject(block))
     return null
   const type = block.type
+  if (type === 'resource') {
+    // Resource URIs belong to the MCP server and do not identify files on the worker.
+    const resource = isObject(block.resource) ? block.resource : block
+    const mimeType = pickString(resource, 'mimeType')
+    return mimeType.toLowerCase().startsWith('image/') && typeof resource.blob === 'string'
+      ? { data: resource.blob, mimeType }
+      : null
+  }
   if (type !== 'image' && type !== 'inputImage')
     return null
 
@@ -93,14 +84,9 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
 
   const mimeType = pickString(block, 'mimeType', undefined)
 
-  // MCP / ACP / Pi flat shape. `mimeType` is required by all three specs but
-  // read separately, so a payload with no type still reaches the renderer and
-  // surfaces as "unsupported format" rather than vanishing.
-  // `data` is base64 by spec, but a server that puts a whole `data:` URL there is
-  // common enough that the old reader sniffed for it. Without the sniff the
-  // renderer builds `data:<mime>;base64,data:<mime>;base64,...` -- a broken image
-  // with no placeholder, and a tab whose decode throws. `:` is not in the base64
-  // alphabet, so this can never misread a real payload.
+  // MCP, ACP, and Pi require a MIME type, but missing types still need an unsupported-format placeholder.
+  // Accept complete data URLs in data. Otherwise, the renderer would prepend a second data-URL prefix.
+  // A colon cannot occur in base64, so URL detection cannot misread a valid base64 payload.
   const data = pickString(block, 'data', undefined)
   if (data)
     return withPath(isRenderableUrl(data) ? { url: data, mimeType } : { data, mimeType })
@@ -129,8 +115,8 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
       if (url)
         return withPath({ url })
     }
-    // `source:{type:'file', file_id}` and anything else nested: an image we
-    // cannot fetch. Keep the MIME type so the placeholder can name it.
+    // File IDs and unknown source formats cannot supply image bytes here.
+    // Keep the MIME type for the placeholder.
     return withPath({ mimeType })
   }
 
@@ -145,21 +131,14 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
 /**
  * MIME types LeapMux renders inline.
  *
- * The list exists for the SIZE CAP and for one policy in one place, not as a
- * script defence. Every consumer mounts an image through `ImageRender`, which
- * builds a blob URL and hands it to an `<img>` -- and an `<img>` renders SVG in
- * SECURE STATIC MODE, where no script runs, no external resource loads and no
- * declarative animation plays. That is a property of the element, not of this
- * set.
+ * The list defines supported image formats alongside the shared size limit.
+ * ImageRender supplies a blob URL to an img element.
+ * That element prevents SVG scripts and external resource loads.
  *
- * SVG is therefore included. Excluding it refused an agent's diagram while the
- * file viewer rendered the identical bytes off disk through the SAME
- * `ImageRender`, which is an inconsistency rather than a policy.
+ * Both transcript previews and the file viewer use ImageRender for SVG images.
  *
- * One real cost: `sniffImageDimensionsFromDataUrl` reads intrinsic dimensions
- * from a raster header, and an SVG has none, so an SVG row reserves no box and
- * falls back to measure-on-load. That costs one scroll adjustment when it
- * decodes; it does not affect what is rendered.
+ * The raster-header decoder cannot determine SVG dimensions.
+ * An SVG without supplied dimensions needs measurement after loading, which can adjust the scroll position.
  */
 export const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
   'image/png',
@@ -171,16 +150,14 @@ export const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
 ])
 
 /**
- * Cap on the base64-encoded length of an inline image. 7 MB base64 is about
- * 5 MB raw, which comfortably covers a screenshot.
- *
- * It lives here, beside {@link parseImageBlock}, because BOTH consumers of a
- * parsed source have to honour it: the component that mounts an `<img>`, and
- * {@link imageBlockToMarkdown}, which builds a data URL for a text destination.
- * The wire allows a far larger message than this cap, so an uncapped path can
- * put megabytes of base64 into an `src` attribute or a clipboard.
+ * The inline image limit counts base64 characters. Seven megabytes of base64 represent about five megabytes of raw data.
+ * Transcript images and imageBlockToMarkdown share this limit.
+ * Provider messages can exceed it, so each display path must check before it constructs an image URL or clipboard text.
  */
 export const MAX_INLINE_IMAGE_BASE64_LEN = 7 * 1024 * 1024
+
+/** Raw byte limit that corresponds to the shared inline image limit. */
+export const MAX_FILE_IMAGE_BYTES = Math.floor(MAX_INLINE_IMAGE_BASE64_LEN / 4) * 3
 
 /** True for the URL schemes the image renderer knows how to act on. */
 function isRenderableUrl(value: string): boolean {
@@ -188,66 +165,22 @@ function isRenderableUrl(value: string): boolean {
 }
 
 /**
- * Fill `filePath` from the caller's fallback, unless the block already stated
- * one.
- *
- * The block's own path always wins. It names the file the agent actually read,
- * where a fallback names only the file the tool was ASKED for -- and a tool that
- * was asked for one file and returned another is exactly the case the two can
- * disagree on.
- *
- * Every provider that can carry an image needs this same merge, and each one
- * spelled it differently until they shared it: `parseImageBlock` for an
- * in-band `file://` uri, and the Claude, ACP and Pi extractors for a path that
- * the tool INPUT states rather than the result.
+ * Fill an absent filePath from the caller's fallback.
+ * The result's own path takes precedence because a tool can return a file other than the requested file.
+ * The content parser and provider extractors share this rule.
  */
 export function withFallbackFilePath<T extends ImageBlockSource>(source: T, filePath: string | undefined): T {
   return filePath && !source.filePath ? { ...source, filePath } : source
 }
 
 /**
- * The file an image block points at, when it names one.
- *
- * ACP's `ImageContent.uri` is the only in-band carrier -- a `file://` URL that
- * OpenCode, Kilo and Goose set when the image came off disk. Every other
- * provider states the path on the tool INPUT rather than the result, so its
- * extractor supplies `filePath` itself.
+ * Read a local path from an image block's file URI.
+ * ACP providers can supply this URI on the image result.
+ * Provider extractors resolve paths from tool inputs when the result omits them.
  */
 function imageBlockFilePath(block: Record<string, unknown>): string | undefined {
-  const uri = pickString(block, 'uri', undefined)
-  if (!uri || !uri.startsWith('file://'))
-    return undefined
-  let pathname: string
-  try {
-    const parsed = new URL(uri)
-    const path = decodeURIComponent(parsed.pathname)
-    // `pathname` alone is not a local path on two shapes a worker really sends.
-    // A Windows `file:///C:/x` gives `/C:/x`: the URL API keeps the slash before
-    // the drive letter, and the worker cannot resolve that. A UNC
-    // `file://server/share/x` puts `server` in the HOST, which the pathname drops
-    // entirely. Node's `fileURLToPath` is not the answer -- it resolves against the
-    // platform this code runs on, and the path belongs to the worker's platform.
-    const host = decodeURIComponent(parsed.host)
-    if (host)
-      return `//${host}${path}` || undefined
-    return (/^\/[a-z]:/i.test(path) ? path.slice(1) : path) || undefined
-  }
-  catch {
-    return undefined
-  }
-  // A LITERAL `%` that is not valid percent-encoding makes decodeURIComponent
-  // throw, and an agent that builds the uri by pasting a path after `file://`
-  // sends one for any file named `50%off.png`. The raw pathname is the right
-  // answer there: it is what the caller asked to open, and the only cost of
-  // skipping the decode is that a genuinely encoded name stays encoded --
-  // whereas returning undefined silently downgrades the click to the
-  // transcript's downsampled copy, with nothing to explain why.
-  try {
-    return decodeURIComponent(pathname) || undefined
-  }
-  catch {
-    return pathname || undefined
-  }
+  const uri = pickString(block, 'uri')
+  return uri ? fileUriToPath(uri) : undefined
 }
 
 /** Why an image draws as a placeholder rather than inline. */
@@ -256,17 +189,11 @@ export type ImageSkipReason = 'no-data' | 'unsupported-mime' | 'too-large' | 'ex
 /**
  * Split a `data:<mime>[;<param>...];base64,<payload>` URL.
  *
- * ONE reader, because two disagreed. `imageRenderInfo` accepted a data URL with
- * no `;base64` and the image-tab decoder refused it, so such an image drew
- * inline with a click target and then opened a tab that said it could not
- * display the picture -- the branch that decoder's own comment calls
- * unreachable. Requiring `;base64` in the one parser is what makes it
- * unreachable in fact.
+ * Both the transcript renderer and image viewer require a base64 parameter through this parser.
+ * Otherwise, a URL could render inline but fail when the user opens its image tab.
  *
- * `mimeType` is the essence alone: `data:image/png;charset=utf-8;base64,...`
- * answers `image/png`. A parameter that reached a Blob type made the tab and the
- * row describe the same bytes two ways, and the allowlist below is keyed on the
- * essence.
+ * Return only the MIME type's essence: image/png for data:image/png;charset=utf-8;base64,...
+ * Blob types and the format allowlist use that same value.
  */
 export function parseDataImageUrl(url: string | undefined): { mimeType: string, base64: string } | null {
   if (!url?.startsWith('data:'))
@@ -282,19 +209,12 @@ export function parseDataImageUrl(url: string | undefined): { mimeType: string, 
 }
 
 /**
- * Whether an image source draws inline, and if not, why.
+ * Determine whether an image can render inline, or give the reason it cannot.
+ * Transcript rows and imageBlockToMarkdown share the same format and size checks.
  *
- * The single render policy for every destination. It lives beside the parser
- * rather than in the transcript row, because the row is not the only consumer:
- * `imageBlockToMarkdown` feeds every quote, preview and Markdown body, and it
- * used to embed a 50 MB payload that the row next to it refused.
- *
- *   - inline base64 + allowlisted MIME + under the cap -> `<img src="data:...">`
- *   - an already-formed `data:` URL, on the same terms
- *   - an http(s) URL -> not drawn; the caller shows an open link, so the
- *     transcript fetches from no remote host on its own
- *   - anything else -> a placeholder, so the reader still learns an image came
- *     back
+ *   - Inline base64 or a data URL requires a supported MIME type and an acceptable size.
+ *   - An HTTP URL becomes an external link that the user must open.
+ *   - Other values require a placeholder.
  */
 export function imageRenderInfo(source: ImageBlockSource): {
   src?: string
@@ -323,9 +243,8 @@ export function imageRenderInfo(source: ImageBlockSource): {
 }
 
 /**
- * The allowlist and the cap, applied once. Both shapes above normalize to
- * (mime, base64) first, so neither can be checked against a different length
- * than the other renders.
+ * Apply the shared format and size limits to normalized MIME and base64 values.
+ * Data URLs and separate data fields use the same checks.
  */
 function renderPolicy(mimeType: string, base64: string, src: string): {
   src?: string
@@ -340,24 +259,11 @@ function renderPolicy(mimeType: string, base64: string, src: string): {
 }
 
 /**
- * Render an image block as Markdown, for the text-only contexts that have no
- * place to mount a component (a quote, a scroll-rail preview, a Markdown body).
- *
- * A renderable image becomes an inline `![image](data:...)`, which embeds when
- * the surrounding renderer is Markdown-aware. An external URL becomes a
- * `[image](url)` LINK, not an embed, so rendering it never fetches from a
- * third-party host.
- *
- * It asks `imageRenderInfo`, the SAME policy the transcript row asks, so the two
- * destinations can never disagree about which pictures are safe to embed. This
- * path used to skip that policy entirely, and `rehypeBlockRemoteImages` lets a
- * `data:` src through -- so an `image/svg+xml` or a 50 MB payload embedded here
- * after the row beside it had already refused to draw it.
- *
- * Anything the policy refuses returns null and the caller omits the block,
- * which is what this function has always done for a shape it could not render.
- * The row is where a refused image still leaves a visible trace, through
- * {@link imageSkipPlaceholder}; a Markdown body has no box to put one in.
+ * Format an image for a quote, scroll-rail preview, or Markdown body.
+ * Use imageRenderInfo so Markdown and transcript images share the same display policy.
+ * Supported inline data becomes an image. External URLs become links that require user action.
+ * Oversized images and unsupported formats produce text placeholders.
+ * Missing data and unknown formats without a MIME type produce no Markdown.
  */
 export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
   const info = imageRenderInfo(source)
@@ -365,25 +271,18 @@ export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
     return `![image](${info.src})`
   if (info.reason === 'external-url' && source.url)
     return `[image](${source.url})`
-  // A refused image still leaves a trace, so a reader learns one came back.
+  // Preserve a text placeholder for an image that exceeds the inline size limit.
   if (info.reason === 'too-large')
     return source.mimeType ? `[image: ${source.mimeType} — too large to embed]` : '[image: too large to embed]'
-  // `unsupported-mime` says something only when a type was actually stated --
-  // an `image/svg+xml`, which the allowlist refuses and this path used to
-  // embed. Without a type the block carries nothing to describe, and this
-  // function has always omitted such a block; so has `no-data`.
+  // Include unsupported formats only when the provider supplies a MIME type.
   if (info.reason === 'unsupported-mime' && source.mimeType)
     return `[image: ${source.mimeType} — unsupported format]`
   return null
 }
 
 /**
- * The text a destination shows in place of an image it will not draw.
- *
- * One wording for the transcript row and for the Markdown path, so a reader who
- * sees the same refused image in a quote and in the transcript reads the same
- * sentence. The MIME type is included when the wire carried one, because
- * "unsupported format" without the format is a question rather than an answer.
+ * Format a placeholder for a destination that cannot display the image.
+ * Include the MIME type when the provider supplies one.
  */
 export function imageSkipPlaceholder(reason: ImageSkipReason | undefined, mimeType?: string): string {
   const suffix = mimeType ? `: ${mimeType}` : ''

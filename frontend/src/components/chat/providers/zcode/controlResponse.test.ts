@@ -1,123 +1,98 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import { zcodeControlResponseDisplay } from './controlResponse'
-import { ZCODE_METHOD } from './protocol'
 
-/**
- * A stored answer row. `response` is the SHARED allow/deny envelope: ZCode's own
- * reply shape is built by the worker when it forwards the answer, so it never
- * reaches the database.
- */
-function cr(
-  response: Record<string, unknown> | undefined,
-  request?: Record<string, unknown>,
-): PersistedControlResponse {
-  return { provider: 'ZCODE', requestId: 'req-1', request, response }
+function response(result: Record<string, unknown>, params: Record<string, unknown> = {}, method = 'interaction/requestUserInput'): PersistedControlResponse {
+  return { requestId: 'request-1', claimToken: 'claim-1', request: { id: 7, method, params }, response: { id: 7, result } }
 }
 
-/** The pruned request context for an AskUserQuestion, as the worker stores it. */
 function questionRequest(...questions: string[]): Record<string, unknown> {
-  return {
-    method: ZCODE_METHOD.RequestUserInput,
-    request: { tool_name: ZCODE_TOOL.AskUserQuestion },
-    questions: questions.map(question => ({ question })),
-  }
+  return { input: { questions: questions.map(question => ({ question })) } }
 }
 
-function allow(answers: Record<string, string>): Record<string, unknown> {
-  return buildAllowResponse('req-1', { answers })
-}
+const plan = { schema: { interaction: 'plan_approval' } }
 
 describe('zcodeControlResponseDisplay', () => {
-  it('renders one answered question as a question: answer line', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      allow({ 'Which database?': 'Postgres' }),
-      questionRequest('Which database?'),
-    ))).toEqual({ kind: 'label', text: 'Which database?: Postgres' })
+  it.each([
+    ['allow', 'Allow'],
+    ['deny', 'Deny'],
+    ['escalate', 'Escalated'],
+    ['modify', 'Modified'],
+  ])('renders the native permission decision %s', (decision, text) => {
+    expect(zcodeControlResponseDisplay(response({ decision }, {}, 'interaction/requestPermission'))).toEqual({ kind: 'label', text })
   })
 
-  // The REQUEST's order is authoritative, not the answer map's: object key order is a
-  // detail of whoever serialized the map, and two rows of the same prompt must read
-  // identically.
-  it('orders the lines by the request question list, not by the answer map', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      allow({ Second: 'b', First: 'a' }),
-      questionRequest('First', 'Second'),
-    ))).toEqual({ kind: 'label', text: 'First: a\nSecond: b' })
+  it('preserves a native permission rejection reason without attributing it to the user', () => {
+    expect(zcodeControlResponseDisplay(response({ decision: 'deny', reason: 'No offered option allows this operation.' }, {}, 'interaction/requestPermission')))
+      .toEqual({ kind: 'label', text: 'Deny\nNo offered option allows this operation.' })
   })
 
-  // A stale or absent request context must not lose the answer.
-  it('appends an answer whose question the request does not name', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      allow({ Known: 'a', Unlisted: 'b' }),
-      questionRequest('Known'),
-    ))).toEqual({ kind: 'label', text: 'Known: a\nUnlisted: b' })
+  it('renders native answers in the complete request order', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: { Second: 'b', First: 'a' }, answer_0: 'wrong', answer_1: 'wrong' } }, questionRequest('First', 'Second'))))
+      .toEqual({ kind: 'label', text: 'First: a\nSecond: b' })
   })
 
-  it('renders the bare answer when the question text is empty', () => {
-    expect(zcodeControlResponseDisplay(cr(allow({ '': 'Postgres' }), questionRequest(''))))
-      .toEqual({ kind: 'label', text: 'Postgres' })
+  it('recovers question labels from native request display fields', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: 'Postgres' } }, { questions: [{ question: 'Database?' }] })))
+      .toEqual({ kind: 'label', text: 'Database?: Postgres' })
   })
 
-  it('trims the stored answer text', () => {
-    expect(zcodeControlResponseDisplay(cr(allow({ Q: '  A  ' }), questionRequest('Q'))))
-      .toEqual({ kind: 'label', text: 'Q: A' })
+  it('uses positional answers when keyed answers are absent', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer_0: 'a', answer_1: 'b', answer: 'ignored' } }, questionRequest('First', 'Second'))))
+      .toEqual({ kind: 'label', text: 'First: a\nSecond: b' })
   })
 
-  // A blank answer is dropped because the app-server discards one too: showing it
-  // would claim an answer that was never delivered.
-  it('falls back to the neutral approved label when every answer is blank', () => {
-    expect(zcodeControlResponseDisplay(cr(allow({ Q: '   ' }), questionRequest('Q'))))
-      .toEqual({ kind: 'label', text: 'Approved' })
+  it('keeps the final native value when question text repeats', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer_0: 'first', answer_1: 'last' } }, questionRequest('Repeated', 'Repeated'))))
+      .toEqual({ kind: 'label', text: 'Repeated: last' })
   })
 
-  it('falls back to the neutral label when the allow carries no answers at all', () => {
-    expect(zcodeControlResponseDisplay(cr(buildAllowResponse('req-1', {}), questionRequest('Q'))))
-      .toEqual({ kind: 'label', text: 'Approved' })
+  it('uses a single answer only for one question', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: 'a' } }, questionRequest('One'))))
+      .toEqual({ kind: 'label', text: 'One: a' })
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: 'a' } }, questionRequest('One', 'Two')))).toBeNull()
   })
 
-  // A permission decision and a plan approval are exactly what the neutral envelope
-  // already describes, so the ZCode derivation must not dress them up as answers.
-  it('delegates a permission allow to the neutral envelope', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      allow({ 'Which database?': 'Postgres' }),
-      { method: ZCODE_METHOD.RequestPermission, request: { tool_name: ZCODE_TOOL.Bash } },
-    ))).toEqual({ kind: 'label', text: 'Approved' })
+  it('normalizes strings and string arrays as the native consumer does', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer_0: '  value  ', answer_1: [' a ', false, '', ' b '] } }, questionRequest('One', 'Two'))))
+      .toEqual({ kind: 'label', text: 'One: value\nTwo: a, b' })
   })
 
-  // The plan approval travels over the SAME method as a question, so the tool name is
-  // what separates them.
-  it('delegates a plan approval to the neutral envelope', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      allow({ 'Review this implementation plan.': 'approve' }),
-      { method: ZCODE_METHOD.RequestUserInput, request: { tool_name: ZCODE_TOOL.ExitPlanMode } },
-    ))).toEqual({ kind: 'label', text: 'Approved' })
+  it('does not show answers that the native consumer discards', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: {}, answer_0: 'ignored' } }, questionRequest('One')))).toBeNull()
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: { Unrelated: 'ignored' } } }, questionRequest('One')))).toBeNull()
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer_0: 0, answer_1: false, answer_2: ' ' } }, questionRequest('One', 'Two', 'Three')))).toBeNull()
   })
 
-  it('delegates when the request context is gone, so the answers cannot be attributed', () => {
-    expect(zcodeControlResponseDisplay(cr(allow({ Q: 'A' }))))
-      .toEqual({ kind: 'label', text: 'Approved' })
+  it.each([
+    ['decline', 'Reject'],
+    ['cancel', 'Cancel'],
+  ])('renders %s without claiming that its ignored reason reached the model', (action, text) => {
+    expect(zcodeControlResponseDisplay(response({ action, reason: 'The native mapper drops this field.' }, questionRequest('One'))))
+      .toEqual({ kind: 'label', text })
   })
 
-  it('renders a bare denial as the neutral rejected label', () => {
-    expect(zcodeControlResponseDisplay(cr(buildDenyResponse('req-1', ''), questionRequest('Q'))))
-      .toEqual({ kind: 'label', text: 'Rejected' })
+  it.each([
+    { answer: 'approve' },
+    { answer_0: 'approve' },
+    { answers: { 'Review this implementation plan.': 'approve' } },
+  ])('recognizes the native plan approval answer %j', (content) => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content }, plan))).toEqual({ kind: 'label', text: 'Approve' })
   })
 
-  it('renders a denial with a typed reason as feedback', () => {
-    expect(zcodeControlResponseDisplay(cr(
-      buildDenyResponse('req-1', 'use MySQL instead'),
-      questionRequest('Q'),
-    ))).toEqual({ kind: 'feedback', message: 'use MySQL instead' })
+  it('preserves native plan feedback and refuses to infer approval from an empty accept', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: '  Add tests.  ' } }, plan)))
+      .toEqual({ kind: 'feedback', message: 'Add tests.' })
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: {} }, plan))).toEqual({ kind: 'label', text: 'Reject' })
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: { 'Review this implementation plan.': '' }, answer_0: 'approve' } }, plan)))
+      .toEqual({ kind: 'label', text: 'Reject' })
   })
 
-  // Null lets the shared chokepoint degrade to its generic label rather than render
-  // an empty row.
-  it('returns null for a payload that is not the behavior envelope', () => {
-    expect(zcodeControlResponseDisplay(cr(undefined))).toBeNull()
-    expect(zcodeControlResponseDisplay(cr({}))).toBeNull()
-    expect(zcodeControlResponseDisplay(cr({ response: { response: { behavior: 'maybe' } } }))).toBeNull()
+  it('returns no derived label for an unknown or corrupt native response', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'unknown' }))).toBeNull()
+    expect(zcodeControlResponseDisplay(response({ decision: 'unknown' }, {}, 'interaction/requestPermission'))).toBeNull()
+    expect(zcodeControlResponseDisplay({ ...response({ action: 'accept' }), response: undefined })).toBeNull()
+    expect(zcodeControlResponseDisplay({ ...response({ action: 'accept' }), request: undefined })).toBeNull()
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: 'ignored' } }, { questions: [null, 0, {}] }))).toBeNull()
   })
 })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -19,7 +20,7 @@ var _ store.LifecycleOutboxStore = (*lifecycleOutboxStore)(nil)
 func (s *lifecycleOutboxStore) Insert(ctx context.Context, p store.InsertLifecycleOutboxParams) error {
 	return mapErr(s.conn.q.InsertLifecycleOutbox(ctx, gendb.InsertLifecycleOutboxParams{
 		UserID:  p.UserID.String(),
-		OpType:  p.OpType,
+		OpType:  int16(p.OpType),
 		Payload: p.Payload,
 	}))
 }
@@ -43,7 +44,7 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 		out[i] = store.LifecycleOutboxRow{
 			ID:         r.ID,
 			UserID:     r.UserID,
-			OpType:     r.OpType,
+			OpType:     leapmuxv1.WorkspaceLifecycleOp(r.OpType),
 			Payload:    r.Payload,
 			EnqueuedAt: r.EnqueuedAt.Time,
 			ConsumedAt: r.ConsumedAt.Ptr(),

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,12 +30,25 @@ type recordedClaudeControl struct {
 // hand the matching control_response back through stdout. Claude's
 // sendControlAndWait blocks until the agent responds; without the
 // echo this test would deadlock.
+//
+// The rig also runs the agent's own output handling for every line the pending-
+// control handler does not consume, exactly as readOutputLoop does. That is what
+// lets a case state the ORDER the CLI speaks in: `beforeAck` writes lines that
+// reach the reader before the acknowledgement does.
 type claudeInterruptRig struct {
 	agent    *ClaudeCodeAgent
+	sink     *outputTestSink
 	captured func() []recordedClaudeControl
 }
 
 func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
+	t.Helper()
+	return newClaudeInterruptRigWithPreamble(t, nil)
+}
+
+// newClaudeInterruptRigWithPreamble is newClaudeInterruptRig whose responder
+// writes `beforeAck` to stdout before it answers the control request it captured.
+func newClaudeInterruptRigWithPreamble(t *testing.T, beforeAck []string) *claudeInterruptRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stdinReader, stdinWriter, err := os.Pipe()
@@ -42,6 +56,7 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	require.NoError(t, err)
 
+	sink := &outputTestSink{}
 	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:      "test-agent",
@@ -53,6 +68,7 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 			stderrDone:   make(chan struct{}),
 			apiTimeout:   2 * time.Second,
 		},
+		sink:           sink,
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	close(a.stderrDone)
@@ -77,6 +93,14 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 			mu.Lock()
 			captured = append(captured, rec)
 			mu.Unlock()
+
+			// Whatever the CLI says before it answers. An abort that ends the
+			// turn on its way to the acknowledgement is written here.
+			for _, line := range beforeAck {
+				if _, err := stdoutWriter.Write(append([]byte(line), '\n')); err != nil {
+					return
+				}
+			}
 
 			// Construct the matching control_response shape Claude
 			// Code emits: response.subtype="success" terminates the
@@ -109,6 +133,7 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 			if a.handlePendingControlResponse(line) {
 				continue
 			}
+			a.handleClaudeOutput(line.Raw, line.Type)
 		}
 	}()
 
@@ -122,6 +147,7 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 
 	return &claudeInterruptRig{
 		agent: a,
+		sink:  sink,
 		captured: func() []recordedClaudeControl {
 			mu.Lock()
 			defer mu.Unlock()
@@ -153,6 +179,53 @@ func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
 		"Claude Code interrupt must use the {subtype:'interrupt'} control_request")
 }
 
+// The note that tells an interrupted turn from a failed one is taken BEFORE the
+// request goes out, so the `result` of the aborted turn cannot overtake it.
+//
+// The reader goroutine hands the acknowledgement to the waiting Interrupt and
+// reads the next line at once. Taking the note after that wait raced the
+// takeInterruptRequest that spends it, and lost whenever the reader won -- the
+// stopped turn then read as the failure its `error_during_execution` subtype
+// claims, in the danger colour, for a stop the reader asked for.
+//
+// This case pins the losing order: the abort's `result` reaches the reader
+// before the acknowledgement does.
+func TestClaudeCodeAgent_Interrupt_TheAbortedTurnStatesTheStop(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRigWithPreamble(t, []string{
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":12000}`,
+	})
+	rig.agent.mu.Lock()
+	rig.agent.turnActive = true
+	rig.agent.mu.Unlock()
+
+	require.NoError(t, rig.agent.Interrupt())
+
+	require.Eventually(t, func() bool { return len(rig.sink.Messages()) > 0 }, time.Second, 5*time.Millisecond,
+		"the aborted turn stored no result")
+	messages := rig.sink.Messages()
+	assert.Equal(t, MessageCompletionInterrupted, messages[len(messages)-1].Completion,
+		"the turn end states the stop the reader asked for, not the subtype's failure")
+}
+
+// A turn that ends with no stop behind it keeps its own outcome. The note is
+// taken only while a turn runs, because Claude Code acknowledges an interrupt
+// sent outside one and sends no `result` for it.
+func TestClaudeCodeAgent_Interrupt_OutsideATurnMarksNothing(t *testing.T) {
+	t.Parallel()
+
+	rig := newClaudeInterruptRigWithPreamble(t, nil)
+
+	require.NoError(t, rig.agent.Interrupt())
+	rig.agent.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true}`))
+
+	messages := rig.sink.Messages()
+	require.NotEmpty(t, messages)
+	assert.Empty(t, messages[len(messages)-1].Completion,
+		"no turn was running, so the next turn's failure stays a failure")
+}
+
 func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +246,7 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 // supplies the delayed response for a turn/interrupt request.
 type codexInterruptRig struct {
 	agent          *CodexAgent
-	responseBodies chan json.RawMessage
+	responseBodies chan jsonrpcResponsePayload
 	captured       func() []map[string]any
 }
 
@@ -205,7 +278,7 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 		mu       sync.Mutex
 		captured []map[string]any
 	)
-	responseBodies := make(chan json.RawMessage, 1)
+	responseBodies := make(chan jsonrpcResponsePayload, 1)
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -227,12 +300,12 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 			})
 			mu.Unlock()
 			if frame.ID != 0 && autoRespond {
-				body := json.RawMessage(`{}`)
+				body := jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 				select {
 				case body = <-responseBodies:
 				default:
 				}
-				a.deliver(frame.ID, body)
+				a.deliver(frame.ID, jsonrpcTestResponse(frame.ID, body))
 			}
 		}
 	}()
@@ -288,7 +361,7 @@ func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
 	require.Len(t, frames, 1, "concurrent calls must share one request")
 	requestID, ok := frames[0]["id"].(int64)
 	require.True(t, ok)
-	require.True(t, rig.agent.deliver(requestID, json.RawMessage(`{}`)))
+	require.True(t, rig.agent.deliver(requestID, jsonrpcTestResponse(requestID, jsonrpcResponsePayload{Result: json.RawMessage(`{}`)})))
 	require.NoError(t, <-results)
 	require.NoError(t, <-results)
 	assert.Len(t, rig.captured(), 1)
@@ -300,7 +373,7 @@ func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
 	rig.agent.turnID = "turn-42"
-	rig.responseBodies <- json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)
+	rig.responseBodies <- jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)}
 
 	err := rig.agent.Interrupt()
 	require.Error(t, err)
@@ -482,7 +555,7 @@ func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *tes
 			if !ok {
 				continue
 			}
-			agent.deliver(int64(id), json.RawMessage(`{}`))
+			agent.deliver(int64(id), jsonrpcTestResponse(int64(id), jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}))
 		}
 	}()
 
@@ -566,7 +639,7 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 	t.Parallel()
 
 	agent, requests := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	// Helper sets sessionID="session-1" by default.
 
 	require.NoError(t, agent.Interrupt())
@@ -586,11 +659,69 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 	assert.Equal(t, "session-1", got[0].Params["sessionId"])
 }
 
+// The protocol asks the CLIENT to answer an outstanding permission request when it
+// cancels a session, and Goose is the provider that proves why: it waits for that
+// answer, so a bare `session/cancel` left the turn running for the rest of the session
+// -- the thinking indicator never stopped, and the card the reader had just dismissed
+// was the only thing that could have unblocked it.
+func TestACPAgent_Interrupt_AnswersAnOutstandingPermissionRequest(t *testing.T) {
+	t.Parallel()
+
+	agent, requests := newGooseAgentForRPCWithResponder(t,
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
+	agent.sink = &testSink{}
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1","options":[{"optionId":"allow_once","kind":"allow_once","name":"allow_once"}]}}`))
+
+	require.NoError(t, agent.Interrupt())
+
+	var answer string
+	require.Eventually(t, func() bool {
+		for _, recorded := range requests() {
+			if strings.Contains(recorded.Raw, `"id":7`) && strings.Contains(recorded.Raw, "outcome") {
+				answer = recorded.Raw
+				return true
+			}
+		}
+		return false
+	}, time.Second, 5*time.Millisecond, "the request the turn was blocked on was never answered")
+	assert.Contains(t, answer, `"outcome":"cancelled"`, "the reader gave no decision, and none is invented")
+}
+
+// A request the reader already answered is not answered twice: the response the
+// browser sent clears it, and the cancel then has nothing of its own to send.
+func TestACPAgent_Interrupt_SkipsARequestTheReaderAlreadyAnswered(t *testing.T) {
+	t.Parallel()
+
+	agent, requests := newGooseAgentForRPCWithResponder(t,
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
+	agent.sink = &testSink{}
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1"}}`))
+	require.NoError(t, agent.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`)))
+
+	require.NoError(t, agent.Interrupt())
+
+	require.Eventually(t, func() bool {
+		for _, recorded := range requests() {
+			if recorded.Method == acpMethodSessionCancel {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 5*time.Millisecond, "the cancel never went out")
+	cancelled := 0
+	for _, recorded := range requests() {
+		if strings.Contains(recorded.Raw, `"outcome":"cancelled"`) {
+			cancelled++
+		}
+	}
+	assert.Zero(t, cancelled, "the reader's own answer stands")
+}
+
 func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 	t.Parallel()
 
 	agent, requests := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	// Wipe the session so cancelSession would emit a stale id; the
 	// interrupt path must short-circuit instead of emitting at all.
 	// (acpBase fields are reachable via the embedding promotion.)
@@ -608,7 +739,7 @@ func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	t.Parallel()
 
 	agent, _ := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.mu.Lock()
 	agent.stopped = true
 	agent.mu.Unlock()

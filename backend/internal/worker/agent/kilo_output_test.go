@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,7 +34,7 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	agent := newKiloAgentWithSink(sink)
 
 	// Thought chunks are buffered; flushed on interrupting event or end-of-turn.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
 	require.Equal(t, 0, sink.MessageCount())
 
@@ -44,9 +45,9 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
-	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
-	content := parsed["content"].(map[string]interface{})
-	require.Equal(t, "thinking...", content["text"])
+	require.Equal(t, contracts.AssembledMessageType, parsed["type"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, parsed["kind"])
+	require.Equal(t, "thinking...", parsed["text"])
 }
 
 func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
@@ -65,7 +66,7 @@ func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
 	assistantMsg := sink.Messages()[0]
 	var assistantParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(assistantMsg.Content, &assistantParsed))
-	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindText, assistantParsed["kind"])
 
 	resultMsg := sink.Messages()[1]
 	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
@@ -81,7 +82,7 @@ func TestHandleKiloOutput_ToolCallOpensSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"bash","kind":"execute","status":"pending","locations":[],"rawInput":{}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"bash","kind":"execute","status":"pending","locations":[],"rawInput":{}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -102,7 +103,7 @@ func TestHandleKiloOutput_ToolCallUpdateCompleted(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"output"}}],"rawOutput":{"output":"output"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"output"}}],"rawOutput":{"output":"output"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -123,7 +124,7 @@ func TestHandleKiloOutput_UsageUpdate(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":1000,"size":128000,"cost":{"amount":0.05,"currency":"USD"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"usage_update","used":1000,"size":128000,"cost":{"amount":0.05,"currency":"USD"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -142,7 +143,7 @@ func TestHandleKiloOutput_Plan(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[{"priority":"medium","status":"pending","content":"Step 1"},{"priority":"medium","status":"completed","content":"Step 2"}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"plan","entries":[{"priority":"medium","status":"pending","content":"Step 1"},{"priority":"medium","status":"completed","content":"Step 2"}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -166,14 +167,13 @@ func TestHandleKiloOutput_RequestPermission(t *testing.T) {
 	sink := &recordingControlSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
+	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"test-session","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "5", rec.RequestID)
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:5", rec.RequestID)
 
 	var parsed struct {
 		Method string `json:"method"`

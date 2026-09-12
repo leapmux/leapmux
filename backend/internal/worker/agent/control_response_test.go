@@ -17,16 +17,49 @@ func TestResolveControlResponse_NoopKeepsRawResponse(t *testing.T) {
 	res := noopProvider{}.ResolveControlResponse(ControlResponseContext{ResponseContent: content})
 
 	assert.Equal(t, content, res.Content)
-	assert.Nil(t, res.RequestContext)
 	assert.False(t, res.SelfDisplayed)
 	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
 }
 
-func TestResolveControlResponse_CodexApprovalRequestContext(t *testing.T) {
+func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
+	t.Parallel()
+	type nativeAnswerCase struct {
+		name     string
+		provider Provider
+		request  string
+		response string
+	}
+	cases := []nativeAnswerCase{
+		{"codex questions", codexProvider{}, `{"id":7,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"task","header":"Task"}]}}`, " {\"id\":7,\"result\":{\"answers\":{\"task\":{\"answers\":[\"Inspect\"]}}},\"unknown\":9007199254740993}\n"},
+		{"cursor questions", acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}, `{"id":7,"method":"cursor/ask_question","params":{"questions":[{"id":"color","prompt":"Choose","options":[{"id":"red","label":"Red"}]}]}}`, `{"id":7,"result":{"outcome":{"outcome":"answered","answers":[{"questionId":"color","selectedOptionIds":["red"]}]}}}`},
+		{"opencode questions", acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE}, `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`, `{"id":7,"result":{"answers":[["Inspect"]]}}`},
+		{"kilo questions", acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO}, `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`, `{"id":7,"result":{"answers":[["Inspect"]]}}`},
+	}
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	} {
+		for _, options := range []string{`[]`, `[{"optionId":"once","name":"Allow once","kind":"allow_once"}]`} {
+			cases = append(cases, nativeAnswerCase{provider.String() + options, acpProvider{provider: provider}, `{"id":7,"method":"session/request_permission","params":{"options":` + options + `}}`, `{"id":7,"result":{"outcome":{"optionId":"once"}}}`})
+		}
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := []byte(tc.response)
+			resolved := tc.provider.ResolveControlResponse(ControlResponseContext{RequestPayload: []byte(tc.request), ResponseContent: response})
+			assert.Equal(t, response, resolved.Content)
+			assert.False(t, resolved.Withhold)
+			assert.Equal(t, PlanModeControlNone, resolved.PlanModeControl)
+		})
+	}
+}
+
+func TestResolveControlResponse_CodexApprovalPreservesTheResponse(t *testing.T) {
 	t.Parallel()
 
-	// A Codex command-approval decision: the native response is forwarded verbatim, and the pruned
-	// request context is just the method -- the frontend maps result.decision to a label itself.
+	// Native command approval preserves the response bytes.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
 	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload:  []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`),
@@ -34,32 +67,6 @@ func TestResolveControlResponse_CodexApprovalRequestContext(t *testing.T) {
 	})
 
 	assert.Equal(t, content, res.Content)
-	assert.JSONEq(t, `{"method":"item/commandExecution/requestApproval"}`, string(res.RequestContext))
-	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
-}
-
-func TestResolveControlResponse_CodexUserInputRequestContext(t *testing.T) {
-	t.Parallel()
-
-	// requestUserInput keeps the question id + header the frontend labels its answer values with.
-	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
-		RequestPayload: []byte(`{
-			"jsonrpc":"2.0",
-			"id":7,
-			"method":"item/tool/requestUserInput",
-			"params":{"questions":[{"header":"Task","id":"task"},{"header":"Reason","id":"reason"}]}
-		}`),
-		ResponseContent: []byte(`{
-			"jsonrpc":"2.0",
-			"id":7,
-			"result":{"answers":{"task":{"answers":["Inspect"]},"reason":{"answers":["Parity"]}}}
-		}`),
-	})
-
-	assert.JSONEq(t, `{
-		"method":"item/tool/requestUserInput",
-		"params":{"questions":[{"id":"task","header":"Task"},{"id":"reason","header":"Reason"}]}
-	}`, string(res.RequestContext))
 	assert.Equal(t, PlanModeControlNone, res.PlanModeControl)
 }
 
@@ -76,7 +83,6 @@ func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
 	})
 
 	assert.Equal(t, content, res.Content)
-	assert.JSONEq(t, `{"request":{"tool_name":"CodexPlanModePrompt"}}`, string(res.RequestContext))
 	assert.Equal(t, PlanModeControlPrompt, res.PlanModeControl)
 }
 
@@ -91,7 +97,6 @@ func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
 	assert.True(t, res.SelfDisplayed)
 	assert.Equal(t, PlanModeControlExit, res.PlanModeControl)
 	// The tool name is all the frontend needs to render Claude's Approved / Rejected / feedback.
-	assert.JSONEq(t, `{"request":{"tool_name":"ExitPlanMode"}}`, string(res.RequestContext))
 }
 
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
@@ -114,7 +119,6 @@ func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T)
 
 	// The plan decision renders from the transformed outcome alone, so the pruned context is
 	// method-only.
-	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		ID     int `json:"id"`
 		Result struct {
@@ -148,7 +152,6 @@ func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 		}`),
 	})
 
-	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		ID     string `json:"id"`
 		Result struct {
@@ -182,7 +185,6 @@ func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t 
 		}`),
 	})
 
-	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 	var normalized struct {
 		Result struct {
 			Outcome struct {
@@ -214,176 +216,9 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 	})
 
 	assert.Equal(t, content, res.Content)
-	assert.JSONEq(t, `{"method":"cursor/create_plan"}`, string(res.RequestContext))
 }
 
-func TestResolveControlResponse_CursorQuestionRequestContext(t *testing.T) {
-	t.Parallel()
-
-	// Cursor AskQuestion keeps the question prompts and the option id->label map the frontend needs
-	// to render selected option ids as their labels.
-	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
-		RequestPayload: []byte(`{
-			"jsonrpc":"2.0","id":7,"method":"` + CursorMethodAskQuestion + `",
-			"params":{"questions":[
-				{"id":"q1","prompt":"Pick a color","options":[{"id":"o1","label":"Red"},{"id":"o2","label":"Blue"}]},
-				{"id":"q2","prompt":"Pick a size","options":[{"id":"s1","label":"Large"}]}
-			]}
-		}`),
-		ResponseContent: []byte(`{
-			"jsonrpc":"2.0","id":7,
-			"result":{"outcome":{"outcome":"answered","answers":[
-				{"questionId":"q1","selectedOptionIds":["o1","o2"]},
-				{"questionId":"q2","selectedOptionIds":["s1"]}
-			]}}
-		}`),
-	})
-
-	assert.JSONEq(t, `{
-		"method":"cursor/ask_question",
-		"params":{"questions":[
-			{"id":"q1","prompt":"Pick a color","options":[{"id":"o1","label":"Red"},{"id":"o2","label":"Blue"}]},
-			{"id":"q2","prompt":"Pick a size","options":[{"id":"s1","label":"Large"}]}
-		]}
-	}`, string(res.RequestContext))
-}
-
-func TestResolveControlResponse_OpenCodeQuestionRequestContext(t *testing.T) {
-	t.Parallel()
-
-	// The OpenCode/Kilo question context keeps the question headers the frontend labels its answer
-	// values with. Resolve through ProviderFor (not an inline literal) so the test exercises the
-	// real registration: the question hook is set only for OpenCode/Kilo in init().
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-	} {
-		t.Run(provider.String(), func(t *testing.T) {
-			res := ProviderFor(provider).ResolveControlResponse(ControlResponseContext{
-				RequestPayload: []byte(`{
-					"type":"question.asked",
-					"properties":{"questions":[{"header":"Task"},{"header":"Env"}]}
-				}`),
-				ResponseContent: []byte(`{"jsonrpc":"2.0","id":"q1","result":{"answers":[["Build"],["Dev"]]}}`),
-			})
-
-			assert.JSONEq(t, `{
-				"type":"question.asked",
-				"properties":{"questions":[{"header":"Task"},{"header":"Env"}]}
-			}`, string(res.RequestContext))
-		})
-	}
-}
-
-func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *testing.T) {
-	t.Parallel()
-
-	// The OpenCode-protocol `question.asked` request context must dispatch through the
-	// registration-time questionRequestContext hook (set only for OpenCode and Kilo in init()), NOT a
-	// provider-enum allowlist in ResolveControlResponse. This is the backend mirror of the frontend's
-	// registerOpenCodeProtocolProvider membership: keeping "who speaks the question protocol" at the
-	// single registration site stops a second source of truth from drifting.
-	//
-	// The fixture deliberately carries BOTH wire shapes at once -- an OpenCode `question.asked`
-	// question AND an ACP permission method/options -- so the two dispatch paths yield DISTINCT
-	// request context. A provider WITH the hook prunes the question context; a provider WITHOUT it
-	// falls through to the permission context. That divergence is what makes case (b) a real
-	// regression guard: it fails if someone re-adds a non-question provider to an enum allowlist, or
-	// wires the hook onto a provider that shouldn't have it.
-	requestPayload := []byte(`{
-		"type":"question.asked",
-		"properties":{"questions":[{"header":"Task"}]},
-		"method":"session/request_permission",
-		"params":{"options":[{"optionId":"proceed_once","name":"Allow once"}]}
-	}`)
-	responseContent := []byte(`{"result":{"answers":[["Build"]],"outcome":{"optionId":"proceed_once"}}}`)
-
-	questionContext := `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`
-	permissionContext := `{"method":"session/request_permission","params":{"options":[{"optionId":"proceed_once","name":"Allow once"}]}}`
-
-	// (a) Both providers registered WITH the hook prune the OpenCode question context.
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-	} {
-		t.Run(provider.String()+"_uses_question_hook", func(t *testing.T) {
-			res := ProviderFor(provider).ResolveControlResponse(ControlResponseContext{
-				RequestPayload:  requestPayload,
-				ResponseContent: responseContent,
-			})
-			assert.JSONEq(t, questionContext, string(res.RequestContext))
-		})
-	}
-
-	// (b) An ACP provider registered WITHOUT the hook falls through to the ACP permission context for
-	// the very same `question.asked` payload -- it never invokes opencodeQuestionRequestContext.
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-	} {
-		t.Run(provider.String()+"_falls_through_to_permission", func(t *testing.T) {
-			res := ProviderFor(provider).ResolveControlResponse(ControlResponseContext{
-				RequestPayload:  requestPayload,
-				ResponseContent: responseContent,
-			})
-			assert.JSONEq(t, permissionContext, string(res.RequestContext))
-		})
-	}
-}
-
-func TestResolveControlResponse_ACPPermissionRequestContext(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-	} {
-		t.Run(provider.String(), func(t *testing.T) {
-			res := acpProvider{provider: provider}.ResolveControlResponse(ControlResponseContext{
-				RequestPayload: []byte(`{
-					"jsonrpc":"2.0",
-					"id":7,
-					"method":"session/request_permission",
-					"params":{"options":[
-						{"optionId":"proceed_once","name":"Allow once","kind":"allow_once"},
-						{"optionId":"reject","name":"Reject","kind":"reject_once"}
-					]}
-				}`),
-				ResponseContent: []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"proceed_once"}}}`),
-			})
-
-			// Options keep optionId + name -- the minimal context the frontend matches the selected
-			// id against to render its label; the selected optionId itself lives in the native
-			// response. The request's `kind` is intentionally pruned away (the frontend never reads it).
-			assert.JSONEq(t, `{
-				"method":"session/request_permission",
-				"params":{"options":[
-					{"optionId":"proceed_once","name":"Allow once"},
-					{"optionId":"reject","name":"Reject"}
-				]}
-			}`, string(res.RequestContext))
-		})
-	}
-}
-
-func TestResolveControlResponse_ACPPermissionRequestContextWithoutOptions(t *testing.T) {
-	t.Parallel()
-
-	// A permission request that carries no options (e.g. a Cursor create-plan request that fell
-	// through the transform) degrades to method-only context rather than an empty options list.
-	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE}.ResolveControlResponse(ControlResponseContext{
-		RequestPayload:  []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{}}`),
-		ResponseContent: []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"proceed_once"}}}`),
-	})
-
-	assert.JSONEq(t, `{"method":"session/request_permission"}`, string(res.RequestContext))
-}
-
-func TestResolveControlResponse_PiRequestContext(t *testing.T) {
+func TestResolveControlResponse_PiPreservesTheResponse(t *testing.T) {
 	t.Parallel()
 
 	confirmed := true
@@ -396,14 +231,12 @@ func TestResolveControlResponse_PiRequestContext(t *testing.T) {
 	})
 
 	assert.Equal(t, response, res.Content)
-	assert.JSONEq(t, `{"method":"confirm"}`, string(res.RequestContext))
 }
 
-func TestResolveControlResponse_EmptyRequestPayloadYieldsNilContext(t *testing.T) {
+func TestResolveControlResponse_PreservesTheResponseWithoutARequest(t *testing.T) {
 	t.Parallel()
 
-	// Every resolver returns nil RequestContext when it has no stored request to prune (the request
-	// row was already deleted, or never captured) -- the row then persists with `request` omitted.
+	// An absent request must not change the response bytes.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
 	cases := map[string]Provider{
 		"codex":  codexProvider{},
@@ -414,17 +247,15 @@ func TestResolveControlResponse_EmptyRequestPayloadYieldsNilContext(t *testing.T
 	for name, provider := range cases {
 		t.Run(name, func(t *testing.T) {
 			res := provider.ResolveControlResponse(ControlResponseContext{ResponseContent: content})
-			assert.Nil(t, res.RequestContext)
 			assert.Equal(t, content, res.Content)
 		})
 	}
 }
 
-func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testing.T) {
+func TestResolveControlResponse_PreservesButWithholdsTheResponseForAMalformedRequest(t *testing.T) {
 	t.Parallel()
 
-	// A stored request that doesn't parse as JSON leaves RequestContext nil (warnUnmarshal fails)
-	// without dropping the forwarded response.
+	// A corrupt request prevents native ID validation. Keep the response bytes for recovery.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
 	for name, provider := range map[string]Provider{
 		"codex": codexProvider{},
@@ -436,8 +267,8 @@ func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testi
 				RequestPayload:  []byte(`not json`),
 				ResponseContent: content,
 			})
-			assert.Nil(t, res.RequestContext)
 			assert.Equal(t, content, res.Content)
+			assert.True(t, res.Withhold)
 		})
 	}
 }

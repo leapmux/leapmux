@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -67,15 +68,20 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 	})
 
 	// purpose is an enumerated column, and the schema is what enforces the
-	// enumeration. Go's zero value is "", never "login", so an explicit insert
-	// never reaches the column DEFAULT -- and the callback reads every value
-	// that is not "reauth" as a login, which may create a session or link an
-	// identity. The CHECK refuses the row instead.
+	// enumeration. Go's zero value is 0 (UNSPECIFIED), never LOGIN, so an
+	// explicit insert never reaches the column DEFAULT -- and the callback reads
+	// every value that is not REAUTH as a login, which may create a session or
+	// link an identity. The CHECK refuses the row instead.
+	//
+	// The cases below are the three ways a bad value arrives: the unset zero,
+	// an ordinal above the range, and a negative one.
 	t.Run("an unknown purpose is refused by the schema", func(t *testing.T) {
 		st := s.NewStore(t)
 		prov := SeedOAuthProvider(t, st, "state-badpurpose-prov")
 
-		for _, purpose := range []string{"", "LOGIN", "elevate"} {
+		for _, purpose := range []leapmuxv1.OAuthStatePurpose{
+			leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 3, -1,
+		} {
 			err := st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
 				State:        id.Generate(),
 				ProviderID:   prov.ID,
@@ -84,7 +90,7 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 				Purpose:      purpose,
 				ExpiresAt:    time.Now().Add(10 * time.Minute),
 			})
-			assert.Error(t, err, "purpose %q must not be storable", purpose)
+			assert.Error(t, err, "purpose %d must not be storable", purpose)
 		}
 	})
 

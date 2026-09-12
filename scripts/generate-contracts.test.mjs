@@ -41,6 +41,7 @@ import {
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoChatHistory,
+  emitGoCodexBypass,
   emitGoDesktop,
   emitGoExternalApps,
   emitGoHeaders,
@@ -487,29 +488,33 @@ describe('checkProviderProtocol', () => {
 describe('checkCodexBypass', () => {
   const valid = () => ({
     settings: [
-      { id: 'permissionMode', value: 'never', planOption: false },
-      { id: 'network_access', value: 'enabled', planOption: true },
+      { id: 'permissionMode', value: 'never' },
+      { id: 'network_access', value: 'enabled' },
     ],
   })
 
-  it('accepts one permission mode and at least one plan option', () => {
+  it('accepts one permission mode and at least one additional option', () => {
     expect(checkCodexBypass(valid())).toBeUndefined()
+  })
+
+  it('includes the permission mode in the worker approval options', () => {
+    expect(emitGoCodexBypass(valid())).toContain('"permissionMode": "never"')
   })
 
   it('rejects duplicate option ids', () => {
     const contract = valid()
-    contract.settings.push({ id: 'network_access', value: 'restricted', planOption: true })
+    contract.settings.push({ id: 'network_access', value: 'restricted' })
     expectContractError(() => checkCodexBypass(contract), 'two settings share one option id')
   })
 
-  it('requires the permission mode and a plan option', () => {
+  it('requires the permission mode and an additional option', () => {
     expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'other', value: 'x', planOption: false }] }),
+      () => checkCodexBypass({ settings: [{ id: 'other', value: 'x' }] }),
       'permissionMode is required',
     )
     expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'permissionMode', value: 'never', planOption: false }] }),
-      'at least one plan option is required',
+      () => checkCodexBypass({ settings: [{ id: 'permissionMode', value: 'never' }] }),
+      'at least one additional option is required',
     )
   })
 })
@@ -667,19 +672,23 @@ describe('generate', () => {
   it('emits the shipped domains from the real contracts dir', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
     expect(Object.keys(files).sort()).toEqual([
+      'backend/generated/contracts/acp-protocol.go',
       'backend/generated/contracts/agent-input.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
-      'backend/generated/contracts/copilot-permissions.go',
+      'backend/generated/contracts/copilot-protocol.go',
+      'backend/generated/contracts/cursor-protocol.go',
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/external-apps.go',
       'backend/generated/contracts/goose-protocol.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
+      'backend/generated/contracts/mcp-elicitation.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
+      'backend/generated/contracts/reasonix-protocol.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
       'backend/generated/contracts/session-info.go',
@@ -693,19 +702,23 @@ describe('generate', () => {
       'backend/generated/contracts/worker-vocab.go',
       'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
+      'frontend/src/generated/contracts/acp-protocol.ts',
       'frontend/src/generated/contracts/agent-input.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
-      'frontend/src/generated/contracts/copilot-permissions.ts',
+      'frontend/src/generated/contracts/copilot-protocol.ts',
+      'frontend/src/generated/contracts/cursor-protocol.ts',
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/external-apps.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',
+      'frontend/src/generated/contracts/mcp-elicitation.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
       'frontend/src/generated/contracts/providers.ts',
+      'frontend/src/generated/contracts/reasonix-protocol.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
       'frontend/src/generated/contracts/session-info.ts',
@@ -727,16 +740,16 @@ describe('generate', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
 
     // Emit one TypeScript union for each table. The old Copilot emitter omitted it.
-    const copilotTs = files['frontend/src/generated/contracts/copilot-permissions.ts']
-    expect(copilotTs).toContain('export type CopilotPermissionGroup =')
-    expect(copilotTs).toContain('export type CopilotPermissionValue =')
+    const copilotTs = files['frontend/src/generated/contracts/copilot-protocol.ts']
+    expect(copilotTs).toContain('export type CopilotPermissionMode =')
+    expect(copilotTs).toContain('export type CopilotApprovalScope =')
     // Preserve the identifiers that both languages import.
-    expect(copilotTs).toContain('export const COPILOT_PERMISSION_GROUP = {')
-    expect(files['backend/generated/contracts/copilot-permissions.go'])
-      .toContain('CopilotPermissionGroupAssistedApproval = "copilot_assisted_approval"')
-    // LeapMux owns one of the two Copilot identifiers. The domain therefore
-    // overrides the shared header instead of assigning every value to the vendor.
-    expect(files['backend/generated/contracts/copilot-permissions.go'])
+    expect(copilotTs).toContain('export const COPILOT_PERMISSION_MODE = {')
+    expect(files['backend/generated/contracts/copilot-protocol.go'])
+      .toContain('CopilotPermissionModeAllowAll = "allow-all"')
+    // LeapMux owns some of the Copilot identifiers. The domain therefore overrides
+    // the shared header instead of assigning every value to the vendor.
+    expect(files['backend/generated/contracts/copilot-protocol.go'])
       .not
       .toContain('vendor owns\n// the values')
 
@@ -1216,12 +1229,13 @@ describe('checkWorkerVocab / checkDesktop', () => {
     workerAuthoredNotificationTypes: ['AgentError'],
     goalStatusTokens: { None: '', Running: 'running' },
     goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
+    messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses' },
+    messageSupplementFields: { Provider: 'provider', Metadata: 'metadata' },
     assembledMessage: {
       fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
       types: { Assembled: 'assembled_message' },
       kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
       completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error' },
-      metadata: { Field: '_leapmux' },
     },
     notificationThreadWrapperType: 'notification_thread',
     codexRateLimitReachedTimeWindow: 'rate_limit_reached',

@@ -922,8 +922,8 @@ func TestACPTerminal_ReleaseSessionOnClearContext(t *testing.T) {
 	resps := rec.wait(t, 1, 3*time.Second)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
-	_, ok := b.ClearContext()
-	assert.False(t, ok, "session/new must fail without a live agent")
+	_, clearErr := b.ClearContext()
+	assert.Error(t, clearErr, "session/new must fail without a live agent")
 
 	b.terminalsMu.Lock()
 	_, still := b.terminals[termID]

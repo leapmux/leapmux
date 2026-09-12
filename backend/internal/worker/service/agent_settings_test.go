@@ -870,8 +870,8 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 // TestUpdateAgentSettings_DropsForeignNonSecondaryAxes verifies the generalized strip:
 // any axis a provider doesn't expose -- not just the secondary permission-mode/
 // primary-agent axis -- is dropped. A `--effort` against Cursor (which bakes effort
-// into the model id and has no effort axis) and a `--set allow_all=on` against Claude
-// (a Copilot-only config option) must both be stripped rather than persisting a phantom and
+// into the model id and has no effort axis) and a `--set session_mode=plan` against Claude
+// (a Copilot-only axis) must both be stripped rather than persisting a phantom and
 // emitting a misleading settings_changed notification.
 func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 	t.Parallel()
@@ -882,7 +882,7 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 		foreign  string
 	}{
 		{"effort against Cursor", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, agent.OptionIDEffort},
-		{"allow_all against Claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.CopilotPermissionGroupAllowAll},
+		{"session_mode against Claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.CopilotOptionSessionMode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1925,9 +1925,9 @@ func TestSettingsResponseSettlements_ReportsConfirmedRemovalAndUnresolvedValue(t
 }
 
 // Every RELAUNCH must carry the safe-default provenance, which only the OpenAgent request
-// knew. A restart that dropped it silently disabled Copilot's launch fallback, so a
-// stored Assisted Approval that the CLI refuses left the tab with no process on every
-// attempt -- and nothing said why.
+// knew. A restart that dropped it leaves a provider unable to tell a value the USER chose
+// from the one LeapMux stamped for a new session, and every fallback that turns on that
+// difference then reads the wrong answer.
 func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
@@ -1935,8 +1935,8 @@ func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 
 	stored := map[string]string{
 		// The value a new Copilot session receives, now replayed from the row.
-		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-		agent.OptionIDModel: "gpt-5",
+		agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted,
+		agent.OptionIDModel:          "gpt-5",
 	}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
@@ -1958,8 +1958,8 @@ func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 
 	select {
 	case opts := <-launched:
-		assert.True(t, opts.NewSessionDefaultOptionIDs[contracts.CopilotPermissionGroupAssistedApproval],
-			"a value still equal to the safe default keeps the provider's launch fallback armed")
+		assert.True(t, opts.NewSessionDefaultOptionIDs[agent.OptionIDPermissionMode],
+			"a value still equal to the safe default is reported as default-sourced")
 		assert.False(t, opts.NewSessionDefaultOptionIDs[agent.OptionIDModel],
 			"an axis with no safe default is never reported as default-sourced")
 	case <-time.After(5 * time.Second):
@@ -1967,32 +1967,35 @@ func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 	}
 }
 
-func TestSettingsResponseSettlementsReportsIndirectCopilotConflict(t *testing.T) {
+func TestSettingsResponseSettlementsReportsAnIndirectChange(t *testing.T) {
 	t.Parallel()
 
+	// Copilot's mode axis can select a different model: `session.mode.set` reports
+	// `modelChanged`, and the settings refresh that follows surfaces the new model. The
+	// request named the mode alone, so the model settlement is INDIRECT -- and a reply
+	// that omitted it would leave the panel showing the model the session no longer runs.
 	prior := OptionMap{
-		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+		contracts.CopilotOptionSessionMode: contracts.CopilotModeInteractive,
+		agent.OptionIDModel:                "gpt-5",
 	}
 	optimistic := OptionMap{
-		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
-		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+		contracts.CopilotOptionSessionMode: contracts.CopilotModePlan,
+		agent.OptionIDModel:                "gpt-5",
 	}
-	result := agent.SettingsApplyResult{
-		AppliedLive: true,
-		SurfacedOptions: map[string]string{
-			contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
-			contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
-		},
+	// The provider's own snapshot is what the service settles on, and it carries the
+	// model the mode change selected.
+	settled := OptionMap{
+		contracts.CopilotOptionSessionMode: contracts.CopilotModePlan,
+		agent.OptionIDModel:                "gpt-5-plan",
 	}
+	result := agent.SettingsApplyResult{AppliedLive: true, SurfacedOptions: settled}
 
 	got := settingsResponseSettlements(prior,
-		map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
-		optimistic, optimistic, result)
-	require.Contains(t, got, contracts.CopilotPermissionGroupAssistedApproval)
-	assert.Equal(t, contracts.CopilotPermissionValueOff,
-		*got[contracts.CopilotPermissionGroupAssistedApproval].Value)
-	require.Contains(t, got, contracts.CopilotPermissionGroupAllowAll)
+		map[string]string{contracts.CopilotOptionSessionMode: contracts.CopilotModePlan},
+		optimistic, settled, result)
+	require.Contains(t, got, agent.OptionIDModel)
+	assert.Equal(t, "gpt-5-plan", *got[agent.OptionIDModel].Value)
+	require.Contains(t, got, contracts.CopilotOptionSessionMode)
 }
 
 // TestReportModelChange verifies the settings_changed notification reports a model

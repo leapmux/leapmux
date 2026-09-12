@@ -362,7 +362,9 @@ func (h *handler) Cancel(ctx context.Context, req *connect.Request[leapmuxv1.Can
 
 func (h *handler) UpdateStream(ctx context.Context, req *connect.Request[leapmuxv1.UpdateStreamRequest]) (*connect.Response[leapmuxv1.UpdateStreamResponse], error) {
 	if id := req.Msg.GetClientRequestId(); id != "" {
-		h.router.UpdateStream(id, req.Msg.GetPayload())
+		if err := h.router.UpdateStream(id, req.Msg.GetPayload()); err != nil {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
 	}
 	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
 }

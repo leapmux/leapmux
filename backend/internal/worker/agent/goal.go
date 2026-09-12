@@ -23,50 +23,45 @@ import (
 // that itself: Codex keys thread_goals by thread_id, ZCode keys its target by
 // sessionID, Claude Code holds a single activeGoal. Nothing here is a list.
 
-// GoalStatus is the neutral status. It mirrors leapmuxv1.AgentGoalStatus with a
-// friendlier zero value: the zero GoalStatus means "no goal", which is what a
-// caller with an empty struct wants.
+// GoalStatus is the neutral status: a DEFINED type over
+// leapmuxv1.AgentGoalStatus, so this package, the agents.goal_status column and
+// the browser share one numbering. GoalStatusNone IS the proto's UNSPECIFIED,
+// so the zero value still means "no goal", which is what a caller with an empty
+// struct wants.
 //
-// Five values, deliberately. Four come from the providers, and the UI branches
-// three ways on them (pause iff active, resume iff paused, clear always). The
-// providers' own enums do not agree -- Codex has six words, ZCode has six
-// different ones -- so a neutral value per provider word would claim a
-// precision the mapping cannot deliver, and the provider's own word travels
-// beside this as GoalUpdate.StatusDetail.
-//
-// GoalStatusDormant is the fifth, and no provider reports it. LeapMux writes it
-// when the process that pursued the goal is gone. See its comment below.
-type GoalStatus int
+// Four values describe provider goal states. GoalStatusNone describes an absent goal.
+// Providers use different status vocabularies, so StatusDetail retains the provider's own status.
+// GoalStatusDormant describes a stored goal whose provider process no longer runs.
+type GoalStatus leapmuxv1.AgentGoalStatus
 
 const (
-	GoalStatusNone GoalStatus = iota
-	GoalStatusActive
-	GoalStatusPaused
+	GoalStatusNone   = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNSPECIFIED)
+	GoalStatusActive = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE)
+	GoalStatusPaused = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_PAUSED)
 	// GoalStatusBlocked is "not progressing, needs the user": Codex's blocked,
 	// usageLimited and budgetLimited; ZCode's notSatisfied and failed;
 	// Reasonix's blocked and stopped.
-	GoalStatusBlocked
-	GoalStatusDone
-	// GoalStatusDormant is "the objective is stored, and no live process is
-	// pursuing it". LeapMux writes it, never a provider: at worker boot for
-	// every goal that outlived the process, and when one agent's process exits.
-	//
-	// It exists because the two alternatives both lie. Keeping the last status
-	// draws a live Active dot and working Pause and Clear buttons for a process
-	// that no longer exists, and blanking the status projects the enum's zero
-	// value, which the browser can only read as "a status this build does not
-	// understand" -- so a goal that is merely waiting renders as a fault.
-	GoalStatusDormant
+	GoalStatusBlocked = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_BLOCKED)
+	GoalStatusDone    = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE)
+	// GoalStatusDormant means the objective is stored but no live process pursues it.
+	// LeapMux derives this display state from the running-agent map and does not persist it,
+	// which the agents.goal_status CHECK enforces by excluding this ordinal.
+	// The provider's last stored status remains available for comparison after a restart.
+	GoalStatusDormant = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT)
 )
 
-// goalStatusWires maps each status onto the token stored in agents.goal_status.
-// The empty token is GoalStatusNone, so a cleared goal and a never-set goal read
-// back identically.
+// goalStatusWires maps each status onto the token the goal_updated NOTIFICATION
+// PAYLOAD carries. The empty token is GoalStatusNone, so a cleared goal and a
+// never-set goal read back identically.
 //
 // The tokens come from the contract, because the BROWSER reads the same ones:
 // the worker ships goal_status inside the goal_updated notification payload and
-// the transcript renderer narrows it. The agents.goal_status CHECK constraint is
-// a third spelling that the generator cannot emit -- keep it in step by hand.
+// the transcript renderer narrows it.
+//
+// This is NOT the storage format. agents.goal_status holds the ordinal
+// directly, so the column and this vocabulary no longer have to be kept in step
+// by hand -- which is what the contract readme used to ask for, and what a
+// renumber used to break silently in a third place nothing generated.
 var goalStatusWires = map[GoalStatus]string{
 	GoalStatusNone:    contracts.GoalStatusTokenNone,
 	GoalStatusActive:  contracts.GoalStatusTokenActive,
@@ -76,19 +71,19 @@ var goalStatusWires = map[GoalStatus]string{
 	GoalStatusDormant: contracts.GoalStatusTokenDormant,
 }
 
-// GoalStatusWire returns the token persisted in agents.goal_status.
+// GoalStatusWire returns the token the goal_updated notification payload
+// carries for s.
 //
 // An unmapped status yields "", because that is what a Go map miss gives, and
-// the column's CHECK constraint accepts "". So the write SUCCEEDS and stores a
-// non-empty objective beside a blank status, which every reader then takes as
-// "no goal": GoalStatusFromWire answers GoalStatusNone, the projection sends
-// AGENT_GOAL_STATUS_UNSPECIFIED, and the card draws the goal as one it cannot
-// act on. Keep every GoalStatus constant in goalStatusWires.
+// the browser reads "" as a goal it cannot act on -- so a status missing from
+// goalStatusWires reaches the transcript as a goal with no state rather than as
+// a parse failure. Keep every GoalStatus constant in goalStatusWires.
 func GoalStatusWire(s GoalStatus) string { return goalStatusWires[s] }
 
-// GoalStatusFromWire is the inverse. An unrecognized token reads as
-// GoalStatusNone rather than an error: the only way one reaches the column is a
-// downgrade, and a goal whose status cannot be understood must not offer
+// GoalStatusFromWire is the inverse, for the one caller that has a token rather
+// than a status: the ZCode plugin, which matches a provider word against this
+// vocabulary. An unrecognized token reads as GoalStatusNone rather than an
+// error, because a goal whose status cannot be understood must not offer
 // controls that act on it.
 func GoalStatusFromWire(wire string) GoalStatus {
 	for status, token := range goalStatusWires {
@@ -99,22 +94,11 @@ func GoalStatusFromWire(wire string) GoalStatus {
 	return GoalStatusNone
 }
 
-// GoalStatusToProto projects onto the wire enum the browser reads.
+// GoalStatusToProto projects onto the wire enum the browser reads. The two
+// numberings are the same one, so this is a cast; it stays a named function
+// because every caller reads better for saying what it projects onto.
 func GoalStatusToProto(s GoalStatus) leapmuxv1.AgentGoalStatus {
-	switch s {
-	case GoalStatusActive:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE
-	case GoalStatusPaused:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_PAUSED
-	case GoalStatusBlocked:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_BLOCKED
-	case GoalStatusDone:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE
-	case GoalStatusDormant:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT
-	default:
-		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNSPECIFIED
-	}
+	return leapmuxv1.AgentGoalStatus(s)
 }
 
 // GoalUpdate is one provider's report of the current goal.
@@ -130,6 +114,8 @@ func GoalStatusToProto(s GoalStatus) leapmuxv1.AgentGoalStatus {
 // a number meaning the opposite of its label, so the Claude parser leaves
 // TokensUsed nil.
 type GoalUpdate struct {
+	// NativeID distinguishes provider goals that have the same objective text.
+	NativeID     string
 	Objective    string
 	Status       GoalStatus
 	StatusDetail string
@@ -184,7 +170,7 @@ type GoalUpdate struct {
 // halves are empty, Reasonix sends an absent `objective` as "" while its state
 // machine starts, and StripUnreadable above empties an objective made only of
 // control characters. The card renders a goal from the status alone, so without
-// this the panel shows an empty objective line with an armed status dot and
+// this the panel shows an empty objective line with an active status indicator and
 // live Pause and Clear buttons -- a goal with no text that the user cannot read
 // and did not set.
 func (u GoalUpdate) Clean() GoalUpdate {
@@ -200,6 +186,7 @@ func (u GoalUpdate) Clean() GoalUpdate {
 		u.Status = GoalStatusBlocked
 	}
 	if u.Objective == "" {
+		u.NativeID = ""
 		u.Status = GoalStatusNone
 		u.StatusDetail = ""
 		u.TokensUsed = nil
@@ -265,8 +252,9 @@ type GoalCapable interface {
 // text-route provider built a user message that changes nothing until the
 // durable input queue delivers it, and returns it in QueuedInput.
 type GoalOutcome struct {
-	// QueuedInput is user-message text the caller MUST enqueue. Empty means the
-	// action already took effect.
+	// QueuedInput is an explicit provider command that the caller must enqueue.
+	// Empty means the action already took effect. Never use an ordinary prompt
+	// to resume a paused goal.
 	QueuedInput string
 }
 
@@ -282,8 +270,8 @@ type GoalOutcome struct {
 //   - Claude Code, Goose, and Copilot have only a user-message command. They
 //     return it as QueuedInput, and observe it after the queue delivers it.
 //     GoalTextCommander is how they build and observe that text.
-//   - Reasonix implements none of this. Setting changes its mode and takes the
-//     next prompt. Clearing must restore a mode that LeapMux did not track.
+//   - Reasonix sets its mode and submits the objective under one session lock.
+//     Normal mode clears its goal. ACP provides no Pause or Resume operation.
 //
 // SupportedGoalActions is what the browser reads to disable a control, so it
 // lives on the same interface as the implementations and cannot drift from
@@ -292,12 +280,13 @@ type GoalOutcome struct {
 type GoalWriter interface {
 	GoalCapable
 
-	// PerformGoalAction runs one action. The provider decides whether that
-	// starts a turn, and whether the caller has anything left to do.
+	// PerformGoalAction uses a verified provider command or RPC for the action.
+	// The provider decides whether this starts a turn and requires queued delivery.
+	// A natural-language prompt cannot substitute for a Goal resume operation.
 	PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error)
 }
 
-// GoalCommandDelivery names the channel that carried a goal command to the
+// GoalCommandDelivery identifies the channel that carried a goal command to the
 // provider process. A provider reads its own command parser on one channel and
 // not always on the other, so the observer must know which one delivered.
 type GoalCommandDelivery int
@@ -329,24 +318,29 @@ const (
 	goalTextBareQuery
 	goalTextClear
 	goalTextSet
+	goalTextPause
+	goalTextResume
 )
 
 // goalTextRoute is one provider's user-message goal vocabulary.
 //
-// The three text-route providers differ in five values and in nothing else, so
-// the algorithm lives here and each provider declares one of these. The rule
-// that provider-specific logic stays in the provider still holds: the command,
-// the clear words and the capability check remain in the provider's own file.
-// Only the format-and-observe algorithm is shared, exactly as
-// parseGoalCommandText already is.
+// Providers share objective formatting and clear-command observation through this type.
+// Each provider supplies its command vocabulary and capability check.
+// Providers handle additional control arguments in their own implementations.
 type goalTextRoute struct {
-	// provider names the provider in an error message.
+	// provider identifies the provider in an error message.
 	provider string
 	// command is the slash command that LeapMux emits.
 	command string
 	// clearArgs lists each complete argument that clears the goal. LeapMux
 	// emits the first one and observes them all.
 	clearArgs []string
+	// pauseArgs and resumeArgs list the arguments for the other two verbs, in
+	// the same form as clearArgs. Empty means the provider's command has no such
+	// verb, and the action is unsupported: Goose's `/goal` takes an objective or
+	// a clear word, while Kilo's takes all four.
+	pauseArgs  []string
+	resumeArgs []string
 	// steerCarriesCommand is true when the provider's steer channel reaches the
 	// same command parser as its send channel. Claude Code steers by sending
 	// the identical user message, so a steered command changes its goal. Goose
@@ -355,10 +349,9 @@ type goalTextRoute struct {
 	steerCarriesCommand bool
 }
 
-// ErrGoalObjectiveIsCommand means that the objective is one of the words that
-// clears the goal, so the provider would read a set as a clear. The service
-// maps it to InvalidArgument.
-var ErrGoalObjectiveIsCommand = errors.New("this objective is a word that clears the goal")
+// ErrGoalObjectiveIsCommand means the provider interprets the objective as a control argument.
+// The service maps it to InvalidArgument.
+var ErrGoalObjectiveIsCommand = errors.New("this objective is a reserved command argument")
 
 // perform builds the user message for one action. It changes nothing itself:
 // a text route takes effect only once the queue delivers what it returns.
@@ -380,17 +373,21 @@ func (r goalTextRoute) commandText(action GoalAction, objective string) (string,
 		}
 		// The command is positional, so a one-word objective that equals a
 		// clear word reaches the provider as a clear. The provider then removes
-		// the goal, and parseGoalCommandText below reads the same text the same
+		// the goal, and the parser below reads the same text the same
 		// way, so nothing reports the difference. Refuse instead, and let the
 		// user see why. ZCode escapes the same hazard with its `replace` alias;
 		// a text route has no alias to reach for.
-		if r.matchesClearArgument(objective) {
-			return "", fmt.Errorf("%w: %s %s reads %q as a clear",
-				ErrGoalObjectiveIsCommand, r.provider, r.command, objective)
+		if verb := r.reservedArgument(objective); verb != "" {
+			return "", fmt.Errorf("%w: %s %s reads %q as a %s",
+				ErrGoalObjectiveIsCommand, r.provider, r.command, objective, verb)
 		}
 		return r.command + " " + objective, nil
 	case GoalActionClear:
-		return r.command + " " + r.clearArgs[0], nil
+		return r.verbText(r.clearArgs)
+	case GoalActionPause:
+		return r.verbText(r.pauseArgs)
+	case GoalActionResume:
+		return r.verbText(r.resumeArgs)
 	default:
 		return "", ErrGoalControlUnsupported
 	}
@@ -401,7 +398,7 @@ func (r goalTextRoute) observe(sink GoalServices, delivery GoalCommandDelivery, 
 	if delivery == GoalDeliverySteer && !r.steerCarriesCommand {
 		return
 	}
-	intent, objective := parseGoalCommandText(text, r.command, r.clearArgs)
+	intent, objective := r.parse(text)
 	switch intent {
 	case goalTextSet:
 		// A fresh CreatedAt on every set, so re-setting the SAME objective
@@ -415,18 +412,42 @@ func (r goalTextRoute) observe(sink GoalServices, delivery GoalCommandDelivery, 
 	case goalTextClear:
 		// Not a snapshot: the user just did this, so it is a real transition.
 		sink.ClearGoal(false)
+	case goalTextPause:
+		// The objective and the identity survive a pause, so this changes the
+		// status alone. It moves an ACTIVE goal only: a paused or finished goal
+		// has nothing to pause, and a compare-and-set says so without reading
+		// the goal back first.
+		sink.UpdateGoalStatus(GoalStatusActive, GoalStatusPaused)
+	case goalTextResume:
+		sink.UpdateGoalStatus(GoalStatusPaused, GoalStatusActive)
 	case goalTextNotCommand, goalTextBareQuery:
 		// These inputs do not change the goal.
 	}
 }
 
-func (r goalTextRoute) matchesClearArgument(argument string) bool {
-	for _, clearArg := range r.clearArgs {
-		if strings.EqualFold(argument, clearArg) {
-			return true
+// verbText emits the first argument of a verb the provider's command accepts.
+func (r goalTextRoute) verbText(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", ErrGoalControlUnsupported
+	}
+	return r.command + " " + args[0], nil
+}
+
+// reservedArgument names the verb an objective would be read as, or "" when the
+// objective is safe to send.
+//
+// The command is positional, so a one-word objective that equals a verb reaches the
+// provider as that verb. The provider then acts on it, and the observer below reads the
+// same text the same way, so nothing reports the difference.
+func (r goalTextRoute) reservedArgument(objective string) string {
+	for verb, args := range map[string][]string{"clear": r.clearArgs, "pause": r.pauseArgs, "resume": r.resumeArgs} {
+		for _, arg := range args {
+			if strings.EqualFold(objective, arg) {
+				return verb
+			}
 		}
 	}
-	return false
+	return ""
 }
 
 // foldGoalObjective makes a goal safe for a single-line slash command. A
@@ -435,31 +456,34 @@ func foldGoalObjective(objective string) string {
 	return strings.Join(strings.Fields(objective), " ")
 }
 
-// parseGoalCommandText classifies one delivered provider command. A clear
-// word must match the complete argument.
+// parse classifies one delivered provider command. A verb argument
+// must match the complete argument.
 //
 // It reads the FIRST LINE only. A provider takes the remainder of the command
 // line as the objective, so a later line of the same message belongs to no
 // command. Folding the whole message would store an objective longer than the
 // one the provider installed, and no text route reports the goal back to
 // correct it.
-func parseGoalCommandText(text, command string, clearArgs []string) (goalTextIntent, string) {
+func (r goalTextRoute) parse(text string) (goalTextIntent, string) {
 	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
 	line = strings.TrimSpace(line)
-	if line == command {
+	if line == r.command {
 		return goalTextBareQuery, ""
 	}
-	if !strings.HasPrefix(line, command+" ") {
+	if !strings.HasPrefix(line, r.command+" ") {
 		return goalTextNotCommand, ""
 	}
-	argument := foldGoalObjective(strings.TrimPrefix(line, command+" "))
+	argument := foldGoalObjective(strings.TrimPrefix(line, r.command+" "))
 	if argument == "" {
 		return goalTextBareQuery, ""
 	}
-	for _, clearArg := range clearArgs {
-		if strings.EqualFold(argument, clearArg) {
-			return goalTextClear, ""
-		}
+	switch r.reservedArgument(argument) {
+	case "clear":
+		return goalTextClear, ""
+	case "pause":
+		return goalTextPause, ""
+	case "resume":
+		return goalTextResume, ""
 	}
 	return goalTextSet, argument
 }

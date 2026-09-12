@@ -2,33 +2,26 @@ import type { Component } from 'solid-js'
 import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
+import { pickString } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
-import * as styles from '../ControlRequestBanner.css'
-import { CollapsibleText } from './CollapsibleText'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
+import { PermissionRequestContent } from './PermissionRequestContent'
 import { sendResponse } from './types'
 
 export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
   const toolName = () => getToolName(props.request.payload)
   const input = () => getToolInput(props.request.payload)
-  const inputSummary = () => {
-    try {
-      return JSON.stringify(input(), null, 2)
-    }
-    catch {
-      return '{}'
-    }
-  }
 
   return (
-    <>
-      <div class={styles.controlBannerTitle}>
-        Permission Required:
-        {toolName()}
-      </div>
-      <CollapsibleText text={inputSummary()} maxLines={6} class={styles.bannerCodeBlock} />
-    </>
+    <PermissionRequestContent
+      request={props.request}
+      source={{
+        title: toolName(),
+        input: input(),
+        command: toolName() === 'Bash' ? pickString(input(), 'command', undefined) : undefined,
+      }}
+    />
   )
 }
 
@@ -39,10 +32,8 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
     return sendResponse(props.onRespond, buildDenyResponse(props.request.requestId))
   }
 
-  // Await the allow BEFORE applying a preset. The worker dispatches the two
-  // concurrently, and applying a permission mode the provider cannot take live
-  // relaunches the agent -- a relaunch that won the race killed the session
-  // before the allow reached it, so the tool call was never answered.
+  // Send the approval before applying a preset, because some permission changes restart the agent.
+  // Concurrent requests could restart the agent before it receives the approval.
   const handleAllow = () => respondThenApplyPermissionPreset(
     sendResponse(props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload))),
     props.presets,

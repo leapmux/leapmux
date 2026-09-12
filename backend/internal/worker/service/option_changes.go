@@ -1,0 +1,63 @@
+package service
+
+import (
+	"fmt"
+	"maps"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+)
+
+// persistOptionChanges changes only the supplied keys. Concurrent provider updates retain their other keys.
+// The caller decides whether values are preferences or confirmed live settings.
+func (svc *Service) persistOptionChanges(current db.Agent, previous, values OptionMap, notifyFirstSet bool) (db.Agent, error) {
+	delta := make(OptionMap, len(previous))
+	for key := range previous {
+		delta[key] = values[key]
+	}
+	if len(delta) == 0 {
+		return current, nil
+	}
+	settled, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, current.ID, current.Options, delta)
+	if err != nil {
+		return current, fmt.Errorf("persist agent settings: %w", err)
+	}
+	current.Options = settled
+	svc.broadcastSettingsStatusChange(current)
+	changes := svc.buildSettingsChanges(&current, previous, values, sortedOptionKeys(delta), notifyFirstSet)
+	if len(changes) > 0 {
+		svc.Output.PersistLeapMuxNotification(current.ID, current.AgentProvider, map[string]interface{}{
+			"type": contracts.NotificationTypeSettingsChanged, "changes": changes,
+		})
+	}
+	return current, nil
+}
+
+// applyPlanOptionsLocked requires exact confirmations from a running provider.
+// A stopped provider receives stored preferences that its next launch must confirm.
+// The caller holds the agent's lifecycle lock and validates its session before this call.
+func (svc *Service) applyPlanOptionsLocked(current db.Agent, wanted OptionMap) (db.Agent, error) {
+	if len(wanted) == 0 {
+		return current, nil
+	}
+	if svc.Agents.HasAgent(current.ID) {
+		result := svc.updateAgentSettingsFn(current.ID, maps.Clone(wanted))
+		if !result.AppliedLive || result.SurfacedOptions == nil {
+			return current, fmt.Errorf("the provider did not confirm the plan settings")
+		}
+		for key, value := range wanted {
+			settlement := result.Settlements[key]
+			if settlement.State != agent.OptionSettlementConfirmed || settlement.Value == nil || *settlement.Value != value {
+				return current, fmt.Errorf("the provider did not confirm the %s plan setting", key)
+			}
+		}
+	}
+	values := loadOptions(current.Options, current.AgentProvider)
+	previous := make(OptionMap, len(wanted))
+	for key, value := range wanted {
+		previous[key] = values[key]
+		values[key] = value
+	}
+	return svc.persistOptionChanges(current, previous, values, true)
+}

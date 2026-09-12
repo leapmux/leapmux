@@ -12,6 +12,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -142,7 +143,7 @@ func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON str
 // assertion options, and persist the per-user ceremony session
 // (persistSession replaces any prior open row of the same kind, so repeated
 // Begin calls cannot accumulate ceremony rows until TTL cleanup).
-func (s *Service) beginAssertion(ctx context.Context, kind, userID, origin string) (sessionID string, optionsJSON string, err error) {
+func (s *Service) beginAssertion(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, origin string) (sessionID string, optionsJSON string, err error) {
 	if err = s.CheckOrigin(origin); err != nil {
 		return "", "", err
 	}
@@ -187,7 +188,7 @@ func (s *Service) CheckOrigin(origin string) error {
 // rather than an assertion, so both of its paths -- FinishSignUp, which also
 // carries the signup draft, and VerifyRegistration -- run verifyAttestation
 // instead.
-func (s *Service) validateAssertion(ctx context.Context, sessionID, wantKind, expectedUserID, credentialJSON string) (*store.User, int64, error) {
+func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, credentialJSON string) (*store.User, int64, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, "")
 	if err != nil {
 		return nil, 0, err
@@ -330,7 +331,7 @@ func (s *Service) VerifyRecoveryRegistration(ctx context.Context, sessionID, cre
 // beginRegistration is the shared begin path for KindRegister and
 // KindRecovery. excludeExisting loads the credential list and sends
 // WebAuthn exclusions; recovery omits both.
-func (s *Service) beginRegistration(ctx context.Context, kind, userID, origin string, excludeExisting bool, tokenHash string) (sessionID, optionsJSON string, err error) {
+func (s *Service) beginRegistration(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, origin string, excludeExisting bool, tokenHash string) (sessionID, optionsJSON string, err error) {
 	if err = s.CheckOrigin(origin); err != nil {
 		return "", "", err
 	}
@@ -359,7 +360,7 @@ func (s *Service) beginRegistration(ctx context.Context, kind, userID, origin st
 // attestation against an identity-only user (CreateCredential compares
 // only WebAuthnID). An empty expectedUserID derives the owner from the
 // session row. expectedTokenHash is the recovery bind; empty skips it.
-func (s *Service) verifyRegistration(ctx context.Context, sessionID, wantKind, expectedUserID, expectedTokenHash, credentialJSON string) (string, FinishedSignUpCredential, error) {
+func (s *Service) verifyRegistration(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, expectedTokenHash, credentialJSON string) (string, FinishedSignUpCredential, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, expectedTokenHash)
 	if err != nil {
 		return "", FinishedSignUpCredential{}, err
@@ -475,7 +476,7 @@ func verifyAttestation(w *gowebauthn.WebAuthn, waUser *user, sessionData gowebau
 	}, nil
 }
 
-func (s *Service) persistSession(ctx context.Context, kind, userID, payload string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
+func (s *Service) persistSession(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, payload string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
 	// Every PER-USER ceremony replaces any prior open row of the same kind,
 	// so repeated Begin calls cannot accumulate encrypted sessions until TTL
 	// cleanup. This comment gives the rule as the property rather than as a
@@ -565,7 +566,7 @@ func ceremonyTokenHash(payload string) string {
 // consumeCeremonySession loads a ceremony row then atomically deletes it so a
 // second Finish call cannot reuse the same assertion/attestation. The kind
 // and expiry rules live in the consume SQL; Go does not re-check them.
-func (s *Service) consumeCeremonySession(ctx context.Context, sessionID, wantKind, expectedTokenHash string) (*store.WebAuthnSession, *gowebauthn.SessionData, error) {
+func (s *Service) consumeCeremonySession(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedTokenHash string) (*store.WebAuthnSession, *gowebauthn.SessionData, error) {
 	row, err := s.store.WebAuthnSessions().Get(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

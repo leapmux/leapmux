@@ -4,36 +4,23 @@ import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTrigg
 import { pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { joinMetaParts } from '../../../rendererUtils'
+import { mcpToolCallDisplayName } from '../../../results/mcpToolCall'
 import { toolInputCode, toolInputText } from '../../../toolStyles.css'
 import {
   renderAgentTitle,
   renderBashTitle,
   renderEditTitle,
   renderGlobTitle,
+  renderMcpTitle,
   renderQueryTitle,
   renderReadTitle,
   renderSearchTitle,
   renderUrlTitle,
   renderWriteTitle,
+  toolInputHint,
 } from '../../../toolTitleRenderers'
-import { formatClaudeMcpDisplayName, parseClaudeMcpToolName } from '../extractors/mcp'
+import { parseClaudeMcpToolName } from '../extractors/mcp'
 import { renderSendMessageTitle } from './sendMessage'
-
-/** Prefer common parameter names for the hint, then fall back to first short string. */
-const HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
-
-function extractInputHint(input: Record<string, unknown>): string {
-  for (const key of HINT_KEYS) {
-    const val = input[key]
-    if (typeof val === 'string' && val.length > 0 && val.length <= 120)
-      return val.length > 80 ? `${val.slice(0, 80)}…` : val
-  }
-  for (const val of Object.values(input)) {
-    if (typeof val === 'string' && val.length > 0 && val.length <= 120)
-      return val.length > 80 ? `${val.slice(0, 80)}…` : val
-  }
-  return ''
-}
 
 export function renderClaudeToolTitle(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const cwd = context?.workingDir
@@ -118,16 +105,11 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
       return <span class={toolInputText}>{label}</span>
     }
     default: {
-      const hint = extractInputHint(input)
+      const hint = toolInputHint(input)
       const mcpInfo = parseClaudeMcpToolName(toolName)
       if (mcpInfo) {
-        const displayName = formatClaudeMcpDisplayName(mcpInfo.serverName, mcpInfo.toolName)
-        return (
-          <>
-            <span class={toolInputText}>{displayName}</span>
-            {hint ? <span class={toolInputCode}>{` "${hint}"`}</span> : null}
-          </>
-        )
+        const displayName = mcpToolCallDisplayName({ server: mcpInfo.serverName, tool: mcpInfo.toolName })
+        return renderMcpTitle(displayName, input)
       }
       // Unknown non-MCP tool — show tool name with hint if available.
       return hint

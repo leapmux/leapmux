@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["updates"],
+  "properties": {
+    "_readme": { "type": "string" },
+    "updates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["CurrentMode"],
+      "properties": {
+        "CurrentMode": { "const": "current_mode_update" }
+      }
+    }
+  }
+}

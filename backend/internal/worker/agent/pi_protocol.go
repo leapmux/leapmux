@@ -32,13 +32,6 @@ package agent
 // match the wire format exactly.
 // The values are generated: see contracts/pi-protocol.json.
 
-// PiToolAgent is the tool the pi-subagents extension registers to spawn a
-// subagent (SUBAGENT_TOOL_NAMES.AGENT in its src/agent-runner.ts; its nested
-// variant in src/nested-tools.ts reuses the same name). The extension's two
-// other tools, get_subagent_result and steer_subagent, act on an agent that
-// already runs and are ordinary tool spans, so they need no constant here.
-const PiToolAgent = "Agent"
-
 // Pi RPC command methods — the "type" field on JSONL commands the
 // worker writes to Pi's stdin. Pi replies with a matching {type:
 // "response", id} envelope.
@@ -49,6 +42,8 @@ const (
 	PiCommandSetThinkingLevel   = "set_thinking_level"
 	PiCommandGetSessionStats    = "get_session_stats"
 	PiCommandGetState           = "get_state"
+	PiCommandGetEntries         = "get_entries"
+	PiCommandGetCommands        = "get_commands"
 	PiCommandGetAvailableModels = "get_available_models"
 	PiCommandNewSession         = "new_session"
 )

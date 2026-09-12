@@ -6,7 +6,7 @@
  * `agentMessage` independently testable, and what let this move out of a
  * 1700-line module without changing a line of behaviour.
  */
-import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -14,18 +14,18 @@ import type { createAgentSessionStore, LiveGenerationProgress, RateLimitInfo } f
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
-import type { createControlStore } from '~/stores/control.store'
+import type { ControlPayloadFault, createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
-import { providerFor } from '~/components/chat/providers/registry'
+import { parsedMessageForRendering, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
@@ -345,7 +345,8 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
   // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
   if (msg.source === MessageSource.AGENT) {
-    const usage = extractContextUsage(parsed, p => plugin?.contextUsageFromMessage?.(p) ?? null)
+    const resolved = parsedMessageForRendering(parsed, msg.agentProvider)
+    const usage = extractContextUsage(resolved, p => plugin?.contextUsageFromMessage?.(p) ?? null)
     if (usage)
       agentSessionStore.updateInfo(agentId, usage)
   }
@@ -656,12 +657,7 @@ export function buildAgentStatusTabUpdate(
   }
 }
 
-/**
- * INACTIVE cleanup: the agent subprocess stopped. Clear stale control requests (so the
- * user can send a regular message that auto-starts the agent instead of being stuck on
- * an unanswerable prompt) and clear the live per-turn state. A live event also signals
- * the turn end.
- */
+/** Clear live turn state and unanswered prompts. Keep delivered responses until recording finishes. */
 export function handleAgentInactive(
   agentId: string,
   sc: AgentStatusChange,
@@ -670,7 +666,7 @@ export function handleAgentInactive(
   // reuse AgentMessageStores rather than re-spelling its three members inline.
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
-  stores.controlStore.clearAgent(agentId)
+  stores.controlStore.clearProviderRequests(agentId)
   clearPerTurnLiveState(agentId, stores)
   // No alert here: a process exit drives the Worker's busy state to false, and
   // handleAgentSettled owns every settle. See its doc comment.
@@ -683,14 +679,12 @@ export function handleAgentInactive(
   // working tree.
 }
 
-/**
- * The `controlRequest` case: register a pending control prompt (permission / plan), and --
- * only on a LIVE frame -- badge a backgrounded tab and end the turn (the agent paused to
- * wait on the user, which may produce no agent message and no INACTIVE). During catch-up a
- * replayed request for an already-INACTIVE agent is skipped so the user isn't stuck on an
- * unanswerable prompt, and the live-only side effects are restricted so a page-reload replay of
- * a still-pending row doesn't re-alert. The caller marks the agent live BEFORE this.
- */
+/** Cancel the provider prompt without discarding a delivered response that still needs recording. */
+export function handleControlCancellation(request: AgentControlCancelRequest, controlStore: ReturnType<typeof createControlStore>): void {
+  controlStore.cancelRequest(request)
+}
+
+/** Apply a request or response-state snapshot. Replay retains recoverable responses without a new notification. */
 export function handleControlRequest(
   agentId: string,
   cr: AgentControlRequest,
@@ -698,26 +692,38 @@ export function handleControlRequest(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
   const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
-  // During catch-up, the INACTIVE statusChange may have already been processed before
-  // this replayed controlRequest arrives. Skip adding the request so the user isn't
-  // stuck on an unanswerable prompt.
-  const agentEntry = view.getAgentTab(cr.agentId)
-  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)
+  if (cr.responseState === ControlResponseState.COMPLETED || cr.responseState === ControlResponseState.CANCELED) {
+    controlStore.cancelRequest(cr)
     return
-  let payload: Record<string, unknown>
+  }
+  // A saved response can still need local recording after its provider stops.
+  const agentEntry = view.getAgentTab(cr.agentId)
+  const hasSavedResponse = cr.responseState === ControlResponseState.DELIVERED
+    || cr.responseState === ControlResponseState.PENDING || cr.responseState === ControlResponseState.UNCERTAIN
+  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse)
+    return
+  // A payload LeapMux cannot read is still a request the agent BLOCKS on. Keeping it is
+  // what gives the reader a question to see, a way to answer it, and the banner's stop;
+  // dropping it left a turn that never ended and no trace on screen (RL-002). The payload
+  // stays EMPTY rather than guessing a shape a provider plugin would then read, and the
+  // fault says why, so the banner can state it instead of rendering a blank question.
+  let payload: Record<string, unknown> = {}
+  let payloadFault: ControlPayloadFault | undefined
   try {
     const parsed = JSON.parse(TEXT_DECODER.decode(cr.payload)) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      log.warn('Ignoring non-object control request payload', { agentId: cr.agentId, requestId: cr.requestId })
-      return
+      log.warn('Keeping a control request whose payload is not an object', { agentId: cr.agentId, requestId: cr.requestId })
+      payloadFault = 'not-an-object'
     }
-    payload = parsed as Record<string, unknown>
+    else {
+      payload = parsed as Record<string, unknown>
+    }
   }
   catch (err) {
-    log.warn('Ignoring malformed control request payload', { agentId: cr.agentId, requestId: cr.requestId, err })
-    return
+    log.warn('Keeping a control request whose payload is malformed', { agentId: cr.agentId, requestId: cr.requestId, err })
+    payloadFault = 'malformed'
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, claimToken: cr.claimToken })
+  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState })
   if (catchUpPhase === 'live') {
     // Light up the tab badge so a user looking at a sibling tab knows the background
     // agent is now waiting on them. Match FULL's on-screen rule (tile-active).

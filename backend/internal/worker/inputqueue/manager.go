@@ -2,6 +2,7 @@ package inputqueue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -106,14 +107,16 @@ func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, 
 	return snapshot, nil
 }
 
-// drainIfReleased schedules a drain when the snapshot shows a queue that can
-// move: no turn in flight, no pause, and at least one item that waits. A drain
-// for a queue that cannot move costs a transaction and delivers nothing.
+// drainIfReleased schedules an unpaused queue with a waiting item.
+// An active turn permits only a plan context replacement candidate. The store then verifies its recorded approval.
 //
 // The caller must NOT hold the coordinator lock, because scheduleDrain takes
 // that same non-reentrant mutex.
 func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
-	if snapshot.ActiveTurn || snapshot.Paused || len(snapshot.Items) == 0 {
+	if snapshot.Paused || len(snapshot.Items) == 0 {
+		return
+	}
+	if snapshot.ActiveTurn && !snapshot.Items[0].requiresContextReplacement() {
 		return
 	}
 	m.scheduleDrain(agentID)
@@ -232,13 +235,19 @@ func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, er
 }
 
 func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	return m.EnqueueWithMutation(ctx, input, nil)
+}
+
+// EnqueueWithMutation commits the queued input and related database changes together.
+// The callback must not commit the transaction or perform provider I/O.
+func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
 	// The classifier rewrites a slash command into its own kind, so the test
 	// must see the kind the store will store, not the one the client sent.
 	if err := m.refuseUnacceptedKind(input.AgentID, m.store.Classify(input.Kind, input.Text)); err != nil {
 		return Snapshot{}, err
 	}
 	return m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.Enqueue(ctx, input)
+		return m.store.enqueue(ctx, input, apply)
 	}))
 }
 
@@ -637,6 +646,12 @@ func (m *Manager) DrainRecovered(ctx context.Context) error {
 		}
 	}
 	return drainErr
+}
+
+// NotifyDependencyReady checks queued input after an external dependency becomes ready.
+// Normal pause and delivery checks still apply.
+func (m *Manager) NotifyDependencyReady(agentID string) {
+	m.scheduleDrain(agentID)
 }
 
 func (m *Manager) scheduleDrain(agentID string) {

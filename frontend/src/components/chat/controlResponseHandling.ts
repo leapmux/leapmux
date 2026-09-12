@@ -1,16 +1,22 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
-import type { ControlAnswerSeed, ControlAnswerState, EditorContentRef } from './controls/types'
+import type { ControlAnswerSeed, ControlAnswerState, ControlResponseHandler, ControlResponseOptions, ControlResponseSender, EditorContentRef } from './controls/types'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
+import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
-import { requestInstanceId } from '~/stores/control.store'
+import { activityInterruptsWork } from '~/stores/agentActivity.store'
+import { controlRequestProvider, requestInstanceId } from '~/stores/control.store'
+import { useControlRequestSource } from './controlRequestSource'
 import { controlQuestion, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { ReportedControlResponseError } from './controls/controlResponseError'
+import { canAnswerControlRequest } from './controls/controlResponseState'
 import { decidePlanModeToggle } from './planModeToggle'
 import { pluginFor } from './providers/registry'
 import './providers'
@@ -19,12 +25,17 @@ export interface ControlResponseHandlingProps {
   agentId: string
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
-  onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
+  messageContext?: MessageContextResolver
+  onControlResponse?: ControlResponseHandler
   onSettingChange?: ProviderSettingChangeHandler
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
   onSendControlFeedback?: (content: string) => void | Promise<void>
   settingsLoading?: boolean
-  agentWorking?: boolean
+  /**
+   * The activity level the Worker last published for this agent. `showInterrupt`
+   * reads it; see there for why the level and not a boolean.
+   */
+  agentActivity?: AgentActivityState
   /**
    * Whether Interrupt can target THIS agent alone. False for a subagent tab
    * whose provider cannot interrupt one subagent (the worker would answer
@@ -36,13 +47,14 @@ export interface ControlResponseHandlingProps {
 export interface ControlResponseHandlingResult {
   activeControlRequest: Accessor<ControlRequest | null>
   isAskUserQuestion: Accessor<boolean>
+  editorPlaceholder: Accessor<string | undefined>
+  editorPurpose: Accessor<'answer' | 'feedback' | 'none' | undefined>
   showInterrupt: Accessor<boolean>
-  handleControlSend: (content: string) => boolean | void
+  handleControlSend: (content: string) => boolean | void | Promise<boolean | void>
   handleSend: (content: string) => boolean | void | Promise<boolean | void>
-  /** Discards ONE answered request's drafts and collapses the composer. */
-  finishAnswer: (request: ControlRequest) => void
   /** Builds the responder that answers as ONE request instance. See `respondTo` below. */
-  respondTo: (request: ControlRequest) => (bytes: Uint8Array) => Promise<void>
+  respondTo: (request: ControlRequest) => ControlResponseSender
+  recordResponse: (request: ControlRequest) => Promise<void>
   togglePlanMode: () => void
 }
 
@@ -110,21 +122,70 @@ export function useControlResponseHandling(
   // memo returns the same instance when the head does not change, so it stops
   // the notification there.
   const activeControlRequest = createMemo(() => props.controlRequests?.[0] ?? null)
+  const activeProvider = createMemo(() => controlRequestProvider(activeControlRequest(), props.agent?.agentProvider))
+  const source = useControlRequestSource(activeControlRequest, () => props.messageContext, activeProvider)
+  const questionForRequest = (request: ControlRequest, provider: AgentProvider | undefined) => {
+    const active = activeControlRequest()
+    const matches = active?.agentId === request.agentId && requestInstanceId(active) === requestInstanceId(request)
+    return controlQuestion(request, provider, matches ? source() : undefined)
+  }
 
   // The active request's questions, or undefined when it is not a question.
   // `controlQuestion` is the one classifier; see its doc comment.
-  const activeQuestion = createMemo(() => controlQuestion(activeControlRequest(), props.agent?.agentProvider))
+  const activeQuestion = createMemo(() => controlQuestion(activeControlRequest(), activeProvider(), source()))
   const isAskUserQuestion = createMemo(() => activeQuestion() !== undefined)
+  const editorPurpose = createMemo(() => {
+    const request = activeControlRequest()
+    if (!request)
+      return undefined
+    if (!canAnswerControlRequest(request))
+      return 'none'
+    // A payload LeapMux could not read composes no answer, and a rejection reason is
+    // still an answer: it builds a DENY out of the option list the payload was carrying.
+    // The banner offers no decision for this request either, and the stop is the way out.
+    if (request.payloadFault)
+      return 'none'
+    if (isAskUserQuestion())
+      return 'answer'
+    const plugin = pluginFor(activeProvider())
+    if (plugin?.elicitation?.(request.payload))
+      return 'none'
+    return plugin?.controlEditorPurpose?.(request.payload) ?? 'feedback'
+  })
+  const editorPlaceholder = createMemo(() => {
+    switch (editorPurpose()) {
+      case 'answer': return 'Type a custom answer...'
+      case 'feedback': return 'Type a rejection reason...'
+      default: return undefined
+    }
+  })
 
-  // Whether the Interrupt button should be shown.
+  // Whether the Interrupt button should be shown: the Worker says there is
+  // something to stop, and this agent is one the stop can target.
+  //
+  // The Worker's level is the ONLY input, because the Worker owns every input the
+  // answer is made of -- the provider's turn bookkeeping, the background-task
+  // registry, the pending prompts, the process state. `activityInterruptsWork` is
+  // the same rule the close guard applies, and it covers both halves:
+  //
+  //   - WORKING. A turn, or a background task, is running.
+  //   - WAITING_FOR_USER. The agent is BLOCKED on a prompt, mid-turn. That is
+  //     exactly when a reader most wants out, and hiding the button there left one
+  //     way out -- answer the question. Denying is a real answer that goes to the
+  //     agent and lets it carry on with something else; it is not a stop.
+  //
+  // A live request on its own is NOT enough, so this reads no request list. A
+  // background shell can ask for permission after its agent's turn ended, and the
+  // Worker calls that IDLE: there is no turn left, so a button offered on the
+  // request alone offers a stop that stops nothing.
   const showInterrupt = () =>
-    !!props.agentWorking && !activeControlRequest() && (props.canInterrupt ?? true)
+    activityInterruptsWork(props.agentActivity ?? AgentActivityState.IDLE) && (props.canInterrupt ?? true)
 
   // The saved answer of ONE request instance -- its selections, its typed notes,
   // its page and its switches. `requestInstanceId` states why a request id alone
   // is not enough.
   const answerKey = (request: ControlRequest): AsyncLocalKey =>
-    `${PREFIX_CONTROL_STATE}${props.agentId}:${requestInstanceId(request)}`
+    `${PREFIX_CONTROL_STATE}${request.agentId}:${requestInstanceId(request)}`
 
   // The request whose answer `answerState` holds right now. The restore effect
   // below assigns it; the persist effect reads it. See both for why.
@@ -173,6 +234,8 @@ export function useControlResponseHandling(
     activeControlRequest,
     (request) => {
       answerOwner = request
+      answerState.setResponsePending(false)
+      answerState.setResponseError('')
       answerState.setReady(!request || !props.agentId)
       // RESET FIRST, then fill in from storage if there is anything to fill in.
       // The read is asynchronous (saved answers are an unbounded family on the
@@ -261,31 +324,20 @@ export function useControlResponseHandling(
     localStorageStore(answerKey(owner), value)
   })
 
-  // Answers as ONE request instance: the one the caller captured before it acted.
-  // The worker's idempotency claim then keys on the instance the user answered.
-  // It still keys on that instance after the store drops it. Both answer paths
-  // use this: the typed feedback below, and the footer action row in
-  // `AgentEditorPanel`, which keys its owner on the request for the same reason.
-  //
-  // Reading the store again inside the responder would answer as whatever is
-  // active by then. Once the queue is empty it would answer as no request at all.
-  const respondTo = (request: ControlRequest) => (bytes: Uint8Array): Promise<void> =>
-    props.onControlResponse?.(request, bytes) ?? Promise.resolve()
-
   // Discards every draft of ONE answered request: its editor text, its per-page
   // question answers, and its saved selection state.
   const cleanupControlRequestDrafts = (request: ControlRequest) => {
-    if (!props.agentId)
+    if (!request.agentId)
       return
     const instanceId = requestInstanceId(request)
-    clearDraft(`${props.agentId}-ctrl-${instanceId}`)
+    clearDraft(`${request.agentId}-ctrl-${instanceId}`)
     // The editor scopes a question's draft per page, and it writes one key per
     // question. The same classifier that decides those pages counts them here,
     // so a question set of any size loses every key it wrote. A request that is
     // not a question wrote none, and the loop then does no work.
-    const pages = controlQuestion(request, props.agent?.agentProvider)?.questions.length ?? 0
+    const pages = questionForRequest(request, props.agent?.agentProvider)?.questions.length ?? 0
     for (let page = 0; page < pages; page++) {
-      clearDraft(`${props.agentId}-ctrl-${instanceId}-q-${page}`)
+      clearDraft(`${request.agentId}-ctrl-${instanceId}-q-${page}`)
     }
     localStorageDrop(answerKey(request))
     // Release the ownership too. The persist effect is deferred, so it runs
@@ -297,20 +349,58 @@ export function useControlResponseHandling(
       answerOwner = null
   }
 
-  // The epilogue of ONE answered request: discard its drafts, then collapse the
-  // composer back to its natural height. Every answer path ends here -- the
-  // footer action row in `AgentEditorPanel` and both branches of
-  // `handleControlSend` -- so the two steps cannot drift apart.
-  //
-  // This deliberately sits OUTSIDE `respondTo`. The non-question branch below
-  // runs the epilogue even when the plugin builds no response, and a plugin
-  // decides for itself how many times it calls the responder.
-  const finishAnswer = (request: ControlRequest) => {
-    cleanupControlRequestDrafts(request)
-    resetEditorHeightFn()
+  // Capture the request instance before delivery. Never read a different request from the store to send an answer.
+  // Keep its drafts until the server accepts the answer, so a failed delivery permits retry and reload.
+  const pendingResponses = new Set<string>()
+  const responseIsCurrent = (request: ControlRequest): boolean => {
+    const active = activeControlRequest()
+    return props.agentId === request.agentId && active?.agentId === request.agentId && requestInstanceId(active) === requestInstanceId(request)
+  }
+  const submitResponse = async (request: ControlRequest, bytes: Uint8Array, options?: ControlResponseOptions): Promise<void> => {
+    const key = JSON.stringify([request.agentId, request.requestId, request.claimToken ?? ''])
+    if (pendingResponses.has(key))
+      throw new ReportedControlResponseError(new Error('This request already has a pending response.'))
+    pendingResponses.add(key)
+    if (responseIsCurrent(request)) {
+      answerState.setResponsePending(true)
+      answerState.setResponseError('')
+    }
+    try {
+      if (!props.onControlResponse)
+        throw new Error('The response handler is unavailable.')
+      if (!options?.recordOnly && !canAnswerControlRequest(request))
+        throw new Error('Check the saved response state before sending an answer.')
+      const completed = options
+        ? await props.onControlResponse(request, bytes, options)
+        : await props.onControlResponse(request, bytes)
+      if (completed === false)
+        return
+      cleanupControlRequestDrafts(request)
+      const active = activeControlRequest()
+      if (props.agentId === request.agentId && (!active || requestInstanceId(active) === requestInstanceId(request)))
+        resetEditorHeightFn()
+    }
+    catch (cause) {
+      const error = new ReportedControlResponseError(cause)
+      if (responseIsCurrent(request))
+        answerState.setResponseError(error.message)
+      else
+        showWarnToast('Could not complete the response', cause)
+      throw error
+    }
+    finally {
+      pendingResponses.delete(key)
+      if (responseIsCurrent(request))
+        answerState.setResponsePending(false)
+    }
   }
 
-  const handleControlSend = (content: string): boolean | void => {
+  const respondTo = (request: ControlRequest) => (bytes: Uint8Array, options?: ControlResponseOptions) => submitResponse(request, bytes, options)
+  const recordResponse = (request: ControlRequest) => submitResponse(request, new Uint8Array(), { recordOnly: true })
+
+  const handleControlSend = (content: string): boolean | void | Promise<boolean | void> => {
+    if (editorPurpose() === 'none' || answerState.responsePending() || !canAnswerControlRequest(activeControlRequest()))
+      return false
     const req = activeControlRequest()
     if (!req)
       return
@@ -322,7 +412,7 @@ export function useControlResponseHandling(
     // unregistered provider (a bug, e.g. backend/frontend version skew). Refuse to
     // encode a control response through the wrong provider's builder; surface a
     // toast so the send is not a silent no-op, and keep the editor content.
-    const provider = props.agent?.agentProvider
+    const provider = controlRequestProvider(req, props.agent?.agentProvider)
     const plugin = pluginFor(provider)
     if (!plugin) {
       showWarnToast(`Cannot send response: unsupported agent provider (${provider})`)
@@ -331,10 +421,11 @@ export function useControlResponseHandling(
     // Classify the CAPTURED request, not whatever the store holds by now. The
     // shared return type carries the capability, so a question with no capability
     // to answer it cannot be represented here.
-    const question = controlQuestion(req, provider)
+    const question = questionForRequest(req, provider)
     if (question) {
+      let sending: Promise<void> | undefined
       const sendAskResponse = () => {
-        void question.capability.sendAnswer(req, respond, question.questions, answerState)
+        sending = Promise.resolve(question.capability.sendAnswer(req, respond, question.questions, answerState))
       }
       const submitted = trySubmitAskUserQuestion(
         answerState,
@@ -346,21 +437,16 @@ export function useControlResponseHandling(
       )
       if (!submitted)
         return false
-      finishAnswer(req)
-      return
+      return sending
     }
     const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
-    if (response) {
-      const bytes = new TextEncoder().encode(JSON.stringify(response))
-      const sent = respond(bytes)
-      if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
-        void sent.then(() => (props.onSendControlFeedback ?? props.onSendMessage)(content)).catch(() => {})
-      }
-      else {
-        void sent.catch(() => {})
-      }
-    }
-    finishAnswer(req)
+    if (!response)
+      return false
+    const bytes = new TextEncoder().encode(JSON.stringify(response))
+    const sent = respond(bytes)
+    if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload))
+      return sent.then(() => (props.onSendControlFeedback ?? props.onSendMessage)(content))
+    return sent
   }
 
   const handleSend = (content: string): boolean | void | Promise<boolean | void> => {
@@ -392,11 +478,13 @@ export function useControlResponseHandling(
 
   return {
     activeControlRequest,
-    finishAnswer,
     handleControlSend,
     handleSend,
     isAskUserQuestion,
+    editorPlaceholder,
+    editorPurpose,
     respondTo,
+    recordResponse,
     showInterrupt,
     togglePlanMode,
   }

@@ -23,7 +23,7 @@ export function SendMessageRecipient(props: {
   to: string
   context?: RenderContext
 }): JSX.Element {
-  const row = () => props.context?.resolveBackgroundTaskRow?.(props.to)
+  const row = () => props.context?.sources?.backgroundTask(props.to)
   // Linkable only when the row owns a transcript. A shell row, or a subagent
   // whose provider never linked one, has no tab to open.
   const openable = () => {

@@ -267,29 +267,30 @@ func (a *zcodeAgent) usageSnapshot() zcodeUsageSnapshot {
 	}
 }
 
-// zcodeAugmentWithUsage injects the broadcast-shaped usage fields into an event
-// envelope before it is persisted, so a reconnecting frontend rehydrates the cost
-// and context readout from the stored turn end rather than waiting for a live
-// broadcast that already happened.
-func zcodeAugmentWithUsage(raw []byte, snap zcodeUsageSnapshot) []byte {
+// zcodeTurnContent keeps worker usage separate from the original provider event.
+func zcodeTurnContent(raw []byte, snap zcodeUsageSnapshot) MessageContent {
+	content := MessageContent{Original: raw}
 	if len(snap.ContextUsage) == 0 && !snap.HasCost {
-		return raw
+		return content
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
-		return raw
+	_, ok := parseZCodeEvent(raw)
+	if !ok {
+		return content
 	}
+	fields := map[string]any{}
 	if len(snap.ContextUsage) > 0 {
-		obj[contracts.SessionInfoKeyContextUsage] = snap.ContextUsage
+		fields[contracts.SessionInfoKeyContextUsage] = snap.ContextUsage
 	}
 	if snap.HasCost {
-		obj[contracts.SessionInfoKeyTotalCostUsd] = snap.CostUSD
+		fields[contracts.SessionInfoKeyTotalCostUsd] = snap.CostUSD
 	}
-	augmented, err := json.Marshal(obj)
+	supplement, err := json.Marshal(fields)
 	if err != nil {
-		return raw
+		slog.Warn("encode zcode usage supplement", "error", err)
+		return content
 	}
-	return augmented
+	content.Metadata = supplement
+	return content
 }
 
 // noteZCodeStateRevision records the app-server's optimistic-concurrency

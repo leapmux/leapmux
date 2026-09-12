@@ -45,7 +45,7 @@ func TestGooseToolOutputProgressCountsSequencedMetadata(t *testing.T) {
 	assert.False(t, ok, "a repeated sequence must not count twice")
 }
 
-func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []recordedRequest) {
+func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *GooseCLIAgent {
 			a := &GooseCLIAgent{}

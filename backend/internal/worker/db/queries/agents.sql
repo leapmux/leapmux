@@ -195,16 +195,19 @@ UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ?, title_auto_gene
 -- statement run hundreds of times per turn.
 -- name: UpdateAgentGoal :exec
 UPDATE agents
-SET goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
+SET goal_native_id = ?, goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
 WHERE id = ?;
 
 -- ClearAgentGoal removes the goal. It is unconditional on purpose. Codex's
 -- thread/resume pushes thread/goal/cleared to mean "this thread has no goal",
 -- and a caller that skipped the write because its in-memory copy was already
 -- empty would leave a goal from a previous process in the table forever.
+-- goal_status returns to 0, AGENT_GOAL_STATUS_UNSPECIFIED. The literal is safe
+-- where a status ordinal would not be: proto3 fixes the first enumerator at 0,
+-- so no renumber can move it.
 -- name: ClearAgentGoal :exec
 UPDATE agents
-SET goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
+SET goal_native_id = '', goal_objective = '', goal_status = 0, goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
 WHERE id = ?;
 
 -- GetAgentGoal reads only the goal columns. `SELECT *` would deserialize the
@@ -212,7 +215,7 @@ WHERE id = ?;
 -- completed tool call, exactly the cost GetAgentID and GetAgentTitle above
 -- exist to avoid.
 -- name: GetAgentGoal :one
-SELECT id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
+SELECT id, goal_native_id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
 FROM agents WHERE id = ?;
 
 -- name: ListAgentsByIDs :many

@@ -184,7 +184,7 @@ export interface SetGoalState {
 interface AppShellDialogsProps {
   dialogs: AppShellDialogStates
   /** Commit an edited session goal. */
-  onSetGoal?: (agentId: string, objective: string) => void
+  onSetGoal?: (agentId: string, objective: string) => Promise<boolean>
   /**
    * Called after a successful Change branch / non-worktree Delete
    * branch with the branch the working directory is now on. The
@@ -544,7 +544,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         {state => (
           <SetGoalDialog
             initialObjective={state.initialObjective}
-            onSubmit={objective => props.onSetGoal?.(state.agentId, objective)}
+            onSubmit={objective => props.onSetGoal?.(state.agentId, objective) ?? Promise.resolve(false)}
             onClose={() => props.dialogs.setGoal.close()}
           />
         )}

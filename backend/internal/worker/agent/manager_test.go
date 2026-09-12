@@ -21,11 +21,14 @@ import (
 
 type stubProvider struct {
 	groups         []*leapmuxv1.AvailableOptionGroup
-	clearContextFn func() (string, bool)
+	clearContextFn func() (string, error)
 }
 
 func (s *stubProvider) AgentID() string                                 { return "stub" }
 func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
+	return ErrInputSessionChanged
+}
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
 // Manager.SendInput calls it only after a refusal this stub never returns.
@@ -36,11 +39,11 @@ func (s *stubProvider) SendRawInput([]byte) error { return nil }
 func (s *stubProvider) Stop()                     {}
 func (s *stubProvider) IsStopped() bool           { return false }
 func (s *stubProvider) DiscardOutput()            {}
-func (s *stubProvider) ClearContext() (string, bool) {
+func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()
 	}
-	return "", false
+	return "", ErrContextClearUnsupported
 }
 func (s *stubProvider) Wait() error                                     { return nil }
 func (s *stubProvider) Stderr() string                                  { return "" }
@@ -122,16 +125,17 @@ func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
 
 	m := NewManager(nil)
 	entered := make(chan struct{}, 1)
-	m.agents["locked"] = &stubProvider{clearContextFn: func() (string, bool) {
+	m.agents["locked"] = &stubProvider{clearContextFn: func() (string, error) {
 		entered <- struct{}{}
-		return "thread-new", true
+		return "thread-new", nil
 	}}
 
 	unlock := m.LockAgent("locked")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.ClearContext("locked")
+		_, err := m.ClearContext("locked")
+		assert.NoError(t, err)
 	}()
 
 	premature := false

@@ -134,3 +134,60 @@ describe('zcodeBashToCommandSource', () => {
     expect(zcodeBashToCommandSource({ ...base, isError: true }).isError).toBe(true)
   })
 })
+
+// ZCode states the exit code twice: as `perf.detail.command.exitCode`, and as the
+// first line of `result.content`. Without consuming the line the reader sees
+// `Error (exit 1)` in the label AND `Exit code 1` in the body.
+describe('zcodeBashToCommandSource exit-code line', () => {
+  const base = {
+    command: 'mv a b',
+    description: '',
+    timedOut: false,
+    truncated: false,
+    isError: false,
+    durationMs: 44,
+  }
+
+  it('consumes the line when it agrees with the structured code', () => {
+    const source = zcodeBashToCommandSource({
+      ...base,
+      output: 'Exit code 1\nmv: rename a to b: No such file or directory',
+      exitCode: 1,
+    })
+    expect(source.output).toBe('mv: rename a to b: No such file or directory')
+    expect(source.exitCode).toBe(1)
+    expect(source.isError).toBe(true)
+  })
+
+  // A disagreement is worth showing, so the line survives it and the structured
+  // field -- the one the app-server computed rather than formatted -- wins the label.
+  it('keeps the line when it disagrees with the structured code', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 3\nboom', exitCode: 1 })
+    expect(source.output).toBe('Exit code 3\nboom')
+    expect(source.exitCode).toBe(1)
+  })
+
+  // Null telemetry means the app-server stated no code. The line then states it.
+  it('takes the code from the line when telemetry is absent', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 2\nnope', exitCode: null })
+    expect(source.output).toBe('nope')
+    expect(source.exitCode).toBe(2)
+    expect(source.isError).toBe(true)
+  })
+
+  it('leaves output without the line untouched', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'plain output', exitCode: 0 })
+    expect(source.output).toBe('plain output')
+    expect(source.exitCode).toBe(0)
+    expect(source.isError).toBe(false)
+  })
+
+  // A zero code stated only by the line is still a success, and must not become an
+  // error just because the code became known.
+  it('does not turn a zero code from the line into a failure', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 0\ndone', exitCode: null })
+    expect(source.output).toBe('done')
+    expect(source.exitCode).toBe(0)
+    expect(source.isError).toBe(false)
+  })
+})

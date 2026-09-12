@@ -3,6 +3,7 @@ import type { Ctx } from '@milkdown/ctx'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { replaceAll } from '@milkdown/utils'
+import { unescapeAutolinkDots } from './autolinkDotEscape'
 
 /** Options for setting up the ref callbacks exposed to the parent component. */
 export interface EditorRefHandlersOptions {
@@ -31,7 +32,7 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
         editor.action((ctx: Ctx) => {
           const serializer = ctx.get(serializerCtx)
           const view = ctx.get(editorViewCtx)
-          text = serializer(view.state.doc).trim()
+          text = unescapeAutolinkDots(serializer(view.state.doc)).trim()
         })
       }
       catch { /* editor may not be ready */ }
@@ -72,7 +73,7 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
         // one.
         let applied = text
         editor.action((ctx: Ctx) => {
-          applied = ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)
+          applied = unescapeAutolinkDots(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc))
         })
         opts.onDocument(applied)
       }

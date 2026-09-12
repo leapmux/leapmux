@@ -21,7 +21,7 @@ describe('sendACPPermissionResponse', () => {
     const parsed = JSON.parse(new TextDecoder().decode(content))
     expect(parsed).toEqual({
       jsonrpc: '2.0',
-      id: 7,
+      id: '7',
       result: {
         outcome: {
           outcome: 'selected',

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -91,6 +92,7 @@ type ClaudeCodeAgent struct {
 	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
+	sessionID  string
 	effort     string
 	workingDir string
 	homeDir    string
@@ -100,6 +102,8 @@ type ClaudeCodeAgent struct {
 	contextUsage    *contextUsageSnapshot
 	lastAgentStatus string
 	turnActive      bool
+	inputMu         sync.Mutex
+	turnEndRevision uint64
 	// sessionStateReported records that this CLI publishes
 	// `system`/`session_state_changed`. Once it does, the output heuristic
 	// stands down for the life of the process: the CLI states its own turn
@@ -107,14 +111,13 @@ type ClaudeCodeAgent struct {
 	// the vendor adds later can arm a turn that nothing ends.
 	sessionStateReported bool
 
-	// awaitingResult is true from the moment a message reaches the CLI's stdin
-	// until the `result` that answers it. It is what tells a STALE
-	// session_state_changed idle from a live one: the CLI emits idle before it
-	// reads the next message, so an idle that arrives after this Worker handed
-	// one over describes the state before that hand-over, and clearing the turn
-	// on it would open the queue on a turn about to start. See
-	// ClaudeCodeAgent.noteSessionIdle.
-	awaitingResult         bool
+	// awaitingResult covers the input write and its reply. An unsuccessful write clears it unless native output proves a turn started.
+	// This prevents an older idle notification from releasing a queued prompt before the CLI reads it.
+	awaitingResult bool
+	// interruptRequested records that the user stopped the RUNNING turn. The
+	// `result` that ends that turn spends the note, and disarmTurn drops a note that
+	// no `result` spent. Guarded by a.mu. See noteInterruptRequested.
+	interruptRequested     bool
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 	// hasGoalCommand records whether the running CLI advertises /goal in its
 	// init frame's slash_commands. The command shipped in 2.1.139, so this is
@@ -191,9 +194,13 @@ type ClaudeCodeAgent struct {
 //
 // The start fails instead. It never drops the flag and launches on a fresh
 // session; see resumeFailedError.
-func claudeResumeArgs(resumeSessionID string) ([]string, error) {
+func claudeSessionArgs(resumeSessionID string) ([]string, error) {
 	if resumeSessionID == "" {
-		return nil, nil
+		sessionID, err := uuid.NewRandom()
+		if err != nil {
+			return nil, fmt.Errorf("create Claude session ID: %w", err)
+		}
+		return []string{"--session-id", sessionID.String()}, nil
 	}
 	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
 		return nil, resumeFailedError(resumeSessionID,
@@ -283,12 +290,12 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 		"--forward-subagent-text",
 	}
 
-	resumeArgs, err := claudeResumeArgs(opts.ResumeSessionID)
+	sessionArgs, err := claudeSessionArgs(opts.ResumeSessionID)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	baseArgs = append(baseArgs, resumeArgs...)
+	baseArgs = append(baseArgs, sessionArgs...)
 
 	// opts.Model() is the raw stored/operator-default value, which may be a legacy
 	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from
@@ -342,6 +349,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 	a := &ClaudeCodeAgent{
 		processBase:            newProcessBase(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
 		model:                  launchModel,
+		sessionID:              sessionArgs[1],
 		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
@@ -380,6 +388,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 		cleanup()
 		return nil, err
 	}
+	a.sink.UpdateSessionID(a.sessionID)
 
 	return a, nil
 }
@@ -702,11 +711,52 @@ func (a *ClaudeCodeAgent) Interrupt() error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}
+	// Noted BEFORE the request goes out, the way every other provider notes its
+	// own stop. The reader goroutine hands the acknowledgement to the wait below
+	// and reads the NEXT line at once, and that line is the `result` of the turn
+	// the interrupt just aborted -- so a note taken after the wait races the
+	// takeInterruptRequest that spends it, and loses whenever the reader wins.
+	// The turn then reads as the failure its subtype claims.
+	//
+	// A failed send leaves the note standing, because the failure that reaches
+	// here is a control TIMEOUT far more often than a lost write, and the CLI
+	// that answered late still aborted the turn. The note costs nothing if it is
+	// wrong: disarmTurn drops one that no `result` spent.
+	a.noteInterruptRequested()
 	// Use the agent's own context so a process exit unblocks the
 	// wait. APITimeout caps how long we hold the caller; the control
 	// protocol itself is fast (single round-trip).
 	_, err := a.sendControlAndWait(a.ctx, `{"subtype":"interrupt"}`, a.APITimeout())
 	return err
+}
+
+// noteInterruptRequested records that the USER stopped the running turn, so the
+// `result` that ends it carries LeapMux's own completion.
+//
+// The command-line interface reports an interrupted turn as
+// `subtype: error_during_execution` with `is_error: true`, which is the same shape it
+// uses for a genuine failure, and its `errors` array carries its own diagnostics. The
+// subtype therefore cannot tell the two apart. LeapMux can: it asked for the stop.
+//
+// The note is taken only while a turn is running. Claude acknowledges an interrupt
+// sent outside a turn and sends no `result` for it, so a note taken there would wait
+// and then mislabel the NEXT turn's outcome.
+func (a *ClaudeCodeAgent) noteInterruptRequested() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.turnActive {
+		a.interruptRequested = true
+	}
+}
+
+// takeInterruptRequest reports whether the turn that is ending was interrupted, and
+// clears the note. One `result` ends one turn, so the note is spent there.
+func (a *ClaudeCodeAgent) takeInterruptRequest() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	interrupted := a.interruptRequested
+	a.interruptRequested = false
+	return interrupted
 }
 
 // SendInput writes a user message to the agent's stdin.
@@ -814,10 +864,14 @@ func (a *ClaudeCodeAgent) noteSessionIdle() {
 // already reset.
 func (a *ClaudeCodeAgent) disarmTurn() {
 	a.mu.Lock()
+	a.turnEndRevision++
 	a.turnActive = false
 	// The `result` this ends is the answer to whatever the Worker sent, so a
 	// later idle is no longer stale.
 	a.awaitingResult = false
+	// The note belongs to the turn that just ended. A turn end that ran without one
+	// (a process exit, a refused dispatch) must not leave it for the next turn.
+	a.interruptRequested = false
 	a.mu.Unlock()
 	a.PublishTurnActive()
 }
@@ -838,23 +892,14 @@ func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.At
 }
 
 func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
-	// Registered BEFORE the unlock below, so it runs AFTER it: deferred calls
-	// run last-registered-first. Publishing under a.mu would hold the agent lock
-	// across a broadcast. It re-reads the flag, so the error paths below -- and a
-	// steer, which opens no turn -- publish the unchanged value, and the Worker
-	// reconciles rather than moves. That covers the busy refusal for this
-	// provider, which the other providers publish explicitly.
+	return a.sendInputForSession(nil, content, attachments, priority)
+}
+
+func (a *ClaudeCodeAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, priority string) error {
+	// Serialize input writes without blocking state updates or Stop on the process mutex.
 	defer a.PublishTurnActive()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.stopped {
-		return fmt.Errorf("agent is stopped")
-	}
-	if priority == "" && a.turnActive {
-		return ErrAgentBusy
-	}
-
+	a.inputMu.Lock()
+	defer a.inputMu.Unlock()
 	msg := UserInputMessage{
 		Type:     MessageTypeUser,
 		Priority: priority,
@@ -864,7 +909,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	}
 
 	if len(attachments) == 0 {
-		// Plain text — backward compatible string content.
+		// Plain text uses the protocol's string content.
 		msg.Message.Content = content
 	} else {
 		// Multimodal — build a content block array.
@@ -878,18 +923,37 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	}
 
 	data = append(data, '\n')
-	if err := a.writeStdin(data); err != nil {
-		return fmt.Errorf("write stdin: %w", err)
+	a.mu.Lock()
+	if err := checkInputSession(expected, a.sessionID); err != nil {
+		a.mu.Unlock()
+		return err
 	}
-	// The turn opens once the message is actually on stdin, not before: a write
-	// that failed started nothing, and marking it busy would leave the agent
-	// working forever with no envelope coming to clear it. A steer joins the turn
-	// already in flight, so it opens none.
+	if a.stopped {
+		a.mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	if priority == "" && a.turnActive {
+		a.mu.Unlock()
+		return ErrAgentBusy
+	}
+	endRevision := a.turnEndRevision
 	if priority == "" {
-		a.turnActive = true
 		a.awaitingResult = true
 	}
-
+	a.mu.Unlock()
+	writeErr := a.writeStdin(data)
+	a.mu.Lock()
+	if priority == "" && a.turnEndRevision == endRevision {
+		if writeErr == nil && !a.stopped {
+			a.turnActive = true
+		} else if !a.turnActive {
+			a.awaitingResult = false
+		}
+	}
+	a.mu.Unlock()
+	if writeErr != nil {
+		return fmt.Errorf("write stdin: %w", writeErr)
+	}
 	return nil
 }
 

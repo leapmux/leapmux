@@ -298,7 +298,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	now := time.Now().UTC()
 	require.NoError(t, st.WebAuthnSessions().Create(context.Background(), store.CreateWebAuthnSessionParams{
 		ID:          ceremonyID,
-		Kind:        "login",
+		Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
 		UserID:      userID,
 		PayloadJSON: "{}",
 		SessionData: []byte("dummy-ceremony"),

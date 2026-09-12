@@ -101,8 +101,9 @@ describe('extractZCodeFileDiff', () => {
     }), ZCODE_TOOL.Edit, undefined))).toBeNull()
   })
 
-  it('returns null for a tool that has no diff of its own', () => {
-    expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { display: fileDiffDisplay() } }), ZCODE_TOOL.Bash, undefined))).toBeNull()
+  it('uses an explicit diff display regardless of tool name', () => {
+    expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { display: fileDiffDisplay() } }), ZCODE_TOOL.Bash, undefined))).toMatchObject({ structuredPatch: [HUNK] })
+    expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: {} }), ZCODE_TOOL.Bash, undefined))).toBeNull()
     expect(extractZCodeFileDiff(zcodeRow({ type: ZCODE_EVENT.TurnCompleted, payload: {} }, ZCODE_TOOL.Edit, undefined))).toBeNull()
   })
 })

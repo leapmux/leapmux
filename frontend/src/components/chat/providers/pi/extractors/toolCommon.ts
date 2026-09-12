@@ -1,3 +1,5 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
+import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
@@ -10,8 +12,7 @@ import { pickObject, pickString } from '~/lib/jsonPick'
  *   end    → { toolCallId, toolName, result, isError }   // no args
  *
  * Callers that need both args and result on the end side reach back into
- * the matching start payload via `RenderContext.toolUseParsed`, which the
- * chat store wires up by `spanId`.
+ * the matching start payload through `context.sources.request()`.
  */
 export interface PiToolExecution {
   toolCallId: string
@@ -81,4 +82,24 @@ export function piExtractTool(payload: Record<string, unknown> | null | undefine
   }
   toolCache.set(payload, tool)
   return tool
+}
+
+/** Accept only the start event for the same tool call and tool name. */
+export function piPairedRequest(payload: Record<string, unknown> | null | undefined, request?: ParsedMessageContent): ParsedMessageContent | undefined {
+  const current = piExtractTool(payload)
+  const paired = piExtractTool(request?.parentObject)
+  return current && paired && request?.parentObject?.type === PI_EVENT.ToolExecutionStart
+    && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
+    ? request
+    : undefined
+}
+
+/** Accept only the final event for this request and tool. */
+export function piPairedResult(payload: Record<string, unknown>, result?: ParsedMessageContent): ParsedMessageContent | undefined {
+  const current = piExtractTool(payload)
+  const paired = piExtractTool(result?.parentObject)
+  return current && paired && payload.type === PI_EVENT.ToolExecutionStart && result?.parentObject?.type === PI_EVENT.ToolExecutionEnd
+    && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
+    ? result
+    : undefined
 }

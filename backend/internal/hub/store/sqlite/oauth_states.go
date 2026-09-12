@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -21,7 +22,7 @@ func fromDBOAuthState(s gendb.OauthState) *store.OAuthState {
 		PkceVerifier: s.PkceVerifier,
 		NonceHash:    s.NonceHash,
 		RedirectURI:  s.RedirectUri,
-		Purpose:      s.Purpose,
+		Purpose:      leapmuxv1.OAuthStatePurpose(s.Purpose),
 		SessionID:    s.SessionID,
 		ExpiresAt:    s.ExpiresAt.Time,
 		CreatedAt:    s.CreatedAt.Time,
@@ -35,7 +36,7 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 		PkceVerifier: p.PkceVerifier,
 		NonceHash:    p.NonceHash,
 		RedirectUri:  p.RedirectURI,
-		Purpose:      p.Purpose,
+		Purpose:      int64(p.Purpose),
 		SessionID:    p.SessionID,
 		ExpiresAt:    sqltime.NewSQLiteTime(p.ExpiresAt),
 	}))

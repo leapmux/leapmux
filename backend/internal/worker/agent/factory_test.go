@@ -147,7 +147,7 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.ClaudeModeDefault, CodexDefaultApprovalPolicy},
 		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "never", "never"},
 		{"cursor legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, contracts.ClaudeModeDefault, CursorCLIModeAgent},
-		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.ClaudeModeDefault, CopilotCLIModeAgent},
+		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.ClaudeModeDefault, contracts.CopilotPermissionModeManual},
 		// Goose's fallback is Smart Approve, never Auto: Auto is the value Goose's own
 		// BYPASS preset selects, so a resumed session with no stored mode would otherwise
 		// open with every permission prompt disabled.
@@ -155,7 +155,7 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		{"goose legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.ClaudeModeDefault, contracts.GooseModeSmartApprove},
 		{"goose explicit auto", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.GooseModeAuto, contracts.GooseModeAuto},
 		{"opencode no top-level default", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "", ""},
-		{"reasonix no permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", ""},
+		{"reasonix default mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", contracts.ReasonixModeNormal},
 		{"zcode empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "", contracts.ZCodeDefaultMode},
 		{"zcode explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, contracts.ZCodeModePlan, contracts.ZCodeModePlan},
 	}
@@ -280,14 +280,13 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(cursor, OptionIDPermissionMode))
 	assert.False(t, has(cursor, OptionIDEffort), "cursor has no effort axis (baked into model id)")
 
-	// Copilot's reasoning axis is the option "reasoning_effort", NOT the well-known
-	// "effort"; it also exposes "allow_all". `--effort` against Copilot is foreign.
+	// Copilot drives its reasoning axis through the well-known "effort" id
+	// (`session.model.setReasoningEffort`), and carries its session mode on a second
+	// axis beside the permission mode.
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	assert.True(t, has(copilot, OptionIDPermissionMode))
-	assert.True(t, has(copilot, CopilotConfigReasoningEffort))
-	assert.True(t, has(copilot, contracts.CopilotPermissionGroupAllowAll))
-	assert.True(t, has(copilot, contracts.CopilotPermissionGroupAssistedApproval))
-	assert.False(t, has(copilot, OptionIDEffort), "copilot uses reasoning_effort, not the well-known effort")
+	assert.True(t, has(copilot, OptionIDEffort))
+	assert.True(t, has(copilot, contracts.CopilotOptionSessionMode))
 
 	// OpenCode / Kilo surface their per-model reasoning under the well-known "effort"
 	// id, and use the primary-agent secondary axis (no permission mode).
@@ -311,11 +310,12 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(pi, PiOptionProvider))
 	assert.False(t, has(pi, OptionIDPermissionMode), "pi has no permission-mode axis")
 
-	// Reasonix's model is fixed at launch and it exposes no other axis.
+	// Reasonix advertises these runtime options.
 	reasonix := leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX
 	assert.True(t, has(reasonix, OptionIDModel))
-	assert.False(t, has(reasonix, OptionIDEffort))
-	assert.False(t, has(reasonix, OptionIDPermissionMode))
+	assert.True(t, has(reasonix, OptionIDEffort))
+	assert.True(t, has(reasonix, OptionIDPermissionMode))
+	assert.True(t, has(reasonix, contracts.ReasonixConfigToolApproval))
 	assert.False(t, has(reasonix, OptionIDPrimaryAgent))
 
 	// ZCode surfaces thought level under the well-known effort id, and its session
@@ -384,24 +384,21 @@ func TestPermissionDefaults(t *testing.T) {
 			wantFallback: contracts.GooseDefaultMode,
 		},
 		{
-			// Copilot's safe defaults name two axes that are NOT the permission mode, so
-			// its fallback covers a third axis entirely.
-			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-			wantNew: map[string]string{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-			},
-			wantFallback: CopilotCLIModeAgent,
+			// A new Copilot session asks for Assisted, and a session with no stored mode
+			// runs Manual -- the mode the runtime itself starts in.
+			provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+			wantNew:      map[string]string{OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted},
+			wantFallback: contracts.CopilotPermissionModeManual,
 		},
 		// A provider whose starting policy already asks before acting declares no safe
 		// default, and only a fallback.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: CodexDefaultApprovalPolicy},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, wantFallback: contracts.ZCodeDefaultMode},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, wantFallback: CursorCLIModeAgent},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, wantFallback: contracts.ReasonixModeNormal},
 		// A provider with no permission-mode axis at all declares neither half, and the
 		// option is left unset rather than stamped with a value it cannot accept.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI},
-		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
 	}
 	for _, tc := range cases {
@@ -430,7 +427,6 @@ func TestRegisteredSecondaryFallback(t *testing.T) {
 		modeChannel acpModeChannel
 		want        []*leapmuxv1.AvailableOption
 	}{
-		{"copilot permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, modeChannelPermissionMode, fallbackCopilotCLIModes()},
 		{"goose permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, modeChannelPermissionMode, fallbackGooseCLIModes()},
 		{"cursor permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, modeChannelPermissionMode, fallbackCursorCLIModes()},
 		{"opencode primary agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, modeChannelPrimaryAgent, fallbackOpenCodePrimaryAgents()},

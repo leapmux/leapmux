@@ -1527,7 +1527,7 @@ describe('chatView', () => {
     expect(screen.queryByText('line4')).not.toBeInTheDocument()
   })
 
-  it('strips tool use header DOM from completed codex command output', () => {
+  it('preserves printed tool header HTML in completed Codex command output', async () => {
     const messages = [
       makeCodexCommandMessage({
         id: 'cmd-done',
@@ -1552,7 +1552,9 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container).toHaveTextContent('real failure output')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+    await waitFor(() => expect(view.container).toHaveTextContent('real failure output'))
+    expect(view.container).toHaveTextContent('<span>0 files</span>')
     expect(screen.queryByText('0 files')).not.toBeInTheDocument()
   })
 

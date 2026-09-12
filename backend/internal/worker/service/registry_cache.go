@@ -86,11 +86,11 @@ type registryRetention[T any] struct {
 type registryOps[T any] struct {
 	// listRows loads up to `limit` persisted rows for `ownerID` in one cap pool,
 	// newest first, projecting each into a stored item plus its persisted seq.
-	// `bucket` is "" for a single-pool registry (bucketOf nil).
-	listRows func(ctx context.Context, ownerID, bucket string, limit int32) ([]seedEntry[T], error)
+	// `bucket` is 0 for a single-pool registry (bucketOf nil).
+	listRows func(ctx context.Context, ownerID string, bucket int64, limit int32) ([]seedEntry[T], error)
 	// reclaimFinishedBelowSeq deletes the pool's FINISHED rows older than `seq` --
 	// the surplus a seed window leaves behind. Optional: nil skips the pass.
-	reclaimFinishedBelowSeq func(ctx context.Context, ownerID, bucket string, seq int64) error
+	reclaimFinishedBelowSeq func(ctx context.Context, ownerID string, bucket, seq int64) error
 	// keyOf extracts the registry key (row_key / task id) from a stored row.
 	keyOf func(T) string
 	// setKey sets the registry key on a stored row (in place) for a rename.
@@ -107,25 +107,28 @@ type registryOps[T any] struct {
 	cap int32
 	// bucketOf groups rows into independent cap pools, so a burst of one group
 	// cannot evict another's rows. Nil means one pool for everything.
-	bucketOf func(T) string
-	// buckets names every cap pool, so the cold-start seed can load each one to
-	// its own cap. Nil/empty means a single pool, seeded with bucket "".
-	buckets []string
+	// The key is an int64 because every bucketed registry so far partitions on
+	// an enum ordinal it also filters the seed query by, so a name would have to
+	// be parsed back into the number the query binds.
+	bucketOf func(T) int64
+	// buckets lists every cap pool, so the cold-start seed can load each one to
+	// its own cap. Nil/empty means a single pool, seeded with bucket 0.
+	buckets []int64
 	// label is used in the eviction error context (e.g. "agent_todos").
 	label string
 }
 
-// bucket returns the cap pool a row belongs to ("" when the registry has only
+// bucket returns the cap pool a row belongs to (0 when the registry has only
 // one pool).
-func (c *registryCache[T]) bucket(row T) string {
+func (c *registryCache[T]) bucket(row T) int64 {
 	if c.ops.bucketOf == nil {
-		return ""
+		return 0
 	}
 	return c.ops.bucketOf(row)
 }
 
 // inBucket reports whether a row belongs to the named pool.
-func (c *registryCache[T]) inBucket(row T, bucket string) bool {
+func (c *registryCache[T]) inBucket(row T, bucket int64) bool {
 	return c.bucket(row) == bucket
 }
 
@@ -150,7 +153,7 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 	}
 	buckets := c.ops.buckets
 	if len(buckets) == 0 {
-		buckets = []string{""}
+		buckets = []int64{0}
 	}
 	// listRows returns the NEWEST rows first (see
 	// ListAgentBackgroundTasksByKindNewestFirst), so a LIMIT keeps what the cap
@@ -329,7 +332,7 @@ func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key str
 // when nothing was evicted), so a caller can report which case it got by testing
 // isFinished on it rather than by re-deriving the preference. Caller must hold
 // c.Mu.
-func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
+func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
 	if !c.atCapForBucket(bucket) {
 		var zero T
 		return zero, false, nil
@@ -343,17 +346,17 @@ func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID, bucket s
 
 // evictOldestFinishedInBucketLocked removes the first finished row (by slice
 // order) of ONE cap pool, so making room for a shell row never drops a
-// subagent's. Pass "" for a single-pool registry (bucketOf nil), where every row
+// subagent's. Pass 0 for a single-pool registry (bucketOf nil), where every row
 // shares one pool. RETURNS the evicted row, so a caller that logs it reads the
 // row this method actually removed rather than re-running an equivalent scan of
 // its own -- two expressions of one predicate that agree only while nobody edits
 // either. Returns ok=false (no error) when the pool holds no finished row.
 // Caller must hold c.Mu.
 //
-// There is deliberately NO unscoped wrapper: with a bucketed registry, bucket ""
+// There is deliberately NO unscoped wrapper: with a bucketed registry, bucket 0
 // matches nothing, so a wrapper that hardcoded it would evict nothing and report
 // "no finished row" without an error or a log. Naming the pool is the caller's.
-func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
+func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
 	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool {
 		return c.inBucket(r, bucket) && c.ops.isFinished(r)
 	})
@@ -365,7 +368,7 @@ func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context
 // even while it runs; ops.retention decides whether the persisted row goes with
 // it. Same bucket and return contract as
 // evictOldestFinishedInBucketLocked. Caller must hold c.Mu.
-func (c *registryCache[T]) evictOldestInBucketLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
+func (c *registryCache[T]) evictOldestInBucketLocked(ctx context.Context, ownerID string, bucket int64) (T, bool, error) {
 	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool { return c.inBucket(r, bucket) })
 }
 
@@ -473,7 +476,7 @@ func (c *registryCache[T]) renameRowKeyLocked(oldKey, newKey string) bool {
 // atCapForBucket reports whether one cap pool is full, so an insert into that
 // pool knows it must evict before appending. Pass "" for a single-pool registry
 // (bucketOf nil), where every row shares one pool. Caller must hold c.Mu.
-func (c *registryCache[T]) atCapForBucket(bucket string) bool {
+func (c *registryCache[T]) atCapForBucket(bucket int64) bool {
 	n := 0
 	for _, r := range c.Rows {
 		if c.inBucket(r, bucket) {

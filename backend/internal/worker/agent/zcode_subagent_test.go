@@ -407,3 +407,31 @@ func TestZCodeSubagentTitle(t *testing.T) {
 	assert.Equal(t, "reviewer", zcodeSubagentTitle(zcodeToolUpdated{AgentType: "reviewer"}))
 	assert.Equal(t, "Agent", zcodeSubagentTitle(zcodeToolUpdated{ToolName: "Agent"}))
 }
+
+// A turn that ends while the spawn runs closes the row with the TURN's outcome. An
+// earlier build read Completed out of the missing result, which claimed work the
+// subagent never finished.
+func TestZCodeSubagent_AnInterruptedTurnStopsTheRowRatherThanCompletingIt(t *testing.T) {
+	t.Parallel()
+
+	a, sink := spawnAZCodeSubagent(t)
+	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusStopped, rows[0].Status)
+}
+
+// A batch summary that counted an error cannot say WHICH call failed, so a spawn it
+// recovers stops rather than being reported as either outcome.
+func TestZCodeSubagent_ABatchErrorStopsTheRowRatherThanClaimingAnOutcome(t *testing.T) {
+	t.Parallel()
+
+	a, sink := spawnAZCodeSubagent(t)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
+		`{"kind":"batch","toolCallIds":["spawn-1"],"successCount":0,"errorCount":1}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusStopped, rows[0].Status)
+}

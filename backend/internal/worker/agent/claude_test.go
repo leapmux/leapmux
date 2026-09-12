@@ -338,7 +338,7 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	require.NoError(t, agent.SendRawInput([]byte(assistantText)))
 	time.Sleep(50 * time.Millisecond)
 
-	// 5. Result message — should be enriched with num_tool_uses: 1.
+	// 5. The result keeps its original bytes and stores the tool count separately.
 	resultMsg := `{"type":"result","subtype":"turn_end"}` + "\n"
 	require.NoError(t, agent.SendRawInput([]byte(resultMsg)))
 
@@ -352,20 +352,23 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 		return false
 	}, "expected result message to be persisted")
 
-	// Find the result message (recorded by PersistTurnEnd) and verify num_tool_uses.
+	// Find the result and verify its separate tool count.
 	msgs := sink.Messages()
 	var resultContent []byte
+	var resultMetadata []byte
 	for _, m := range msgs {
 		if m.TurnEnd {
 			resultContent = m.Content
+			resultMetadata = m.Metadata
 		}
 	}
 	require.NotNil(t, resultContent, "result message should exist")
+	assert.Equal(t, strings.TrimSuffix(resultMsg, "\n"), string(resultContent))
 
 	var enriched map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(resultContent, &enriched))
+	require.NoError(t, json.Unmarshal(resultMetadata, &enriched))
 	numToolUsesRaw, ok := enriched["num_tool_uses"]
-	require.True(t, ok, "result should contain num_tool_uses field")
+	require.True(t, ok, "metadata must contain the tool count")
 
 	var numToolUses int
 	require.NoError(t, json.Unmarshal(numToolUsesRaw, &numToolUses))

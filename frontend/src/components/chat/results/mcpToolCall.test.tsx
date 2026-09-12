@@ -1,5 +1,20 @@
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
+import { McpToolCallBody, mcpToolCallCopyable, mcpToolCallDisplayName, parseMcpContentItem } from './mcpToolCall'
+
+it('gives an empty completed result visible content without inventing copyable output', () => {
+  const source = { server: 'Docs', tool: 'lookup', argsJson: '', content: [], status: 'completed' as const }
+  const { container } = render(() => <McpToolCallBody source={source} />)
+  expect(container.textContent).toBe('[no output]')
+  expect(mcpToolCallCopyable(source)).toBe('')
+})
+
+it('preserves failed text blocks with the same formatting as an error field', () => {
+  const source = { server: 'Docs', tool: 'lookup', argsJson: '', content: [{ type: 'text' as const, text: 'Access denied\n  Detail' }], status: 'failed' as const }
+  const { container } = render(() => <McpToolCallBody source={source} />)
+  expect(container.querySelector('p')).toBeNull()
+  expect(container.textContent).toBe('Access denied\n  Detail')
+})
 
 describe('mcptoolcalldisplayname', () => {
   it('returns "server / tool" when server is set', () => {
@@ -13,6 +28,11 @@ describe('mcptoolcalldisplayname', () => {
 })
 
 describe('parsemcpcontentitem', () => {
+  it('preserves the text of an embedded MCP resource', () => {
+    expect(parseMcpContentItem({ type: 'resource', resource: { uri: 'probe://note', mimeType: 'text/plain', text: 'Resource contents' } }))
+      .toEqual({ type: 'resource', uri: 'probe://note', mimeType: 'text/plain', text: 'Resource contents' })
+  })
+
   it('parses text blocks', () => {
     expect(parseMcpContentItem({ type: 'text', text: 'hello' }))
       .toEqual({ type: 'text', text: 'hello' })

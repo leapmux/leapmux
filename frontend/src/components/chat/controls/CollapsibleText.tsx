@@ -11,6 +11,7 @@ interface CollapsibleTextProps {
   /** Tag to wrap the text in. Default: 'pre' */
   tag?: 'pre' | 'div'
   class?: string
+  bodyRef?: (element: HTMLElement) => void
 }
 
 export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
@@ -27,7 +28,7 @@ export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
 
   return (
     <>
-      <Dynamic component={props.tag ?? 'pre'} class={props.class} id={bodyId}>{visibleText()}</Dynamic>
+      <Dynamic component={props.tag ?? 'pre'} class={props.class} id={bodyId} ref={props.bodyRef}>{visibleText()}</Dynamic>
       <Show when={shouldCollapse()}>
         <CollapsibleToggle
           expanded={expanded()}

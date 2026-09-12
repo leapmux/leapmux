@@ -405,6 +405,8 @@ message AgentEvent {
     AgentInputQueueChanged input_queue_changed = 15;
     AgentGoalChanged goal_changed = 16;
     AgentActivityChanged activity_changed = 17;
+    // Worker response state updates do not establish that the provider process is active.
+    AgentControlRequest control_response_changed = 19;
   }
 }
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/stretchr/testify/assert"
@@ -313,7 +314,7 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 			CanonicalClient: "c", OpCount: 1, Epoch: 1, ExpiresAt: now.Add(time.Hour),
 		}))
 		require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
-			UserID: userid.MustNew(realUser.ID), OpType: "create", Payload: []byte("payload"),
+			UserID: userid.MustNew(realUser.ID), OpType: leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE, Payload: []byte("payload"),
 		}))
 
 		rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{

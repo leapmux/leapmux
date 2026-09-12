@@ -149,3 +149,13 @@ describe('zcode notification rendering (markup)', () => {
     expect(renderZCodeText(event('totally_unknown_zcode_event'))).toBe('')
   })
 })
+
+// The stop row is the one LeapMux writes for ZCode itself: `session/stop` is
+// acknowledged with an empty object, and the app-server has been observed to report
+// the end of the aborted turn with no frame at all. ZCode's describer returns null
+// for it, and the shared switch supplies the line.
+describe('the stop row LeapMux writes', () => {
+  it('renders in the shared vocabulary rather than as raw JSON', () => {
+    expect(renderZCodeText({ type: 'interrupted' })).toBe('Interrupted')
+  })
+})

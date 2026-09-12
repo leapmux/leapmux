@@ -95,7 +95,10 @@ export function createGoalStore() {
       //
       // `createdAt` is what tells a replacement from an update: Codex puts no
       // goal id on the wire, so a restarted goal differs only by that stamp.
-      if (!incoming || incoming.createdAt !== previous?.createdAt)
+      const differentIdentity = incoming?.nativeId && previous?.nativeId
+        ? incoming.nativeId !== previous.nativeId
+        : incoming?.createdAt !== previous?.createdAt
+      if (!incoming || differentIdentity || incoming.objective !== previous?.objective)
         progress.clear(agentId)
       goal.setReconciled(agentId, incoming)
     },

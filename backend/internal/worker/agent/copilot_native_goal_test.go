@@ -1,0 +1,244 @@
+//go:build unix
+
+package agent
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// startNativeCopilotForGoal opens an agent against the fake runtime, which models the
+// autopilot command verified in CP-002, CP-003 and CP-008.
+func startNativeCopilotForGoal(t *testing.T, env ...string) (*copilotAgent, *testSink) {
+	t.Helper()
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary: "copilot", helperRun: "TestHelperCopilotNativeConnection",
+		wantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", env: env,
+	})
+	sink := &testSink{}
+	provider, err := startNativeCopilot(t.Context(), Options{
+		AgentID: "native-goal", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: 2 * time.Second,
+	}, sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	return provider.(*copilotAgent), sink
+}
+
+func TestNativeCopilotGoalExposesEveryVerifiedAction(t *testing.T) {
+	a, _ := startNativeCopilotForGoal(t)
+	assert.Equal(t,
+		[]GoalAction{GoalActionSet, GoalActionPause, GoalActionResume, GoalActionClear},
+		a.SupportedGoalActions())
+}
+
+// Set records the objective and hands back the runtime's OWN continuation prompt.
+// LeapMux never writes that prompt itself.
+func TestNativeCopilotGoalSetReturnsTheRuntimeEffect(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+
+	outcome, err := a.PerformGoalAction(GoalActionSet, "Ship the release.\n두 번째 줄")
+	require.NoError(t, err)
+	assert.Equal(t, "Pursue: Ship the release.\n두 번째 줄", outcome.QueuedInput)
+
+	goal, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "Ship the release.\n두 번째 줄", goal.Objective, "the objective keeps its own line breaks")
+	assert.Equal(t, GoalStatusActive, goal.Status)
+	assert.Equal(t, "1", goal.NativeID)
+	assert.False(t, goal.Snapshot, "a goal the user just set is announced, not restated")
+}
+
+// An objective that reads like an option stays an objective: `--` stops the
+// runtime's own argument parsing (CP-003).
+func TestNativeCopilotGoalSetPreservesALiteralObjective(t *testing.T) {
+	for _, objective := range []string{"off", "on", "clear", "--max-ai-credits 1"} {
+		t.Run(objective, func(t *testing.T) {
+			a, sink := startNativeCopilotForGoal(t)
+			_, err := a.PerformGoalAction(GoalActionSet, objective)
+			require.NoError(t, err)
+			goal, ok := sink.LastGoal()
+			require.True(t, ok)
+			assert.Equal(t, objective, goal.Objective)
+			assert.Equal(t, GoalStatusActive, goal.Status)
+		})
+	}
+}
+
+func TestNativeCopilotGoalSetRefusesAnEmptyObjective(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+	for _, objective := range []string{"", "   ", "\n\t"} {
+		outcome, err := a.PerformGoalAction(GoalActionSet, objective)
+		require.Error(t, err, objective)
+		assert.Empty(t, outcome.QueuedInput)
+	}
+	assert.Empty(t, sink.Goals())
+}
+
+// Pause leaves the objective stored, and it queues nothing: the command takes effect
+// by itself, so there is no prompt for the input queue to deliver.
+func TestNativeCopilotGoalPauseKeepsTheObjective(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+	_, err := a.PerformGoalAction(GoalActionSet, "Keep this objective")
+	require.NoError(t, err)
+
+	outcome, err := a.PerformGoalAction(GoalActionPause, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput, "the pause command needs no queued input")
+
+	goal, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, GoalStatusPaused, goal.Status)
+	assert.Equal(t, "Keep this objective", goal.Objective)
+	assert.Zero(t, sink.GoalClears())
+}
+
+// Resume needs the explicit credit-limit command, and it returns the runtime's own
+// prompt effect. A plain "continue" is never a resume.
+func TestNativeCopilotGoalResumeUsesTheCreditLimitCommand(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+	_, err := a.PerformGoalAction(GoalActionSet, "Keep this objective")
+	require.NoError(t, err)
+	_, err = a.PerformGoalAction(GoalActionPause, "")
+	require.NoError(t, err)
+
+	outcome, err := a.PerformGoalAction(GoalActionResume, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Continue the objective.", outcome.QueuedInput)
+	goal, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, GoalStatusActive, goal.Status)
+	assert.Equal(t, "Keep this objective", goal.Objective)
+}
+
+// Resume applies to a PAUSED objective alone. Resuming an active one would spend a
+// turn on work that already runs.
+func TestNativeCopilotGoalResumeRefusesAnObjectiveThatIsNotPaused(t *testing.T) {
+	a, _ := startNativeCopilotForGoal(t)
+
+	outcome, err := a.PerformGoalAction(GoalActionResume, "")
+	assert.ErrorIs(t, err, ErrGoalControlUnsupported, "there is no objective to resume")
+	assert.Empty(t, outcome.QueuedInput)
+
+	_, err = a.PerformGoalAction(GoalActionSet, "Keep this objective")
+	require.NoError(t, err)
+	outcome, err = a.PerformGoalAction(GoalActionResume, "")
+	assert.ErrorIs(t, err, ErrGoalControlUnsupported, "an active objective is already running")
+	assert.Empty(t, outcome.QueuedInput)
+}
+
+// Clear runs the ordered session disposal of CP-008 and confirms the removal.
+func TestNativeCopilotGoalClearDisposesAndReopensTheSession(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+	_, err := a.PerformGoalAction(GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+	sessionID := a.currentNativeSessionID()
+
+	outcome, err := a.PerformGoalAction(GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput)
+	assert.Positive(t, sink.GoalClears())
+	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
+
+	// The reopened session still accepts input and still reports its settings.
+	require.NoError(t, a.SendInput("Carry on.", nil))
+	assert.NotEmpty(t, a.SettingsSnapshot().SurfacedOptions)
+
+	raw, err := a.sendRequest("probe.interests", json.RawMessage(`{}`), time.Second)
+	require.NoError(t, err)
+	var probe struct {
+		Closed bool `json:"closed"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &probe))
+	assert.True(t, probe.Closed, "the clear sequence closes the session before it opens it again")
+}
+
+// A Clear that leaves the objective behind is a failure, not a success. The stored
+// objective would otherwise come back on the next read.
+func TestNativeCopilotGoalClearReportsASurvivingObjective(t *testing.T) {
+	a, _ := startNativeCopilotForGoal(t, "LEAPMUX_TEST_COPILOT_GOAL_CLEAR_SURVIVES=1")
+	_, err := a.PerformGoalAction(GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+
+	_, err = a.PerformGoalAction(GoalActionClear, "")
+	require.ErrorContains(t, err, "survived the clear sequence")
+}
+
+// Clearing an absent objective changes nothing and disposes of no session.
+func TestNativeCopilotGoalClearWithNoObjectiveIsANoOperation(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+
+	outcome, err := a.PerformGoalAction(GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput)
+	assert.Zero(t, sink.GoalClears())
+
+	raw, err := a.sendRequest("probe.interests", json.RawMessage(`{}`), time.Second)
+	require.NoError(t, err)
+	var probe struct {
+		Closed bool `json:"closed"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &probe))
+	assert.False(t, probe.Closed)
+}
+
+// Every event-log subscription is released with its own handle. The runtime keeps a
+// subscription until then, so a replacement that forgot one would leave it registered
+// for the life of the process. See CP-009.
+func TestNativeCopilotReleasesItsEventSubscriptions(t *testing.T) {
+	a, _ := startNativeCopilotForGoal(t)
+	interests := func(t *testing.T) int {
+		t.Helper()
+		raw, err := a.sendRequest("probe.interests", json.RawMessage(`{}`), time.Second)
+		require.NoError(t, err)
+		var probe struct {
+			Released int `json:"released"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &probe))
+		return probe.Released
+	}
+	require.Zero(t, interests(t))
+
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, len(copilotEventInterests), interests(t),
+		"a session replacement releases the subscriptions of the session it replaced")
+}
+
+func TestNativeCopilotGoalStatusMapping(t *testing.T) {
+	t.Parallel()
+	for wire, want := range map[string]GoalStatus{
+		"active":      GoalStatusActive,
+		"paused":      GoalStatusPaused,
+		"completed":   GoalStatusDone,
+		"cap_reached": GoalStatusBlocked,
+		"":            GoalStatusBlocked,
+		"future_word": GoalStatusBlocked,
+	} {
+		assert.Equal(t, want, copilotGoalStatus(wire), wire)
+	}
+}
+
+// The runtime refuses to resume a session its store never recorded, which is every
+// session that ran no model turn. Clearing a goal on one must still reopen it: the
+// store held nothing to restore, so opening it under the same identity loses nothing.
+// See CP-012.
+func TestNativeCopilotGoalClearReopensASessionTheStoreNeverRecorded(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t, "LEAPMUX_TEST_COPILOT_UNRESUMABLE=1")
+	_, err := a.PerformGoalAction(GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+	sessionID := a.currentNativeSessionID()
+
+	outcome, err := a.PerformGoalAction(GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Empty(t, outcome.QueuedInput)
+	assert.Positive(t, sink.GoalClears())
+	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
+
+	require.NoError(t, a.SendInput("Carry on.", nil))
+}

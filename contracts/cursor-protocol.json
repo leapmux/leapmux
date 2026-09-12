@@ -1,0 +1,6 @@
+{
+  "_readme": "Cursor owns these ACP tool identifiers. The worker and frontend use them to identify subagent launches.",
+  "toolNames": {
+    "Task": "task"
+  }
+}

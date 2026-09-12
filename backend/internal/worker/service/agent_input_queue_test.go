@@ -673,7 +673,7 @@ func TestPlanExecutionProducerPreservesItsQueueSemantics(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
-	svc.initiatePlanExecution("agent-1", "acceptEdits")
+	require.NoError(t, svc.enqueuePlanExecution("agent-1", "acceptEdits", "plan-execution"))
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
@@ -754,13 +754,31 @@ func TestClassifyQueueDeliveryErrorKeepsTheQueueOpenForABusyAgent(t *testing.T) 
 // what the process received.
 func startEchoAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
+	startMockAgent(t, svc, agentID, svc.Agents.MockStartAgent)
+}
+
+// startSilentAgent is startEchoAgent with a mock that writes nothing back. A
+// case that reads the derived activity state needs it; see MockStartSilentAgent
+// for the artifact the echo leaves behind.
+func startSilentAgent(t *testing.T, svc *Service, agentID string) {
+	t.Helper()
+	startMockAgent(t, svc, agentID, svc.Agents.MockStartSilentAgent)
+}
+
+func startMockAgent(
+	t *testing.T,
+	svc *Service,
+	agentID string,
+	start func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error),
+) {
+	t.Helper()
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.Agents.MockStartAgent(context.Background(), agent.Options{
+	_, err := start(context.Background(), agent.Options{
 		AgentID: agentID, WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
 	}, sink)
 	require.NoError(t, err)
@@ -828,6 +846,98 @@ func TestInterruptAgentRunsWhenTheQueuePauseFails(t *testing.T) {
 			"the failed pause became the caller's answer, and the agent kept running")
 		assert.NotContains(t, rejection.message, "pause agent input queue")
 	}
+}
+
+// TestRawInterruptFramePublishesTheStop pins the half of a stop the reader
+// actually sees.
+//
+// Every provider answers a stop with a round trip, and its turn flag reads
+// WORKING until that answer lands. So the press itself has to drop the
+// indicator; waiting for the provider left the spinner and the Interrupt button
+// on screen for the whole round trip, which invites a second press.
+//
+// The raw frame is the stop path that waits for no answer, so the delivery here
+// SUCCEEDS and the published stop stands. The InterruptAgent RPC reaches the
+// same two calls in the same order; what it adds is the wait, and the case below
+// covers the refusal that wait can end in.
+func TestRawInterruptFramePublishesTheStop(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startSilentAgent(t, svc, "agent-1")
+	svc.Output.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
+	}, writer)
+
+	require.Empty(t, writer.rejections())
+	// The provider reported no turn end -- the mock reports nothing at all -- so
+	// the turn flag still says WORKING. The stop is what the tab reads.
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the press, not the provider's answer, is what drops the indicator")
+}
+
+// The other half. A stop the worker could not deliver leaves the agent running
+// whatever it was running, so the indicator and the Interrupt button belong back
+// on screen -- hiding the button on a runaway agent is the one failure it exists
+// to prevent.
+//
+// The mock answers no interrupt, so this call ends on the control timeout, which
+// is the refusal the caller reads as "not running".
+func TestInterruptAgentPutsTheIndicatorBackWhenTheStopIsRefused(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startSilentAgent(t, svc, "agent-1")
+	svc.Output.setTurnActive("agent-1", "agent-1", true)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
+
+	require.NotEmpty(t, writer.rejections(), "the control timeout is a refused stop")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the turn never stopped, so the tab must not read idle")
+}
+
+// TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn pins what a stop does to a
+// question nobody answered.
+//
+// A permission request is part of the turn that asked it. Four providers were measured
+// blocked on one, and an interrupt there stopped the turn and left the card asking: the
+// reader kept a live-looking question about a turn that had already ended, and the
+// answer had nowhere to go.
+func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startEchoAgent(t, svc, "agent-1")
+	_, err := svc.Queries.StoreControlRequest(context.Background(), db.StoreControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "request-1",
+		Payload:   []byte(`{"type":"control_request","request_id":"request-1","request":{"subtype":"can_use_tool"}}`),
+	})
+	require.NoError(t, err)
+
+	// The raw frame is the stop path that waits for no answer, so the stop it sends is
+	// DELIVERED rather than merely attempted. That is the bar the cancel runs behind.
+	writer := newTestWriter()
+	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
+	}, writer)
+	assert.Empty(t, writer.rejections())
+
+	_, err = svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
+		AgentID: "agent-1", RequestID: "request-1",
+	})
+	assert.Error(t, err, "the question belonged to the turn the stop ended")
 }
 
 // TestRawInterruptFrameRunsWhenTheQueuePauseFails is the same rule on the

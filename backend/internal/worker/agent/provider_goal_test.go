@@ -156,14 +156,6 @@ func TestTextGoalObservationRequiresTheAdvertisedCapability(t *testing.T) {
 				agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
 			},
 		},
-		{
-			name: "copilot",
-			observe: func(sink *testSink) {
-				agent := newCopilotCLIAgent("", false)
-				agent.sink = sink
-				agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
-			},
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -216,27 +208,77 @@ func TestGooseGoal_UsesTheAdvertisedGoalCommand(t *testing.T) {
 	assert.Equal(t, len(gooseGoalRoute.clearArgs), sink.GoalClears())
 }
 
-func TestCopilotGoal_UsesTheAdvertisedAutopilotCommand(t *testing.T) {
+// Kilo's `/goal` is the one text route that carries all four verbs. The command is
+// Kilo's own addition to the OpenCode base it forks, which is why OpenCode has none.
+func TestKiloGoal_UsesTheAdvertisedGoalCommandForEveryVerb(t *testing.T) {
 	t.Parallel()
 	sink := &testSink{}
-	agent := newCopilotCLIAgent("", false)
+	agent := &KiloAgent{}
 	agent.sink = sink
 
-	advertiseACPCommands(t, &agent.acpBase, "autopilot")
-	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
-	setOutcome, err := agent.PerformGoalAction(GoalActionSet, "ship it")
-	require.NoError(t, err)
-	assert.Equal(t, "/goal ship it", setOutcome.QueuedInput)
-	clearOutcome, err := agent.PerformGoalAction(GoalActionClear, "")
-	require.NoError(t, err)
-	assert.Equal(t, "/goal off", clearOutcome.QueuedInput)
+	assert.Empty(t, agent.SupportedGoalActions(), "a build that lists no goal command offers no goal control")
+	advertiseACPCommands(t, &agent.acpBase, "compact", "goal")
+	assert.Equal(t,
+		[]GoalAction{GoalActionSet, GoalActionClear, GoalActionPause, GoalActionResume},
+		agent.SupportedGoalActions())
 
+	setOutcome, err := agent.PerformGoalAction(GoalActionSet, "  keep\n NOTES.md accurate ")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal keep NOTES.md accurate", setOutcome.QueuedInput)
 	agent.ObserveGoalCommand(GoalDeliverySend, setOutcome.QueuedInput)
 	goal, ok := sink.LastGoal()
 	require.True(t, ok)
-	assert.Equal(t, "ship it", goal.Objective)
+	assert.Equal(t, "keep NOTES.md accurate", goal.Objective)
+	assert.Equal(t, GoalStatusActive, goal.Status)
+
+	// A pause keeps the objective and moves the status alone.
+	pauseOutcome, err := agent.PerformGoalAction(GoalActionPause, "")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal pause", pauseOutcome.QueuedInput)
+	agent.ObserveGoalCommand(GoalDeliverySend, pauseOutcome.QueuedInput)
+	paused, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, GoalStatusPaused, paused.Status)
+	assert.Equal(t, "keep NOTES.md accurate", paused.Objective, "a pause must not lose the objective")
+
+	resumeOutcome, err := agent.PerformGoalAction(GoalActionResume, "")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal resume", resumeOutcome.QueuedInput)
+	agent.ObserveGoalCommand(GoalDeliverySend, resumeOutcome.QueuedInput)
+	resumed, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, GoalStatusActive, resumed.Status)
+	assert.Equal(t, "keep NOTES.md accurate", resumed.Objective)
+
+	clearOutcome, err := agent.PerformGoalAction(GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Equal(t, "/goal clear", clearOutcome.QueuedInput)
 	agent.ObserveGoalCommand(GoalDeliverySend, clearOutcome.QueuedInput)
 	assert.Equal(t, 1, sink.GoalClears())
+}
+
+// The command is positional, so a one-word objective that equals a verb would reach Kilo
+// as that verb. Refuse it rather than store a goal Kilo does not hold.
+func TestKiloGoal_RefusesAnObjectiveThatReadsAsAVerb(t *testing.T) {
+	t.Parallel()
+	agent := &KiloAgent{}
+	agent.sink = &testSink{}
+	for _, objective := range []string{"pause", "Resume", "CLEAR"} {
+		_, err := agent.PerformGoalAction(GoalActionSet, objective)
+		require.ErrorIs(t, err, ErrGoalObjectiveIsCommand, "objective %q", objective)
+	}
+}
+
+// A goal command that Kilo never advertised changes nothing, the same rule every text
+// route follows.
+func TestKiloGoal_ObservesNothingWithoutTheAdvertisedCommand(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := &KiloAgent{}
+	agent.sink = sink
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal ship it")
+	assert.Empty(t, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
 }
 
 func TestACPGoal_CommandRemovalRepublishesCapabilities(t *testing.T) {
@@ -287,6 +329,17 @@ func TestZCodeGoal_StatePatchReportsAChange(t *testing.T) {
 	assert.EqualValues(t, 4, *got.Iterations)
 	assert.False(t, got.Snapshot, "a patch reports a change as it happens")
 	assert.Nil(t, got.TokensUsed, "ZCode reports a budget, never a consumed count")
+}
+
+func TestZCodeGoalPreservesDistinctNativeIdentities(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.reportZCodeGoal(json.RawMessage(`{"targetId":"first","objective":"Same objective","status":"active"}`), false)
+	a.reportZCodeGoal(json.RawMessage(`{"targetId":"second","objective":"Same objective","status":"active"}`), false)
+	updates := sink.Goals()
+	require.Len(t, updates, 2)
+	assert.NotEqual(t, updates[0], updates[1], "distinct native goals must not become the same goal update")
 }
 
 // A patch that changed something else omits `goal` entirely. Treating an absent
@@ -447,18 +500,16 @@ func TestReasonixGoal_IgnoresAnotherSession(t *testing.T) {
 	assert.Empty(t, sink.Goals(), "a notification for a replaced session is dropped")
 }
 
-// Reasonix is READ-ONLY: setting means switching to its goal mode and hijacking
-// the next prompt, and clearing means switching back to a mode LeapMux never
-// tracked. It must therefore implement no GoalWriter at all, so the browser
-// disables every action.
-func TestReasonixGoal_ImplementsNoGoalWriter(t *testing.T) {
+// Reasonix exposes goal controls only after the handshake advertises their modes.
+func TestReasonixGoal_RequiresAdvertisedModes(t *testing.T) {
 	t.Parallel()
 
 	var a any = &ReasonixAgent{}
 	_, ok := a.(GoalWriter)
-	assert.False(t, ok, "Reasonix cannot honestly perform a goal action")
+	assert.True(t, ok, "Reasonix has verified Set and Clear operations")
 	_, ok = a.(GoalCapable)
-	assert.True(t, ok, "Reasonix reports that its action list is empty")
+	assert.True(t, ok)
+	assert.Empty(t, a.(GoalCapable).SupportedGoalActions())
 }
 
 // Reasonix's real wire vocabulary. `cancelled` and `failed` come from a
@@ -912,7 +963,6 @@ func TestTextGoal_RefusesAnObjectiveThatClears(t *testing.T) {
 	}{
 		{name: "claude", route: claudeGoalRoute},
 		{name: "goose", route: gooseGoalRoute},
-		{name: "copilot", route: copilotGoalRoute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

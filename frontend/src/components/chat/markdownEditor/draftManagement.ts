@@ -4,6 +4,7 @@ import type { Draft } from '~/lib/editor/draftPersistence'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { unescapeAutolinkDots } from './autolinkDotEscape'
 
 /**
  * Restore a saved cursor position in a ProseMirror editor view.  If the saved
@@ -43,7 +44,7 @@ export function saveDraftFromEditor(editor: Editor, draftKey: string): void {
   editor.action((ctx: Ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
-    const raw = serializer(view.state.doc)
+    const raw = unescapeAutolinkDots(serializer(view.state.doc))
     const text = typeof raw === 'string' ? raw.trim() : ''
     const cursor = view.state.selection.from
     saveDraft(draftKey, text, cursor)

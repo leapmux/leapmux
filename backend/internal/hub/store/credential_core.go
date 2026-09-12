@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // CredentialEvent is the dialect-neutral result of a credential mutation.
@@ -10,7 +12,7 @@ import (
 // core emits the matching durable lifecycle event.
 type CredentialEvent struct {
 	// Kind is the durable revocation-event kind the mutation emits.
-	Kind      string
+	Kind      leapmuxv1.RevocationEventKind
 	SubjectID string
 	UserID    string
 	At        time.Time

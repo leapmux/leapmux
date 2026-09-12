@@ -124,8 +124,7 @@ func TestSessionInfoReplay_SurvivesControlRequestCleanup(t *testing.T) {
 
 	svc, sink, _ := newSessionInfoServiceFixture(t)
 	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
-	svc.deleteControlRequest("agent-1",
-		controlResponseRequestMetadata{RequestID: "request-1"}, false)
+	sink.CancelControlRequest("request-1")
 
 	event := svc.Output.SessionInfoReplayEvent("agent-1")
 	require.NotNil(t, event)

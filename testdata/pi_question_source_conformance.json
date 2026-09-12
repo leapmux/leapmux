@@ -1,0 +1,506 @@
+{
+  "_readme": "Shared Pi dialog matching cases for Go and TypeScript. Malformed or ambiguous sources must not supply display fields.",
+  "cases": [
+    {
+      "name": "single selection with preview",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 0
+    },
+    {
+      "name": "source preview omitted from dialog",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 0
+    },
+    {
+      "name": "different question title",
+      "dialog": {
+        "method": "select",
+        "title": "Different question",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "changed option",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Changed",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "missing custom option",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large"
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "localized custom option",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. 직접 입력"
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 0
+    },
+    {
+      "name": "second question in source",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Earlier",
+            "options": [
+              {
+                "label": "A",
+                "description": "Earlier"
+              }
+            ]
+          },
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 1
+    },
+    {
+      "name": "ambiguous duplicate questions",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          },
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "empty questions",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": []
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "null arguments",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": null,
+      "expectedIndex": null
+    },
+    {
+      "name": "array arguments",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": [],
+      "expectedIndex": null
+    },
+    {
+      "name": "unknown dialog",
+      "dialog": {
+        "method": "confirm",
+        "title": "[Layout] Choose a layout"
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "multi selection",
+      "dialog": {
+        "method": "input",
+        "title": "[Layout] Choose a layout\n\n1. Compact — Small\n2. Wide — Large\n\nLocalized instructions",
+        "placeholder": "1,3"
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ],
+            "multiSelect": true
+          }
+        ]
+      },
+      "expectedIndex": 0
+    },
+    {
+      "name": "wrong multi placeholder",
+      "dialog": {
+        "method": "input",
+        "title": "[Layout] Choose a layout\n\n1. Compact — Small\n2. Wide — Large\n\nLocalized instructions",
+        "placeholder": "other"
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ],
+            "multiSelect": true
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "multi question cannot match select",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] Choose a layout\n\n--- 1. Compact preview ---\nfull preview",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ],
+            "multiSelect": true
+          }
+        ]
+      },
+      "expectedIndex": null
+    },
+    {
+      "name": "custom text input",
+      "dialog": {
+        "method": "input",
+        "title": "[Layout] Choose a layout\n\nType your answer:",
+        "placeholder": ""
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "Choose a layout",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 0
+    },
+    {
+      "name": "normalized line endings",
+      "dialog": {
+        "method": "select",
+        "title": "[Layout] First\nSecond",
+        "options": [
+          "1. Compact — Small",
+          "2. Wide — Large",
+          "3. Type something."
+        ]
+      },
+      "args": {
+        "questions": [
+          {
+            "question": "First\r\nSecond",
+            "header": "Layout",
+            "options": [
+              {
+                "label": "Compact",
+                "description": "Small",
+                "preview": "full preview"
+              },
+              {
+                "label": "Wide",
+                "description": "Large"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedIndex": 0
+    }
+  ]
+}

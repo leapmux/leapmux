@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // TestListAgentMessages_AnchorPaging exercises the four MessagePageAnchor modes
@@ -169,7 +170,7 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 		AgentID: "agent-1", RowKey: "k1", Seq: 1, TaskID: "t1",
-		Content: "Run tests", ActiveForm: "Running tests", Status: "in_progress",
+		Content: "Run tests", ActiveForm: "Running tests", Status: int64(todoevents.StatusInProgress),
 	}))
 
 	list := func(req *leapmuxv1.ListAgentMessagesRequest) *leapmuxv1.ListAgentMessagesResponse {
@@ -587,7 +588,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	}
 	require.NoError(t, svc.Queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 		AgentID: "agent-1", RowKey: "k1", Seq: 1, TaskID: "t1",
-		Content: "Run tests", ActiveForm: "Running tests", Status: "in_progress",
+		Content: "Run tests", ActiveForm: "Running tests", Status: int64(todoevents.StatusInProgress),
 	}))
 
 	// Resume from the first message's seq: a RESUMING subscriber whose catch-up

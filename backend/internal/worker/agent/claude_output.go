@@ -213,12 +213,6 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	}
 }
 
-// enrichResultWithToolUses injects num_tool_uses into a result message so
-// the frontend can determine whether the turn involved tool use.
-func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
-	return a.enrichWithToolUses(content)
-}
-
 // contentBlock represents a single block in message.content[].
 type contentBlock struct {
 	Type      string          `json:"type"`
@@ -556,9 +550,12 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.detectPlanModeFromToolResult(&env)
 	}
 
-	// Enrich result messages with num_tool_uses.
+	messageContent := MessageContent{Original: content}
 	if msgType == claudeMsgTypeResult {
-		content = a.enrichResultWithToolUses(content)
+		messageContent = a.messageWithToolUses(content)
+		if a.takeInterruptRequest() {
+			messageContent.Completion = MessageCompletionInterrupted
+		}
 	}
 
 	// Resolve the span metadata and reserve the tool_use row's color. Shared
@@ -573,9 +570,9 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	if msgType == claudeMsgTypeResult {
 		// Final turn-end envelope — routes through PersistTurnEnd so
 		// the sink fires the git-status auto-broadcast explicitly.
-		persistErr = a.sink.PersistTurnEnd(content, spanInfo)
+		persistErr = a.sink.PersistTurnEnd(messageContent, spanInfo)
 	} else {
-		persistErr = a.sink.PersistMessage(source, content, spanInfo)
+		persistErr = a.sink.PersistMessage(source, messageContent, spanInfo)
 	}
 	if persistErr != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", persistErr)
@@ -862,6 +859,13 @@ func (a *ClaudeCodeAgent) claudeCodeHandleSystemInit(content []byte) {
 	if err := json.Unmarshal(content, &initMsg); err != nil || initMsg.SessionID == "" {
 		return
 	}
+	a.mu.Lock()
+	expected := a.sessionID
+	a.sessionID = initMsg.SessionID
+	a.mu.Unlock()
+	if expected != "" && expected != initMsg.SessionID {
+		slog.Warn("Claude Code reported a different session ID", "agent_id", a.agentID, "expected_session_id", expected, "session_id", initMsg.SessionID)
+	}
 	a.sink.UpdateSessionID(initMsg.SessionID)
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
@@ -875,8 +879,20 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlRequest(content []byte) {
 		slog.Warn("invalid control_request JSON", "agent_id", a.agentID, "error", err)
 		return
 	}
-	claimToken := a.sink.PersistControlRequest(cr.RequestID, content)
-	a.sink.BroadcastControlRequest(cr.RequestID, content, claimToken)
+	if err := a.sink.PublishControlRequest(ControlRequest{RequestID: cr.RequestID, Payload: content}); err != nil {
+		slog.Error("publish claude control request", "agent_id", a.agentID, "request_id", cr.RequestID, "error", err)
+		response, marshalErr := json.Marshal(map[string]any{
+			"type":     "control_response",
+			"response": map[string]any{"subtype": "error", "request_id": cr.RequestID, "error": controlPublicationFailure},
+		})
+		if marshalErr != nil {
+			slog.Error("encode claude control failure", "agent_id", a.agentID, "error", marshalErr)
+			return
+		}
+		if err := a.SendRawInput(response); err != nil {
+			slog.Warn("send claude control failure", "agent_id", a.agentID, "error", err)
+		}
+	}
 }
 
 // claudeCodeHandleControlCancel persists and broadcasts a control_cancel_request.
@@ -888,8 +904,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 		slog.Warn("invalid control_cancel_request JSON", "agent_id", a.agentID, "error", err)
 		return
 	}
-	a.sink.DeleteControlRequest(cc.RequestID)
-	a.sink.BroadcastControlCancel(cc.RequestID)
+	a.sink.CancelControlRequest(cc.RequestID)
 }
 
 // claudeCodeHandleControlResponse handles a control_response from Claude Code that no

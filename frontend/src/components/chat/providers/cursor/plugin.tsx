@@ -1,0 +1,42 @@
+import type { PermissionMode } from '~/utils/controlResponse'
+import { createMemo, Show } from 'solid-js'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ACPControlActions, ACPControlContent } from '../acp/ACPControlRequest'
+import { registerACPProvider } from '../acp/registerACPProvider'
+import { cursorControlResponseDisplay } from './controlResponse'
+import { CursorControlActions, CursorControlContent, getCursorQuestions, isCursorAskQuestionPayload, isCursorControlPayload, sendCursorQuestionRejectResponse, sendCursorQuestionResponse } from './CursorControlRequest'
+import { cursorToolAdapter } from './toolPresentation'
+
+registerACPProvider({
+  provider: AgentProvider.CURSOR,
+  toolAdapter: cursorToolAdapter,
+  defaultPermissionMode: 'agent' as PermissionMode,
+  controlResponseDisplay: cursorControlResponseDisplay,
+  // Cursor's ask-question payload is shaped differently from generic ACP, so
+  // dispatch on payload type and fall through to the shared ACP UI when not.
+  ControlContent: (props) => {
+    const isCursor = createMemo(() => isCursorControlPayload(props.request.payload))
+    return (
+      <Show when={isCursor()} fallback={<ACPControlContent {...props} />}>
+        <CursorControlContent {...props} />
+      </Show>
+    )
+  },
+  ControlActions: (props) => {
+    const isCursor = createMemo(() => isCursorControlPayload(props.request.payload))
+    return (
+      <Show when={isCursor()} fallback={<ACPControlActions {...props} />}>
+        <CursorControlActions {...props} />
+      </Show>
+    )
+  },
+  planValue: 'plan',
+  questionHandling: {
+    isRequest: payload => !!payload && isCursorAskQuestionPayload(payload),
+    extractQuestions: payload => getCursorQuestions(payload),
+    sendAnswer: (request, sendControlResponse, questions, answerState) =>
+      sendCursorQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
+    sendReject: (request, sendControlResponse, message) =>
+      sendCursorQuestionRejectResponse(sendControlResponse, request.requestId, message),
+  },
+})

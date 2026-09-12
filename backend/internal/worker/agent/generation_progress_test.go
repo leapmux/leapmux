@@ -55,7 +55,7 @@ func TestProgressResetSinkKeepsOutputWhenAMessagePersists(t *testing.T) {
 	sink.ReportProgress(OutputDeltaProgress("background", 512))
 	require.NoError(t, sink.PersistMessage(
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		SpanInfo{},
 	))
 
@@ -73,7 +73,7 @@ func TestProgressResetSinkDecoratesChildTranscriptFacets(t *testing.T) {
 	child.ReportProgress(ModelTextProgress("model", "abcdefgh"))
 	require.NoError(t, child.PersistMessage(
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		SpanInfo{},
 	))
 

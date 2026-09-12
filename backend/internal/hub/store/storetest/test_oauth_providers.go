@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,7 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		provID := id.Generate()
 		err := st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 			ID:           provID,
-			ProviderType: "oidc",
+			ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 			Name:         name,
 			IssuerURL:    "https://issuer.example.com",
 			ClientID:     "client-" + name,
@@ -38,7 +39,7 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		prov, err := st.OAuthProviders().GetByID(ctx, provID)
 		require.NoError(t, err)
 		assert.Equal(t, provID, prov.ID)
-		assert.Equal(t, "oidc", prov.ProviderType)
+		assert.Equal(t, leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC, prov.ProviderType)
 		assert.Equal(t, "test-prov", prov.Name)
 		assert.Equal(t, "https://issuer.example.com", prov.IssuerURL)
 		assert.Equal(t, "client-test-prov", prov.ClientID)

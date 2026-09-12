@@ -402,7 +402,14 @@ CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_
 CREATE TABLE lifecycle_outbox (
     id          BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id      VARCHAR(255) NOT NULL,
-    op_type     VARCHAR(16) NOT NULL,
+    -- The three LifecycleOpType values in internal/hub/crdt. The drain switches
+    -- on this word, and its default arm logs and CONSUMES the row, so a typo
+    -- here is a lifecycle event that vanishes rather than one that fails.
+    -- A WorkspaceLifecycleOp ordinal. The drain switches on it, and its default
+    -- arm logs and CONSUMES the row, so a value nobody writes is a lifecycle
+    -- event that vanishes rather than one that fails. The CHECK is what keeps
+    -- that arm unreachable.
+    op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     LONGBLOB NOT NULL,
     enqueued_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     consumed_at DATETIME(6),
@@ -412,7 +419,11 @@ CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id);
 
 CREATE TABLE revocation_events (
     id         VARCHAR(255) PRIMARY KEY,
-    kind       VARCHAR(32) NOT NULL CHECK (kind IN ('session', 'session_revoked', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    -- A RevocationEventKind ordinal. idx_revocation_events_session_revoked
+    -- spells SESSION_REVOKED as the literal 2; TestRevocationEventKindNumbering
+    -- pins it, because a partial index is frozen history a query parameter
+    -- cannot reach.
+    kind       SMALLINT NOT NULL CHECK (kind BETWEEN 1 AND 7),
     subject_id VARCHAR(255) NOT NULL,
     user_id    VARCHAR(255) NOT NULL,
     revoked_at DATETIME(3) NOT NULL,
@@ -462,8 +473,8 @@ CREATE TABLE oauth_clients (
     scopes                TEXT NOT NULL,
     grant_types           VARCHAR(512) NOT NULL DEFAULT 'authorization_code refresh_token',
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
-    registration_source   VARCHAR(16) NOT NULL
-        CHECK (registration_source IN ('builtin', 'admin', 'user', 'dynamic')),
+    -- An AppRegistrationSource ordinal: who put this registration in the table.
+    registration_source   SMALLINT NOT NULL CHECK (registration_source BETWEEN 1 AND 4),
     -- WHO vouched, and WHEN. The two move together, which the CHECK below
     -- enforces: a row with one and not the other describes a vouch nobody can
     -- read.
@@ -646,7 +657,13 @@ CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_cod
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
     id              VARCHAR(255) PRIMARY KEY,
-    provider_type   VARCHAR(255) NOT NULL,
+    -- oauth.ProviderTypeOIDC / ProviderTypeGitHub. The preset table maps the
+    -- four registrable presets (github, google, apple, oidc) onto these two
+    -- stored words, so this is the whole vocabulary a row may carry.
+    -- An IdentityProviderType ordinal: the PROTOCOL this provider speaks, not
+    -- the preset an administrator picked. The four presets (github, google,
+    -- apple, oidc) map onto these two protocols.
+    provider_type   SMALLINT NOT NULL CHECK (provider_type BETWEEN 1 AND 2),
     name            VARCHAR(255) NOT NULL,
     issuer_url      TEXT NOT NULL,
     client_id       VARCHAR(255) NOT NULL,
@@ -701,7 +718,13 @@ CREATE TABLE oauth_states (
     -- column is "", never 'login', so an explicit insert never reaches the
     -- DEFAULT, and the callback treats every value that is not 'reauth' as a
     -- login -- which may create a session or link an identity.
-    purpose         VARCHAR(16) NOT NULL DEFAULT 'login' CHECK (purpose IN ('login', 'reauth')),
+    -- An OAuthStatePurpose ordinal. The CHECK is the enforcement, not the
+    -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
+    -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
+    -- reaching the DEFAULT. That matters because the callback treats every
+    -- value that is not REAUTH as a LOGIN -- the branch that may create a
+    -- session and link an identity.
+    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 2),
     -- The session the reauth leg elevates on success. Empty for 'login'.
     session_id      VARCHAR(255) NOT NULL DEFAULT '',
     expires_at      DATETIME(3) NOT NULL,
@@ -752,14 +775,15 @@ CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_vers
 -- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
 CREATE TABLE webauthn_sessions (
     id           VARCHAR(255) PRIMARY KEY,
-    kind         VARCHAR(32) NOT NULL,
+    -- A WebAuthnSessionKind ordinal.
+    kind         SMALLINT NOT NULL,
     user_id      VARCHAR(255),
     payload_json TEXT NOT NULL,              -- '{}' or keystore-encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
     session_data BLOB NOT NULL,              -- keystore-encrypted ceremony state, AAD: 'webauthn_session:' || id
     expires_at   DATETIME(3) NOT NULL,
     created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CHECK (kind IN ('signup', 'login', 'register', 'elevation', 'recovery'))
+    CHECK (kind BETWEEN 1 AND 5)
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
 

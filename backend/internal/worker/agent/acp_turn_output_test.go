@@ -17,9 +17,10 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	output.appendAssistant("answer")
 	assert.True(t, output.appendThought("first "))
 	assert.False(t, output.appendThought("second"))
+	opener := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"pending"}`)
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{
 		"toolCallId": json.RawMessage(`"tool-1"`),
-	})
+	}, opener)
 	output.completeTool("tool-complete")
 
 	turn := output.drainTurn()
@@ -28,6 +29,8 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	require.Len(t, turn.incompleteTools, 1)
 	assert.Equal(t, "tool-1", turn.incompleteTools[0].toolCallID)
 	assert.NoError(t, turn.incompleteTools[0].encodeErr)
+	assert.JSONEq(t, string(opener), string(turn.incompleteTools[0].original),
+		"the snapshot carries the agent's own frame, not the merged fields")
 	assert.Equal(t, 1, turn.completedToolUses)
 
 	turn = output.drainTurn()

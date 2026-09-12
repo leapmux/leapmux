@@ -69,6 +69,11 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	resolvedInput, err := svc.resolveControlInput(item, dbAgent)
+	if err != nil {
+		return inputqueue.DispatchResult{}, err
+	}
+	text := resolvedInput.text
 	// Two checks, because either one alone can miss. The registry holds the
 	// live outcome, and persistAgentStartupError only logs when its write
 	// fails, so a failed write leaves the column empty while the registry says
@@ -97,7 +102,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments); err != nil {
+		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, text, attachments); err != nil {
 			if errors.Is(err, agent.ErrChildOperationUnsupported) {
 				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
 			}
@@ -145,7 +150,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		}
 		err := svc.Agents.CompactContext(item.AgentID)
 		if errors.Is(err, agent.ErrCompactionUnsupported) {
-			err = svc.Agents.SendInput(item.AgentID, item.Text, attachments)
+			err = svc.Agents.SendInput(item.AgentID, text, attachments)
 		}
 		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
@@ -153,13 +158,19 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION:
 		if item.PrepareContext {
-			if err := svc.preparePlanExecutionContext(item.AgentID, item.TargetMode, dbAgent); err != nil {
-				return inputqueue.DispatchResult{}, err
+			if err := svc.prepareApprovedPlanContext(item, &resolvedInput); err != nil {
+				return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 			}
-		} else if err := ensureRunning(); err != nil {
+		}
+		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
+		if item.PrepareContext {
+			if err := svc.confirmPreparedPlanSettings(item, resolvedInput); err != nil {
+				return inputqueue.DispatchResult{}, err
+			}
+		}
+		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
@@ -167,7 +178,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
+		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
@@ -235,6 +246,11 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	resolvedInput, err := a.svc.resolveControlInput(item, dbAgent)
+	if err != nil {
+		return inputqueue.DispatchResult{}, err
+	}
+	text := resolvedInput.text
 	attachments, err := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
@@ -244,9 +260,9 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
-		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments)
+		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else {
-		err = a.svc.Agents.SteerInput(item.AgentID, item.Text, attachments)
+		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}
 	return inputqueue.DispatchResult{
 		StartsTurn: true,

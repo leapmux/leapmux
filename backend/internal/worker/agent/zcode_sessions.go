@@ -58,6 +58,11 @@ func zcodeStorageDir(q StoredSessionQuery, cfg zcodeCLIConfig) string {
 
 // zcodeSessionDBPath resolves ZCode's session database.
 func zcodeSessionDBPath(q StoredSessionQuery) string {
+	return zcodeToolStorePaths(q).databasePath
+}
+
+// zcodeToolStorePaths uses the same storage configuration for the database and artifacts.
+func zcodeToolStorePaths(q StoredSessionQuery) zcodeToolStoreLocation {
 	home := q.home()
 	var cfg zcodeCLIConfig
 	if home != "" {
@@ -69,14 +74,16 @@ func zcodeSessionDBPath(q StoredSessionQuery) string {
 			return json.Unmarshal(data, &cfg)
 		})
 	}
-	if explicit := strings.TrimSpace(cfg.Storage.SessionDbPath); explicit != "" {
-		return pathutil.ExpandHome(explicit, home)
-	}
 	dir := zcodeStorageDir(q, cfg)
-	if dir == "" {
-		return ""
+	location := zcodeToolStoreLocation{}
+	if dir != "" {
+		location.databasePath = filepath.Join(append([]string{dir}, zcodeSessionDBRelPath...)...)
+		location.artifactRoot = filepath.Join(dir, "cli", "artifacts")
 	}
-	return filepath.Join(append([]string{dir}, zcodeSessionDBRelPath...)...)
+	if explicit := strings.TrimSpace(cfg.Storage.SessionDbPath); explicit != "" {
+		location.databasePath = pathutil.ExpandHome(explicit, home)
+	}
+	return location
 }
 
 // zcodeStoredSessions is ZCode's Provider.ListStoredSessions.

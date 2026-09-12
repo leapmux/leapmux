@@ -12,8 +12,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // TestAllDatetimeColumnsStoreCanonicalLayout drives every worker-DB write path
@@ -123,7 +126,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Seq:     1,
 		TaskID:  "task-1",
 		Content: "do the thing",
-		Status:  "pending",
+		Status:  int64(todoevents.StatusPending),
 	}))
 
 	// agent_background_tasks: created_at/updated_at are Go-bound on the Upsert;
@@ -133,36 +136,36 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		OwnerAgentID: "agent-1",
 		RowKey:       "bg-1",
 		Seq:          1,
-		Kind:         "subagent",
-		Status:       "running",
+		Kind:         int64(bgtask.KindSubagent),
+		Status:       int64(bgtask.StatusRunning),
 		CreatedAt:    sqltime.NewSQLiteTime(now),
 		UpdatedAt:    sqltime.NewSQLiteTime(now),
 	}))
 	require.NoError(t, queries.CloseAgentBackgroundTask(ctx, gendb.CloseAgentBackgroundTaskParams{
-		Status:       "completed",
-		EndedAt:      sqltime.SQLiteNullTimeOf(now),
-		UpdatedAt:    sqltime.NewSQLiteTime(now),
-		OwnerAgentID: "agent-1",
-		RowKey:       "bg-1",
+		Status:         int64(bgtask.StatusCompleted),
+		MinFinalStatus: int64(bgtask.MinFinalStatus),
+		EndedAt:        sqltime.SQLiteNullTimeOf(now),
+		UpdatedAt:      sqltime.NewSQLiteTime(now),
+		OwnerAgentID:   "agent-1",
+		RowKey:         "bg-1",
 	}))
 
 	// agents.goal_created_at / goal_updated_at are Go-bound on UpdateAgentGoal.
 	require.NoError(t, queries.UpdateAgentGoal(ctx, gendb.UpdateAgentGoalParams{
 		GoalObjective:    "make the tests pass",
-		GoalStatus:       "active",
+		GoalStatus:       int64(agent.GoalStatusActive),
 		GoalStatusDetail: "active",
 		GoalCreatedAt:    sqltime.SQLiteNullTimeOf(now),
 		GoalUpdatedAt:    sqltime.SQLiteNullTimeOf(now),
 		ID:               "agent-1",
 	}))
-
-	// control_requests.created_at via the column DEFAULT on CreateControlRequest.
-	require.NoError(t, queries.CreateControlRequest(ctx, gendb.CreateControlRequestParams{
+	// control_requests.created_at via the column DEFAULT on StoreControlRequest.
+	createTestControlRequest(t, ctx, queries, gendb.StoreControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "req-1",
 		Payload:    []byte("{}"),
 		ClaimToken: "claim-1",
-	}))
+	})
 
 	// worker_tab_payloads.created_at via the column DEFAULT on UpsertWorkerTabPayload.
 	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, gendb.UpsertWorkerTabPayloadParams{

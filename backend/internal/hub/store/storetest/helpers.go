@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/require"
@@ -161,7 +162,7 @@ func SeedOAuthProvider(t *testing.T, st store.Store, name string) *store.OAuthPr
 	provID := id.Generate()
 	err := st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID:           provID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         name,
 		IssuerURL:    "https://issuer.example.com",
 		ClientID:     "client-" + name,

@@ -196,6 +196,7 @@ globalStyle(`${container}[data-expanded] ${footerSlot}`, {
 globalStyle(`${container}[data-expanded] ${footerSlot}[data-full-width]`, {
   left: 'var(--editor-left-pad)',
   right: 'var(--space-1)',
+  alignItems: 'flex-end',
 })
 
 /**
@@ -355,6 +356,19 @@ globalStyle(`${container}[data-expanded] ${editorWrapper} .ProseMirror`, {
 // that. The fallback covers the frames before the first measurement.
 globalStyle(`${container}[data-expanded] ${editorRow}`, {
   paddingBottom: 'calc(var(--editor-actions-h, var(--editor-btn-h)) + var(--space-1) * 3)',
+})
+
+// Native request controls replace the text input. Keep the mounted editor's draft and reserve only the actions.
+globalStyle(`${container}[data-input-hidden] ${editorWrapper}`, {
+  display: 'none',
+})
+globalStyle(`${container}[data-input-hidden] ${editorSeparator}`, {
+  display: 'none',
+})
+globalStyle(`${container}[data-input-hidden] ${editorRow}`, {
+  flex: 'none',
+  minHeight: 'calc(var(--editor-actions-h, var(--editor-btn-h)) + var(--space-1) * 2)',
+  paddingBottom: 0,
 })
 
 // Code blocks: move scroll to <code> so the language label stays fixed.

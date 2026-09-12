@@ -35,11 +35,17 @@ ORDER BY seq DESC LIMIT ?;
 -- uninterruptible. A linked row is retained for the life of its root agent,
 -- which is what ON DELETE CASCADE from agents(id) already gives the transcript
 -- it points at.
+-- min_final_status is BACKGROUND_TASK_STATUS_COMPLETED, the lowest FINAL
+-- ordinal. Every query below splits the pool on it rather than listing the four
+-- final words, so a renumbered enum propagates through the binding instead of
+-- leaving a stale literal behind. bgtask.MinFinalStatus is the one Go spelling,
+-- and TestBackgroundTaskFinalStatusesAreTheTopOfTheRange proves the split
+-- matches Status.IsFinished for every value of the enum.
 -- name: DeleteFinishedAgentBackgroundTasksBelowSeq :execrows
 DELETE FROM agent_background_tasks
-WHERE owner_agent_id = ? AND kind = ? AND seq < ?
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND kind = sqlc.arg(kind) AND seq < sqlc.arg(seq)
   AND child_agent_id = ''
-  AND status IN ('completed','failed','stopped','interrupted');
+  AND status >= sqlc.arg(min_final_status);
 
 -- UpsertAgentBackgroundTask inserts a new row or updates an existing one keyed
 -- by (owner_agent_id, row_key). seq is set only on insert (never overwritten on
@@ -84,28 +90,28 @@ WHERE owner_agent_id = ? AND row_key = ?;
 -- transient failure here self-corrects on the next final-status write (or the boot
 -- sweep): the status is already final in both DB and cache, and a NULL
 -- ended_at reads back as the zero time, matching the cache's untouched value.
--- Kept as a separate query because sqlc cannot infer the type of a positional
--- parameter that appears only inside a CASE WHEN condition (a `? IN (...)`
--- predicate), so the atomic single-statement form is not generatable with this
--- toolchain version. The close path (CloseAgentBackgroundTask) sets both
--- status and ended_at in one statement because its WHERE guard
--- (status IN pending/running) is a literal, not a parameter.
+-- Kept as a separate query because it answers a different question from the
+-- close path: CloseAgentBackgroundTask moves an ACTIVE row to a final status,
+-- while this one repairs a row that is ALREADY final and never got its stamp.
+-- The two guards are disjoint by construction, so no single statement covers
+-- both.
 -- name: StampAgentBackgroundTaskEndedAt :exec
 UPDATE agent_background_tasks SET
-    ended_at   = ?
-WHERE owner_agent_id = ? AND row_key = ?
+    ended_at   = sqlc.arg(ended_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
   AND ended_at IS NULL
-  AND status IN ('completed','failed','stopped','interrupted');
+  AND status >= sqlc.arg(min_final_status);
 
 -- CloseAgentBackgroundTask stamps the final status and ended_at. The
--- status-IN filter means a finished row can never be resurrected or re-closed
--- by a late/duplicate event.
+-- `status < min_final_status` filter means a finished row can never be
+-- resurrected or re-closed by a late/duplicate event.
 -- name: CloseAgentBackgroundTask :exec
 UPDATE agent_background_tasks SET
-    status     = ?,
-    ended_at   = ?,
-    updated_at = ?
-WHERE owner_agent_id = ? AND row_key = ? AND status IN ('pending','running');
+    status     = sqlc.arg(status),
+    ended_at   = sqlc.arg(ended_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
+  AND status < sqlc.arg(min_final_status);
 
 -- ReviveAgentBackgroundTask returns a FINISHED row to running and clears its
 -- ended_at, for a subagent that its parent restarted by sending it a message.
@@ -125,18 +131,19 @@ WHERE owner_agent_id = ? AND row_key = ? AND status IN ('pending','running');
 -- slot shows whichever is present, so leaving them pins the previous run's
 -- output path under a subagent that runs again.
 --
--- The status-IN filter makes the call idempotent -- an absent or still-active
--- row matches nothing -- and :execrows lets the caller tell a real revive from
--- a no-op, because only a real one owes the transcript-close release.
+-- The `status >= min_final_status` filter makes the call idempotent -- an
+-- absent or still-active row matches nothing -- and :execrows lets the caller
+-- tell a real revive from a no-op, because only a real one owes the
+-- transcript-close release.
 -- name: ReviveAgentBackgroundTask :execrows
 UPDATE agent_background_tasks SET
-    status      = 'running',
+    status      = sqlc.arg(status),
     active_form = '',
     description = '',
     ended_at    = NULL,
-    updated_at  = ?
-WHERE owner_agent_id = ? AND row_key = ?
-  AND status IN ('completed','failed','stopped','interrupted');
+    updated_at  = sqlc.arg(updated_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
+  AND status >= sqlc.arg(min_final_status);
 
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
@@ -203,10 +210,10 @@ SELECT * FROM agent_background_tasks WHERE child_agent_id = ? ORDER BY seq LIMIT
 -- divider, permanently.
 -- name: MarkAgentBackgroundTasksEnded :many
 UPDATE agent_background_tasks SET
-    status     = ?,
-    ended_at   = ?,
-    updated_at = ?
-WHERE owner_agent_id = ? AND status IN ('pending','running')
+    status     = sqlc.arg(status),
+    ended_at   = sqlc.arg(ended_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND status < sqlc.arg(min_final_status)
 RETURNING child_agent_id;
 
 -- MarkAllActiveAgentBackgroundTasksInterrupted runs at worker boot before any
@@ -221,8 +228,8 @@ RETURNING child_agent_id;
 -- permanently and with no way for a later boot to find them.
 -- name: MarkAllActiveAgentBackgroundTasksInterrupted :many
 UPDATE agent_background_tasks SET
-    status     = 'interrupted',
-    ended_at   = ?,
-    updated_at = ?
-WHERE status IN ('pending','running')
+    status     = sqlc.arg(status),
+    ended_at   = sqlc.arg(ended_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE status < sqlc.arg(min_final_status)
 RETURNING child_agent_id;

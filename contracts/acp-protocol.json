@@ -1,0 +1,6 @@
+{
+  "_readme": "The Agent Client Protocol defines these session updates. The worker and frontend share their identifiers.",
+  "updates": {
+    "CurrentMode": "current_mode_update"
+  }
+}

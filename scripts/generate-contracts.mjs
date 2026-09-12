@@ -568,7 +568,14 @@ function assembledMessageEntries(v) {
     ['Type', v.types.Assembled],
     ...Object.entries(v.kinds).map(([key, token]) => [`Kind${key}`, token]),
     ...Object.entries(v.completions).map(([key, token]) => [`Completion${key}`, token]),
-    ['MetadataField', v.metadata.Field],
+  ]
+}
+
+function toolOutcomeEntries(v) {
+  return [
+    ...Object.entries(v.fields).map(([key, token]) => [`Field${key}`, token]),
+    ...Object.entries(v.sources).map(([key, token]) => [`Source${key}`, token]),
+    ...Object.entries(v.outcomes).map(([key, token]) => [`Outcome${key}`, token]),
   ]
 }
 
@@ -589,11 +596,23 @@ export function checkWorkerVocab(v) {
   mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the agents row stores "" for "no goal", and every reader tests for it')
   const transitions = Object.values(v.goalTransitions)
   mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
+  const metadataFields = Object.values(v.messageMetadataFields)
+  mustBe(new Set(metadataFields).size === metadataFields.length, 'worker-vocab.json', 'two message metadata fields share one wire token')
+  const supplementFields = Object.values(v.messageSupplementFields)
+  mustBe(new Set(supplementFields).size === supplementFields.length, 'worker-vocab.json', 'two message supplement fields share one wire token')
   for (const [group, values] of Object.entries(v.assembledMessage ?? {})) {
     const tokens = Object.values(values)
     mustBe(tokens.length > 0, 'worker-vocab.json', `assembledMessage.${group} must hold at least one entry`)
     mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', `two assembled-message ${group} entries share one wire token`)
   }
+  for (const [group, values] of Object.entries(v.toolOutcome ?? {})) {
+    const tokens = Object.values(values)
+    mustBe(tokens.length > 0, 'worker-vocab.json', `toolOutcome.${group} must hold at least one entry`)
+    mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', `two tool-outcome ${group} entries share one wire token`)
+  }
+  // The outcome note is a metadata FIELD, so its key must exist there. Without it the
+  // worker would write a note under a name the browser never reads.
+  mustBe(v.messageMetadataFields.ToolOutcome != null, 'worker-vocab.json', 'messageMetadataFields must hold ToolOutcome, the field the tool-outcome note is stored under')
   return {}
 }
 
@@ -606,6 +625,8 @@ export function emitGoWorkerVocab(v) {
     .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
   const assembledMessageBlock = goConstBlock(assembledMessageEntries(v.assembledMessage)
     .map(([key, token]) => ({ name: `AssembledMessage${key}`, value: jsonString(token) })))
+  const toolOutcomeBlock = goConstBlock(toolOutcomeEntries(v.toolOutcome)
+    .map(([key, token]) => ({ name: `ToolOutcome${key}`, value: jsonString(token) })))
   return `${GO_HEADER('worker-vocab.json')}package contracts
 
 // The worker's wire vocabulary: notification-type tokens persisted inside
@@ -617,6 +638,21 @@ export function emitGoWorkerVocab(v) {
 // NotificationType* are the notification envelope's inner "type" tokens.
 const (
 ${notif}
+)
+
+// RPCMethod* identifies worker methods that share a generated wire token.
+const (
+${goConstBlock(Object.entries(v.rpcMethods).map(([key, token]) => ({ name: `RPCMethod${key}`, value: jsonString(token) })))}
+)
+
+// MessageMetadataField* identifies fields calculated by the worker for display.
+const (
+${goConstBlock(Object.entries(v.messageMetadataFields).map(([key, token]) => ({ name: `MessageMetadataField${key}`, value: jsonString(token) })))}
+)
+
+// MessageSupplementField* separates provider data from worker metadata in storage.
+const (
+${goConstBlock(Object.entries(v.messageSupplementFields).map(([key, token]) => ({ name: `MessageSupplementField${key}`, value: jsonString(token) })))}
 )
 
 // NotificationThreadWrapperType is the wrapper discriminator the worker's
@@ -646,6 +682,13 @@ const (
 ${assembledMessageBlock}
 )
 
+// ToolOutcome* are the fields and values of the note the worker attaches to a tool
+// row whose own result the agent never sent. The note is LeapMux's CALCULATION, so
+// it lives in message metadata and never in the provider's own bytes.
+const (
+${toolOutcomeBlock}
+)
+
 // Model sentinels: the account-default model resolves to a different concrete
 // model on relaunch; "auto" is the effort a catalog default falls back to.
 const (
@@ -673,6 +716,9 @@ export function emitTsWorkerVocab(v) {
   const assembledEntries = assembledMessageEntries(v.assembledMessage)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
+  const toolOutcomeTsEntries = toolOutcomeEntries(v.toolOutcome)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
   return `${TS_HEADER('worker-vocab.json')}
 // The worker's wire vocabulary, generated from contracts/worker-vocab.json
 // (the Go agent package's NotificationType* constants and friends read the
@@ -681,6 +727,21 @@ export function emitTsWorkerVocab(v) {
 /** Notification envelope "type" tokens. */
 export const NOTIFICATION_TYPE = {
 ${notif}
+} as const
+
+/** Worker methods with generated wire tokens. */
+export const WORKER_RPC_METHOD = {
+${Object.entries(v.rpcMethods).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
+} as const
+
+/** Fields calculated by the worker for display. */
+export const MESSAGE_METADATA_FIELD = {
+${Object.entries(v.messageMetadataFields).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
+} as const
+
+/** Separate provider data from worker metadata in storage. */
+export const MESSAGE_SUPPLEMENT_FIELD = {
+${Object.entries(v.messageSupplementFields).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
 } as const
 
 export type NotificationType = typeof NOTIFICATION_TYPE[keyof typeof NOTIFICATION_TYPE]
@@ -716,6 +777,15 @@ export type GoalTransitionToken = typeof GOAL_TRANSITION[keyof typeof GOAL_TRANS
 /** Fields and values of Worker-assembled text rows. */
 export const ASSEMBLED_MESSAGE = {
 ${assembledEntries}
+} as const
+
+/**
+ * Fields and values of the note the worker attaches to a tool row whose own result
+ * the agent never sent. The note is LeapMux's CALCULATION, so it arrives in message
+ * metadata and never inside the provider's own bytes.
+ */
+export const TOOL_OUTCOME = {
+${toolOutcomeTsEntries}
 } as const
 
 /** Model sentinels: the account-default model, and the auto effort. */
@@ -894,7 +964,6 @@ export function emitGoProviders(p, agentEnumValues) {
   const entries = Object.entries(p.providers)
   const display = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: jsonString(m.displayName) })))
   const aliases = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: jsonString(m.cliAlias) })))
-  const sessionGoal = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: String(m.supportsSessionGoal) })))
   const reverse = goMapBlock([...providerAliasTable(p)]
     .sort(byFirstString)
     .map(([alias, name]) => ({ key: `${jsonString(alias)}:`, value: goEnum(name) })))
@@ -911,15 +980,6 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 // ProviderDisplayName is enum -> user-facing label.
 var ProviderDisplayName = map[leapmuxv1.AgentProvider]string{
 ${display}
-}
-
-// ProviderSupportsSessionGoal is enum -> whether the provider's CLI has a
-// session goal. It decides only whether the browser offers a goal card. The
-// LIVE action list the worker broadcasts still governs every control, and
-// TestProviderSessionGoalContractMatchesGoalWriters asserts this table against
-// the agents that implement GoalWriter.
-var ProviderSupportsSessionGoal = map[leapmuxv1.AgentProvider]bool{
-${sessionGoal}
 }
 
 // ProviderCLIAlias is enum -> the \`leapmux control\` identifier.
@@ -944,9 +1004,6 @@ export function emitTsProviders(p, agentEnumValues) {
   const display = Object.entries(p.providers)
     .map(([name, m]) => `  [${AgentProviderKey(name)}]: ${jsonString(m.displayName)},`)
     .join('\n')
-  const sessionGoalTs = Object.entries(p.providers)
-    .map(([name, m]) => `  [${AgentProviderKey(name)}]: ${m.supportsSessionGoal},`)
-    .join('\n')
   // Proto order, matching the Go twin's AllProviders, so the pre-probe
   // fallback list the browser renders cannot drift from the CLI's list.
   const all = agentEnumValues
@@ -963,17 +1020,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 /** enum -> user-facing label (the agentProviderLabel source). UNSPECIFIED is absent: callers fall back. */
 export const PROVIDER_DISPLAY_NAME: Readonly<Partial<Record<AgentProvider, string>>> = {
 ${display}
-}
-
-/**
- * enum -> whether the provider's CLI has a session goal.
- *
- * It decides only whether the Goals & To-dos section offers a goal card. The
- * LIVE action list the worker broadcasts still governs every control, so a
- * provider listed here whose running process reports no action draws no button.
- */
-export const PROVIDER_SUPPORTS_SESSION_GOAL: Readonly<Partial<Record<AgentProvider, boolean>>> = {
-${sessionGoalTs}
 }
 
 /** Every non-UNSPECIFIED provider in proto order (the Go twin is contracts.AllProviders). */
@@ -2033,20 +2079,18 @@ export function checkCodexBypass(c) {
   const ids = c.settings.map(setting => setting.id)
   mustBe(new Set(ids).size === ids.length, 'codex-bypass.json', 'two settings share one option id')
   mustBe(ids.includes('permissionMode'), 'codex-bypass.json', 'permissionMode is required')
-  mustBe(c.settings.some(setting => setting.planOption), 'codex-bypass.json', 'at least one plan option is required')
+  mustBe(ids.some(id => id !== 'permissionMode'), 'codex-bypass.json', 'at least one additional option is required')
 }
 
 export function emitGoCodexBypass(c) {
   const indent = '\t'
   const rows = c.settings
-    .filter(setting => setting.planOption)
     .map(setting => `\t${jsonString(setting.id)}: ${jsonString(setting.value)},`)
     .join('\n')
   return `${GO_HEADER('codex-bypass.json')}package contracts
 
-// CodexPlanBypassOptions returns the provider options that accompany a
-// plan-mode bypass approval. The permission mode travels in its own field.
-func CodexPlanBypassOptions() map[string]string {
+// CodexBypassOptions returns the complete preset that disables permission prompts.
+func CodexBypassOptions() map[string]string {
 ${indent}return map[string]string{
 ${rows}
 ${indent}}
@@ -2081,7 +2125,7 @@ ${rows}
  * row, the TS plugin renders it -- so the two copies must agree exactly, and a
  * one-character drift silently stops rendering rather than failing a build. The agent's
  * vendor usually owns the values, and neither language does. A domain where LeapMux owns
- * part of the vocabulary (copilot-permissions) states that in its own `preamble`, which
+ * part of the vocabulary (copilot-protocol) states that in its own `preamble`, which
  * replaces the default sentence in both emitted headers -- a generated comment that
  * claims the wrong owner is worse than none.
  *
@@ -2091,13 +2135,30 @@ ${rows}
  */
 const PROVIDER_PROTOCOLS = [
   {
+    name: 'acp-protocol',
+    goPrefix: 'ACP',
+    tsPrefix: 'ACP',
+    title: 'Agent Client Protocol',
+    preamble: 'The Agent Client Protocol defines these session updates.',
+    tables: [
+      { key: 'updates', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
+    ],
+  },
+  {
     name: 'zcode-protocol',
     goPrefix: 'ZCode',
     tsPrefix: 'ZCODE',
     title: 'ZCode',
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
+      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request methods' },
+      { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'ZCodeAction', doc: 'native input response actions' },
+      { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'ZCodeReplyField', doc: 'native input response fields' },
+      { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'ZCodeAnswerField', doc: 'native answer fields' },
+      { key: 'planControls', goTable: 'PlanControl', tsTable: 'PLAN_CONTROL', tsType: 'ZCodePlanControl', doc: 'native plan approval values' },
+      { key: 'interactions', goTable: 'Interaction', tsTable: 'INTERACTION', tsType: 'ZCodeInteraction', doc: 'control interaction types' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
+      { key: 'toolPrefixes', goTable: 'ToolPrefix', tsTable: 'TOOL_PREFIX', tsType: 'ZCodeToolPrefix', doc: 'prefixes for projected tool-call IDs' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
       { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ZCodeMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
@@ -2124,19 +2185,35 @@ const PROVIDER_PROTOCOLS = [
     ],
   },
   {
-    name: 'copilot-permissions',
-    goPrefix: 'CopilotPermission',
-    tsPrefix: 'COPILOT_PERMISSION',
+    name: 'copilot-protocol',
+    goPrefix: 'Copilot',
+    tsPrefix: 'COPILOT',
     title: 'GitHub Copilot',
     preamble: [
-      'Copilot\'s permission vocabulary. GitHub owns `allow_all` and the two values;',
-      'LeapMux owns `copilot_assisted_approval`, the axis its launch flags drive. Both',
-      'sides read them -- the Go worker builds the option group, the browser plugin builds',
-      'the preset -- so they are generated from one file rather than hand-copied into two.',
+      'GitHub owns the native event, tool, mode and permission names. LeapMux owns the',
+      'session-mode option-group id and the supplemental field name. Both sides read them --',
+      'the Go worker dispatches the native events and builds the option groups, the browser',
+      'plugin classifies the same rows and builds the presets.',
     ].join('\n// '),
     tables: [
-      { key: 'groups', goTable: 'Group', tsTable: 'GROUP', tsType: 'CopilotPermissionGroup', doc: 'permission option-group ids' },
-      { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'CopilotPermissionValue', doc: 'permission values, shared by both axes' },
+      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
+      { key: 'eventPrefixes', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', doc: 'prefixes that name a whole event family' },
+      { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CopilotTool', doc: 'native tool names' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CopilotOption', doc: 'LeapMux option-group ids for Copilot axes' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CopilotMode', doc: 'native session modes' },
+      { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'CopilotPermissionMode', doc: 'native permission modes' },
+      { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'CopilotApprovalScope', doc: 'how long one approved permission lasts' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'CopilotDecision', doc: 'the words a permission answer carries to the runtime' },
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CopilotSupplementField', doc: 'supplemental content fields' },
+    ],
+  },
+  {
+    name: 'cursor-protocol',
+    goPrefix: 'Cursor',
+    tsPrefix: 'CURSOR',
+    title: 'Cursor',
+    tables: [
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CursorTool', doc: 'ACP tool identifiers' },
     ],
   },
   {
@@ -2145,11 +2222,43 @@ const PROVIDER_PROTOCOLS = [
     tsPrefix: 'PI',
     title: 'Pi',
     tables: [
+      { key: 'mcpApprovalChoices', goTable: 'MCPApprovalChoice', tsTable: 'MCP_APPROVAL_CHOICE', tsType: 'PiMcpApprovalChoice', doc: 'MCP approval response values' },
+      { key: 'mcpApprovalText', goTable: 'MCPApprovalText', tsTable: 'MCP_APPROVAL_TEXT', tsType: 'PiMcpApprovalText', doc: 'MCP approval dialog delimiters' },
+      { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', doc: 'plan approval dialog titles' },
+      { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
       { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', doc: 'assistant message-update sub-types' },
+      { key: 'customTypes', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
       { key: 'dialogMethods', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
       { key: 'extensionMethods', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'PiTool', doc: 'tool names the renderers dispatch on' },
+    ],
+  },
+  {
+    name: 'mcp-elicitation',
+    goPrefix: 'MCPElicitation',
+    tsPrefix: 'MCP_ELICITATION',
+    title: 'MCP elicitation',
+    tables: [
+      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'McpElicitationMethod', doc: 'request methods' },
+      { key: 'subtypes', goTable: 'Subtype', tsTable: 'SUBTYPE', tsType: 'McpElicitationSubtype', doc: 'control request subtypes' },
+      { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'McpElicitationAction', doc: 'response actions' },
+      { key: 'approvalKinds', goTable: 'ApprovalKind', tsTable: 'APPROVAL_KIND', tsType: 'McpElicitationApprovalKind', doc: 'approval request kinds' },
+      { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'McpElicitationApprovalScope', doc: 'approval duration values' },
+    ],
+  },
+  {
+    name: 'reasonix-protocol',
+    goPrefix: 'Reasonix',
+    tsPrefix: 'REASONIX',
+    title: 'Reasonix',
+    tables: [
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ReasonixMode', doc: 'session modes' },
+      { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'ReasonixConfig', doc: 'config option identifiers' },
+      { key: 'approvalValues', goTable: 'Approval', tsTable: 'APPROVAL', tsType: 'ReasonixApproval', doc: 'tool approval values' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'ReasonixTool', doc: 'native tool names' },
+      { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
+      { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
     ],
   },
 ]

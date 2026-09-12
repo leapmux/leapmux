@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"golang.org/x/oauth2"
 )
 
@@ -63,11 +64,29 @@ type Provider interface {
 	Refresh(ctx context.Context, refreshToken string) (*TokenSet, error)
 }
 
-// Provider type constants.
+// Provider type constants. oauth_providers.provider_type stores these ordinals.
 const (
-	ProviderTypeGitHub = "github"
-	ProviderTypeOIDC   = "oidc"
+	ProviderTypeGitHub = leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB
+	ProviderTypeOIDC   = leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC
 )
+
+// ProviderTypeWire spells a provider type for the ADMIN RPC surface, which
+// carries it as a string because an operator types it and reads it back.
+//
+// The storage numbering and this vocabulary are separate on purpose: the column
+// holds the ordinal, and only the two functions here know the words. An
+// unrecognized type spells "", which the admin surface renders as no type
+// rather than as a type it invented.
+func ProviderTypeWire(t leapmuxv1.IdentityProviderType) string {
+	switch t {
+	case ProviderTypeGitHub:
+		return "github"
+	case ProviderTypeOIDC:
+		return "oidc"
+	default:
+		return ""
+	}
+}
 
 // refreshWithConfig is a shared implementation of Refresh for providers backed
 // by an oauth2.Config.

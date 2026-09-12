@@ -331,7 +331,7 @@ type UserRecentBatchIDRow struct {
 type LifecycleOutboxRow struct {
 	ID         int64
 	UserID     string
-	OpType     string
+	OpType     leapmuxv1.WorkspaceLifecycleOp
 	Payload    []byte
 	EnqueuedAt time.Time
 	ConsumedAt *time.Time
@@ -359,7 +359,7 @@ type WorkspaceSectionItem struct {
 // OAuthProviderSummary holds all OAuth provider fields except the encrypted secret.
 type OAuthProviderSummary struct {
 	ID           string
-	ProviderType string
+	ProviderType leapmuxv1.IdentityProviderType
 	Name         string
 	IssuerURL    string
 	ClientID     string
@@ -409,21 +409,23 @@ type OAuthState struct {
 	// Purpose is OAuthStatePurposeLogin or OAuthStatePurposeReauth. The
 	// callback branches on it: a reauth row elevates SessionID and must never
 	// create a session or link an identity.
-	Purpose string
+	Purpose leapmuxv1.OAuthStatePurpose
 	// SessionID is the session a reauth row elevates. Empty for a login row.
 	SessionID string
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }
 
-// OAuth state purposes. The value is persisted, so the strings are the wire
-// form and must stay stable.
+// OAuth state purposes. oauth_states.purpose stores these ordinals, and the
+// column's CHECK refuses the UNSPECIFIED zero -- so a row that never stated its
+// purpose fails the insert rather than defaulting into the login branch, which
+// is the one that may create a session.
 const (
 	// OAuthStatePurposeLogin starts a sign-in and may create a session.
-	OAuthStatePurposeLogin = "login"
+	OAuthStatePurposeLogin = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_LOGIN
 	// OAuthStatePurposeReauth proves the identity again for a session that is
 	// ALREADY signed in, to elevate it.
-	OAuthStatePurposeReauth = "reauth"
+	OAuthStatePurposeReauth = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH
 )
 
 // PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
@@ -448,7 +450,7 @@ type PasskeyCredential struct {
 // keystore-encrypted at the service layer before persistence.
 type WebAuthnSession struct {
 	ID          string
-	Kind        string
+	Kind        leapmuxv1.WebAuthnSessionKind
 	UserID      string
 	PayloadJSON string
 	SessionData []byte
@@ -1145,7 +1147,7 @@ type InsertUserRecentBatchIDParams struct {
 
 type InsertLifecycleOutboxParams struct {
 	UserID  userid.UserID
-	OpType  string
+	OpType  leapmuxv1.WorkspaceLifecycleOp
 	Payload []byte
 }
 
@@ -1211,7 +1213,7 @@ type IsWorkspaceInArchivedSectionParams struct {
 
 type CreateOAuthProviderParams struct {
 	ID           string
-	ProviderType string
+	ProviderType leapmuxv1.IdentityProviderType
 	Name         string
 	IssuerURL    string
 	ClientID     string
@@ -1240,7 +1242,7 @@ type CreateOAuthStateParams struct {
 	PkceVerifier string
 	NonceHash    string
 	RedirectURI  string
-	Purpose      string
+	Purpose      leapmuxv1.OAuthStatePurpose
 	SessionID    string
 	ExpiresAt    time.Time
 }
@@ -1313,7 +1315,7 @@ type UpdatePasskeyPublicKeyParams struct {
 
 type CreateWebAuthnSessionParams struct {
 	ID          string
-	Kind        string
+	Kind        leapmuxv1.WebAuthnSessionKind
 	UserID      string
 	PayloadJSON string
 	SessionData []byte
@@ -1417,7 +1419,7 @@ type APIToken struct {
 	// list labels every row with the answer, exactly as the consent screen
 	// does; only the per-user listing joins them.
 	ClientVerifiedAt         *time.Time
-	ClientRegistrationSource string
+	ClientRegistrationSource leapmuxv1.AppRegistrationSource
 }
 
 // PageCursor returns the keyset position for the per-user api-token listing
@@ -1550,9 +1552,9 @@ type OAuthClient struct {
 	// scope set and MULTIPLIES it, so no grant field could express it and mean
 	// anything.
 	ElevationAllowed bool
-	// RegistrationSource is one of builtin, admin, user, dynamic. The CHECK
-	// constraint is the closed set.
-	RegistrationSource string
+	// RegistrationSource says who put this registration in the table. The
+	// column stores the ordinal and its CHECK is the closed set.
+	RegistrationSource leapmuxv1.AppRegistrationSource
 	// VerifiedAt and VerifiedBy move together (a CHECK enforces it). Nil is the
 	// unverified marker the consent page renders.
 	VerifiedAt *time.Time
@@ -1589,25 +1591,48 @@ func (c OAuthClient) IsVerified() bool {
 // above, and the columns a JOIN carries onto an api_tokens listing -- and a
 // second spelling of "builtin means verified" is exactly the drift a fifth
 // surface would inherit.
-func ClientIsVerified(registrationSource string, verifiedAt *time.Time) bool {
+func ClientIsVerified(registrationSource leapmuxv1.AppRegistrationSource, verifiedAt *time.Time) bool {
 	return verifiedAt != nil || registrationSource == OAuthClientSourceBuiltin
 }
 
-// Registration sources, the closed set the CHECK constraint enforces.
+// Registration sources. oauth_clients.registration_source stores these
+// ordinals, and its CHECK is the closed set.
 const (
 	// OAuthClientSourceBuiltin is an app this build ships with. Its fields are
 	// constants of the build, so the surface refuses to edit, revoke or delete
 	// one -- see internal/hub/oauthapp.
-	OAuthClientSourceBuiltin = "builtin"
+	OAuthClientSourceBuiltin = leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_BUILTIN
 	// OAuthClientSourceAdmin is an app an administrator registered. It is
 	// hub-wide.
-	OAuthClientSourceAdmin = "admin"
+	OAuthClientSourceAdmin = leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_ADMIN
 	// OAuthClientSourceUser is an app one user registered for themself.
-	OAuthClientSourceUser = "user"
+	OAuthClientSourceUser = leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_USER
 	// OAuthClientSourceDynamic is an app that self-registered through RFC 7591,
 	// which an administrator must turn on. It is hub-wide and unverified.
-	OAuthClientSourceDynamic = "dynamic"
+	OAuthClientSourceDynamic = leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_DYNAMIC
 )
+
+// AppRegistrationSourceWire spells a registration source for the RPC surface,
+// which carries it as a string because the app list renders the word.
+//
+// The storage numbering and this vocabulary are separate on purpose: the column
+// holds the ordinal, and this is the one function that knows the words. An
+// unrecognized source spells "", which the surface renders as no source rather
+// than as one it invented.
+func AppRegistrationSourceWire(s leapmuxv1.AppRegistrationSource) string {
+	switch s {
+	case OAuthClientSourceBuiltin:
+		return "builtin"
+	case OAuthClientSourceAdmin:
+		return "admin"
+	case OAuthClientSourceUser:
+		return "user"
+	case OAuthClientSourceDynamic:
+		return "dynamic"
+	default:
+		return ""
+	}
+}
 
 // CreateOAuthClientParams registers one app.
 type CreateOAuthClientParams struct {
@@ -1625,7 +1650,7 @@ type CreateOAuthClientParams struct {
 	Scopes             string
 	GrantTypes         string
 	ElevationAllowed   bool
-	RegistrationSource string
+	RegistrationSource leapmuxv1.AppRegistrationSource
 	VerifiedAt         *time.Time
 	VerifiedBy         string
 }
@@ -1644,7 +1669,7 @@ type UpsertBuiltInClientParams struct {
 	Scopes             string
 	GrantTypes         string
 	ElevationAllowed   bool
-	RegistrationSource string
+	RegistrationSource leapmuxv1.AppRegistrationSource
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -1748,7 +1773,7 @@ type OAuthClientIcon struct {
 	IconBlob           []byte
 	IconMediaType      string
 	VerifiedAt         *time.Time
-	RegistrationSource string
+	RegistrationSource leapmuxv1.AppRegistrationSource
 	RevokedAt          *time.Time
 }
 

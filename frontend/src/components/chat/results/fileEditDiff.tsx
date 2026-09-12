@@ -2,9 +2,12 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from '../diff'
 import type { RenderContext } from '../messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import { createMemo } from 'solid-js'
-import { DiffView, rawDiffToHunks } from '../diff'
+import { createMemo, Show } from 'solid-js'
+import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
+import { relativizePath } from '~/lib/paths'
+import { diffStatsFromHunks, DiffView, formatUnifiedDiffText, rawDiffToHunks } from '../diff'
 import { cachedRenderValueForStrings } from '../messageRenderCache'
+import { toolInputPath, toolInputText, toolResultPrompt } from '../toolStyles.css'
 
 const NO_NEWLINE_MARKER = '\\ No newline at end of file'
 
@@ -16,10 +19,46 @@ const NO_NEWLINE_MARKER = '\\ No newline at end of file'
  */
 export interface FileEditDiffSource {
   filePath: string
+  previousPath?: string
+  operation?: 'add' | 'edit' | 'delete' | 'move'
+  showLineNumbers?: boolean
+  notice?: string
   structuredPatch: StructuredPatchHunk[] | null
   oldStr: string
   newStr: string
   originalFile?: string
+}
+
+/** Show the paths and statistics of the actual file change. */
+export function FileEditDiffTitle(props: { source: FileEditDiffSource, context?: RenderContext }): JSX.Element {
+  const path = (value: string) => relativizePath(value, props.context?.workingDir, props.context?.homeDir)
+  const stats = createMemo(() => diffStatsFromHunks(fileEditDiffHunks(props.source)))
+  return (
+    <>
+      <Show when={props.source.previousPath && props.source.previousPath !== props.source.filePath}>
+        <span class={toolInputPath}>
+          {path(props.source.previousPath!)}
+          {' '}
+          →
+          {' '}
+        </span>
+      </Show>
+      <span class={toolInputPath}>{path(props.source.filePath)}</span>
+      <Show when={props.source.operation === 'delete'}><span class={toolInputText}> (deleted)</span></Show>
+      <DiffStatsBadge stats={{ ...stats(), untracked: 0 }} class={toolInputText} />
+    </>
+  )
+}
+
+export function fileEditCopyableText(source: FileEditDiffSource): string {
+  const { filePath, previousPath, operation } = source
+  const diff = fileEditHasDiff(source) ? formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath) : ''
+  const metadata = previousPath && previousPath !== filePath
+    ? `rename from ${previousPath}\nrename to ${filePath}`
+    : !diff && operation === 'delete'
+        ? `Deleted ${filePath}`
+        : !diff && operation === 'add' ? `Created ${filePath}` : ''
+  return [metadata, source.notice, diff].filter(Boolean).join('\n')
 }
 
 /**
@@ -129,10 +168,8 @@ export function fileEditHasDiff(source: FileEditDiffSource | null | undefined): 
     return false
   if (nonEmptyStructuredPatch(source))
     return true
-  // New-file write: empty old + non-empty new is an all-added diff.
-  if (source.oldStr === '' && source.newStr !== '')
-    return true
-  return source.oldStr !== '' && source.newStr !== '' && source.oldStr !== source.newStr
+  // A creation or deletion has one empty side.
+  return source.oldStr !== source.newStr
 }
 
 /**
@@ -181,13 +218,16 @@ export function FileEditDiffBody(props: {
     )
   })
   return (
-    <DiffView
-      hunks={hunks()}
-      view={props.view}
-      filePath={props.source.filePath}
-      originalFile={props.source.originalFile}
-      showLineNumbers={props.showLineNumbers}
-      context={props.context}
-    />
+    <>
+      <Show when={props.source.notice}><div class={toolResultPrompt}>{props.source.notice}</div></Show>
+      <DiffView
+        hunks={hunks()}
+        view={props.view}
+        filePath={props.source.filePath}
+        originalFile={props.source.originalFile}
+        showLineNumbers={props.showLineNumbers ?? props.source.showLineNumbers}
+        context={props.context}
+      />
+    </>
   )
 }

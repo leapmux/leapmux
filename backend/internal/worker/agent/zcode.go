@@ -30,6 +30,8 @@ type zcodeAgent struct {
 	// dispatchMu serializes dispatchZCodeEvent across the read loop and a replaying
 	// re-subscribe. See that function for why the whole body needs it.
 	dispatchMu sync.Mutex
+	// Control requests can arrive concurrently while the server repeats an unanswered request.
+	controlMu sync.Mutex
 
 	sink       ProviderServices
 	workingDir string
@@ -71,6 +73,12 @@ type zcodeAgent struct {
 	// backgroundTurn is true while the running turn was started by a background
 	// task rather than by the user. Such a turn must not end the user's turn.
 	backgroundTurn bool
+	// stoppedTurnTimer ends a turn whose stop the app-server accepted and then never
+	// reported. Armed by Interrupt, restarted by every session event, dropped when the
+	// turn ends on its own. Guarded by a.mu. See armStoppedZCodeTurn.
+	stoppedTurnTimer *time.Timer
+	// afterFunc is time.AfterFunc. A test replaces it to fire the window itself.
+	afterFunc func(time.Duration, func()) *time.Timer
 
 	// observedThoughtLevels is the thought-level list the app-server reports for
 	// the CURRENT model (settings.thoughtLevel.available). It is authoritative and
@@ -183,6 +191,14 @@ func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent
 		pendingControls:  map[string]json.RawMessage{},
 	}
 	a.sink = newModelProgressResetSink(a.sink)
+	storeLocation := zcodeToolStorePaths(StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir})
+	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		location := storeLocation
+		location.sessionID = a.sessionID
+		return location
+	})
 	// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to
 	// the composite id the option groups carry. An unresolvable request leaves the
 	// model empty, and the app-server then picks the registry default -- which the
@@ -277,6 +293,12 @@ type zcodeStateSnapshot struct {
 		SessionID string `json:"sessionId"`
 		Mode      string `json:"mode"`
 		Title     string `json:"title"`
+		// Target is where the app-server actually states the session goal. ZCode
+		// calls the goal a target in its storage and runtime, and the shipped
+		// build sends it HERE and nowhere else: a session/create reply carries
+		// `session.target: null`, and a session/goal reply carries the whole
+		// object. Raw for the same three-case reason as Goal below.
+		Target json.RawMessage `json:"target"`
 	} `json:"session"`
 	Settings *zcodeSettingsSnapshot `json:"settings"`
 	// Runtime carries stateRevision as well as eventSeq, because session/create
@@ -297,7 +319,24 @@ type zcodeStateSnapshot struct {
 	// null (no goal), and an object. A decoded pointer would fold the first
 	// two together, and a snapshot with no goal must CLEAR one that a previous
 	// process stored.
+	//
+	// The shipped build sends no `goal` key at all -- see Session.Target, which
+	// is where it puts one. This stays because it costs nothing and a build that
+	// does send the documented key keeps working.
 	Goal json.RawMessage `json:"goal"`
+}
+
+// goalState returns the goal a state document states, from whichever key carries
+// it.
+//
+// The `goal` key is what ZCode's protocol documents. `session.target` is what the
+// shipped app-server sends, under the name its own storage uses. A document that
+// carries both is read from `goal`, because that is the documented one.
+func (s zcodeStateSnapshot) goalState() json.RawMessage {
+	if len(s.Goal) > 0 {
+		return s.Goal
+	}
+	return s.Session.Target
 }
 
 // openSession creates a fresh session, or resumes the one the client specified.
@@ -328,7 +367,7 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 		// it updates the panel and writes no transcript row for a goal that may
 		// be hours old. Outside applyParsedStateSnapshot, which holds a.mu for
 		// its whole body and must not call into the sink.
-		a.reportZCodeGoal(snap.Goal, true)
+		a.reportZCodeGoal(snap.goalState(), true)
 		return nil
 	}
 
@@ -346,16 +385,14 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	snap, _ := a.applyStateSnapshot(raw)
-	// A create RESTATES the session's goal -- normally that it has none, which
-	// is what clears one a previous session left on the row.
-	a.reportZCodeGoal(snap.Goal, true)
-	a.mu.Lock()
-	created := a.sessionID != ""
-	a.mu.Unlock()
-	if !created {
+	snap, ok := a.parseStateSnapshot(raw)
+	if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
 		return fmt.Errorf("%s returned no session id", ZCodeMethodSessionCreate)
 	}
+	a.applyParsedStateSnapshot(snap)
+	// A create RESTATES the session's goal -- normally that it has none, which
+	// is what clears one a previous session left on the row.
+	a.reportZCodeGoal(snap.goalState(), true)
 	return nil
 }
 
@@ -491,6 +528,17 @@ func (a *zcodeAgent) parseStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot
 	if len(raw) == 0 {
 		return snap, false
 	}
+	// A session/goal reply is not a bare state document: it wraps one under
+	// `snapshot`, beside its own `response` text and a `startedTurn` flag.
+	// Parsing that envelope as a document read nothing at all -- not the goal,
+	// and not the `stateRevision` the next goal action needs for its
+	// expectedRevision. Unwrapping here keeps one parser for both shapes.
+	var envelope struct {
+		Snapshot json.RawMessage `json:"snapshot"`
+	}
+	if json.Unmarshal(raw, &envelope) == nil && len(envelope.Snapshot) > 0 {
+		raw = envelope.Snapshot
+	}
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		slog.Warn("zcode state snapshot unmarshal failed", "agent_id", a.agentID, "error", err)
 		return snap, false
@@ -503,6 +551,12 @@ func (a *zcodeAgent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if zcodeUsableSessionID(snap.Session.SessionID) {
+		if snap.Session.SessionID != a.sessionID {
+			// Sequence and revision counters belong to one native session.
+			a.lastSeq = 0
+			a.stateRevision = 0
+			a.modeObserved = false
+		}
 		a.sessionID = snap.Session.SessionID
 	}
 	if snap.Runtime.EventSeq > a.lastSeq {
@@ -566,7 +620,15 @@ func (a *zcodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachm
 }
 
 func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
+	return a.sendInputForSession(nil, content, attachments, requestedDelivery)
+}
+
+func (a *zcodeAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
 	a.mu.Lock()
+	if err := checkInputSession(expected, a.sessionID); err != nil {
+		a.mu.Unlock()
+		return err
+	}
 	if a.stopped {
 		a.mu.Unlock()
 		return fmt.Errorf("agent is stopped")
@@ -641,6 +703,66 @@ func classifyZCodeInputDeliveryError(err error) error {
 	return fmt.Errorf("%w: ZCode did not confirm session/send delivery: %v", ErrDeliveryUncertain, err)
 }
 
+// zcodeStoppedSilenceWindow is how long a stopped turn may say NOTHING before
+// LeapMux ends it locally.
+//
+// The window has to outlast the gaps a live turn leaves between its own frames. A
+// census of a hundred and twenty reads left gaps up to eighteen seconds while the
+// agent was plainly still working, so thirty seconds is the margin above that.
+const zcodeStoppedSilenceWindow = 30 * time.Second
+
+// armStoppedZCodeTurn starts the window that ends a turn the app-server accepted a
+// stop for and then never reported.
+//
+// It replaces an immediate local end. The app-server accepts `session/stop` in both
+// of the cases LeapMux must tell apart: the one where the abort cuts the model
+// stream, and the one where the turn goes on making tool calls for minutes. Ending
+// the turn on the accepted stop alone read the second case as an idle chat while the
+// agent was still writing to it.
+//
+// Silence is the signal, not elapsed time. Every session event restarts the window,
+// so a turn that still speaks keeps the indicator it has earned, and a turn that
+// stops speaking ends once.
+func (a *zcodeAgent) armStoppedZCodeTurn() {
+	a.mu.Lock()
+	if !a.turnActive {
+		a.mu.Unlock()
+		return
+	}
+	after := a.afterFunc
+	if after == nil {
+		after = time.AfterFunc
+	}
+	if a.stoppedTurnTimer != nil {
+		a.stoppedTurnTimer.Stop()
+	}
+	a.stoppedTurnTimer = after(zcodeStoppedSilenceWindow, a.endStoppedZCodeTurn)
+	a.mu.Unlock()
+}
+
+// refreshStoppedZCodeTurn restarts the window, because the agent just spoke.
+//
+// A no-op unless a stop armed the window, so an ordinary turn pays nothing.
+func (a *zcodeAgent) refreshStoppedZCodeTurn() {
+	a.mu.Lock()
+	armed := a.stoppedTurnTimer != nil
+	a.mu.Unlock()
+	if armed {
+		a.armStoppedZCodeTurn()
+	}
+}
+
+// cancelStoppedZCodeTurn drops the window, because the turn ended on its own.
+func (a *zcodeAgent) cancelStoppedZCodeTurn() {
+	a.mu.Lock()
+	timer := a.stoppedTurnTimer
+	a.stoppedTurnTimer = nil
+	a.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+}
+
 // Interrupt aborts the running turn.
 //
 // A no-op when no turn is active, so a caller need not probe first. session/stop
@@ -656,8 +778,82 @@ func (a *zcodeAgent) Interrupt() error {
 	if !turnActive || sessionID == "" {
 		return nil
 	}
-	_, err := a.sendZCodeRequest(ZCodeMethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
-	return err
+	if _, err := a.sendZCodeRequest(ZCodeMethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout); err != nil {
+		// The stop stopped nothing, so the turn is still running. Reporting it
+		// finished would hide a live agent behind an idle chat.
+		return err
+	}
+	a.armStoppedZCodeTurn()
+	return nil
+}
+
+// endStoppedZCodeTurn records what session/stop actually cut.
+//
+// The app-server's handler aborts the running model stream and answers an empty
+// object. It announces the end of the turn ONLY sometimes: a turn whose model stream
+// the abort cut has been observed to send no turn.completed and no turn.failed at all,
+// which left the turn active for the rest of the session -- the thinking indicator ran
+// without end, the durable input queue could never drain, and the model output the
+// turn had already produced was never stored. Every other provider reports the end of
+// the turn it cancelled, so every other provider's Interrupt can wait for that report.
+//
+// What this does NOT do is close the turn's tool calls. The abort reaches the model
+// stream, not a command the runtime already launched: an interrupted `sleep 90` ran
+// its full ninety seconds and then reported success. Marking that call interrupted
+// would state an outcome the runtime goes on to contradict, so an open call keeps its
+// running card until its own update arrives, or until the process ends.
+//
+// No PROVIDER row is written either. A turn-end divider is built from the frame that
+// reports the end, the app-server sent none, and LeapMux invents no provider output. A
+// turn.completed that arrives later still writes its own divider through
+// finishZCodeTurn. What the reader gets instead is LeapMux's own row, from
+// persistZCodeStopRow.
+//
+// See ZC-001 in docs/provider-parity/protocol-evidence.md.
+func (a *zcodeAgent) endStoppedZCodeTurn() {
+	a.mu.Lock()
+	a.turnActive = false
+	a.backgroundTurn = false
+	if a.stoppedTurnTimer != nil {
+		a.stoppedTurnTimer.Stop()
+		a.stoppedTurnTimer = nil
+	}
+	a.mu.Unlock()
+	defer a.PublishTurnActive()
+
+	// The text the model had already produced is a real segment that ended early.
+	// The buffer is empty when the abort found the stream idle, so this costs
+	// nothing in the case where a tool was running.
+	a.flushZCodeGeneration(MessageCompletionInterrupted)
+	a.persistZCodeStopRow()
+	a.resetCumulativeOutput()
+	a.sink.ReportProgress(ResetProgress())
+}
+
+// persistZCodeStopRow states the stop that the app-server never reported.
+//
+// Without it the transcript held NOTHING about the stop: a census pressed Stop on
+// `sleep 45` for ten providers, and ZCode alone drew neither a result row nor a turn
+// divider. The reader saw a running command card stop being updated.
+//
+// The row is LeapMux's own, and it states only what LeapMux did: it asked for the
+// stop, the app-server accepted it, and the turn then went silent for the whole
+// window. It carries the shared `interrupted` notification type, which is the row
+// Claude Code's transcript already draws for a stopped turn, so the two read alike.
+//
+// The spans stay OPEN, unlike the Claude path, which resets them here. The abort
+// reaches the model stream and not a command the runtime already launched, so a call
+// that is still running needs its span for the update it still sends -- the same
+// reason endStoppedZCodeTurn closes no tool call.
+func (a *zcodeAgent) persistZCodeStopRow() {
+	content, err := json.Marshal(map[string]string{"type": contracts.NotificationTypeInterrupted})
+	if err != nil {
+		slog.Error("zcode marshal stop row", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+		slog.Error("zcode persist stop row", "agent_id", a.agentID, "error", err)
+	}
 }
 
 // Stop aborts a running turn, then tears the process down.
@@ -666,6 +862,7 @@ func (a *zcodeAgent) Interrupt() error {
 // stdin: on a goroutine it would race that flag and be dropped in the common case.
 func (a *zcodeAgent) Stop() {
 	a.noteIntentionalStop()
+	a.cancelStoppedZCodeTurn()
 	a.mu.Lock()
 	stopped, turnActive, sessionID := a.stopped, a.turnActive, a.sessionID
 	a.mu.Unlock()
@@ -682,6 +879,7 @@ func (a *zcodeAgent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *zcodeAgent) Wait() error {
 	err := a.processBase.Wait()
+	a.cancelStoppedZCodeTurn()
 	completion := a.processExitCompletion()
 	a.flushZCodeGeneration(completion)
 	a.persistIncompleteZCodeTools(completion)
@@ -696,19 +894,9 @@ func (a *zcodeAgent) Wait() error {
 // arrives for a call the replaced session was still running, so without this a
 // spawn prompt is retained for the life of the process and a reused tool-call id
 // would open the next child transcript on the previous session's instruction.
-func (a *zcodeAgent) ClearContext() (string, bool) {
+func (a *zcodeAgent) ClearContext() (string, error) {
 	timeout := a.APITimeout()
 	a.mu.Lock()
-	a.sessionID = ""
-	a.lastSeq = 0
-	// The fresh session starts its own revision counter, so the replaced
-	// session's value must not survive. The guard in applyZCodeRuntimeState is
-	// monotonic, so a retained higher value would refuse every lower revision
-	// the new session reports, and session/goal would never send a revision the
-	// app-server accepts again.
-	a.stateRevision = 0
-	// The replaced session's report says nothing about the mode the fresh one runs in.
-	a.modeObserved = false
 	// The three axes the user currently runs on are the request for the fresh session.
 	// Reading them AFTER openSession would read the new session's defaults instead, and
 	// a context clear would silently drop the level and the model back to them.
@@ -716,13 +904,11 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.mu.Unlock()
 
 	if err := a.openSession("", timeout); err != nil {
-		slog.Error("zcode ClearContext: session create failed", "agent_id", a.agentID, "error", err)
-		return "", false
+		return "", err
 	}
 	a.applyStartupSettings(current, timeout)
-	if err := a.subscribe(timeout); err != nil {
-		slog.Warn("zcode ClearContext: subscribe failed", "agent_id", a.agentID, "error", err)
-	}
+	subscribeErr := a.subscribe(timeout)
+	a.cancelStoppedZCodeTurn()
 	a.flushZCodeGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
 
@@ -750,10 +936,10 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.sink.ClearGoal(false)
 
 	if sessionID == "" {
-		return "", false
+		return "", fmt.Errorf("the new ZCode session has no ID")
 	}
 	a.sink.UpdateSessionID(sessionID)
-	return sessionID, true
+	return sessionID, subscribeErr
 }
 
 // currentZCodeContextWindow returns the context window to label usage with,
@@ -792,10 +978,17 @@ type zcodeToolCall struct {
 	// name and input cache what model.streaming said before tool.updated opens the call.
 	// The scheduled update reports `inputOmitted: true, inputRef: "model_stream"` and
 	// carries no input of its own, so the stream is the ONLY place the input is sent.
-	name     string
-	input    json.RawMessage
+	name  string
+	input json.RawMessage
+	// progress is the last progress payload, PARSED. The subagent hooks read the
+	// routing fields it carries; the transcript row reads lastFrame instead.
 	progress zcodeToolUpdated
-	order    uint64
+	// lastFrame is the last tool.updated event the agent sent for this call, byte
+	// for byte. A turn that ends while the call runs stores THAT frame, so the
+	// transcript never holds an event the agent did not send. An empty value means
+	// the agent never announced the call, which also means no row opened its span.
+	lastFrame []byte
+	order     uint64
 	// final marks a call that already reached a final state, so the batch summary that
 	// follows it does not reopen or re-close it. It is cleared at the TURN end rather
 	// than at the call's own close, because the batch arrives after the results it

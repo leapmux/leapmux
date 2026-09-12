@@ -590,6 +590,30 @@ func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (acpTerminalR
 	return result, ok
 }
 
+// terminalResultFor gives the output a stored row carries for one terminal.
+//
+// A terminal that EXITED is taken from the completed set, which spends it. One that is
+// still RUNNING is read where it stands, because LeapMux owns that process and holds
+// every byte it printed: a stop cuts the turn, the agent sends its final tool update at
+// once, and the process is alive when that row is stored. Without this the row said
+// `[output unavailable]` for output LeapMux had in hand.
+//
+// A terminal LeapMux no longer holds returns false, and the row states that nothing can
+// be read for it. That is the one case "unavailable" describes.
+func (b *acpTerminalHost) terminalResultFor(terminalID string) (acpTerminalResult, bool) {
+	if result, present := b.takeCompletedTerminal(terminalID); present {
+		return result, true
+	}
+	b.terminalsMu.Lock()
+	session := b.terminals[terminalID]
+	b.terminalsMu.Unlock()
+	if session == nil {
+		return acpTerminalResult{}, false
+	}
+	output, truncated, exitCode, signal, _ := session.snapshot()
+	return acpTerminalResult{Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal}, true
+}
+
 func (b *acpTerminalHost) clearCompletedTerminals() {
 	b.terminalsMu.Lock()
 	b.completedTerminals = nil

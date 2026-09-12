@@ -316,10 +316,8 @@ func setModelSubGroups(provider leapmuxv1.AgentProvider, fn modelSubGroupsFunc) 
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.modelSubGroups = fn })
 }
 
-// setAdditionalOptionIDs declares the provider-specific option-group ids a provider can
-// carry beyond "model" and its static optionGroups (see agentFactoryEntry.additionalOptionIDs).
-// Called from a provider's init() after registerAgentFactory; a provider with no additional
-// axes (e.g. Cursor, Reasonix) need not call it.
+// setAdditionalOptionIDs declares runtime option IDs that the static option groups omit.
+// Call it after registerAgentFactory when a provider advertises additional options.
 func setAdditionalOptionIDs(provider leapmuxv1.AgentProvider, ids ...string) {
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.additionalOptionIDs = ids })
 }
@@ -414,14 +412,6 @@ func NewAgentOptionDefaults(provider leapmuxv1.AgentProvider) map[string]string 
 // provider with no permission-mode axis.
 func FallbackPermissionMode(provider leapmuxv1.AgentProvider) string {
 	return agentFactoryRegistry[provider].permissionDefaults.Fallback
-}
-
-// addStaticOptionGroups appends provider-owned groups to the static catalog.
-// A live provider must also include each group in its settings snapshot.
-func addStaticOptionGroups(provider leapmuxv1.AgentProvider, groups ...*leapmuxv1.AvailableOptionGroup) {
-	mutateFactoryEntry(provider, func(e *agentFactoryEntry) {
-		e.optionGroups = append(e.optionGroups, groups...)
-	})
 }
 
 // ProviderOptionDefaults returns the provider-specific seed option values (id->default)
@@ -739,36 +729,6 @@ type binaryAvailabilityKey struct {
 	shellPath  string
 	loginShell bool
 	binaryName string
-}
-
-// binaryFlagUnsupportedCache remembers, for this worker process, that one binary
-// rejected one launch flag. A capability belongs to the INSTALLED CLI, not to the agent
-// that happened to discover it: without this, a second tab repeats the failed spawn, and
-// every restart of the same tab forgets and fails again -- which turns a stored option
-// into a tab that can never start.
-//
-// Only a NEGATIVE result is stored, and only from a launch the CLI itself refused, so
-// there is nothing to invalidate: a flag a binary accepts is never recorded, and an
-// upgraded CLI is a new worker process.
-var binaryFlagUnsupportedCache sync.Map // binaryFlagKey -> struct{}
-
-type binaryFlagKey struct {
-	binaryAvailabilityKey
-	flag string
-}
-
-// MarkBinaryFlagUnsupported records that binaryName rejected flag under this shell.
-func MarkBinaryFlagUnsupported(shellPath string, loginShell bool, binaryName, flag string) {
-	binaryFlagUnsupportedCache.Store(
-		binaryFlagKey{binaryAvailabilityKey{shellPath, loginShell, binaryName}, flag}, struct{}{})
-}
-
-// BinaryFlagUnsupported reports whether a previous launch in this worker process proved
-// that binaryName rejects flag under this shell.
-func BinaryFlagUnsupported(shellPath string, loginShell bool, binaryName, flag string) bool {
-	_, found := binaryFlagUnsupportedCache.Load(
-		binaryFlagKey{binaryAvailabilityKey{shellPath, loginShell, binaryName}, flag})
-	return found
 }
 
 // checkBinaryAvailable answers whether one binary resolves, and whether

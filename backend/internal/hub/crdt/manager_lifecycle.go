@@ -11,17 +11,19 @@ import (
 )
 
 // LifecycleOpType is the kind of workspace lifecycle event recorded in
-// lifecycle_outbox. Kept as a stringly-encoded typed alias so the
-// JSON payload and the DB column stay readable while the Go switch
-// statements get the benefit of constant-safety (typos at the call
-// sites become compile errors).
-type LifecycleOpType string
+// lifecycle_outbox. It is a DEFINED type over the proto enum, so the ordinal
+// this package switches on is the one the op_type column stores, and the
+// conversion each way is a cast.
+type LifecycleOpType leapmuxv1.WorkspaceLifecycleOp
 
 const (
-	LifecycleOpCreate LifecycleOpType = "create"
-	LifecycleOpRename LifecycleOpType = "rename"
-	LifecycleOpDelete LifecycleOpType = "delete"
+	LifecycleOpCreate = LifecycleOpType(leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE)
+	LifecycleOpRename = LifecycleOpType(leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_RENAME)
+	LifecycleOpDelete = LifecycleOpType(leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_DELETE)
 )
+
+// String names the op with the proto enum's own generated name, for logs.
+func (o LifecycleOpType) String() string { return leapmuxv1.WorkspaceLifecycleOp(o).String() }
 
 // lifecycleCreateBatchIDPrefix / lifecycleDeleteBatchIDPrefix prefix the fixed
 // BatchId the create/delete seed batches submit under. The fixed id (prefix +

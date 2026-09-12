@@ -9,9 +9,25 @@ import (
 
 type acpIncompleteTool struct {
 	toolCallID string
-	content    []byte
-	rowKey     string
-	encodeErr  error
+	// original is the last frame the agent sent for this tool call, byte for byte.
+	// It is what the transcript row stores.
+	original []byte
+	// content is the fields merged across every frame of the call. The row carries
+	// the fields the original lacks as supplemental content, never as provider JSON.
+	content   []byte
+	rowKey    string
+	encodeErr error
+}
+
+// acpToolUpdateState is what LeapMux knows about one running tool call.
+//
+// The Agent Client Protocol sends a tool call as an opening frame and a run of
+// updates, and each frame repeats only what changed. One struct holds the last
+// frame and the merge, so the two can never describe different tool calls.
+type acpToolUpdateState struct {
+	original json.RawMessage
+	fields   map[string]json.RawMessage
+	order    uint64
 }
 
 type acpTurnSnapshot struct {
@@ -21,17 +37,17 @@ type acpTurnSnapshot struct {
 	incompleteTools   []acpIncompleteTool
 }
 
-// acpTurnOutput owns text assembly and incomplete tool state for one ACP turn.
-// Its lock is independent from protocol and session state. Callers never hold
-// another ACP lock while they call these methods.
+// acpTurnOutput protects assembled text and incomplete tool state with turnMu.
+// Callers can hold session, update, or terminal lifecycle locks.
+// Session replacement acquires turnMu before the protocol-state lock.
 type acpTurnOutput struct {
 	turnMu sync.Mutex
 
 	turnAssistantText strings.Builder
 	turnThoughtText   strings.Builder
 
-	toolUpdateState     map[string]map[string]json.RawMessage
-	toolUpdateOrder     map[string]uint64
+	toolUpdateState     map[string]*acpToolUpdateState
+	toolRequestContents map[string]*acpToolRequestContent
 	toolSubagentRows    map[string]string
 	nextToolUpdateOrder uint64
 	spawnSpansReleased  map[string]struct{}
@@ -72,8 +88,8 @@ func (o *acpTurnOutput) drainTurn() acpTurnSnapshot {
 	return o.drainTurnLocked()
 }
 
-// replaceSession drains the old turn before it changes protocol state.
-// updateProtocol must only mutate in-memory state. It must not do I/O.
+// replaceSession drains turn output and invokes updateProtocol while turnMu stays held.
+// updateProtocol may acquire the protocol-state lock. It must not perform I/O.
 func (o *acpTurnOutput) replaceSession(updateProtocol func()) acpTurnSnapshot {
 	o.turnMu.Lock()
 	snapshot := o.drainTurnLocked()
@@ -86,7 +102,7 @@ func (o *acpTurnOutput) resetTurnLocked() {
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
 	o.toolUpdateState = nil
-	o.toolUpdateOrder = nil
+	o.toolRequestContents = nil
 	o.toolSubagentRows = nil
 	o.nextToolUpdateOrder = 0
 	o.spawnSpansReleased = nil
@@ -100,13 +116,11 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 		completedToolUses: o.turnToolUses,
 		incompleteTools:   make([]acpIncompleteTool, 0, len(o.toolUpdateState)),
 	}
-	for toolCallID, fields := range o.toolUpdateState {
-		if _, present := fields["status"]; !present {
-			fields["status"] = json.RawMessage(`"in_progress"`)
-		}
-		encoded, err := json.Marshal(fields)
+	for toolCallID, state := range o.toolUpdateState {
+		encoded, err := json.Marshal(state.fields)
 		snapshot.incompleteTools = append(snapshot.incompleteTools, acpIncompleteTool{
 			toolCallID: toolCallID,
+			original:   state.original,
 			content:    encoded,
 			rowKey:     o.toolSubagentRows[toolCallID],
 			encodeErr:  err,
@@ -115,8 +129,10 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 	sort.Slice(snapshot.incompleteTools, func(left, right int) bool {
 		leftID := snapshot.incompleteTools[left].toolCallID
 		rightID := snapshot.incompleteTools[right].toolCallID
-		if o.toolUpdateOrder[leftID] != o.toolUpdateOrder[rightID] {
-			return o.toolUpdateOrder[leftID] < o.toolUpdateOrder[rightID]
+		leftOrder := o.toolUpdateState[leftID].order
+		rightOrder := o.toolUpdateState[rightID].order
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
 		}
 		return leftID < rightID
 	})
@@ -124,27 +140,34 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 	return snapshot
 }
 
-func (o *acpTurnOutput) rememberIncompleteTool(toolCallID string, incoming map[string]json.RawMessage) {
+// rememberIncompleteTool records the opening frame of a tool call. An earlier frame
+// wins each field, because this runs for the frame that OPENS the call.
+func (o *acpTurnOutput) rememberIncompleteTool(toolCallID string, incoming map[string]json.RawMessage, original json.RawMessage) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
+	state := o.toolUpdateStateLocked(toolCallID, len(incoming))
+	state.original = append(json.RawMessage(nil), original...)
+	for key, value := range incoming {
+		if _, exists := state.fields[key]; !exists {
+			state.fields[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+}
+
+// toolUpdateStateLocked returns the state for one tool call, creating it on the
+// first frame. The creation order is the order the rows persist in, so a turn that
+// ends with several open calls lists them as the agent opened them.
+func (o *acpTurnOutput) toolUpdateStateLocked(toolCallID string, size int) *acpToolUpdateState {
 	if o.toolUpdateState == nil {
-		o.toolUpdateState = make(map[string]map[string]json.RawMessage)
+		o.toolUpdateState = make(map[string]*acpToolUpdateState)
 	}
 	state := o.toolUpdateState[toolCallID]
 	if state == nil {
-		state = make(map[string]json.RawMessage, len(incoming))
+		state = &acpToolUpdateState{fields: make(map[string]json.RawMessage, size), order: o.nextToolUpdateOrder}
 		o.toolUpdateState[toolCallID] = state
-		if o.toolUpdateOrder == nil {
-			o.toolUpdateOrder = make(map[string]uint64)
-		}
-		o.toolUpdateOrder[toolCallID] = o.nextToolUpdateOrder
 		o.nextToolUpdateOrder++
 	}
-	for key, value := range incoming {
-		if _, exists := state[key]; !exists {
-			state[key] = append(json.RawMessage(nil), value...)
-		}
-	}
+	return state
 }
 
 func (o *acpTurnOutput) completeTool(toolCallID string) string {
@@ -152,45 +175,33 @@ func (o *acpTurnOutput) completeTool(toolCallID string) string {
 	defer o.turnMu.Unlock()
 	o.turnToolUses++
 	delete(o.toolUpdateState, toolCallID)
-	delete(o.toolUpdateOrder, toolCallID)
+	delete(o.toolRequestContents, toolCallID)
 	rowKey := o.toolSubagentRows[toolCallID]
 	delete(o.toolSubagentRows, toolCallID)
 	delete(o.spawnSpansReleased, toolCallID)
 	return rowKey
 }
 
+// mergeToolUpdate folds one update into the call's merged fields and records the
+// frame that carried it. A later frame wins each field. A final update ends the
+// call, so its state is removed rather than kept for the turn-end sweep.
 func (o *acpTurnOutput) mergeToolUpdate(
 	toolCallID string,
 	incoming map[string]json.RawMessage,
 	final bool,
+	original json.RawMessage,
 ) (json.RawMessage, acpToolCallUpdateEnvelope, bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	if o.toolUpdateState == nil {
-		o.toolUpdateState = make(map[string]map[string]json.RawMessage)
-	}
-	merged := o.toolUpdateState[toolCallID]
-	existed := merged != nil
-	if !existed {
-		merged = make(map[string]json.RawMessage, len(incoming))
-	}
+	state := o.toolUpdateStateLocked(toolCallID, len(incoming))
+	state.original = append(json.RawMessage(nil), original...)
 	for key, value := range incoming {
-		merged[key] = value
+		state.fields[key] = value
 	}
-	update, ok := decodeACPToolCallUpdate(merged)
-	encoded, err := json.Marshal(merged)
+	update, ok := decodeACPToolCallUpdate(state.fields)
+	encoded, err := json.Marshal(state.fields)
 	if final {
 		delete(o.toolUpdateState, toolCallID)
-		delete(o.toolUpdateOrder, toolCallID)
-	} else {
-		if !existed {
-			if o.toolUpdateOrder == nil {
-				o.toolUpdateOrder = make(map[string]uint64)
-			}
-			o.toolUpdateOrder[toolCallID] = o.nextToolUpdateOrder
-			o.nextToolUpdateOrder++
-		}
-		o.toolUpdateState[toolCallID] = merged
 	}
 	if err != nil || !ok {
 		return nil, acpToolCallUpdateEnvelope{}, false

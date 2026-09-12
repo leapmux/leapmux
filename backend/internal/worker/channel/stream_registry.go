@@ -7,72 +7,94 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// StreamController is what a streaming handler installs so the transport can
-// deliver client->worker frames on its correlation id.
-//
-// Both methods run on the transport's RECEIVE goroutine -- the one goroutine
-// that decrypts every frame for every channel on this worker -- so neither may
-// block. Implementations hand the work to their own loop.
+// StreamController receives client frames and cancellation for one server stream.
+// Both callbacks must return promptly and must tolerate concurrent cancellation.
 type StreamController interface {
-	// OnClientFrame delivers one InnerStreamRequest.payload.
 	OnClientFrame(payload []byte)
-	// OnCancel retires the stream. Called at most once per controller, by an
-	// explicit cancel frame or by transport teardown.
 	OnCancel()
 }
 
-// streamRegistry maps a session's live server streams by correlation id.
+// streamRegistry reserves inboxes before dispatch and removes them on release or cancellation.
 type streamRegistry struct {
-	mu   sync.Mutex
-	byID map[uint64]StreamController
+	mu     sync.Mutex
+	byID   map[uint64]*StreamInbox
+	closed bool
 }
 
-func (r *streamRegistry) bind(id uint64, ctrl StreamController) (release func()) {
+func (r *streamRegistry) reserve(id uint64) (*StreamInbox, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed || r.byID[id] != nil {
+		return nil, false
+	}
 	if r.byID == nil {
-		r.byID = make(map[uint64]StreamController)
+		r.byID = make(map[uint64]*StreamInbox)
 	}
-	r.byID[id] = ctrl
-	return func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		// Remove without calling OnCancel -- the handler is already unwinding.
-		delete(r.byID, id)
-	}
+	inbox := &StreamInbox{}
+	r.byID[id] = inbox
+	return inbox, true
 }
 
-func (r *streamRegistry) deliver(id uint64, frame *leapmuxv1.InnerStreamRequest) {
+func (r *streamRegistry) remove(id uint64, inbox *StreamInbox) {
 	r.mu.Lock()
-	ctrl, ok := r.byID[id]
-	if !ok {
-		r.mu.Unlock()
-		// A frame racing teardown is normal.
-		slog.Debug("dropping stream_request for unbound correlation id",
-			"correlation_id", id,
-		)
-		return
-	}
-	if frame.GetCancel() {
-		// Remove before OnCancel so a double cancel is a no-op structurally.
+	if r.byID[id] == inbox {
 		delete(r.byID, id)
-		r.mu.Unlock()
-		ctrl.OnCancel()
-		return
 	}
 	r.mu.Unlock()
-	ctrl.OnClientFrame(frame.GetPayload())
+}
+
+func (r *streamRegistry) bindReserved(id uint64, inbox *StreamInbox, controller StreamController) (func(), bool) {
+	if !inbox.Bind(controller) {
+		if !inbox.IsBound() {
+			r.remove(id, inbox)
+		}
+		return nil, false
+	}
+	return func() { r.remove(id, inbox); inbox.Release() }, true
+}
+
+// bind supports direct writers whose handler runs synchronously.
+func (r *streamRegistry) bind(id uint64, controller StreamController) func() {
+	inbox, ok := r.reserve(id)
+	if !ok {
+		return func() {}
+	}
+	release, ok := r.bindReserved(id, inbox, controller)
+	if !ok {
+		return func() {}
+	}
+	return release
+}
+
+// deliver returns cleanup on failure. The caller must send the error before cleanup can emit a clean End.
+func (r *streamRegistry) deliver(id uint64, frame *leapmuxv1.InnerStreamRequest) (func(), error) {
+	r.mu.Lock()
+	inbox := r.byID[id]
+	r.mu.Unlock()
+	if inbox == nil {
+		slog.Debug("dropping a frame for an unknown stream", "correlation_id", id)
+		return nil, nil
+	}
+	if frame.GetCancel() {
+		inbox.Cancel()
+		if inbox.IsBound() {
+			r.remove(id, inbox)
+		}
+		return nil, nil
+	}
+	if err := inbox.Deliver(frame.GetPayload()); err != nil {
+		return func() { r.remove(id, inbox); inbox.Cancel() }, err
+	}
+	return nil, nil
 }
 
 func (r *streamRegistry) releaseAll() {
 	r.mu.Lock()
-	ctrls := make([]StreamController, 0, len(r.byID))
-	for _, c := range r.byID {
-		ctrls = append(ctrls, c)
-	}
-	r.byID = make(map[uint64]StreamController)
+	r.closed = true
+	inboxes := r.byID
+	r.byID = nil
 	r.mu.Unlock()
-	for _, c := range ctrls {
-		c.OnCancel()
+	for _, inbox := range inboxes {
+		inbox.Cancel()
 	}
 }

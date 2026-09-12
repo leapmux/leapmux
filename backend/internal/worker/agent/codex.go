@@ -107,6 +107,13 @@ type CodexAgent struct {
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
 
+	// lastRateLimits is the rateLimits object of the newest account snapshot that
+	// reached the transcript. Codex reports the snapshot after every model call, and
+	// the value is a STATE: a report that repeats it states nothing new, so the row
+	// is written only when the state moves. outputMu guards it, as it guards every
+	// other field the output dispatch touches.
+	lastRateLimits json.RawMessage
+
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")
@@ -621,7 +628,7 @@ func (a *CodexAgent) clearInterruptCallsForThread(threadID string) {
 
 // ClearContext sends a new thread/start on the running Codex process,
 // replacing the current thread with a fresh one.
-func (a *CodexAgent) ClearContext() (string, bool) {
+func (a *CodexAgent) ClearContext() (string, error) {
 	a.mu.Lock()
 	oldThreadID := a.threadID
 	approvalPolicy := a.approvalPolicy
@@ -637,9 +644,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	threadParams["sessionStartSource"] = "clear"
 
 	thread, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil || thread.ID == "" {
-		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
-		return "", false
+	if err != nil {
+		return "", err
+	}
+	if thread.ID == "" {
+		return "", fmt.Errorf("the new Codex thread has no ID")
 	}
 	a.outputMu.Lock()
 	a.flushAllCodexGeneration(MessageCompletionInterrupted)
@@ -685,7 +694,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.sink.ClearGoal(false)
 
 	a.sink.UpdateSessionID(thread.ID)
-	return thread.ID, true
+	return thread.ID, nil
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from turnID, the
@@ -721,8 +730,16 @@ func (a *CodexAgent) PublishTurnActive() TurnState {
 // text is "/compact" keeps its kind, reaches this method, and a check here
 // starts a compaction in place of the answer that the agent waits for.
 func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInputForSession(nil, content, attachments)
+}
+
+func (a *CodexAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
+	if err := checkInputSession(expected, a.threadID); err != nil {
+		a.mu.Unlock()
+		return err
+	}
 	if a.stopped {
 		a.mu.Unlock()
 		return fmt.Errorf("agent is stopped")
