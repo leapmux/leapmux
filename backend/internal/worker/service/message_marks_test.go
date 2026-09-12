@@ -178,7 +178,7 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 
 	require.NoError(t, sink.PersistMessage(
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"isSynthetic":true,"controlResponse":{"provider":"CLAUDE_CODE","requestId":"r","response":{"behavior":"allow"}}}`),
+		agent.MessageContent{Original: []byte(`{"isSynthetic":true,"controlResponse":{"provider":"CLAUDE_CODE","requestId":"r","response":{"behavior":"allow"}}}`)},
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE},
 	))
 
@@ -296,12 +296,12 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "request-1",
 		Payload:    []byte(`{"type":"permission","id":"request-1"}`),
 		ClaimToken: "instance-token-1",
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 

@@ -1,5 +1,8 @@
 {
-  "_readme": "ZCode's app-server wire vocabulary, for the tables BOTH the Go provider and the TS renderer plugin read. ZCode speaks line-delimited JSON with no `jsonrpc` field, so the envelope's `type` and the payload's `kind` ARE the dispatch keys on both sides -- a one-character drift between the two copies silently stops rendering a row rather than failing a build. Only the tables that are genuinely duplicated live here. The Go-only vocabulary (client->server methods, error codes, reply field names, input sources, task kinds, scopes) and the frontend-only `display.kind` stay in their own file, per the contracts rule's one-side-only exemption. LeapMux does not own these values -- Z.ai does -- so a change here follows the app-server, it does not lead it.",
+  "_readme": "These ZCode app-server values are shared by the Go provider and the TypeScript renderer. The protocol uses line-delimited JSON without a jsonrpc field. Both implementations dispatch on the envelope type and the payload kind. Go-only methods and fields stay in Go. Frontend-only display kinds stay in TypeScript. Z.ai owns these values, so changes must follow the installed provider protocol.",
+  "toolPrefixes": { "Subagent": "tool_subagent_" },
+  "methods": { "RequestUserInput": "interaction/requestUserInput" },
+  "interactions": { "PlanApproval": "plan_approval" },
   "events": {
     "SessionCreated": "session.created",
     "SessionResumed": "session.resumed",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { zcodePlanText, zcodeQuestionsFromPayload } from './askUserQuestion'
+import { zcodeQuestionsFromPayload } from './askUserQuestion'
 
 /** A stored control-request payload, as the worker persists an interaction request. */
 function payload(input: Record<string, unknown>, toolName: string = ZCODE_TOOL.AskUserQuestion): Record<string, unknown> {
@@ -8,6 +8,41 @@ function payload(input: Record<string, unknown>, toolName: string = ZCODE_TOOL.A
 }
 
 describe('zcodeQuestionsFromPayload', () => {
+  it('recovers option descriptions from the preserved native request', () => {
+    const nativeQuestion = {
+      question: 'Pick a color.',
+      header: 'Color',
+      multiSelect: false,
+      options: [{ label: 'Blue', value: 'Blue', description: 'Choose the color blue.' }],
+    }
+    const original = {
+      ...payload({ questions: [{ ...nativeQuestion, options: [{ label: 'Blue', value: 'Blue' }] }] }),
+      params: { questions: [nativeQuestion], schema: { toolName: 'AskUserQuestion' } },
+    }
+    const before = JSON.stringify(original)
+    expect(zcodeQuestionsFromPayload(original)[0].options).toEqual([{ label: 'Blue', description: 'Choose the color blue.' }])
+    expect(JSON.stringify(original)).toBe(before)
+  })
+
+  it.each(['schema', 'input'])('reads native questions from %s', (field) => {
+    expect(zcodeQuestionsFromPayload({ params: { [field]: { questions: [{ question: 'Native question', options: [{ label: 'A', description: 'Native description' }] }] } } })).toEqual([
+      { question: 'Native question', options: [{ label: 'A', description: 'Native description' }] },
+    ])
+  })
+
+  it('keeps an explicitly empty native question list empty', () => {
+    expect(zcodeQuestionsFromPayload({
+      ...payload({ questions: [{ question: 'Stale question' }] }),
+      params: { questions: [] },
+    })).toEqual([])
+  })
+
+  it('uses native top-level questions when the schema list is empty', () => {
+    expect(zcodeQuestionsFromPayload({ params: { schema: { questions: [] }, questions: [{ question: 'Native question' }] } })).toEqual([
+      { question: 'Native question', options: [] },
+    ])
+  })
+
   it('reads a question and its options through', () => {
     expect(zcodeQuestionsFromPayload(payload({
       questions: [{
@@ -99,52 +134,5 @@ describe('zcodeQuestionsFromPayload', () => {
     expect(zcodeQuestionsFromPayload(payload({}))).toEqual([])
     expect(zcodeQuestionsFromPayload(payload({ questions: 'not an array' }))).toEqual([])
     expect(zcodeQuestionsFromPayload({})).toEqual([])
-  })
-})
-
-describe('zcodePlanText', () => {
-  // `plan` is where the worker puts the plan, and it wins over everything else. A plan
-  // approval carries no question of its own, so the worker synthesizes one whose text is
-  // fixed boilerplate — reading the question first rendered THAT as the plan, and the
-  // real plan never appeared.
-  it('reads the plan from the plan field, over a synthesized boilerplate question', () => {
-    expect(zcodePlanText(payload({
-      plan: '## Plan\n1. Do the thing',
-      questions: [{ question: 'Review this implementation plan.' }],
-      prompt: 'Review this implementation plan.',
-    }, ZCODE_TOOL.ExitPlanMode))).toBe('## Plan\n1. Do the thing')
-  })
-
-  // The question text stays as a fallback, for a build that states the plan there.
-  it('reads the plan from the first question text', () => {
-    expect(zcodePlanText(payload({
-      questions: [{ question: '## Plan\n1. Do the thing' }],
-    }, ZCODE_TOOL.ExitPlanMode))).toBe('## Plan\n1. Do the thing')
-  })
-
-  it('skips a leading question that carries no text', () => {
-    expect(zcodePlanText(payload({
-      questions: [{ header: 'only a header' }, { question: 'the plan' }],
-    }, ZCODE_TOOL.ExitPlanMode))).toBe('the plan')
-  })
-
-  it('falls back to the request prompt when no question carries text', () => {
-    expect(zcodePlanText(payload({
-      prompt: 'approve the plan?',
-      questions: [{ header: 'no text here' }],
-    }, ZCODE_TOOL.ExitPlanMode))).toBe('approve the plan?')
-  })
-
-  it('falls back to the prompt when the questions field is absent or malformed', () => {
-    expect(zcodePlanText(payload({ prompt: 'approve?' }, ZCODE_TOOL.ExitPlanMode))).toBe('approve?')
-    expect(zcodePlanText(payload({ prompt: 'approve?', questions: {} }, ZCODE_TOOL.ExitPlanMode)))
-      .toBe('approve?')
-  })
-
-  // The content component falls back to its own sentence for an empty plan, so an
-  // empty string here is a valid answer and not a reason to throw.
-  it('reports an empty string when the request states neither', () => {
-    expect(zcodePlanText(payload({}, ZCODE_TOOL.ExitPlanMode))).toBe('')
-    expect(zcodePlanText({})).toBe('')
   })
 })

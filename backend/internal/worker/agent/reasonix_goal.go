@@ -5,8 +5,9 @@ import (
 	"log/slog"
 )
 
-// SupportedGoalActions reports no writes. Reasonix reports a goal over ACP but
-// exposes no safe client command that sets or clears it.
+// SupportedGoalActions reports no goal actions.
+// ACP exposes no explicit operation to resume an existing Goal.
+// See https://github.com/esengine/DeepSeek-Reasonix/issues/10201.
 func (a *ReasonixAgent) SupportedGoalActions() []GoalAction { return nil }
 
 var _ GoalCapable = (*ReasonixAgent)(nil)
@@ -21,15 +22,8 @@ var _ GoalCapable = (*ReasonixAgent)(nil)
 //	   goal:{status, objective?, runtime?:{turnsUsed, tokensUsed, requestsUsed,
 //	                                       workDurationMs, lastReason, stopCause}}}
 //
-// READ ONLY. Reasonix can be told to adopt a goal, but only by switching to its
-// `goal` session mode and then letting the NEXT prompt become the objective --
-// and clearing means switching back to whichever mode the session was in
-// before. LeapMux never tracked that mode (Reasonix leaves modeChannel
-// unmapped and exposes no option groups), so a clear would drop the user into
-// an arbitrary mode. A goal panel that reports honestly and offers no control
-// is better than one whose Clear button silently changes something else, so
-// ReasonixAgent implements no GoalWriter at all and the browser disables
-// every action.
+// Reasonix adopts the next prompt as its objective after entering goal mode.
+// Switching to normal or plan mode clears the goal.
 const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
 
 // Reasonix's own goal status words, as they reach the WIRE.
@@ -97,18 +91,6 @@ func reasonixGoalStatus(wire string) GoalStatus {
 	default:
 		return GoalStatusBlocked
 	}
-}
-
-// handleExtraMethod claims Reasonix's own notification namespace.
-//
-// It returns true for every `_reasonix.io/` method so the shared ACP reader
-// stops treating them as unknown, and false for anything else.
-func (a *ReasonixAgent) handleExtraMethod(line *parsedLine) bool {
-	if line.Method != reasonixMethodStatusUpdate {
-		return false
-	}
-	a.handleReasonixStatusUpdate(line.Params)
-	return true
 }
 
 func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {

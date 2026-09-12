@@ -14,7 +14,7 @@
  */
 
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
-import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_METHOD, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import {
@@ -22,7 +22,6 @@ import {
   joinAnswerLines,
   labelOrNull,
 } from '../../persistedControlResponse'
-import { ZCODE_METHOD } from './protocol'
 
 /**
  * The `answers` map the shared AskUserQuestion control attaches to its allow

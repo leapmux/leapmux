@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi_question_source_conformance.schema.json",
+  "title": "Pi question source matching",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "cases"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "dialog",
+          "args",
+          "expectedIndex"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dialog": {
+            "type": "object"
+          },
+          "args": {},
+          "expectedIndex": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

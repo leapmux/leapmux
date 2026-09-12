@@ -108,19 +108,3 @@ func TestACPExtractTodoEvent_ServesEveryACPProvider(t *testing.T) {
 		require.Len(t, ev.Snapshot, 1)
 	}
 }
-
-// Pi's CLI states no to-do list, so its plugin reports none rather than guessing at
-// another provider's shape.
-func TestPiExtractTodoEvent_ReportsNothing(t *testing.T) {
-	t.Parallel()
-
-	for _, content := range []string{
-		`{"sessionUpdate":"plan","entries":[{"content":"one"}]}`,
-		`{"method":"turn/plan/updated","params":{"plan":[{"step":"x"}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[]}}]}}`,
-	} {
-		_, ok := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI).
-			ExtractTodoEvent("TodoWrite", []byte(content), nil)
-		assert.False(t, ok)
-	}
-}

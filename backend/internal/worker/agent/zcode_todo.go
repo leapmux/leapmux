@@ -19,9 +19,7 @@ import (
 // re-sends the complete list rather than a delta, and an incremental apply would
 // keep a row the model deleted.
 //
-// Only the `scheduled` update carries the input. The result that follows repeats
-// the tool name with no input, and returning an empty snapshot for it would clear
-// the list the opener just set.
+// Scheduled input updates the projection. Result rows do not repeat that update.
 func (zcodeProvider) ExtractTodoEvent(spanType string, content []byte, _ func() []byte) (todoevents.Event, bool) {
 	if spanType != contracts.ZCodeToolNameTodoWrite {
 		return todoevents.Event{}, false
@@ -38,16 +36,11 @@ func (zcodeProvider) ExtractTodoEvent(spanType string, content []byte, _ func() 
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		return todoevents.Event{}, false
 	}
-	if payload.Kind != contracts.ZCodeToolKindScheduled || payload.ToolName != contracts.ZCodeToolNameTodoWrite {
+	if payload.Kind != contracts.ZCodeToolKindScheduled || (payload.ToolName != "" && payload.ToolName != contracts.ZCodeToolNameTodoWrite) {
 		return todoevents.Event{}, false
 	}
-	// A scheduled update reports `inputOmitted: true` and carries NO input of its own;
-	// openZCodeToolCallInto substitutes the model-stream cache, which is best effort (it
-	// is empty after a resume, after a context clear, and when the stream was cut). An
-	// absent input must therefore be read as "the list did not change", NEVER as an empty
-	// list -- a snapshot of zero items DELETES every row, so the user's checklist would
-	// vanish mid-turn. Only a `todos` array that is actually present states a list, and
-	// an explicitly empty one still means the model cleared it.
+	// The resolver supplies streamed arguments from supplemental content.
+	// Missing arguments leave the list unchanged. Only an explicit empty todos array clears it.
 	var input struct {
 		Todos *[]struct {
 			Content    string `json:"content"`

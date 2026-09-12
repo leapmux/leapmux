@@ -219,7 +219,7 @@ type subagentServices interface {
 	BackgroundTaskServices
 }
 
-func openToolSpan(sink ToolSpanServices, content []byte, spanID, spanType string, spawns bool) error {
+func openToolSpan(sink ToolSpanServices, content MessageContent, spanID, spanType string, spawns bool) error {
 	var spanColor int32
 	if !spawns {
 		spanColor = sink.ReserveSpanColor(spanID, "")
@@ -293,9 +293,40 @@ func publishTurnStateTo(sink TurnServices, state TurnState, seq uint64) TurnStat
 	return state
 }
 
+// MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
+type MessageContent struct {
+	Original []byte
+	// Supplemental holds recovered provider data. Metadata holds worker-calculated fields.
+	Supplemental []byte
+	Metadata     []byte
+	Completion   MessageCompletion
+}
+
+// MessageEnrichment describes a conditional update to separate rendering data.
+type MessageEnrichment struct {
+	Seq                 int64
+	SpanID              string
+	OriginalContent     []byte
+	PreviousRevision    int64
+	SupplementalContent []byte
+}
+
+// StoredMessage supplies the original content and its supplemental revision for a precise update.
+type StoredMessage struct {
+	Content  MessageContent
+	Seq      int64
+	Revision int64
+	Provider leapmuxv1.AgentProvider
+}
+
 // TranscriptServices persists provider output and turn boundaries.
 type TranscriptServices interface {
-	PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
+	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
+	ReadToolRequest(spanID string) (*StoredMessage, error)
+	PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error
+	// EnrichMessage stores rendering data separately from the original provider bytes.
+	// It returns false when the original content or supplemental revision no longer matches.
+	EnrichMessage(MessageEnrichment) (bool, error)
 	// PersistNotification persists an agent notification (appending it to the
 	// active notification thread when one is open). It returns whether the
 	// notification produced a frontend-visible broadcast: a flapping notification
@@ -308,7 +339,7 @@ type TranscriptServices interface {
 	// closing envelope (Claude type:"result", Codex turn/completed,
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
-	PersistTurnEnd(content []byte, span SpanInfo) error
+	PersistTurnEnd(content MessageContent, span SpanInfo) error
 }
 
 // TurnServices publishes the provider's turn state.
@@ -367,18 +398,20 @@ type ProgressServices interface {
 	ReportProgress(update ProgressUpdate)
 }
 
+// ControlRequest keeps the native payload separate from its optional transcript source.
+type ControlRequest struct {
+	RequestID string
+	Payload   []byte
+	SourceSeq int64
+}
+
 // ControlServices persists and broadcasts control requests.
 type ControlServices interface {
-	// PersistControlRequest stores the pending control request and returns the fresh per-instance
-	// claim_token it minted for it. The caller threads that token straight into the paired
-	// BroadcastControlRequest so the live broadcast carries the SAME token that was persisted --
-	// without a second DB round-trip to read it back (and without the readback-failure window that
-	// would broadcast an empty token). Empty only when the sink mints none (test fakes).
-	PersistControlRequest(requestID string, payload []byte) (claimToken string)
+	// PublishControlRequest stores the request before it broadcasts the request.
+	// Storage failure leaves the pending state unchanged and returns an error.
+	// Repeated announcements of an identical pending request keep its claim token.
+	PublishControlRequest(request ControlRequest) error
 	DeleteControlRequest(requestID string)
-	// BroadcastControlRequest fans the control request out to live windows, carrying the claim_token
-	// PersistControlRequest returned so the frontend can echo it in its answer (AgentControlRequest.claim_token).
-	BroadcastControlRequest(requestID string, payload []byte, claimToken string)
 	BroadcastControlCancel(requestID string)
 }
 
@@ -443,6 +476,11 @@ type GoalServices interface {
 	// A provider that later wants a per-child goal must change that decision
 	// here, not work around it.
 	UpsertGoal(update GoalUpdate)
+	// UpdateGoalStatus changes the stored goal only when its status equals expected.
+	// It replaces the status and clears the status detail under the goal mutex.
+	// It preserves the objective and identity. An absent goal stays absent.
+	// Only a root sink accepts this operation.
+	UpdateGoalStatus(expected, status GoalStatus)
 	// ClearGoal removes the session goal. A root sink only, like UpsertGoal.
 	//
 	// The WRITE is unconditional, and a caller must NOT skip it because its own
@@ -523,7 +561,7 @@ type ChildServices interface {
 	// PersistChildMessage / PersistChildTurnEnd are shorthands for
 	// ChildSink(id).PersistMessage / PersistTurnEnd.
 	PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
-	PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error
+	PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error
 
 	// PersistChildPrompt writes the spawn prompt as the FIRST message of the
 	// child transcript, so the subagent tab opens on the instruction the
@@ -805,11 +843,9 @@ type Agent interface {
 	// Omitted and empty options do not change the live state. The result distinguishes
 	// confirmed values from values that need a restart or a later acknowledgement.
 	UpdateSettings(options optionmap.Map) SettingsApplyResult
-	// ClearContext starts a new thread/session on the running process,
-	// effectively clearing conversation context without a full restart.
-	// Returns the new session ID, or ("", false) if the provider does not
-	// support in-place context clearing (caller should restart instead).
-	ClearContext() (sessionID string, ok bool)
+	// ClearContext starts a fresh thread or session on the running process.
+	// Only ErrContextClearUnsupported permits a restart. Cancellation and failures preserve their errors.
+	ClearContext() (sessionID string, err error)
 	// Interrupt aborts the agent's current turn using the provider-
 	// specific signal (SIGINT, JSON-RPC stop, control payload, etc.).
 	// Returns nil on success or if the agent is not currently in a turn;
@@ -839,10 +875,12 @@ type InputSteerer interface {
 }
 
 var (
-	ErrCompactionUnsupported = errors.New("agent provider does not support native context compaction")
-	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
-	ErrNoActiveTurn          = errors.New("agent has no active turn to steer")
-	ErrDeliveryUncertain     = errors.New("agent input delivery is uncertain")
+	ErrContextClearUnsupported = errors.New("agent provider does not support native context clearing")
+	ErrContextClearCancelled   = errors.New("the agent provider cancelled context clearing")
+	ErrCompactionUnsupported   = errors.New("agent provider does not support native context compaction")
+	ErrSteeringUnsupported     = errors.New("agent provider does not support steering")
+	ErrNoActiveTurn            = errors.New("agent has no active turn to steer")
+	ErrDeliveryUncertain       = errors.New("agent input delivery is uncertain")
 
 	// ErrAgentBusy reports the opposite condition to ErrNoActiveTurn: the agent
 	// already runs a turn, so it refuses input that starts another turn. A

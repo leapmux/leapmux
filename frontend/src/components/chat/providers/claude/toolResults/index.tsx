@@ -2,33 +2,36 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
+import type { extractToolUseInfo } from '../extractors/assistantContent'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { Show } from 'solid-js'
 import { splitToolResultContent } from '~/lib/contentBlocks'
 import { isObject, pickObject } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { cachedRenderValue } from '../../../messageRenderCache'
+import { AgentResultBody } from '../../../results/agentResult'
 import { pickFileEditDiff } from '../../../results/fileEditDiff'
 import { ImageResultList } from '../../../results/imageResult'
-import { McpToolCallBody } from '../../../results/mcpToolCall'
+import { McpToolMessage } from '../../../results/McpToolMessage'
 import { ReadFileResultBody } from '../../../results/readFileResult'
 import { SearchResultBody } from '../../../results/searchResult'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
 import { WebSearchResultsBody } from '../../../results/webSearchResults'
+import { TodoListMessage } from '../../../todoListMessage'
 import { ToolResultMessage } from '../../../toolRenderers'
-import { claudeAgentFromToolResult } from '../extractors/agent'
-import { extractToolUseInfo, getMessageContentArray } from '../extractors/assistantContent'
+import { claudeAgentFromToolResult, claudeAgentResultSource } from '../extractors/agent'
+import { extractPairedToolUseInfo, getMessageContentArray } from '../extractors/assistantContent'
 import { claudeBashFromToolResult } from '../extractors/bash'
 import { claudeCreateResultDiff, claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
 import { claudeImagesFromToolResult } from '../extractors/image'
 import { claudeListAgentsListing } from '../extractors/listAgents'
-import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
+import { claudeMcpFromMessage, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
 import { claudeRemoteTriggerFromToolResult } from '../extractors/remoteTrigger'
+import { claudeTodoWriteFromResult } from '../extractors/todo'
 import { claudeWebFetchFromToolResult } from '../extractors/webFetch'
 import { claudeWebSearchFromToolResult } from '../extractors/webSearch'
-import { AgentResultView } from './agent'
 import { AskUserQuestionResultView } from './askUserQuestion'
 import { ExitPlanModeResultView } from './exitPlanMode'
 import { ListAgentsResultView } from './listAgents'
@@ -89,6 +92,12 @@ type ToolResultEntry = (info: DispatchInfo, context: RenderContext | undefined) 
  * branch is the dispatcher's else-after-lookup, not an entry here.
  */
 const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
+  [CLAUDE_TOOL.TODO_WRITE]: (info, ctx) => {
+    if (info.resultData.is_error === true)
+      return null
+    const source = claudeTodoWriteFromResult(info.toolUseResult, info.toolInput)
+    return source ? <TodoListMessage source={source} role="result" hasRequest={!!info.toolInput} context={ctx} /> : null
+  },
   [CLAUDE_TOOL.GREP]: (info, ctx) => (
     <SearchResultBody source={claudeGrepFromToolResult(info.toolUseResult, info.resultContent)} context={ctx} />
   ),
@@ -114,7 +123,7 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
     const source = claudeAgentFromToolResult(info.toolUseResult, info.resultContent, info.toolInput)
     if (!source)
       return null
-    return <AgentResultView source={source} context={ctx} />
+    return <AgentResultBody source={claudeAgentResultSource(source)} context={ctx} />
   },
 
   [CLAUDE_TOOL.TASK_OUTPUT]: (info, ctx) => {
@@ -176,7 +185,7 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
   // plugin.tsx, so they never reach this dispatch. The tool_use side
   // (toolUse/taskTools.tsx) renders the single-row cards (TaskCreate,
   // TaskUpdate, TaskGet) by reading the paired result through
-  // `context.toolResultParsed`. TaskList is hidden on both sides
+  // `context.sources?.result()`. TaskList is hidden on both sides
   // because the persistent todo sidebar already surfaces the list.
 }
 
@@ -209,7 +218,8 @@ export function renderClaudeToolResult(
     // Extract tool name: prefer span_type (always set for span messages),
     // then tool_use_result, then linked tool_use message.
     const toolUseResult = pickObject(parsed, 'tool_use_result') ?? undefined
-    const toolUseInfo = context?.toolUseParsed ? extractToolUseInfo(context.toolUseParsed) : null
+    const request = context?.sources?.request()
+    const toolUseInfo = extractPairedToolUseInfo(parsed, request)
     const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || '')
     const toolInput = toolUseInfo?.input
     // The blocks give order and payload; `tool_use_result` gives dimensions
@@ -251,15 +261,9 @@ export function renderClaudeToolResult(
 
   // MCP (mcp__server__tool): render args + content blocks via the shared body.
   if (isClaudeMcpTool(dispatch.toolName)) {
-    const mcpSource = claudeMcpFromToolResult({
-      toolName: dispatch.toolName,
-      toolInput: dispatch.toolInput,
-      toolUseResult: dispatch.toolUseResult,
-      resultContent: Array.isArray(dispatch.resultData.content) ? dispatch.resultData.content : dispatch.resultContent,
-      isError: dispatch.resultData.is_error === true,
-    })
+    const mcpSource = claudeMcpFromMessage(parsed, dispatch.toolName, context?.sources?.request())
     if (mcpSource)
-      return <McpToolCallBody source={mcpSource} context={context} />
+      return <McpToolMessage source={mcpSource} role="result" hasRequest={dispatch.toolUseInfo !== null} context={context} />
   }
 
   // Catch-all: shared `ToolResultMessage`. Reads `displayKind` /

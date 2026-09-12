@@ -1,3 +1,4 @@
+import type { MessageContextResolver } from '~/components/chat/messageContextResolver'
 import type { AgentChatMessage, ListMessageMarksResponse } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
@@ -5,16 +6,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
+import { testMessageContext } from '~/test-support/messageContext'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerPage / catchUpToTail
 const mockListAgentMessages = vi.fn()
 const mockListMessageMarks = vi.fn()
-const mockGetAgentMessage = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
   listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
   listMessageMarks: (...args: unknown[]) => mockListMessageMarks(...args),
-  getAgentMessage: (...args: unknown[]) => mockGetAgentMessage(...args),
 }))
 
 function makeMessage(id: string, seq: bigint) {
@@ -199,6 +200,28 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+const storeContexts = new WeakMap<ReturnType<typeof createChatStore>, Map<string, MessageContextResolver>>()
+function storeContext(store: ReturnType<typeof createChatStore>, agentId: string): MessageContextResolver {
+  let contexts = storeContexts.get(store)
+  if (!contexts) {
+    contexts = new Map()
+    storeContexts.set(store, contexts)
+  }
+  let resolver = contexts.get(agentId)
+  if (!resolver) {
+    resolver = testMessageContext({
+      messages: () => store.getMessages(agentId),
+      messageVersion: () => store.getMessageVersion(agentId),
+      contentVersion: store.getMessageContentVersion,
+      spanMessage: (spanId, side) => store.getSpanMessage(agentId, spanId, side),
+      messageBySeq: seq => store.getLoadedMessageBySeq(agentId, seq),
+      subscribe: observer => store.subscribeMessages(agentId, observer),
+    })
+    contexts.set(agentId, resolver)
+  }
+  return resolver
+}
+
 describe('chatstore span content versions', () => {
   it('exposes same-seq tool_result content-version bumps by span id', () => {
     const store = createChatStore()
@@ -210,18 +233,18 @@ describe('chatstore span content versions', () => {
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
-    expect(JSON.stringify(store.getToolResultParsedBySpanId(agentId, spanId)?.parentObject)).toContain('first result')
-    expect(store.getToolUseRevisionBySpanId(agentId, spanId)).toEqual({ id: 'opener-1', seq: 1n, contentVersion: 0 })
-    expect(store.getToolResultRevisionBySpanId(agentId, spanId)).toEqual({ id: 'result-1', seq: 2n, contentVersion: 0 })
-    expect(store.getToolResultContentVersionBySpanId(agentId, spanId)).toBe(0)
-    expect(store.getToolUseContentVersionBySpanId(agentId, spanId)).toBe(0)
+    expect(JSON.stringify(storeContext(store, agentId).result(spanId)?.parsed?.parentObject)).toContain('first result')
+    expect(storeContext(store, agentId).request(spanId)?.revision).toEqual({ id: 'opener-1', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).result(spanId)?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 0, supplementalRevision: 0n })
+    expect((storeContext(store, agentId).result(spanId)?.revision.contentVersion ?? 0)).toBe(0)
+    expect((storeContext(store, agentId).request(spanId)?.revision.contentVersion ?? 0)).toBe(0)
 
     store.addMessage(agentId, claudeToolResult('result-1', 2n, spanId, 'updated result'))
 
-    expect(JSON.stringify(store.getToolResultParsedBySpanId(agentId, spanId)?.parentObject)).toContain('updated result')
-    expect(store.getToolResultRevisionBySpanId(agentId, spanId)).toEqual({ id: 'result-1', seq: 2n, contentVersion: 1 })
-    expect(store.getToolResultContentVersionBySpanId(agentId, spanId)).toBe(1)
-    expect(store.getToolUseContentVersionBySpanId(agentId, spanId)).toBe(0)
+    expect(JSON.stringify(storeContext(store, agentId).result(spanId)?.parsed?.parentObject)).toContain('updated result')
+    expect(storeContext(store, agentId).result(spanId)?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 1, supplementalRevision: 0n })
+    expect((storeContext(store, agentId).result(spanId)?.revision.contentVersion ?? 0)).toBe(1)
+    expect((storeContext(store, agentId).request(spanId)?.revision.contentVersion ?? 0)).toBe(0)
   })
 
   it('updates span revisions when a full window replace swaps a sibling at content version zero', () => {
@@ -239,8 +262,8 @@ describe('chatstore span content versions', () => {
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
-    expect(store.getToolUseContentVersionBySpanId(agentId, spanId)).toBe(0)
-    expect(store.getToolUseRevisionBySpanId(agentId, spanId)).toEqual({ id: 'opener-2', seq: 3n, contentVersion: 0 })
+    expect((storeContext(store, agentId).request(spanId)?.revision.contentVersion ?? 0)).toBe(0)
+    expect(storeContext(store, agentId).request(spanId)?.revision).toEqual({ id: 'opener-2', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
   })
 
   it('returns zero when no result is indexed for a span id', () => {
@@ -250,8 +273,8 @@ describe('chatstore span content versions', () => {
 
     store.setMessages(agentId, [claudeToolUse('opener-1', 1n, spanId)])
 
-    expect(store.getToolResultParsedBySpanId(agentId, spanId)).toBeUndefined()
-    expect(store.getToolResultContentVersionBySpanId(agentId, spanId)).toBe(0)
+    expect(storeContext(store, agentId).result(spanId)?.parsed).toBeUndefined()
+    expect((storeContext(store, agentId).result(spanId)?.revision.contentVersion ?? 0)).toBe(0)
   })
 })
 
@@ -798,7 +821,6 @@ describe('createChatStore', () => {
   beforeEach(() => {
     mockListAgentMessages.mockReset()
     mockListMessageMarks.mockReset()
-    mockGetAgentMessage.mockReset()
   })
 
   it('should return empty array for unknown agent', () => {
@@ -840,6 +862,74 @@ describe('createChatStore', () => {
       store.addMessage('agent1', makeMessage('dup', 5n))
       expect(store.getMessages('agent1')).toHaveLength(1)
       expect(store.getMessageVersion('agent1')).toBe(versionBefore)
+      dispose()
+    })
+  })
+
+  it('keeps newer supplemental data when an older response arrives later', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      const newer = create(AgentChatMessageSchema, {
+        ...makeMessage('supplemented', 1n),
+        contentCompression: ContentCompression.NONE,
+        supplementalContent: new TextEncoder().encode('{"provider":{"value":"newer"}}'),
+        supplementalContentCompression: ContentCompression.NONE,
+        supplementalRevision: 2n,
+      })
+      store.addMessage('agent-1', newer)
+      store.addMessage('agent-1', create(AgentChatMessageSchema, {
+        ...newer,
+        supplementalContent: new TextEncoder().encode('{"provider":{"value":"older"}}'),
+        supplementalRevision: 1n,
+      }))
+      const stored = store.getMessages('agent-1')[0]
+      expect(stored.supplementalRevision).toBe(2n)
+      expect(parseMessageContent(stored).supplementalContent).toEqual({ value: 'newer' })
+      expect(stored.content).toEqual(newer.content)
+      dispose()
+    })
+  })
+
+  it('refreshes cached rendering after a history snapshot adds a supplement', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      const original = makeUserMessage('supplemented', 1n, 'Original text')
+      store.setMessages('agent-1', [original])
+      const cache = createClassifiedEntryCache({
+        messages: () => store.getMessages('agent-1'),
+        contentVersionById: id => store.getMessageContentVersion(id),
+        showHiddenMessages: () => false,
+      })
+      expect(cache.visibleEntries()[0].parsed.supplementalContent).toBeUndefined()
+      store.setMessages('agent-1', [create(AgentChatMessageSchema, {
+        ...original,
+        supplementalContent: new TextEncoder().encode('{"provider":{"value":"recovered"}}'),
+        supplementalContentCompression: ContentCompression.NONE,
+        supplementalRevision: 1n,
+      })])
+      expect(cache.visibleEntries()[0].parsed.supplementalContent).toEqual({ value: 'recovered' })
+      dispose()
+    })
+  })
+
+  it('refreshes a message when only its supplemental content changes', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      const original = makeMessage('supplemented', 1n)
+      original.contentCompression = ContentCompression.NONE
+      store.addMessage('agent-1', original)
+      const stored = store.state.messagesByAgent['agent-1'][0]
+      expect(parseMessageContent(stored).supplementalContent).toBeUndefined()
+      const version = store.getMessageContentVersion(original.id)
+      store.addMessage('agent-1', create(AgentChatMessageSchema, {
+        ...original,
+        supplementalContent: new TextEncoder().encode('{"provider":{"recovered":"result"}}'),
+        supplementalContentCompression: ContentCompression.NONE,
+      }))
+      expect(store.state.messagesByAgent['agent-1']).toHaveLength(1)
+      expect(store.state.messagesByAgent['agent-1'][0].content).toEqual(original.content)
+      expect(parseMessageContent(store.state.messagesByAgent['agent-1'][0]).supplementalContent).toEqual({ recovered: 'result' })
+      expect(store.getMessageContentVersion(original.id)).toBeGreaterThan(version)
       dispose()
     })
   })
@@ -1833,15 +1923,15 @@ describe('createChatStore', () => {
           const result = makeSpanMessage('res', 200n, 's-new', 'RESULT')
           store.setMessages('a1', [...filler, opener, result])
           // Indexed and resolvable while in the window.
-          expect(store.getToolUseParsedBySpanId('a1', 's-new')?.parentObject?.content).toBe('OPENER')
-          expect(store.getToolResultParsedBySpanId('a1', 's-new')?.parentObject?.content).toBe('RESULT')
+          expect(storeContext(store, 'a1').request('s-new')?.parsed?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').result('s-new')?.parsed?.parentObject?.content).toBe('RESULT')
           // Trimming the newest end (older history loaded) evicts seq 199/200.
           store.trimNewestEnd('a1', 150)
           expect(store.getMessages('a1').some(m => m.spanId === 's-new')).toBe(false)
           // The span index must not retain the trimmed opener/result — otherwise
           // it grows unbounded across a long scroll-through and leaks the messages.
-          expect(store.getToolUseParsedBySpanId('a1', 's-new')).toBeUndefined()
-          expect(store.getToolResultParsedBySpanId('a1', 's-new')).toBeUndefined()
+          expect(storeContext(store, 'a1').request('s-new')?.parsed).toBeUndefined()
+          expect(storeContext(store, 'a1').result('s-new')?.parsed).toBeUndefined()
           dispose()
         })
       })
@@ -1861,8 +1951,8 @@ describe('createChatStore', () => {
           await store.loadOlderMessages('w1', 'a1')
           // After the prepend + reindex over the seq-ascending window, opener and
           // result are correctly separated rather than swapped.
-          expect(store.getToolUseParsedBySpanId('a1', 's1')?.parentObject?.content).toBe('OPENER')
-          expect(store.getToolResultParsedBySpanId('a1', 's1')?.parentObject?.content).toBe('RESULT')
+          expect(storeContext(store, 'a1').request('s1')?.parsed?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').result('s1')?.parsed?.parentObject?.content).toBe('RESULT')
           dispose()
         })
       })
@@ -1876,12 +1966,12 @@ describe('createChatStore', () => {
           // misfiling it as the opener (the old insertion-order heuristic would).
           store.addMessage('a1', makeToolResultSpan('res', 51n, 's1'))
           // With only the result seen, the opener lookup is empty (not the result).
-          expect(store.getToolUseParsedBySpanId('a1', 's1')).toBeUndefined()
-          expect(store.getToolResultParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').request('s1')?.parsed).toBeUndefined()
+          expect(storeContext(store, 'a1').result('s1')?.parsed?.parentObject?.type).toBe('user')
           // The opener arrives afterward (lower seq); it must land on the opener side.
           store.addMessage('a1', makeToolUseSpan('op', 50n, 's1'))
-          expect(store.getToolUseParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('assistant')
-          expect(store.getToolResultParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').request('s1')?.parsed?.parentObject?.type).toBe('assistant')
+          expect(storeContext(store, 'a1').result('s1')?.parsed?.parentObject?.type).toBe('user')
           dispose()
         })
       })
@@ -1891,14 +1981,14 @@ describe('createChatStore', () => {
           const store = createChatStore()
           // A server tool_result occupies seq 51 (span s1).
           store.setMessages('a1', [makeToolResultSpan('res', 51n, 's1')])
-          expect(store.getToolResultParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').result('s1')?.parsed?.parentObject?.type).toBe('user')
           // A re-broadcast arrives with the SAME seq under a DIFFERENT id and span.
           // addMessage's dedup short-circuit discards it (seq 51 already present),
           // so it never enters the window -- and its span (s2) must NOT be indexed,
           // or the lookup would resolve to a never-rendered message no reindex heals.
           store.addMessage('a1', makeToolResultSpan('res-dup', 51n, 's2'))
           expect(store.getMessages('a1').some(m => m.id === 'res-dup')).toBe(false)
-          expect(store.getToolResultParsedBySpanId('a1', 's2')).toBeUndefined()
+          expect(storeContext(store, 'a1').result('s2')?.parsed).toBeUndefined()
           dispose()
         })
       })
@@ -2244,13 +2334,13 @@ describe('createChatStore', () => {
           // result sizes its diff from the OPENER, so it must be able to observe the
           // opener's content version (which an in-place opener edit bumps).
           store.setMessages('a1', [makeToolUseSpan('op', 1n, 'spanX'), makeToolResultSpan('res', 2n, 'spanX')])
-          expect(store.getToolUseContentVersionBySpanId('a1', 'spanX')).toBe(0)
+          expect((storeContext(store, 'a1').request('spanX')?.revision.contentVersion ?? 0)).toBe(0)
           // The opener's body is replaced in place with NEW content (same id+seq, edited
           // tool input) -> its version bumps, and the result's spanId lookup reflects it.
           store.addMessage('a1', makeToolUseSpan('op', 1n, 'spanX', 0n, { file_path: '/edited' }))
-          expect(store.getToolUseContentVersionBySpanId('a1', 'spanX')).toBe(1)
+          expect((storeContext(store, 'a1').request('spanX')?.revision.contentVersion ?? 0)).toBe(1)
           // An unindexed span has no opener -> 0.
-          expect(store.getToolUseContentVersionBySpanId('a1', 'nope')).toBe(0)
+          expect((storeContext(store, 'a1').request('nope')?.revision.contentVersion ?? 0)).toBe(0)
           dispose()
         })
       })
@@ -3164,34 +3254,6 @@ describe('createChatStore', () => {
         mockListMessageMarks.mockRejectedValueOnce(new Error('offline'))
         await store.loadMessageMarks('w1', 'a1')
         expect(store.getRailData('a1').marks.map(m => m.seq)).toEqual([3n, 7n])
-        dispose()
-      })
-    })
-
-    it('fetchMessageBySeq returns the fetched message on success', async () => {
-      mockGetAgentMessage.mockResolvedValueOnce({ message: makeMessage('m9', 9n) })
-      await createRoot(async (dispose) => {
-        const store = createChatStore()
-        const got = await store.fetchMessageBySeq('w1', 'a1', 9n)
-        expect(got?.id).toBe('m9')
-        expect(mockGetAgentMessage).toHaveBeenCalledWith('w1', { agentId: 'a1', seq: 9n })
-        dispose()
-      })
-    })
-
-    it('fetchMessageBySeq resolves undefined for an unset message but RETHROWS a failed RPC', async () => {
-      await createRoot(async (dispose) => {
-        const store = createChatStore()
-        // Unset message: the mark outlived its row (deleted / reseq'd) -> definitive absence,
-        // resolves undefined so the rail caches '' and shows a label without re-fetching.
-        mockGetAgentMessage.mockResolvedValueOnce({ message: undefined })
-        expect(await store.fetchMessageBySeq('w1', 'a1', 9n)).toBeUndefined()
-        // An RPC failure RETHROWS (rather than collapsing to undefined) so the caller can tell
-        // a transient blip from a real absence and retry instead of poisoning the preview.
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-        mockGetAgentMessage.mockRejectedValueOnce(new Error('offline'))
-        await expect(store.fetchMessageBySeq('w1', 'a1', 9n)).rejects.toThrow('offline')
-        warn.mockRestore()
         dispose()
       })
     })

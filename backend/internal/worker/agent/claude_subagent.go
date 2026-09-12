@@ -801,7 +801,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	if msgType == claudeMsgTypeResult {
 		// The subagent's final result. Also drives the registry as a
 		// fallback when no task_notification arrived.
-		if err := childSink.PersistTurnEnd(content, spanInfo); err != nil {
+		if err := childSink.PersistTurnEnd(MessageContent{Original: content}, spanInfo); err != nil {
 			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
 		}
 		// Both branches below report the same outcome, so one reading of IsError
@@ -835,7 +835,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		return
 	}
 
-	if err := childSink.PersistMessage(source, content, spanInfo); err != nil {
+	if err := childSink.PersistMessage(source, MessageContent{Original: content}, spanInfo); err != nil {
 		slog.Warn("claude route subagent message failed", "child", childID, "error", err)
 	}
 	if spanType != "" {

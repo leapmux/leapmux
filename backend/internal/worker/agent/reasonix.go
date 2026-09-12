@@ -2,11 +2,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const (
@@ -14,15 +12,7 @@ const (
 	reasonixSteerMethod    = "_reasonix.io/session/steer"
 )
 
-// ReasonixAgent manages a single Reasonix (DeepSeek) ACP process.
-//
-// Reasonix is an unusually minimal ACP agent: session/new returns only a
-// sessionId (no models/modes/configOptions channel), the model is fixed at
-// startup via the `--model` flag rather than a runtime RPC, and permission
-// mode is config-driven (reasonix.toml) and not switchable over ACP. So
-// Reasonix is a model-only provider -- it leaves modeChannel unmapped, sets no
-// reapply/refresh hooks, exposes no option groups, and relaunches (rather than
-// live-applies) when the model changes.
+// ReasonixAgent manages a Reasonix Agent Client Protocol (ACP) process.
 type ReasonixAgent struct {
 	acpBase
 }
@@ -33,21 +23,8 @@ func (a *ReasonixAgent) SteerInput(content string, attachments []*leapmuxv1.Atta
 
 // StartReasonix starts a Reasonix ACP agent process and performs the handshake.
 //
-// Unlike the other ACP providers, Reasonix has no afterHandshake apply step:
-// session/new returns only a sessionId (no models/modes to apply), so the
-// handshake itself activates the session and the manager serves the static
-// model catalog.
-//
-// Reasonix selects its model only at launch via `reasonix acp --model <name>`
-// and reports it nowhere over ACP, so LeapMux always pins it: the model is
-// resolved to the provider default (the IsDefault catalog entry, or the
-// LEAPMUX_REASONIX_DEFAULT_MODEL override) when the caller leaves it unset, and
-// the flag is always passed. This keeps the stored model in sync with the
-// running process (it can never be empty/unknown) and gives LeapMux full
-// control over the model rather than deferring to reasonix.toml's default_model
-// -- matching the service, which already resolves the model before launch.
-// It inherits the default prompt sender and the default nil-group
-// AvailableOptionGroups from acpBase.
+// The launch flag selects the initial model. The session response supplies
+// the live model catalog and mutable settings.
 func StartReasonix(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
 	model := opts.Model()
 	if model == "" {
@@ -61,57 +38,26 @@ func StartReasonix(ctx context.Context, opts Options, sink ProviderServices) (Ag
 		newAgent:     func() *ReasonixAgent { return &ReasonixAgent{} },
 		base:         func(a *ReasonixAgent) *acpBase { return &a.acpBase },
 		configure: func(a *ReasonixAgent) {
+			transcript := newReasonixToolTranscript(ctx, a.sink, a.currentSessionID, opts.WorkingDir)
+			a.sink = transcript
+			a.clearProviderState = transcript.reset
 			a.advertisedSteerMethod = func(response []byte) string {
 				return parseACPAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
 			}
-			// Pin the stored model to the launched one (acpStart set it from the
-			// possibly-empty model option). modeChannel stays unmapped, and Reasonix
-			// exposes no modes/configOptions channel, so opt out of the shared
-			// reapply/refresh hooks acpStart now defaults on (the ClearContext path
-			// nil-guards both). modelFixedAtLaunch makes a stray config_option_update
-			// model select a no-op so the stored model can't drift from the launch value.
+			// Keep the launch selection until the session reports its current model.
 			a.model = model
-			a.modelFixedAtLaunch = true
-			a.reapplySettings = nil
-			a.refreshFromSession = nil
-			// Registry entry from the spawn tool_call only: Reasonix withholds
-			// ToolProgress from ACP by design, so there is no update hook and
-			// the row stays running until the agent's final tool_result
-			// closes the span (no close signal arrives over ACP for it).
-			// Reasonix's rawInput carries {description, prompt} with NO
-			// subagent_type, so it uses its own shape detector.
+			a.modeChannel = modeChannelPermissionMode
+			a.clientCapabilityMeta = map[string]any{"reasonix.io": map[string]any{"mcpInteraction": map[string]any{"supported": true, "schemaVersion": 1}}}
+			// Task launches open no span. Final updates close the task registry row.
 			a.subagentFromToolCall = reasonixSubagentFromToolCall
-			// Reasonix streams its goal state on its own notification, outside
-			// the standard ACP session updates. Read-only: see reasonix_goal.go
-			// for why no GoalWriter is implemented.
+			a.subagentFromToolCallUpdate = reasonixSubagentFromToolCallUpdate
+			// Reasonix sends goal state outside standard ACP session updates.
 			a.extraMethod = a.handleExtraMethod
 		},
+		afterHandshake: func(a *ReasonixAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPermissionModeStartup(handshake, opts, contracts.ReasonixModeNormal, model)
+		},
 	})
-}
-
-// UpdateSettings handles a live settings change. Reasonix fixes its model at
-// startup via the `--model` flag and cannot switch it over ACP, so a model
-// change returns false to make the service fall back to a stop+restart, which
-// relaunches the process with the new --model. Every other change (Reasonix has
-// none) is a no-op that needs no restart.
-func (a *ReasonixAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
-	requested := options[OptionIDModel]
-	if requested == "" {
-		return a.SettingsSnapshot()
-	}
-	a.mu.Lock()
-	current := a.model
-	a.mu.Unlock()
-	// Returning false signals "can't apply live" -> the service relaunches with
-	// the new model option.
-	if requested != current {
-		return restartRequiredSettings(options)
-	}
-	return a.SettingsSnapshot()
-}
-
-func (a *ReasonixAgent) SettingsSnapshot() SettingsApplyResult {
-	return confirmedSettings(CurrentOptions(a.OptionGroups()))
 }
 
 // reasonixAvailableModels is the static catalog of Reasonix's built-in provider
@@ -130,58 +76,11 @@ func init() {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 		StartReasonix,
 		reasonixAvailableModels,
-		nil, // no permission-mode / config-option groups
+		nil, // The session supplies available modes and config options.
 		"LEAPMUX_REASONIX_DEFAULT_MODEL",
 		"",
 		"reasonix",
 	)
-}
-
-// reasonixSubagentFromToolCall detects Reasonix's spawn tool_call. Reasonix
-// sends a single tool_call (kind "other", title "task") whose rawInput carries
-// {description, prompt} with NO subagent_type discriminator. Registry-only:
-// Reasonix withholds ToolProgress from ACP by design, and no child-session
-// content crosses the wire.
-func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
-	if len(tc.RawInput) == 0 {
-		return nil
-	}
-	var input struct {
-		Description string          `json:"description"`
-		Prompt      json.RawMessage `json:"prompt"`
-	}
-	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
-		return nil
-	}
-	// Spawn shape = a prompt (optionally a description). No subagent_type, so
-	// the prompt is the ONLY discriminator Reasonix supplies and it is required.
-	// Accepting a description alone made every ordinary tool that carries one a
-	// spawn, which now costs that tool its span as well as adding a false
-	// sidebar row.
-	//
-	// The raw form is tested, not the length: an absent prompt gives no bytes,
-	// but an explicit `null` gives four and an empty string gives two, and
-	// neither of those is a prompt.
-	switch string(input.Prompt) {
-	case "", "null", `""`:
-		return nil
-	}
-	title := tc.Title
-	if title == "" || title == "task" {
-		title = input.Description
-	}
-	if title == "" {
-		title = "Reasonix subagent"
-	}
-	// No Prompt. Reasonix is registry-only and wires no update hook at all, so
-	// it reports no ChildAgentKey (nothing to spend the prompt on) and produces
-	// no closing observation (nothing to drop it on) -- a remembered prompt here
-	// would be held for the life of the agent process. `prompt` still
-	// discriminates the spawn shape above, by presence.
-	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
-		Title:  title,
-		Status: bgtask.StatusRunning,
-		Spawns: true,
-	}
+	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, OptionIDPermissionMode, OptionIDEffort, contracts.ReasonixConfigToolApproval)
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, PermissionDefaults{Fallback: contracts.ReasonixModeNormal})
 }

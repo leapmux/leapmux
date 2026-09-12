@@ -1,14 +1,14 @@
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GoalSurface } from '~/stores/chatGoal'
 import { TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '~/lib/jsonPick'
 
 // ---------------------------------------------------------------------------
 // Provider-neutral to-do list model + conversions
 //
 // The store-shape TodoItem and the helpers that normalize the various provider
 // wire forms (Claude TodoWrite/Task*, Codex turn/plan, ACP sessionUpdate=plan)
-// into it. A leaf module -- it imports only the generated proto types -- so the
-// chat store, the sidebar, and the provider extractors share one to-do shape
+// into it. The chat store, the sidebar, and provider extractors share one shape
 // without routing the conversions through the window store.
 // ---------------------------------------------------------------------------
 
@@ -146,14 +146,16 @@ export function protoTodoToStore(t: ProtoTodoItem, index: number): TodoItem {
 export function rawTodosToItems(raw: unknown): TodoItem[] {
   if (!Array.isArray(raw))
     return []
-  return raw.map((t: Record<string, unknown>, i: number) => {
-    const content = String(t.content || '')
-    return {
+  return raw.flatMap((t, i) => {
+    if (!isObject(t))
+      return []
+    const content = String(t.content ?? '')
+    return [{
       rowKey: todoRowKey(undefined, i, content),
       content,
       status: normalizeTodoStatus(t.status),
-      activeForm: String(t.activeForm || ''),
-    }
+      activeForm: String(t.activeForm ?? ''),
+    }]
   })
 }
 

@@ -7,25 +7,32 @@ import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { controlRequestProvider } from '~/stores/control.store'
 import * as styles from './ControlRequestBanner.css'
+import { useControlRequestSource } from './controlRequestSource'
 import { AskUserQuestionActions, AskUserQuestionContent, controlQuestion } from './controls/AskUserQuestionControl'
+import { ElicitationActions, ElicitationContent } from './controls/ElicitationControl'
 import { pluginFor } from './providers/registry'
 
-function createControlQuestion(props: Pick<BannerContentProps, 'request' | 'agentProvider'>) {
+function createControlInputs(props: Pick<BannerContentProps, 'request' | 'agentProvider' | 'messageContext'>) {
   // This memo is a SIBLING of the `<Show when={props.request}>` below, never a
   // descendant, so that Show cannot dispose it first. A caller that passes
   // `request` as a reactive prop therefore re-runs this memo with the removed
   // request. `controlQuestion` accepts an absent request for that reason.
   // `AgentEditorPanel` keys its owner on the request and never does that, but
   // the prop is public.
-  return createMemo(() => controlQuestion(props.request, props.agentProvider))
+  const provider = createMemo(() => controlRequestProvider(props.request, props.agentProvider))
+  const source = useControlRequestSource(() => props.request, () => props.messageContext, provider)
+  const question = createMemo(() => controlQuestion(props.request, provider(), source()))
+  const elicitation = createMemo(() => props.request ? pluginFor(provider())?.elicitation?.(props.request.payload, source()) : undefined)
+  return { question, elicitation, provider }
 }
 
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<BannerContentProps> = (props) => {
-  const plugin = () => pluginFor(props.agentProvider)
+  const { question, elicitation, provider } = createControlInputs(props)
+  const plugin = () => pluginFor(provider())
   const pluginContent = () => plugin()?.ControlContent
-  const question = createControlQuestion(props)
   const { copied, copy } = useCopyButton(() => prettifyJson(props.request?.payload))
 
   return (
@@ -41,10 +48,11 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
               data-testid="control-copy-json"
             />
           </div>
-          <Show when={question()} fallback={<Dynamic component={pluginContent()} {...props} request={request()} />}>
+          <Show when={question()} fallback={<Show when={elicitation()} fallback={<Dynamic component={pluginContent()} {...props} agentProvider={provider()} request={request()} />}>{elicitation => <ElicitationContent {...props} agentProvider={provider()} request={request()} elicitation={elicitation()} />}</Show>}>
             {question => (
               <AskUserQuestionContent
                 {...props}
+                agentProvider={provider()}
                 request={request()}
                 questions={question().questions}
               />
@@ -58,9 +66,9 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
 
 /** Renders control request action buttons only, for the footer slot. */
 export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
-  const plugin = () => pluginFor(props.agentProvider)
+  const { question, elicitation, provider } = createControlInputs(props)
+  const plugin = () => pluginFor(provider())
   const pluginActions = () => plugin()?.ControlActions
-  const question = createControlQuestion(props)
   return (
     <Show when={props.request}>
       {request => (
@@ -80,10 +88,11 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
             onCleanup(() => element.removeEventListener('click', blockUntilReady, true))
           }}
         >
-          <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
+          <Show when={question()} fallback={<Show when={elicitation()} fallback={<Dynamic component={pluginActions()} {...props} agentProvider={provider()} request={request()} />}>{elicitation => <ElicitationActions {...props} agentProvider={provider()} request={request()} elicitation={elicitation()} />}</Show>}>
             {question => (
               <AskUserQuestionActions
                 {...props}
+                agentProvider={provider()}
                 request={request()}
                 questions={question().questions}
                 onSubmitAnswers={() => question().capability.sendAnswer(

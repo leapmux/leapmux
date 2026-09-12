@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ZCode's control requests: a permission prompt, a plan approval, a question.
@@ -65,6 +66,8 @@ type zcodePermissionOption struct {
 // ResolveControlResponse, and the app-server waits for it -- which is the whole
 // point of a permission prompt.
 func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	var req zcodePermissionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode permission request unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -79,6 +82,9 @@ func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
 		slog.Warn("zcode permission request carried no request id", "agent_id", a.agentID, "tool", req.ToolName)
 		a.replyZCodePermission(id, req.Options, ControlBehaviorDeny, "leapmux could not route this permission request")
 		return
+	}
+	if _, err := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, req.Input); err != nil {
+		slog.Warn("recover permission tool input", "agent_id", a.agentID, "tool_call_id", req.ToolCallID, "error", err)
 	}
 
 	// Check for a repeat BEFORE the marshal below. The app-server re-announces an
@@ -117,11 +123,12 @@ func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
 type zcodeUserInputRequest struct {
-	RequestID  string `json:"requestId"`
-	SessionID  string `json:"sessionId"`
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
-	Prompt     string `json:"prompt"`
+	RequestID  string          `json:"requestId"`
+	SessionID  string          `json:"sessionId"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Prompt     string          `json:"prompt"`
+	Input      json.RawMessage `json:"input"`
 	Schema     struct {
 		Interaction string               `json:"interaction"`
 		Questions   []zcodeInputQuestion `json:"questions"`
@@ -156,33 +163,49 @@ func (r zcodeUserInputRequest) questions() []zcodeInputQuestion {
 // isPlanApproval reports whether this request is the plan-approval prompt rather
 // than a question.
 func (r zcodeUserInputRequest) isPlanApproval() bool {
-	return r.Schema.Interaction == ZCodeInteractionPlanApproval
+	return r.Schema.Interaction == contracts.ZCodeInteractionPlanApproval
 }
 
-// planText returns the plan a plan approval asks about.
-//
-// The app-server puts the plan under `context.plan` and leaves `prompt` holding its own
-// boilerplate ("Review this implementation plan."). The plan must therefore travel as its
-// own field: the frontend reads the first question text, and the question a plan approval
-// gets is synthesized here, so a plan left in `context` never reaches the banner.
-//
-// Falls back to `prompt` for a build that states the plan there and sends no context.
+// planText reads the native tool input first, then context, then the prompt fallback.
 func (r zcodeUserInputRequest) planText() string {
-	var ctx struct {
-		Plan string `json:"plan"`
-	}
-	if len(r.Context) > 0 {
-		// A context that does not decode is not an error here: the plan simply is not in it.
-		_ = json.Unmarshal(r.Context, &ctx)
-	}
-	if strings.TrimSpace(ctx.Plan) != "" {
-		return ctx.Plan
+	for _, data := range []json.RawMessage{r.Input, r.Context} {
+		var content struct {
+			Plan string `json:"plan"`
+		}
+		if json.Unmarshal(data, &content) == nil && strings.TrimSpace(content.Plan) != "" {
+			return content.Plan
+		}
 	}
 	return r.Prompt
 }
 
+// toolInput adds a missing plan field from the native context or prompt.
+func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
+	if !r.isPlanApproval() || strings.TrimSpace(r.planText()) == "" {
+		return r.Input, nil
+	}
+	var fields map[string]json.RawMessage
+	if !zcodeInputIsAbsent(r.Input) && json.Unmarshal(r.Input, &fields) != nil {
+		return r.Input, nil
+	}
+	if _, exists := fields["plan"]; exists {
+		return r.Input, nil
+	}
+	if fields == nil {
+		fields = make(map[string]json.RawMessage)
+	}
+	plan, err := json.Marshal(r.planText())
+	if err != nil {
+		return nil, err
+	}
+	fields["plan"] = plan
+	return json.Marshal(fields)
+}
+
 // handleUserInputRequest persists a plan approval or a question.
-func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
+func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	var req zcodeUserInputRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode user input request unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -195,6 +218,16 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 			zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		return
 	}
+	nativeInput, err := req.toolInput()
+	if err != nil {
+		slog.Warn("encode interaction tool input", "agent_id", a.agentID, "error", err)
+		a.replyZCodeControlFailure(id, "LeapMux could not read the tool input.")
+		return
+	}
+	matched, sourceErr := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, nativeInput)
+	if sourceErr != nil {
+		slog.Warn("recover interaction tool input", "agent_id", a.agentID, "tool_call_id", req.ToolCallID, "error", sourceErr)
+	}
 
 	// Check for a repeat BEFORE the two marshals below. The app-server re-announces an
 	// unanswered request every second, doubling to ten, for as long as the user takes to
@@ -206,6 +239,21 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 		slog.Debug("zcode re-announced user-input request republished", "agent_id", a.agentID, "request_id", req.RequestID)
 		a.publishZCodeControlRequest(req.RequestID, stored)
 		return
+	}
+	if req.isPlanApproval() && !matched {
+		if len(original) == 0 {
+			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
+			return
+		}
+		spanID := req.ToolCallID
+		if spanID == "" {
+			spanID = req.RequestID
+		}
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: spanID, SpanType: zcodeControlPlanApproval, NoSpan: true}); err != nil {
+			slog.Error("persist plan control source", "agent_id", a.agentID, "request_id", req.RequestID, "error", err)
+			a.replyZCodeControlFailure(id, "LeapMux could not store the plan.")
+			return
+		}
 	}
 
 	toolName := zcodeControlAskUserQuestion
@@ -233,7 +281,7 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 		Type:      "control_request",
 		RequestID: req.RequestID,
 		WireID:    id,
-		Method:    ZCodeMethodRequestUserInput,
+		Method:    contracts.ZCodeMethodRequestUserInput,
 		Request: zcodeControlRequestHeader{
 			ToolName:  toolName,
 			ToolUseID: req.ToolCallID,
@@ -647,8 +695,13 @@ func (a *zcodeAgent) rememberZCodeControlRequest(requestID string, payload json.
 // Shared by the first announcement and by each republished repeat, so the two can never
 // store one payload and show another.
 func (a *zcodeAgent) publishZCodeControlRequest(requestID string, payload json.RawMessage) {
-	claimToken := a.sink.PersistControlRequest(requestID, payload)
-	a.sink.BroadcastControlRequest(requestID, payload, claimToken)
+	if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
+		slog.Error("publish zcode control request", "agent_id", a.agentID, "request_id", requestID, "error", err)
+		a.forgetZCodeControlRequest(requestID)
+		if wireID, _, ok := ExtractJSONRPCID(payload); ok {
+			a.replyZCodeControlFailure(wireID, controlPublicationFailure)
+		}
+	}
 }
 
 // forgetZCodeControlRequest reports whether requestID was a prompt LeapMux
@@ -682,7 +735,7 @@ func zcodeReplyForAnswer(stored zcodeControlRequestPayload, behavior, message st
 			return nil, err
 		}
 		return result, nil
-	case ZCodeMethodRequestUserInput:
+	case contracts.ZCodeMethodRequestUserInput:
 		return zcodeUserInputResult(behavior, message, zcodeUserInputReply{
 			PlanApproval: stored.Request.ToolName == zcodeControlPlanApproval,
 			Questions:    zcodeStoredQuestionTexts(stored.Request.Input),
@@ -767,7 +820,7 @@ func zcodeControlRequestContext(stored zcodeControlRequestPayload) json.RawMessa
 				ctx.Options = append(ctx.Options, option{OptionID: o.OptionID, Name: o.Name})
 			}
 		}
-	case ZCodeMethodRequestUserInput:
+	case contracts.ZCodeMethodRequestUserInput:
 		var input struct {
 			Questions []question `json:"questions"`
 		}

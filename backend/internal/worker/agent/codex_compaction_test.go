@@ -15,8 +15,8 @@ import (
 func TestCodexCompactContextUsesNativeCompaction(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.threadID = "thread-1"
 	agent.turnID = "turn-1"
@@ -37,8 +37,8 @@ func TestCodexCompactContextUsesNativeCompaction(t *testing.T) {
 func TestCodexSendInputDoesNotInterceptCompactCommand(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.threadID = "thread-1"
 
@@ -65,7 +65,7 @@ func TestCodexSendInputDoesNotInterceptCompactCommand(t *testing.T) {
 func TestCodexTurnStartProcessExitIsDeliveryUncertain(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.threadID = "thread-1"
 	close(agent.processDone)
 
@@ -75,8 +75,8 @@ func TestCodexTurnStartProcessExitIsDeliveryUncertain(t *testing.T) {
 func TestCodexTurnStartExplicitRejectionIsKnownFailure(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{"code":-32600,"message":"thread is active"}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32600,"message":"thread is active"}`)}
 	})
 	agent.threadID = "thread-1"
 
@@ -101,9 +101,9 @@ func TestCodexCompactionStartNotificationConfirmsDelivery(t *testing.T) {
 
 	releaseResponse := make(chan struct{})
 	defer close(releaseResponse)
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
 		<-releaseResponse
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.threadID = "thread-1"
 	result := make(chan error, 1)

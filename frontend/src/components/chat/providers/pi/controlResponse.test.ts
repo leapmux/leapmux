@@ -1,6 +1,8 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
+import { createControlAnswerState } from '../../controls/types'
 import {
+  piAskAnswerValue,
   piCancelResponse,
   piConfirmResponse,
   piControlResponseDisplay,
@@ -13,6 +15,16 @@ function cr(method: string, response: Record<string, unknown> | undefined): Pers
 }
 
 describe('pi controlResponse helpers', () => {
+  it('preserves saved multi-select choices when source details are unavailable', () => {
+    const state = createControlAnswerState({ selections: { 0: ['1', '2'] } })
+    expect(piAskAnswerValue(state, [{ question: 'Choose', options: [] }], { method: 'input', placeholder: '1,3' })).toBe('1,2')
+  })
+
+  it('preserves numeric-looking custom text as typed', () => {
+    const state = createControlAnswerState({ customTexts: { 0: '1. A — custom text' } })
+    expect(piAskAnswerValue(state, [], { method: 'input', placeholder: '1,3' })).toBe('1. A — custom text')
+  })
+
   it('builds value responses for select / input / editor', () => {
     expect(piValueResponse('req-1', 'Allow')).toEqual({
       type: 'extension_ui_response',
@@ -59,6 +71,16 @@ describe('pi controlResponse helpers', () => {
 })
 
 describe('picontrolresponsedisplay', () => {
+  it.each([
+    ['Implement here', 'Approved'],
+    ['Start fresh and implement', 'Approved'],
+    ['Stay in Plan mode', 'Rejected'],
+    ['Export plan…', 'Export plan…'],
+  ])('renders the plan decision %s as %s', (value, expected) => {
+    expect(piControlResponseDisplay({ ...cr('select', { value }), request: { method: 'select', planApproval: true } }))
+      .toEqual({ kind: 'label', text: expected })
+  })
+
   it('labels a cancellation regardless of method', () => {
     expect(piControlResponseDisplay(cr('confirm', { cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
   })

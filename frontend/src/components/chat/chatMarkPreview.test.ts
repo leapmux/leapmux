@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageContext } from '~/test-support/messageContext'
 import { __resetMarkPreviewCacheForTest, forgetMarkPreview, getCachedMarkPreview, messageMarkPreviewText, warmMarkPreview } from './chatMarkPreview'
 import * as registry from './providers/registry'
 // Register provider plugins so messageMarkPreviewText (called inside warm) can resolve one.
@@ -102,22 +103,22 @@ describe('message mark preview text', () => {
 
 describe('warmmarkpreview', () => {
   it('resolves from the loaded window without fetching', () => {
-    const fetchMessageBySeq = vi.fn()
-    warmMarkPreview('w1', 'a1', 5n, {
-      getLoadedMessageBySeq: () => userMessage(5n, 'in window'),
-      fetchMessageBySeq,
-    })
+    const fetchMessage = vi.fn()
+    warmMarkPreview('a1', 5n, testMessageContext({
+      messageBySeq: () => userMessage(5n, 'in window'),
+      fetchMessage,
+    }))
     expect(getCachedMarkPreview('a1', 5n)).toBe('in window')
-    expect(fetchMessageBySeq).not.toHaveBeenCalled()
+    expect(fetchMessage).not.toHaveBeenCalled()
   })
 
   it('fetches an out-of-window mark and caches its extracted preview', async () => {
-    const fetchMessageBySeq = vi.fn().mockResolvedValue(userMessage(9n, 'far away'))
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
+    const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'far away'))
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
     // Undefined = still resolving; the tooltip shows a loading line meanwhile.
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined()
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('far away'))
-    expect(fetchMessageBySeq).toHaveBeenCalledOnce()
+    expect(fetchMessage).toHaveBeenCalledOnce()
   })
 
   it('dedupes concurrent hovers on the same seq to a single fetch', async () => {
@@ -125,74 +126,72 @@ describe('warmmarkpreview', () => {
     const pending = new Promise<AgentChatMessage>((r) => {
       resolve = r
     })
-    const fetchMessageBySeq = vi.fn().mockReturnValue(pending)
-    const deps = { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq }
-    warmMarkPreview('w1', 'a1', 9n, deps)
-    warmMarkPreview('w1', 'a1', 9n, deps)
-    expect(fetchMessageBySeq).toHaveBeenCalledOnce()
+    const fetchMessage = vi.fn().mockReturnValue(pending)
+    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    warmMarkPreview('a1', 9n, deps)
+    warmMarkPreview('a1', 9n, deps)
+    expect(fetchMessage).toHaveBeenCalledOnce()
     resolve(userMessage(9n, 'landed'))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('landed'))
   })
 
   it('does not re-fetch a seq already resolved', async () => {
-    const fetchMessageBySeq = vi.fn().mockResolvedValue(userMessage(9n, 'once'))
-    const deps = { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq }
-    warmMarkPreview('w1', 'a1', 9n, deps)
+    const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'once'))
+    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    warmMarkPreview('a1', 9n, deps)
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('once'))
-    warmMarkPreview('w1', 'a1', 9n, deps)
-    expect(fetchMessageBySeq).toHaveBeenCalledOnce()
+    warmMarkPreview('a1', 9n, deps)
+    expect(fetchMessage).toHaveBeenCalledOnce()
   })
 
   it('bounds the per-agent preview cache across long hover sessions', () => {
     for (let seq = 1n; seq <= 505n; seq++) {
-      warmMarkPreview('w1', 'a1', seq, {
-        getLoadedMessageBySeq: () => userMessage(seq, `message ${seq}`),
-        fetchMessageBySeq: vi.fn(),
-      })
+      warmMarkPreview('a1', seq, testMessageContext({
+        messageBySeq: () => userMessage(seq, `message ${seq}`),
+        fetchMessage: vi.fn(),
+      }))
     }
     expect(getCachedMarkPreview('a1', 1n)).toBeUndefined()
     expect(getCachedMarkPreview('a1', 505n)).toBe('message 505')
   })
 
   it('caches "" when the message is gone, so the rail shows a label without re-fetching', async () => {
-    const fetchMessageBySeq = vi.fn().mockResolvedValue(undefined)
-    const deps = { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq }
-    warmMarkPreview('w1', 'a1', 9n, deps)
+    const fetchMessage = vi.fn().mockResolvedValue(undefined)
+    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    warmMarkPreview('a1', 9n, deps)
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
-    warmMarkPreview('w1', 'a1', 9n, deps)
-    expect(fetchMessageBySeq).toHaveBeenCalledOnce()
+    warmMarkPreview('a1', 9n, deps)
+    expect(fetchMessage).toHaveBeenCalledOnce()
   })
 
   it('leaves the cache unresolved when the fetch rejects, so a later hover retries', async () => {
     // A transient RPC failure (reject) must NOT be cached as '' -- that would poison the
     // dot with a permanent label for the rest of the session. It stays unresolved and a
     // later hover re-fetches; only a resolved-undefined (definitive absence) caches ''.
-    const fetchMessageBySeq = vi.fn()
+    const fetchMessage = vi.fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(userMessage(9n, 'recovered'))
-    const deps = { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq }
-    warmMarkPreview('w1', 'a1', 9n, deps)
+    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    await warmMarkPreview('a1', 9n, deps)
     // The rejection settles and the in-flight token is dropped, with nothing cached.
-    await vi.waitFor(() => expect(fetchMessageBySeq).toHaveBeenCalledOnce())
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(fetchMessage).toHaveBeenCalledOnce())
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined()
     // A later hover re-fetches (the '' poison is gone) and resolves the real preview.
-    warmMarkPreview('w1', 'a1', 9n, deps)
+    await warmMarkPreview('a1', 9n, deps)
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('recovered'))
-    expect(fetchMessageBySeq).toHaveBeenCalledTimes(2)
+    expect(fetchMessage).toHaveBeenCalledTimes(2)
   })
 
   it('loaded-window extraction throw caches "" synchronously without propagating', () => {
     // A plugin previewText throw on the SYNC loaded-window path must not escape into the
     // caller's hover effect; it caches '' (a label), same as any un-previewable message.
     withThrowingPlugin(() => {
-      const fetchMessageBySeq = vi.fn()
+      const fetchMessage = vi.fn()
       expect(() =>
-        warmMarkPreview('w1', 'a1', 4n, { getLoadedMessageBySeq: () => userMessage(4n, 'x'), fetchMessageBySeq }),
+        warmMarkPreview('a1', 4n, testMessageContext({ messageBySeq: () => userMessage(4n, 'x'), fetchMessage })),
       ).not.toThrow()
       expect(getCachedMarkPreview('a1', 4n)).toBe('')
-      expect(fetchMessageBySeq).not.toHaveBeenCalled()
+      expect(fetchMessage).not.toHaveBeenCalled()
     })
   })
 
@@ -205,12 +204,12 @@ describe('warmmarkpreview', () => {
       previewText() { throw new Error('boom') },
     } as unknown as ReturnType<typeof registry.pluginFor>)
     try {
-      const fetchMessageBySeq = vi.fn().mockResolvedValue(userMessage(9n, 'far'))
-      const deps = { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq }
-      warmMarkPreview('w1', 'a1', 9n, deps)
+      const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'far'))
+      const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+      warmMarkPreview('a1', 9n, deps)
       await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
-      warmMarkPreview('w1', 'a1', 9n, deps) // a second hover must NOT re-fetch
-      expect(fetchMessageBySeq).toHaveBeenCalledOnce()
+      warmMarkPreview('a1', 9n, deps) // a second hover must NOT re-fetch
+      expect(fetchMessage).toHaveBeenCalledOnce()
     }
     finally {
       spy.mockRestore()
@@ -218,17 +217,17 @@ describe('warmmarkpreview', () => {
   })
 
   it('ignores an invalid sequence', () => {
-    const fetchMessageBySeq = vi.fn()
-    warmMarkPreview('w1', 'a1', 0n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
-    warmMarkPreview('w1', 'a1', -1n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
-    expect(fetchMessageBySeq).not.toHaveBeenCalled()
+    const fetchMessage = vi.fn()
+    warmMarkPreview('a1', 0n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
+    warmMarkPreview('a1', -1n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
+    expect(fetchMessage).not.toHaveBeenCalled()
     expect(getCachedMarkPreview('a1', 0n)).toBeUndefined()
     expect(getCachedMarkPreview('a1', -1n)).toBeUndefined()
   })
 
   it('forgetMarkPreview drops one agent\'s entries and leaves other agents intact', () => {
-    warmMarkPreview('w1', 'a1', 5n, { getLoadedMessageBySeq: () => userMessage(5n, 'agent one'), fetchMessageBySeq: vi.fn() })
-    warmMarkPreview('w1', 'a2', 5n, { getLoadedMessageBySeq: () => userMessage(5n, 'agent two'), fetchMessageBySeq: vi.fn() })
+    warmMarkPreview('a1', 5n, testMessageContext({ messageBySeq: () => userMessage(5n, 'agent one'), fetchMessage: vi.fn() }))
+    warmMarkPreview('a2', 5n, testMessageContext({ messageBySeq: () => userMessage(5n, 'agent two'), fetchMessage: vi.fn() }))
     expect(getCachedMarkPreview('a1', 5n)).toBe('agent one')
     expect(getCachedMarkPreview('a2', 5n)).toBe('agent two')
 
@@ -242,8 +241,8 @@ describe('warmmarkpreview', () => {
     const pending = new Promise<AgentChatMessage | undefined>((r) => {
       resolve = r
     })
-    const fetchMessageBySeq = vi.fn().mockReturnValue(pending)
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
+    const fetchMessage = vi.fn().mockReturnValue(pending)
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined() // still resolving
 
     // Agent closed while the fetch is in flight: the cache has no entry yet to prune.
@@ -261,12 +260,12 @@ describe('warmmarkpreview', () => {
       resolveOld = r
     })
     const oldFetch = vi.fn().mockReturnValue(oldPending)
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq: oldFetch })
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: oldFetch }))
 
     forgetMarkPreview('a1') // close
     // Reopen + re-warm: a fresh fetch resolves first with the current value.
     const newFetch = vi.fn().mockResolvedValue(userMessage(9n, 'fresh'))
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq: newFetch })
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: newFetch }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('fresh'))
 
     // The OLD fetch resolves late; its token was superseded, so it must not clobber 'fresh'.
@@ -279,7 +278,7 @@ describe('warmmarkpreview', () => {
   it('re-fetches after forget so a stale "" does not survive a close/reopen', async () => {
     // First warm resolves empty (message transiently gone) and caches ''.
     const gone = vi.fn().mockResolvedValue(undefined)
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq: gone })
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: gone }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
 
     // Agent closed -> cache pruned. The reopened agent now has the message, and a re-warm
@@ -287,7 +286,7 @@ describe('warmmarkpreview', () => {
     forgetMarkPreview('a1')
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined()
     const back = vi.fn().mockResolvedValue(userMessage(9n, 'now available'))
-    warmMarkPreview('w1', 'a1', 9n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq: back })
+    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: back }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('now available'))
     expect(back).toHaveBeenCalledOnce()
   })

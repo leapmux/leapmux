@@ -285,6 +285,7 @@ func TestACP_ReasonixSubagentFromToolCall_SpawnShapeNoSubagentType(t *testing.T)
 func TestACP_ReasonixSubagentFromToolCall_PromptOnlyUsesDefaultTitle(t *testing.T) {
 	tc := acpToolCallEnvelope{
 		ToolCallID: "tc-rx2",
+		Title:      "task",
 		RawInput:   json.RawMessage(`{"prompt":"do thing"}`),
 	}
 	obs := reasonixSubagentFromToolCall(tc)
@@ -504,7 +505,7 @@ func TestACP_WireDecode_ToolCallParsesRawInput(t *testing.T) {
 	obs := openCodeSubagentFromToolCall(tc)
 	if assert.NotNil(t, obs, "OpenCode detector fires on decoded wire payload") {
 		assert.Equal(t, "tc-1", obs.RowKey)
-		assert.Equal(t, "task", obs.Title, "non-empty wire title takes precedence over description")
+		assert.Equal(t, "build feature", obs.Title, "the description replaces the generic native task title")
 	}
 }
 
@@ -777,6 +778,7 @@ func TestACPSubagentDetectors_RegistryOnlyProvidersRecordNoPrompt(t *testing.T) 
 
 	rx := reasonixSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-3",
+		Title:      "task",
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Trace it."}`),
 	})
 	require.NotNil(t, rx)
@@ -1018,11 +1020,46 @@ func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	}
 }
 
-// Kilo opens its spawn with `rawInput: {}` and reveals the spawn shape only on
-// the first in-progress update, so the span is already open by then. The update
-// gives it back with CloseSpan, which frees the column but keeps the recorded
-// span type that the closing update reads back.
-func TestACP_KiloLateSpawnGivesItsSpanBack(t *testing.T) {
+func TestACP_OpenCodeFamilyTaskWithoutArgumentsOpensNoSpan(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	b := &acpBase{sink: sink, subagentFromToolCall: openCodeSubagentFromToolCall, subagentFromToolCallUpdate: openCodeSubagentFromToolCallUpdate}
+	// Both installed providers emit this request before their tool arguments arrive.
+	b.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","kind":"think","status":"pending","rawInput":{}}`))
+	assert.Empty(t, sink.OpenSpans())
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].NoSpan)
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"task-call","status":"in_progress","rawInput":{"description":"Inspect the code","prompt":"Read the entry points.","subagent_type":"explore"}}`))
+	assert.Empty(t, sink.OpenSpans())
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"task-call","status":"completed","rawOutput":{"metadata":{"sessionId":"child-session"}}}`))
+	require.Len(t, sink.Messages(), 2)
+	assert.Empty(t, sink.Messages()[1].SpansOpenAtPersist)
+}
+
+func TestACP_OpenCodeTaskIdentityWithoutArguments(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`null`)} {
+		obs := openCodeSubagentFromToolCall(acpToolCallEnvelope{ToolCallID: "task-call", Title: "task", Kind: "think", RawInput: raw})
+		require.NotNil(t, obs)
+		assert.True(t, obs.Spawns)
+		assert.Equal(t, "Subagent", obs.Title)
+	}
+	assert.Nil(t, openCodeSubagentFromToolCall(acpToolCallEnvelope{ToolCallID: "other-call", Title: "task", Kind: "other", RawInput: json.RawMessage(`{}`)}))
+}
+
+func TestACP_ReasonixCapabilityTaskOpensNoSpan(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	b := &acpBase{sink: sink, subagentFromToolCall: reasonixSubagentFromToolCall}
+	b.handleToolCall(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"use_capability","kind":"other","status":"pending","rawInput":{"action":"call","capability_id":"tool:task","arguments":{"description":"Inspect sample","prompt":"Read sample.py"}}}`))
+	assert.Empty(t, sink.OpenSpans())
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].NoSpan)
+}
+
+// An unrecognized title needs later arguments to identify a subagent.
+// Releasing that span keeps its recorded type for the result row.
+func TestACP_LateSpawnGivesItsSpanBack(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}

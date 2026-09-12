@@ -1,6 +1,7 @@
 {
   "_readme": "Pi's RPC wire vocabulary, for the tables BOTH the Go provider and the TS renderer plugin read. Pi's stream is JSONL where every envelope carries a top-level `type` and an extension UI request carries a `method`, so those strings ARE the dispatch keys on both sides -- a drift between two hand copies stops a row rendering rather than failing a build. The Go-only vocabulary (the client->server `PiCommand*` names) stays in pi_protocol.go, per the contracts rule's one-side-only exemption. LeapMux does not own these values, so a change here follows Pi's protocol rather than leading it.",
   "events": {
+    "EntryAppended": "entry_appended",
     "AgentStart": "agent_start",
     "AgentEnd": "agent_end",
     "AgentSettled": "agent_settled",
@@ -26,6 +27,9 @@
     "TextDelta": "text_delta",
     "ThinkingDelta": "thinking_delta"
   },
+  "customTypes": {
+    "SubagentNotification": "subagent-notification"
+  },
   "dialogMethods": {
     "Select": "select",
     "Confirm": "confirm",
@@ -40,9 +44,31 @@
     "SetEditorText": "set_editor_text"
   },
   "toolNames": {
+    "AskUserQuestion": "ask_user_question",
+    "PlanComplete": "plan_mode_complete",
+    "Agent": "Agent",
+    "SubagentWorkflow": "SubagentWorkflow",
+    "Todo": "todo",
     "Bash": "bash",
     "Read": "read",
     "Edit": "edit",
     "Write": "write"
+  },
+  "planDialogs": {
+    "ReadyTitle": "Proposed plan ready. What next?"
+  },
+  "planActions": {
+    "ImplementHere": "Implement here",
+    "ImplementFresh": "Start fresh and implement",
+    "Stay": "Stay in Plan mode"
+  },
+  "mcpApprovalChoices": {
+    "AllowOnce": "Allow once",
+    "AllowForSession": "Allow for session",
+    "Deny": "Deny"
+  },
+  "mcpApprovalText": {
+    "TitlePrefix": "MCP: ",
+    "ArgumentsMarker": "\n\nArguments:\n"
   }
 }

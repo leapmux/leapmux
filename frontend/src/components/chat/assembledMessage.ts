@@ -1,6 +1,6 @@
 import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
 import { MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickString } from '~/lib/jsonPick'
 
 export type MessageCompletion = 'complete' | 'interrupted' | 'error'
 
@@ -48,15 +48,6 @@ export function parseAssembledMessage(value: unknown): AssembledMessage | null {
   if (!completion)
     return null
   return { kind, text: pickString(value, ASSEMBLED_MESSAGE.FieldText), completion }
-}
-
-export function parseProviderMessageCompletion(value: unknown): MessageCompletion | null {
-  if (!isObject(value))
-    return null
-  return parseCompletion(pickString(
-    pickObject(value, ASSEMBLED_MESSAGE.MetadataField),
-    ASSEMBLED_MESSAGE.FieldCompletion,
-  ))
 }
 
 export function completionMarker(completion: MessageCompletion | null): string | null {

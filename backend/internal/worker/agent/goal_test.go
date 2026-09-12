@@ -179,3 +179,11 @@ func TestParseGoalCommandText_ClassifiesTheCompleteCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestGoalTextRouteWithoutClearArgumentsRejectsClear(t *testing.T) {
+	t.Parallel()
+	route := goalTextRoute{provider: "test", command: "/goal"}
+	outcome, err := route.perform(GoalActionClear, "")
+	assert.ErrorIs(t, err, ErrGoalControlUnsupported)
+	assert.Empty(t, outcome.QueuedInput)
+}

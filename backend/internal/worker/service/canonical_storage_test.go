@@ -155,14 +155,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		GoalUpdatedAt:    sqltime.SQLiteNullTimeOf(now),
 		ID:               "agent-1",
 	}))
-
-	// control_requests.created_at via the column DEFAULT on CreateControlRequest.
-	require.NoError(t, queries.CreateControlRequest(ctx, gendb.CreateControlRequestParams{
+	// control_requests.created_at via the column DEFAULT on StoreControlRequest.
+	createTestControlRequest(t, ctx, queries, gendb.StoreControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "req-1",
 		Payload:    []byte("{}"),
 		ClaimToken: "claim-1",
-	}))
+	})
 
 	// worker_tab_payloads.created_at via the column DEFAULT on UpsertWorkerTabPayload.
 	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, gendb.UpsertWorkerTabPayloadParams{

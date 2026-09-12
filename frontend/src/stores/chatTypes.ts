@@ -18,7 +18,10 @@ export interface SpanMessageRevision {
   id: string
   seq: bigint
   contentVersion: number
+  supplementalRevision: bigint
 }
+
+export type ToolMessageSide = 'request' | 'result'
 
 /**
  * A scroll anchor: the message (by row id) the viewport top is pinned to, plus

@@ -20,18 +20,18 @@ import (
 func TestCopilotClearContextPersistsOutgoingBufferedText(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{"sessionId":"session-2"}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	sink := &testSink{}
 	agent.sink = sink
 	agent.appendAssistant("unfinished answer")
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	require.Len(t, sink.Messages(), 1)
 	assert.JSONEq(t, `{
 		"type":"assembled_message",
@@ -46,22 +46,22 @@ func TestCopilotClearContextReleasesATerminalCreatedDuringSessionNew(t *testing.
 
 	sessionNewReceived := make(chan struct{})
 	releaseSessionResponse := make(chan struct{})
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
 			close(sessionNewReceived)
 			<-releaseSessionResponse
-			return json.RawMessage(`{"sessionId":"session-2"}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.sink = &testSink{}
 	agent.bind(&agent.acpBase)
 	t.Cleanup(agent.releaseAllTerminals)
 
-	cleared := make(chan bool, 1)
+	cleared := make(chan error, 1)
 	go func() {
-		_, ok := agent.ClearContext()
-		cleared <- ok
+		_, clearErr := agent.ClearContext()
+		cleared <- clearErr
 	}()
 	<-sessionNewReceived
 
@@ -73,7 +73,7 @@ func TestCopilotClearContextReleasesATerminalCreatedDuringSessionNew(t *testing.
 	require.NoError(t, err)
 	agent.terminalCreate(json.RawMessage(`1`), params)
 	close(releaseSessionResponse)
-	require.True(t, <-cleared)
+	require.NoError(t, <-cleared)
 
 	agent.terminalsMu.Lock()
 	terminalCount := len(agent.terminals)
@@ -84,15 +84,15 @@ func TestCopilotClearContextReleasesATerminalCreatedDuringSessionNew(t *testing.
 func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "gpt-5.4"},
 				"modes":  {"currentModeId": "plan"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-4o"
 	agent.permissionMode = "agent"
@@ -101,8 +101,8 @@ func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "gpt-5.4", agent.model)
 	assert.Equal(t, "plan", agent.permissionMode)
@@ -120,14 +120,14 @@ func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 func TestCopilotClearContextReappliesOption(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		switch method {
 		case acpMethodSessionNew:
-			return json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"}}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"}}`)}
 		case acpMethodSessionSetConfigOption:
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.4"
 	agent.permissionMode = "agent"
@@ -137,8 +137,8 @@ func TestCopilotClearContextReappliesOption(t *testing.T) {
 	// The user had picked "high" in the prior session.
 	seedReasoningEffort(agent, "high")
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	var reapplied bool
 	for _, r := range requests() {
@@ -159,16 +159,16 @@ func TestCopilotClearContextReappliesOption(t *testing.T) {
 func TestCopilotClearContextKeepsReappliedOptionOverSessionDefault(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		switch method {
 		case acpMethodSessionNew:
 			// The fresh session reports reasoning_effort at the server default "medium".
-			return json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"medium","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"medium","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 		case acpMethodSessionSetConfigOption:
 			// The re-push confirms "high".
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.4"
 	agent.permissionMode = "agent"
@@ -179,8 +179,8 @@ func TestCopilotClearContextKeepsReappliedOptionOverSessionDefault(t *testing.T)
 	// The user had picked "high" in the prior session.
 	seedReasoningEffort(agent, "high")
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	assert.Equal(t, "high", optionids.GroupByID(agent.OptionGroups(), "reasoning_effort").GetCurrentValue(),
 		"the re-applied option survives the session refresh, not reverted to the session default")
@@ -204,20 +204,20 @@ func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 			return a
 		},
 		func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
-		func(req recordedRequest) json.RawMessage {
+		func(req recordedRequest) jsonrpcResponsePayload {
 			switch req.Method {
 			case acpMethodSessionNew:
-				return json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"}}`)
+				return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"}}`)}
 			case acpMethodSessionSetConfigOption:
 				// The model re-push surfaces reasoning_effort at the daemon default "none"; an
 				// effort write echoes whatever value it set.
 				if req.Params["configId"] == acpConfigOptionIDModel {
-					return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"none","options":[{"value":"none"},{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+					return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"none","options":[{"value":"none"},{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 				}
 				value, _ := req.Params["value"].(string)
-				return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"` + value + `","options":[{"value":"none"},{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+				return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"` + value + `","options":[{"value":"none"},{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 			}
-			return json.RawMessage(`{}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 		})
 	agent.model = "gpt-5.4"
 	agent.permissionMode = "agent"
@@ -228,8 +228,8 @@ func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 	// The user had picked "low" -- a real level below the raise's "high".
 	seedReasoningEffort(agent, "low")
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The LAST reasoning_effort write is the reapply of the stored "low", landing after the
 	// model write's "none" -> "high" raise.
@@ -253,18 +253,18 @@ func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 func TestCopilotClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		switch method {
 		case acpMethodSessionNew:
 			// The fresh session reports reasoning_effort still at "high" but with "medium"
 			// no longer offered -- a list-only change (value kept, available set shrinks).
-			return json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2","models":{"currentModelId":"gpt-5.4"},"modes":{"currentModeId":"agent"},"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]}`)}
 		case acpMethodSessionSetConfigOption:
 			// The re-push confirms "high" against the prior (full) list, so the list only
 			// changes when applySessionRefresh folds the narrower session/new payload above.
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.4"
 	agent.permissionMode = "agent"
@@ -275,8 +275,8 @@ func TestCopilotClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 	// The user had picked "high" in the prior session, surfaced with the full list.
 	seedReasoningEffort(agent, "high")
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The current selection is unchanged...
 	g := optionids.GroupByID(agent.OptionGroups(), "reasoning_effort")
@@ -292,16 +292,16 @@ func TestCopilotClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
 			// Cursor returns the wire format "default[]" for auto model.
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "default[]"},
 				"modes":  {"currentModeId": "agent"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "some-model"
 	agent.permissionMode = "plan"
@@ -310,8 +310,8 @@ func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "auto", agent.model)
 	assert.Equal(t, "agent", agent.permissionMode)
@@ -329,9 +329,9 @@ func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
 func TestCursorClearContextRefreshesOptions(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "default[]"},
 				"modes":  {"currentModeId": "agent"},
@@ -339,9 +339,9 @@ func TestCursorClearContextRefreshesOptions(t *testing.T) {
 					{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},
 					{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}
 				]
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "some-model"
 	agent.permissionMode = "plan"
@@ -350,8 +350,8 @@ func TestCursorClearContextRefreshesOptions(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The option group is surfaced after the mapped permission-mode group.
 	groups := agent.OptionGroups()
@@ -370,15 +370,15 @@ func TestCursorClearContextRefreshesOptions(t *testing.T) {
 func TestOpenCodeClearContextRefreshesPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"},
 				"modes":  {"currentModeId": "plan"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = "build"
@@ -387,8 +387,8 @@ func TestOpenCodeClearContextRefreshesPrimaryAgent(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "openai/gpt-5", agent.model)
 	assert.Equal(t, "plan", agent.currentPrimaryAgent)
@@ -409,15 +409,15 @@ func TestOpenCodeClearContextRefreshesPrimaryAgent(t *testing.T) {
 func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"},
 				"modes":  {"currentModeId": "compaction", "availableModes": [{"id":"build"},{"id":"plan"},{"id":"compaction"}]}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = "build"
@@ -426,8 +426,8 @@ func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The hidden pseudo-agent is dropped; the stored "build" (re-pushed by reapply)
 	// is kept rather than overwritten with "compaction".
@@ -443,18 +443,18 @@ func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
 func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"modes": {"currentModeId": "build"},
 				"configOptions": [{"id":"model","currentValue":"openai/gpt-5","options":[
 					{"value":"openai/gpt-5","name":"GPT-5"},
 					{"value":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"}
 				]}]
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.currentPrimaryAgent = "build"
@@ -464,8 +464,8 @@ func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The stale handshake-time list is replaced by the new session's models.
 	require.Len(t, agent.availableModels, 2)
@@ -483,15 +483,15 @@ func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {
 func TestOpenCodeClearContextRefreshesPrimaryAgentListFromNativeModes(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"},
 				"modes":  {"currentModeId": "plan", "availableModes": [{"id":"build"},{"id":"plan"},{"id":"review"}]}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = "build"
@@ -504,8 +504,8 @@ func TestOpenCodeClearContextRefreshesPrimaryAgentListFromNativeModes(t *testing
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The stale handshake list is replaced by the new session's native modes channel.
 	require.Len(t, agent.availablePrimaryAgents, 3)
@@ -524,17 +524,17 @@ func TestOpenCodeClearContextRefreshesPrimaryAgentListFromNativeModes(t *testing
 func TestOpenCodeClearContextReseedsOrphanedPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
 			// The new session lists [build, review] (dropping the stored "plan") and
 			// reports no current agent, with no configOptions to correct it.
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"},
 				"modes":  {"availableModes": [{"id":"build"},{"id":"review"}]}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = "plan"
@@ -543,8 +543,8 @@ func TestOpenCodeClearContextReseedsOrphanedPrimaryAgent(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// "plan" is gone from the rebuilt list, so the current re-seeds to the first option.
 	require.Len(t, agent.availablePrimaryAgents, 2)
@@ -560,15 +560,15 @@ func TestOpenCodeClearContextReseedsOrphanedPrimaryAgent(t *testing.T) {
 func TestCopilotClearContextRefreshesModeListFromNativeModes(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "gpt-5.4"},
 				"modes":  {"currentModeId": "agent", "availableModes": [{"id":"agent"},{"id":"plan"},{"id":"ask"}]}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-4o"
 	agent.permissionMode = "agent"
@@ -581,8 +581,8 @@ func TestCopilotClearContextRefreshesModeListFromNativeModes(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The stale handshake mode list is replaced by the new session's native modes channel.
 	require.Len(t, agent.availableModes, 3)
@@ -599,14 +599,14 @@ func TestCopilotClearContextRefreshesModeListFromNativeModes(t *testing.T) {
 func TestOpenCodeClearContextEmptyPrimaryAgentPreservesExtras(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = ""
@@ -615,8 +615,8 @@ func TestOpenCodeClearContextEmptyPrimaryAgentPreservesExtras(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
@@ -630,18 +630,18 @@ func TestOpenCodeClearContextEmptyPrimaryAgentPreservesExtras(t *testing.T) {
 func TestCopilotClearContextAppliesConfigOptionModeOverride(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
 			// The modes channel says "agent" but the configOptions `mode` says "plan".
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "gpt-5.4"},
 				"modes":  {"currentModeId": "agent"},
 				"configOptions": [{"id":"mode","currentValue":"plan","options":[
 					{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]}]
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-4o"
 	agent.permissionMode = "agent"
@@ -650,8 +650,8 @@ func TestCopilotClearContextAppliesConfigOptionModeOverride(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The configOptions override wins over the modes-channel "agent".
 	assert.Equal(t, "plan", agent.permissionMode)
@@ -668,12 +668,12 @@ func TestCopilotClearContextAppliesConfigOptionModeOverride(t *testing.T) {
 func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
 			// The modes channel says "build" but the configOptions `mode` says "plan",
 			// and the configOptions list adds an agent ("review") absent from the
 			// pre-seeded handshake list.
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "openai/gpt-5"},
 				"modes":  {"currentModeId": "build"},
@@ -681,9 +681,9 @@ func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.
 					{"value":"build","name":"Build"},
 					{"value":"plan","name":"Plan"},
 					{"value":"review","name":"Review"}]}]
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-4o"
 	agent.currentPrimaryAgent = "build"
@@ -696,8 +696,8 @@ func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The configOptions override wins over the modes-channel "build".
 	assert.Equal(t, "plan", agent.currentPrimaryAgent)
@@ -714,9 +714,9 @@ func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.
 func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"modes":  {"currentModeId": "build"},
 				"configOptions": [
@@ -724,9 +724,9 @@ func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
 					{"id":"model","currentValue":"openai/gpt-5","options":[{"value":"openai/gpt-5","name":"GPT-5"}]},
 					{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}
 				]
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.currentPrimaryAgent = "build"
 	sink := &testSink{}
@@ -734,8 +734,8 @@ func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// The option group is surfaced alongside the mapped primary-agent group.
 	groups := agent.OptionGroups()
@@ -756,11 +756,11 @@ func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
 func TestOpenCodeClearContextEmptyModelsKeepsCatalog(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{"sessionId": "session-2", "modes": {"currentModeId": "build"}}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId": "session-2", "modes": {"currentModeId": "build"}}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.currentPrimaryAgent = "build"
@@ -771,8 +771,8 @@ func TestOpenCodeClearContextEmptyModelsKeepsCatalog(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	_, ok := agent.ClearContext()
-	require.True(t, ok)
+	_, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 
 	// No models in the response -> both mirrors keep their prior values.
 	require.Len(t, agent.availableModels, 1)
@@ -784,15 +784,15 @@ func TestOpenCodeClearContextEmptyModelsKeepsCatalog(t *testing.T) {
 func TestGooseClearContextRefreshesFromSession(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newGooseAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newGooseAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "claude-sonnet-4"},
 				"modes":  {"currentModeId": "approve"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.4"
 	agent.permissionMode = "auto"
@@ -801,8 +801,8 @@ func TestGooseClearContextRefreshesFromSession(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "claude-sonnet-4", agent.model)
 	assert.Equal(t, "approve", agent.permissionMode)

@@ -7,8 +7,7 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { ExitPlanModeActions } from '../../controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
-import { MarkdownText } from '../../messageRenderers'
-import { zcodePlanText } from './askUserQuestion'
+import { PlanApprovalContent } from '../../controls/PlanApprovalContent'
 
 /**
  * ZCode multiplexes three prompts over two RPCs, and the worker records which one
@@ -21,27 +20,6 @@ import { zcodePlanText } from './askUserQuestion'
  */
 function zcodeControlKind(payload: Record<string, unknown> | undefined): string {
   return payload ? getToolName(payload) : ''
-}
-
-/**
- * The plan-approval content.
- *
- * The shared `ExitPlanModeContent` cannot be reused: it renders Claude's
- * `allowedPrompts` permission summary, which ZCode does not send, and it would show
- * "ready to proceed" while dropping the plan itself. ZCode states its plan as the
- * question text of the single question its prompt builder synthesizes, so the plan
- * is rendered as markdown -- it is written as markdown by the model.
- */
-const ZCodePlanContent: Component<{ payload: Record<string, unknown> }> = (props) => {
-  const plan = createMemo(() => zcodePlanText(props.payload))
-  return (
-    <>
-      <div class={styles.controlBannerTitle}>Plan Ready for Review</div>
-      <Show when={plan()} fallback={<div>The agent finished planning and is ready to proceed.</div>}>
-        <MarkdownText text={plan()} />
-      </Show>
-    </>
-  )
 }
 
 /**
@@ -71,7 +49,7 @@ export const ZCodeControlContent: Component<ContentProps> = (props) => {
   return (
     <Switch fallback={<ZCodePermissionContent {...props} />}>
       <Match when={kind() === ZCODE_TOOL.ExitPlanMode}>
-        <ZCodePlanContent payload={props.request.payload} />
+        <PlanApprovalContent />
       </Match>
     </Switch>
   )

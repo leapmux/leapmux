@@ -31,6 +31,7 @@ type acpTurnOutput struct {
 	turnThoughtText   strings.Builder
 
 	toolUpdateState     map[string]map[string]json.RawMessage
+	toolRequestContents map[string]*acpToolRequestContent
 	toolUpdateOrder     map[string]uint64
 	toolSubagentRows    map[string]string
 	nextToolUpdateOrder uint64
@@ -86,6 +87,7 @@ func (o *acpTurnOutput) resetTurnLocked() {
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
 	o.toolUpdateState = nil
+	o.toolRequestContents = nil
 	o.toolUpdateOrder = nil
 	o.toolSubagentRows = nil
 	o.nextToolUpdateOrder = 0
@@ -152,6 +154,7 @@ func (o *acpTurnOutput) completeTool(toolCallID string) string {
 	defer o.turnMu.Unlock()
 	o.turnToolUses++
 	delete(o.toolUpdateState, toolCallID)
+	delete(o.toolRequestContents, toolCallID)
 	delete(o.toolUpdateOrder, toolCallID)
 	rowKey := o.toolSubagentRows[toolCallID]
 	delete(o.toolSubagentRows, toolCallID)

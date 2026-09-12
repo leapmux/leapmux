@@ -154,9 +154,9 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 			Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}},
 		},
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: agentID, RequestID: "control-1", Payload: []byte("pending"), ClaimToken: "claim-1",
-	}))
+	})
 	require.NoError(t, svc.Queries.UpsertAutoContinueSchedule(ctx, db.UpsertAutoContinueScheduleParams{
 		AgentID: agentID, Reason: string(agent.AutoContinueReasonAPIError), Content: "Continue.",
 		DueAt: sqltime.NewSQLiteTime(time.Now().Add(time.Hour)), SourcePayload: []byte{},

@@ -5,7 +5,7 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { parseProviderMessageCompletion } from '../../assembledMessage'
+import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { extractAgentText } from './renderers/helpers'
 
@@ -156,7 +156,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
           return providerCategory
       }
       const status = parent.status as string | undefined
-      if (status === 'completed' || status === 'failed' || status === 'cancelled' || parseProviderMessageCompletion(parent))
+      if (status === 'completed' || status === 'failed' || status === 'cancelled' || messageCompletionFromProto(input.completion))
         return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL_UPDATE, toolUse: parent, content: [] }
       return { kind: 'hidden' }
     }

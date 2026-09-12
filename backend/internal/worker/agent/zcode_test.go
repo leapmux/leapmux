@@ -338,8 +338,8 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
 	}()
 
-	sessionID, ok := a.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "sess-fresh", sessionID)
 	for _, req := range stdin.Requests(t) {
 		assert.NotEqual(t, ZCodeMethodSetMode, req.Method, "session/create already opened the session in that mode")
@@ -361,4 +361,27 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	_, hasTool := a.children.toolChild("sub-1")
 	assert.False(t, hasTool)
 	assert.Empty(t, a.children.takeTitle("spawn-2"))
+}
+
+func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.mu.Lock()
+	a.lastSeq = 42
+	a.stateRevision = 17
+	a.modeObserved = true
+	a.mu.Unlock()
+	go func() {
+		request := waitZCodeRequest(t, stdin, ZCodeMethodSessionCreate)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+	}()
+	_, clearErr := a.ClearContext()
+	assert.Error(t, clearErr)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	assert.Equal(t, "sess-1", a.sessionID)
+	assert.Equal(t, int64(42), a.lastSeq)
+	assert.Equal(t, int64(17), a.stateRevision)
+	assert.True(t, a.modeObserved)
 }

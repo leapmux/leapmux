@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageCategory } from './messageClassification'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { RenderContext } from './messageRenderers'
 import type { MessageUiKey } from './messageUiKeys'
@@ -8,10 +9,8 @@ import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { TodoItem } from '~/stores/chatTodos'
-import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-
 import Check from 'lucide-solid/icons/check'
+
 import Copy from 'lucide-solid/icons/copy'
 import { createEffect, createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { render } from 'solid-js/web'
@@ -27,17 +26,18 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
-import { appendCompletionMarker, assembledMessageDisplayText, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
+import { appendCompletionMarker, assembledMessageDisplayText, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
 import { bubbleRunsToRightEdge, classifyParsedMessage, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
 import { useMessageContextMenu } from './MessageContextMenuHost'
+import { createMessageRenderSources } from './messageContextResolver'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
-import { providerFor } from './providers/registry'
+import { parsedMessageForRendering, providerFor } from './providers/registry'
 import { renderResultDivider } from './resultDividerRenderers'
 import { ToolHeaderActions } from './ToolHeaderActions'
 import { JsonHighlightHtml } from './toolRenderers'
@@ -128,18 +128,8 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
  * (tests, isolated previews) can pass `host={undefined}`.
  */
 export interface MessageBubbleHost {
-  /** O(1) live-todo lookup for this bubble's agent (resolves subjects for status-only TaskUpdate patches). */
-  getTodoById?: (taskId: string) => TodoItem | undefined
-  /** Look up the parsed tool_use message by spanId (for tool_result → tool_use linking). */
-  getToolUseParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
-  /** Look up the parsed tool_result message by spanId (for tool_use → tool_result linking). */
-  getToolResultParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
-  /**
-   * Resolve a background-task row key to its row, so a tool card that identifies
-   * an agent by id (Claude's SendMessage `to`) can link to that subagent's
-   * transcript.
-   */
-  resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
+  /** Shared resolver for this agent's messages and live entities. */
+  messages?: MessageContextResolver
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /**
@@ -149,11 +139,6 @@ export interface MessageBubbleHost {
    * message; a renderer says only which image of its own row it means.
    */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
-  /**
-   * Live tool progress for this message's span. The thunk restricts the
-   * reactive subscription to the badge. See RenderContext.toolProgress.
-   */
-  toolProgress?: () => ToolProgressEntry | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
   localDiffView?: 'unified' | 'split'
   /** Set the per-message diff view override. */
@@ -202,6 +187,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     : classifyParsedMessage(props.message))
   const parsed = () => classified().parsed
   const category = () => classified().category
+  const resolved = createMemo(() => props.host?.messages?.current(props.message, parsed()))
+  const displayParsed = createMemo(() => resolved()?.parsed
+    ?? parsedMessageForRendering(parsed(), props.message.agentProvider))
+  const sources = createMessageRenderSources(() => props.host?.messages, () => props.message, displayParsed)
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
@@ -210,7 +199,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // builder lives in chatRawJson so its proto-field copying and parse-failure
   // fallbacks are unit-testable without mounting a component.
   const rawJson = (): string =>
-    buildRawJsonEnvelope(props.message, parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
+    buildRawJsonEnvelope(resolved()?.message ?? props.message, resolved()?.original ?? parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
   const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode ? undefined : prettifyJson(rawJson()))
 
@@ -226,26 +215,18 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return prettifyJson(rawJson())
   })
 
-  // Look up the parsed sibling tool_use for tool_result bubbles.
-  const toolUseParsed = createMemo(() => {
-    if (category().kind !== 'tool_result')
-      return undefined
+  createEffect(() => {
+    const resolver = props.host?.messages
     const spanId = props.message.spanId
-    const lookup = props.host?.getToolUseParsedBySpanId
-    if (!spanId || !lookup)
-      return undefined
-    return lookup(spanId)
-  })
-
-  // Look up the parsed sibling tool_result for tool_use bubbles.
-  const toolResultParsed = createMemo(() => {
-    if (category().kind !== 'tool_use')
-      return undefined
-    const spanId = props.message.spanId
-    const lookup = props.host?.getToolResultParsedBySpanId
-    if (!spanId || !lookup)
-      return undefined
-    return lookup(spanId)
+    const kind = category().kind
+    if (!resolver || !spanId || props.premeasureMode || (kind !== 'tool_use' && kind !== 'tool_result'))
+      return
+    const release = resolver.retainSpan(spanId)
+    onCleanup(release)
+    void resolver.loadRelated(props.message, parsed()).catch((error: unknown) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError'))
+        console.warn('Cannot load related tool messages', { spanId, error })
+    })
   })
 
   // Toolbar metadata for the current message — collapsibility, diff presence,
@@ -256,7 +237,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const plugin = providerFor(props.message.agentProvider)
     if (!plugin?.toolResultMeta)
       return null
-    return plugin.toolResultMeta(category(), parsed().parentObject, props.message.spanType, toolUseParsed())
+    return plugin.toolResultMeta(category(), { parsed: displayParsed(), spanType: props.message.spanType, request: sources.request(), role: sources.role() })
   })
 
   // The renderer renders its own ToolHeaderActions (inside ToolUseLayout) for
@@ -317,12 +298,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // per component setup) AND per-field reactivity — body components track only
   // the getters they read, so changes to one field don't cascade to siblings.
   const renderContext: RenderContext = {
-    get getTodoById() { return props.host?.getTodoById },
+    sources,
+    get hasOuterToolbar() { return !hasInternalActions() },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    get resolveBackgroundTaskRow() { return props.host?.resolveBackgroundTaskRow },
     get onOpenSubagent() { return props.host?.onOpenSubagent },
     get onOpenImage() { return props.host?.onOpenImage ? openImage : undefined },
     get onCopyJson() { return copyJson },
@@ -334,15 +315,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // expandedUiKeyFor. Getter so the literal stays referentially stable while
     // tracking a category/provider change.
     get expandUiKey() { return expandedUiKeyFor(category().kind, props.message.agentProvider) },
-    get toolUseParsed() { return toolUseParsed() },
-    get toolResultParsed() { return toolResultParsed() },
     get renderCache() { return props.host?.renderCache },
     syntaxHighlightingPaused: () => props.host?.syntaxHighlightingPaused?.() ?? false,
     textSelectionActive: () => props.host?.textSelectionActive?.() ?? false,
     get spanColor() { return props.message.spanColor },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
-    toolProgress: () => props.host?.toolProgress?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
@@ -359,7 +337,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const text = plugin?.extractQuotableText?.(category(), parsed()) ?? null
     if (text === null)
       return null
-    return appendCompletionMarker(text, parseProviderMessageCompletion(parsed().parentObject))
+    return appendCompletionMarker(text, messageCompletionFromProto(props.message.completion))
   })
 
   const handleReply = () => {
@@ -391,7 +369,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // The payload to hand a renderer: the parsed parent object, or the raw text
   // when the envelope didn't parse to an object. Defined once so renderContent and
   // the result_divider arm pass the renderers the same shape.
-  const renderPayload = () => parsed().parentObject ?? parsed().rawText
+  const renderPayload = () => displayParsed().parentObject ?? parsed().rawText
 
   // Render the message body through the provider plugin, ending in the raw-JSON
   // last-resort span when no renderer claims it. Used for every non-notification

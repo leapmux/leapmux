@@ -3,7 +3,7 @@
 -- NOT MAX(live seq) + 1, so a deleted tail seq is never reused. The agent row is
 -- guaranteed to exist (messages.agent_id REFERENCES agents); the COALESCE is a
 -- defensive fallback. A trigger advances message_seq_hwm after the insert.
-INSERT INTO messages (id, agent_id, seq, source, content, content_compression, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, created_at)
+INSERT INTO messages (id, agent_id, seq, source, content, content_compression, supplemental_content, supplemental_content_compression, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
@@ -11,6 +11,8 @@ VALUES (
   sqlc.arg(source),
   sqlc.arg(content),
   sqlc.arg(content_compression),
+  COALESCE(CAST(sqlc.arg(supplemental_content) AS BLOB), X''),
+  sqlc.arg(supplemental_content_compression),
   sqlc.arg(depth),
   sqlc.arg(span_id),
   sqlc.arg(parent_span_id),

@@ -4,47 +4,146 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestCopilot_NoHooksNoRegistryWrites is the regression guard that Copilot is
-// inert with respect to the subagent/background-task registry: it registers
-// via registerACPProvider/acpStart WITHOUT setting the subagentFromToolCall /
-// subagentFromToolCallUpdate hooks (verified by the live probe), so feeding it
-// tool_call / tool_call_update payloads that WOULD trigger spawn detection for
-// other providers (OpenCode's {description,prompt,subagent_type}, Goose's
-// _meta.goose.toolCall {delegate,summon}, Reasonix's {description,prompt}) must
-// not produce any registry write on the sink.
-//
-// This is asserted two complementary ways:
-//
-//  1. Structurally: after constructing a CopilotCLIAgent exactly the way the
-//     production helper (newCopilotAgentForRPC) does, both subagent hooks are
-//     nil. Copilot.go's StartCopilotCLI configure callback is the ONLY place
-//     that could set them and it does not.
-//  2. Behaviorally: feeding spawn-shaped tool_call / tool_call_update wire
-//     payloads through the shared ACP dispatcher leaves the testSink's
-//     background-task registry empty.
-func TestCopilot_NoHooksNoRegistryWrites(t *testing.T) {
+const copilotNativeTaskStart = `{"type":"tool.execution_start","data":{"toolCallId":"native-task","toolName":"task","arguments":{"description":"Inspect sample","prompt":"Read sample.py","agent_type":"explore","mode":"sync"}}}`
+
+func copilotNativeFixture(t *testing.T, events ...string) (*CopilotCLIAgent, *testSink) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("COPILOT_HOME", home)
+	const sessionID = "d5c7d3e6-e251-44db-875b-34a248d1392a"
+	directory := filepath.Join(home, "session-state", sessionID)
+	require.NoError(t, os.MkdirAll(directory, 0o700))
+	native := []byte(strings.Join(events, "\n") + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "events.jsonl"), native, 0o600))
+	a, _ := newCopilotAgentForRPC(t)
+	a.sessionID = sessionID
+	sink := &testSink{}
+	a.sink = sink
+	return a, sink
+}
+
+func TestCopilotNativeSubagentLaunchOpensNoSpan(t *testing.T) {
+	a, sink := copilotNativeFixture(t, copilotNativeTaskStart)
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call","toolCallId":"native-task","title":"Inspect sample","kind":"other","status":"pending","rawInput":{"description":"Inspect sample","prompt":"Read sample.py","agent_type":"explore","mode":"sync"}}}`), nil)
+	assert.Empty(t, sink.OpenSpans())
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].NoSpan)
+	require.Len(t, sink.BackgroundTasks(), 1)
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"native-task","status":"completed","rawOutput":{"content":"Done"}}}`), nil)
+	assert.Equal(t, bgtask.StatusCompleted, sink.BackgroundTasks()[0].Status)
+}
+
+func TestCopilotNativeToolUsesTheAgentWorkingDirectory(t *testing.T) {
+	workingDir := t.TempDir()
+	t.Setenv("COPILOT_HOME", "relative-copilot")
+	a, _ := newCopilotAgentForRPC(t)
+	a.workingDir = workingDir
+	directory := filepath.Join(workingDir, "relative-copilot", "session-state", a.currentSessionID())
+	require.NoError(t, os.MkdirAll(directory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "events.jsonl"), []byte(copilotNativeTaskStart+"\n"), 0o600))
+	record := a.nativeTool("native-task")
+	require.NotNil(t, record)
+	assert.Equal(t, "task", record.ToolName)
+}
+
+func TestCopilotChildToolsUseTheirOwnTranscript(t *testing.T) {
+	a, sink := copilotNativeFixture(t, copilotNativeTaskStart,
+		`{"type":"subagent.started","agentId":"native-child","data":{"toolCallId":"native-task"}}`,
+		`{"type":"tool.execution_start","agentId":"native-child","data":{"toolCallId":"child-read","parentToolCallId":"native-task","toolName":"view","arguments":{"path":"/project/sample.py"}}}`)
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call","toolCallId":"native-task","title":"Inspect sample","kind":"other","status":"pending"}}`), nil)
+	request := `{"sessionUpdate":"tool_call","toolCallId":"child-read","title":"Viewing sample.py","kind":"read","status":"pending","rawInput":{"path":"/project/sample.py"},"_meta":{"github.com/copilot":{"agentId":"native-child"}}}`
+	result := `{"sessionUpdate":"tool_call_update","toolCallId":"child-read","status":"completed","rawOutput":{"content":"answer = 41"},"_meta":{"github.com/copilot":{"agentId":"native-child"}}}`
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":`+request+`}`), nil)
+	require.NoError(t, os.Remove(copilotToolStorePath(a.currentSessionID(), a.currentWorkingDir())))
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":`+result+`}`), nil)
+	require.Len(t, sink.Messages(), 1, "child tools must not appear in the parent transcript")
+	assert.Empty(t, sink.OpenSpans())
+	sink.childSinkMu.Lock()
+	child := sink.children["native-task"]
+	sink.childSinkMu.Unlock()
+	require.NotNil(t, child)
+	messages := child.Messages()
+	require.Len(t, messages, 3)
+	assert.Contains(t, string(messages[0].Content), "Read sample.py")
+	assert.Equal(t, request, string(messages[1].Content))
+	assert.Equal(t, result, string(messages[2].Content))
+	require.Len(t, child.OpenSpans(), 1)
+	assert.Equal(t, "child-read", child.OpenSpans()[0].SpanID)
+	require.Len(t, sink.BackgroundTasks(), 1)
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"native-task","status":"completed","rawOutput":{"content":"Done"}}}`), nil)
+	assert.Equal(t, bgtask.StatusCompleted, sink.BackgroundTasks()[0].Status)
+	a.subagentMu.Lock()
+	childCount := len(a.childTools)
+	a.subagentMu.Unlock()
+	assert.Zero(t, childCount, "completed children must release their protocol state")
+}
+
+func TestCopilotBackgroundLaunchDoesNotCompleteTheChild(t *testing.T) {
+	a, sink := copilotNativeFixture(t, strings.Replace(copilotNativeTaskStart, `"mode":"sync"`, `"mode":"background"`, 1))
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call","toolCallId":"native-task","title":"Inspect sample","kind":"other","status":"pending"}}`), nil)
+	a.handleACPSessionUpdate(json.RawMessage(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"native-task","status":"completed","rawOutput":{"content":"Agent launched"}}}`), nil)
+	require.Len(t, sink.BackgroundTasks(), 1)
+	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
+	file, err := os.OpenFile(copilotToolStorePath(a.currentSessionID(), a.currentWorkingDir()), os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = file.WriteString("{\"type\":\"subagent.completed\",\"agentId\":\"native-child\",\"data\":{\"toolCallId\":\"native-task\"}}\n")
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	assert.Eventually(t, func() bool { return sink.BackgroundTasks()[0].Status == bgtask.StatusCompleted }, 3*time.Second, 10*time.Millisecond)
+}
+
+func TestCopilotBackgroundNativeOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name, event string
+		status      bgtask.Status
+	}{
+		{"cancelled", `{"type":"subagent.completed","agentId":"native-child","data":{"toolCallId":"native-task","cancelled":true}}`, bgtask.StatusStopped},
+		{"failed", `{"type":"subagent.failed","agentId":"native-child","data":{"toolCallId":"native-task"}}`, bgtask.StatusFailed},
+	} {
+		for _, delayed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/delayed=%t", test.name, delayed), func(t *testing.T) {
+				events := []string{strings.Replace(copilotNativeTaskStart, `"mode":"sync"`, `"mode":"background"`, 1)}
+				if !delayed {
+					events = append(events, test.event)
+				}
+				a, sink := copilotNativeFixture(t, events...)
+				a.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"native-task","title":"Inspect sample","kind":"other","status":"pending"}`), nil)
+				a.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"native-task","status":"completed"}`), nil)
+				if delayed {
+					file, err := os.OpenFile(copilotToolStorePath(a.currentSessionID(), a.currentWorkingDir()), os.O_APPEND|os.O_WRONLY, 0)
+					require.NoError(t, err)
+					_, err = file.WriteString(test.event + "\n")
+					require.NoError(t, err)
+					require.NoError(t, file.Close())
+				}
+				assert.Eventually(t, func() bool {
+					return len(sink.BackgroundTasks()) == 1 && sink.BackgroundTasks()[0].Status == test.status
+				}, 3*time.Second, 10*time.Millisecond)
+			})
+		}
+	}
+}
+
+// Copilot uses its native tool identity. Other providers' argument shapes do not identify its subagents.
+func TestCopilot_RejectsOtherProviderSubagentShapes(t *testing.T) {
 	t.Parallel()
 
-	// --- Structural assertion: hooks stay nil on a CopilotCLIAgent. ---
-	// Constructed the same way newCopilotAgentForRPC (the harness used by every
-	// other Copilot test) builds one: a fresh CopilotCLIAgent with the
-	// modeChannel set, mirroring what StartCopilotCLI's configure callback does.
-	// StartCopilotCLI's configure only sets modeChannel + effortConfigID -- it
-	// never assigns the subagent hooks (unlike goose/opencode/kilo/cursor/
-	// reasonix, which assign at least one). Re-checking here means a future
-	// edit that wires Copilot into the registry is caught at unit level.
 	agent, _ := newCopilotAgentForRPC(t)
 	base := &agent.acpBase
-	assert.Nil(t, base.subagentFromToolCall,
-		"Copilot must not register a subagentFromToolCall hook")
-	assert.Nil(t, base.subagentFromToolCallUpdate,
-		"Copilot must not register a subagentFromToolCallUpdate hook")
+	assert.NotNil(t, base.subagentFromToolCall)
+	assert.NotNil(t, base.subagentFromToolCallUpdate)
 
 	// --- Behavioral assertion: spawn-shaped payloads write nothing to the
 	// registry when driven through the shared ACP session-update dispatcher. ---
@@ -62,9 +161,7 @@ func TestCopilot_NoHooksNoRegistryWrites(t *testing.T) {
 	// (_meta.goose.toolCall {delegate,summon}).
 	gooseSpawnShape := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tc-goose","title":"delegate","status":"in_progress","_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`)
 
-	// Drive each through the shared dispatcher (the entry point the reader
-	// goroutine uses). Because Copilot's hooks are nil, the subagent branch is
-	// never entered regardless of payload shape.
+	// These unrelated shapes have no matching native Copilot task event.
 	require.NotPanics(t, func() {
 		base.handleACPSessionUpdate(
 			json.RawMessage(`{"update":`+string(opencodeSpawnShape)+`}`),
@@ -78,13 +175,11 @@ func TestCopilot_NoHooksNoRegistryWrites(t *testing.T) {
 		)
 	})
 
-	// A terminal tool_call_update that WOULD re-key + close a registry row for
-	// the OpenCode/Cursor detectors. Copilot has no tool_call_update hook, so it
-	// must not create or close any row.
-	terminalUpdate := json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"tc-opencode","status":"completed","rawOutput":{"metadata":{"sessionId":"child-sess-1"}}}`)
+	// A final update with another provider's metadata also identifies no Copilot task.
+	finalUpdate := json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"tc-opencode","status":"completed","rawOutput":{"metadata":{"sessionId":"child-sess-1"}}}`)
 	require.NotPanics(t, func() {
 		base.handleACPSessionUpdate(
-			json.RawMessage(`{"update":`+string(terminalUpdate)+`}`),
+			json.RawMessage(`{"update":`+string(finalUpdate)+`}`),
 			nil,
 		)
 	})

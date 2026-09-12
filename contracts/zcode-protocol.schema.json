@@ -5,7 +5,7 @@
   "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal the app-server sends. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "events", "toolKinds", "toolNames", "modes", "resultTypes", "decisions", "defaultMode"],
+  "required": ["_readme", "events", "toolPrefixes", "methods", "interactions", "toolKinds", "toolNames", "modes", "resultTypes", "decisions", "defaultMode"],
   "$defs": {
     "table": {
       "type": "object",
@@ -17,6 +17,9 @@
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
     "events": { "$ref": "#/$defs/table" },
+    "toolPrefixes": { "$ref": "#/$defs/table" },
+    "methods": { "$ref": "#/$defs/table" },
+    "interactions": { "$ref": "#/$defs/table" },
     "toolKinds": { "$ref": "#/$defs/table" },
     "toolNames": { "$ref": "#/$defs/table" },
     "modes": { "$ref": "#/$defs/table" },

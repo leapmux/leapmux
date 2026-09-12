@@ -30,6 +30,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ContentCompression"
+          - column: "messages.supplemental_content_compression"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ContentCompression"
           - column: "worktree_tabs.tab_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

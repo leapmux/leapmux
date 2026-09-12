@@ -5,6 +5,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import './claude'
 import './codex'
 import './opencode'
@@ -43,13 +44,13 @@ function makeClaudeToolUseMessage(name: string, input: Record<string, unknown>):
     type: 'assistant',
     message: {
       role: 'assistant',
-      content: [{ type: 'tool_use', id: `toolu_${name}_1`, name, input }],
+      content: [{ type: 'tool_use', id: 'toolu_x', name, input }],
     },
   }
 }
 
 function makeClaudeToolUseCategory(name: string, input: Record<string, unknown>): MessageCategory {
-  const toolUse = { type: 'tool_use' as const, id: `toolu_${name}_1`, name, input }
+  const toolUse = { type: 'tool_use' as const, id: 'toolu_x', name, input }
   return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
 }
 
@@ -75,14 +76,12 @@ function makeClaudeToolResultMessage(
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
   const category = makeClaudeToolUseCategory(name, input)
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
 
 function makePiToolStart(toolName: string, args: Record<string, unknown>) {
@@ -107,19 +106,14 @@ function makePiToolEnd(toolName: string, result: Record<string, unknown>, isErro
 function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: RenderContext) {
   const toolUse = makePiToolStart(toolName, args)
   const category: MessageCategory = { kind: 'tool_use', toolName, toolUse, content: [] }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.PI)
-  return render(() => result)
+  return render(() => renderMessageContent(toolUse, context, category, AgentProvider.PI))
 }
 
 function renderPiToolResult(toolName: string, resultPayload: Record<string, unknown>, startArgs: Record<string, unknown>, isError = false) {
   const start = makePiToolStart(toolName, startArgs)
   const end = makePiToolEnd(toolName, resultPayload, isError)
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(end, {
-    spanType: toolName,
-    toolUseParsed: parseMessageContent(makeFakeMessage(start)),
-  }, category, AgentProvider.PI)
-  return render(() => result)
+  return render(() => renderMessageContent(end, { spanType: toolName, sources: testMessageSources({ request: () => (parseMessageContent(makeFakeMessage(start))) }) }, category, AgentProvider.PI))
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +167,7 @@ describe('claude Edit tool_result diff selection', () => {
       oldString: 'somethingElse',
       newString: 'somethingElse',
     }, 'File modified.')
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: editToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (editToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('resultPatchOldQ')
     expect(text).toContain('resultPatchNewQ')
@@ -188,7 +182,7 @@ describe('claude Edit tool_result diff selection', () => {
       tool_name: 'Edit',
       filePath: '/tmp/file.ts',
     }, 'Modified.')
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: editToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (editToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('fallbackOldZZZ')
     expect(text).toContain('fallbackNewZZZ')
@@ -199,7 +193,7 @@ describe('claude Edit tool_result diff selection', () => {
       tool_name: 'Edit',
       filePath: '/tmp/file.ts',
     }, 'Found 2 occurrences; old_string must be unique.', { isError: true })
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: editToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (editToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Found 2 occurrences')
     expect(text).not.toContain('fallbackOldZZZ')
@@ -211,7 +205,7 @@ describe('claude Edit tool_result diff selection', () => {
       makeClaudeToolUseMessage('Edit', { file_path: '/tmp/x.ts' }) as unknown as Record<string, unknown>,
     ))
     const parsed = makeClaudeToolResultMessage({ tool_name: 'Edit' }, 'Plain text result.')
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: noDiffToolUse })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (noDiffToolUse) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Plain text result.')
   })
@@ -240,7 +234,7 @@ describe('claude Edit tool_result diff selection', () => {
       isError: true,
       toolUseResultRaw: 'Error: File has not been read yet. Read it first before writing to it.',
     })
-    const { container } = renderClaudeToolResult(parsed, { spanType: 'Edit', toolUseParsed: editToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Edit', sources: testMessageSources({ request: () => (editToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('File has not been read yet')
     expect(text).not.toContain('fallbackOldZZZ')
@@ -266,7 +260,7 @@ describe('claude Write tool_result diff selection', () => {
         { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-resultWriteOld', '+resultWriteNew'] },
       ],
     }, 'Updated.')
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: writeToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (writeToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('resultWriteOld')
     expect(text).toContain('resultWriteNew')
@@ -280,7 +274,7 @@ describe('claude Write tool_result diff selection', () => {
       tool_name: 'Write',
       filePath: '/tmp/new.ts',
     }, 'Created.')
-    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: writeToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (writeToolUseParsed) }) })
     const text = container.textContent ?? ''
     // The fallback all-added diff renders the new file content.
     expect(text).toContain('fallbackWriteBodyZZZ')
@@ -292,7 +286,7 @@ describe('claude Write tool_result diff selection', () => {
       isError: true,
       toolUseResultRaw: 'Error: File has not been read yet. Read it first before writing to it.',
     })
-    const { container } = renderClaudeToolResult(parsed, { spanType: 'Write', toolUseParsed: writeToolUseParsed })
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Write', sources: testMessageSources({ request: () => (writeToolUseParsed) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('File has not been read yet')
     expect(text).not.toContain('fallbackWriteBodyZZZ')
@@ -305,14 +299,15 @@ describe('claude Write tool_result diff selection', () => {
 // ---------------------------------------------------------------------------
 
 describe('pi Edit/Write tool_use renders header only (no diff body)', () => {
-  it('edit tool_use shows file path + edit count but not changed lines', () => {
+  it('edit tool_use shows file path and statistics without changed lines', () => {
     const { container } = renderPiToolUse('edit', {
       path: '/tmp/example.ts',
       edits: [{ oldText: 'piOldToolUseMarker', newText: 'piNewToolUseMarker' }],
     })
     const text = container.textContent ?? ''
     expect(text).toContain('example.ts')
-    expect(text).toContain('1 edit(s)')
+    expect(text).toContain('+1')
+    expect(text).toContain('-1')
     expect(text).not.toContain('piOldToolUseMarker')
     expect(text).not.toContain('piNewToolUseMarker')
   })

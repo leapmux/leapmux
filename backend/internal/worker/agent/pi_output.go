@@ -36,12 +36,14 @@ type piToolExecutionEnvelope struct {
 	Args       json.RawMessage `json:"args"`
 	Input      json.RawMessage `json:"input"`
 	Result     json.RawMessage `json:"result"`
+	IsError    bool            `json:"isError"`
 }
 
 // piToolUpdateEnvelope adds the cumulative output and the structured details
 // that the pi-subagents extension carries.
 type piToolUpdateEnvelope struct {
 	ToolCallID    string          `json:"toolCallId"`
+	ToolName      string          `json:"toolName"`
 	PartialResult json.RawMessage `json:"partialResult"`
 }
 
@@ -65,7 +67,7 @@ type piToolState struct {
 
 // piExtensionUIRequestHeader captures the routing fields of an
 // extension_ui_request event. The full payload is forwarded verbatim to the
-// frontend through PersistControlRequest / PersistLeapMuxNotification so renderers
+// frontend through PublishControlRequest / PersistLeapMuxNotification so renderers
 // can read every method-specific field.
 type piExtensionUIRequestHeader struct {
 	ID         string          `json:"id"`
@@ -155,13 +157,25 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 		}
 	case contracts.PiEventExtensionUIRequest:
 		a.handlePiExtensionUIRequest(line.Raw)
+	case contracts.PiEventEntryAppended:
+		var event struct {
+			Entry struct {
+				CustomType string `json:"customType"`
+			} `json:"entry"`
+		}
+		if json.Unmarshal(line.Raw, &event) == nil && event.Entry.CustomType == "pi-goal-focus" {
+			a.schedulePiGoalRefresh(false)
+		}
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
+			slog.Error("persist Pi session entry", "agent_id", a.agentID, "error", err)
+		}
 	case contracts.PiEventResponse:
 		// Should have been intercepted by handlePiResponse; reaching here means
 		// no caller was waiting on this id. Log and drop.
 		slog.Warn("pi orphan response line", "agent_id", a.agentID, "len", len(line.Raw))
 	default:
 		// Persist unknown event types so the user can still see them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("pi persist unknown event", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
 	}
@@ -204,6 +218,12 @@ func (a *PiAgent) handlePiAgentStart() {
 	a.PublishTurnActive()
 	// A fresh turn begins with empty progress counters.
 	a.sink.ReportProgress(ResetModelProgress())
+	// Extensions can start a replacement session without a worker new_session request.
+	if a.canRequestPiSessionStats() {
+		go func() {
+			_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout()))
+		}()
+	}
 }
 
 func (a *PiAgent) handlePiAgentEnd(raw []byte) {
@@ -222,21 +242,15 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// Read the mark BEFORE the clear below consumes it, or every turn that
 	// really ends measures from the zero time and reports no duration at all.
 	startedAt := a.turnStartedAt
+	toolUses := a.turnToolUses
 	if !env.WillRetry {
-		// turnToolUses is write-only state for Pi: nothing enriches agent_end
-		// with num_tool_uses, so the turn-end event leaves the count unset and
-		// the frontend rings even for a turn that used no tool.
-		// https://github.com/leapmux/leapmux/issues/435
+		// Retries retain the count until the complete turn ends.
 		a.turnToolUses = 0
 		a.turnStartedAt = time.Time{}
 	}
 	a.mu.Unlock()
-	// Deferred so it runs AFTER persistPiAgentEnd below. That call hands the
-	// finished turn's tool-call count to the activity latch, and the clear
-	// published here is the settle edge that spends it -- so publishing first
-	// would settle the agent with no count. Pi reports no count today
-	// (https://github.com/leapmux/leapmux/issues/435), which is exactly why the
-	// order has to be right before it does.
+	// Publish the inactive state after the sink receives the completed tool count.
+	// This order prevents a completion sound for a turn that used no tools.
 	defer a.PublishTurnActive()
 	if env.WillRetry {
 		a.generationBuffer.Reset()
@@ -257,7 +271,8 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// away. Then refresh Pi's authoritative session stats asynchronously for the
 	// live popover; the stdout read loop must remain free to deliver that RPC
 	// response.
-	a.persistPiAgentEnd(raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, endedAt), env.WillRetry)
+	content := piAgentEndContent(raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, endedAt))
+	a.persistPiAgentEnd(withToolUseCount(content, toolUses), env.WillRetry)
 	// Pi retries the run itself when it says willRetry, so LeapMux must not send
 	// a second continuation for the same failure. Pi reports false once its own
 	// retry budget is spent, which is where LeapMux's auto-continue takes over
@@ -317,14 +332,10 @@ func (env piAgentEndEnvelope) retainedCompletion() MessageCompletion {
 }
 
 func (a *PiAgent) handlePiMessageEnd(raw []byte) {
-	augmented := a.augmentPiMessageEnd(raw)
-	// The pi-subagents extension emits a customType:"subagent-notification"
-	// message carrying registry details (status / activity / agentId, and
-	// optionally details.others[] for group nudges). Update/close the registry
-	// from it BEFORE the generic persist; the message itself STILL persists to
-	// the parent transcript (it is real conversational context).
-	piApplySubagentNotification(a.sink, augmented)
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, augmented, SpanInfo{}); err != nil {
+	content := a.piMessageEndContent(raw)
+	// Update child status from the nested custom message before persisting it.
+	piApplySubagentNotification(a.sink, raw)
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.agentID, "error", err)
 		return
 	}
@@ -363,7 +374,7 @@ func (a *PiAgent) flushPiGeneration(completion MessageCompletion) {
 		return
 	}
 	if err := a.generationBuffer.PersistAll(completion, func(raw []byte) error {
-		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 	}); err != nil {
 		slog.Error("pi persist partial generation", "agent_id", a.agentID, "error", err)
 	}
@@ -408,8 +419,8 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	// Pi never reads the recorded span type back -- tool_execution_end carries
 	// its own toolName -- but openToolSpan records it for every provider, so a
 	// closing message that DOES read it (Claude, ACP) finds it.
-	spawns := env.ToolName == PiToolAgent
-	if err := openToolSpan(a.sink, raw, env.ToolCallID, env.ToolName, spawns); err != nil {
+	spawns := env.ToolName == contracts.PiToolAgent || env.ToolName == contracts.PiToolSubagentWorkflow
+	if err := openToolSpan(a.sink, MessageContent{Original: raw}, env.ToolCallID, env.ToolName, spawns); err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.agentID, "error", err)
 	}
 }
@@ -458,12 +469,18 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 		a.sink.ReportProgress(OutputTotalProgress(env.ToolCallID, observed.Total, observed.Minimum))
 	}
 
-	// pi-subagents extension: when partialResult.details parses to the
-	// subagent shape {status, activity} (shape detection), upsert a running
-	// registry row keyed by details.agentId (fallback toolCallId).
-	if obs := piSubagentFromDetails(partial.Details, env.ToolCallID, a.toolCallTitle(env.ToolCallID)); obs != nil {
-		if err := a.sink.UpsertBackgroundTask(*obs); err != nil {
-			slog.Warn("pi subagent upsert failed", "agent_id", a.agentID, "tool_call", env.ToolCallID, "error", err)
+	a.mu.Lock()
+	toolName := env.ToolName
+	if tool := a.toolStates[env.ToolCallID]; tool != nil && tool.ToolName != "" {
+		toolName = tool.ToolName
+	}
+	a.mu.Unlock()
+	// Other extensions also use status fields. Only Agent describes a child here.
+	if toolName == contracts.PiToolAgent {
+		if obs := piSubagentFromDetails(partial.Details, env.ToolCallID, a.toolCallTitle(env.ToolCallID)); obs != nil {
+			if err := a.sink.UpsertBackgroundTask(*obs); err != nil {
+				slog.Warn("pi subagent upsert failed", "agent_id", a.agentID, "tool_call", env.ToolCallID, "error", err)
+			}
 		}
 	}
 }
@@ -480,6 +497,7 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	a.turnToolUses++
 	tool := a.toolStates[env.ToolCallID]
 	delete(a.toolStates, env.ToolCallID)
+	a.clearPiQuestionToolLocked(env.ToolCallID)
 	title := ""
 	if tool != nil {
 		title = tool.Description
@@ -488,7 +506,7 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	a.clearCumulativeOutput(env.ToolCallID)
 	a.sink.ReportProgress(CompleteOutputProgress(env.ToolCallID))
 
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{
 		SpanID:   env.ToolCallID,
 		SpanType: env.ToolName,
 		Closing:  true,
@@ -496,15 +514,28 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 		slog.Error("pi persist tool_execution_end", "agent_id", a.agentID, "error", err)
 	}
 	a.sink.CloseSpan(env.ToolCallID)
+	a.reportPiGoalResult(env.ToolName, env.Result)
 
-	// pi-subagents extension: parse the result details for final status, or
-	// a background re-key. The row key may change from toolCallId to
-	// details.agentId here (the agent id surfaces only at completion).
-	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, title, a.toolCallPrompts.take(env.ToolCallID))
+	prompt := a.toolCallPrompts.take(env.ToolCallID)
+	if env.ToolName == contracts.PiToolAgent {
+		piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, title, prompt)
+	} else if env.ToolName == contracts.PiToolSubagentWorkflow && !env.IsError {
+		var result struct {
+			Details struct {
+				TaskID string `json:"taskId"`
+			} `json:"details"`
+		}
+		if json.Unmarshal(env.Result, &result) == nil && result.Details.TaskID != "" {
+			logUpsertRefusal(a.sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: result.Details.TaskID, Kind: bgtask.KindSubagent, Title: title, Status: bgtask.StatusRunning,
+			}))
+		}
+	}
 }
 
 func (a *PiAgent) discardIncompletePiTools() {
 	a.mu.Lock()
+	a.clearPiQuestionStateLocked()
 	a.toolStates = nil
 	a.nextToolOrder = 0
 	a.mu.Unlock()
@@ -527,6 +558,7 @@ func (a *PiAgent) persistIncompletePiTools(completion MessageCompletion) {
 		tools[toolCallID] = *tool
 	}
 	a.toolStates = nil
+	a.clearPiQuestionStateLocked()
 	a.nextToolOrder = 0
 	a.mu.Unlock()
 	for _, toolCallID := range toolCallIDs {
@@ -557,14 +589,11 @@ func (a *PiAgent) persistIncompletePiTools(completion MessageCompletion) {
 			value["args"] = tool.Args
 		}
 		raw, err := json.Marshal(value)
-		if err == nil {
-			raw, err = AnnotateMessageCompletion(raw, completion)
-		}
 		if err != nil {
 			slog.Warn("marshal incomplete pi tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
 			continue
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw, Completion: completion}, SpanInfo{
 			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
 		}); err != nil {
 			slog.Error("persist incomplete pi tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
@@ -608,8 +637,22 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 				"agent_id", a.agentID, "method", head.Method)
 			return
 		}
-		claimToken := a.sink.PersistControlRequest(head.ID, raw)
-		a.sink.BroadcastControlRequest(head.ID, raw, claimToken)
+		question, answered := a.preparePiQuestionDialog(head.ID, raw)
+		if answered {
+			return
+		}
+		if err := a.sink.PublishControlRequest(ControlRequest{RequestID: head.ID, Payload: raw, SourceSeq: a.piControlSourceSeq(question)}); err != nil {
+			slog.Error("publish pi control request", "agent_id", a.agentID, "request_id", head.ID, "error", err)
+			// Pi offers cancellation but no error response for extension dialogs.
+			response, marshalErr := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": head.ID, "cancelled": true})
+			if marshalErr != nil {
+				slog.Error("encode pi control cancellation", "agent_id", a.agentID, "error", marshalErr)
+				return
+			}
+			if err := a.SendRawInput(response); err != nil {
+				slog.Warn("send pi control cancellation", "agent_id", a.agentID, "error", err)
+			}
+		}
 		return
 	}
 
@@ -625,6 +668,9 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 	// pi_editor_text, so they stay out of contracts/session-info.json. Render them
 	// or delete the broadcasts: https://github.com/leapmux/leapmux/issues/433
 	case contracts.PiExtensionMethodSetStatus:
+		if head.StatusKey == "goal" {
+			a.schedulePiGoalRefresh(false)
+		}
 		statusValue := any(nil)
 		if head.StatusText != nil {
 			statusValue = *head.StatusText
@@ -633,6 +679,9 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 			"pi_status": map[string]any{head.StatusKey: statusValue},
 		})
 	case contracts.PiExtensionMethodSetWidget:
+		if head.WidgetKey == "goal" {
+			a.schedulePiGoalRefresh(false)
+		}
 		widget := map[string]any{
 			"placement": cmp.Or(head.Placement, "aboveEditor"),
 		}
@@ -733,10 +782,7 @@ func piExtractPrompt(input json.RawMessage) string {
 	return in.Prompt
 }
 
-// piSubagentDetails is the shape the pi-subagents extension carries in
-// partialResult.details (update) and result.details (end): a status + activity
-// (+ agentId at completion). Shape detection: a details blob with a non-empty
-// status is treated as a subagent observation.
+// piSubagentDetails contains child status from Agent result details.
 type piSubagentDetails struct {
 	Status   string `json:"status"`
 	Activity string `json:"activity"`
@@ -793,18 +839,18 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 	if len(result) == 0 {
 		return
 	}
-	// result may be a JSON object with details, or a raw string.
+	var envelope piPartialResult
 	var d piSubagentDetails
-	if json.Unmarshal(result, &d) == nil && d.Status != "" {
+	if json.Unmarshal(result, &envelope) == nil && json.Unmarshal(envelope.Details, &d) == nil && d.Status != "" {
+		if d.AgentID != "" && d.AgentID != toolCallID {
+			if err := sink.RenameBackgroundTask(toolCallID, d.AgentID); err != nil {
+				slog.Warn("pi rename subagent task failed", "tool_call_id", toolCallID, "error", err)
+				return
+			}
+		}
 		if d.Status == "background" {
 			if agentID := d.AgentID; agentID != "" && agentID != toolCallID {
-				// Re-key: upsert under the agent id and close the toolCallId row.
-				// The close is mandatory -- without it the old toolCallId row stays
-				// Running forever and pins the parent's thinking indicator. The
-				// upsert links the child transcript (EnsureChildAgent) so the row is
-				// openable as a child tab, and the two writes share one swallowed-
-				// error discipline so a close failure is visible in the log rather
-				// than silently leaving a duplicate Running row.
+				// Link the background run to its child transcript after the registry rename.
 				if childID, err := sink.EnsureChildAgent(toolCallID, agentID, title); err != nil {
 					slog.Warn("pi background re-key ensure child failed", "tool_call_id", toolCallID, "agent_id", agentID, "error", err)
 				} else {
@@ -820,9 +866,6 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 						Title:        title,
 						Status:       bgtask.StatusRunning,
 					}))
-				}
-				if err := sink.CloseBackgroundTask(toolCallID, bgtask.StatusCompleted); err != nil {
-					slog.Warn("pi background re-key close failed", "tool_call_id", toolCallID, "error", err)
 				}
 			}
 			// No agent id: the row stays keyed by toolCallID as-is (still running).
@@ -852,7 +895,13 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 	// the title. Free-form prose that mentions "Agent ID:" mid-sentence does not
 	// match the anchored regex. The result may be a JSON-encoded string, so
 	// decode it first; fall back to the raw text if it is not a string.
-	s := string(result)
+	var content strings.Builder
+	for _, block := range envelope.Content {
+		if block.Type == PiContentBlockText {
+			content.WriteString(block.Text)
+		}
+	}
+	s := content.String()
 	var asString string
 	if json.Unmarshal(result, &asString) == nil {
 		s = asString
@@ -874,47 +923,36 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 // message and updates/closes the registry from its details (including
 // details.others[] for group nudges). The message itself still persists.
 func piApplySubagentNotification(sink BackgroundTaskServices, raw []byte) {
-	var msg struct {
-		CustomType string          `json:"customType"`
-		Details    json.RawMessage `json:"details"`
+	type details struct {
+		ID          string `json:"id"`
+		Status      string `json:"status"`
+		Description string `json:"description"`
 	}
-	if json.Unmarshal(raw, &msg) != nil || msg.CustomType != "subagent-notification" {
+	var envelope struct {
+		Message struct {
+			Role       string `json:"role"`
+			CustomType string `json:"customType"`
+			Details    struct {
+				details
+				Others []details `json:"others"`
+			} `json:"details"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != "custom" || envelope.Message.CustomType != contracts.PiCustomTypeSubagentNotification {
 		return
 	}
-	applyOne := func(details json.RawMessage) {
-		if len(details) == 0 {
-			return
-		}
-		var d piSubagentDetails
-		if json.Unmarshal(details, &d) != nil || d.Status == "" {
-			return
-		}
-		rowKey := d.AgentID
-		if rowKey == "" {
+	applyOne := func(d details) {
+		if d.ID == "" || d.Status == "" {
 			return
 		}
 		if status, ok := piFinalStatus(d.Status); ok {
-			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Status: status}))
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: status}))
 		} else {
-			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ActiveForm: d.Activity, Status: bgtask.StatusRunning}))
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: bgtask.StatusRunning}))
 		}
 	}
-	applyOne(msg.Details)
-	// Group nudges: details.others[] carries sibling agent ids.
-	var grp struct {
-		Others []struct {
-			AgentID string `json:"agentId"`
-			Status  string `json:"status"`
-		} `json:"others"`
-	}
-	if json.Unmarshal(msg.Details, &grp) == nil {
-		for _, o := range grp.Others {
-			if o.AgentID == "" || o.Status == "" {
-				continue
-			}
-			if status, ok := piFinalStatus(o.Status); ok {
-				logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: o.AgentID, Kind: bgtask.KindSubagent, Status: status}))
-			}
-		}
+	applyOne(envelope.Message.Details.details)
+	for _, other := range envelope.Message.Details.Others {
+		applyOne(other)
 	}
 }

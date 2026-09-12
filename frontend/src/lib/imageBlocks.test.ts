@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest'
 import { imageBlockToMarkdown, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
 
 describe('parseImageBlock', () => {
+  it('parses an embedded MCP image resource for every provider', () => {
+    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/png', blob: 'AAAA' } }))
+      .toEqual({ data: 'AAAA', mimeType: 'image/png' })
+  })
+
+  it('preserves unsupported image resources for the image placeholder', () => {
+    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/x-custom', blob: 'AAAA' } }))
+      .toEqual({ data: 'AAAA', mimeType: 'image/x-custom' })
+  })
+
+  it.each([
+    { uri: 'probe://text', mimeType: 'text/plain', text: 'Resource body' },
+    { uri: 'probe://file', mimeType: 'application/pdf', blob: 'AAAA' },
+    { uri: 'probe://image', mimeType: 'image/png' },
+    { uri: 'probe://image', mimeType: 'image/png', blob: 0 },
+    null,
+  ])('leaves a resource without image bytes to the resource renderer: %j', (resource) => {
+    expect(parseImageBlock({ type: 'resource', resource })).toBeNull()
+  })
+
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {
     expect(parseImageBlock({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
@@ -165,6 +185,10 @@ describe('parseImageBlock data-URL tolerance', () => {
 })
 
 describe('imageBlockFilePath platform shapes', () => {
+  it('preserves a literal percent sign in a provider file URI', () => {
+    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///repo/50%off.png' }))
+      .toMatchObject({ filePath: '/repo/50%off.png' })
+  })
   // Windows workers are supported, and `new URL(...).pathname` keeps the slash
   // before the drive letter. The worker cannot resolve `/C:/...`, so the FILE
   // tab this feeds opened nothing while the IMAGE tab that would have worked

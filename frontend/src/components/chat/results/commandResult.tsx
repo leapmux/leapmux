@@ -2,15 +2,17 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
-import { createMemo, Show } from 'solid-js'
+import Terminal from 'lucide-solid/icons/terminal'
+import { createMemo, For, Show } from 'solid-js'
 import { normalizedCommandBody, normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
+import { messageCompletionFromProto } from '../assembledMessage'
 import { cachedRenderValueForString } from '../messageRenderCache'
 import { getToolResultExpanded } from '../messageRenderers'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
-import { ToolStatusHeader } from './ToolStatusHeader'
+import { ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
 /**
@@ -23,6 +25,8 @@ import { useCollapsedLines } from './useCollapsedLines'
  */
 export interface CommandResultSource {
   output: string
+  /** A referenced output stream could not be recovered. This is different from an empty stream. */
+  outputUnavailable?: boolean
   /** Claude only: stderr separated from stdout. */
   stderr?: string
   exitCode?: number | null
@@ -33,6 +37,25 @@ export interface CommandResultSource {
   interrupted?: boolean
   /** Resolved error state. */
   isError: boolean
+}
+
+export interface CommandResultEntry {
+  label?: string
+  source: CommandResultSource
+}
+
+/** Keep separate process output and status when one tool call owns several commands. */
+export function CommandResultList(props: { entries: CommandResultEntry[], context?: RenderContext }): JSX.Element {
+  return (
+    <For each={props.entries}>
+      {entry => (
+        <>
+          <Show when={entry.label}>{label => <ToolHeaderRow icon={Terminal} title={label()} />}</Show>
+          <CommandResultBody source={entry.source} context={props.context} />
+        </>
+      )}
+    </For>
+  )
 }
 
 /**
@@ -118,9 +141,17 @@ export function CommandResultBody(props: {
     expanded,
     threshold: () => commandCollapseThreshold(body().hadCarriageReturns),
   })
-  const statusIcon = () => props.source.isError ? CircleAlert : Check
-  const statusLabel = () => commandStatusLabel(props.source)
-  const showStatusHeader = () => statusLabel() !== 'Success'
+  const source = () => {
+    const completion = messageCompletionFromProto(props.context?.sources?.current()?.completion)
+    return {
+      ...props.source,
+      interrupted: props.source.interrupted || completion === 'interrupted',
+      isError: props.source.isError || completion === 'error',
+    }
+  }
+  const statusIcon = () => source().isError || source().interrupted ? CircleAlert : Check
+  const statusLabel = () => commandStatusLabel(source())
+  const showStatusHeader = () => !props.context?.completionHeader && statusLabel() !== 'Success'
 
   // When the command produced no output, surface a "[no output]" placeholder
   // alongside whatever metadata we have (duration, exit code). Without this
@@ -132,7 +163,7 @@ export function CommandResultBody(props: {
     const dur = props.source.durationMs
     const exit = props.source.exitCode
     return joinMetaParts([
-      '[no output]',
+      props.source.outputUnavailable ? '[output unavailable]' : '[no output]',
       typeof dur === 'number' && formatDuration(dur),
       typeof exit === 'number' && `exit ${exit}`,
     ])

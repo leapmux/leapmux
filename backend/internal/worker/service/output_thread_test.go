@@ -119,7 +119,7 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	require.NoError(t, err)
 
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif)
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, assistantMsg, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: assistantMsg}, agent.SpanInfo{}))
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif)
 
 	rows := listRows()

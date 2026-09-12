@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import { diffLines } from 'diff'
 import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
+import { isObject } from '~/lib/jsonPick'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
@@ -13,6 +14,41 @@ import {
 
 const TRAILING_NEWLINE_RE = /\n$/
 
+const INPUT_HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
+
+function shortInputHint(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 120
+    ? value.length > 80 ? `${value.slice(0, 80)}…` : value
+    : ''
+}
+
+/** Prefer a common argument key, then the first short string. */
+export function toolInputHint(input: unknown): string {
+  if (!isObject(input))
+    return ''
+  for (const key of INPUT_HINT_KEYS) {
+    const hint = shortInputHint(input[key])
+    if (hint)
+      return hint
+  }
+  for (const value of Object.values(input)) {
+    const hint = shortInputHint(value)
+    if (hint)
+      return hint
+  }
+  return ''
+}
+
+export function renderMcpTitle(displayName: string, input: unknown): JSX.Element {
+  const hint = toolInputHint(input)
+  return (
+    <>
+      <span class={toolInputText}>{displayName}</span>
+      <Show when={hint}><span class={toolInputCode}>{` "${hint}"`}</span></Show>
+    </>
+  )
+}
+
 export function renderBashTitle(description?: string, command?: string): JSX.Element | null {
   if (!description && !command)
     return null
@@ -23,13 +59,12 @@ export function renderBashTitle(description?: string, command?: string): JSX.Ele
 export function renderReadTitle(path?: string, offset?: number, limit?: number, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
-  const rangeStr = offset && limit
-    ? ` (Line ${offset}–${offset + limit - 1})`
-    : limit
-      ? ` (Line 1–${limit})`
-      : offset
-        ? ` (Line ${offset}–)`
-        : ''
+  const start = offset !== undefined && Number.isSafeInteger(offset) && offset > 0 ? offset : undefined
+  const count = limit !== undefined && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
+  const end = count !== undefined && count - 1 <= Number.MAX_SAFE_INTEGER - (start ?? 1) ? (start ?? 1) + (count - 1) : undefined
+  const rangeStr = end !== undefined
+    ? ` (Line ${start ?? 1}–${end})`
+    : start !== undefined ? ` (Line ${start}–)` : ''
   return (
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
@@ -41,7 +76,7 @@ export function renderReadTitle(path?: string, offset?: number, limit?: number, 
 export function renderWriteTitle(path?: string, content?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
-  const lineCount = content ? content.split('\n').length : 0
+  const lineCount = content ? content.replace(TRAILING_NEWLINE_RE, '').split('\n').length : 0
   const lineStr = lineCount > 0 ? ` (${pluralize(lineCount, 'line')})` : ''
   return (
     <>
@@ -62,7 +97,7 @@ export function renderEditTitle(path?: string, oldStr?: string, newStr?: string,
     return null
   let added = 0
   let removed = 0
-  if (oldStr && newStr && oldStr !== newStr) {
+  if (oldStr !== undefined && newStr !== undefined && oldStr !== newStr) {
     const changes = diffLines(oldStr, newStr)
     for (const c of changes) {
       const count = c.value.replace(TRAILING_NEWLINE_RE, '').split('\n').length

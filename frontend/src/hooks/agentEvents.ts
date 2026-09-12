@@ -21,7 +21,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
-import { providerFor } from '~/components/chat/providers/registry'
+import { parsedMessageForRendering, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
@@ -345,7 +345,8 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
   // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
   if (msg.source === MessageSource.AGENT) {
-    const usage = extractContextUsage(parsed, p => plugin?.contextUsageFromMessage?.(p) ?? null)
+    const resolved = parsedMessageForRendering(parsed, msg.agentProvider)
+    const usage = extractContextUsage(resolved, p => plugin?.contextUsageFromMessage?.(p) ?? null)
     if (usage)
       agentSessionStore.updateInfo(agentId, usage)
   }
@@ -717,7 +718,7 @@ export function handleControlRequest(
     log.warn('Ignoring malformed control request payload', { agentId: cr.agentId, requestId: cr.requestId, err })
     return
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, claimToken: cr.claimToken })
+  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq })
   if (catchUpPhase === 'live') {
     // Light up the tab badge so a user looking at a sibling tab knows the background
     // agent is now waiting on them. Match FULL's on-screen rule (tile-active).

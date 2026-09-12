@@ -1,5 +1,4 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { getOrCreate } from '~/lib/getOrCreate'
 import { parseMessageContent } from '~/lib/messageParser'
@@ -8,7 +7,7 @@ import { parseMessageContent } from '~/lib/messageParser'
  * Window-scoped index linking a tool span's opener (tool_use) and result
  * (tool_result) messages by spanId, so a tool_use bubble can find its result
  * and vice versa. Extracted from the chat store: it owns only the two
- * id->message maps plus a per-message parse cache, with no reactive coupling.
+ * span-to-message maps. The message parser owns the parse cache.
  *
  * Routing is by message ROLE (the per-provider `spanRole` classifier), not
  * arrival order: a tool_result always files into the result map and a tool_use
@@ -26,55 +25,22 @@ export interface ChatSpanIndex {
    * loaded). A true return is MANDATORY-reindex, not advisory: the conflicting
    * message was ALREADY filed (the maps are left in a partially-updated state),
    * so the caller MUST `reindex` from the authoritative window to discard it.
-   * The sole caller does (`if (inserted && index(...)) reindex(...)`); a future
-   * caller that treats the boolean as advisory would leave a stale slot.
+   * Each caller must inspect this result and rebuild on a conflict.
    */
   index: (agentId: string, ...messages: AgentChatMessage[]) => boolean
   /** Replace an agent's index with exactly `messages` (clear, then index). */
   reindex: (agentId: string, messages: AgentChatMessage[]) => void
-  /** Parsed opener (tool_use) for a spanId, or undefined. Parse is cached. */
-  getOpenerParsed: (agentId: string, spanId: string) => ParsedMessageContent | undefined
-  /**
-   * The opener (tool_use) message id for a spanId, or undefined. Lets a consumer
-   * resolve the OPENER's content version from a tool_result's spanId, so an
-   * in-place opener body change (which sizes the result's diff) can bust the
-   * result's cached classification / height estimate.
-   */
-  getOpenerId: (agentId: string, spanId: string) => string | undefined
   /** The opener message for a spanId, or undefined. */
   getOpenerMessage: (agentId: string, spanId: string) => AgentChatMessage | undefined
-  /** Parsed result (tool_result) for a spanId, or undefined. Parse is cached. */
-  getResultParsed: (agentId: string, spanId: string) => ParsedMessageContent | undefined
-  /**
-   * The result (tool_result) message id for a spanId, or undefined. Lets a
-   * consumer resolve the RESULT's content version from a tool_use spanId, so
-   * opener rows that render hidden result data can invalidate on result edits.
-   */
-  getResultId: (agentId: string, spanId: string) => string | undefined
   /** The result message for a spanId, or undefined. */
   getResultMessage: (agentId: string, spanId: string) => AgentChatMessage | undefined
-  /**
-   * Drop the memoized parse for a message replaced in place under a stable
-   * reference (the store's same-seq update). The local parse cache assumes message
-   * immutability, so an in-place content swap must evict here or a paired
-   * tool_use/tool_result lookup keeps returning the pre-update parse.
-   */
-  invalidate: (message: AgentChatMessage) => void
+
 }
 
 export function createSpanIndex(): ChatSpanIndex {
   // The opener (tool_use) message per spanId, and the result (tool_result).
   const openers = new Map<string, Map<string, AgentChatMessage>>()
   const results = new Map<string, Map<string, AgentChatMessage>>()
-
-  // Per-message memoized parse. AgentChatMessage instances are immutable, so a
-  // WeakMap is the natural cache: entries get GC'd whenever the store drops a
-  // message. The shared cache lets a tool_result bubble reuse the parse the
-  // tool_use bubble's own render already paid for.
-  const parsedCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
-  function parsedFor(message: AgentChatMessage): ParsedMessageContent {
-    return getOrCreate(parsedCache, message, () => parseMessageContent(message))
-  }
 
   function mapFor(store: Map<string, Map<string, AgentChatMessage>>, agentId: string): Map<string, AgentChatMessage> {
     return getOrCreate(store, agentId, () => new Map<string, AgentChatMessage>())
@@ -119,15 +85,10 @@ export function createSpanIndex(): ChatSpanIndex {
     for (const msg of messages) {
       if (!msg.spanId)
         continue
-      // parsedFor caches, so this parse is reused by a later opener/result lookup.
-      // The provider plugin owns the role dialect (Claude reads Anthropic tool_use/tool_result
-      // blocks, Pi routes by envelope `type`); a provider with no spanRole hook (Codex / ACP, whose
-      // spans are single-logical-row -- the item IS both opener and terminal state) defaults to
-      // 'other' and files first-seen-is-opener, with the two-'other'-member conflict backstop below.
-      // CONTRACT: if a provider ever emits a DISTINCT result-role row that can arrive out of order
-      // (a result before its opener), it MUST add a spanRole hook returning 'result' -- first-seen
-      // can't order that case and would misfile the lone result as the opener.
-      const role = pluginFor(msg.agentProvider)?.spanRole?.(parsedFor(msg)) ?? 'other'
+      // The shared message parser caches this parse for later renderer lookups.
+      // Each provider identifies its request and result roles from the protocol.
+      // Unknown roles use sequence order. Known results must never depend on arrival order.
+      const role = pluginFor(msg.agentProvider)?.spanRole?.(parseMessageContent(msg)) ?? 'other'
       if (role === 'result') {
         // Always the result side, regardless of arrival order.
         fileInto(results, openers, msg)
@@ -136,14 +97,22 @@ export function createSpanIndex(): ChatSpanIndex {
         fileInto(openers, results, msg)
       }
       else {
+        // A refreshed message keeps its side when its protocol still omits the role.
+        if (openers.get(agentId)?.get(msg.spanId)?.id === msg.id) {
+          fileInto(openers, results, msg)
+          continue
+        }
+        if (results.get(agentId)?.get(msg.spanId)?.id === msg.id) {
+          fileInto(results, openers, msg)
+          continue
+        }
         // Other kinds sharing a spanId: first-seen is the opener. But a SECOND
         // 'other' member can't be ordered by role (neither side classifies it), so
         // filing it opposite the first by arrival order is a guess that's wrong when
         // it arrived out of seq order (a result-before-opener pair both classified
         // 'other'). Flag a conflict so the caller reindexes from the authoritative,
         // seq-ordered window, where the lower-seq member correctly becomes the
-        // opener. (Today no provider emits two 'other' members on one span, so this
-        // is a defensive backstop, not a hot path.)
+        // opener. Some item shapes omit status, so their protocol cannot identify the role here.
         if (!openers.get(agentId)?.has(msg.spanId)) {
           fileInto(openers, results, msg)
         }
@@ -165,23 +134,10 @@ export function createSpanIndex(): ChatSpanIndex {
       index(agentId, ...messages)
   }
 
-  // Shared lookup for the opener/result getters -- like mapFor, it takes the
-  // backing store (openers or results) as its first param so both getters route
-  // through one body.
-  function getParsed(store: Map<string, Map<string, AgentChatMessage>>, agentId: string, spanId: string): ParsedMessageContent | undefined {
-    const msg = store.get(agentId)?.get(spanId)
-    return msg ? parsedFor(msg) : undefined
-  }
-
   return {
     index,
     reindex,
-    getOpenerParsed: (agentId: string, spanId: string) => getParsed(openers, agentId, spanId),
-    getOpenerId: (agentId: string, spanId: string) => openers.get(agentId)?.get(spanId)?.id,
     getOpenerMessage: (agentId: string, spanId: string) => openers.get(agentId)?.get(spanId),
-    getResultParsed: (agentId: string, spanId: string) => getParsed(results, agentId, spanId),
-    getResultId: (agentId: string, spanId: string) => results.get(agentId)?.get(spanId)?.id,
     getResultMessage: (agentId: string, spanId: string) => results.get(agentId)?.get(spanId),
-    invalidate: (message: AgentChatMessage) => parsedCache.delete(message),
   }
 }

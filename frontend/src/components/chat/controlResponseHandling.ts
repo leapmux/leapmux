@@ -1,16 +1,20 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
 import type { ControlAnswerSeed, ControlAnswerState, EditorContentRef } from './controls/types'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
+import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
-import { requestInstanceId } from '~/stores/control.store'
+import { controlRequestProvider, requestInstanceId } from '~/stores/control.store'
+import { useControlRequestSource } from './controlRequestSource'
 import { controlQuestion, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { buildElicitationResponse, createElicitationForm, elicitationAcceptMetadata, elicitationURL } from './controls/elicitationForm'
 import { decidePlanModeToggle } from './planModeToggle'
 import { pluginFor } from './providers/registry'
 import './providers'
@@ -19,6 +23,7 @@ export interface ControlResponseHandlingProps {
   agentId: string
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
+  messageContext?: MessageContextResolver
   onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
   onSettingChange?: ProviderSettingChangeHandler
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
@@ -36,11 +41,10 @@ export interface ControlResponseHandlingProps {
 export interface ControlResponseHandlingResult {
   activeControlRequest: Accessor<ControlRequest | null>
   isAskUserQuestion: Accessor<boolean>
+  editorPlaceholder: Accessor<string | undefined>
   showInterrupt: Accessor<boolean>
-  handleControlSend: (content: string) => boolean | void
+  handleControlSend: (content: string) => boolean | void | Promise<boolean | void>
   handleSend: (content: string) => boolean | void | Promise<boolean | void>
-  /** Discards ONE answered request's drafts and collapses the composer. */
-  finishAnswer: (request: ControlRequest) => void
   /** Builds the responder that answers as ONE request instance. See `respondTo` below. */
   respondTo: (request: ControlRequest) => (bytes: Uint8Array) => Promise<void>
   togglePlanMode: () => void
@@ -110,11 +114,28 @@ export function useControlResponseHandling(
   // memo returns the same instance when the head does not change, so it stops
   // the notification there.
   const activeControlRequest = createMemo(() => props.controlRequests?.[0] ?? null)
+  const activeProvider = createMemo(() => controlRequestProvider(activeControlRequest(), props.agent?.agentProvider))
+  const source = useControlRequestSource(activeControlRequest, () => props.messageContext, activeProvider)
+  const questionForRequest = (request: ControlRequest, provider: AgentProvider | undefined) => {
+    const active = activeControlRequest()
+    const matches = active?.agentId === request.agentId && requestInstanceId(active) === requestInstanceId(request)
+    return controlQuestion(request, provider, matches ? source() : undefined)
+  }
 
   // The active request's questions, or undefined when it is not a question.
   // `controlQuestion` is the one classifier; see its doc comment.
-  const activeQuestion = createMemo(() => controlQuestion(activeControlRequest(), props.agent?.agentProvider))
+  const activeQuestion = createMemo(() => controlQuestion(activeControlRequest(), activeProvider(), source()))
   const isAskUserQuestion = createMemo(() => activeQuestion() !== undefined)
+  const editorPlaceholder = createMemo(() => {
+    const request = activeControlRequest()
+    if (!request)
+      return undefined
+    if (isAskUserQuestion())
+      return 'Type a custom answer...'
+    if (pluginFor(controlRequestProvider(request, props.agent?.agentProvider))?.elicitation?.(request.payload))
+      return 'Complete the request above, then choose an action.'
+    return 'Type a rejection reason...'
+  })
 
   // Whether the Interrupt button should be shown.
   const showInterrupt = () =>
@@ -124,7 +145,7 @@ export function useControlResponseHandling(
   // its page and its switches. `requestInstanceId` states why a request id alone
   // is not enough.
   const answerKey = (request: ControlRequest): AsyncLocalKey =>
-    `${PREFIX_CONTROL_STATE}${props.agentId}:${requestInstanceId(request)}`
+    `${PREFIX_CONTROL_STATE}${request.agentId}:${requestInstanceId(request)}`
 
   // The request whose answer `answerState` holds right now. The restore effect
   // below assigns it; the persist effect reads it. See both for why.
@@ -261,31 +282,20 @@ export function useControlResponseHandling(
     localStorageStore(answerKey(owner), value)
   })
 
-  // Answers as ONE request instance: the one the caller captured before it acted.
-  // The worker's idempotency claim then keys on the instance the user answered.
-  // It still keys on that instance after the store drops it. Both answer paths
-  // use this: the typed feedback below, and the footer action row in
-  // `AgentEditorPanel`, which keys its owner on the request for the same reason.
-  //
-  // Reading the store again inside the responder would answer as whatever is
-  // active by then. Once the queue is empty it would answer as no request at all.
-  const respondTo = (request: ControlRequest) => (bytes: Uint8Array): Promise<void> =>
-    props.onControlResponse?.(request, bytes) ?? Promise.resolve()
-
   // Discards every draft of ONE answered request: its editor text, its per-page
   // question answers, and its saved selection state.
   const cleanupControlRequestDrafts = (request: ControlRequest) => {
-    if (!props.agentId)
+    if (!request.agentId)
       return
     const instanceId = requestInstanceId(request)
-    clearDraft(`${props.agentId}-ctrl-${instanceId}`)
+    clearDraft(`${request.agentId}-ctrl-${instanceId}`)
     // The editor scopes a question's draft per page, and it writes one key per
     // question. The same classifier that decides those pages counts them here,
     // so a question set of any size loses every key it wrote. A request that is
     // not a question wrote none, and the loop then does no work.
-    const pages = controlQuestion(request, props.agent?.agentProvider)?.questions.length ?? 0
+    const pages = questionForRequest(request, props.agent?.agentProvider)?.questions.length ?? 0
     for (let page = 0; page < pages; page++) {
-      clearDraft(`${props.agentId}-ctrl-${instanceId}-q-${page}`)
+      clearDraft(`${request.agentId}-ctrl-${instanceId}-q-${page}`)
     }
     localStorageDrop(answerKey(request))
     // Release the ownership too. The persist effect is deferred, so it runs
@@ -297,20 +307,17 @@ export function useControlResponseHandling(
       answerOwner = null
   }
 
-  // The epilogue of ONE answered request: discard its drafts, then collapse the
-  // composer back to its natural height. Every answer path ends here -- the
-  // footer action row in `AgentEditorPanel` and both branches of
-  // `handleControlSend` -- so the two steps cannot drift apart.
-  //
-  // This deliberately sits OUTSIDE `respondTo`. The non-question branch below
-  // runs the epilogue even when the plugin builds no response, and a plugin
-  // decides for itself how many times it calls the responder.
-  const finishAnswer = (request: ControlRequest) => {
+  // Capture the request instance before delivery. Never read a different request from the store to send an answer.
+  // Keep its drafts until the server accepts the answer, so a failed delivery permits retry and reload.
+  const respondTo = (request: ControlRequest) => async (bytes: Uint8Array): Promise<void> => {
+    await props.onControlResponse?.(request, bytes)
     cleanupControlRequestDrafts(request)
-    resetEditorHeightFn()
+    const active = activeControlRequest()
+    if (props.agentId === request.agentId && (!active || requestInstanceId(active) === requestInstanceId(request)))
+      resetEditorHeightFn()
   }
 
-  const handleControlSend = (content: string): boolean | void => {
+  const handleControlSend = (content: string): boolean | void | Promise<boolean | void> => {
     const req = activeControlRequest()
     if (!req)
       return
@@ -322,7 +329,7 @@ export function useControlResponseHandling(
     // unregistered provider (a bug, e.g. backend/frontend version skew). Refuse to
     // encode a control response through the wrong provider's builder; surface a
     // toast so the send is not a silent no-op, and keep the editor content.
-    const provider = props.agent?.agentProvider
+    const provider = controlRequestProvider(req, props.agent?.agentProvider)
     const plugin = pluginFor(provider)
     if (!plugin) {
       showWarnToast(`Cannot send response: unsupported agent provider (${provider})`)
@@ -331,10 +338,11 @@ export function useControlResponseHandling(
     // Classify the CAPTURED request, not whatever the store holds by now. The
     // shared return type carries the capability, so a question with no capability
     // to answer it cannot be represented here.
-    const question = controlQuestion(req, provider)
+    const question = questionForRequest(req, provider)
     if (question) {
+      let sending: Promise<void> | undefined
       const sendAskResponse = () => {
-        void question.capability.sendAnswer(req, respond, question.questions, answerState)
+        sending = Promise.resolve(question.capability.sendAnswer(req, respond, question.questions, answerState))
       }
       const submitted = trySubmitAskUserQuestion(
         answerState,
@@ -346,21 +354,31 @@ export function useControlResponseHandling(
       )
       if (!submitted)
         return false
-      finishAnswer(req)
-      return
+      return sending
+    }
+    const elicitation = plugin.elicitation?.(req.payload)
+    if (elicitation) {
+      if (content.trim()) {
+        showWarnToast('Enter the response in the form, then use Approve, Reject, or Cancel.')
+        return false
+      }
+      const answer = elicitation.mode === 'form' ? createElicitationForm(elicitation.schema).read(answerState.choices()) : undefined
+      const valid = elicitation.mode === 'form' ? !!answer?.content : elicitation.mode === 'url' && !!elicitationURL(elicitation.url)
+      if (!valid) {
+        showWarnToast(answer?.error ?? 'This request cannot be approved.')
+        return false
+      }
+      const bytes = new TextEncoder().encode(JSON.stringify(buildElicitationResponse(req.requestId, MCP_ELICITATION_ACTION.Accept, answer?.content, elicitationAcceptMetadata(elicitation, answerState.choices()))))
+      return respond(bytes)
     }
     const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
-    if (response) {
-      const bytes = new TextEncoder().encode(JSON.stringify(response))
-      const sent = respond(bytes)
-      if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
-        void sent.then(() => (props.onSendControlFeedback ?? props.onSendMessage)(content)).catch(() => {})
-      }
-      else {
-        void sent.catch(() => {})
-      }
-    }
-    finishAnswer(req)
+    if (!response)
+      return false
+    const bytes = new TextEncoder().encode(JSON.stringify(response))
+    const sent = respond(bytes)
+    if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload))
+      return sent.then(() => (props.onSendControlFeedback ?? props.onSendMessage)(content))
+    return sent
   }
 
   const handleSend = (content: string): boolean | void | Promise<boolean | void> => {
@@ -392,10 +410,10 @@ export function useControlResponseHandling(
 
   return {
     activeControlRequest,
-    finishAnswer,
     handleControlSend,
     handleSend,
     isAskUserQuestion,
+    editorPlaceholder,
     respondTo,
     showInterrupt,
     togglePlanMode,

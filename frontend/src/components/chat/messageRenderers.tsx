@@ -1,17 +1,16 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
+import type { MessageRenderSources } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ControlResponseDeriver } from './persistedControlResponse'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { TodoItem } from '~/stores/chatTodos'
-import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
@@ -22,13 +21,14 @@ import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { inlineFlex } from '~/styles/shared.css'
-import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
+import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { renderMarkdownForContext } from './markdownRendering'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
+import { ToolStatusHeader } from './results/ToolStatusHeader'
 import {
   toolInputText,
   toolUseIcon,
@@ -51,8 +51,10 @@ const logger = createLogger('messageRenderers')
 export interface RenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
-  /** O(1) live-todo lookup for this bubble's agent (resolves subjects for status-only TaskUpdate patches). */
-  getTodoById?: (taskId: string) => TodoItem | undefined
+  /** Original, supplemental, linked, and live data resolved for this row. */
+  sources?: MessageRenderSources
+  /** The enclosing renderer displays the retained tool completion. */
+  completionHeader?: boolean
   workingDir?: string
   /** Worker's home directory for tilde (~) path simplification. */
   homeDir?: string
@@ -75,10 +77,6 @@ export interface RenderContext {
    * (isolated tests/previews), where each renderer falls back to its own literal.
    */
   expandUiKey?: MessageUiKey
-  /** Pre-parsed tool_use message for tool_result bubbles to inspect (cached by the store). */
-  toolUseParsed?: ParsedMessageContent
-  /** Pre-parsed tool_result message for tool_use bubbles to inspect (cached by the store). */
-  toolResultParsed?: ParsedMessageContent
   /** Per-row/content-version pure render-derivation cache shared by visible + premeasure mounts. */
   renderCache?: MessageRenderCache
   /** Color index assigned to this message's span (−1 = no color). */
@@ -87,17 +85,10 @@ export interface RenderContext {
   spanType?: string
   /** Current message span id. */
   spanId?: string
-  /**
-   * Live progress for THIS row's still-running tool (elapsed time, subagent
-   * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
-   * reading it here would subscribe the whole renderer to a value that changes
-   * while the row is on screen, and re-rendering the row drops any text
-   * selection the user holds across it. Only the leaf that displays it
-   * calls it -- see ToolRunningBadge.
-   */
-  toolProgress?: () => ToolProgressEntry | undefined
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
+  /** The message host supplies an outer toolbar with shared result actions. */
+  hasOuterToolbar?: boolean
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: MessageUiKey, value: boolean) => void
   /**
@@ -124,16 +115,6 @@ export interface RenderContext {
    * scrolled in (see createWorkerPriorityGate).
    */
   rowOffscreen?: () => boolean
-  /**
-   * Resolve a provider registry row key to its background-task row, so a tool
-   * card that identifies an agent by id can link to that subagent's transcript.
-   *
-   * The key is `BackgroundTaskItem.rowKey` (the proto item calls it `id`) — the
-   * same string Claude's SendMessage carries in `to`. Returns undefined when the
-   * key identifies no row of this root, which is the answer for every recipient
-   * outside this session's subagents.
-   */
-  resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /**
@@ -390,9 +371,22 @@ export function renderMessageContent(
     // Claude's renderers (classifyMessage routes such messages to
     // `unsupported_provider`, which MessageBubble surfaces explicitly).
     const plugin = pluginFor(agentProvider)
-    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
+    const completion = messageCompletionFromProto(messageCompletion) ?? messageCompletionFromProto(context?.sources?.current()?.completion)
+    const toolCompletion = (category?.kind === 'tool_use' || category?.kind === 'tool_result')
+      && (completion === 'interrupted' || completion === 'error')
+    const providerContext = toolCompletion
+      ? Object.create(context ?? null, { completionHeader: { value: true } }) as RenderContext
+      : context
+    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, providerContext) ?? null
     if (result !== null) {
-      const marker = completionMarker(messageCompletionFromProto(messageCompletion) ?? parseProviderMessageCompletion(parsed))
+      if (toolCompletion) {
+        return (
+          <ToolStatusHeader icon={CircleAlert} title={completion === 'interrupted' ? 'Interrupted' : 'Failed'} dataToolMessage>
+            {result}
+          </ToolStatusHeader>
+        )
+      }
+      const marker = completionMarker(completion)
       if (marker) {
         return (
           <>

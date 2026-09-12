@@ -2,6 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudeToolResultMeta } from './claude/toolResult'
 import './testMocks'
@@ -155,57 +156,37 @@ describe('claude RemoteTrigger tool_result rendering', () => {
 
 describe('claudeToolResultMeta for RemoteTrigger', () => {
   it('marks structured tool_use_result as collapsible so the toolbar renders an expand button', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{}' }] },
-        tool_use_result: { status: 200, json: '{}' },
-      },
-      'RemoteTrigger',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{}' }] },
+      tool_use_result: { status: 200, json: '{}' },
+    }, 'RemoteTrigger', undefined))
     expect(meta?.collapsible).toBe(true)
   })
 
   it('marks fallback HTTP {n}\\n... text as collapsible', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{"trigger":{}}' }] },
-      },
-      'RemoteTrigger',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{"trigger":{}}' }] },
+    }, 'RemoteTrigger', undefined))
     expect(meta?.collapsible).toBe(true)
   })
 
   it('does not mark non-HTTP plain text as collapsible', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: 'opaque' }] },
-      },
-      'RemoteTrigger',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'opaque' }] },
+    }, 'RemoteTrigger', undefined))
     expect(meta?.collapsible).toBe(false)
   })
 
   it('returns prettified JSON for the copy button', () => {
     const compact = '{"trigger":{"id":"trig_1","name":"hello","enabled":true}}'
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
-        tool_use_result: { status: 200, json: compact },
-      },
-      'RemoteTrigger',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+      tool_use_result: { status: 200, json: compact },
+    }, 'RemoteTrigger', undefined))
     const copied = meta?.copyableContent()
     expect(copied).not.toBeNull()
     expect(copied!.startsWith('HTTP 200\n')).toBe(true)
@@ -217,15 +198,10 @@ describe('claudeToolResultMeta for RemoteTrigger', () => {
 
   it('prettifies copy text from fallback HTTP {n}\\n... content when tool_use_result is absent', () => {
     const compact = '{"trigger":{"id":"trig_2"}}'
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 201\n${compact}` }] },
-      },
-      'RemoteTrigger',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 201\n${compact}` }] },
+    }, 'RemoteTrigger', undefined))
     const copied = meta?.copyableContent()
     expect(copied).not.toBeNull()
     expect(copied!.startsWith('HTTP 201\n')).toBe(true)

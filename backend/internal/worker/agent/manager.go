@@ -742,10 +742,8 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	return true
 }
 
-// ClearContext attempts to clear the agent's context in-place (e.g. by
-// starting a new Codex thread). Returns the new session ID and true if
-// successful, or ("", false) if the provider doesn't support it.
-func (m *Manager) ClearContext(agentID string) (string, bool) {
+// ClearContext returns the new session ID or the provider's refusal or failure.
+func (m *Manager) ClearContext(agentID string) (string, error) {
 	unlock := m.LockAgent(agentID)
 	defer unlock()
 
@@ -753,7 +751,7 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 	if !ok {
-		return "", false
+		return "", ErrAgentNotFound
 	}
 	return p.ClearContext()
 }

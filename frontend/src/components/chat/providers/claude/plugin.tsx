@@ -13,6 +13,7 @@ import { truncatePreview } from '~/lib/textTruncate'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
+import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendResponse } from '../../controls/types'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
@@ -20,7 +21,8 @@ import { controlBehaviorDisplay } from '../../persistedControlResponse'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from './ClaudeCodeControlRequest'
-import { getAssistantContent, joinToolResultText } from './extractors/assistantContent'
+import { claudeElicitation } from './elicitation'
+import { extractToolUseInfo, getAssistantContent, joinToolResultText } from './extractors/assistantContent'
 import { claudeToolResultImages } from './extractors/image'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
@@ -49,13 +51,11 @@ const HIDDEN_TOOL_USE_SPAN_TYPES = new Set<string>([
 ])
 /**
  * Tool span types whose `tool_result` row is suppressed because the
- *  tool_use side already renders the full information (TodoWrite), the
  *  result is the data source for the tool_use side (TaskCreate /
  *  TaskUpdate / TaskGet), or the entire call is hidden (ToolSearch,
  *  TaskList — see {@link HIDDEN_TOOL_USE_SPAN_TYPES}).
  */
 const HIDDEN_TOOL_RESULT_SPAN_TYPES = new Set<string>([
-  CLAUDE_TOOL.TODO_WRITE,
   CLAUDE_TOOL.TOOL_SEARCH,
   CLAUDE_TOOL.TASK_CREATE,
   CLAUDE_TOOL.TASK_UPDATE,
@@ -385,16 +385,22 @@ const claudeCodePlugin: Provider = {
 
   classify: classifyClaudeCodeMessage,
   spanRole: claudeSpanRole,
+  relatedMessages: (parsed) => {
+    if (claudeSpanRole(parsed) === 'result')
+      return ['request']
+    const tool = extractToolUseInfo(parsed)?.toolName
+    return tool === CLAUDE_TOOL.AGENT || tool === CLAUDE_TOOL.TASK || tool === CLAUDE_TOOL.TODO_WRITE || tool === CLAUDE_TOOL.TASK_CREATE || tool === CLAUDE_TOOL.TASK_UPDATE || tool === CLAUDE_TOOL.TASK_GET ? ['result'] : []
+  },
   rateLimitsFromMessage: claudeRateLimitsFromMessage,
   contextUsageFromMessage: claudeContextUsageFromMessage,
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
-  toolResultImages: claudeToolResultImages,
+  toolResultImages: input => claudeToolResultImages(input.parsed.parentObject, input.spanType, input.request),
   extractQuotableText: claudeExtractQuotableText,
   previewText: claudeMarkPreview,
   // Claude's native control response IS the neutral behavior envelope, so its derivation is the
   // shared reader: allow -> "Approved", deny+message -> feedback, bare deny -> "Rejected".
-  controlResponseDisplay: cr => controlBehaviorDisplay(cr.response),
+  controlResponseDisplay: withElicitationResponse(claudeElicitation, cr => controlBehaviorDisplay(cr.response)),
   notificationThreadEntry: claudeNotificationThreadEntry,
   resultDivider: claudeResultDivider,
 
@@ -413,6 +419,7 @@ const claudeCodePlugin: Provider = {
       sendResponse(sendControlResponse, buildDenyResponse(request.requestId, message)),
   },
 
+  elicitation: claudeElicitation,
   buildControlResponse(payload, content, requestId) {
     // ExitPlanMode never goes through the editor for "approve" — that path
     // lives in the dedicated approval button. Editor input here always means

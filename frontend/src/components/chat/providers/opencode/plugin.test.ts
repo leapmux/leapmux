@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
@@ -165,9 +165,8 @@ describe('opencode classify', () => {
       toolCallId: 'tc-1',
       status: 'in_progress',
       kind: 'execute',
-      _leapmux: { completion: 'interrupted' },
     }
-    expect(plugin.classify(input(parent))).toEqual({
+    expect(plugin.classify({ ...input(parent), completion: MessageCompletion.INTERRUPTED })).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,

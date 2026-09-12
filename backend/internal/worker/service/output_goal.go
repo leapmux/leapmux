@@ -95,7 +95,11 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 		slog.Warn("failed to fetch agent for goal update", "agent_id", agentID, "error", err)
 		return
 	}
+	h.applyGoalUpdateFromRow(agentID, provider, row, update)
+}
 
+// applyGoalUpdateFromRow applies a report under the per-agent goal mutex.
+func (h *OutputHandler) applyGoalUpdateFromRow(agentID string, provider leapmuxv1.AgentProvider, row db.GetAgentGoalRow, update agent.GoalUpdate) {
 	// TWO tests, over different fields, because the row and the transcript
 	// answer different questions.
 	//
@@ -111,7 +115,8 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	// and announces nothing. A goal that finished or blocked while the worker
 	// was down still differs in status, and is still announced.
 	statusWire := agent.GoalStatusWire(update.Status)
-	sameIdentity := sameGoalCreatedAt(row.GoalCreatedAt, update)
+	sameIdentity := sameGoalIdentity(row, update)
+	replaced := row.GoalObjective != update.Objective || !sameIdentity
 	transition := row.GoalObjective != update.Objective ||
 		row.GoalStatus != statusWire ||
 		!sameIdentity
@@ -125,8 +130,13 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	// detail change is STORED and BROADCAST, which is what the card reads, and
 	// never announced.
 	detailChanged := row.GoalStatusDetail != update.StatusDetail
+	nativeID := update.NativeID
+	if nativeID == "" && !replaced {
+		nativeID = row.GoalNativeID
+	}
+	identityAdded := nativeID != row.GoalNativeID
 
-	if !transition && !detailChanged {
+	if !transition && !detailChanged && !identityAdded {
 		return
 	}
 
@@ -134,7 +144,7 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	createdAt := row.GoalCreatedAt
 	if !update.CreatedAt.IsZero() {
 		createdAt = sqltime.SQLiteNullTime{Time: update.CreatedAt, Valid: true}
-	} else if !createdAt.Valid {
+	} else if !createdAt.Valid || replaced {
 		// A provider that reports no creation time still needs an identity, or
 		// every later report of the same goal would look like a replacement.
 		createdAt = sqltime.SQLiteNullTime{Time: now, Valid: true}
@@ -145,6 +155,7 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	// from the stored one would order against something no row holds.
 	updatedAt := sqltime.SQLiteNullTime{Time: now, Valid: true}
 	if err := h.queries.UpdateAgentGoal(bgCtx(), db.UpdateAgentGoalParams{
+		GoalNativeID:     nativeID,
 		GoalObjective:    update.Objective,
 		GoalStatus:       statusWire,
 		GoalStatusDetail: update.StatusDetail,
@@ -156,7 +167,7 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 		return
 	}
 
-	goal := h.goalProto(update.Objective, statusWire, update.StatusDetail, createdAt)
+	goal := goalProto(GoalColumns{NativeID: nativeID, Objective: update.Objective, StatusWire: statusWire, StatusDetail: update.StatusDetail, CreatedAt: createdAt})
 	h.broadcastGoal(agentID, goal, goalStamp(updatedAt))
 
 	// Only a transition reaches the transcript. A detail-only change already
@@ -185,7 +196,7 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	})
 }
 
-// goalTransitionKind names what a transition DID, from the row as it stood
+// goalTransitionKind identifies the transition from the row as it stood
 // before the write. Only the applier holds both sides, so only the applier can
 // answer: the persisted payload carries the resulting state alone, and several
 // different changes land on the same one.
@@ -194,7 +205,7 @@ func goalTransitionKind(row db.GetAgentGoalRow, update agent.GoalUpdate) string 
 	// these same two values, and a signature that accepted it would let a second
 	// caller pass an identity answer that disagrees with the update -- which
 	// names the wrong verb in the transcript and nothing catches it.
-	sameIdentity := sameGoalCreatedAt(row.GoalCreatedAt, update)
+	sameIdentity := sameGoalIdentity(row, update)
 	// Reaching a status case below means the STATUS is what moved: the caller
 	// only asks after a transition, and the two cases above take the objective
 	// and the identity.
@@ -267,14 +278,15 @@ func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvid
 	})
 }
 
-// sameGoalCreatedAt reports whether the stored creation time already matches
-// this report's. A report that states no creation time cannot contradict the
-// stored one, so it compares equal and the identity is left alone.
-func sameGoalCreatedAt(stored sqltime.SQLiteNullTime, update agent.GoalUpdate) bool {
+// Native identities are authoritative. Creation time distinguishes providers without an ID.
+func sameGoalIdentity(stored db.GetAgentGoalRow, update agent.GoalUpdate) bool {
+	if stored.GoalNativeID != "" && update.NativeID != "" {
+		return stored.GoalNativeID == update.NativeID
+	}
 	if update.CreatedAt.IsZero() {
 		return true
 	}
-	return stored.Valid && stored.Time.Equal(update.CreatedAt)
+	return stored.GoalCreatedAt.Valid && stored.GoalCreatedAt.Time.Equal(update.CreatedAt)
 }
 
 // goalProgressInfo builds the volatile half of a report, or nil when the
@@ -348,10 +360,10 @@ func goalStamp(updatedAt sqltime.SQLiteNullTime) string {
 // both must exist when a goal does not. "This agent can set a goal" is what the
 // empty state needs to know, and the stamp orders the very write that removes
 // the goal. Both ride AgentGoalChanged and the cold-load response instead.
-func (h *OutputHandler) goalProto(objective, statusWire, statusDetail string, createdAt sqltime.SQLiteNullTime) *leapmuxv1.AgentGoal {
+func goalProto(columns GoalColumns) *leapmuxv1.AgentGoal {
 	// The one presence rule, so the projection cannot disagree with the clear
 	// path about the same row. See goalPresent.
-	if !goalPresent(objective) {
+	if !goalPresent(columns.Objective) {
 		return nil
 	}
 	goal := &leapmuxv1.AgentGoal{
@@ -366,12 +378,13 @@ func (h *OutputHandler) goalProto(objective, statusWire, statusDetail string, cr
 		// message for one bad byte, and this projection feeds
 		// ListAgentMessagesResponse -- so a single byte would fail an entire page
 		// of chat history, with nothing on screen to say why.
-		Objective:    validate.WireString(objective),
-		Status:       agent.GoalStatusToProto(agent.GoalStatusFromWire(statusWire)),
-		StatusDetail: validate.WireString(statusDetail),
+		NativeId:     validate.WireString(columns.NativeID),
+		Objective:    validate.WireString(columns.Objective),
+		Status:       agent.GoalStatusToProto(agent.GoalStatusFromWire(columns.StatusWire)),
+		StatusDetail: validate.WireString(columns.StatusDetail),
 	}
-	if createdAt.Valid {
-		goal.CreatedAt = timefmt.Format(createdAt.Time)
+	if columns.CreatedAt.Valid {
+		goal.CreatedAt = timefmt.Format(columns.CreatedAt.Time)
 	}
 	return goal
 }
@@ -451,7 +464,7 @@ func (h *OutputHandler) LoadGoal(ctx context.Context, agentID string) (GoalSnaps
 // The RPC handlers reach the goal columns through a row the dispatcher loaded
 // for them, so re-reading the row inside LoadGoal would run a second query for
 // data already in hand -- once per cold chat load and once per resubscribe. The
-// registry leg beside it reads its own column off that row for the same reason.
+// registry code reads its own column from that row for the same reason.
 func (h *OutputHandler) GoalSnapshotFrom(cols GoalColumns) GoalSnapshot {
 	if cols.IsChild {
 		return GoalSnapshot{}
@@ -472,8 +485,9 @@ func (h *OutputHandler) GoalSnapshotFrom(cols GoalColumns) GoalSnapshot {
 	if goalPresent(cols.Objective) && !h.agentAlive(cols.AgentID) {
 		statusWire, statusDetail = contracts.GoalStatusTokenDormant, ""
 	}
+	cols.StatusWire, cols.StatusDetail = statusWire, statusDetail
 	return GoalSnapshot{
-		Goal:      h.goalProto(cols.Objective, statusWire, statusDetail, cols.CreatedAt),
+		Goal:      goalProto(cols),
 		UpdatedAt: goalStamp(cols.UpdatedAt),
 	}
 }
@@ -496,6 +510,7 @@ func (h *OutputHandler) agentAlive(agentID string) bool {
 // the neutral status, or ordered every answer by the wrong stamp. Two adapters
 // build it, one per sqlc row type, so no call site spells the field order.
 type GoalColumns struct {
+	NativeID string
 	// AgentID, because the projection asks the running-agent map whether a
 	// process still serves this row. It comes off the row itself, so no call
 	// site pairs a set of columns with somebody else's id.
@@ -512,6 +527,7 @@ type GoalColumns struct {
 // already loaded.
 func GoalColumnsOfAgent(row db.Agent) GoalColumns {
 	return GoalColumns{
+		NativeID:     row.GoalNativeID,
 		AgentID:      row.ID,
 		IsChild:      row.ParentAgentID.Valid,
 		Objective:    row.GoalObjective,
@@ -525,6 +541,7 @@ func GoalColumnsOfAgent(row db.Agent) GoalColumns {
 // goalColumnsOfRow reads them from the narrow query the goal paths use.
 func goalColumnsOfRow(row db.GetAgentGoalRow) GoalColumns {
 	return GoalColumns{
+		NativeID:     row.GoalNativeID,
 		AgentID:      row.ID,
 		IsChild:      row.ParentAgentID.Valid,
 		Objective:    row.GoalObjective,
@@ -566,6 +583,38 @@ func (s *agentOutputSink) PublishGoalCapabilities() {
 		return
 	}
 	s.h.publishGoalCapabilities(s.agentID)
+}
+
+func (s *agentOutputSink) UpdateGoalStatus(expected, status agent.GoalStatus) {
+	if !s.ownsGoal("UpdateGoalStatus") {
+		return
+	}
+	switch status {
+	case agent.GoalStatusActive, agent.GoalStatusPaused, agent.GoalStatusBlocked, agent.GoalStatusDone:
+	default:
+		slog.Warn("refusing invalid goal status update", "agent_id", s.agentID, "status", status)
+		return
+	}
+	mu := s.h.goalMutex(s.agentID)
+	mu.Lock()
+	defer mu.Unlock()
+	row, err := s.h.queries.GetAgentGoal(bgCtx(), s.agentID)
+	if err != nil {
+		slog.Warn("failed to read agent goal for status update", "agent_id", s.agentID, "error", err)
+		return
+	}
+	if !goalPresent(row.GoalObjective) || agent.GoalStatusFromWire(row.GoalStatus) != expected {
+		return
+	}
+	update := agent.GoalUpdate{
+		NativeID:  row.GoalNativeID,
+		Objective: row.GoalObjective,
+		Status:    status,
+	}
+	if row.GoalCreatedAt.Valid {
+		update.CreatedAt = row.GoalCreatedAt.Time
+	}
+	s.h.applyGoalUpdateFromRow(s.agentID, s.agentProvider, row, update)
 }
 
 func (s *agentOutputSink) ClearGoal(snapshot bool) {

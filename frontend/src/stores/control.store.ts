@@ -1,9 +1,14 @@
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce } from 'solid-js/store'
 
 export interface ControlRequest {
   requestId: string
   agentId: string
+  /** The provider from the control event remains available before agent metadata loads. */
+  agentProvider?: AgentProvider
   payload: Record<string, unknown>
+  /** The exact transcript message that supplies omitted display fields. */
+  sourceSeq?: bigint
   // Per-instance token minted by the worker (AgentControlRequest.claim_token). The answer echoes it
   // in SendControlResponseRequest so the worker's idempotency claim dedups a reused request_id per
   // INSTANCE. The real ingestion always sets it (from the event); optional so synthetic fixtures and a
@@ -26,6 +31,11 @@ export interface ControlRequest {
  */
 export function requestInstanceId(request: ControlRequest): string {
   return request.claimToken ? `${request.requestId}:${request.claimToken}` : request.requestId
+}
+
+/** Prefer the provider attached to this request over separately loaded agent metadata. */
+export function controlRequestProvider(request: ControlRequest | null | undefined, fallback?: AgentProvider): AgentProvider | undefined {
+  return request?.agentProvider ?? fallback
 }
 
 interface ControlStoreState {
@@ -98,8 +108,14 @@ export function createControlStore() {
         return
       setState(produce((s) => {
         const list = s.pendingByAgent[agentId] ??= []
-        if (list.some(r => r.requestId === request.requestId && canonicalJSON(r.payload) === fp))
+        const existing = list.find(r => r.requestId === request.requestId && r.claimToken === request.claimToken && canonicalJSON(r.payload) === fp)
+        if (existing) {
+          if (existing.agentProvider === undefined && request.agentProvider !== undefined)
+            existing.agentProvider = request.agentProvider
+          if (!existing.sourceSeq && request.sourceSeq && request.sourceSeq > 0n)
+            existing.sourceSeq = request.sourceSeq
           return
+        }
         list.push(request)
       }))
     },

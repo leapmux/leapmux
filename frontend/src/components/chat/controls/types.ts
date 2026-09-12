@@ -1,14 +1,21 @@
 import type { Accessor, Setter } from 'solid-js'
+import type { MessageContextResolver } from '../messageContextResolver'
 import type { PermissionPresetController } from '../providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import { createSignal } from 'solid-js'
 
-interface QuestionOption {
-  id?: string
+export interface QuestionOption {
+  /** The response value stays stable when supplemental data changes the label. */
+  value?: string
   label: string
   description?: string
+  preview?: string
+}
+
+export function questionOptionValue(option: QuestionOption): string {
+  return option.value ?? option.label
 }
 
 export interface Question {
@@ -17,6 +24,8 @@ export interface Question {
   header?: string
   options: QuestionOption[]
   multiSelect?: boolean
+  /** The provider accepts an explicit empty answer. */
+  allowEmpty?: boolean
 }
 
 /**
@@ -142,10 +151,12 @@ export interface ContentProps {
   answerState: ControlAnswerState
   optionsDisabled?: boolean
   agentProvider?: AgentProvider
+  messageContext?: MessageContextResolver
 }
 
 export interface ActionsProps {
   request: ControlRequest
+  messageContext?: MessageContextResolver
   answerState: ControlAnswerState
   /**
    * Sends ONE answer for {@link request}.

@@ -1,16 +1,14 @@
 import type { Component } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { MessageBubbleHost } from './MessageBubble'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { ChatScrollState, PaginationCallbacks } from './useChatScroll'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
-import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { SpanMessageRevision } from '~/stores/chatTypes'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
@@ -102,59 +100,6 @@ export interface ChatScrollApi {
 }
 
 /**
- * The per-agent reactive lookups ChatView's renderers and entry cache consult by
- * spanId / message id. Bundled into one object (built once by the
- * host, TileRenderer) so the lookup cluster has a name and a single typed surface --
- * adding one no longer means a new prop plus three internal re-wiring sites. Every
- * member MUST read REACTIVELY (off the store) where noted, or an off-screen row freezes
- * at its first classification / measured-height cache key.
- */
-export interface ChatMessageLookups {
-  /** Look up the parsed tool_use message by spanId (for tool_use ↔ tool_result linking). */
-  getToolUseParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
-  /**
-   * The content version of the tool_use opener paired with a spanId (0 when none).
-   * MUST read REACTIVELY (the store's getToolUseContentVersionBySpanId): a
-   * tool_result renders from the opener's input, so an in-place opener body
-   * change -- which bumps the OPENER's content version, not the result's -- must
-   * re-classify the off-screen result and invalidate its cached DOM height. Folded
-   * into the entry cache's freshness check and the per-row height key for
-   * tool_result rows.
-   */
-  getToolUseContentVersionBySpanId?: (spanId: string) => number
-  /** Full paired tool_use revision token (id + seq + content version). */
-  getToolUseRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
-  /** Symmetric counterpart: look up the parsed tool_result message by spanId. */
-  getToolResultParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
-  /**
-   * The content version of the tool_result paired with a spanId (0 when none).
-   * MUST read REACTIVELY: some tool_use renderers (Claude Task* rows) render
-   * from the hidden result side, so result body changes must invalidate the
-   * off-screen opener row's classification and measured DOM height.
-   */
-  getToolResultContentVersionBySpanId?: (spanId: string) => number
-  /** Full paired tool_result revision token (id + seq + content version). */
-  getToolResultRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
-  /**
-   * Look up a still-running tool's live progress by span id. Read ONLY by the
-   * leaf badge in the tool card's header, never by the classified-entry cache:
-   * the value changes while the row is on screen, and re-classifying (or
-   * re-rendering) the row would drop a text selection held across it.
-   */
-  getToolProgressBySpanId?: (spanId: string) => ToolProgressEntry | undefined
-  /**
-   * The row's content version (the store's getMessageContentVersion), bumped when a
-   * message's body is replaced in place under a stable id+seq. The classified-entry
-   * cache and the height key fold it in so such an update re-classifies the row
-   * and invalidates cached DOM height, which a same-seq proxy-preserving merge
-   * would otherwise hide.
-   */
-  getMessageContentVersion?: (id: string) => number
-  /** O(1) live-todo lookup for this view's agent (forwarded to renderers like the Claude Task card). */
-  getTodoById?: (taskId: string) => TodoItem | undefined
-}
-
-/**
  * Pagination / windowing inputs: the boolean state signals PLUS the load/jump/trim
  * callbacks (PaginationCallbacks). Grouped into one prop so adding a windowing flag
  * touches a single typed surface instead of the flat prop list. The host builds this
@@ -206,14 +151,6 @@ export interface AgentLifecycleProps {
   providerLabel?: string
   /** Full registry (active + past) for the chip and the popover it opens. */
   backgroundTasks?: BackgroundTaskItem[]
-  /**
-   * The ROOT registry, unfiltered -- what a tool card resolves a recipient id
-   * against. Deliberately NOT `backgroundTasks`: that list is CHIP-scoped, so on
-   * a child tab it holds only the rows that tab itself spawned, and a
-   * SendMessage addressing a sibling or the parent would resolve to nothing --
-   * exactly the sibling-to-sibling case the worker arms a revive for.
-   */
-  registryRows?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /** Open an image a chat row rendered in its own tab. */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
@@ -292,13 +229,8 @@ interface ChatViewProps {
   onQuote?: (text: string) => void
   /** Called when the user clicks the reply button on an assistant message. */
   onReply?: (quotedText: string) => void
-  /**
-   * The per-agent reactive lookups the bubble renderers, the classified-entry cache,
-   * and the measured-height cache keys read by spanId / message id. Bundled into one stable
-   * object (built once by the host) so adding a lookup touches a single typed surface
-   * instead of the prop list plus three separate re-wiring sites.
-   */
-  lookups?: ChatMessageLookups
+  /** Shared message and entity resolver for this agent. */
+  messageContext?: MessageContextResolver
   /** Agent status / startup / thinking telemetry (see AgentLifecycleProps). */
   agentLifecycle?: AgentLifecycleProps
 }
@@ -339,36 +271,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onSyntaxThemeChange(() => renderCacheStore.clear())
   const [textSelectionActive, setTextSelectionActive] = createSignal(false)
 
-  // The AGENT-stable half of a MessageBubbleHost: the todo + span-parse lookups,
-  // which are identical for every row of this agent and don't read the message.
-  // Built once from props.lookups (itself built once by the host) rather than
-  // re-bundled per row, so buildMessageHost below only assembles the genuinely
-  // per-message bindings on top -- making the agent-scoped vs message-scoped split
-  // explicit instead of a flat 8-field literal where the distinction is invisible.
-  // The ROOT registry, indexed by row key so a tool card can turn an agent id
-  // into a link. Indexed once per registry change rather than scanned per card:
-  // a transcript can hold many SendMessage rows, each resolving on every render,
-  // and the registry arrives authoritative-and-replaced-wholesale so there is
-  // exactly one moment to rebuild.
-  const bgRowIndex = createMemo(() => new Map(
-    (props.agentLifecycle?.registryRows ?? []).map(t => [t.rowKey, t] as const),
-  ))
-  // Declared OUTSIDE hostLookups, and by reference. The index has to live in its
-  // own memo: the registry is replaced wholesale on every task_progress tick of
-  // any shell or subagent under this root, so building it inside hostLookups
-  // gave that memo a new identity per tick -- and hostLookups is spread into
-  // every row's host, so one background shell's progress line rebuilt the host
-  // of every message on screen, in every agent tab of the tile. Reading
-  // bgRowIndex() here instead subscribes the CARD that calls this, and nothing
-  // else.
-  const resolveBackgroundTaskRow = (rowKey: string): BackgroundTaskItem | undefined =>
-    bgRowIndex().get(rowKey)
-
   const hostLookups = createMemo(() => ({
-    getTodoById: props.lookups?.getTodoById,
-    getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
-    getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
-    resolveBackgroundTaskRow,
+    messages: props.messageContext,
     onOpenSubagent: props.agentLifecycle?.onOpenSubagent,
     onOpenImage: props.agentLifecycle?.onOpenImage,
   }))
@@ -385,25 +289,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // freshness rule and the incremental prune.
   const entries = createClassifiedEntryCache({
     messages: () => props.messages,
-    // A tool_result's rendered content reads its paired tool_use; re-classify
-    // the moment that opener is indexed so a late opener doesn't leave the row
-    // frozen at its no-sibling shape.
-    hasToolUseSiblingBySpanId: spanId => props.lookups?.getToolUseParsedBySpanId?.(spanId) !== undefined,
-    // A tool_result reads its opener's content to render the diff; the opener is a
-    // DIFFERENT message, so its in-place body change bumps the opener's version (not
-    // the result's). Reading it here re-classifies the result row the moment its
-    // opener changes, instead of leaving it frozen at the pre-change structure.
-    toolUseSiblingContentVersionBySpanId: spanId => props.lookups?.getToolUseContentVersionBySpanId?.(spanId) ?? 0,
-    toolUseSiblingRevisionBySpanId: spanId => props.lookups?.getToolUseRevisionBySpanId?.(spanId),
-    // Some opener/tool_use rows render from the paired hidden result (Claude
-    // TaskCreate/TaskUpdate/TaskGet). Track that side symmetrically so a result
-    // edit invalidates the opener's cached classification/height.
-    hasToolResultSiblingBySpanId: spanId => props.lookups?.getToolResultParsedBySpanId?.(spanId) !== undefined,
-    toolResultSiblingContentVersionBySpanId: spanId => props.lookups?.getToolResultContentVersionBySpanId?.(spanId) ?? 0,
-    toolResultSiblingRevisionBySpanId: spanId => props.lookups?.getToolResultRevisionBySpanId?.(spanId),
-    // A same-seq in-place body replacement bumps this; reading it keeps the entry
-    // cache from reusing the pre-update classification when the proxy/seq don't move.
-    contentVersionById: id => props.lookups?.getMessageContentVersion?.(id) ?? 0,
+    requestRevision: spanId => props.messageContext?.request(spanId)?.revision,
+    resultRevision: spanId => props.messageContext?.result(spanId)?.revision,
+    contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
     isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
@@ -628,7 +516,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
    */
   const buildMessageHost = (entry: ClassifiedEntry): MessageBubbleHost => ({
     ...hostLookups(),
-    toolProgress: () => props.lookups?.getToolProgressBySpanId?.(entry.msg.spanId),
     localDiffView: getLocalDiffView(entry.msg.id),
     // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
     // being scrolled away by the geometry re-pin (which otherwise holds the viewport-

@@ -1,7 +1,7 @@
 import type { CommandResultSource } from '../../../results/commandResult'
 import { pickBoolean, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { commandIsError } from '../../../results/commandResult'
-import { collectAcpToolText, pickAcpRawOutputMetadata } from '../rendering'
+import { collectAcpToolText, pickAcpRawOutputMetadata } from '../content'
 
 /**
  * Build a CommandResultSource from an ACP `tool_call_update` of kind
@@ -14,7 +14,7 @@ export function acpExecuteFromToolCall(toolUse: Record<string, unknown> | null |
   const exitCode = pickNumber(pickAcpRawOutputMetadata(toolUse), 'exit')
   const rawOutput = pickObject(toolUse, 'rawOutput')
   return {
-    output: collectAcpToolText(toolUse),
+    output: collectAcpToolText(toolUse, { rawObjects: false }),
     exitCode,
     truncated: pickBoolean(rawOutput, 'truncated') ?? false,
     isError: commandIsError(pickString(toolUse, 'status'), exitCode),

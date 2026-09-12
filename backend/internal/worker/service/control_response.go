@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -26,11 +27,13 @@ type controlResponsePlanModePayload struct {
 }
 
 type controlResponseRequestMetadata struct {
-	RequestID string
-	ToolName  string
-	ToolUseID string
-	Payload   json.RawMessage
-	Loaded    bool
+	RequestID  string
+	ToolName   string
+	ToolUseID  string
+	Payload    json.RawMessage
+	Loaded     bool
+	Exists     bool
+	ClaimToken string
 }
 
 type controlResponsePlan struct {
@@ -58,6 +61,8 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID string, plugin ag
 		return meta
 	}
 	meta.Payload = json.RawMessage(cr.Payload)
+	meta.Exists = true
+	meta.ClaimToken = cr.ClaimToken
 
 	var crBody struct {
 		Request struct {
@@ -191,7 +196,7 @@ func (svc *Service) applyWinningControlResponse(agentID string, dbAgent db.Agent
 // decision is unit-testable without a channel sender. Returns forward=false (nil bytes) for a
 // duplicate (deduped no-op), a plan-mode prompt (handled entirely server-side), or a context-clearing
 // plan approval (withheld so it can't race the restart it kicked off).
-func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, content []byte, claimToken string) (forwardBytes []byte, forward bool) {
+func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, content []byte, claimToken string) (forwardBytes []byte, forward bool, err error) {
 	// Build the plan (which reads the pending control request and decodes the request id ONCE),
 	// then CLAIM the answer for idempotency. The claim is the concurrency serialization point:
 	// handlers run concurrently (DispatchAsync, no per-agent lock), and an atomic INSERT on
@@ -210,6 +215,15 @@ func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, con
 	// successful persist would let two answers both persist before either claims -- the double-row
 	// this prevents.
 	plan := svc.buildControlResponsePlan(agentID, dbAgent, content)
+	if plan.requestMeta.Exists && plan.requestMeta.ClaimToken != claimToken {
+		return nil, false, nil
+	}
+
+	// Keep the request and claim available when the provider rejects an invalid answer.
+	// The client receives an error and retains the user's draft for another attempt.
+	if plan.requestMeta.Exists && plan.resolution.Withhold {
+		return nil, false, errors.New("the agent provider could not read this control response")
+	}
 
 	firstAnswer := true
 	if plan.requestMeta.RequestID != "" {
@@ -225,7 +239,7 @@ func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, con
 	// would forward the untransformed envelope. Re-forwarding either injects a stray/malformed frame
 	// onto the agent's stdin, so only the winner forwards.
 	if !firstAnswer {
-		return nil, false
+		return nil, false, nil
 	}
 
 	// The once-only winner work: delete the request, then persist the answer row and apply the
@@ -240,9 +254,9 @@ func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, con
 	// a frame the agent can parse sets resolution.Withhold, which the Content backfill above cannot
 	// express.
 	if plan.isPlanPrompt() || plan.withholdsForward() || plan.resolution.Withhold {
-		return nil, false
+		return nil, false, nil
 	}
-	return plan.resolution.Content, true
+	return plan.resolution.Content, true, nil
 }
 
 func (svc *Service) deleteControlRequest(agentID string, requestMeta controlResponseRequestMetadata, selfDisplayed bool) {
@@ -537,7 +551,7 @@ func (svc *Service) persistControlResponseRow(agentID string, provider leapmuxv1
 		slog.Warn("marshal control response row", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rowJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: rowJSON}, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil); err != nil {
 		slog.Warn("failed to persist control response row", "agent_id", agentID, "error", err)
 	}
 }

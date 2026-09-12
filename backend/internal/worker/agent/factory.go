@@ -316,10 +316,8 @@ func setModelSubGroups(provider leapmuxv1.AgentProvider, fn modelSubGroupsFunc) 
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.modelSubGroups = fn })
 }
 
-// setAdditionalOptionIDs declares the provider-specific option-group ids a provider can
-// carry beyond "model" and its static optionGroups (see agentFactoryEntry.additionalOptionIDs).
-// Called from a provider's init() after registerAgentFactory; a provider with no additional
-// axes (e.g. Cursor, Reasonix) need not call it.
+// setAdditionalOptionIDs declares runtime option IDs that the static option groups omit.
+// Call it after registerAgentFactory when a provider advertises additional options.
 func setAdditionalOptionIDs(provider leapmuxv1.AgentProvider, ids ...string) {
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.additionalOptionIDs = ids })
 }

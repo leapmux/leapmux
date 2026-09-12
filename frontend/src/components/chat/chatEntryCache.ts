@@ -54,8 +54,7 @@ export interface EntryFreshness {
   /**
    * The paired tool_use OPENER's content version at classify time (0 for non-result
    * rows or when no opener is indexed). Retained separately for tests/debugging and
-   * for hosts that do not yet supply full sibling revisions; the revision key below
-   * is the stronger freshness dimension used for identity/seq replacement.
+   * for the height debug view. The revision key also identifies replacement messages.
    */
   toolUseSiblingContentVersion: number
   /**
@@ -74,7 +73,7 @@ export interface EntryFreshness {
   /**
    * The paired tool_result's content version at classify time (0 for non-opener
    * rows or when no result is indexed). Retained separately for tests/debugging and
-   * legacy hosts; the revision key below also covers identity/seq replacement.
+   * the height debug view. The revision key also identifies replacement messages.
    */
   toolResultSiblingContentVersion: number
   /** Stable token for the paired tool_result identity/seq/content version. */
@@ -139,40 +138,10 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
 export interface ClassifiedEntryCacheDeps {
   /** The window's messages, in display order (read reactively). */
   messages: () => readonly AgentChatMessage[]
-  /**
-   * Whether a span has a paired tool_use (opener) parse right now, read
-   * REACTIVELY (the store's span index). Lets a tool_result row re-classify and
-   * invalidate measured height the moment its opener is indexed, instead of staying
-   * frozen at its no-sibling height when the opener arrives after it.
-   */
-  hasToolUseSiblingBySpanId?: (spanId: string) => boolean
-  /**
-   * The paired tool_use opener's content version for a span, read REACTIVELY (the
-   * store's getToolUseContentVersionBySpanId). A tool_result sizes its diff from the
-   * opener, so an in-place opener body change -- which bumps the opener's version,
-   * not the result's -- must wake this memo to re-classify and invalidate the
-   * result row. Only consulted for tool_result rows (see toolUseSiblingContentVersionOf).
-   */
-  toolUseSiblingContentVersionBySpanId?: (spanId: string) => number
-  /**
-   * Full paired tool_use revision for a span. Preferred over content-version-only
-   * freshness because a reindexed sibling can change id/seq while its content
-   * version remains at the default 0.
-   */
-  toolUseSiblingRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
-  /**
-   * Whether a span has a paired tool_result parse right now, read REACTIVELY.
-   * Lets tool_use rows that render hidden result data re-classify when the result
-   * arrives after the opener was first measured.
-   */
-  hasToolResultSiblingBySpanId?: (spanId: string) => boolean
-  /**
-   * The paired tool_result content version for a span, read REACTIVELY. Only
-   * consulted for tool_use rows (see toolResultSiblingContentVersionOf).
-   */
-  toolResultSiblingContentVersionBySpanId?: (spanId: string) => number
-  /** Full paired tool_result revision for a span. */
-  toolResultSiblingRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
+  /** The shared resolver's current request revision for this span. */
+  requestRevision?: (spanId: string) => SpanMessageRevision | undefined
+  /** The shared resolver's current result revision for this span. */
+  resultRevision?: (spanId: string) => SpanMessageRevision | undefined
   /**
    * The row's content version (the store's getMessageContentVersion), bumped on a
    * same-seq in-place body replacement. MUST read REACTIVELY: that merge changes
@@ -204,55 +173,21 @@ export interface ClassifiedEntryCache {
 
 export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): ClassifiedEntryCache {
   const entryCache = new Map<string, ClassifiedEntry>()
-  const hasToolUseSibling = (msg: AgentChatMessage): boolean =>
-    !!msg.spanId && (deps.hasToolUseSiblingBySpanId?.(msg.spanId) ?? false)
-  const hasToolResultSiblingOf = (msg: AgentChatMessage, kind: string): boolean =>
-    kind.startsWith('tool_use') && !!msg.spanId && (deps.hasToolResultSiblingBySpanId?.(msg.spanId) ?? false)
-  const contentVersionOf = (msg: AgentChatMessage): number =>
-    deps.contentVersionById?.(msg.id) ?? 0
   const revisionKeyOf = (revision: SpanMessageRevision | undefined): string =>
-    revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}`
-  // The opener's content version, but ONLY for tool_result rows (the only kind that
-  // sizes from a sibling opener). Scoping it to tool_result avoids an opener row
-  // redundantly tracking its OWN version twice (once as contentVersion, once here).
-  const toolUseSiblingRevisionOf = (msg: AgentChatMessage, kind: string): SpanMessageRevision | undefined =>
-    kind === 'tool_result' && !!msg.spanId
-      ? deps.toolUseSiblingRevisionBySpanId?.(msg.spanId)
-      : undefined
-  const toolUseSiblingContentVersionOf = (msg: AgentChatMessage, kind: string, revision?: SpanMessageRevision): number =>
-    kind === 'tool_result' && !!msg.spanId
-      ? (revision?.contentVersion ?? deps.toolUseSiblingContentVersionBySpanId?.(msg.spanId) ?? 0)
-      : 0
-  const toolResultSiblingRevisionOf = (msg: AgentChatMessage, kind: string): SpanMessageRevision | undefined =>
-    kind.startsWith('tool_use') && !!msg.spanId
-      ? deps.toolResultSiblingRevisionBySpanId?.(msg.spanId)
-      : undefined
-  const toolResultSiblingContentVersionOf = (msg: AgentChatMessage, kind: string, revision?: SpanMessageRevision): number =>
-    kind.startsWith('tool_use') && !!msg.spanId
-      ? (revision?.contentVersion ?? deps.toolResultSiblingContentVersionBySpanId?.(msg.spanId) ?? 0)
-      : 0
-  /**
-   * Build the freshness signature for `msg` classified as `kind`. The SINGLE place
-   * the freshness dimensions are enumerated: isEntryFresh compares against this and
-   * buildEntry stores it, so neither can drift from a hand-synced field list. `kind`
-   * is the row's classification (only tool_result rows track an opener's version);
-   * isEntryFresh passes the CACHED entry's kind so the comparison reads the same slot
-   * the entry was built with.
-   */
+    revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
+
   const freshnessOf = (msg: AgentChatMessage, kind: string): EntryFreshness => {
-    const toolUseRevision = toolUseSiblingRevisionOf(msg, kind)
-    const toolUseContentVersion = toolUseSiblingContentVersionOf(msg, kind, toolUseRevision)
-    const toolResultRevision = toolResultSiblingRevisionOf(msg, kind)
-    const toolResultContentVersion = toolResultSiblingContentVersionOf(msg, kind, toolResultRevision)
+    const request = msg.spanId ? deps.requestRevision?.(msg.spanId) : undefined
+    const result = msg.spanId && kind.startsWith('tool_use') ? deps.resultRevision?.(msg.spanId) : undefined
     return {
       seq: msg.seq,
-      contentVersion: contentVersionOf(msg),
-      hasToolUseSibling: hasToolUseSibling(msg),
-      toolUseSiblingContentVersion: toolUseContentVersion,
-      toolUseSiblingRevisionKey: revisionKeyOf(toolUseRevision) || (toolUseContentVersion === 0 ? '' : `legacy:${toolUseContentVersion}`),
-      hasToolResultSibling: hasToolResultSiblingOf(msg, kind),
-      toolResultSiblingContentVersion: toolResultContentVersion,
-      toolResultSiblingRevisionKey: revisionKeyOf(toolResultRevision) || (toolResultContentVersion === 0 ? '' : `legacy:${toolResultContentVersion}`),
+      contentVersion: deps.contentVersionById?.(msg.id) ?? 0,
+      hasToolUseSibling: request !== undefined,
+      toolUseSiblingContentVersion: request?.contentVersion ?? 0,
+      toolUseSiblingRevisionKey: revisionKeyOf(request),
+      hasToolResultSibling: result !== undefined,
+      toolResultSiblingContentVersion: result?.contentVersion ?? 0,
+      toolResultSiblingRevisionKey: revisionKeyOf(result),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     }
   }

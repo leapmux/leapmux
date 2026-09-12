@@ -10,6 +10,20 @@ function makeRequest(requestId: string, agentId: string, payload: Record<string,
 }
 
 describe('createControlStore', () => {
+  it('keeps a new instance when an identical earlier request still awaits cancellation', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      const payload = { request: { tool_name: 'Read', input: { path: 'sample.txt' } } }
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'first'))
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
+      expect(store.getRequests('agent-1').map(request => request.claimToken)).toEqual(['first', 'second'])
+      store.removeRequest('agent-1', '1')
+      expect(store.getRequests('agent-1').map(request => request.claimToken)).toEqual(['second'])
+      dispose()
+    })
+  })
+
   it('should initialize with empty state', () => {
     createRoot((dispose) => {
       const store = createControlStore()

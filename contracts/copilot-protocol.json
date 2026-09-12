@@ -1,0 +1,22 @@
+{
+  "_readme": "GitHub owns the native event and tool names. LeapMux stores recovered native events in a separate supplemental field.",
+  "events": {
+    "ToolStarted": "tool.execution_start",
+    "ToolCompleted": "tool.execution_complete",
+    "SubagentStarted": "subagent.started",
+    "SubagentCompleted": "subagent.completed",
+    "SubagentFailed": "subagent.failed",
+    "AssistantMessage": "assistant.message",
+    "UserMessage": "user.message"
+  },
+  "tools": {
+    "Task": "task",
+    "ReadAgent": "read_agent",
+    "WriteAgent": "write_agent",
+    "ListAgents": "list_agents",
+    "View": "view",
+    "Glob": "glob",
+    "Grep": "grep"
+  },
+  "supplement": { "NativeEvents": "nativeEvents" }
+}

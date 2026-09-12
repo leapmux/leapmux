@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -12,6 +16,154 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestZCodePlanApprovalWithoutToolRowPersistsOriginal(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	raw := []byte(` {"id":"server-1","method":"interaction/requestUserInput","params":{"requestId":"plan","toolCallId":"missing-call","toolName":"ExitPlanMode","input":{"plan":"# Stored plan"},"schema":{"interaction":"plan_approval"},"future":9007199254740993}} `)
+	a.HandleOutput(raw)
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, raw, messages[0].Content)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, messages[0].Source)
+	assert.True(t, messages[0].NoSpan)
+	a.HandleOutput(bytes.Replace(raw, []byte(`"server-1"`), []byte(`"server-2"`), 1))
+	assert.Len(t, sink.Messages(), 1)
+}
+
+func TestZCodeConcurrentPlanAnnouncementsPersistOneSource(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	const count = 12
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index := 0; index < count; index++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			a.HandleOutput([]byte(`{"id":` + strconv.Itoa(index) + `,"method":"interaction/requestUserInput","params":{"requestId":"plan","toolCallId":"missing-call","input":{"plan":"# One plan"},"schema":{"interaction":"plan_approval"}}}`))
+		}()
+	}
+	close(start)
+	workers.Wait()
+	require.Len(t, sink.Messages(), 1)
+	requests := sink.PublishedControls()
+	require.Len(t, requests, count)
+	for _, request := range requests {
+		assert.Equal(t, requests[0].Payload, request.Payload)
+	}
+}
+
+func TestZCodePlanStorageFailureDoesNotPublishApproval(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	sink.persistErr = errors.New("storage unavailable")
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	a.HandleOutput([]byte(`{"id":"server-1","method":"interaction/requestUserInput","params":{"requestId":"plan","input":{"plan":"# One plan"},"schema":{"interaction":"plan_approval"}}}`))
+	assert.Empty(t, sink.PublishedControls())
+	frames := stdin.Frames()
+	require.Len(t, frames, 1)
+	var response zcodeSentRequest
+	require.NoError(t, json.Unmarshal(frames[0], &response))
+	require.NotNil(t, response.Error)
+	assert.Equal(t, ZCodeErrInternal, response.Error.Code)
+}
+
+func TestZCodeControlPublicationFailureReturnsProtocolError(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput} {
+		t.Run(method, func(t *testing.T) {
+			sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, sink, stdin)
+			a.HandleOutput(zcodeRequestLine(t, 27, method, `{"requestId":"control-1","toolName":"Read","schema":{"questions":[]}}`))
+			frames := stdin.Frames()
+			require.Len(t, frames, 1)
+			var response zcodeSentRequest
+			require.NoError(t, json.Unmarshal(frames[0], &response))
+			assert.Equal(t, "27", string(response.ID))
+			require.NotNil(t, response.Error)
+			assert.Equal(t, ZCodeErrInternal, response.Error.Code)
+			assert.Equal(t, controlPublicationFailure, response.Error.Message)
+			assert.Empty(t, sink.PublishedControls())
+			assert.Nil(t, a.pendingZCodeControlPayload("control-1"))
+		})
+	}
+}
+
+func TestZCodePlanControlUsesNativeInputPlan(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"prompt":"Tool ExitPlanMode requires user interaction",
+		"input":{"plan":"# Welcome plan"},
+		"schema":{"interaction":"plan_approval","toolName":"ExitPlanMode"}
+	}`))
+	var stored struct {
+		Request struct {
+			Input struct {
+				Plan string
+			}
+		}
+	}
+	require.NoError(t, json.Unmarshal(zcodeStoredPayload(t, sink), &stored))
+	assert.Equal(t, "# Welcome plan", stored.Request.Input.Plan)
+}
+
+func TestZCodeControlInputSupplementsThePersistedToolRequest(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newZCodeTestAgent(t, sink)
+	original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","inputOmitted":true,"future":9007199254740993}} `)
+	event, ok := parseZCodeEvent(original)
+	require.True(t, ok)
+	a.dispatchZCodeEvent(event)
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"input":{"plan":"# Welcome plan"}, "schema":{"interaction":"plan_approval"}
+	}`))
+	message := sink.Messages()[0]
+	assert.Equal(t, original, message.Content)
+	assert.Contains(t, string(message.SupplementalContent), "# Welcome plan")
+	assert.Equal(t, int64(1), message.SupplementalRevision)
+	resolved := ResolveMessageContent(zcodeProvider{}, MessageContent{Original: message.Content, Supplemental: message.SupplementalContent})
+	assert.Contains(t, string(resolved), `"plan":"# Welcome plan"`)
+	assert.Contains(t, string(resolved), `9007199254740993`)
+	a.HandleOutput(zcodeRequestLine(t, 8, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"input":{"plan":"# Welcome plan"}, "schema":{"interaction":"plan_approval"}
+	}`))
+	assert.Equal(t, int64(1), sink.Messages()[0].SupplementalRevision)
+}
+
+func TestZCodePlanControlSupplementsPartialInput(t *testing.T) {
+	t.Parallel()
+	for _, controlInput := range []string{`"input":{"plan":"# Welcome plan"}`, `"input":{"allowedPrompts":[]},"context":{"plan":"# Welcome plan"}`} {
+		t.Run(controlInput, func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingControlSink{}
+			a := newZCodeTestAgent(t, sink)
+			original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","input":{"allowedPrompts":[],"future":9007199254740993}}} `)
+			event, ok := parseZCodeEvent(original)
+			require.True(t, ok)
+			a.dispatchZCodeEvent(event)
+			a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{"requestId":"plan","toolCallId":"plan-call","toolName":"ExitPlanMode","schema":{"interaction":"plan_approval"},`+controlInput+`}`))
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.Equal(t, original, messages[0].Content)
+			resolved := ResolveMessageContent(zcodeProvider{}, MessageContent{Original: messages[0].Content, Supplemental: messages[0].SupplementalContent})
+			assert.Contains(t, string(resolved), `"plan":"# Welcome plan"`)
+			assert.Contains(t, string(resolved), `"allowedPrompts":[]`)
+			assert.Contains(t, string(resolved), `9007199254740993`)
+		})
+	}
+}
 
 // zcodeRequestLine renders one server-to-client REQUEST: an id AND a method, which is
 // the shape that distinguishes a request from a notification in either direction.
@@ -29,13 +181,8 @@ func zcodeRequestLine(t *testing.T, id int64, method, params string) []byte {
 // zcodeStoredPayload decodes the one control request the agent persisted.
 func zcodeStoredPayload(t *testing.T, sink *recordingControlSink) []byte {
 	t.Helper()
-	persisted := sink.PersistedControls()
+	persisted := sink.PublishedControls()
 	require.Len(t, persisted, 1, "a control request must be persisted exactly once")
-	broadcast := sink.BroadcastControls()
-	require.Len(t, broadcast, 1, "and broadcast exactly once")
-	assert.Equal(t, persisted[0].RequestID, broadcast[0].RequestID)
-	assert.Equal(t, persisted[0].ClaimToken, broadcast[0].ClaimToken,
-		"the broadcast must carry the claim token the persist minted, or no client can claim it")
 	return persisted[0].Payload
 }
 
@@ -261,7 +408,7 @@ func TestHandlePermissionRequest_NoRequestIDDeniesImmediately(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 7, ZCodeMethodRequestPermission,
 		`{"toolName":"Bash","options":[{"optionId":"deny","response":{"decision":"deny"}}]}`))
 
-	assert.Empty(t, sink.PersistedControls(), "an unanswerable prompt must not become a pending row")
+	assert.Empty(t, sink.PublishedControls(), "an unanswerable prompt must not become a pending row")
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
 	assert.Equal(t, "7", string(requests[0].ID))
@@ -281,7 +428,7 @@ func TestHandlePermissionRequest_MalformedParamsAnswerWithAnError(t *testing.T) 
 
 	a.HandleOutput([]byte(`{"id":7,"method":"interaction/requestPermission","params":"not an object"}`))
 
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
 	require.NotNil(t, requests[0].Error)
@@ -306,7 +453,7 @@ func TestHandleUserInputRequest_PlanApprovalIsStoredAsAPlanControl(t *testing.T)
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeRequestLine(t, 9, ZCodeMethodRequestUserInput, zcodePlanParams))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	var stored zcodeControlRequestPayload
 	require.NoError(t, json.Unmarshal(zcodeStoredPayload(t, sink), &stored))
@@ -354,7 +501,7 @@ func TestZCodeResolveControlResponse_PlanAcceptSendsTheSentinel(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 9, ZCodeMethodRequestUserInput, zcodePlanParams))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	frame, res := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-plan", ControlBehaviorAllow, "", nil))
@@ -375,7 +522,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithFeedbackKeepsTheText(t *te
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 9, ZCodeMethodRequestUserInput, zcodePlanParams))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-plan", ControlBehaviorDeny, "  split step 2  ", nil))
@@ -394,7 +541,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithNoFeedbackDeclines(t *test
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 9, ZCodeMethodRequestUserInput, zcodePlanParams))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-plan", ControlBehaviorDeny, "   ", nil))
@@ -427,7 +574,7 @@ func TestHandleUserInputRequest_QuestionIsStoredForTheSharedControl(t *testing.T
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
 	var stored zcodeControlRequestPayload
 	require.NoError(t, json.Unmarshal(zcodeStoredPayload(t, sink), &stored))
@@ -471,7 +618,7 @@ func TestZCodeResolveControlResponse_QuestionAnswersCarryBothKeyForms(t *testing
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-q", ControlBehaviorAllow, "", map[string]string{
@@ -554,7 +701,7 @@ func TestZCodeResolveControlResponse_QuestionRejectionDeclinesWithTheReason(t *t
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-q", ControlBehaviorDeny, "ask me later", nil))
@@ -594,7 +741,7 @@ func TestHandleUserInputRequest_AQuestionWithNoOptionsIsStillAnswerable(t *testi
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput,
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput,
 		`{"requestId":"req-q","schema":{"questions":[{"question":"Name it?","options":[]}]}}`))
 
 	stored := zcodeStoredPayload(t, sink)
@@ -614,9 +761,9 @@ func TestHandleUserInputRequest_NoRequestIDDeclinesImmediately(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, sink, stdin)
 
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, `{"schema":{"questions":[]}}`))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, `{"schema":{"questions":[]}}`))
 
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
 	var result map[string]any
@@ -1001,7 +1148,7 @@ func TestZCodeControlRequestContext_KeepsTheQuestionLabels(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
 	_, res := zcodeResolve(t, zcodeStoredPayload(t, sink),
 		zcodeAnswer(t, "req-q", ControlBehaviorAllow, "", map[string]string{"Which database?": "Postgres"}))
@@ -1044,14 +1191,11 @@ func TestHandlePermissionRequest_AReannouncementRepublishesTheFirstPayload(t *te
 	a.HandleOutput(zcodeRequestLine(t, 8, ZCodeMethodRequestPermission, zcodePermissionParams))
 	a.HandleOutput(zcodeRequestLine(t, 9, ZCodeMethodRequestPermission, zcodePermissionParams))
 
-	persisted := sink.PersistedControls()
-	broadcast := sink.BroadcastControls()
+	persisted := sink.PublishedControls()
 	require.Len(t, persisted, 3)
-	require.Len(t, broadcast, 3)
 	for i := 1; i < len(persisted); i++ {
 		assert.Equal(t, string(persisted[0].Payload), string(persisted[i].Payload),
 			"a repeat must republish the stored bytes, or the frontend stacks a banner")
-		assert.Equal(t, string(broadcast[0].Payload), string(broadcast[i].Payload))
 	}
 
 	// The FIRST wire id is the one every stored payload addresses, and it stays valid:
@@ -1072,7 +1216,7 @@ func TestHandlePermissionRequest_AResolvedRequestIDIsForwardedAgain(t *testing.T
 		`{"requestId":"req-1","toolCallId":"call-1","toolName":"Bash","decision":"allow"}`))
 	a.HandleOutput(zcodeRequestLine(t, 8, ZCodeMethodRequestPermission, zcodePermissionParams))
 
-	assert.Len(t, sink.PersistedControls(), 2,
+	assert.Len(t, sink.PublishedControls(), 2,
 		"the guard is re-armed by the resolution, so a genuinely new prompt on the same id is shown")
 }
 
@@ -1083,13 +1227,12 @@ func TestHandleUserInputRequest_AReannouncementRepublishesTheFirstPayload(t *tes
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
-	a.HandleOutput(zcodeRequestLine(t, 12, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 12, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
-	persisted := sink.PersistedControls()
+	persisted := sink.PublishedControls()
 	require.Len(t, persisted, 2)
 	assert.Equal(t, string(persisted[0].Payload), string(persisted[1].Payload))
-	require.Len(t, sink.BroadcastControls(), 2)
 
 	var stored zcodeControlRequestPayload
 	require.NoError(t, json.Unmarshal(persisted[1].Payload, &stored))
@@ -1102,11 +1245,11 @@ func TestHandleUserInputRequest_UserInputResolvedReArmsTheGuard(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newZCodeTestAgent(t, sink)
 
-	a.HandleOutput(zcodeRequestLine(t, 11, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-q"}`))
-	a.HandleOutput(zcodeRequestLine(t, 12, ZCodeMethodRequestUserInput, zcodeQuestionParams))
+	a.HandleOutput(zcodeRequestLine(t, 12, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
-	assert.Len(t, sink.PersistedControls(), 2)
+	assert.Len(t, sink.PublishedControls(), 2)
 	assert.Empty(t, sink.PersistedNotifications(), "userInput.resolved renders nothing of its own")
 }
 
@@ -1123,7 +1266,7 @@ func TestHandlePermissionRequest_AnIDLessRequestIsAlwaysAnswered(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 7, ZCodeMethodRequestPermission, params))
 	a.HandleOutput(zcodeRequestLine(t, 8, ZCodeMethodRequestPermission, params))
 
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 	assert.Len(t, stdin.Requests(t), 2, "each unroutable request gets its own denial")
 }
 

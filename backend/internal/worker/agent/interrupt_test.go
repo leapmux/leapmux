@@ -173,7 +173,7 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 // supplies the delayed response for a turn/interrupt request.
 type codexInterruptRig struct {
 	agent          *CodexAgent
-	responseBodies chan json.RawMessage
+	responseBodies chan jsonrpcResponsePayload
 	captured       func() []map[string]any
 }
 
@@ -205,7 +205,7 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 		mu       sync.Mutex
 		captured []map[string]any
 	)
-	responseBodies := make(chan json.RawMessage, 1)
+	responseBodies := make(chan jsonrpcResponsePayload, 1)
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -227,12 +227,12 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 			})
 			mu.Unlock()
 			if frame.ID != 0 && autoRespond {
-				body := json.RawMessage(`{}`)
+				body := jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 				select {
 				case body = <-responseBodies:
 				default:
 				}
-				a.deliver(frame.ID, body)
+				a.deliver(frame.ID, jsonrpcTestResponse(frame.ID, body))
 			}
 		}
 	}()
@@ -288,7 +288,7 @@ func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
 	require.Len(t, frames, 1, "concurrent calls must share one request")
 	requestID, ok := frames[0]["id"].(int64)
 	require.True(t, ok)
-	require.True(t, rig.agent.deliver(requestID, json.RawMessage(`{}`)))
+	require.True(t, rig.agent.deliver(requestID, jsonrpcTestResponse(requestID, jsonrpcResponsePayload{Result: json.RawMessage(`{}`)})))
 	require.NoError(t, <-results)
 	require.NoError(t, <-results)
 	assert.Len(t, rig.captured(), 1)
@@ -300,7 +300,7 @@ func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
 	rig.agent.turnID = "turn-42"
-	rig.responseBodies <- json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)
+	rig.responseBodies <- jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)}
 
 	err := rig.agent.Interrupt()
 	require.Error(t, err)
@@ -482,7 +482,7 @@ func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *tes
 			if !ok {
 				continue
 			}
-			agent.deliver(int64(id), json.RawMessage(`{}`))
+			agent.deliver(int64(id), jsonrpcTestResponse(int64(id), jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}))
 		}
 	}()
 
@@ -566,7 +566,7 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 	t.Parallel()
 
 	agent, requests := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	// Helper sets sessionID="session-1" by default.
 
 	require.NoError(t, agent.Interrupt())
@@ -590,7 +590,7 @@ func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 	t.Parallel()
 
 	agent, requests := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	// Wipe the session so cancelSession would emit a stale id; the
 	// interrupt path must short-circuit instead of emitting at all.
 	// (acpBase fields are reachable via the embedding promotion.)
@@ -608,7 +608,7 @@ func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	t.Parallel()
 
 	agent, _ := newGooseAgentForRPCWithResponder(t,
-		func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.mu.Lock()
 	agent.stopped = true
 	agent.mu.Unlock()

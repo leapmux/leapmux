@@ -23,7 +23,7 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []recordedRequ
 	)
 }
 
-func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*OpenCodeAgent, func() []recordedRequest) {
+func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*OpenCodeAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *OpenCodeAgent {
 			a := &OpenCodeAgent{}
@@ -36,7 +36,7 @@ func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method strin
 	)
 }
 
-func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req recordedRequest) json.RawMessage) (*OpenCodeAgent, func() []recordedRequest) {
+func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req recordedRequest) jsonrpcResponsePayload) (*OpenCodeAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithRequestResponder(t,
 		func() *OpenCodeAgent {
 			a := &OpenCodeAgent{}
@@ -141,11 +141,11 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{"sessionId":"session-2"}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "openai/gpt-5"
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentPlan
@@ -156,8 +156,8 @@ func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 	agent.sink = &testSink{}
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "session-2", agent.sessionID)
 
@@ -223,20 +223,20 @@ func openCodeEffortWrites(requests []recordedRequest) []recordedRequest {
 func TestOpenCodeModelSwitchRaisesNoneEffortToHigh(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
 		if req.Method != acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 		}
 		switch req.Params["configId"] {
 		case acpConfigOptionIDModel:
 			// The new model surfaces an effort axis the daemon leaves at "none".
-			return effortAxisResponse("none")
+			return jsonrpcResponsePayload{Result: effortAxisResponse("none")}
 		case OptionIDEffort:
 			// Echo whatever level LeapMux pushes back (expected: "high").
 			value, _ := req.Params["value"].(string)
-			return effortAxisResponse(value)
+			return jsonrpcResponsePayload{Result: effortAxisResponse(value)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
@@ -270,19 +270,19 @@ func TestOpenCodeModelSwitchRaisesNoneEffortByIDWithoutCategory(t *testing.T) {
 		return json.RawMessage(`{"configOptions":[{"id":"effort","name":"Effort","currentValue":"` + current +
 			`","options":[{"value":"none","name":"None"},{"value":"low","name":"Low"},{"value":"medium","name":"Medium"},{"value":"high","name":"High"}]}]}`)
 	}
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
 		if req.Method != acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 		}
 		switch req.Params["configId"] {
 		case acpConfigOptionIDModel:
 			// The new model surfaces a category-less effort axis the daemon leaves at "none".
-			return effortNoCategory("none")
+			return jsonrpcResponsePayload{Result: effortNoCategory("none")}
 		case OptionIDEffort:
 			value, _ := req.Params["value"].(string)
-			return effortNoCategory(value)
+			return jsonrpcResponsePayload{Result: effortNoCategory(value)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
@@ -303,11 +303,11 @@ func TestOpenCodeModelSwitchRaisesNoneEffortByIDWithoutCategory(t *testing.T) {
 func TestOpenCodeModelSwitchKeepsReportedEffort(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == acpConfigOptionIDModel {
-			return effortAxisResponse("low")
+			return jsonrpcResponsePayload{Result: effortAxisResponse("low")}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
@@ -325,12 +325,12 @@ func TestOpenCodeModelSwitchKeepsReportedEffort(t *testing.T) {
 func TestOpenCodeModelSwitchLeavesNoneWhenNoRealLevel(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == acpConfigOptionIDModel {
 			// The surfaced effort axis offers only none/off -- no real level to raise to.
-			return json.RawMessage(`{"configOptions":[{"id":"effort","category":"thought_level","name":"Effort","currentValue":"none","options":[{"value":"none","name":"None"},{"value":"off","name":"Off"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"effort","category":"thought_level","name":"Effort","currentValue":"none","options":[{"value":"none","name":"None"},{"value":"off","name":"Off"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
@@ -348,12 +348,12 @@ func TestOpenCodeModelSwitchLeavesNoneWhenNoRealLevel(t *testing.T) {
 func TestOpenCodeExplicitNoneEffortNotRaised(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == OptionIDEffort {
 			value, _ := req.Params["value"].(string)
-			return effortAxisResponse(value)
+			return jsonrpcResponsePayload{Result: effortAxisResponse(value)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.sink = &testSink{}
 	// Seed a surfaced effort axis at "high", as a model switch would.

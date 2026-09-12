@@ -2,7 +2,7 @@ import type { McpContentItem, McpToolCallSource } from '../../../results/mcpTool
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
+import { CODEX_ITEM } from '~/types/toolMessages'
 import { parseMcpContentItem } from '../../../results/mcpToolCall'
 import { parseCodexStatus } from '../status'
 
@@ -69,16 +69,11 @@ function fromDynamicToolCall(item: Record<string, unknown>): McpToolCallSource {
     return [{ type: 'unknown', raw: entry }]
   })
 
-  // Dynamic tool calls have no separate error field; failure shows up via
-  // status === 'failed' and the textual contentItems carry any details.
-  const error = status === CODEX_STATUS.FAILED && content.length === 0 ? 'Tool call failed' : undefined
-
   return {
     server: pickString(item, 'namespace'),
     tool: pickString(item, 'tool', 'Tool'),
     argsJson,
     content,
-    error,
     status,
     durationMs: pickNumber(item, 'durationMs', undefined),
   }

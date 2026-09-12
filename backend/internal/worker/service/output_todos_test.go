@@ -77,7 +77,7 @@ func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{
 		SpanID: "span-todowrite", SpanType: "TodoWrite",
 	}))
 	rows := listRows()
@@ -87,6 +87,48 @@ func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 	assert.Equal(t, "Doing A", rows[0].ActiveForm)
 	assert.Equal(t, "B", rows[1].Content)
 	assert.Equal(t, "in_progress", rows[1].Status)
+}
+
+func TestOutputTodos_OpenCodeFamilyNativeResults(t *testing.T) {
+	t.Parallel()
+	for _, provider := range []leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO} {
+		t.Run(provider.String(), func(t *testing.T) {
+			t.Parallel()
+			sink, _, listRows := setupTodoTestForProvider(t, provider)
+			persist := func(status string, todos any) {
+				t.Helper()
+				body := marshalJSON(t, map[string]any{
+					"sessionUpdate": "tool_call_update", "toolCallId": "todos", "status": status,
+					"rawOutput": map[string]any{"metadata": map[string]any{"todos": todos}},
+				})
+				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{SpanID: "todos", SpanType: "other"}))
+			}
+			todos := []map[string]string{{"content": "Inspect sample", "status": "in_progress"}, {"content": "Cancelled task", "status": "cancelled"}}
+			persist("pending", todos)
+			assert.Empty(t, listRows())
+			persist("completed", todos)
+			rows := listRows()
+			require.Len(t, rows, 2)
+			assert.Equal(t, "Inspect sample", rows[0].Content)
+			assert.Equal(t, "in_progress", rows[0].Status)
+			assert.Equal(t, "deleted", rows[1].Status)
+			persist("failed", []any{})
+			assert.Len(t, listRows(), 2)
+			persist("completed", []any{})
+			assert.Empty(t, listRows())
+		})
+	}
+}
+
+func TestOutputTodos_ZCodeStreamedInputReachesTheProjection(t *testing.T) {
+	t.Parallel()
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	original := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"todo","toolName":"TodoWrite","inputOmitted":true,"inputRef":"model_stream"}}`)
+	supplemental := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"todo","input":{"todos":[{"content":"Recovered task","status":"pending"}]}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, Supplemental: supplemental}, agent.SpanInfo{SpanID: "todo", SpanType: "TodoWrite"}))
+	rows := listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Recovered task", rows[0].Content)
 }
 
 // ZCode names its to-do tool exactly as Claude Code does and takes the same input,
@@ -117,7 +159,7 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{
 		SpanID: "call-1", SpanType: "TodoWrite",
 	}))
 
@@ -140,7 +182,7 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 			"result": map[string]any{"success": true},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "call-1", SpanType: "TodoWrite", Closing: true,
 	}))
 	rows, err = svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-z", Limit: 1000})
@@ -187,7 +229,7 @@ func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
 				t.Parallel()
 				sink, _, listRows := setupTodoTestForProvider(t, reader)
 				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-					[]byte(shape.body), agent.SpanInfo{SpanID: "span-1", SpanType: shape.spanType}))
+					agent.MessageContent{Original: []byte(shape.body)}, agent.SpanInfo{SpanID: "span-1", SpanType: shape.spanType}))
 
 				rows := listRows()
 				if reader == shape.owner {
@@ -220,7 +262,7 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-tc1", SpanType: "TaskCreate",
 	}))
 	// Nothing yet — the tool_use has no id.
@@ -232,7 +274,7 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "1", "subject": "Add proto messages"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-tc1", SpanType: "TaskCreate",
 	}))
 
@@ -271,7 +313,7 @@ func TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric(t *testing.T) {
 				},
 			},
 		})
-		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 			SpanID: spanID, SpanType: "TaskCreate",
 		}))
 		res := marshalJSON(t, map[string]any{
@@ -279,7 +321,7 @@ func TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric(t *testing.T) {
 			"message":         map[string]any{"content": []any{}},
 			"tool_use_result": map[string]any{"task": map[string]any{"id": taskID, "subject": fmt.Sprintf("task %d", i)}},
 		})
-		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, res, agent.SpanInfo{
+		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: res}, agent.SpanInfo{
 			SpanID: spanID, SpanType: "TaskCreate",
 		}))
 	}
@@ -325,7 +367,7 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -333,7 +375,7 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "1", "subject": "Run tests"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 
@@ -349,7 +391,7 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, useU, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: useU}, agent.SpanInfo{
 		SpanID: "span-u", SpanType: "TaskUpdate",
 	}))
 	resultU := marshalJSON(t, map[string]any{
@@ -360,7 +402,7 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 			"statusChange": map[string]any{"from": "pending", "to": "in_progress"},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, resultU, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: resultU}, agent.SpanInfo{
 		SpanID: "span-u", SpanType: "TaskUpdate",
 	}))
 
@@ -386,7 +428,7 @@ func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -394,7 +436,7 @@ func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "7", "subject": "tmp"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	require.Len(t, listRows(), 1)
@@ -408,7 +450,7 @@ func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 			"statusChange": map[string]any{"from": "completed", "to": "deleted"},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, resultD, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: resultD}, agent.SpanInfo{
 		SpanID: "span-d", SpanType: "TaskUpdate",
 	}))
 	rows := listRows()
@@ -433,7 +475,7 @@ func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -441,7 +483,7 @@ func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "1", "subject": "keep me"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	require.Len(t, listRows(), 1)
@@ -462,7 +504,7 @@ func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, snap, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: snap}, agent.SpanInfo{
 		SpanID: "span-tw", SpanType: "TodoWrite",
 	}))
 	rows := listRows()
@@ -484,7 +526,7 @@ func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{}))
 	rows := listRows()
 	require.Len(t, rows, 2)
 	assert.Equal(t, "Investigate", rows[0].Content)
@@ -503,7 +545,7 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 			map[string]any{"content": "two", "status": "completed"},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{}))
 	rows := listRows()
 	require.Len(t, rows, 2)
 	assert.Equal(t, "one", rows[0].Content)
@@ -546,7 +588,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"tasks": tasks},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, listBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: listBody}, agent.SpanInfo{
 		SpanID: "span-list", SpanType: "TaskList",
 	}))
 	require.Len(t, listRows(), todoevents.MaxTodos)
@@ -564,7 +606,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -572,7 +614,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "new", "subject": "fresh"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 
@@ -639,7 +681,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"tasks": tasks},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, listBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: listBody}, agent.SpanInfo{
 		SpanID: "span-list", SpanType: "TaskList",
 	}))
 	require.Len(t, listRows(), todoevents.MaxTodos)
@@ -657,7 +699,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-evict", SpanType: "TaskCreate",
 	}))
 	resBody := marshalJSON(t, map[string]any{
@@ -665,7 +707,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "evict-trigger", "subject": "evict-trigger"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, resBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: resBody}, agent.SpanInfo{
 		SpanID: "span-evict", SpanType: "TaskCreate",
 	}))
 
@@ -704,7 +746,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 			"statusChange": map[string]any{"from": "in_progress", "to": "deleted"},
 		},
 	})
-	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, delRes, agent.SpanInfo{
+	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: delRes}, agent.SpanInfo{
 		SpanID: "span-del", SpanType: "TaskUpdate",
 	}))
 	createUse := marshalJSON(t, map[string]any{
@@ -718,7 +760,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, createUse, agent.SpanInfo{
+	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: createUse}, agent.SpanInfo{
 		SpanID: "span-post", SpanType: "TaskCreate",
 	}))
 	createRes := marshalJSON(t, map[string]any{
@@ -726,7 +768,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "post-restart", "subject": "post-restart"}},
 	})
-	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, createRes, agent.SpanInfo{
+	require.NoError(t, sink2.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: createRes}, agent.SpanInfo{
 		SpanID: "span-post", SpanType: "TaskCreate",
 	}))
 
@@ -768,7 +810,7 @@ func TestOutputTodos_TaskCreateAtCapNoFinishedRowDrops(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"tasks": tasks},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, listBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: listBody}, agent.SpanInfo{
 		SpanID: "span-list", SpanType: "TaskList",
 	}))
 	require.Len(t, listRows(), todoevents.MaxTodos)
@@ -784,7 +826,7 @@ func TestOutputTodos_TaskCreateAtCapNoFinishedRowDrops(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-drop", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -792,7 +834,7 @@ func TestOutputTodos_TaskCreateAtCapNoFinishedRowDrops(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "dropme", "subject": "dropped"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-drop", SpanType: "TaskCreate",
 	}))
 
@@ -822,7 +864,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -830,7 +872,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "9", "subject": "tmp"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-c", SpanType: "TaskCreate",
 	}))
 
@@ -843,7 +885,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 			"statusChange": map[string]any{"from": "completed", "to": "deleted"},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, resultD, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: resultD}, agent.SpanInfo{
 		SpanID: "span-d1", SpanType: "TaskUpdate",
 	}))
 	rows := listRows()
@@ -853,7 +895,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 
 	// Second delete on the same task — should leave the row untouched
 	// (idempotent guard returns the existing snapshot without a DB write).
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, resultD, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: resultD}, agent.SpanInfo{
 		SpanID: "span-d2", SpanType: "TaskUpdate",
 	}))
 	rows = listRows()
@@ -899,7 +941,7 @@ func TestOutputTodos_TaskCreateAtCapMixedFinishedEvictsOldest(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"tasks": tasks},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, listBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: listBody}, agent.SpanInfo{
 		SpanID: "span-list", SpanType: "TaskList",
 	}))
 	require.Len(t, listRows(), todoevents.MaxTodos)
@@ -917,7 +959,7 @@ func TestOutputTodos_TaskCreateAtCapMixedFinishedEvictsOldest(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -925,7 +967,7 @@ func TestOutputTodos_TaskCreateAtCapMixedFinishedEvictsOldest(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "new", "subject": "fresh"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 
@@ -969,7 +1011,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"tasks": tasks},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, listBody, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: listBody}, agent.SpanInfo{
 		SpanID: "span-list", SpanType: "TaskList",
 	}))
 	require.Len(t, listRows(), todoevents.MaxTodos)
@@ -985,7 +1027,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, use, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: use}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 	result := marshalJSON(t, map[string]any{
@@ -993,7 +1035,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
 		"message":         map[string]any{"content": []any{}},
 		"tool_use_result": map[string]any{"task": map[string]any{"id": "new", "subject": "fresh"}},
 	})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, result, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: result}, agent.SpanInfo{
 		SpanID: "span-new", SpanType: "TaskCreate",
 	}))
 
@@ -1030,7 +1072,7 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 	}))
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	body := marshalJSON(t, map[string]any{"type": "assistant", "note": "the use half"})
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{
 		SpanID: "span-1", SpanType: "TaskCreate",
 	}))
 
@@ -1069,6 +1111,6 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		marshalJSON(t, map[string]any{"type": "assistant"}), agent.SpanInfo{SpanID: "span-1"}))
+		agent.MessageContent{Original: marshalJSON(t, map[string]any{"type": "assistant"})}, agent.SpanInfo{SpanID: "span-1"}))
 	assert.Nil(t, read(), "the answer is fixed for the message being extracted")
 }

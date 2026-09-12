@@ -27,15 +27,9 @@ import (
 // friendlier zero value: the zero GoalStatus means "no goal", which is what a
 // caller with an empty struct wants.
 //
-// Five values, deliberately. Four come from the providers, and the UI branches
-// three ways on them (pause iff active, resume iff paused, clear always). The
-// providers' own enums do not agree -- Codex has six words, ZCode has six
-// different ones -- so a neutral value per provider word would claim a
-// precision the mapping cannot deliver, and the provider's own word travels
-// beside this as GoalUpdate.StatusDetail.
-//
-// GoalStatusDormant is the fifth, and no provider reports it. LeapMux writes it
-// when the process that pursued the goal is gone. See its comment below.
+// Four values describe provider goal states. GoalStatusNone describes an absent goal.
+// Providers use different status vocabularies, so StatusDetail retains the provider's own status.
+// GoalStatusDormant describes a stored goal whose provider process no longer runs.
 type GoalStatus int
 
 const (
@@ -47,15 +41,9 @@ const (
 	// Reasonix's blocked and stopped.
 	GoalStatusBlocked
 	GoalStatusDone
-	// GoalStatusDormant is "the objective is stored, and no live process is
-	// pursuing it". LeapMux writes it, never a provider: at worker boot for
-	// every goal that outlived the process, and when one agent's process exits.
-	//
-	// It exists because the two alternatives both lie. Keeping the last status
-	// draws a live Active dot and working Pause and Clear buttons for a process
-	// that no longer exists, and blanking the status projects the enum's zero
-	// value, which the browser can only read as "a status this build does not
-	// understand" -- so a goal that is merely waiting renders as a fault.
+	// GoalStatusDormant means the objective is stored but no live process pursues it.
+	// LeapMux derives this display state from the running-agent map and does not persist it.
+	// The provider's last stored status remains available for comparison after a restart.
 	GoalStatusDormant
 )
 
@@ -130,6 +118,8 @@ func GoalStatusToProto(s GoalStatus) leapmuxv1.AgentGoalStatus {
 // a number meaning the opposite of its label, so the Claude parser leaves
 // TokensUsed nil.
 type GoalUpdate struct {
+	// NativeID distinguishes provider goals that have the same objective text.
+	NativeID     string
 	Objective    string
 	Status       GoalStatus
 	StatusDetail string
@@ -184,7 +174,7 @@ type GoalUpdate struct {
 // halves are empty, Reasonix sends an absent `objective` as "" while its state
 // machine starts, and StripUnreadable above empties an objective made only of
 // control characters. The card renders a goal from the status alone, so without
-// this the panel shows an empty objective line with an armed status dot and
+// this the panel shows an empty objective line with an active status indicator and
 // live Pause and Clear buttons -- a goal with no text that the user cannot read
 // and did not set.
 func (u GoalUpdate) Clean() GoalUpdate {
@@ -200,6 +190,7 @@ func (u GoalUpdate) Clean() GoalUpdate {
 		u.Status = GoalStatusBlocked
 	}
 	if u.Objective == "" {
+		u.NativeID = ""
 		u.Status = GoalStatusNone
 		u.StatusDetail = ""
 		u.TokensUsed = nil
@@ -265,8 +256,9 @@ type GoalCapable interface {
 // text-route provider built a user message that changes nothing until the
 // durable input queue delivers it, and returns it in QueuedInput.
 type GoalOutcome struct {
-	// QueuedInput is user-message text the caller MUST enqueue. Empty means the
-	// action already took effect.
+	// QueuedInput is an explicit provider command that the caller must enqueue.
+	// Empty means the action already took effect. Never use an ordinary prompt
+	// to resume a paused goal.
 	QueuedInput string
 }
 
@@ -292,12 +284,13 @@ type GoalOutcome struct {
 type GoalWriter interface {
 	GoalCapable
 
-	// PerformGoalAction runs one action. The provider decides whether that
-	// starts a turn, and whether the caller has anything left to do.
+	// PerformGoalAction uses a verified provider command or RPC for the action.
+	// The provider decides whether this starts a turn and requires queued delivery.
+	// A natural-language prompt cannot substitute for a Goal resume operation.
 	PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error)
 }
 
-// GoalCommandDelivery names the channel that carried a goal command to the
+// GoalCommandDelivery identifies the channel that carried a goal command to the
 // provider process. A provider reads its own command parser on one channel and
 // not always on the other, so the observer must know which one delivered.
 type GoalCommandDelivery int
@@ -333,14 +326,11 @@ const (
 
 // goalTextRoute is one provider's user-message goal vocabulary.
 //
-// The three text-route providers differ in five values and in nothing else, so
-// the algorithm lives here and each provider declares one of these. The rule
-// that provider-specific logic stays in the provider still holds: the command,
-// the clear words and the capability check remain in the provider's own file.
-// Only the format-and-observe algorithm is shared, exactly as
-// parseGoalCommandText already is.
+// Providers share objective formatting and clear-command observation through this type.
+// Each provider supplies its command vocabulary and capability check.
+// Providers handle additional control arguments in their own implementations.
 type goalTextRoute struct {
-	// provider names the provider in an error message.
+	// provider identifies the provider in an error message.
 	provider string
 	// command is the slash command that LeapMux emits.
 	command string
@@ -355,10 +345,9 @@ type goalTextRoute struct {
 	steerCarriesCommand bool
 }
 
-// ErrGoalObjectiveIsCommand means that the objective is one of the words that
-// clears the goal, so the provider would read a set as a clear. The service
-// maps it to InvalidArgument.
-var ErrGoalObjectiveIsCommand = errors.New("this objective is a word that clears the goal")
+// ErrGoalObjectiveIsCommand means the provider interprets the objective as a control argument.
+// The service maps it to InvalidArgument.
+var ErrGoalObjectiveIsCommand = errors.New("this objective is a reserved command argument")
 
 // perform builds the user message for one action. It changes nothing itself:
 // a text route takes effect only once the queue delivers what it returns.
@@ -390,6 +379,9 @@ func (r goalTextRoute) commandText(action GoalAction, objective string) (string,
 		}
 		return r.command + " " + objective, nil
 	case GoalActionClear:
+		if len(r.clearArgs) == 0 {
+			return "", ErrGoalControlUnsupported
+		}
 		return r.command + " " + r.clearArgs[0], nil
 	default:
 		return "", ErrGoalControlUnsupported

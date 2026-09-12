@@ -1,0 +1,27 @@
+{
+  "_readme": "Reasonix owns this tool and capability vocabulary. The worker and frontend use the same identifiers.",
+  "toolNames": {
+    "Task": "task",
+    "ReadOnlyTask": "read_only_task",
+    "UseCapability": "use_capability"
+  },
+  "capabilityActions": {
+    "Call": "call"
+  },
+  "capabilityPrefixes": {
+    "Tool": "tool:"
+  },
+  "modes": {
+    "Normal": "normal",
+    "Plan": "plan",
+    "Goal": "goal"
+  },
+  "configIds": {
+    "ToolApproval": "tool_approval"
+  },
+  "approvalValues": {
+    "Ask": "ask",
+    "Auto": "auto",
+    "Yolo": "yolo"
+  }
+}

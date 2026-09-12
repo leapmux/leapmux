@@ -29,7 +29,7 @@ func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []recordedReque
 	)
 }
 
-func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CursorCLIAgent, func() []recordedRequest) {
+func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*CursorCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *CursorCLIAgent {
 			a := &CursorCLIAgent{}
@@ -182,11 +182,11 @@ func TestCursorUpdateSettingsSkipsUnchangedModelAndMode(t *testing.T) {
 func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
 	t.Parallel()
 
-	agent, requests := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCursorAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{"sessionId":"session-2"}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "auto"
 	agent.permissionMode = CursorCLIModePlan
@@ -197,8 +197,8 @@ func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
 	agent.sink = &testSink{}
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "session-2", agent.sessionID)
 
@@ -475,11 +475,11 @@ func TestPiNonReasoningEffortsUseSharedLabels(t *testing.T) {
 func TestCursorClearContextDropsTheTaskToolNotes(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{"sessionId": "session-2"}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId": "session-2"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.sink = &testSink{}
 	agent.subagentFromToolCall = agent.spawnObservation
@@ -493,8 +493,8 @@ func TestCursorClearContextDropsTheTaskToolNotes(t *testing.T) {
 	agent.mu.Unlock()
 	require.Equal(t, 1, before, "the in-flight task left a note")
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	require.Equal(t, "session-2", sessionID)
 
 	agent.mu.Lock()
@@ -522,8 +522,8 @@ func TestCursorFailedClearContextKeepsTheTaskToolNotes(t *testing.T) {
 	agent.processDone = make(chan struct{})
 	close(agent.processDone)
 
-	_, ok := agent.ClearContext()
-	require.False(t, ok, "session/new must fail without a live agent")
+	_, clearErr := agent.ClearContext()
+	require.Error(t, clearErr, "session/new must fail without a live agent")
 
 	agent.mu.Lock()
 	after := len(agent.taskToolCalls)

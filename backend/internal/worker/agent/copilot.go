@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -27,6 +28,12 @@ type CopilotCLIAgent struct {
 	acpBase
 	assistedApproval            string
 	assistedApprovalUnavailable bool
+	// Keep child-link changes, completion, and reset in one operation.
+	subagentOpsMu          sync.Mutex
+	subagentMu             sync.Mutex
+	childTools             map[string]*copilotChildTools
+	subagentTasks          map[string]*copilotTaskState
+	backgroundWatchRunning bool
 }
 
 const (
@@ -61,6 +68,9 @@ func newCopilotCLIAgent(assistedApproval string, assistedApprovalUnavailable boo
 		assistedApprovalUnavailable: assistedApprovalUnavailable,
 	}
 	a.decorateOptionGroups = a.copilotOptionGroups
+	a.configureSubagentHooks(&a.acpBase)
+	a.routeToolMessage = a.routeChildToolMessage
+	a.clearProviderState = a.clearChildTools
 	return a
 }
 
@@ -120,6 +130,9 @@ func startCopilotCLI(ctx context.Context, opts Options, sink ProviderServices, a
 		},
 		base: func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *CopilotCLIAgent) {
+			transcript := newCopilotToolTranscript(a.ctx, a.sink, func() string { return copilotToolStorePath(a.currentSessionID(), a.currentWorkingDir()) })
+			a.sink = transcript
+			a.clearProviderState = func() { a.clearChildTools(); transcript.reset() }
 			a.modeChannel = modeChannelPermissionMode
 			// Copilot's reasoning-effort axis is the convention id "reasoning_effort", not the
 			// well-known "effort" -- declare it so the env-effort override maps onto it.

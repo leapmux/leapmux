@@ -102,6 +102,17 @@ describe('chatTodos', () => {
   })
 
   describe('rawTodosToItems', () => {
+    it('skips malformed entries while retaining each valid entry position', () => {
+      expect(rawTodosToItems([null, 0, [], { content: 'Keep', status: 'pending' }, {}])).toEqual([
+        { rowKey: '3:Keep', content: 'Keep', status: 'pending', activeForm: '' },
+        { rowKey: '4:', content: '', status: 'pending', activeForm: '' },
+      ])
+    })
+
+    it('preserves a numeric zero when converting text fields', () => {
+      expect(rawTodosToItems([{ content: 0, activeForm: 0 }])[0]).toMatchObject({ content: '0', activeForm: '0' })
+    })
+
     it('returns an empty array for non-array input', () => {
       expect(rawTodosToItems(undefined)).toEqual([])
       expect(rawTodosToItems({})).toEqual([])

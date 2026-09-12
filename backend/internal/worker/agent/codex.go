@@ -621,7 +621,7 @@ func (a *CodexAgent) clearInterruptCallsForThread(threadID string) {
 
 // ClearContext sends a new thread/start on the running Codex process,
 // replacing the current thread with a fresh one.
-func (a *CodexAgent) ClearContext() (string, bool) {
+func (a *CodexAgent) ClearContext() (string, error) {
 	a.mu.Lock()
 	oldThreadID := a.threadID
 	approvalPolicy := a.approvalPolicy
@@ -637,9 +637,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	threadParams["sessionStartSource"] = "clear"
 
 	thread, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil || thread.ID == "" {
-		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
-		return "", false
+	if err != nil {
+		return "", err
+	}
+	if thread.ID == "" {
+		return "", fmt.Errorf("the new Codex thread has no ID")
 	}
 	a.outputMu.Lock()
 	a.flushAllCodexGeneration(MessageCompletionInterrupted)
@@ -685,7 +687,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.sink.ClearGoal(false)
 
 	a.sink.UpdateSessionID(thread.ID)
-	return thread.ID, true
+	return thread.ID, nil
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from turnID, the

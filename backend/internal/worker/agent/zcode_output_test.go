@@ -86,7 +86,10 @@ func TestHandleZCodeOutput_TurnCompleted_PersistsTheDividerAndResetsSpans(t *tes
 	var env map[string]any
 	require.NoError(t, json.Unmarshal(msg.Content, &env))
 	assert.Equal(t, contracts.ZCodeEventTurnCompleted, env["type"])
-	assert.Contains(t, env, "context_usage", "the persisted divider carries the usage a reconnect rehydrates from")
+	assert.NotContains(t, env, "context_usage", "the original provider event stays unchanged")
+	var supplemental map[string]any
+	require.NoError(t, json.Unmarshal(msg.Metadata, &supplemental))
+	assert.Contains(t, supplemental, "context_usage", "the supplement retains usage for a reconnect")
 }
 
 // A background turn's completion must leave the user's turn and its open spans
@@ -253,7 +256,8 @@ func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T)
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	var result map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[1].Content, &result))
-	assert.Equal(t, map[string]interface{}{"completion": "error"}, result["_leapmux"])
+	assert.NotContains(t, result, "_leapmux")
+	assert.Equal(t, MessageCompletionError, sink.Messages()[1].Completion)
 	payload := result["payload"].(map[string]interface{})
 	assert.Equal(t, "result", payload["kind"])
 	assert.Equal(t, "partial output", payload["result"].(map[string]interface{})["content"])
@@ -320,6 +324,26 @@ func TestHandleZCodeOutput_ModelStreaming_EmptyDeltasAndUnknownKindsAreDropped(t
 
 // The scheduled tool.updated reports `inputOmitted` and carries no input, so the
 // model stream is the ONLY copy of it that ever exists.
+func TestHandleZCodeOutput_SupplementsStreamedInputWithoutChangingOriginal(t *testing.T) {
+	t.Parallel()
+	for _, inputField := range []string{"", `,"input":null`, `,"input":{}`, ",\"input\":{ \n }"} {
+		t.Run(inputField, func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingControlSink{}
+			a := newZCodeTestAgent(t, sink)
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming, `{"kind":"tool_call","toolCallId":"call","toolName":"Bash","input":{"command":"printf recovered"}}`))
+			original := []byte(`{"sessionId":"sess-1","seq":2,"type":"tool.updated","futureMetadata":{"x":1},"payload": {"kind":"scheduled","toolCallId":"call","toolName":"Bash","inputOmitted":true,"inputRef":"model_stream"` + inputField + `}}`)
+			event, ok := parseZCodeEvent(original)
+			require.True(t, ok)
+			a.dispatchZCodeEvent(event)
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.Equal(t, original, messages[0].Content)
+			assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","input":{"command":"printf recovered"}}}`, string(messages[0].SupplementalContent))
+		})
+	}
+}
+
 func TestHandleZCodeOutput_ToolInputIsCachedFromTheStreamAndConsumedByScheduled(t *testing.T) {
 	t.Parallel()
 
@@ -348,9 +372,12 @@ func TestHandleZCodeOutput_ToolInputIsCachedFromTheStreamAndConsumedByScheduled(
 	}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &env))
 	assert.Equal(t, contracts.ZCodeEventToolUpdated, env.Type)
-	assert.JSONEq(t, `{"command":"ls -1"}`, string(env.Payload.Input))
-	assert.Nil(t, env.Payload.InputOmitted, "the omission marker must go once the input is filled in")
-	assert.Nil(t, env.Payload.InputRef)
+	assert.Empty(t, env.Payload.Input)
+	require.NotNil(t, env.Payload.InputOmitted)
+	assert.True(t, *env.Payload.InputOmitted)
+	require.NotNil(t, env.Payload.InputRef)
+	assert.Equal(t, "model_stream", *env.Payload.InputRef)
+	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call-1","input":{"command":"ls -1"}}}`, string(sink.Messages()[0].SupplementalContent))
 
 	assert.Equal(t, 1, len(sink.OpenSpans()))
 	assert.Equal(t, "Bash", sink.GetSpanType("call-1"))
@@ -379,7 +406,8 @@ func TestHandleZCodeOutput_ToolCallInputSupersedesTheFragments(t *testing.T) {
 		} `json:"payload"`
 	}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &env))
-	assert.JSONEq(t, `{"command":"echo ok"}`, string(env.Payload.Input))
+	assert.Empty(t, env.Payload.Input)
+	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"c1","input":{"command":"echo ok"}}}`, string(sink.Messages()[0].SupplementalContent))
 	assert.Equal(t, "Bash", sink.GetSpanType("c1"), "the tool name is recovered from the stream too")
 }
 
@@ -400,28 +428,6 @@ func TestHandleZCodeOutput_ToolInputStartDropsAPartialFragment(t *testing.T) {
 	a.mu.Unlock()
 	assert.Empty(t, cached)
 	assert.Equal(t, "Read", name)
-}
-
-func TestZCodeCompleteToolInput_LeavesAnExistingInputAlone(t *testing.T) {
-	t.Parallel()
-
-	payload := json.RawMessage(`{"kind":"scheduled","input":{"command":"real"}}`)
-	got := zcodeCompleteToolInput(payload, json.RawMessage(`{"command":"cached"}`))
-	assert.JSONEq(t, string(payload), string(got), "the update's own input wins over the cache")
-
-	// Nothing to fill in, or nothing valid: the payload passes through untouched, so
-	// the common path takes no decode/encode round trip.
-	assert.Equal(t, string(payload), string(zcodeCompleteToolInput(payload, nil)))
-	assert.Equal(t, string(payload), string(zcodeCompleteToolInput(payload, json.RawMessage(`{not json`))))
-
-	// A `null` input counts as absent.
-	filled := zcodeCompleteToolInput(json.RawMessage(`{"kind":"scheduled","input":null}`), json.RawMessage(`{"a":1}`))
-	var body map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(filled, &body))
-	assert.JSONEq(t, `{"a":1}`, string(body["input"]))
-
-	// A payload that is not an object cannot be completed and must not be corrupted.
-	assert.Equal(t, `[1,2]`, string(zcodeCompleteToolInput(json.RawMessage(`[1,2]`), json.RawMessage(`{"a":1}`))))
 }
 
 // --- tool progress ---
@@ -1041,11 +1047,14 @@ func TestZCodeEventEnvelope_PersistBytesNormalizesBothArrivalPaths(t *testing.T)
 
 	// A replayed event (from the subscribe reply) and a notification event must
 	// persist as the SAME envelope, so the frontend has one shape to classify.
-	replayed := zcodeEventEnvelope{Type: contracts.ZCodeEventTurnCompleted, Seq: 4, Payload: json.RawMessage(`{"toolCallCount":1}`)}
+	native := []byte(`{"seq":4,"type":"turn.completed","payload":{"toolCallCount":1}}`)
+	var replayed zcodeEventEnvelope
+	require.NoError(t, json.Unmarshal(native, &replayed))
 	notified, ok := parseZCodeEvent([]byte(`{"seq":4,"type":"turn.completed","payload":{"toolCallCount":1}}`))
 	require.True(t, ok)
 
-	assert.JSONEq(t, string(replayed.persistBytes()), string(notified.persistBytes()))
+	assert.Equal(t, native, replayed.persistBytes())
+	assert.Equal(t, native, notified.persistBytes())
 
 	var env struct {
 		Type    string          `json:"type"`
@@ -1099,7 +1108,7 @@ func TestHandleZCodeOutput_UserInputResolvedRendersNothing(t *testing.T) {
 
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Empty(t, sink.PersistedNotifications())
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 }
 
 // --- event dispatch ---

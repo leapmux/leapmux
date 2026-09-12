@@ -2,25 +2,26 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { isObject, pickString } from '~/lib/jsonPick'
-import { renderMarkdownForContext } from '../messageRenderers'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { getToolResultExpanded } from '../messageRenderers'
 import {
   toolInputSummary,
   toolMessage,
-  toolResultContent,
-  toolResultContentPre,
   toolResultError,
+  toolResultPrompt,
 } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
+import { CollapsibleContent } from './CollapsibleContent'
 import { ImageResultView } from './imageResult'
+import { useCollapsedLines } from './useCollapsedLines'
 
 /** A single MCP content item produced by the server. */
 export type McpContentItem
   = | { type: 'text', text: string }
     | { type: 'image', source: ImageResultSource }
-    | { type: 'resource', uri: string, mimeType?: string }
+    | { type: 'resource', uri: string, mimeType?: string, text?: string }
     | { type: 'unknown', raw: unknown }
 
 export type McpToolCallStatus = 'inProgress' | 'completed' | 'failed'
@@ -72,14 +73,49 @@ export function parseMcpContentItem(raw: unknown): McpContentItem {
   const image = parseImageBlock(obj)
   if (image)
     return { type: 'image', source: image }
-  if (t === 'resource' && typeof obj.uri === 'string') {
+  const resource = t === 'resource' ? pickObject(obj, 'resource') ?? obj : undefined
+  if (resource && typeof resource.uri === 'string' && !('blob' in resource)) {
     return {
       type: 'resource',
-      uri: obj.uri as string,
-      mimeType: pickString(obj, 'mimeType', undefined),
+      uri: resource.uri,
+      mimeType: pickString(resource, 'mimeType', undefined),
+      ...(typeof resource.text === 'string' ? { text: resource.text } : {}),
     }
   }
   return { type: 'unknown', raw }
+}
+
+function mcpContentText(item: McpContentItem): string {
+  switch (item.type) {
+    case 'text': return item.text
+    case 'resource': return [item.uri, item.text].filter(value => value !== undefined).join('\n')
+    case 'unknown': return prettifyJson(item.raw)
+    case 'image': return item.source.description ?? ''
+  }
+}
+
+export function mcpToolCallCopyable(source: McpToolCallSource): string {
+  return [...source.content.map(mcpContentText), source.structuredJson, source.error].filter(Boolean).join('\n\n')
+}
+
+export function mcpToolCallCollapsible(source: McpToolCallSource): boolean {
+  return [source.argsJson, source.structuredJson, source.error, ...source.content.map(item => item.type === 'image' ? undefined : item.type === 'resource' ? item.text : mcpContentText(item))]
+    .some(text => text !== undefined && hasMoreLinesThan(text, COLLAPSED_RESULT_ROWS))
+}
+
+export function mcpToolResultMeta(source: McpToolCallSource) {
+  const text = mcpToolCallCopyable(source)
+  return {
+    collapsible: mcpToolCallCollapsible(source),
+    hasDiff: false,
+    hasCopyable: text !== '',
+    copyableContent: () => text || null,
+  }
+}
+
+function McpTextView(props: { text: string, markdown?: boolean, expanded: () => boolean, context?: RenderContext }): JSX.Element {
+  const collapsed = useCollapsedLines({ text: () => props.text, expanded: () => props.expanded() })
+  return <CollapsibleContent kind={props.markdown ? 'markdown-tool-result' : 'pre'} text={props.text} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} context={props.context} />
 }
 
 /**
@@ -91,7 +127,9 @@ export function parseMcpContentItem(raw: unknown): McpContentItem {
 export function McpToolCallBody(props: {
   source: McpToolCallSource
   context?: RenderContext
+  expanded?: () => boolean
 }): JSX.Element {
+  const expanded = () => props.expanded?.() ?? getToolResultExpanded(props.context)
   // Each image's position among the IMAGES of this message, which is what an
   // image tab addresses -- not its position among the content items, which
   // counts the text blocks between them. `Provider.toolResultImages` produces
@@ -105,7 +143,7 @@ export function McpToolCallBody(props: {
     <div class={toolMessage}>
       <Show when={props.source.argsJson}>
         <div class={toolInputSummary}>Arguments</div>
-        <div class={toolResultContentPre}>{props.source.argsJson}</div>
+        <McpTextView text={props.source.argsJson} expanded={expanded} context={props.context} />
       </Show>
       <Show when={props.source.content.length > 0}>
         <For each={props.source.content}>
@@ -114,31 +152,32 @@ export function McpToolCallBody(props: {
               item={item}
               imageIndex={imageOrdinals()[index()]}
               title={mcpToolCallDisplayName(props.source)}
+              failed={props.source.status === 'failed'}
               context={props.context}
+              expanded={expanded}
             />
           )}
         </For>
       </Show>
       <Show when={props.source.structuredJson}>
         <div class={toolInputSummary}>Structured</div>
-        <div class={toolResultContentPre}>{props.source.structuredJson}</div>
+        <McpTextView text={props.source.structuredJson!} expanded={expanded} context={props.context} />
       </Show>
       <Show when={props.source.error}>
-        <div class={toolResultError}>{props.source.error}</div>
+        <div class={toolResultError}><McpTextView text={props.source.error!} expanded={expanded} context={props.context} /></div>
+      </Show>
+      <Show when={props.source.status !== 'inProgress' && props.source.content.length === 0 && !props.source.structuredJson && !props.source.error}>
+        <div class={toolResultPrompt}>[no output]</div>
       </Show>
     </div>
   )
 }
 
-function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, title?: string, context?: RenderContext }): JSX.Element {
-  const markdownHtml = (text: string) => renderMarkdownForContext(text, props.context)
+function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, title?: string, failed?: boolean, context?: RenderContext, expanded: () => boolean }): JSX.Element {
   return (
     <Switch>
       <Match when={props.item.type === 'text'}>
-        <div
-          class={toolResultContent}
-          ref={cachedInnerHtml(() => markdownHtml((props.item as { type: 'text', text: string }).text))}
-        />
+        <McpTextView text={(props.item as { type: 'text', text: string }).text} markdown={!props.failed} expanded={props.expanded} context={props.context} />
       </Match>
       <Match when={props.item.type === 'image'}>
         <ImageResultView
@@ -149,27 +188,32 @@ function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, 
         />
       </Match>
       <Match when={props.item.type === 'resource'}>
-        <McpResourceView item={props.item as { type: 'resource', uri: string, mimeType?: string }} />
+        <McpResourceView item={props.item as Extract<McpContentItem, { type: 'resource' }>} expanded={props.expanded} context={props.context} />
       </Match>
       <Match when={props.item.type === 'unknown'}>
-        <div class={toolResultContentPre}>
-          {prettifyJson((props.item as { type: 'unknown', raw: unknown }).raw)}
-        </div>
+        <McpTextView text={prettifyJson((props.item as { type: 'unknown', raw: unknown }).raw)} expanded={props.expanded} context={props.context} />
       </Match>
     </Switch>
   )
 }
 
 function McpResourceView(props: {
-  item: { type: 'resource', uri: string, mimeType?: string }
+  item: Extract<McpContentItem, { type: 'resource' }>
+  expanded: () => boolean
+  context?: RenderContext
 }): JSX.Element {
   return (
-    <div class={toolInputSummary}>
-      [resource:
-      {' '}
-      {props.item.uri}
-      {props.item.mimeType ? ` (${props.item.mimeType})` : ''}
-      ]
-    </div>
+    <>
+      <div class={toolInputSummary}>
+        [resource:
+        {' '}
+        {props.item.uri}
+        {props.item.mimeType ? ` (${props.item.mimeType})` : ''}
+        ]
+      </div>
+      <Show when={props.item.text !== undefined}>
+        <McpTextView text={props.item.text!} expanded={props.expanded} context={props.context} />
+      </Show>
+    </>
   )
 }

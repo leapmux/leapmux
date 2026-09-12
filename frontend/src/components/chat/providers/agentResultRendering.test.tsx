@@ -1,7 +1,9 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import { claudeToolResultMeta } from './claude/toolResult'
 import './testMocks'
 
@@ -58,14 +60,14 @@ function renderAgentResult(
         topLevel: null,
         parentObject: {
           type: 'assistant',
-          message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Agent', input: toolUseInput }] },
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'test-agent', name: 'Agent', input: toolUseInput }] },
         },
         wrapper: null,
       }
     : undefined
   const result = renderMessageContent(
     agentToolResult(resultContent, toolUseResult),
-    { spanType: 'Agent', toolUseParsed },
+    { spanType: 'Agent', sources: testMessageSources({ request: () => (toolUseParsed) }) },
     category,
     AgentProvider.CLAUDE_CODE,
   )
@@ -243,12 +245,7 @@ describe('claude Agent tool_result rendering: a finished run', () => {
 
 describe('claudeToolResultMeta for Agent', () => {
   const meta = (toolUseResult: Record<string, unknown>, resultContent = HARNESS_TEXT) =>
-    claudeToolResultMeta(
-      { kind: 'tool_result' },
-      agentToolResult(resultContent, toolUseResult),
-      'Agent',
-      undefined,
-    )
+    claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(agentToolResult(resultContent, toolUseResult), 'Agent', undefined))
 
   // The toolbar must act on the text the card shows. Copying the harness
   // instructions gave the user the one thing on the row that is not about their

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // ZCode's request/response plumbing.
@@ -122,7 +124,7 @@ func (a *zcodeAgent) routeZCodeRPC(line *parsedLine) (handler func(), consumed b
 	// without a copy: readOutput allocates a fresh buffer per line, and
 	// json.RawMessage.UnmarshalJSON copies into its own allocation on top of that. So
 	// nothing the scanner reuses is reachable from here.
-	return func() { a.handleServerRequest(line.Method, line.ID, line.Params) }, true
+	return func() { a.handleServerRequest(line) }, true
 }
 
 // interceptResponse is the readOutput interceptor. It returns true when it
@@ -144,14 +146,15 @@ func (a *zcodeAgent) interceptResponse(line *parsedLine) bool {
 // Every branch MUST answer, including the ones LeapMux cannot satisfy. The
 // app-server blocks the flow behind an unanswered request -- the runtime-preferences
 // handshake blocks session/create outright -- so silence is a hang, not a decline.
-func (a *zcodeAgent) handleServerRequest(method string, id, params json.RawMessage) {
+func (a *zcodeAgent) handleServerRequest(line *parsedLine) {
+	method, id, params := line.Method, line.ID, line.Params
 	switch method {
 	case ZCodeMethodRequestRuntimePreferences:
 		a.answerRuntimePreferences(id)
 	case ZCodeMethodRequestPermission:
 		a.handlePermissionRequest(id, params)
-	case ZCodeMethodRequestUserInput:
-		a.handleUserInputRequest(id, params)
+	case contracts.ZCodeMethodRequestUserInput:
+		a.handleUserInputRequest(id, params, line.Raw)
 	case ZCodeMethodRequestProviderRuntimeHeaders:
 		a.answerProviderRuntimeHeaders(id, params)
 	case ZCodeMethodRequestOfficialMcpAuthHeaders:

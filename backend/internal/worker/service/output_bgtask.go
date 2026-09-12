@@ -964,10 +964,10 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices 
 }
 
 func (s *agentOutputSink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
-	return s.ChildSink(childAgentID).PersistMessage(source, content, span)
+	return s.ChildSink(childAgentID).PersistMessage(source, agent.MessageContent{Original: content}, span)
 }
 
-func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byte, span agent.SpanInfo) error {
+func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
@@ -996,7 +996,7 @@ func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error 
 		return fmt.Errorf("marshal child prompt: %w", err)
 	}
 	return s.ChildSink(childAgentID).PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{})
 }
 
 // userMessageContent encodes text as a transcript's user-message envelope: the
@@ -1027,7 +1027,7 @@ func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) err
 		return fmt.Errorf("marshal child user message: %w", err)
 	}
 	return s.ChildSink(childAgentID).PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content},
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE})
 }
 
@@ -1121,7 +1121,7 @@ func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bg
 		return
 	}
 	if err := h.persistAndBroadcast(childAgentID, child.AgentProvider,
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, agent.SpanInfo{},
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}, agent.SpanInfo{},
 		h.closingChildTracker(childAgentID)); err != nil {
 		slog.Warn("persist subagent end divider", "child", childAgentID, "error", err)
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -83,8 +84,9 @@ type testSink struct {
 	// ClearGoal. A provider's goal parser is tested through these: they hold the
 	// neutral GoalUpdate, so a test asserts what the parser MEANT rather than
 	// the provider bytes it read.
-	goals      []GoalUpdate
-	goalClears int
+	goals       []GoalUpdate
+	currentGoal *GoalUpdate
+	goalClears  int
 	// goalClearSnapshots records the snapshot flag of every ClearGoal, in order.
 	// The count alone cannot tell a restatement from a real removal, and that is
 	// the whole distinction the flag exists to carry.
@@ -148,15 +150,19 @@ type testSink struct {
 func (*testSink) providerServices() {}
 
 type testSinkMessage struct {
-	Source          leapmuxv1.MessageSource
-	Content         []byte
-	ParentSpanID    string
-	ConnectorSpanID string
-	SpanID          string
-	SpanType        string
-	Closing         bool
-	SpanColor       int32
-	MarkType        leapmuxv1.MarkType
+	Source               leapmuxv1.MessageSource
+	Content              []byte
+	SupplementalContent  []byte
+	Metadata             []byte
+	SupplementalRevision int64
+	Completion           MessageCompletion
+	ParentSpanID         string
+	ConnectorSpanID      string
+	SpanID               string
+	SpanType             string
+	Closing              bool
+	SpanColor            int32
+	MarkType             leapmuxv1.MarkType
 	// NoSpan mirrors SpanInfo.NoSpan: the row carries a span id but owns no
 	// span, so its span_color of 0 is the answer and the persist path must not
 	// fill it from the connector.
@@ -197,27 +203,70 @@ func (s *testSink) liveSpansLocked() []testSinkSpanOpen {
 // only way to exercise a caller's error path: every caller LOGS the error and
 // carries on, so a test that cannot make the persist fail cannot tell "carries
 // on" from "returns early".
-func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
+		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
 	return s.persistErr
 }
 
-func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
+func (s *testSink) EnrichMessage(change MessageEnrichment) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.persistErr != nil {
+		return false, s.persistErr
+	}
+	for index := len(s.messages) - 1; index >= 0; index-- {
+		if change.Seq > 0 && change.Seq != int64(index+1) {
+			continue
+		}
+		message := &s.messages[index]
+		if message.SpanID == change.SpanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
+			if bytes.Equal(message.SupplementalContent, change.SupplementalContent) {
+				return false, nil
+			}
+			if bytes.Equal(message.Content, change.OriginalContent) && message.SupplementalRevision == change.PreviousRevision {
+				message.SupplementalContent = append([]byte(nil), change.SupplementalContent...)
+				message.SupplementalRevision++
+				return true, nil
+			}
+			break
+		}
+	}
+	return false, nil
+}
+
+func (s *testSink) ReadToolRequest(spanID string) (*StoredMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, message := range s.messages {
+		if spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
+			return &StoredMessage{Seq: int64(index + 1), Revision: message.SupplementalRevision, Content: MessageContent{
+				Original: append([]byte(nil), message.Content...), Supplemental: append([]byte(nil), message.SupplementalContent...), Metadata: append([]byte(nil), message.Metadata...),
+			}}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *testSink) PersistTurnEnd(content MessageContent, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{
-		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:            append([]byte(nil), content...),
-		ParentSpanID:       span.ParentSpanID,
-		ConnectorSpanID:    span.ConnectorSpanID,
-		SpanID:             span.SpanID,
-		SpanType:           span.SpanType,
-		Closing:            span.Closing,
-		MarkType:           span.MarkType,
-		TurnEnd:            true,
-		SpansOpenAtPersist: s.liveSpansLocked(),
+		Source:              leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:             append([]byte(nil), content.Original...),
+		SupplementalContent: append([]byte(nil), content.Supplemental...),
+		Metadata:            append([]byte(nil), content.Metadata...),
+		Completion:          content.Completion,
+		ParentSpanID:        span.ParentSpanID,
+		ConnectorSpanID:     span.ConnectorSpanID,
+		SpanID:              span.SpanID,
+		SpanType:            span.SpanType,
+		Closing:             span.Closing,
+		MarkType:            span.MarkType,
+		TurnEnd:             true,
+		SpansOpenAtPersist:  s.liveSpansLocked(),
 	})
 	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
 	return nil
@@ -399,10 +448,9 @@ func (s *testSink) ProgressUpdates() []ProgressUpdate {
 	return append([]ProgressUpdate(nil), s.progress...)
 }
 
-func (s *testSink) PersistControlRequest(string, []byte) string    { return "" }
-func (s *testSink) DeleteControlRequest(string)                    {}
-func (s *testSink) BroadcastControlRequest(string, []byte, string) {}
-func (s *testSink) BroadcastControlCancel(string)                  {}
+func (s *testSink) PublishControlRequest(ControlRequest) error { return nil }
+func (s *testSink) DeleteControlRequest(string)                {}
+func (s *testSink) BroadcastControlCancel(string)              {}
 func (s *testSink) UpdateSessionID(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -488,6 +536,23 @@ func (s *testSink) UpsertGoal(update GoalUpdate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goals = append(s.goals, update)
+	s.currentGoal = &update
+}
+
+func (s *testSink) UpdateGoalStatus(expected, status GoalStatus) {
+	if !s.ownsGoal() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.currentGoal == nil || s.currentGoal.Status != expected {
+		return
+	}
+	update := *s.currentGoal
+	update.Status = status
+	update.StatusDetail = ""
+	s.currentGoal = &update
+	s.goals = append(s.goals, update)
 }
 
 func (s *testSink) ClearGoal(snapshot bool) {
@@ -496,6 +561,7 @@ func (s *testSink) ClearGoal(snapshot bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.currentGoal = nil
 	s.goalClears++
 	s.goalClearSnapshots = append(s.goalClearSnapshots, snapshot)
 }
@@ -705,10 +771,10 @@ func (s *testSink) PersistChildMessage(childAgentID string, source leapmuxv1.Mes
 	if cs == nil {
 		return nil
 	}
-	return cs.PersistMessage(source, content, span)
+	return cs.PersistMessage(source, MessageContent{Original: content}, span)
 }
 
-func (s *testSink) PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error {
+func (s *testSink) PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error {
 	cs, _ := s.ChildSink(childAgentID).(*testSink)
 	if cs == nil {
 		return nil
@@ -734,7 +800,7 @@ func (s *testSink) PersistChildPrompt(childAgentID, prompt string) error {
 	if err != nil {
 		return err
 	}
-	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{})
+	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, MessageContent{Original: content}, SpanInfo{})
 }
 
 // PersistChildUserMessage mirrors the real sink: it APPENDS, with no emptiness
@@ -753,7 +819,7 @@ func (s *testSink) PersistChildUserMessage(childAgentID, text string) error {
 	if err != nil {
 		return err
 	}
-	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{
+	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, MessageContent{Original: content}, SpanInfo{
 		MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
 	})
 }
@@ -1168,10 +1234,12 @@ type noopSink struct{}
 
 func (noopSink) providerServices() {}
 
-func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error {
+func (noopSink) PersistMessage(leapmuxv1.MessageSource, MessageContent, SpanInfo) error {
 	return nil
 }
-func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
+func (noopSink) EnrichMessage(MessageEnrichment) (bool, error)                     { return false, nil }
+func (noopSink) ReadToolRequest(string) (*StoredMessage, error)                    { return nil, nil }
+func (noopSink) PersistTurnEnd(MessageContent, SpanInfo) error                     { return nil }
 func (noopSink) SetTurnState(TurnState, uint64)                                    {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
@@ -1181,9 +1249,8 @@ func (noopSink) SetSpanType(string, string)                                     
 func (noopSink) GetSpanType(string) string                                         { return "" }
 func (noopSink) ReserveSpanColor(string, string) int32                             { return 0 }
 func (noopSink) ReportProgress(ProgressUpdate)                                     {}
-func (noopSink) PersistControlRequest(string, []byte) string                       { return "" }
+func (noopSink) PublishControlRequest(ControlRequest) error                        { return nil }
 func (noopSink) DeleteControlRequest(string)                                       {}
-func (noopSink) BroadcastControlRequest(string, []byte, string)                    {}
 func (noopSink) BroadcastControlCancel(string)                                     {}
 func (noopSink) UpdateSessionID(string)                                            {}
 func (noopSink) UpdatePermissionMode(string)                                       {}
@@ -1196,6 +1263,7 @@ func (noopSink) StorePlanModeToolUse(string, string)                            
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}
 func (noopSink) UpsertGoal(GoalUpdate)                                             {}
+func (noopSink) UpdateGoalStatus(GoalStatus, GoalStatus)                           {}
 func (noopSink) ClearGoal(bool)                                                    {}
 func (noopSink) PublishGoalCapabilities()                                          {}
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
@@ -1206,9 +1274,9 @@ func (noopSink) ChildSink(string) ProviderServices                              
 func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil
 }
-func (noopSink) PersistChildTurnEnd(string, []byte, SpanInfo) error { return nil }
-func (noopSink) PersistChildPrompt(string, string) error            { return nil }
-func (noopSink) UpsertBackgroundTask(bgtask.Upsert) error           { return nil }
+func (noopSink) PersistChildTurnEnd(string, MessageContent, SpanInfo) error { return nil }
+func (noopSink) PersistChildPrompt(string, string) error                    { return nil }
+func (noopSink) UpsertBackgroundTask(bgtask.Upsert) error                   { return nil }
 func (noopSink) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
 	return nil
 }

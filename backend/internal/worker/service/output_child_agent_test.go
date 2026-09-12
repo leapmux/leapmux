@@ -249,7 +249,7 @@ func TestChildSink_PersistsIntoChildSeqSpace(t *testing.T) {
 	childSink := sink.ChildSink(childID)
 	require.NotNil(t, childSink)
 	require.NoError(t, childSink.PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"assistant"}`), agent.SpanInfo{
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{
 			SpanID: "child-span-1", SpanType: "text",
 		}))
 
@@ -291,7 +291,7 @@ func TestChildSink_SpanTrackerIndependentOfParent(t *testing.T) {
 	// The root span is still open: persisting a closing message on the root
 	// under the same id succeeds (its tracker still tracks it).
 	require.NoError(t, sink.PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"result"}`), agent.SpanInfo{
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"result"}`)}, agent.SpanInfo{
 			SpanID: "shared-span", SpanType: "tool_result", Closing: true,
 		}))
 
@@ -776,7 +776,7 @@ func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
-		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(result, agent.SpanInfo{}))
+		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 
 		msgs := transcriptMessages(t, svc, childID)
 		require.Len(t, msgs, 1, "the forwarded result must stand down, not stack")
@@ -789,7 +789,7 @@ func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
 		childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
 		require.NoError(t, err)
 
-		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(result, agent.SpanInfo{}))
+		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 		msgs := transcriptMessages(t, svc, childID)
@@ -817,7 +817,7 @@ func TestSubagentEndDivider_ConcurrentWritersProduceOne(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		assert.NoError(t, sink.ChildSink(childID).PersistTurnEnd(result, agent.SpanInfo{}))
+		assert.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 	}()
 	wg.Wait()
 
@@ -852,8 +852,8 @@ func TestPersistTurnEnd_RootTurnEndIsNeverSuppressed(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 	result := []byte(`{"type":"result","duration_ms":12}`)
-	require.NoError(t, sink.PersistTurnEnd(result, agent.SpanInfo{}))
-	require.NoError(t, sink.PersistTurnEnd(result, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 
 	assert.Len(t, transcriptMessages(t, svc, "root-1"), 2, "every root turn end persists")
 }
@@ -979,8 +979,7 @@ func TestCloseBackgroundTask_SkipsTheDividerWhenTheProviderAlreadyEndedIt(t *tes
 	require.NoError(t, err)
 
 	// The forwarded subagent result, persisted as the child's turn end.
-	require.NoError(t, sink.PersistChildTurnEnd(childID,
-		[]byte(`{"type":"result","duration_ms":5100,"is_error":false}`), agent.SpanInfo{}))
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":5100,"is_error":false}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 	msgs := transcriptMessages(t, svc, childID)
@@ -1058,8 +1057,7 @@ func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistChildTurnEnd(childID,
-		[]byte(`{"type":"result","duration_ms":5100}`), agent.SpanInfo{}))
+	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":5100}`)}, agent.SpanInfo{}))
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 

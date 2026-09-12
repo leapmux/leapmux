@@ -5,6 +5,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import './providers'
@@ -140,7 +141,7 @@ describe('write/edit tool_use messages never render the diff body', () => {
         structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
       },
     }))
-    const context: RenderContext = { toolResultParsed }
+    const context: RenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
@@ -320,5 +321,14 @@ describe('a user row whose provider has no plugin', () => {
     const { container } = render(() =>
       renderMessageContent(parsed, undefined, { kind: 'unsupported_provider' } as MessageCategory, AgentProvider.UNSPECIFIED))
     expect(container.textContent).toContain('"duration_ms"')
+  })
+})
+
+describe('provider completion fields', () => {
+  it('does not interpret a provider field as LeapMux completion', () => {
+    const message = { ...makeToolUseMessage('Read', { file_path: '/a.ts' }), _leapmux: { completion: 'error' } }
+    const { container } = render(() => renderMessageContent(message, undefined, makeToolUseCategory('Read', { file_path: '/a.ts' }), AgentProvider.CLAUDE_CODE))
+    expect(container.querySelector('[role="note"]')).toBeNull()
+    expect(container.textContent).toContain('/a.ts')
   })
 })

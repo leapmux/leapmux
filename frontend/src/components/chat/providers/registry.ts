@@ -9,6 +9,7 @@
 
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
+import type { ElicitationRequest } from '../controls/elicitationForm'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
@@ -18,7 +19,10 @@ import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSou
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
+import type { ToolMessageSide } from '~/stores/chatTypes'
 import type { ControlRequest } from '~/stores/control.store'
+import { isObject } from '~/lib/jsonPick'
+import { applyMessageMetadata } from '../messageMetadata'
 
 export interface AttachmentCapabilities {
   text: boolean
@@ -29,7 +33,7 @@ export interface AttachmentCapabilities {
 
 export interface ProviderAskUserQuestion {
   isRequest: (payload: Record<string, unknown>) => boolean
-  extractQuestions: (payload: Record<string, unknown>) => Question[]
+  extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => Question[]
   /**
    * Answers ONE request instance.
    *
@@ -105,6 +109,14 @@ export interface ToolResultMeta {
   copyableContent: () => string | null
 }
 
+/** Parsed provider content and supplemental content remain separate inside each message. */
+export interface ToolMessageInput {
+  parsed: ParsedMessageContent
+  spanType: string | undefined
+  request: ParsedMessageContent | undefined
+  role?: SpanRole
+}
+
 /**
  * One entry inside a notification_thread wrapper, after the provider has
  * inspected a single message. The shared thread renderer concatenates entries
@@ -148,6 +160,8 @@ export interface ResultDividerModel {
 export type SpanRole = 'opener' | 'result' | 'other'
 
 export interface Provider {
+  /** Combine separate supplemental data with the provider payload for display only. */
+  resolveMessage?: (parsed: ParsedMessageContent) => Record<string, unknown> | undefined
   /**
    * Extra per-provider settings to seed into a new agent's OpenAgent request.
    * Omit when the provider needs none. Codex seeds its collaboration mode.
@@ -203,10 +217,12 @@ export interface Provider {
    * Classify a message's role within a tool span (opener / result / other) from this provider's
    * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
    * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
-   * Omit for providers whose spans have no distinct opener/result marker (Codex / ACP emit only
-   * tool_use openers) -- the caller defaults to `'other'` and files them first-seen-is-opener.
+   * Omit for providers whose spans have no distinct opener/result marker (such as Codex) -- the caller defaults to `'other'` and files them first-seen-is-opener.
    */
   spanRole?: (parsed: ParsedMessageContent) => SpanRole
+
+  /** Linked messages that this row needs for rendering. Omit for self-contained rows. */
+  relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolMessageSide[]
 
   /**
    * Render a message given its category and parsed content.
@@ -230,9 +246,7 @@ export interface Provider {
    */
   toolResultMeta?: (
     category: MessageCategory,
-    parsed: unknown,
-    spanType: string | undefined,
-    toolUseParsed: ParsedMessageContent | undefined,
+    input: ToolMessageInput,
   ) => ToolResultMeta | null
 
   /**
@@ -249,9 +263,7 @@ export interface Provider {
    * empty array when the message carries no image.
    */
   toolResultImages?: (
-    parsed: unknown,
-    spanType: string | undefined,
-    toolUseParsed: ParsedMessageContent | undefined,
+    input: ToolMessageInput,
   ) => ImageResultSource[]
 
   /**
@@ -302,6 +314,9 @@ export interface Provider {
 
   /** Complete support for the shared question UI. */
   askUserQuestion?: ProviderAskUserQuestion
+
+  /** Extract a native MCP input request for the shared form. */
+  elicitation?: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ElicitationRequest | undefined
 
   /**
    * Convert one message inside a notification_thread wrapper into thread
@@ -472,4 +487,11 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  */
 export function pluginFor(provider: AgentProvider | undefined): Provider | undefined {
   return provider != null ? providerFor(provider) : undefined
+}
+
+/** Resolve display data without changing the parsed original used by the Raw JSON view. */
+export function parsedMessageForRendering(parsed: ParsedMessageContent, provider: AgentProvider): ParsedMessageContent {
+  const providerData = providerFor(provider)?.resolveMessage?.(parsed) ?? parsed.parentObject
+  const parentObject = providerData && isObject(parsed.messageMetadata) ? applyMessageMetadata(providerData, parsed.messageMetadata) : providerData
+  return parentObject === parsed.parentObject ? parsed : { ...parsed, parentObject }
 }

@@ -140,22 +140,19 @@ func TestCodexTurnActive_StartedOpensAndCompletedCloses(t *testing.T) {
 	}, sink.TurnKinds(), "the turn end must clear the steering classification")
 }
 
-func TestCodexTurnActive_ReadsTurnIDNotTheInheritedPromptActive(t *testing.T) {
+func TestCodexTurnActive_ReadsNativeTurnID(t *testing.T) {
 	t.Parallel()
 
-	// CodexAgent embeds jsonrpcBase for its JSON-RPC plumbing and inherits
-	// promptActive with it, but only acpBase.SendInput ever writes that field --
-	// so for Codex it is permanently false. Reading it here would report every
-	// Codex turn idle.
+	// Codex publishes its activity from the native turn identity.
 	sink := &recordingControlSink{}
 	a := newCodexAgentWithSink(sink)
 
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-7"}}}`)))
 
 	a.mu.Lock()
-	promptActive := a.promptActive
+	turnID := a.turnID
 	a.mu.Unlock()
-	require.False(t, promptActive, "the inherited flag stays false for Codex")
+	require.Equal(t, "turn-7", turnID)
 
 	last, published := sink.LastTurnActive()
 	require.True(t, published)

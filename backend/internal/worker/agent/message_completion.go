@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -33,64 +32,23 @@ func MarshalAssembledMessage(kind AssembledMessageKind, text string, completion 
 	})
 }
 
-// AnnotateMessageCompletion adds Worker completion metadata to a provider row.
-func AnnotateMessageCompletion(content []byte, completion MessageCompletion) ([]byte, error) {
-	var value map[string]json.RawMessage
-	if err := json.Unmarshal(content, &value); err != nil {
-		return nil, fmt.Errorf("unmarshal provider message: %w", err)
-	}
-	if value == nil {
-		return nil, fmt.Errorf("provider message must be a JSON object")
-	}
-	metadata := make(map[string]json.RawMessage)
-	if current := value[contracts.AssembledMessageMetadataField]; len(current) > 0 {
-		_ = json.Unmarshal(current, &metadata)
-		if metadata == nil {
-			metadata = make(map[string]json.RawMessage)
-		}
-	}
-	encodedCompletion, err := json.Marshal(completion)
-	if err != nil {
-		return nil, fmt.Errorf("marshal provider completion: %w", err)
-	}
-	metadata[contracts.AssembledMessageFieldCompletion] = encodedCompletion
-	encodedMetadata, err := json.Marshal(metadata)
-	if err != nil {
-		return nil, fmt.Errorf("marshal provider completion metadata: %w", err)
-	}
-	value[contracts.AssembledMessageMetadataField] = encodedMetadata
-	annotated, err := json.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("marshal provider message: %w", err)
-	}
-	return annotated, nil
-}
-
-// MessageMetadata derives the typed metadata that the message row stores.
-// The database copy rebuilds from content and has no independent writer.
-func MessageMetadata(content []byte) (leapmuxv1.AssembledMessageKind, leapmuxv1.MessageCompletion) {
-	var value map[string]json.RawMessage
-	if json.Unmarshal(content, &value) != nil {
-		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED,
-			leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED
-	}
+// MessageMetadata keeps worker completion outside the provider's JSON schema.
+func MessageMetadata(content MessageContent) (leapmuxv1.AssembledMessageKind, leapmuxv1.MessageCompletion) {
 	kind := leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED
-	completion := leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED
+	completion := messageCompletionFromToken(string(content.Completion))
+	var value map[string]json.RawMessage
+	if json.Unmarshal(content.Original, &value) != nil {
+		return kind, completion
+	}
 	var messageType string
 	_ = json.Unmarshal(value[contracts.AssembledMessageFieldType], &messageType)
 	if messageType == contracts.AssembledMessageType {
 		var kindToken, completionToken string
 		_ = json.Unmarshal(value[contracts.AssembledMessageFieldKind], &kindToken)
 		kind = assembledMessageKindFromToken(kindToken)
-		_ = json.Unmarshal(value[contracts.AssembledMessageFieldCompletion], &completionToken)
-		completion = messageCompletionFromToken(completionToken)
-		return kind, completion
-	}
-	var metadata map[string]json.RawMessage
-	if json.Unmarshal(value[contracts.AssembledMessageMetadataField], &metadata) == nil {
-		var token string
-		if json.Unmarshal(metadata[contracts.AssembledMessageFieldCompletion], &token) == nil {
-			completion = messageCompletionFromToken(token)
+		if completion == leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED {
+			_ = json.Unmarshal(value[contracts.AssembledMessageFieldCompletion], &completionToken)
+			completion = messageCompletionFromToken(completionToken)
 		}
 	}
 	return kind, completion

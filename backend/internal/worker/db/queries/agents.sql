@@ -195,7 +195,7 @@ UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ?, title_auto_gene
 -- statement run hundreds of times per turn.
 -- name: UpdateAgentGoal :exec
 UPDATE agents
-SET goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
+SET goal_native_id = ?, goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
 WHERE id = ?;
 
 -- ClearAgentGoal removes the goal. It is unconditional on purpose. Codex's
@@ -204,7 +204,7 @@ WHERE id = ?;
 -- empty would leave a goal from a previous process in the table forever.
 -- name: ClearAgentGoal :exec
 UPDATE agents
-SET goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
+SET goal_native_id = '', goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
 WHERE id = ?;
 
 -- GetAgentGoal reads only the goal columns. `SELECT *` would deserialize the
@@ -212,7 +212,7 @@ WHERE id = ?;
 -- completed tool call, exactly the cost GetAgentID and GetAgentTitle above
 -- exist to avoid.
 -- name: GetAgentGoal :one
-SELECT id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
+SELECT id, goal_native_id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
 FROM agents WHERE id = ?;
 
 -- name: ListAgentsByIDs :many

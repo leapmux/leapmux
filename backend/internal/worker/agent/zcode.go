@@ -30,6 +30,8 @@ type zcodeAgent struct {
 	// dispatchMu serializes dispatchZCodeEvent across the read loop and a replaying
 	// re-subscribe. See that function for why the whole body needs it.
 	dispatchMu sync.Mutex
+	// Control requests can arrive concurrently while the server repeats an unanswered request.
+	controlMu sync.Mutex
 
 	sink       ProviderServices
 	workingDir string
@@ -183,6 +185,14 @@ func StartZCode(ctx context.Context, opts Options, sink ProviderServices) (Agent
 		pendingControls:  map[string]json.RawMessage{},
 	}
 	a.sink = newModelProgressResetSink(a.sink)
+	storeLocation := zcodeToolStorePaths(StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir})
+	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		location := storeLocation
+		location.sessionID = a.sessionID
+		return location
+	})
 	// A requested model may be spelled bare ("GLM-5.3"); the catalog resolves it to
 	// the composite id the option groups carry. An unresolvable request leaves the
 	// model empty, and the app-server then picks the registry default -- which the
@@ -346,16 +356,14 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	snap, _ := a.applyStateSnapshot(raw)
+	snap, ok := a.parseStateSnapshot(raw)
+	if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
+		return fmt.Errorf("%s returned no session id", ZCodeMethodSessionCreate)
+	}
+	a.applyParsedStateSnapshot(snap)
 	// A create RESTATES the session's goal -- normally that it has none, which
 	// is what clears one a previous session left on the row.
 	a.reportZCodeGoal(snap.Goal, true)
-	a.mu.Lock()
-	created := a.sessionID != ""
-	a.mu.Unlock()
-	if !created {
-		return fmt.Errorf("%s returned no session id", ZCodeMethodSessionCreate)
-	}
 	return nil
 }
 
@@ -503,6 +511,12 @@ func (a *zcodeAgent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if zcodeUsableSessionID(snap.Session.SessionID) {
+		if snap.Session.SessionID != a.sessionID {
+			// Sequence and revision counters belong to one native session.
+			a.lastSeq = 0
+			a.stateRevision = 0
+			a.modeObserved = false
+		}
 		a.sessionID = snap.Session.SessionID
 	}
 	if snap.Runtime.EventSeq > a.lastSeq {
@@ -696,19 +710,9 @@ func (a *zcodeAgent) Wait() error {
 // arrives for a call the replaced session was still running, so without this a
 // spawn prompt is retained for the life of the process and a reused tool-call id
 // would open the next child transcript on the previous session's instruction.
-func (a *zcodeAgent) ClearContext() (string, bool) {
+func (a *zcodeAgent) ClearContext() (string, error) {
 	timeout := a.APITimeout()
 	a.mu.Lock()
-	a.sessionID = ""
-	a.lastSeq = 0
-	// The fresh session starts its own revision counter, so the replaced
-	// session's value must not survive. The guard in applyZCodeRuntimeState is
-	// monotonic, so a retained higher value would refuse every lower revision
-	// the new session reports, and session/goal would never send a revision the
-	// app-server accepts again.
-	a.stateRevision = 0
-	// The replaced session's report says nothing about the mode the fresh one runs in.
-	a.modeObserved = false
 	// The three axes the user currently runs on are the request for the fresh session.
 	// Reading them AFTER openSession would read the new session's defaults instead, and
 	// a context clear would silently drop the level and the model back to them.
@@ -716,13 +720,10 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.mu.Unlock()
 
 	if err := a.openSession("", timeout); err != nil {
-		slog.Error("zcode ClearContext: session create failed", "agent_id", a.agentID, "error", err)
-		return "", false
+		return "", err
 	}
 	a.applyStartupSettings(current, timeout)
-	if err := a.subscribe(timeout); err != nil {
-		slog.Warn("zcode ClearContext: subscribe failed", "agent_id", a.agentID, "error", err)
-	}
+	subscribeErr := a.subscribe(timeout)
 	a.flushZCodeGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
 
@@ -750,10 +751,10 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.sink.ClearGoal(false)
 
 	if sessionID == "" {
-		return "", false
+		return "", fmt.Errorf("the new ZCode session has no ID")
 	}
 	a.sink.UpdateSessionID(sessionID)
-	return sessionID, true
+	return sessionID, subscribeErr
 }
 
 // currentZCodeContextWindow returns the context window to label usage with,

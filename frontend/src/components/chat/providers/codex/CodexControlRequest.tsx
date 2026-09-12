@@ -8,8 +8,10 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
+import { ControlJson } from '../../controls/ControlJson'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
+import { PlanApprovalContent } from '../../controls/PlanApprovalContent'
 import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from '../../controls/types'
 import {
   ALLOW_AS_LABEL,
@@ -62,13 +64,13 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
             </div>
           </Show>
           <Show when={method() === 'item/permissions/requestApproval'}>
-            <CollapsibleText text={JSON.stringify(permissions(), null, 2)} maxLines={6} class={styles.bannerCodeBlock} />
+            <ControlJson value={permissions()} />
           </Show>
         </>
       )}
     >
       <Match when={toolName() === 'CodexPlanModePrompt'}>
-        <div class={styles.controlBannerTitle}>Implement the proposed plan?</div>
+        <PlanApprovalContent />
       </Match>
     </Switch>
   )
@@ -77,12 +79,10 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
   const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
-  // A saved key the offered pair no longer holds clamps to Once, which is the
-  // narrowest grant. A wider one must be chosen, never inherited.
+  // An unavailable saved choice resets to Once. A wider grant requires a new user choice.
   const selectedScope = (): 'turn' | 'session' =>
     (allowChoice.choice() === 'session' ? 'session' : 'turn')
-  // A memo, like its sibling in `CodexControlActions`: the footer reads the
-  // accessor twice per pass (once for `leadingOptions`, once for the `Show`).
+  // The footer reads this value for both its leading controls and their visibility check.
   const allowChoicePill = createMemo<ControlAllowChoicePill>(() => ({
     label: ALLOW_AS_LABEL,
     options: CODEX_PERMISSION_SCOPE_OPTIONS,
@@ -144,9 +144,8 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
 }
 
 /**
- * One decision as a footer action, or nothing when Codex offered that polarity
- * no decision at all. The footer then draws no button, rather than one that
- * sends a token the request never carried.
+ * Create a footer action only when Codex offers the decision.
+ * The footer must not send a decision token absent from the request.
  */
 function codexAction(
   decision: CodexDecision | undefined,
@@ -167,9 +166,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const allowChoice = createControlChoice(() => props.answerState, CONTROL_ALLOW_CHOICE_ID)
   const permissionChoice = createSessionPermissionPresetChoice(props)
 
-  // A saved key the live payload no longer offers clamps to the first pill,
-  // which `codexAllowChoices` guarantees is Codex's one-turn `accept`. Never to
-  // a remembering decision: a grant that outlives the turn must be chosen.
+  // An unavailable saved choice resets to the first pill: the approval for this turn.
+  // A grant that lasts beyond the turn requires a new user choice.
   const selectedAllowChoice = createMemo(() => {
     const allow = decisions().allowChoices
     if (!allow)
@@ -195,9 +193,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     decision,
   )
 
-  // The pill's decision when a group renders, else the one allow decision the
-  // request carried -- which `codexAction` already proved present, because it
-  // draws no button without it.
+  // Use the selected pill or the request's single approval decision.
+  // codexAction omits the button when the request offers no approval.
   const handleAllow = (positive: CodexDecision) => respondThenApplyPermissionPreset(
     handleDecision(selectedAllowChoice()?.decision ?? positive),
     props.presets,
@@ -218,7 +215,6 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
             label: codexDecisionLabel(decision),
             testId: `control-decision-${codexDecisionKey(decision)}`,
             onSelect: () => handleDecision(decision),
-            outline: decision === 'decline' || decision === 'cancel',
           }))}
         />
       )}

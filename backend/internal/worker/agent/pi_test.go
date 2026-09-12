@@ -391,11 +391,7 @@ func TestPi_ApplySessionStats_SkipsStaleResponses(t *testing.T) {
 		usageGeneration:    2,
 	}
 
-	applied := a.applyPiSessionStats(piUsageSnapshot{
-		TotalCostUsd: 0.42,
-		HasTotalCost: true,
-		ContextUsage: map[string]any{"context_tokens": int64(50)},
-	}, 1)
+	_, applied := a.applyPiSessionStats(piSessionStats{Cost: 0.42}, 1, "")
 
 	assert.False(t, applied)
 	a.mu.Lock()
@@ -754,8 +750,8 @@ func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
 	rig.agent.sessionCostUsd = 1.23
 	rig.agent.sessionCostKnown = true
 	rig.agent.latestContextUsage = map[string]any{"input_tokens": int64(100)}
-	id, ok := rig.agent.ClearContext()
-	assert.True(t, ok, "ClearContext should report success")
+	id, clearErr := rig.agent.ClearContext()
+	assert.NoError(t, clearErr, "ClearContext should report success")
 	assert.Equal(t, "/tmp/pi-new.jsonl", id, "returns the new sessionFile path")
 
 	// Confirm both RPCs were issued in order.
@@ -776,6 +772,98 @@ func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
 	assert.Equal(t, 0.0, rig.agent.sessionCostUsd)
 	assert.Nil(t, rig.agent.latestContextUsage)
 	assert.Contains(t, sink.sessionIDs, "/tmp/pi-new.jsonl")
+}
+
+func TestPiClearContextPreservesTheSessionWhenCancelled(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	rig := newPiTestRig(t, sink)
+	rig.agent.currentTurnActive = true
+	rig.agent.sessionCostKnown = true
+	rig.agent.sessionCostUsd = 4
+	originalSession := rig.agent.sessionFile
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == "new_session" {
+			return json.RawMessage(`{"cancelled":true}`), true, ""
+		}
+		return json.RawMessage(`{"sessionId":"same-session"}`), true, ""
+	})
+	_, clearErr := rig.agent.ClearContext()
+	assert.ErrorIs(t, clearErr, ErrContextClearCancelled)
+	assert.Len(t, rig.requests(), 1)
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, originalSession, rig.agent.sessionFile)
+	assert.True(t, rig.agent.currentTurnActive)
+	assert.True(t, rig.agent.sessionCostKnown)
+	assert.Equal(t, float64(4), rig.agent.sessionCostUsd)
+}
+
+func TestPiAgentStartRecoversAnExtensionSessionReplacement(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	rig := newPiTestRig(t, sink)
+	rig.agent.mu.Lock()
+	rig.agent.sessionID = "old-session"
+	rig.agent.mu.Unlock()
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type != PiCommandGetSessionStats {
+			return nil, false, "Unexpected command"
+		}
+		return json.RawMessage(`{"sessionId":"new-session","sessionFile":"/project/new-session.jsonl","cost":2}`), true, ""
+	})
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	require.Eventually(t, func() bool { return sink.LastSessionID() == "/project/new-session.jsonl" }, time.Second, time.Millisecond)
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, "new-session", rig.agent.sessionID)
+	assert.True(t, rig.agent.currentTurnActive)
+}
+
+func TestPiSessionStatsRecoverTheNativeSessionIdentity(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	rig := newPiTestRig(t, sink)
+	rig.agent.mu.Lock()
+	rig.agent.sessionID = "old-session"
+	rig.agent.mu.Unlock()
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		return json.RawMessage(`{"sessionId":"new-session","sessionFile":"/project/new-session.jsonl","cost":2}`), true, ""
+	})
+	_, ok := rig.agent.refreshPiSessionStats(time.Second)
+	require.True(t, ok)
+	assert.Equal(t, "/project/new-session.jsonl", sink.LastSessionID())
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, "new-session", rig.agent.sessionID)
+}
+
+func TestPiSessionStatsCannotRestoreAReplacedSession(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := &PiAgent{sink: sink, sessionID: "new-session", sessionFile: "/project/new.jsonl", sessionCostUsd: 3}
+	_, applied := a.applyPiSessionStats(piSessionStats{SessionID: "old-session", SessionFile: "/project/old.jsonl", Cost: 9}, 0, "old-session")
+	assert.False(t, applied)
+	assert.Equal(t, "new-session", a.sessionID)
+	assert.Equal(t, float64(3), a.sessionCostUsd)
+	assert.Zero(t, sink.SessionIDCount())
+}
+
+func TestPiExtensionCommandPublishesIdleBeforeSendReturns(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	rig := newPiTestRig(t, sink)
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == PiCommandGetCommands {
+			return json.RawMessage(`{"commands":[{"name":"plan","source":"extension"}]}`), true, ""
+		}
+		return nil, true, ""
+	})
+	rig.agent.refreshPiCommands(time.Second)
+	require.NoError(t, rig.agent.SendInput("/plan start", nil))
+	active, observed := sink.LastTurnActive()
+	assert.True(t, observed, "the queue needs a completion signal for an extension command")
+	assert.False(t, active)
 }
 
 func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {

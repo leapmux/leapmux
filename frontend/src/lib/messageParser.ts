@@ -1,7 +1,7 @@
-import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { CONTEXT_USAGE_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
-import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { MESSAGE_SUPPLEMENT_FIELD, NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 
@@ -20,6 +20,16 @@ import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pic
 export interface ParsedMessageContent {
   /** The raw decompressed text (for "Copy Raw JSON"). */
   rawText: string
+  /** The compressed original could not be decoded. Its bytes remain on the message. */
+  contentDecodeFailed?: boolean
+  /** Completion belongs to LeapMux, outside the provider payload. */
+  completion?: MessageCompletion
+  /** LeapMux data from a separate field. The provider payload remains unchanged. */
+  supplementalContent?: unknown
+  /** Worker-calculated metadata uses its own schema, separate from recovered provider data. */
+  messageMetadata?: unknown
+  /** Decoded supplemental text for the Raw JSON view, including invalid JSON. */
+  supplementalRawText?: string
   /** The top-level parsed JSON object, or null on parse failure. */
   topLevel: Record<string, unknown> | null
   /** The first (parent) inner message object, or undefined. */
@@ -56,7 +66,27 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
   const cached = parseCache.get(message)
   if (cached)
     return cached
-  const result = parseMessageContentImpl(message)
+  let result = parseMessageContentImpl(message)
+  if (message.supplementalContent?.length) {
+    const text = readMessageText(message.supplementalContent, message.supplementalContentCompression)
+    if (text !== null) {
+      let supplementalContent: unknown
+      try {
+        supplementalContent = JSON.parse(text)
+      }
+      catch {
+        // Invalid supplemental JSON must not prevent the original message from rendering.
+      }
+      result = {
+        ...result,
+        supplementalContent: isObject(supplementalContent) ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined,
+        messageMetadata: isObject(supplementalContent) ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Metadata] : undefined,
+        supplementalRawText: text,
+      }
+    }
+  }
+  if (message.completion)
+    result = { ...result, completion: message.completion }
   parseCache.set(message, result)
   return result
 }
@@ -73,9 +103,9 @@ export function invalidateMessageParseCache(message: AgentChatMessage): void {
 }
 
 function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageContent {
-  const text = decompressContentToString(message.content, message.contentCompression)
+  const text = readMessageText(message.content, message.contentCompression)
   if (text === null)
-    return EMPTY_PARSED
+    return { ...EMPTY_PARSED, contentDecodeFailed: true }
 
   try {
     const obj = JSON.parse(text)
@@ -111,6 +141,16 @@ function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageConten
   }
   catch {
     return { rawText: text, topLevel: null, parentObject: undefined, wrapper: null }
+  }
+}
+
+function readMessageText(content: Uint8Array, compression: AgentChatMessage['contentCompression']): string | null {
+  try {
+    return decompressContentToString(content, compression)
+  }
+  catch {
+    // A damaged compressed field must not hide the other message fields.
+    return null
   }
 }
 

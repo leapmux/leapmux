@@ -5,15 +5,27 @@ import { createMemo, For, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { AgentResultBody } from '../../../results/agentResult'
 import { CommandResultBody } from '../../../results/commandResult'
+import { DirectoryResultBody } from '../../../results/directoryResult'
 import { FileEditDiffBody, fileEditHasDiff } from '../../../results/fileEditDiff'
 import { ImageResultList } from '../../../results/imageResult'
+import { McpToolMessage } from '../../../results/McpToolMessage'
 import { ReadFileResultBody } from '../../../results/readFileResult'
+import { SearchResultBody } from '../../../results/searchResult'
+import { ToolResultMessage } from '../../../toolRenderers'
 import { toolResultContentPre } from '../../../toolStyles.css'
-import { extractPiBash, piBashToCommandSource } from '../extractors/bash'
+import { extractPiCommand, piCommandSource } from '../extractors/command'
+import { piSubagentNotificationSources } from '../extractors/customMessage'
 import { extractPiEdit, extractPiRead, extractPiWrite, resolvePiResultDiff } from '../extractors/fileEdit'
+import { piGenericToolSource } from '../extractors/generic'
 import { piToolResultImages } from '../extractors/image'
-import { piExtractTool } from '../extractors/toolCommon'
+import { extractPiSearch } from '../extractors/search'
+import { piExtractTool, piPairedRequest } from '../extractors/toolCommon'
+import { PI_AGENT_TOOL, PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from '../protocol'
+import { PiAgentResult } from './agent'
+import { PiPlanResult } from './plan'
+import { PiTodoResult } from './todo'
 
 interface RendererProps {
   parsed: unknown
@@ -28,18 +40,17 @@ type ToolResultRenderer = Component<ToolResultProps>
 
 /**
  * Resolve `args` from the matching `tool_execution_start` payload, which
- * the chat store wires through `context.toolUseParsed`. Pi's
+ * the chat store wires through `context.sources?.request()`. Pi's
  * `tool_execution_end` event itself carries no args, so result renderers
  * that need the original input (e.g. Read needs `filePath` for syntax
  * highlighting) reach back into the start.
  */
-function startArgsFor(context: RenderContext | undefined): Record<string, unknown> {
-  return pickObject(context?.toolUseParsed?.parentObject, 'args') ?? {}
+function startArgsFor(payload: Record<string, unknown>, context: RenderContext | undefined): Record<string, unknown> {
+  return pickObject(startPayloadFor(payload, context), 'args') ?? {}
 }
 
-function startPayloadFor(context: RenderContext | undefined): Record<string, unknown> | null {
-  const payload = context?.toolUseParsed?.parentObject
-  return isObject(payload) ? payload : null
+function startPayloadFor(payload: Record<string, unknown>, context: RenderContext | undefined): Record<string, unknown> | null {
+  return piPairedRequest(payload, context?.sources?.request())?.parentObject ?? null
 }
 
 function renderDiffSources(sources: FileEditDiffSource[], context: RenderContext | undefined): JSX.Element {
@@ -51,16 +62,16 @@ function renderDiffSources(sources: FileEditDiffSource[], context: RenderContext
 }
 
 function PiBashResult(props: { payload: Record<string, unknown>, context?: RenderContext }): JSX.Element {
-  const bash = createMemo(() => extractPiBash(props.payload))
+  const bash = createMemo(() => extractPiCommand(props.payload))
   return (
     <Show when={bash()}>
-      {b => <CommandResultBody source={piBashToCommandSource(b())} context={props.context} />}
+      {b => <CommandResultBody source={piCommandSource(b())} context={props.context} />}
     </Show>
   )
 }
 
 function PiReadResult(props: { payload: Record<string, unknown>, context?: RenderContext }): JSX.Element {
-  const read = createMemo(() => extractPiRead(props.payload, startArgsFor(props.context)))
+  const read = createMemo(() => extractPiRead(props.payload, startArgsFor(props.payload, props.context)))
   return (
     <Show when={read()}>
       {r => <ReadFileResultBody source={r().source} context={props.context} />}
@@ -68,18 +79,26 @@ function PiReadResult(props: { payload: Record<string, unknown>, context?: Rende
   )
 }
 
-/**
- * Generic Pi tool-result body — renders the result text in a preformatted
- * block. Used for grep/find/ls (search output) and any unknown tool.
- * Returns null when the result text is empty.
- */
-function PiGenericResult(props: { payload: Record<string, unknown> }): JSX.Element {
-  const text = createMemo(() => piExtractTool(props.payload)?.result?.text ?? '')
+function PiSearchResult(props: ToolResultProps): JSX.Element {
+  const source = createMemo(() => extractPiSearch(props.payload))
   return (
-    <Show when={text()}>
-      <pre class={toolResultContentPre}>{text()}</pre>
+    <Show when={source()}>
+      {value => (
+        <Show when={piExtractTool(props.payload)?.toolName === PI_SEARCH_TOOL.List} fallback={<SearchResultBody source={value()} context={props.context} />}>
+          <DirectoryResultBody source={{ entries: value().filenames.map(path => ({ path })), truncated: value().truncated, notice: value().notice }} context={props.context} />
+        </Show>
+      )}
     </Show>
   )
+}
+
+/**
+ * Render unknown Pi tools with the shared rich-content component.
+ * Preserve structured details and non-text content on errors.
+ */
+function PiGenericResult(props: ToolResultProps): JSX.Element {
+  const source = createMemo(() => piGenericToolSource(props.payload, props.context?.sources?.request()))
+  return <Show when={source()}>{value => <McpToolMessage source={value()} role="result" hasRequest={!!startPayloadFor(props.payload, props.context)} context={props.context} />}</Show>
 }
 
 /**
@@ -103,14 +122,14 @@ function PiDiffToolResult(props: {
   const isError = createMemo(() => tool()?.isError === true)
   const resultDiff = createMemo(() => isError()
     ? { source: null, rawDiff: '' }
-    : resolvePiResultDiff(props.payload, startArgsFor(props.context)))
+    : resolvePiResultDiff(props.payload, startArgsFor(props.payload, props.context)))
   const sources = createMemo(() => {
     const resultSource = resultDiff().source
     if (resultSource)
       return [resultSource]
     if (isError() || resultDiff().rawDiff)
       return []
-    return props.fallbackSources(startPayloadFor(props.context))
+    return props.fallbackSources(startPayloadFor(props.payload, props.context))
   })
   const fallbackText = createMemo(() => isError()
     ? (tool()?.result?.text ?? '')
@@ -148,42 +167,59 @@ const PiWriteResult: ToolResultRenderer = props => (
   />
 )
 
-/**
- * Per-tool result-body renderer. Pi's `tool_execution_end` carries
- * `{toolCallId, toolName, result, isError}` — no args. The matching
- * `tool_execution_start` (with args) is already shown in its own bubble;
- * this layer only renders the output. Unknown tools fall through to the
- * generic preformatted-text result.
- */
-const TOOL_RESULT_RENDERERS: Record<string, ToolResultRenderer> = {
-  [PI_TOOL.Bash]: PiBashResult,
-  [PI_TOOL.Read]: PiReadResult,
-  [PI_TOOL.Edit]: PiEditResult,
-  [PI_TOOL.Write]: PiWriteResult,
+/** Each result selects one renderer for its images and errors. */
+interface ToolResultPresentation {
+  component: ToolResultRenderer
+  images: 'shared' | 'body'
+  errors: 'shared' | 'body'
 }
 
-const FallbackToolResultRenderer: ToolResultRenderer = props => <PiGenericResult payload={props.payload} />
+const TOOL_RESULT_RENDERERS = new Map<string, ToolResultPresentation>([
+  [PI_TOOL.PlanComplete, { component: PiPlanResult, images: 'shared', errors: 'shared' }],
+  [PI_TOOL.Agent, { component: PiAgentResult, images: 'shared', errors: 'body' }],
+  [PI_TOOL.Todo, { component: PiTodoResult, images: 'body', errors: 'body' }],
+  [PI_TOOL.SubagentWorkflow, { component: PiAgentResult, images: 'shared', errors: 'body' }],
+  [PI_AGENT_TOOL.GetResult, { component: PiAgentResult, images: 'shared', errors: 'body' }],
+  [PI_AGENT_TOOL.Steer, { component: PiAgentResult, images: 'shared', errors: 'body' }],
+  [PI_TOOL.Bash, { component: PiBashResult, images: 'shared', errors: 'body' }],
+  [PI_POWERSHELL_TOOL, { component: PiBashResult, images: 'shared', errors: 'body' }],
+  [PI_TOOL.Read, { component: PiReadResult, images: 'shared', errors: 'shared' }],
+  [PI_TOOL.Edit, { component: PiEditResult, images: 'shared', errors: 'shared' }],
+  [PI_TOOL.Write, { component: PiWriteResult, images: 'shared', errors: 'shared' }],
+  [PI_SEARCH_TOOL.Grep, { component: PiSearchResult, images: 'shared', errors: 'shared' }],
+  [PI_SEARCH_TOOL.Find, { component: PiSearchResult, images: 'shared', errors: 'shared' }],
+  [PI_SEARCH_TOOL.List, { component: PiSearchResult, images: 'shared', errors: 'shared' }],
+])
+
+const FALLBACK_TOOL_RESULT: ToolResultPresentation = { component: PiGenericResult, images: 'body', errors: 'body' }
 
 export function PiToolResultRenderer(props: RendererProps): JSX.Element {
   const payload = createMemo(() => isObject(props.parsed) ? props.parsed : null)
   const toolName = createMemo(() => pickString(payload() ?? {}, 'toolName'))
-  // Mounted once for every tool rather than inside the per-tool renderers: a
-  // `read` on a PNG returns an image and no cat-n lines (so `PiReadResult`
-  // renders nothing), and any MCP-backed tool can return one.
-  const images = createMemo(() => piToolResultImages(payload(), undefined, props.context?.toolUseParsed))
+  const tool = createMemo(() => piExtractTool(payload()))
+  const notifications = createMemo(() => payload() ? piSubagentNotificationSources(payload()!) : null)
+  const presentation = createMemo(() => TOOL_RESULT_RENDERERS.get(toolName()) ?? FALLBACK_TOOL_RESULT)
+  const sharedError = () => tool()?.isError && presentation().errors === 'shared'
+  // Rich bodies render their own images. The shared error fallback keeps all images.
+  const images = createMemo(() => sharedError() || presentation().images === 'shared' ? piToolResultImages(payload(), undefined, props.context?.sources?.request()) : [])
   return (
     <Show when={payload()}>
       {p => (
-        <>
-          <Dynamic
-            component={TOOL_RESULT_RENDERERS[toolName()] ?? FallbackToolResultRenderer}
-            payload={p()}
-            context={props.context}
-          />
+        <Show when={!notifications()} fallback={<For each={notifications()}>{source => <AgentResultBody source={source} context={props.context} />}</For>}>
+          <Show
+            when={!sharedError()}
+            fallback={<ToolResultMessage resultContent={tool()?.result?.text ?? ''} isError context={props.context} />}
+          >
+            <Dynamic
+              component={presentation().component}
+              payload={p()}
+              context={props.context}
+            />
+          </Show>
           <Show when={images().length > 0}>
             <ImageResultList sources={images()} title={toolName()} context={props.context} />
           </Show>
-        </>
+        </Show>
       )}
     </Show>
   )

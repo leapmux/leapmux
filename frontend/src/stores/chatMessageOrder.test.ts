@@ -17,6 +17,17 @@ function msg(id: string, seq: bigint, spanId = '') {
 const ids = (list: { id: string }[]) => list.map(message => message.id)
 
 describe('chatMessageOrder', () => {
+  it.each(['older', 'newer'] as const)('accepts newer supplements in an overlapping %s page', (side) => {
+    const original = create(AgentChatMessageSchema, { id: 'target', seq: 4n, supplementalRevision: 1n })
+    const enriched = create(AgentChatMessageSchema, { ...original, supplementalRevision: 9007199254740993n })
+    const previous = [msg('kept', 3n), original]
+    const merged = mergeWindow(previous, [enriched], side)
+    expect(ids(merged)).toEqual(['kept', 'target'])
+    expect(merged[1]).toBe(enriched)
+    expect(original.supplementalRevision).toBe(1n)
+    expect(mergeWindow(merged, [original], side)).toBe(merged)
+  })
+
   it('reads the edge sequences of a window', () => {
     const messages = [msg('a', 1n), msg('b', 2n)]
     expect(firstMessageSeq(messages)).toBe(1n)

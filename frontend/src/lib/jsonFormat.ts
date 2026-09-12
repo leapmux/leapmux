@@ -1,13 +1,20 @@
 import { Formatter, FracturedJsonOptions } from 'fracturedjsonjs'
 
-const formatter = new Formatter()
-const fmtOpts = new FracturedJsonOptions()
-fmtOpts.MaxTotalLineLength = 80
-fmtOpts.MaxInlineComplexity = 1
-formatter.Options = fmtOpts
+export const DEFAULT_JSON_LINE_LENGTH = 80
+
+function createFormatter(lineLength: number): Formatter {
+  const formatter = new Formatter()
+  const options = new FracturedJsonOptions()
+  options.MaxTotalLineLength = lineLength
+  options.MaxInlineComplexity = 1
+  formatter.Options = options
+  return formatter
+}
+
+const formatter = createFormatter(DEFAULT_JSON_LINE_LENGTH)
 
 /** Pretty-print JSON text or a plain JS value using FracturedJson when possible. */
-export function prettifyJson(input: unknown): string {
+export function prettifyJson(input: unknown, lineLength = DEFAULT_JSON_LINE_LENGTH): string {
   const raw = typeof input === 'string'
     ? input
     : JSON.stringify(input)
@@ -16,7 +23,9 @@ export function prettifyJson(input: unknown): string {
     return String(input)
 
   try {
-    return formatter.Reformat(raw)
+    const columns = Number.isFinite(lineLength) && lineLength >= 1 ? Math.floor(lineLength) : DEFAULT_JSON_LINE_LENGTH
+    const selected = columns === DEFAULT_JSON_LINE_LENGTH ? formatter : createFormatter(columns)
+    return selected.Reformat(raw)
   }
   catch {
     return raw
@@ -28,14 +37,14 @@ export function prettifyJson(input: unknown): string {
  * empty objects. Used by MCP extractors so that an absent or `{}` `arguments`
  * field renders as no body rather than as a literal empty `{}`.
  */
-export function prettifyArgsJson(args: unknown): string {
+export function prettifyArgsJson(args: unknown, lineLength?: number): string {
   if (args === undefined || args === null)
     return ''
   if (typeof args === 'object' && !Array.isArray(args)
     && Object.keys(args as Record<string, unknown>).length === 0) {
     return ''
   }
-  return prettifyJson(args)
+  return prettifyJson(args, lineLength)
 }
 
 /**

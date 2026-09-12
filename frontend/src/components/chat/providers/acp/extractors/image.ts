@@ -1,8 +1,10 @@
+import type { ToolMessageInput } from '../../registry'
+import type { ACPToolAdapter } from '../toolPresentation'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickFirstString, pickObject } from '~/lib/jsonPick'
-import { ACP_FILE_PATH_KEYS, flattenAcpContent } from '../rendering'
+import { ACP_FILE_PATH_KEYS, flattenAcpContent } from '../content'
+import { acpToolPresentation, resolveACPToolCall } from '../toolPresentation'
 
 /**
  * Every image an ACP tool call carries, in wire order.
@@ -34,12 +36,17 @@ export function acpImagesFromToolCall(toolUse: Record<string, unknown> | null | 
 
 /** `Provider.toolResultImages` for every ACP-based provider. */
 export function acpToolResultImages(
-  parsed: unknown,
-  _spanType: string | undefined,
-  _toolUseParsed: ParsedMessageContent | undefined,
+  input: ToolMessageInput,
+  adapter?: ACPToolAdapter,
 ): ImageResultSource[] {
+  const parsed = input.parsed.parentObject
   if (!isObject(parsed))
     return []
   // An ACP row is the `session/update` params: the tool call IS the message.
-  return acpImagesFromToolCall(parsed)
+  const tool = resolveACPToolCall(parsed, input.request?.parentObject)
+  const presentation = acpToolPresentation(tool, adapter, input.parsed.supplementalContent, input.parsed.completion)
+  const body = presentation.body
+  return body.type === 'mcp'
+    ? body.source.content.flatMap(item => item.type === 'image' ? [item.source] : [])
+    : acpImagesFromToolCall({ ...tool, rawInput: presentation.input })
 }

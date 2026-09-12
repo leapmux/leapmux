@@ -74,10 +74,7 @@ func TestPersistTurnEnd_BroadcastsTurnEndWithToolUses(t *testing.T) {
 
 	sink, mock := newTurnEndFixture(t)
 
-	require.NoError(t, sink.PersistTurnEnd(
-		[]byte(`{"type":"result","num_tool_uses":4}`),
-		agent.SpanInfo{},
-	))
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","num_tool_uses":4}`)}, agent.SpanInfo{}))
 
 	te := mock.lastTurnEnd()
 	require.NotNil(t, te)
@@ -90,10 +87,7 @@ func TestPersistTurnEnd_BroadcastsTurnEndWithoutToolUsesWhenAbsent(t *testing.T)
 
 	sink, mock := newTurnEndFixture(t)
 
-	require.NoError(t, sink.PersistTurnEnd(
-		[]byte(`{"type":"result","subtype":"success"}`),
-		agent.SpanInfo{},
-	))
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{}))
 
 	te := mock.lastTurnEnd()
 	require.NotNil(t, te)

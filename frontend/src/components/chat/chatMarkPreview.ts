@@ -1,8 +1,9 @@
+import type { MessageContextResolver } from './messageContextResolver'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { parseMessageContent } from '~/lib/messageParser'
 import { truncatePreview } from '~/lib/textTruncate'
-import { appendCompletionMarker, parseProviderMessageCompletion } from './assembledMessage'
+import { appendCompletionMarker, messageCompletionFromProto } from './assembledMessage'
 import { defaultMarkPreview } from './markPreviewShared'
 import { classifyAgentMessage } from './messageClassification'
 import { controlResponsePreviewText, parsePersistedControlResponse, resolveControlResponseDisplay } from './persistedControlResponse'
@@ -67,7 +68,7 @@ export function messageMarkPreviewText(message: AgentChatMessage): string | null
     const preview = previewText ? previewText(category, parsed) : defaultMarkPreview(category, parsed)
     if (preview === null)
       return null
-    return truncatePreview(appendCompletionMarker(preview, parseProviderMessageCompletion(parsed.parentObject)))
+    return truncatePreview(appendCompletionMarker(preview, messageCompletionFromProto(message.completion)))
   }
   catch (err) {
     console.warn('mark preview extraction failed', { id: message.id, err })
@@ -116,18 +117,6 @@ function setCachedMarkPreview(agentId: string, seq: bigint, preview: string): vo
   }))
 }
 
-export interface MarkPreviewDeps {
-  /** The loaded message at this seq, or undefined when it's outside the window. */
-  getLoadedMessageBySeq: (agentId: string, seq: bigint) => AgentChatMessage | undefined
-  /**
-   * Fetch a single message by seq. Resolves `undefined` ONLY for a definitive absence
-   * (no row at that seq -- deleted/reseq'd since the mark was recorded); REJECTS on a
-   * transient RPC failure. The two must stay distinguishable so warmMarkPreview caches
-   * '' for a real absence but retries a transient failure instead of poisoning the dot.
-   */
-  fetchMessageBySeq: (workerId: string, agentId: string, seq: bigint) => Promise<AgentChatMessage | undefined>
-}
-
 /**
  * Reactive read of a resolved preview: `undefined` until resolved, `''` when resolved
  * with no previewable text, otherwise the snippet. Tracks the cache so the tooltip
@@ -147,16 +136,16 @@ export function getCachedMarkPreview(agentId: string, seq: bigint): string | und
  * rejects) is deliberately left UNRESOLVED (no cache entry) so a later hover retries,
  * rather than poisoning the dot with a permanent empty preview for the rest of the session.
  */
-export function warmMarkPreview(workerId: string, agentId: string, seq: bigint, deps: MarkPreviewDeps): void {
+export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pick<MessageContextResolver, 'peek' | 'message'>): Promise<void> {
   if (seq <= 0n)
     return
   const k = cacheKey(agentId, seq)
   if (k in cache || inflight.has(k))
     return
 
-  const local = deps.getLoadedMessageBySeq(agentId, seq)
+  const local = messages.peek(seq)
   if (local) {
-    setCachedMarkPreview(agentId, seq, messageMarkPreviewText(local) ?? '')
+    setCachedMarkPreview(agentId, seq, messageMarkPreviewText(local.message) ?? '')
     return
   }
 
@@ -166,13 +155,13 @@ export function warmMarkPreview(workerId: string, agentId: string, seq: bigint, 
   // dropped by forget or superseded by a re-warm is a no-op, so it can neither re-leak an
   // entry for a closed agent nor clobber a fresher fetch's result.
   const isCurrent = () => inflight.get(k) === token
-  deps.fetchMessageBySeq(workerId, agentId, seq)
+  await messages.message(seq)
     .then((msg) => {
       // A resolved-undefined message is a DEFINITIVE absence (no row at this seq) --
       // cache '' so the rail shows a label without re-fetching. A REJECTION lands in
       // .catch below and is NOT cached, so a transient failure can be retried.
       if (isCurrent())
-        setCachedMarkPreview(agentId, seq, msg ? (messageMarkPreviewText(msg) ?? '') : '')
+        setCachedMarkPreview(agentId, seq, msg ? (messageMarkPreviewText(msg.message) ?? '') : '')
     })
     .catch(() => {
       // Transient fetch failure: leave the key UNRESOLVED (the finally drops the

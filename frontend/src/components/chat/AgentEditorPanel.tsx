@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { PermissionPresetController, ProviderSettingChangeHandler } from './providerSettings'
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
@@ -63,6 +64,7 @@ import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
 export interface AgentEditorPanelProps {
+  messageContext?: MessageContextResolver
   /** See `MarkdownEditorProps.suppressAutoFocus`. Forwarded unchanged. */
   suppressAutoFocus?: () => boolean
   agentId: string
@@ -385,6 +387,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         }
       },
       get controlRequests() { return props.controlRequests },
+      get messageContext() { return props.messageContext },
       get onControlResponse() { return props.onControlResponse },
       get onSettingChange() { return props.onSettingChange },
       get onSendMessage() { return props.onSendMessage },
@@ -711,7 +714,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),
               }
             : undefined}
-          placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
+          placeholder={ctrl.editorPlaceholder()}
           allowEmptySend={allowEmptySend()}
           // The keyed owner is what reacts in this slot. `createComponent`
           // untracks the element that this prop getter builds, so the editor's
@@ -727,6 +730,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
                 <ControlRequestContent
+                  messageContext={props.messageContext}
                   request={request}
                   answerState={answerState}
                   optionsDisabled={hasContent()}
@@ -785,12 +789,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </div>
                       <ControlRequestActions
                         request={request}
+                        messageContext={props.messageContext}
                         answerState={answerState}
                         agentProvider={props.agent?.agentProvider}
-                        onRespond={(content) => {
-                          ctrl.finishAnswer(request)
-                          return ctrl.respondTo(request)(content)
-                        }}
+                        onRespond={ctrl.respondTo(request)}
                         hasEditorContent={hasContent()}
                         onTriggerSend={() => { void triggerSend?.() }}
                         editorContentRef={() => editorContentRef}

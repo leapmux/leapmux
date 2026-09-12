@@ -7,6 +7,25 @@ import { SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 
 describe('controlDecisionFooter', () => {
+  it('keeps additional decisions in an accessible menu', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        positiveAction={{ label: 'Approve', testId: 'approve', onSelect: vi.fn() }}
+        additionalActions={() => [{ label: 'Export plan', testId: 'export-plan', onSelect }]}
+      />
+    ))
+    const trigger = screen.getByRole('button', { name: 'More actions' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export plan', hidden: true }))
+    expect(onSelect).toHaveBeenCalledOnce()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('keeps switch focus when its checked state changes', () => {
     const [checked, setChecked] = createSignal(false)
     render(() => (
@@ -33,16 +52,15 @@ describe('controlDecisionFooter', () => {
     expect(document.activeElement).toBe(input)
   })
 
-  it('draws every decision at the small row metrics', () => {
-    // The row mixes a switch, a pill group and these buttons. One size for all
-    // three is the reason the buttons carry the shared compact style.
+  it('keeps primary decisions compact and puts additional decisions in the menu', () => {
+    // Switches, pill groups, and decision buttons use the same compact size.
     render(() => (
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
         negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
         positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
-        additionalActions={() => [{ label: 'Allow all', testId: 'allow-all', onSelect: vi.fn(), outline: true }]}
+        additionalActions={() => [{ label: 'Allow all', testId: 'allow-all', onSelect: vi.fn() }]}
       />
     ))
 
@@ -50,7 +68,11 @@ describe('controlDecisionFooter', () => {
     expect(screen.getByTestId('deny')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('allow')).toHaveClass(compactControl)
     expect(screen.getByTestId('allow')).not.toHaveClass('outline')
-    expect(screen.getByTestId('allow-all')).toHaveClass('outline', compactControl)
+    const more = screen.getByTestId('control-more-actions')
+    expect(more).toHaveAccessibleName('More actions')
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+    expect(more.compareDocumentPosition(screen.getByTestId('deny')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByTestId('deny').compareDocumentPosition(screen.getByTestId('allow')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('keeps the feedback action at the same metrics', () => {
@@ -122,9 +144,7 @@ describe('controlDecisionFooter', () => {
     expect(onSelect).toHaveBeenCalledWith('session')
   })
 
-  // The order runs from what this request grants to what the session keeps. It
-  // lives in the JSX alone, so without this a reorder changes the reading order
-  // of every Codex and ACP approval row and nothing fails.
+  // Request choices precede session permissions in every provider's approval row.
   it('renders the leading cluster in one order', () => {
     render(() => (
       <ControlDecisionFooter

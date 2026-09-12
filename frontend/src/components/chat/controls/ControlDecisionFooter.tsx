@@ -4,6 +4,8 @@ import type { ControlPermissionPill } from './permissionPresets'
 
 import { For, Index, Show } from 'solid-js'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
+import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import * as styles from '../ControlRequestBanner.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
@@ -29,10 +31,8 @@ export const ControlDecisionFooter: Component<{
   hasEditorContent: boolean
   onSendFeedback: () => void
   /**
-   * The refusal. OMIT it only when the provider offered no way to refuse: the
-   * slot then draws nothing, rather than a button that sends a decision the
-   * request never carried. `hasEditorContent` still turns the slot into Send
-   * feedback, which needs no decision of its own.
+   * Omit the refusal only when the provider offers no refusal decision.
+   * Editor content replaces this action with Send feedback, which needs no provider decision.
    */
   negativeAction?: ControlDecisionAction
   /** The approval. Omit it when the provider offered no way to approve. */
@@ -46,11 +46,8 @@ export const ControlDecisionFooter: Component<{
 }> = (props) => {
   const switches = () => props.switches?.() ?? []
   const additionalActions = () => props.additionalActions?.() ?? []
-  // One leading cluster -- [switches][allow-choice pill][permission pill] -- so
-  // the row reads as options followed by decisions. Each pill is button-high, so
-  // the pills share the row with the switches instead of stacking above them.
-  // The order runs from what this request grants to what the session keeps, and
-  // `controlDecisionFooter renders the leading cluster in one order` pins it.
+  // Options precede decisions on one row: switches, request choices, then session permissions.
+  // The leading-controls test checks this order for every provider.
   const leadingOptions = () => switches().length > 0 || !!props.allowChoicePill?.() || !!props.permissionPill?.()
 
   return (
@@ -82,6 +79,17 @@ export const ControlDecisionFooter: Component<{
       )}
       primary={(
         <>
+          <Show when={!props.hasEditorContent && additionalActions().length}>
+            <DropdownMenu trigger={moreHorizontalTrigger({ 'title': 'More actions', 'data-testid': 'control-more-actions' })} aria-label="More actions">
+              <For each={additionalActions()}>
+                {decision => (
+                  <button type="button" role="menuitem" onClick={decision.onSelect} data-testid={decision.testId}>
+                    {decision.label}
+                  </button>
+                )}
+              </For>
+            </DropdownMenu>
+          </Show>
           <Show when={props.hasEditorContent || props.negativeAction}>
             <button
               class={actionButtonClass(true)}
@@ -104,17 +112,6 @@ export const ControlDecisionFooter: Component<{
                 </button>
               )}
             </Show>
-            <For each={additionalActions()}>
-              {decision => (
-                <button
-                  class={actionButtonClass(decision.outline)}
-                  onClick={decision.onSelect}
-                  data-testid={decision.testId}
-                >
-                  {decision.label}
-                </button>
-              )}
-            </For>
           </Show>
         </>
       )}

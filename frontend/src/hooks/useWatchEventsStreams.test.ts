@@ -142,6 +142,60 @@ describe('useWatchEventsStreams', () => {
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
   })
 
+  it.each([WatchMode.FULL, WatchMode.NOTIFY])('keeps mode %s when an opposite change is cancelled before transmission', async (initial) => {
+    const opposite = initial === WatchMode.FULL ? WatchMode.NOTIFY : WatchMode.FULL
+    const [mode, setMode] = createSignal(initial)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    await flush()
+    const handle = handles[0]!
+    handle._emit({
+      event: { case: 'updateAck', value: { updateId: 1n, rejectedAgents: [], rejectedTerminals: [] } },
+    } as unknown as WatchEventsResponse)
+    setMode(opposite)
+    setMode(initial)
+    await flush()
+    expect(handle.update).not.toHaveBeenCalled()
+    expect(handle.close).not.toHaveBeenCalled()
+    expect(watchEventsViaChannel).toHaveBeenCalledOnce()
+  })
+
+  it.each([WatchMode.FULL, WatchMode.NOTIFY])('restores mode %s while an opposite revision awaits acknowledgment', async (initial) => {
+    const opposite = initial === WatchMode.FULL ? WatchMode.NOTIFY : WatchMode.FULL
+    const [mode, setMode] = createSignal(initial)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    await flush()
+    const handle = handles[0]!
+    const acknowledge = (updateId: bigint) => handle._emit({
+      event: { case: 'updateAck', value: { updateId, rejectedAgents: [], rejectedTerminals: [] } },
+    } as unknown as WatchEventsResponse)
+    acknowledge(1n)
+    setMode(opposite)
+    await flush()
+    expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      updateId: 2n,
+      agents: [expect.objectContaining({ mode: opposite })],
+    }))
+    setMode(initial)
+    await flush()
+    expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      updateId: 3n,
+      agents: [expect.objectContaining({ mode: initial })],
+    }))
+    acknowledge(2n)
+    acknowledge(3n)
+    setMode(opposite)
+    await flush()
+    expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      updateId: 4n,
+      agents: [expect.objectContaining({ mode: opposite })],
+    }))
+    expect(watchEventsViaChannel).toHaveBeenCalledOnce()
+  })
+
   it('transport error marks worker offline and reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(

@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { prettifyArgsJson, prettifyJson } from './jsonFormat'
 
 describe('prettifyJson', () => {
+  it('formats JSON for a narrow control without changing its values', () => {
+    const input = '{"query":"answer","path":"sample.py","limit":20}'
+    const formatted = prettifyJson(input, 28)
+    expect(formatted.trim().split('\n').length).toBeGreaterThan(2)
+    expect(formatted.trim().split('\n').every(line => line.length <= 28)).toBe(true)
+    expect(JSON.parse(formatted)).toEqual(JSON.parse(input))
+    expect(prettifyJson(input).trim().split('\n')).toHaveLength(1)
+  })
+
   it('formats plain objects', () => {
     expect(prettifyJson({ a: 1, b: { c: true } })).toContain('{\n')
     expect(prettifyJson({ a: 1, b: { c: true } })).toContain('"a": 1')

@@ -155,7 +155,7 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		{"goose legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.ClaudeModeDefault, contracts.GooseModeSmartApprove},
 		{"goose explicit auto", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.GooseModeAuto, contracts.GooseModeAuto},
 		{"opencode no top-level default", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "", ""},
-		{"reasonix no permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", ""},
+		{"reasonix default mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", contracts.ReasonixModeNormal},
 		{"zcode empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "", contracts.ZCodeDefaultMode},
 		{"zcode explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, contracts.ZCodeModePlan, contracts.ZCodeModePlan},
 	}
@@ -311,11 +311,12 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(pi, PiOptionProvider))
 	assert.False(t, has(pi, OptionIDPermissionMode), "pi has no permission-mode axis")
 
-	// Reasonix's model is fixed at launch and it exposes no other axis.
+	// Reasonix advertises these runtime options.
 	reasonix := leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX
 	assert.True(t, has(reasonix, OptionIDModel))
-	assert.False(t, has(reasonix, OptionIDEffort))
-	assert.False(t, has(reasonix, OptionIDPermissionMode))
+	assert.True(t, has(reasonix, OptionIDEffort))
+	assert.True(t, has(reasonix, OptionIDPermissionMode))
+	assert.True(t, has(reasonix, contracts.ReasonixConfigToolApproval))
 	assert.False(t, has(reasonix, OptionIDPrimaryAgent))
 
 	// ZCode surfaces thought level under the well-known effort id, and its session
@@ -398,10 +399,10 @@ func TestPermissionDefaults(t *testing.T) {
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: CodexDefaultApprovalPolicy},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, wantFallback: contracts.ZCodeDefaultMode},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, wantFallback: CursorCLIModeAgent},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, wantFallback: contracts.ReasonixModeNormal},
 		// A provider with no permission-mode axis at all declares neither half, and the
 		// option is left unset rather than stamped with a value it cannot accept.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI},
-		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
 	}
 	for _, tc := range cases {

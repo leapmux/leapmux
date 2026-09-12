@@ -1,5 +1,6 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildDenyResponse } from '~/utils/controlResponse'
@@ -12,7 +13,7 @@ import './plugin'
 
 const plugin = providerFor(AgentProvider.ZCODE)!
 
-/** One persisted ZCode row: the session-event envelope, which is what a row IS. */
+/** Build a persisted native session event. */
 function event(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
   return { type, payload, sessionId: 's-1', seq: 1 }
 }
@@ -459,70 +460,50 @@ describe('zcode toolResultMeta', () => {
     toolEvent(ZCODE_TOOL_KIND.Result, { result, ...extra })
 
   it('returns null for a category that is not a tool result', () => {
-    expect(plugin.toolResultMeta!({ kind: 'assistant_text' }, resultRow({ content: 'x' }), ZCODE_TOOL.Bash, undefined))
+    expect(plugin.toolResultMeta!({ kind: 'assistant_text' }, toolMessageInput(resultRow({ content: 'x' }), ZCODE_TOOL.Bash, undefined)))
       .toBeNull()
   })
 
   it('returns null for a row that is not a tool.updated at all', () => {
-    expect(plugin.toolResultMeta!({ kind: 'tool_result' }, event(ZCODE_EVENT.TurnCompleted), ZCODE_TOOL.Bash, undefined))
+    expect(plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(event(ZCODE_EVENT.TurnCompleted), ZCODE_TOOL.Bash, undefined)))
       .toBeNull()
   })
 
   it('reads a Bash result through the command-output path', () => {
     const output = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven'
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({ content: output, perf: { detail: { kind: 'command', command: { exitCode: 0 } } } }),
-      ZCODE_TOOL.Bash,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({ content: output, perf: { detail: { kind: 'command', command: { exitCode: 0 } } } }), ZCODE_TOOL.Bash, undefined))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(output)
   })
 
   it('marks a short Bash result uncollapsible and uncopyable when it is empty', () => {
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({ content: '' }),
-      ZCODE_TOOL.Bash,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({ content: '' }), ZCODE_TOOL.Bash, undefined))
     expect(meta).toMatchObject({ collapsible: false, hasCopyable: false })
     expect(meta?.copyableContent()).toBeNull()
   })
 
   it('measures a Read result by its line count', () => {
     const numbered = Array.from({ length: 40 }, (_, i) => `${i + 1}\tline ${i + 1}`).join('\n')
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({ content: numbered }),
-      ZCODE_TOOL.Read,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({ content: numbered }), ZCODE_TOOL.Read, undefined))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
-    expect(meta?.copyableContent()).toBe(numbered)
+    expect(meta?.copyableContent()).toBe(Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n'))
   })
 
   it('exposes the structured patch of an Edit result as a diff', () => {
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({
-        content: 'Edited.',
-        display: {
-          kind: 'file_diff',
-          filePath: '/tmp/a.ts',
-          structuredPatch: [{
-            oldStart: 1,
-            oldLines: 1,
-            newStart: 1,
-            newLines: 1,
-            lines: ['-zcodeMetaOld', '+zcodeMetaNew'],
-          }],
-        },
-      }),
-      ZCODE_TOOL.Edit,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({
+      content: 'Edited.',
+      display: {
+        kind: 'file_diff',
+        filePath: '/tmp/a.ts',
+        structuredPatch: [{
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-zcodeMetaOld', '+zcodeMetaNew'],
+        }],
+      },
+    }), ZCODE_TOOL.Edit, undefined))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('zcodeMetaNew')
   })
@@ -530,12 +511,7 @@ describe('zcode toolResultMeta', () => {
   // A failed edit renders its error text, not the edit it attempted -- otherwise the
   // toolbar would offer a split/unified toggle over a `<pre>` block.
   it('declares no diff for a failed Edit and copies the error text instead', () => {
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      toolEvent(ZCODE_TOOL_KIND.Error, { error: { message: 'old_string not found' } }),
-      ZCODE_TOOL.Edit,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(toolEvent(ZCODE_TOOL_KIND.Error, { error: { message: 'old_string not found' } }), ZCODE_TOOL.Edit, undefined))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('old_string not found')
   })
@@ -547,23 +523,13 @@ describe('zcode toolResultMeta', () => {
       toolName: ZCODE_TOOL.Write,
       input: { file_path: '/tmp/new.ts', content: 'zcodeMetaWriteBody\n' },
     })
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({ content: 'Created.' }),
-      undefined,
-      parsedOf(scheduled),
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({ content: 'Created.' }), undefined, parsedOf(scheduled)))
     expect(meta).toMatchObject({ hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('zcodeMetaWriteBody')
   })
 
   it('falls back to the plain result text for a tool with no dedicated reader', () => {
-    const meta = plugin.toolResultMeta!(
-      { kind: 'tool_result' },
-      resultRow({ content: 'a/b.ts\nc/d.ts' }),
-      ZCODE_TOOL.Glob,
-      undefined,
-    )
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(resultRow({ content: 'a/b.ts\nc/d.ts' }), ZCODE_TOOL.Glob, undefined))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('a/b.ts\nc/d.ts')
   })
@@ -601,10 +567,8 @@ describe('zcode todo rows', () => {
     expect(category.kind === 'tool_use' && category.toolName).toBe(ZCODE_TOOL.TodoWrite)
   })
 
-  // The opener draws the list itself, so the result row would only repeat it. A
-  // result payload names no tool, which is why the span type answers instead.
-  it('hides the TodoWrite result row', () => {
-    expect(classifyWithSpan(result, ZCODE_TOOL.TodoWrite).kind).toBe('hidden')
+  it('keeps the TodoWrite result row for the shared checklist', () => {
+    expect(classifyWithSpan(result, ZCODE_TOOL.TodoWrite).kind).toBe('tool_result')
   })
 
   it('keeps every other tool result visible', () => {

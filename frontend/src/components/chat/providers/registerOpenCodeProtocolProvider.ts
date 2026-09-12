@@ -2,6 +2,7 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from './acp/registerACPProvider'
 import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
 import { opencodeControlResponseDisplay } from './opencode/questionAnswers'
+import { openCodeToolAdapter } from './opencode/toolPresentation'
 
 interface OpenCodeProtocolOptions {
   provider: AgentProvider
@@ -20,6 +21,7 @@ const PLAN_PRIMARY_AGENT = 'plan'
 export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions): void {
   registerACPProvider({
     provider: opts.provider,
+    toolAdapter: openCodeToolAdapter,
     settingsConfig: {
       kind: 'optionGroup',
       optionGroupKey: PRIMARY_AGENT_KEY,

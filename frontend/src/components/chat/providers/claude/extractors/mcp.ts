@@ -1,8 +1,10 @@
 import type { McpContentItem, McpToolCallSource, McpToolCallStatus } from '../../../results/mcpToolCall'
-import { joinContentParagraphs } from '~/lib/contentBlocks'
+import type { ParsedMessageContent } from '~/lib/messageParser'
+import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
-import { capitalize } from '../../../rendererUtils'
-import { mcpToolCallDisplayName, parseMcpContentItem } from '../../../results/mcpToolCall'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { parseMcpContentItem } from '../../../results/mcpToolCall'
+import { extractPairedToolUseInfo } from './assistantContent'
 
 const MCP_PREFIX = 'mcp__'
 
@@ -25,22 +27,6 @@ export function parseClaudeMcpToolName(name: string): { serverName: string, tool
   if (!toolName)
     return null
   return { serverName, toolName }
-}
-
-/** Capitalize underscore-separated server names: `claude_ai_Tavily` → `Claude Ai Tavily`. */
-export function formatClaudeMcpServerName(serverName: string): string {
-  return serverName
-    .split('_')
-    .map(capitalize)
-    .join(' ')
-}
-
-/** Display name for an MCP tool, e.g. `Claude Ai Tavily / tavily_research`. */
-export function formatClaudeMcpDisplayName(serverName: string, toolName: string): string {
-  return mcpToolCallDisplayName({
-    server: formatClaudeMcpServerName(serverName),
-    tool: toolName,
-  })
 }
 
 interface ClaudeMcpFromToolResultArgs {
@@ -83,7 +69,7 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpT
   }
 
   return {
-    server: formatClaudeMcpServerName(parsed.serverName),
+    server: parsed.serverName,
     tool: parsed.toolName,
     argsJson,
     // When the call is flagged as an error, drop the TEXT to avoid rendering
@@ -93,11 +79,32 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpT
     // it left the row with fewer images than `Provider.toolResultImages`
     // numbers for the message -- which is the index an already-open image tab
     // addresses by, permanently.
-    content: args.isError ? content.filter(item => item.type === 'image') : content,
+    content: args.isError ? content.filter(item => item.type !== 'text') : content,
     structuredJson: prettifyStructuredJson(args.toolUseResult?.structuredContent),
     error,
     status,
   }
+}
+
+/** Resolve the same MCP source for the result body and its toolbar. */
+export function claudeMcpFromMessage(parsed: unknown, spanType: string | undefined, request: ParsedMessageContent | undefined): McpToolCallSource | null {
+  if (!isObject(parsed))
+    return null
+  const requestInfo = extractPairedToolUseInfo(parsed, request)
+  const toolUseResult = pickObject(parsed, 'tool_use_result')
+  const toolName = spanType || pickString(toolUseResult, 'tool_name') || requestInfo?.toolName || ''
+  if (!isClaudeMcpTool(toolName))
+    return null
+  const result = getMessageContent(parsed)?.find(block => isObject(block) && block.type === 'tool_result')
+  if (!result)
+    return null
+  return claudeMcpFromToolResult({
+    toolName,
+    toolInput: requestInfo?.input,
+    toolUseResult,
+    resultContent: result.content,
+    isError: result.is_error === true,
+  })
 }
 
 function parseClaudeResultContent(raw: unknown): McpContentItem[] {

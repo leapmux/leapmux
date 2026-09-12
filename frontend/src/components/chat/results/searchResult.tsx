@@ -10,9 +10,16 @@ import {
   toolResultContentPre,
   toolResultPrompt,
 } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { useCollapsedItems, useCollapsedLines } from './useCollapsedLines'
 
 export type SearchVariant = 'grep' | 'glob' | 'search'
+
+export interface SearchResultLine {
+  filePath: string
+  lineNumber?: number
+  text: string
+}
 
 /**
  * Provider-neutral source for Grep/Glob/ACP-search results. The body branches
@@ -25,6 +32,8 @@ export interface SearchResultSource {
   filenames: string[]
   /** Grep-style content blob (line:text or file:line:text). Empty otherwise. */
   content: string
+  /** Structured matches keep file paths separate from text that can contain path punctuation. */
+  lines?: SearchResultLine[]
   numFiles: number
   numLines: number
   /** Grep count-mode: tool_use_result.numMatches. */
@@ -36,6 +45,8 @@ export interface SearchResultSource {
    * Grep `appliedLimit != null`).
    */
   truncated: boolean
+  /** A provider's explanation of an output limit. */
+  notice?: string
   /** Glob: tool_use_result.durationMs. */
   durationMs?: number
   /** Grep: output_mode — 'content' / 'files_with_matches' / 'count'. */
@@ -44,18 +55,35 @@ export interface SearchResultSource {
   fallbackContent: string
 }
 
-/** Reusable file-path list. */
+/** Body and toolbar consumers use the same normalized search text. */
+export function searchResultText(source: SearchResultSource, context?: RenderContext): string {
+  if (source.lines?.length)
+    return source.lines.map(line => `${relativizePath(line.filePath, context?.workingDir, context?.homeDir)}${line.lineNumber !== undefined ? `:${line.lineNumber}` : ''}:${line.text}`).join('\n')
+  return source.content || (source.filenames.length === 0 ? source.fallbackContent : '')
+}
+
+export function searchResultCollapsible(source: SearchResultSource): boolean {
+  return source.filenames.length > COLLAPSED_RESULT_ROWS || hasMoreLinesThan(searchResultText(source), COLLAPSED_RESULT_ROWS)
+}
+
+export interface FileListEntry {
+  path: string
+  detail?: string
+}
+
+/** Reusable file paths with optional provider-supplied details. */
 export function FileListView(props: {
-  filenames: string[]
+  entries: FileListEntry[]
   context?: RenderContext
 }): JSX.Element {
   return (
     <div class={toolResultContentPre}>
-      <For each={props.filenames}>
+      <For each={props.entries}>
         {(f, i) => (
           <>
             {i() > 0 && '\n'}
-            {relativizePath(f, props.context?.workingDir, props.context?.homeDir)}
+            {relativizePath(f.path, props.context?.workingDir, props.context?.homeDir)}
+            <Show when={f.detail}>{detail => `\t${detail()}`}</Show>
           </>
         )}
       </For>
@@ -104,40 +132,30 @@ export function SearchResultBody(props: {
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const filenames = () => props.source.filenames
-  const content = () => props.source.content
   const summary = createMemo(() => summaryFor(props.source))
+  const content = createMemo(() => {
+    const text = searchResultText(props.source, props.context)
+    return text.trim() === summary() ? '' : text
+  })
   const filenameCollapse = useCollapsedItems<string>({ items: filenames, expanded })
   const contentCollapse = useCollapsedLines({ text: content, expanded })
   const isCollapsed = () => filenameCollapse.isCollapsed() || contentCollapse.isCollapsed()
   const displayFilenames = filenameCollapse.displayItems
   const displayContent = contentCollapse.display
 
-  const hasResult = () => {
-    if (props.source.variant === 'grep')
-      return props.source.numFiles > 0 || props.source.numLines > 0
-    if (props.source.variant === 'glob')
-      return filenames().length > 0
-    return typeof props.source.matches === 'number' && props.source.matches > 0
-  }
-
-  const fallbackEl = () => {
-    if (summary())
-      return <div class={toolResultPrompt}>{summary()}</div>
-    return <div class={toolResultContentPre}>{props.source.fallbackContent}</div>
-  }
-
   return (
     <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
-      <Show when={hasResult()} fallback={fallbackEl()}>
-        <Show when={summary()}>
-          <div class={toolResultPrompt}>{summary()}</div>
-        </Show>
-        <Show when={displayFilenames().length > 0}>
-          <FileListView filenames={displayFilenames()} context={props.context} />
-        </Show>
-        <Show when={displayContent()}>
-          <div class={toolResultContentPre}>{displayContent()}</div>
-        </Show>
+      <Show when={summary()}>
+        <div class={toolResultPrompt}>{summary()}</div>
+      </Show>
+      <Show when={displayFilenames().length > 0}>
+        <FileListView entries={displayFilenames().map(path => ({ path }))} context={props.context} />
+      </Show>
+      <Show when={displayContent()}>
+        <div class={toolResultContentPre}>{displayContent()}</div>
+      </Show>
+      <Show when={props.source.notice || props.source.truncated}>
+        <div class={toolResultPrompt}>{props.source.notice || 'Output truncated'}</div>
       </Show>
     </div>
   )

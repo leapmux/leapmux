@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import { create } from '@bufbuild/protobuf'
 import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
 export function rawContent(obj: unknown): Uint8Array {
@@ -13,37 +14,16 @@ export function wrapContent(messages: unknown[], oldSeqs: number[] = []): Uint8A
 }
 
 /** Build a minimal AgentChatMessage for testing. */
-export function makeMessage(overrides: Partial<{
-  id: string
-  source: MessageSource
-  seq: bigint
-  createdAt: string
-  content: Uint8Array
-  contentCompression: ContentCompression
-  agentProvider: number
-  depth: number
-  spanId: string
-  parentSpanId: string
-  spanType: string
-  spanLines: string
-  spanColor: number
-}>): AgentChatMessage {
-  return {
-    $typeName: 'leapmux.v1.AgentChatMessage' as const,
+export function makeMessage(overrides: Partial<Omit<AgentChatMessage, '$typeName' | '$unknown'>>): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    ...overrides,
     id: overrides.id ?? 'msg-1',
     source: overrides.source ?? MessageSource.AGENT,
     seq: overrides.seq ?? 1n,
-    createdAt: overrides.createdAt ?? '',
-    content: overrides.content ?? new Uint8Array(),
     contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
-    depth: overrides.depth ?? 0,
-    spanId: overrides.spanId ?? '',
-    parentSpanId: overrides.parentSpanId ?? '',
-    spanType: overrides.spanType ?? '',
+    supplementalContentCompression: overrides.supplementalContentCompression ?? ContentCompression.NONE,
     spanLines: overrides.spanLines ?? '[]',
     agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanColor: overrides.spanColor ?? -1,
-    previousSeq: 0n,
-    markType: MarkType.UNSPECIFIED,
-  } as AgentChatMessage
+  })
 }

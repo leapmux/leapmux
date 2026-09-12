@@ -33,7 +33,7 @@ func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []recordedReq
 	)
 }
 
-func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CopilotCLIAgent, func() []recordedRequest) {
+func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*CopilotCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *CopilotCLIAgent {
 			a := newCopilotCLIAgent("", false)
@@ -576,11 +576,11 @@ func TestApplyStartupPermissionMode_NoopWhenEmpty(t *testing.T) {
 }
 
 func TestApplyStartupPermissionMode_RejectionIsFatal(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetMode {
-			return json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)
+			return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.permissionMode = CopilotCLIModeAgent
 
@@ -593,11 +593,11 @@ func TestApplyStartupPermissionMode_RejectionIsFatal(t *testing.T) {
 // the provider that ships one (smart_approve), and a build without that mode would
 // otherwise fail EVERY new session.
 func TestApplyStartupPermissionMode_SafeDefaultDegradesWhenUnavailable(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetMode {
-			return json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)
+			return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.permissionMode = CopilotCLIModeAgent
 	agent.availableModes = []*leapmuxv1.AvailableOption{{Id: CopilotCLIModeAgent}}
@@ -634,11 +634,11 @@ func seedReasoningEffort(agent *CopilotCLIAgent, current string) {
 // skipped without holding the lock across the RPC. A false precondition must NOT send a
 // session/set_config_option RPC (no-op success); a true one must.
 func TestSetConfigOptionGuarded_PreconditionGatesWrite(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"low","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"low","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.sink = &testSink{}
 	seedReasoningEffort(agent, "high") // marks reasoning_effort known + offered (low/medium/high)
@@ -666,13 +666,13 @@ func TestSetConfigOptionGuarded_PreconditionGatesWrite(t *testing.T) {
 // (Copilot's reasoning_effort) is surfaced mutable, and a settings change is written
 // via session/set_config_option with the new value adopted from the response.
 func TestACPConfigOption_MutableUpdateRoundTrips(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[
 				{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"medium","name":"medium"},{"value":"high","name":"high"}]}
-			]}`)
+			]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	sink := &testSink{}
 	agent.sink = sink
@@ -715,8 +715,8 @@ func TestACPConfigOption_MutableUpdateRoundTrips(t *testing.T) {
 // inherited from a prior model that the new model dropped) is SKIPPED rather than force-pushed,
 // so the daemon never sees a value it would reject and bounce UpdateSettings into a relaunch.
 func TestACPConfigOption_SkipsUnofferedValue(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.sink = &testSink{}
 	// The current model offers only low/medium/high.
@@ -743,15 +743,15 @@ func TestACPConfigOption_SkipsUnofferedValue(t *testing.T) {
 // group exists in agent state) AND broadcast a status refresh (so the new group reaches the
 // settings panel, which rebuilds its catalog only from statusChange events).
 func TestCopilotModelChangeSurfacesReasoningEffort(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
 			// The new model supports reasoning, so its refreshed configOptions now carry the
 			// reasoning_effort axis (the prior model offered none).
-			return json.RawMessage(`{"configOptions":[
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[
 				{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"medium","options":[{"value":"low","name":"low"},{"value":"medium","name":"medium"},{"value":"high","name":"high"}]}
-			]}`)
+			]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.4-mini"
 	sink := &testSink{}
@@ -797,9 +797,9 @@ func TestCopilotModelChangeSurfacesReasoningEffort(t *testing.T) {
 // -- otherwise applySettingsLive's readback would persist the stale value and revert the
 // user's choice.
 func TestACPConfigOption_EmptyResponseAdoptsWrittenValue(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload {
 		// Every method (incl. set_config_option) succeeds but returns no configOptions.
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	seedReasoningEffort(agent, "medium")
 
@@ -815,7 +815,7 @@ func TestACPConfigOption_EmptyResponseAdoptsWrittenValue(t *testing.T) {
 // (reasoning-effort) config option is reordered strongest-first, regardless of the
 // weakest-first order the server reports.
 func TestACPConfigOption_EffortSortedStrongestFirst(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.mu.Lock()
 	agent.applyOptionGroupsLocked([]acpConfigOption{{
 		ID: "reasoning_effort", Category: "thought_level", Name: "Reasoning Effort", CurrentValue: "medium",
@@ -933,7 +933,7 @@ func TestChooseDefaultEffort(t *testing.T) {
 // reports the same config-option id twice surfaces a SINGLE group, not two sharing a key
 // -- two groups with the same id corrupt the frontend's id-keyed <For> reconciliation.
 func TestACPConfigOption_DedupsDuplicateIDs(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.mu.Lock()
 	agent.applyOptionGroupsLocked([]acpConfigOption{
 		{ID: "allow_all", Name: "Allow All", CurrentValue: "off", Options: []acpConfigOptionValue{{Value: "off"}, {Value: "on"}}},
@@ -958,11 +958,11 @@ func TestACPConfigOption_DedupsDuplicateIDs(t *testing.T) {
 // yet but IS recorded as known, so re-pushing its persisted preference via
 // set_config_option is accepted (not rejected as "unknown config option") and surfaces it.
 func TestACPConfigOption_EmptyCurrentRecoverable(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"high","name":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"high","name":"high"}]}]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	// Handshake reports reasoning_effort with an empty current and nothing stored.
 	agent.mu.Lock()
@@ -1018,8 +1018,8 @@ func TestSecondaryOptionGroupLocked_DefaultIsProviderDefaultNotCurrent(t *testin
 // TestACPConfigOption_NoopWhenUnchanged verifies UpdateSettings does not write a
 // config option whose value already matches the current selection.
 func TestACPConfigOption_NoopWhenUnchanged(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	seedReasoningEffort(agent, "medium")
 
@@ -1034,8 +1034,8 @@ func TestACPConfigOption_NoopWhenUnchanged(t *testing.T) {
 // config_option_update) keeps the prior selection rather than wiping it -- which
 // mergeOptionValues would otherwise propagate as a delete.
 func TestACPConfigOption_PreservesValueOnTransientEmptyCurrent(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	seedReasoningEffort(agent, "high")
 
@@ -1059,7 +1059,7 @@ func TestACPConfigOption_PreservesValueOnTransientEmptyCurrent(t *testing.T) {
 // so would render a selection absent from its own option list. The payload's authoritative
 // CurrentValue wins instead, mirroring reconcileCurrentOptionID on the model/mode channels.
 func TestACPConfigOption_ClearContextReconcilesStoredValueNotInList(t *testing.T) {
-	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _ := newCopilotAgentForRPCWithResponder(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.mu.Lock()
 	// A prior session stored "xhigh"; a re-push the new session rejected left it lingering.
 	agent.options.values = map[string]string{"reasoning_effort": "xhigh"}
@@ -1085,13 +1085,13 @@ func TestACPConfigOption_ClearContextReconcilesStoredValueNotInList(t *testing.T
 // option preference is re-pushed after a (relaunch) handshake whose server reports a
 // different default, so the user's choice survives a fresh process.
 func TestACPConfigOption_StartupReappliesPersistedValue(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[
 				{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"low","options":[{"value":"low","name":"low"},{"value":"medium","name":"medium"},{"value":"high","name":"high"}]}
-			]}`)
+			]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	// The handshake surfaced the server default (medium); the launch options carry the
 	// user's persisted preference (low).
@@ -1116,13 +1116,13 @@ func TestACPConfigOption_StartupReappliesPersistedValue(t *testing.T) {
 // daemon's own id ("reasoning_effort"). This is the provider-declaration replacement for the old
 // live well-known-id scan: Copilot declares effortConfigID = "reasoning_effort" in configure.
 func TestACPConfigOption_StartupMapsEnvEffortOntoDeclaredID(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[
 				{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"medium","name":"medium"},{"value":"high","name":"high"}]}
-			]}`)
+			]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	// configure sets this in production; the test constructor builds the agent directly.
 	agent.effortConfigID = CopilotConfigReasoningEffort
@@ -1153,8 +1153,8 @@ func TestACPConfigOption_StartupMapsEnvEffortOntoDeclaredID(t *testing.T) {
 // no effortConfigID (its axis IS "effort"), and the category-only fallback ignores the bare
 // "reasoning_effort", so the override lands on "effort" exactly once.
 func TestACPConfigOption_StartupEnvEffortNotDoubledOntoCoincidentalAxis(t *testing.T) {
-	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	require.Empty(t, agent.effortConfigID, "OpenCode's effort axis IS \"effort\"; it declares no convention id")
 	// The daemon advertised both axes at handshake (known), neither yet surfaced with a value.
@@ -1183,13 +1183,13 @@ func TestACPConfigOption_StartupEnvEffortNotDoubledOntoCoincidentalAxis(t *testi
 // UpdateSettings would still return true, so the service would persist/broadcast a value the live
 // session never applied until the next relaunch. The fix iterates the union of known + valued ids.
 func TestACPConfigOption_LiveUpdateAppliesKnownButUnsurfacedOption(t *testing.T) {
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionSetConfigOption {
-			return json.RawMessage(`{"configOptions":[
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[
 				{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"high","name":"high"}]}
-			]}`)
+			]}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	// Advertised at handshake (known) but never surfaced with a value (no seedReasoningEffort).
 	agent.mu.Lock()
@@ -1219,14 +1219,14 @@ func TestACPConfigOption_LiveUpdateAppliesKnownButUnsurfacedOption(t *testing.T)
 // have carried a concrete (non-empty) sessionId -- never one observed mid-swap.
 func TestACPSessionRPCs_ConcurrentWithClearContext(t *testing.T) {
 	var sessionSeq atomic.Int64
-	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		switch method {
 		case acpMethodSessionNew:
-			return json.RawMessage(fmt.Sprintf(`{"sessionId":"session-%d"}`, sessionSeq.Add(1)))
+			return jsonrpcResponsePayload{Result: json.RawMessage(fmt.Sprintf(`{"sessionId":"session-%d"}`, sessionSeq.Add(1)))}
 		case acpMethodSessionSetConfigOption:
-			return json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"high","name":"high"}]}]}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"configOptions":[{"id":"reasoning_effort","category":"thought_level","name":"Reasoning Effort","currentValue":"high","options":[{"value":"low","name":"low"},{"value":"high","name":"high"}]}]}`)}
 		default:
-			return json.RawMessage(`{}`)
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 		}
 	})
 	agent.sink = &testSink{} // ClearContext broadcasts the new session id through the sink
@@ -1239,7 +1239,10 @@ func TestACPSessionRPCs_ConcurrentWithClearContext(t *testing.T) {
 		go func() { defer wg.Done(); fn() }()
 	}
 	for range 8 {
-		run(func() { agent.ClearContext() })
+		run(func() {
+			_, err := agent.ClearContext()
+			assert.NoError(t, err)
+		})
 		run(func() { _ = agent.setConfigOption("reasoning_effort", "low") })
 		run(func() { _ = agent.setModelViaConfigOption("gpt-5") })
 		run(func() { _ = agent.cancelSession() })

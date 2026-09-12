@@ -78,8 +78,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "7",
 		Payload: []byte(`{
@@ -93,7 +92,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -139,6 +138,30 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
 }
 
+func TestControlResponseRejectsAnUnansweredOlderInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	first := agent.ControlRequest{RequestID: "7", Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"command":"first"}}`)}
+	require.NoError(t, sink.PublishControlRequest(first))
+	old, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	second := agent.ControlRequest{RequestID: "7", Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"command":"second"}}`)}
+	require.NoError(t, sink.PublishControlRequest(second))
+	current, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	_, forward, responseErr := svc.processControlResponse("agent-1", row, []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`), old.ClaimToken)
+	require.NoError(t, responseErr)
+	assert.False(t, forward)
+	remaining, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "7"})
+	require.NoError(t, err)
+	assert.Equal(t, current.ClaimToken, remaining.ClaimToken)
+	assert.Equal(t, second.Payload, remaining.Payload)
+}
+
 func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 	t.Parallel()
 
@@ -151,8 +174,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "req-1",
 		Payload: []byte(`{
@@ -160,7 +182,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 			"request_id":"req-1",
 			"request":{"tool_name":"ExitPlanMode"}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -220,12 +242,11 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -274,11 +295,11 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -325,12 +346,11 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -382,11 +402,11 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 			agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 		}),
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "gpt-5.6-sol"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -427,10 +447,10 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
 	storeRequest := func() {
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 			AgentID: "agent-1", RequestID: "plan-1",
 			Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-		}))
+		})
 	}
 	storeRequest()
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -467,11 +487,11 @@ func TestBuildControlResponsePlan_MalformedPlanPromptHasNoDecision(t *testing.T)
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
@@ -494,11 +514,11 @@ func TestBuildControlResponsePlan_WhitespacePaddedBehaviorStillDecides(t *testin
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
@@ -530,11 +550,11 @@ func TestBuildControlResponsePlan_RequestIDNormalizedConsistently(t *testing.T) 
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "plan-1",
 		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
@@ -563,8 +583,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "req-1",
 		Payload: []byte(`{
@@ -572,7 +591,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 			"request_id":"req-1",
 			"request":{"tool_name":"ExitPlanMode"}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -627,8 +646,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "que-1",
 		Payload: []byte(`{
@@ -640,7 +658,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -695,8 +713,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}))
-
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   "agent-1",
 		RequestID: "7",
 		Payload: []byte(`{
@@ -710,7 +727,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 				]
 			}
 		}`),
-	}))
+	})
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
@@ -767,10 +784,10 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -809,10 +826,10 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -846,10 +863,10 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -880,10 +897,10 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1026,10 +1043,10 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -1077,10 +1094,10 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan-1",
 		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
@@ -1150,10 +1167,10 @@ func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1181,10 +1198,10 @@ func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-ask",
 		Payload: []byte(`{"type":"control_request","request_id":"req-ask","request":{"tool_name":"AskUserQuestion","tool_use_id":"toolu-ask"}}`),
-	}))
+	})
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	sink.ResetSpans()
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -1212,10 +1229,10 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","tool_use_id":"toolu-exit"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1255,10 +1272,10 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1332,10 +1349,10 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -1418,7 +1435,7 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 
 // TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists is the counterpart: after a relaunch,
 // the new subprocess re-issues a request that REUSES the id (its JSON-RPC counter restarted from
-// scratch). PersistControlRequest mints a FRESH claim_token for that new instance, which the frontend
+// scratch). PublishControlRequest mints a FRESH claim_token for that new instance, which the frontend
 // echoes back, so the genuine post-relaunch answer claims a distinct key and persists its OWN row --
 // while a stale duplicate of the PRE-relaunch instance (old token) is still deduped, so the reuse
 // window stays closed. The distinct claim_token -- not a release step -- is what tells the two apart.
@@ -1442,11 +1459,11 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 	// Instance A answers with its echoed token.
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
 
-	// Relaunch, then the new subprocess re-issues a request that reuses id "req-1" -- PersistControlRequest
+	// Relaunch, then the new subprocess re-issues a request that reuses id "req-1" -- PublishControlRequest
 	// mints a fresh token, which the frontend would echo. Read it back (as the frontend does via the
 	// broadcast) and answer with it: this genuine post-relaunch answer claims a distinct key and persists.
 	svc.Output.ClearPendingControlRequests("agent-1")
-	sink.PersistControlRequest("req-1", []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`))
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-1", Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`)}))
 	reissued, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
 	require.NoError(t, err)
 	require.NotEqual(t, "instA", reissued.ClaimToken, "the reissued instance minted a distinct token")
@@ -1476,10 +1493,10 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "7",
 		Payload: []byte(`{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`),
-	}))
+	})
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
@@ -1529,10 +1546,10 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan-7",
 		Payload: []byte(`{"jsonrpc":"2.0","id":"plan-7","method":"cursor/create_plan","params":{}}`),
-	}))
+	})
 	before, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
@@ -1803,21 +1820,23 @@ func TestProcessControlResponse(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tok-1",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		require.NoError(t, responseErr)
 		require.True(t, forward, "a plain permission answer is forwarded to the agent")
 		assert.Equal(t, content, bytes, "the forwarded bytes are the (unrewritten) response content")
 
 		// The duplicate echoes the SAME instance token, so it lost the idempotency claim taken by the
 		// first call and forwards nothing.
-		bytes, forward = svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr = svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "a duplicate answer (same claim token) is a deduped no-op and is not re-forwarded")
 		assert.Nil(t, bytes)
 	})
@@ -1831,27 +1850,29 @@ func TestProcessControlResponse(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instA",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 
-		_, forward := svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		_, forward, responseErr := svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		require.NoError(t, responseErr)
 		require.True(t, forward, "instance A's answer forwards")
-
 		// Re-store req-1 (the reissued instance) and answer with a DIFFERENT token.
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-			AgentID: "agent-1", RequestID: "req-1",
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "instB",
 			Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`),
-		}))
-		_, forward = svc.processControlResponse("agent-1", dbAgent, content, "instB")
+		})
+		_, forward, responseErr = svc.processControlResponse("agent-1", dbAgent, content, "instB")
+		require.NoError(t, responseErr)
 		assert.True(t, forward, "the reissued instance's answer (fresh token) forwards -- not withheld as a duplicate of the reused id")
 
 		// A stale duplicate of instance A (old token) is STILL deduped.
-		_, forward = svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		_, forward, responseErr = svc.processControlResponse("agent-1", dbAgent, content, "instA")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "instance A's stale duplicate stays deduped even after instance B answered")
 	})
 
@@ -1862,15 +1883,16 @@ func TestProcessControlResponse(t *testing.T) {
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 			Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 		}))
-		require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 			AgentID: "agent-1", RequestID: "plan-1",
 			Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-		}))
+		})
 		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 		require.NoError(t, err)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent,
+		bytes, forward, responseErr := svc.processControlResponse("agent-1", dbAgent,
 			[]byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`), "plan-tok")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "a plan-mode prompt is handled server-side, never forwarded")
 		assert.Nil(t, bytes)
 	})
@@ -1891,7 +1913,8 @@ func TestProcessControlResponse(t *testing.T) {
 		require.NoError(t, err)
 		content := []byte(`{"type":"control_response","response":{"request_id":"req-gone","response":{"behavior":"allow"}}}`)
 
-		bytes, forward := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		bytes, forward, responseErr := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		require.NoError(t, responseErr)
 		assert.False(t, forward, "no frame may reach the app-server's stdin")
 		assert.Nil(t, bytes)
 	})
@@ -1925,17 +1948,18 @@ func TestProcessControlResponse(t *testing.T) {
 				payload := `{"type":"control_request","request_id":"plan-1","id":7,` +
 					`"method":"interaction/requestUserInput",` +
 					`"request":{"tool_name":"` + tc.toolName + `","tool_use_id":"call-1"}}`
-				require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
-					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload),
-				}))
+				createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload), ClaimToken: "plan-tok",
+				})
 				dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 				require.NoError(t, err)
 
 				// Approve with NO permissionMode: the banner's unchecked state, which is
 				// what makes the provider's own fallback the answer.
-				svc.processControlResponse("agent-1", dbAgent,
+				_, _, responseErr := svc.processControlResponse("agent-1", dbAgent,
 					[]byte(`{"type":"control_response","response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`),
 					"plan-tok")
+				require.NoError(t, responseErr)
 
 				updated, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 				require.NoError(t, err)
@@ -1945,4 +1969,62 @@ func TestProcessControlResponse(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+		request  string
+		invalid  string
+		valid    string
+	}{
+		{
+			name:     "mcp elicitation",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			request:  `{"id":"req-1","method":"mcpServer/elicitation/request","params":{"message":"Choose a value","requestedSchema":{"type":"object"}}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"action":"invalid"}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"action":"decline"}}}`,
+		},
+		{
+			name:     "pi mcp approval",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+			request:  `{"type":"extension_ui_request","id":"req-1","method":"select","title":"MCP: form_probe_echo\n\nArguments:\n{}","options":["Allow once","Allow for session","Deny"]}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"action":"accept","_meta":{"persist":"always"}}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"action":"decline"}}}`,
+		},
+		{
+			name:     "zcode permission",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+			request:  `{"type":"control_request","request_id":"req-1","id":7,"method":"interaction/requestUserInput","request":{"tool_name":"Bash","tool_use_id":"call-1"}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"invalid"}}}`,
+			valid:    `{"response":{"request_id":"req-1","response":{"behavior":"deny"}}}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, dispatcher, writer := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: test.provider,
+			}))
+			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+				AgentID: "agent-1", RequestID: "req-1", ClaimToken: "claim-1", Payload: []byte(test.request),
+			})
+			row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+				AgentId: "agent-1", Content: []byte(test.invalid), ClaimToken: "claim-1",
+			}, writer)
+			require.Len(t, writer.errors, 1)
+			assert.Equal(t, codeInvalidArgument, writer.errors[0].code)
+			pending, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
+			require.NoError(t, err, "the provider still waits for a valid response")
+			assert.Equal(t, "claim-1", pending.ClaimToken)
+			_, forward, responseErr := svc.processControlResponse("agent-1", row, []byte(test.valid), "claim-1")
+			require.NoError(t, responseErr)
+			assert.True(t, forward, "the invalid answer must not consume the response claim")
+		})
+	}
 }

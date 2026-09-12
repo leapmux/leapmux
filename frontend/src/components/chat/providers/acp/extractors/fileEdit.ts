@@ -1,7 +1,7 @@
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import { isObject, pickFirstString, pickString } from '~/lib/jsonPick'
 import { ACP_TOOL_KIND } from '~/types/toolMessages'
-import { ACP_FILE_PATH_KEYS, ACP_NEW_TEXT_KEYS, ACP_OLD_TEXT_KEYS } from '../rendering'
+import { ACP_FILE_PATH_KEYS, ACP_NEW_TEXT_KEYS, ACP_OLD_TEXT_KEYS } from '../content'
 
 /**
  * Build a FileEditDiffSource from an ACP `tool_call`/`tool_call_update`

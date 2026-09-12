@@ -1,18 +1,23 @@
 import type { MessageCategory } from '../../messageClassification'
-import type { ToolResultMeta } from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolMessageInput, ToolResultMeta } from '../registry'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { todosToMarkdown } from '~/lib/messageParser'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { formatUnifiedDiffText } from '../../diff'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
+import { mcpToolResultMeta } from '../../results/mcpToolCall'
+import { searchResultCollapsible } from '../../results/searchResult'
 import { claudeAgentFromToolResult, claudeAgentResultBody } from './extractors/agent'
-import { extractToolResultText } from './extractors/assistantContent'
+import { extractPairedToolUseInfo, extractToolResultText, getMessageContentArray } from './extractors/assistantContent'
 import { claudeFileEditFromToolUseResult } from './extractors/fileEdit'
+import { claudeSearchFromToolResult } from './extractors/grepGlob'
 import { claudeListAgentsListing } from './extractors/listAgents'
+import { claudeMcpFromMessage } from './extractors/mcp'
 import { claudeRemoteTriggerFromToolResult } from './extractors/remoteTrigger'
+import { claudeTodoWriteFromResult } from './extractors/todo'
 
 /** Resolve toolName + tool_use_result for a Claude tool_result message. */
 function extractToolResultInfo(
@@ -68,16 +73,8 @@ function isCollapsible(
   resultText: string | null,
   structuredBody: string | null,
 ): boolean {
-  if (toolName === CLAUDE_TOOL.GREP || toolName === CLAUDE_TOOL.GLOB) {
-    const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult.filenames as string[] : []
-    if (filenames.length > COLLAPSED_RESULT_ROWS)
-      return true
-    if (toolName === CLAUDE_TOOL.GREP && typeof toolUseResult?.content === 'string'
-      && hasMoreLinesThan(toolUseResult.content as string, COLLAPSED_RESULT_ROWS)) {
-      return true
-    }
-    return resultText != null && resultText.split('\n').filter((l: string) => l.trim()).length > COLLAPSED_RESULT_ROWS
-  }
+  if (toolName === CLAUDE_TOOL.GREP || toolName === CLAUDE_TOOL.GLOB)
+    return searchResultCollapsible(claudeSearchFromToolResult(toolName === CLAUDE_TOOL.GREP ? 'grep' : 'glob', toolUseResult, resultText ?? ''))
 
   if (toolName === CLAUDE_TOOL.READ) {
     const file = pickObject(toolUseResult, 'file')
@@ -179,28 +176,35 @@ function computeCopyableContent(
 /**
  * Provider.toolResultMeta implementation for Claude Code.
  *
- * Returns null for any non-tool_result category. The `toolUseParsed` argument
- * is currently unused (Claude reads everything off the result message + its
- * `tool_use_result` payload), but kept to keep the plugin signature uniform.
+ * Returns null for other categories. The linked request supplies MCP arguments.
  */
 export function claudeToolResultMeta(
   category: MessageCategory,
-  parsed: unknown,
-  spanType: string | undefined,
-  _toolUseParsed: ParsedMessageContent | undefined,
+  input: ToolMessageInput,
 ): ToolResultMeta | null {
   if (category.kind !== 'tool_result')
     return null
 
-  const obj = isObject(parsed) ? parsed as Record<string, unknown> : null
+  const obj = input.parsed.parentObject
   if (!obj)
     return null
 
-  const info = extractToolResultInfo(obj, spanType)
+  const mcp = claudeMcpFromMessage(obj, input.spanType, input.request)
+  if (mcp)
+    return mcpToolResultMeta(mcp)
+
+  const info = extractToolResultInfo(obj, input.spanType)
   if (!info)
     return null
 
   const { toolName, toolUseResult } = info
+  if (toolName === CLAUDE_TOOL.TODO_WRITE && !getMessageContentArray(obj)?.some(block => isObject(block) && block.type === 'tool_result' && block.is_error === true)) {
+    const source = claudeTodoWriteFromResult(toolUseResult, extractPairedToolUseInfo(obj, input.request)?.input)
+    if (source) {
+      const text = todosToMarkdown(source.todos)
+      return { collapsible: false, hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
+    }
+  }
   // Walk message.content once; downstream collapsibility/copy paths reuse it.
   const resultText = extractToolResultText(obj)
   const hasEditDiff = fileEditHasDiff(claudeFileEditFromToolUseResult(toolUseResult))

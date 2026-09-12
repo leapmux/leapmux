@@ -32,6 +32,7 @@ export type GoalStatus = 'active' | 'paused' | 'blocked' | 'done' | 'dormant'
 export type GoalAction = 'set' | 'clear' | 'pause' | 'resume'
 
 export interface SessionGoal {
+  nativeId?: string
   objective: string
   status: GoalStatus
   /**
@@ -120,6 +121,7 @@ export function hasGoalSurface(surface: GoalSurface): boolean {
 /** Converts the wire goal to the store shape. */
 export function protoGoalToStore(g: ProtoAgentGoal): SessionGoal {
   return {
+    nativeId: g.nativeId || undefined,
     objective: g.objective,
     status: goalStatusFromProto(g.status),
     statusDetail: g.statusDetail || undefined,

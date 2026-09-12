@@ -1,9 +1,11 @@
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
-import { render } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
+import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pngBase64 } from '~/test-support/pngFixture'
+import { toolResultCollapsed } from '../toolStyles.css'
 import './claude'
 import './codex'
 import './testMocks'
@@ -20,8 +22,7 @@ const { renderMessageContent } = await import('../messageRenderers')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
 
 function makeMcpToolResult(content: unknown, isError = false) {
@@ -43,8 +44,7 @@ function renderCodexItem(item: Record<string, unknown>, context?: RenderContext)
     toolUse: parsed,
     content: [],
   }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CODEX))
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,13 @@ function renderCodexItem(item: Record<string, unknown>, context?: RenderContext)
 // ---------------------------------------------------------------------------
 
 describe('claude MCP tool_result rendering', () => {
+  it('preserves resources returned with a failed MCP call', () => {
+    const { container } = renderClaudeToolResult(makeMcpToolResult([
+      { type: 'resource', resource: { uri: 'probe://failure-details', text: 'Resource failure details' } },
+    ], true), { spanType: 'mcp__docs__read' })
+    expect(container.textContent).toContain('Resource failure details')
+  })
+
   it('renders text content blocks via the shared MCP body', () => {
     const parsed = makeMcpToolResult([
       { type: 'text', text: '## Search Result\n\nFound 3 matches.' },
@@ -219,6 +226,24 @@ describe('claude MCP tool_result rendering', () => {
 // ---------------------------------------------------------------------------
 
 describe('codex mcpToolCall rendering', () => {
+  it('collapses completed output when the user selects Collapse', () => {
+    const [expanded, setExpanded] = createSignal(true)
+    const { container, getByRole } = renderCodexItem({
+      type: 'mcpToolCall',
+      server: 'docs',
+      tool: 'read',
+      status: 'completed',
+      result: { content: [{ type: 'text', text: 'first\nsecond\nthird\nfourth\nfifth' }] },
+    }, {
+      getMessageUiState: () => expanded(),
+      setMessageUiState: (_key, value) => setExpanded(value),
+    })
+    expect(container.querySelector(`.${toolResultCollapsed}`)).toBeNull()
+    fireEvent.click(getByRole('button', { name: 'Collapse' }))
+    expect(untrack(expanded)).toBe(false)
+    expect(container.querySelector(`.${toolResultCollapsed}`)).not.toBeNull()
+  })
+
   it('renders server/tool header and result content', () => {
     const { container } = renderCodexItem({
       type: 'mcpToolCall',
@@ -251,7 +276,7 @@ describe('codex mcpToolCall rendering', () => {
       error: { message: 'Authorization required' },
     })
     const text = container.textContent ?? ''
-    expect(text).toContain('failed')
+    expect(text).toContain('Failed')
     expect(text).toContain('Authorization required')
   })
 

@@ -2,13 +2,30 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCursorControlPublicationFailureReturnsProtocolError(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{CursorMethodAskQuestion, CursorMethodCreatePlan} {
+		t.Run(method, func(t *testing.T) {
+			var output bytes.Buffer
+			sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+			a := newCursorAgentWithSink(sink)
+			a.stdin = nopWriteCloser{&output}
+			a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":"007","method":"` + method + `","params":{}}`))
+			require.JSONEq(t, `{"jsonrpc":"2.0","id":"007","error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, output.String())
+			require.Empty(t, sink.PublishedControls())
+		})
+	}
+}
 
 func newCursorAgentWithSink(sink ProviderServices) *CursorCLIAgent {
 	a := &CursorCLIAgent{
@@ -62,8 +79,8 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":7,"method":"cursor/ask_question","params":{"toolCallId":"tc-1","title":"Need input","questions":[{"id":"q1","prompt":"Pick one","allowMultiple":false,"options":[{"id":"a","label":"Alpha"},{"id":"b","label":"Beta"}]}]}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, "7", sink.LastPersistedControl().RequestID)
+	require.Equal(t, 1, sink.PublishedControlCount())
+	require.Equal(t, "7", sink.LastPublishedControl().RequestID)
 
 	var payload struct {
 		Method  string `json:"method"`
@@ -79,7 +96,7 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 			} `json:"input"`
 		} `json:"request"`
 	}
-	require.NoError(t, json.Unmarshal(sink.LastPersistedControl().Payload, &payload))
+	require.NoError(t, json.Unmarshal(sink.LastPublishedControl().Payload, &payload))
 	require.Equal(t, CursorMethodAskQuestion, payload.Method)
 	require.Equal(t, "AskUserQuestion", payload.Request.ToolName)
 	require.Len(t, payload.Request.Input.Questions, 1)
@@ -95,13 +112,13 @@ func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":8,"method":"cursor/create_plan","params":{"toolCallId":"plan-1","name":"Migration","overview":"Review the generated plan"}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
 	var payload struct {
 		Type   string `json:"type"`
 		Method string `json:"method"`
 	}
-	require.NoError(t, json.Unmarshal(sink.LastPersistedControl().Payload, &payload))
+	require.NoError(t, json.Unmarshal(sink.LastPublishedControl().Payload, &payload))
 	require.Equal(t, "cursor.create_plan", payload.Type)
 	require.Equal(t, CursorMethodCreatePlan, payload.Method)
 }

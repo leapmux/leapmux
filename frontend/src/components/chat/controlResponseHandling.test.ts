@@ -319,6 +319,88 @@ describe('restoring saved answers', () => {
 })
 
 describe('handleControlSend', () => {
+  it('cleans only the captured agent after the editor switches during delivery', async () => {
+    let finish!: () => void
+    const delivery = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const first: ControlRequest = { ...makeControlRequest('request', 'agent-A'), claimToken: 'token', agentProvider: AgentProvider.CLAUDE_CODE }
+    const second: ControlRequest = { ...first, agentId: 'agent-B' }
+    const firstKey: AsyncLocalKey = `${PREFIX_CONTROL_STATE}agent-A:request:token`
+    const secondKey: AsyncLocalKey = `${PREFIX_CONTROL_STATE}agent-B:request:token`
+    await localStorageStore(firstKey, { choices: { scope: 'once' } }).durable
+    await localStorageStore(secondKey, { choices: { scope: 'session' } }).durable
+    const [agentId, setAgentId] = createSignal('agent-A')
+    const [requests, setRequests] = createSignal([first])
+    const state = createControlAnswerState()
+    const reset = vi.fn()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: useControlResponseHandling({
+        get agentId() { return agentId() },
+        get controlRequests() { return requests() },
+        onControlResponse: () => delivery,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, reset),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.choices()).toEqual({ scope: 'once' }))
+      const sending = result.respondTo(first)(new Uint8Array())
+      batch(() => {
+        setAgentId('agent-B')
+        setRequests([second])
+      })
+      await vi.waitFor(() => expect(state.choices()).toEqual({ scope: 'session' }))
+      finish()
+      await sending
+      await flushStorageWrites()
+      expect(await localStorageLoad(firstKey)).toBeUndefined()
+      expect(await localStorageLoad(secondKey)).toMatchObject({ choices: { scope: 'session' } })
+      expect(reset).not.toHaveBeenCalled()
+    }
+    finally {
+      finish()
+      dispose()
+    }
+  })
+
+  it('keeps saved answers until delivery succeeds and permits retry after failure', async () => {
+    let resolveDelivery!: () => void
+    let rejectDelivery!: (error: Error) => void
+    const delivery = new Promise<void>((resolve, reject) => {
+      resolveDelivery = resolve
+      rejectDelivery = reject
+    })
+    const onControlResponse = vi.fn().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
+    const request: ControlRequest = { requestId: 'pending', agentId: 'test-agent', agentProvider: AgentProvider.CLAUDE_CODE, claimToken: 'token', payload: { request: { tool_name: 'Bash', input: { command: 'pwd' } } } }
+    const key: AsyncLocalKey = `${PREFIX_CONTROL_STATE}test-agent:pending:token`
+    const state = createControlAnswerState()
+    const reset = vi.fn()
+    const { result, dispose } = createRoot(dispose => ({ dispose, result: useControlResponseHandling({ agentId: 'test-agent', controlRequests: [request], onControlResponse, onSendMessage: vi.fn() }, state, () => undefined, reset) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      state.setChoices({ scope: 'once' })
+      await flushStorageWrites()
+      const sending = Promise.resolve(result.handleControlSend('Use a safer command')).catch(() => {})
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toMatchObject({ choices: { scope: 'once' } })
+      expect(reset).not.toHaveBeenCalled()
+      rejectDelivery(new Error('offline'))
+      await sending
+      state.setChoices({ scope: 'session' })
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toMatchObject({ choices: { scope: 'session' } })
+      await result.handleControlSend('Use a safer command')
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toBeUndefined()
+      expect(reset).toHaveBeenCalledOnce()
+    }
+    finally {
+      resolveDelivery()
+      dispose()
+    }
+  })
+
   // Answering discards the saved answers of the answered instance, and the
   // outcome must not depend on whether a caller batches.
   //
@@ -361,7 +443,7 @@ describe('handleControlSend', () => {
     expect(await localStorageLoad(key)).toBeDefined()
     await vi.waitFor(() => expect(answerState.ready()).toBe(true))
 
-    batch(() => result.handleControlSend(''))
+    await batch(() => result.handleControlSend(''))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
     expect(await localStorageLoad(key)).toBeUndefined()
@@ -469,6 +551,38 @@ describe('handleControlSend', () => {
         finishResponse()
         await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Use a safer command'))
         expect(onSendMessage).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('sends Pi plan feedback only after the native stay decision', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        let finishResponse!: () => void
+        const onControlResponse = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+          finishResponse = resolve
+        }))
+        const onSendControlFeedback = vi.fn()
+        const { result } = setup({
+          agent: { agentProvider: AgentProvider.PI },
+          controlRequests: [makeControlRequest('plan', 'test-agent', {
+            type: 'extension_ui_request',
+            method: 'select',
+            title: 'Proposed plan ready. What next?',
+            options: ['Implement here', 'Start fresh and implement', 'Stay in Plan mode'],
+          })],
+          onControlResponse,
+          onSendControlFeedback,
+        })
+        result.handleControlSend('Revise the second step.')
+        const [, bytes] = onControlResponse.mock.calls[0]
+        expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ type: 'extension_ui_response', id: 'plan', value: 'Stay in Plan mode' })
+        expect(onSendControlFeedback).not.toHaveBeenCalled()
+        finishResponse()
+        await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Revise the second step.'))
       }
       finally {
         dispose()
@@ -890,5 +1004,31 @@ describe('activeControlRequest', () => {
 
       dispose()
     })
+  })
+})
+
+describe('elicitation composer submission', () => {
+  it('keeps editor text and sends only a valid form answer', async () => {
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const request: ControlRequest = { agentId: 'test-agent', requestId: 'form-submit', claimToken: 'form-token', payload: {
+      method: 'elicitation/create',
+      params: { mode: 'form', requestedSchema: { type: 'object', required: ['count'], properties: { count: { type: 'integer' } } } },
+    } }
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({ dispose, handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.GOOSE }, controlRequests: [request], onControlResponse, onSendMessage: vi.fn() }, state, () => undefined, vi.fn()) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.editorPlaceholder()).toBe('Complete the request above, then choose an action.')
+      expect(handling.handleControlSend('Keep this note')).toBe(false)
+      expect(onControlResponse).not.toHaveBeenCalled()
+      expect(handling.handleControlSend('')).toBe(false)
+      state.setChoices({ 'elicitation:"count"': '0' })
+      handling.handleControlSend('')
+      await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
+      expect(JSON.parse(new TextDecoder().decode(onControlResponse.mock.calls[0][1]))).toMatchObject({ response: { response: { action: 'accept', content: { count: 0 } } } })
+    }
+    finally {
+      dispose()
+    }
   })
 })

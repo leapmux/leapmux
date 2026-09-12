@@ -234,7 +234,7 @@ func (p *processBase) APITimeout() time.Duration {
 	return DefaultAPITimeout
 }
 
-func (p *processBase) ClearContext() (string, bool) { return "", false }
+func (p *processBase) ClearContext() (string, error) { return "", ErrContextClearUnsupported }
 
 // DiscardOutput marks the process so that the readOutput loop silently
 // drops all remaining lines. Use this before stopping an agent that will
@@ -565,6 +565,8 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 			"agent_id", p.agentID,
 			"error", err,
 		)
+		// The worker cannot receive further replies after framing fails.
+		p.cancel()
 	}
 
 	p.recordProcessExit(p.cmd.Wait())
@@ -574,31 +576,12 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 	close(p.processDone)
 }
 
-// enrichWithToolUses injects num_tool_uses into a JSON message so the
-// frontend can determine whether the turn involved tool use. Returns the
-// original content unchanged if enrichment fails.
-func (p *processBase) enrichWithToolUses(content []byte) []byte {
+// messageWithToolUses captures the completed tool count as separate worker metadata.
+func (p *processBase) messageWithToolUses(original []byte) MessageContent {
 	p.mu.Lock()
-	numToolUses := p.turnToolUses
+	count := p.turnToolUses
 	p.mu.Unlock()
-	return enrichWithToolUseCount(content, numToolUses)
-}
-
-func enrichWithToolUseCount(content []byte, numToolUses int) []byte {
-	enriched := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(content, &enriched); err != nil {
-		return content
-	}
-	b, err := json.Marshal(numToolUses)
-	if err != nil {
-		return content
-	}
-	enriched["num_tool_uses"] = b
-	out, err := json.Marshal(enriched)
-	if err != nil {
-		return content
-	}
-	return out
+	return withToolUseCount(MessageContent{Original: original}, count)
 }
 
 // drainStderr starts a goroutine that reads from the given reader into

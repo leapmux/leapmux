@@ -2,12 +2,13 @@ import Image from 'lucide-solid/icons/image'
 import { createMemo, Show } from 'solid-js'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
+import { FileImageMessage } from '../../../results/FileImageMessage'
 import { ImageResultList } from '../../../results/imageResult'
 import { ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary, toolResultError } from '../../../toolStyles.css'
-import { renderReadTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
-import { codexGeneratedImage } from '../extractors/image'
+import { codexGeneratedImage, codexViewedImage } from '../extractors/image'
+import { extractItem } from '../renderHelpers'
 import { parseCodexStatus } from '../status'
 import { codexStatusTitle } from './statusTitle'
 
@@ -56,22 +57,17 @@ export const CodexImageGenerationRenderer = defineCodexRenderer({
 /**
  * Codex `imageView`: the `view_image` tool.
  *
- * The item is `{id, path}` and carries no pixels -- Codex attaches the image
- * to the model's context, not to the transcript. A header that states the file is
- * everything this row can say.
+ * The item supplies a path. The shared image component loads that file through the worker.
  */
 export const CodexImageViewRenderer = defineCodexRenderer({
   itemTypes: [CODEX_ITEM.IMAGE_VIEW],
   render: (props) => {
-    const path = () => pickString(props.item, 'path')
+    const source = createMemo(() => codexViewedImage(props.item))
+    const matches = (item: Record<string, unknown> | null) => !!props.item.id && item?.id === props.item.id && item.type === CODEX_ITEM.IMAGE_VIEW
+    const hasRequest = () => props.context?.sources?.role() === 'result' && matches(extractItem(props.context?.sources?.request()?.parentObject))
+    const role = () => props.context?.sources?.role() === 'opener' ? 'request' as const : 'result' as const
     return (
-      <ToolUseLayout
-        icon={Image}
-        toolName="ViewImage"
-        title={renderReadTitle(path(), undefined, undefined, props.context?.workingDir, props.context?.homeDir) ?? 'View image'}
-        context={props.context}
-        alwaysVisible
-      />
+      <FileImageMessage source={source() ?? {}} role={role()} hasRequest={hasRequest()} context={props.context} />
     )
   },
 })

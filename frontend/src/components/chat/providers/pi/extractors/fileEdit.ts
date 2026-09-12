@@ -1,12 +1,14 @@
+import type { StructuredPatchHunk } from '../../../diff'
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { parseUnifiedDiffCached } from '../../../diff'
 import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditHasDiff } from '../../../results/fileEditDiff'
 import { readFileSourceFromContent } from '../../../results/readFileResult'
 import { parsePiNumberedDiff } from './piDiffParser'
-import { piExtractTool } from './toolCommon'
+import { piExtractTool, piPairedRequest } from './toolCommon'
 
 /**
  * Pi `edit` tool — Pi may apply multiple substitutions in one call, so we
@@ -19,26 +21,37 @@ export interface PiEditResult {
   isError: boolean
 }
 
+/** Match Pi's argument normalization without changing the provider message. */
+export function piEditsFromArgs(args: Record<string, unknown>): Array<{ oldText: string, newText: string }> {
+  let edits: unknown = args.edits
+  if (typeof edits === 'string') {
+    try {
+      edits = JSON.parse(edits)
+    }
+    catch {
+      edits = undefined
+    }
+  }
+  const values = Array.isArray(edits) ? [...edits] : isObject(edits) ? [edits] : []
+  if (typeof args.oldText === 'string' && typeof args.newText === 'string')
+    values.push({ oldText: args.oldText, newText: args.newText })
+  return values.flatMap(value => isObject(value) && typeof value.oldText === 'string' && typeof value.newText === 'string'
+    ? [{ oldText: value.oldText, newText: value.newText }]
+    : [])
+}
+
 /** Extract a Pi edit tool execution. Returns null when not the edit tool. */
 export function extractPiEdit(payload: Record<string, unknown> | null | undefined): PiEditResult | null {
   const tool = piExtractTool(payload ?? undefined)
   if (!tool || tool.toolName !== PI_TOOL.Edit)
     return null
   const path = pickString(tool.args, 'path')
-  const editsRaw = tool.args.edits
-  const sources: FileEditDiffSource[] = []
-  if (Array.isArray(editsRaw)) {
-    for (const e of editsRaw) {
-      if (!isObject(e))
-        continue
-      sources.push({
-        filePath: path,
-        structuredPatch: null,
-        oldStr: typeof e.oldText === 'string' ? e.oldText : '',
-        newStr: typeof e.newText === 'string' ? e.newText : '',
-      })
-    }
-  }
+  const sources: FileEditDiffSource[] = piEditsFromArgs(tool.args).map(edit => ({
+    filePath: path,
+    structuredPatch: null,
+    oldStr: edit.oldText,
+    newStr: edit.newText,
+  }))
   return { path, sources, isError: tool.isError }
 }
 
@@ -66,7 +79,7 @@ export function extractPiWrite(payload: Record<string, unknown> | null | undefin
  * renderer both call this for the same payload per render, so without a
  * cache `parsePiNumberedDiff` runs twice on the same diff text.
  */
-const diffCache = new WeakMap<Record<string, unknown>, ResolvedPiResultDiff>()
+const diffCache = new WeakMap<Record<string, unknown>, { hunks: StructuredPatchHunk[] | null, rawDiff: string }>()
 
 interface ResolvedPiResultDiff {
   source: FileEditDiffSource | null
@@ -77,23 +90,20 @@ export function resolvePiResultDiff(
   payload: Record<string, unknown>,
   startArgs: Record<string, unknown>,
 ): ResolvedPiResultDiff {
-  const cached = diffCache.get(payload)
-  if (cached)
-    return cached
-  const tool = piExtractTool(payload)
-  const rawDiff = pickString(tool?.result?.details, 'diff')
-  let resolved: ResolvedPiResultDiff
-  if (!rawDiff) {
-    resolved = { source: null, rawDiff }
+  let cached = diffCache.get(payload)
+  if (!cached) {
+    const details = piExtractTool(payload)?.result?.details
+    const patch = pickString(details, 'patch')
+    const diff = pickString(details, 'diff')
+    const hunks = parseUnifiedDiffCached(patch)?.hunks ?? parsePiNumberedDiff(diff)
+    cached = { hunks, rawDiff: patch || diff }
+    diffCache.set(payload, cached)
   }
-  else {
-    const hunks = parsePiNumberedDiff(rawDiff)
-    resolved = (!hunks || hunks.length === 0)
-      ? { source: null, rawDiff }
-      : { rawDiff, source: fileEditDiffFromHunks(pickString(startArgs, 'path'), hunks) }
+  // The request can arrive after the result. Keep its path outside the parsed-diff cache.
+  return {
+    rawDiff: cached.rawDiff,
+    source: cached.hunks?.length ? fileEditDiffFromHunks(pickString(startArgs, 'path'), cached.hunks) : null,
   }
-  diffCache.set(payload, resolved)
-  return resolved
 }
 
 /**
@@ -179,12 +189,13 @@ export function piResolveDiffSources(
     return []
   if (tool.isError)
     return []
-  const startArgs = pickObject(toolUseParsed?.parentObject, 'args') ?? {}
+  const request = piPairedRequest(parsed, toolUseParsed)
+  const startArgs = pickObject(request?.parentObject, 'args') ?? {}
   const resolved = resolvePiResultDiff(parsed, startArgs)
   if (resolved.source)
     return [resolved.source]
   // Present-but-unparseable diff: the renderer shows raw text, not a diff body.
   if (resolved.rawDiff)
     return []
-  return piFallbackDiffSources(tool.toolName, toolUseParsed)
+  return piFallbackDiffSources(tool.toolName, request)
 }

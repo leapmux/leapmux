@@ -3,14 +3,14 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { FileEditDiffSource } from '../../results/fileEditDiff'
-import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '../registry'
+import type { ClassificationInput, Provider, SpanRole, ToolMessageInput, ToolResultMeta } from '../registry'
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { messageUsage } from '~/lib/messageParser'
+import { messageUsage, todosToMarkdown } from '~/lib/messageParser'
 import { validateSessionFilePath, validateSessionId } from '~/lib/validate'
 import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
@@ -19,6 +19,8 @@ import { isNotificationThreadWrapper } from '../../messageUtils'
 import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks } from '../../results/fileEditDiff'
+import { mcpToolResultMeta } from '../../results/mcpToolCall'
+import { searchResultCollapsible } from '../../results/searchResult'
 import { registerProvider } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
@@ -30,11 +32,21 @@ import {
   sendPiExtensionResponse,
 } from './controlResponse'
 import { PiControlActions, PiControlContent } from './controls'
-import { extractPiBash } from './extractors/bash'
-import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
+import { isPiAgentTool, piAgentResult } from './extractors/agent'
+import { extractPiCommand, isPiCommand } from './extractors/command'
+import { piSubagentNotificationSources, piVisibleCustomMessage } from './extractors/customMessage'
+import { extractPiRead, piResolveDiffSources, resolvePiResultDiff } from './extractors/fileEdit'
+import { piGenericToolSource } from './extractors/generic'
 import { piToolResultImages } from './extractors/image'
-import { piExtractTool } from './extractors/toolCommon'
+import { extractPiSearch } from './extractors/search'
+import { resolvePiMessage } from './extractors/supplement'
+import { piTodoSource } from './extractors/todo'
+import { piExtractTool, piPairedRequest } from './extractors/toolCommon'
+import { piWorkflowResult } from './extractors/workflow'
+import { isPiMcpApproval, piMcpApproval } from './mcpApproval'
 import { piContentText, piIsThinkingOnly } from './messageContent'
+import { isPiPlanApproval } from './planApproval'
+import { PI_SEARCH_TOOL } from './protocol'
 import {
   describePiNotification,
   PiAssistantMessage,
@@ -134,12 +146,18 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
 
 function piToolResultMeta(
   category: MessageCategory,
-  parsed: unknown,
-  _spanType: string | undefined,
-  toolUseParsed: ParsedMessageContent | undefined,
+  input: ToolMessageInput,
 ): ToolResultMeta | null {
+  const parsed = input.parsed.parentObject
+  const toolUseParsed = piPairedRequest(parsed, input.request)
   if (category.kind !== 'tool_result' || !isObject(parsed))
     return null
+
+  const notifications = piSubagentNotificationSources(parsed)
+  if (notifications) {
+    const text = notifications.map(source => source.body).filter(Boolean).join('\n\n')
+    return { collapsible: notifications.some(source => commandOutputIsCollapsible(source.body)), hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
+  }
 
   const tool = piExtractTool(parsed)
   if (!tool)
@@ -148,8 +166,26 @@ function piToolResultMeta(
   const resultText = tool.result?.text ?? ''
   const startArgs = pickObject(toolUseParsed?.parentObject, 'args') ?? {}
 
-  if (tool.toolName === PI_TOOL.Bash) {
-    const bash = extractPiBash(parsed)
+  if (tool.toolName === PI_TOOL.Todo) {
+    const source = piTodoSource(parsed, toolUseParsed)
+    if (source) {
+      const text = source.error ?? [todosToMarkdown(source.list.todos), source.description, ...source.metadata.map(item => `${item.label}: ${item.value}`)].filter(Boolean).join('\n\n')
+      return { collapsible: false, hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
+    }
+  }
+
+  if (isPiAgentTool(tool.toolName)) {
+    const source = tool.toolName === PI_TOOL.SubagentWorkflow ? piWorkflowResult(parsed, toolUseParsed) : piAgentResult(parsed, toolUseParsed)
+    return {
+      collapsible: commandOutputIsCollapsible(source.body),
+      hasDiff: false,
+      hasCopyable: source.body !== '',
+      copyableContent: () => source.body || null,
+    }
+  }
+
+  if (isPiCommand(tool.toolName)) {
+    const bash = extractPiCommand(parsed)
     if (!bash)
       return null
     return {
@@ -157,6 +193,21 @@ function piToolResultMeta(
       hasDiff: false,
       hasCopyable: bash.output !== '',
       copyableContent: () => bash.output || null,
+    }
+  }
+
+  const isFileTool = tool.toolName === PI_TOOL.Read || tool.toolName === PI_TOOL.Edit || tool.toolName === PI_TOOL.Write
+  if (!isFileTool && !Object.values<string>(PI_SEARCH_TOOL).includes(tool.toolName)) {
+    const generic = piGenericToolSource(parsed, toolUseParsed)
+    return generic ? mcpToolResultMeta(generic) : null
+  }
+
+  if (tool.isError) {
+    return {
+      collapsible: commandOutputIsCollapsible(resultText),
+      hasDiff: false,
+      hasCopyable: resultText !== '',
+      copyableContent: () => resultText || null,
     }
   }
 
@@ -173,26 +224,29 @@ function piToolResultMeta(
   }
 
   if (tool.toolName === PI_TOOL.Edit || tool.toolName === PI_TOOL.Write) {
-    if (tool.isError) {
-      return {
-        collapsible: false,
-        hasDiff: false,
-        hasCopyable: resultText !== '',
-        copyableContent: () => resultText || null,
-      }
-    }
-
     const sources = piResolveDiffSources(parsed, toolUseParsed)
     const hasDiff = sources.length > 0
+    const fallback = resolvePiResultDiff(parsed, startArgs).rawDiff || resultText
     return {
       collapsible: false,
       hasDiff,
-      hasCopyable: hasDiff || resultText !== '',
-      copyableContent: () => formatPiDiffSources(sources) ?? (resultText || null),
+      hasCopyable: hasDiff || fallback !== '',
+      copyableContent: () => formatPiDiffSources(sources) ?? (fallback || null),
     }
   }
 
-  return null
+  const search = extractPiSearch(parsed)
+  if (search) {
+    return {
+      collapsible: searchResultCollapsible(search),
+      hasDiff: false,
+      hasCopyable: resultText !== '',
+      copyableContent: () => resultText || null,
+    }
+  }
+
+  const generic = piGenericToolSource(parsed, toolUseParsed)
+  return generic ? mcpToolResultMeta(generic) : null
 }
 
 /**
@@ -269,7 +323,9 @@ export function piValidateResumeHandle(value: string): string | null {
 }
 
 const piPlugin: Provider = {
+  resolveMessage: resolvePiMessage,
   spanRole: piSpanRole,
+  relatedMessages: parsed => piSpanRole(parsed) === 'result' ? ['request'] : piSpanRole(parsed) === 'opener' ? ['result'] : [],
   contextUsageFromMessage: piContextUsageFromMessage,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
   // display and labels the copy action "session file path".
@@ -310,6 +366,9 @@ const piPlugin: Provider = {
 
     const type = pickString(parent, 'type')
 
+    if (type === PI_EVENT.EntryAppended && pickObject(parent, 'entry')?.type === 'custom')
+      return { kind: 'hidden' }
+
     // User messages persisted by the LeapMux service layer are stored as
     // plain `{"content":"...","attachments":[...]}` with no `type` field —
     // not a Pi RPC event. Match this shape *before* event-type dispatch so
@@ -330,6 +389,11 @@ const piPlugin: Provider = {
       return { kind: 'hidden' }
 
     if (type === PI_EVENT.MessageEnd) {
+      if (piVisibleCustomMessage(parent)) {
+        if (piSubagentNotificationSources(parent))
+          return { kind: 'tool_result' }
+        return piContentText(parent, 'text').trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+      }
       // Pi emits message_end for *every* message added to the conversation —
       // the user's prompt, tool results, and bash-execution echoes — not just
       // the assistant's reply. LeapMux already persists the user message via
@@ -390,7 +454,7 @@ const piPlugin: Provider = {
   resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
-  toolResultImages: piToolResultImages,
+  toolResultImages: input => piToolResultImages(input.parsed.parentObject, input.spanType, input.request),
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject
@@ -411,27 +475,32 @@ const piPlugin: Provider = {
   // controlResponseDisplay (chatMarkPreview), not here.
   previewText: defaultMarkPreview,
   controlResponseDisplay: piControlResponseDisplay,
+  elicitation: piMcpApproval,
 
   askUserQuestion: {
     isRequest: payload => payload.type === PI_EVENT.ExtensionUIRequest
-      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select),
+      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select) && !isPiPlanApproval(payload) && !isPiMcpApproval(payload),
     extractQuestions: piQuestionsFromPayload,
-    async sendAnswer(request, sendControlResponse, _questions, answerState) {
+    async sendAnswer(request, sendControlResponse, questions, answerState) {
       const method = pickString(request.payload, 'method')
       if (method === PI_DIALOG_METHOD.Select) {
-        const value = piAskAnswerValue(answerState)
+        const value = piAskAnswerValue(answerState, questions, request.payload)
         const response = value.trim() ? piValueResponse(request.requestId, value) : piCancelResponse(request.requestId)
         await sendPiExtensionResponse(sendControlResponse, response)
         return
       }
-      const text = answerState.customTexts()[0] ?? ''
+      const text = piAskAnswerValue(answerState, questions, request.payload)
       await sendPiExtensionResponse(sendControlResponse, piValueResponse(request.requestId, text))
     },
     sendReject: (request, sendControlResponse) =>
       sendPiExtensionResponse(sendControlResponse, piCancelResponse(request.requestId)),
   },
 
+  controlFeedbackAsFollowUpMessage: isPiPlanApproval,
+
   buildControlResponse(payload, content, requestId) {
+    if (isPiPlanApproval(payload))
+      return piValueResponse(requestId, PI_PLAN_ACTION.Stay)
     const method = pickString(payload, 'method')
     let response: PiExtensionResponse
     switch (method) {

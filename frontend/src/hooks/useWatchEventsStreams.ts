@@ -113,9 +113,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return s
   }
 
-  /** True when `key` is already the acked interest or is mid-flight on the wire. */
+  /** Compare the newest requested interest. An older acknowledgment cannot supersede a queued or transmitted change. */
   function interestMatches(s: WorkerStream, key: string): boolean {
-    return key === s.sentKey || key === s.inflightKey
+    if (s.pendingPlan)
+      return key === watchPlanKey(s.pendingPlan)
+    return key === (s.inflightPlan ? s.inflightKey : s.sentKey)
   }
 
   /**
@@ -469,13 +471,8 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       return
     }
     const plan = s.pendingPlan
-    if (!plan) {
-      if (!s.handle)
-        return
-      s.handle.close()
-      resetForReconnect(s)
+    if (!plan)
       return
-    }
     s.pendingPlan = null
     const key = watchPlanKey(plan)
     // Already acked, or the same revision is already on the wire.

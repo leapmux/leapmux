@@ -52,7 +52,7 @@ func TestPi_FinalStatus(t *testing.T) {
 
 func TestPi_ApplySubagentEnd_FinalStatus(t *testing.T) {
 	sink := &testSink{}
-	result := json.RawMessage(`{"status":"completed","agentId":"a-1"}`)
+	result := json.RawMessage(`{"content":[],"details":{"status":"completed","agentId":"a-1"}}`)
 	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
@@ -62,7 +62,7 @@ func TestPi_ApplySubagentEnd_FinalStatus(t *testing.T) {
 
 func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 	sink := &testSink{}
-	result := json.RawMessage(`{"status":"background","agentId":"bg-1"}`)
+	result := json.RawMessage(`{"content":[],"details":{"status":"background","agentId":"bg-1"}}`)
 	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
@@ -78,7 +78,7 @@ func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 // the row Running so a later final event can still close it.
 func TestPi_ApplySubagentEnd_UnrecognizedStatusStaysRunning(t *testing.T) {
 	sink := &testSink{}
-	result := json.RawMessage(`{"status":"thinking","agentId":"a-1"}`)
+	result := json.RawMessage(`{"content":[],"details":{"status":"thinking","agentId":"a-1"}}`)
 	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
@@ -108,13 +108,14 @@ func TestPi_ApplySubagentEnd_FallbackRegexIgnoresProse(t *testing.T) {
 func TestPi_ApplySubagentNotification_FinalStatus(t *testing.T) {
 	sink := &testSink{}
 	msg, _ := json.Marshal(map[string]any{
+		"role":       "custom",
 		"customType": "subagent-notification",
 		"details": map[string]any{
-			"status":  "completed",
-			"agentId": "a-1",
+			"status": "completed",
+			"id":     "a-1",
 		},
 	})
-	piApplySubagentNotification(sink, msg)
+	piApplySubagentNotification(sink, append(append([]byte(`{"message":`), msg...), byte('}')))
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
@@ -123,17 +124,18 @@ func TestPi_ApplySubagentNotification_FinalStatus(t *testing.T) {
 func TestPi_ApplySubagentNotification_GroupOthers(t *testing.T) {
 	sink := &testSink{}
 	msg, _ := json.Marshal(map[string]any{
+		"role":       "custom",
 		"customType": "subagent-notification",
 		"details": map[string]any{
-			"status":  "running",
-			"agentId": "a-1",
+			"status": "running",
+			"id":     "a-1",
 			"others": []map[string]any{
-				{"agentId": "a-2", "status": "completed"},
-				{"agentId": "a-3", "status": "error"},
+				{"id": "a-2", "status": "completed"},
+				{"id": "a-3", "status": "error"},
 			},
 		},
 	})
-	piApplySubagentNotification(sink, msg)
+	piApplySubagentNotification(sink, append(append([]byte(`{"message":`), msg...), byte('}')))
 	tasks := sink.BackgroundTasks()
 	// a-1 (running) + a-2 (completed) + a-3 (failed) = 3 rows.
 	require.Len(t, tasks, 3)
@@ -142,7 +144,7 @@ func TestPi_ApplySubagentNotification_GroupOthers(t *testing.T) {
 func TestPi_ApplySubagentNotification_NonNotificationNoop(t *testing.T) {
 	sink := &testSink{}
 	msg, _ := json.Marshal(map[string]any{"customType": "other"})
-	piApplySubagentNotification(sink, msg)
+	piApplySubagentNotification(sink, append(append([]byte(`{"message":`), msg...), byte('}')))
 	assert.Empty(t, sink.BackgroundTasks())
 }
 
@@ -183,8 +185,7 @@ func TestPi_ExtractDescription_CleansBeforeItCuts(t *testing.T) {
 	got = piExtractDescription(json.RawMessage(`{"description":`+strconv.Quote(desc)+`}`), "tool")
 	assert.Equal(t, "Run the linter", got)
 
-	// A model-written description is no more bounded than a prompt is, so the
-	// description branch caps too.
+	// A model-written description can exceed the display limit, so this branch applies the same limit.
 	long := strings.Repeat("a", 500)
 	got = piExtractDescription(json.RawMessage(`{"description":`+strconv.Quote(long)+`}`), "tool")
 	assert.Equal(t, strings.Repeat("a", 80), got, "the 80-rune display cap binds for ASCII")
@@ -210,7 +211,7 @@ func TestPi_ExtractPrompt(t *testing.T) {
 // that is where the spawn prompt becomes its first message.
 func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 	sink := &testSink{}
-	result := json.RawMessage(`{"status":"background","agentId":"bg-1"}`)
+	result := json.RawMessage(`{"content":[],"details":{"status":"background","agentId":"bg-1"}}`)
 	piApplySubagentEnd(sink, result, "tc-1", "title", "Write the essay.")
 
 	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
@@ -229,7 +230,7 @@ func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 // would still pass if the code wrongly created a child agent here.
 func TestPi_ApplySubagentEnd_FinalStatusWritesNoPrompt(t *testing.T) {
 	sink := &testSink{}
-	piApplySubagentEnd(sink, json.RawMessage(`{"status":"completed","agentId":"a-1"}`), "tc-1", "title", "Write the essay.")
+	piApplySubagentEnd(sink, json.RawMessage(`{"content":[],"details":{"status":"completed","agentId":"a-1"}}`), "tc-1", "title", "Write the essay.")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Empty(t, tasks[0].ChildAgentID, "a foreground subagent gets no child transcript")
@@ -238,7 +239,7 @@ func TestPi_ApplySubagentEnd_FinalStatusWritesNoPrompt(t *testing.T) {
 	assert.Empty(t, child.Messages())
 }
 
-// --- A subagent spawn owns no span ---
+// --- A subagent launch opens no span ---
 
 // pi-subagents registers its spawn tool as `Agent` (SUBAGENT_TOOL_NAMES.AGENT).
 // That call owns no span: the subagent's output lands in its own child
@@ -254,7 +255,7 @@ func TestPi_AgentToolStartOpensNoSpan(t *testing.T) {
 
 	assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
 	assert.Empty(t, sink.ReservedColorSpans(), "and reserves no color")
-	assert.Equal(t, PiToolAgent, sink.GetSpanType("tc-spawn"),
+	assert.Equal(t, contracts.PiToolAgent, sink.GetSpanType("tc-spawn"),
 		"the span type is still recorded for tool_execution_end")
 
 	msgs := sink.Messages()
@@ -310,4 +311,77 @@ func TestPi_SpawnInsideOpenToolDrawsOneColumn(t *testing.T) {
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "only the bash call ever opened a span")
 	assert.Equal(t, "tc-bash", open[0].SpanID)
+}
+
+func TestPi_NativeSubagentResultAndNotification(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"native-call","toolName":"Agent","args":{"description":"Inspect the sample","prompt":"Read the sample."}}`)))
+	result := []byte(`{"type":"tool_execution_end","toolCallId":"native-call","toolName":"Agent","result":{"content":[{"type":"text","text":"Agent started"}],"details":{"status":"background","agentId":"native-agent"}},"isError":false}`)
+	handlePiOutput(a, parseLine(result))
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "native-agent", tasks[0].RowKey)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Equal(t, "Inspect the sample", tasks[0].Title)
+	assert.NotEmpty(t, tasks[0].ChildAgentID)
+	assert.Equal(t, result, sink.Messages()[1].Content)
+
+	notification := []byte(`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Child finished","display":true,"details":{"id":"native-agent","description":"Inspect the sample","status":"completed","resultPreview":"Read the sample."}}}`)
+	handlePiOutput(a, parseLine(notification))
+	tasks = sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, notification, sink.Messages()[2].Content)
+}
+
+func TestPi_OrdinaryToolStatusCreatesNoSubagent(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"ordinary","toolName":"get_goal","args":{}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_update","toolCallId":"ordinary","toolName":"get_goal","partialResult":{"content":[],"details":{"status":"running"}}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_end","toolCallId":"ordinary","toolName":"get_goal","result":{"content":[],"details":{"status":"completed"}}}`)))
+	assert.Empty(t, sink.BackgroundTasks())
+}
+
+func TestPi_WorkflowLaunchOpensNoSpan(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"workflow-call","toolName":"SubagentWorkflow","args":{"script":"export const meta = { name: 'Probe', description: 'Probe' }; return 0;"}}`)))
+	assert.Empty(t, sink.OpenSpans())
+	assert.Empty(t, sink.ReservedColorSpans())
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_end","toolCallId":"workflow-call","toolName":"SubagentWorkflow","result":{"content":[{"type":"text","text":"Workflow started"}],"details":{"taskId":"wf_probe"}},"isError":false}`)))
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "wf_probe", tasks[0].RowKey)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Workflow complete","details":{"id":"wf_probe","description":"Workflow probe","status":"completed"}}}`)))
+	tasks = sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	for _, message := range sink.Messages() {
+		assert.Empty(t, message.SpansOpenAtPersist)
+	}
+}
+
+func TestPi_SubagentFinalResultReplacesTheProvisionalRow(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"background", "completed", "error", "stopped"} {
+		t.Run(status, func(t *testing.T) {
+			sink := &testSink{}
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "tool-call", Kind: bgtask.KindSubagent, Title: "Inspect sample", Status: bgtask.StatusRunning}))
+			piApplySubagentEnd(sink, json.RawMessage(`{"content":[],"details":{"agentId":"child","status":"`+status+`"}}`), "tool-call", "Inspect sample", "")
+			tasks := sink.BackgroundTasks()
+			require.Len(t, tasks, 1)
+			assert.Equal(t, "child", tasks[0].RowKey)
+			if status == "background" {
+				assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+			} else {
+				assert.True(t, tasks[0].Status.IsFinished())
+			}
+		})
+	}
 }

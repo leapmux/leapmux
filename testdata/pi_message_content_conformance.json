@@ -1,0 +1,1303 @@
+{
+  "_readme": "Shared cases for Pi artifact recovery without changes to original provider messages.",
+  "cases": [
+    {
+      "name": "restore text and keep image order and other fields",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete output\nLast line",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "preserve an explicitly empty recovered text",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": ""
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a different toolCallId",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "other",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a different toolName",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "other",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a different output path",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/different",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retain complete original",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": false,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": false,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retain nonboolean marker",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": "true",
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": "true",
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retain absent content",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": null,
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": null,
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retain nontext first block",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retain invalid content",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": {},
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": {},
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ignore a different event type",
+      "original": {
+        "type": "tool_execution_update",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": "Complete output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_update",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "absent supplement",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": null,
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "array supplement",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": [],
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid recovered text",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "outputFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "text": false
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcpScript",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "mode": "script",
+            "outputGuard": {
+              "truncated": true,
+              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "restore the complete native MCP result",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "mcpResultFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
+          "result": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0
+            },
+            "isError": true
+          }
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "content": [
+                {
+                  "type": "image",
+                  "data": "BBBB",
+                  "mimeType": "image/png"
+                }
+              ],
+              "structuredContent": {
+                "count": 0
+              },
+              "isError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "different result path",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "mcpResultFile": {
+          "path": "/different",
+          "result": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0
+            },
+            "isError": true
+          }
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "absent result path",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "mcpResultFile": {
+          "path": null,
+          "result": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0
+            },
+            "isError": true
+          }
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reject an invalid recovered MCP result",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "mcpResultFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
+          "result": []
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "omitted": true,
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "keep an existing complete native result",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "content": [],
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "mcpResultFile": {
+          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
+          "result": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0
+            },
+            "isError": true
+          }
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "docs",
+            "tool": "lookup",
+            "mcpResult": {
+              "content": [],
+              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

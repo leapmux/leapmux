@@ -48,6 +48,7 @@ CREATE TABLE agents (
     -- silently skip the new message. Maintained by the triggers on `messages` below.
     message_seq_hwm  INTEGER NOT NULL DEFAULT 0,
     startup_error    TEXT NOT NULL DEFAULT '',
+    goal_native_id   TEXT NOT NULL DEFAULT '',
     -- Session goal. Every agent CLI that has this feature (Codex, ZCode, Claude
     -- Code, Copilot, Reasonix) allows AT MOST ONE goal per session, so the goal
     -- is 1:1 with the agent and lives here rather than in a table whose primary
@@ -108,6 +109,11 @@ CREATE TABLE messages (
     source              INTEGER NOT NULL,
     content             BLOB NOT NULL,
     content_compression INTEGER NOT NULL,
+    -- Supplemental rendering data never changes the original provider payload.
+    supplemental_content BLOB NOT NULL DEFAULT X'',
+    supplemental_content_compression INTEGER NOT NULL DEFAULT 0,
+    supplemental_revision INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(supplemental_revision) = 'integer' AND supplemental_revision >= 0),
     -- Non-empty only for an accepted durable queue item. It keeps enqueue
     -- retries idempotent after the queue item becomes a transcript row.
     input_fingerprint   TEXT NOT NULL DEFAULT '',
@@ -126,10 +132,9 @@ CREATE TABLE messages (
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
--- Covers the (agent_id, span_id, source, seq) lookup the to-do extractor
--- uses to find a tool_result's paired tool_use, so SQLite serves the
--- ORDER BY seq ASC LIMIT 1 from the index rather than re-sorting matches.
-CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, source, seq) WHERE span_id <> '';
+-- Serves related-message lookups in sequence order, with an optional source filter.
+-- Keep seq before source so a lookup across sources does not scan the agent's full history.
+CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, seq, source) WHERE span_id <> '';
 -- Covering index for the scroll rail's ListMessageMarksByAgentID: SQLite serves
 -- the (agent_id, ORDER BY seq ASC) scan of marked rows from the index alone.
 -- Partial (only marked rows) so the far-more-numerous unmarked inserts skip it.
@@ -220,10 +225,10 @@ CREATE TABLE control_requests (
     agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     request_id  TEXT NOT NULL,
     payload     BLOB NOT NULL,
-    -- claim_token identifies this REQUEST INSTANCE. The worker mints a fresh token per
-    -- PersistControlRequest (id.Generate nanoid), broadcasts it in AgentControlRequest, and the frontend
-    -- echoes it in the answer so control_response_answers can dedup per instance rather than per
-    -- reused request_id. '' for a row stored before the token existed (degrades to id-only dedup).
+    source_seq  INTEGER NOT NULL DEFAULT 0 CHECK (source_seq >= 0),
+    -- Each request instance has a claim token. Identical pending announcements keep the token.
+    -- A changed payload or a new request after deletion gets a fresh token.
+    -- The frontend echoes the token so the worker can deduplicate answers per instance.
     claim_token TEXT NOT NULL DEFAULT '',
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, request_id)

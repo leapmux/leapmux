@@ -8,7 +8,7 @@ import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { AgentLifecycleProps, ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
+import type { AgentLifecycleProps, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
@@ -32,10 +32,13 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
+import { getAgentMessage, getAgentSpanMessages } from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
+import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
+import { readWorkerImage } from '~/components/chat/readWorkerImage'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
@@ -51,7 +54,7 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { hasGoalSurface } from '~/stores/chatGoal'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabSupportsInterrupt, agentTabSupportsSessionGoal, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
@@ -583,15 +586,42 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // shell builds it and hands the same object to the close guard.
   const taskScope = opts.taskScope
   const bgRootFor = taskScope.rootFor
-  // The store DATA ops an IMAGE tab resolves its reference through. Built once
-  // and shared by every image pane, mirroring how the scroll rail hands the same
-  // two ops to `warmMarkPreview` -- the modules that use them are component-layer
-  // and must not import the DI'd store themselves.
-  const chatImageDeps = {
-    getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
-    fetchMessageBySeq: chatStore.fetchMessageBySeq,
-  }
   const bgTasksFor = taskScope.rootTasksFor
+  const contextKey = (workerId: string, agentId: string) => JSON.stringify([workerId, agentId])
+  const contextKeys = createMemo(() => [...new Set(view.forWorkspace(activeWorkspace()?.id ?? '').flatMap(tab =>
+    tab.type === TabType.AGENT
+      ? [contextKey(tab.workerId ?? '', tab.id)]
+      : tab.type === TabType.IMAGE && tab.imageAgentId ? [contextKey(tab.workerId ?? '', tab.imageAgentId)] : []))])
+  const contexts = createMemo(mapArray(contextKeys, (key) => {
+    const [workerId, agentId] = JSON.parse(key) as [string, string]
+    const backgroundRows = createMemo(() => new Map(bgTasksFor(agentId).map(row => [row.rowKey, row])))
+    const resolver = createMessageContextResolver({
+      scopeKey: () => key,
+      messages: () => chatStore.getMessages(agentId),
+      messageVersion: () => chatStore.getMessageVersion(agentId),
+      contentVersion: chatStore.getMessageContentVersion,
+      spanMessage: (spanId, side) => chatStore.getSpanMessage(agentId, spanId, side),
+      messageBySeq: seq => chatStore.getLoadedMessageBySeq(agentId, seq),
+      fetchSpan: async (spanId, signal) => {
+        if (!workerId)
+          throw new Error('The worker is unavailable')
+        return (await getAgentSpanMessages(workerId, { agentId, spanId }, { signal })).messages
+      },
+      fetchMessage: async (seq, signal) => {
+        if (!workerId)
+          throw new Error('The worker is unavailable')
+        return (await getAgentMessage(workerId, { agentId, seq }, { signal })).message
+      },
+      fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
+      subscribe: observer => chatStore.subscribeMessages(agentId, observer),
+      todo: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
+      backgroundTask: rowKey => backgroundRows().get(rowKey),
+      progress: spanId => chatStore.getToolProgress(agentId, spanId),
+    })
+    return [key, resolver] as const
+  }))
+  const contextIndex = createMemo(() => new Map(contexts()))
+  const messageContext = (workerId: string, agentId: string) => contextIndex().get(contextKey(workerId, agentId))
   // The session goal is ROOT state, like the registry: a child tab shows its
   // root's, because a subagent has no goal of its own.
   const goalFor = (agentId: string) => chatStore.goal.get(bgRootFor(agentId))
@@ -799,37 +829,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabIds()}>
           {(agentId) => {
             const agent = createMemo(() => view.getAgentTab(agentId))
-            // The per-agent reactive lookups ChatView's renderers / entry cache / height
-            // estimator consult. Built ONCE here (the <For> child runs once per agent),
-            // so `props.lookups` is a stable object -- a fresh object per access would
-            // allocate on every spanId lookup the entry cache makes.
-            const lookups: ChatMessageLookups = {
-              getToolUseParsedBySpanId: spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId),
-              getToolUseContentVersionBySpanId: spanId => chatStore.getToolUseContentVersionBySpanId(agentId, spanId),
-              getToolUseRevisionBySpanId: spanId => chatStore.getToolUseRevisionBySpanId(agentId, spanId),
-              getToolResultParsedBySpanId: spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId),
-              getToolResultContentVersionBySpanId: spanId => chatStore.getToolResultContentVersionBySpanId(agentId, spanId),
-              getToolResultRevisionBySpanId: spanId => chatStore.getToolResultRevisionBySpanId(agentId, spanId),
-              getToolProgressBySpanId: spanId => chatStore.getToolProgress(agentId, spanId),
-              getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
-              getTodoById: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
-            }
-            // The scroll-rail prop object, memoized like `lookups` above: getRailData does
-            // firstMessageSeq/lastMessageSeq scans and the rail's per-frame memos read
-            // props.rail.{minSeq,maxSeq,marks} several times per scroll frame -- a fresh
-            // `{...getRailData(), previewFor, warmPreview}` per access would re-run those scans
-            // and allocate an object + two closures each time. Memoizing recomputes only when
-            // getRailData's reactive deps change (marks / window / live tail), and the preview
-            // callbacks are built ONCE (stable references) rather than per read.
+            const messages = () => messageContext(agent()?.workerId ?? '', agentId)
+            // The rail reads this object several times per frame. Compute its sequence range once per change.
+            // Stable preview handlers avoid new closures on each read.
             const railPreviewFor = (seq: bigint) => getCachedMarkPreview(agentId, seq)
             const railWarmPreview = (seq: bigint) => {
               const workerId = agent()?.workerId
               if (!workerId)
                 return
-              warmMarkPreview(workerId, agentId, seq, {
-                getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
-                fetchMessageBySeq: chatStore.fetchMessageBySeq,
-              })
+              const resolver = messages()
+              if (resolver)
+                warmMarkPreview(agentId, seq, resolver)
             }
             // One evaluation per change, and one stable array identity.
             //
@@ -844,7 +854,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // a child tab sees only the rows IT spawned -- so a SendMessage card
             // in a subagent transcript could not resolve a sibling or the parent.
             // Memoized because bgRootFor walks the parent chain on every call.
-            const rootTasks = createMemo(() => bgTasksFor(agentId))
             /**
              * The ROOT's goal surface, or nothing.
              *
@@ -853,16 +862,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
              * lookups and three parent-chain walks and minted a fresh object.
              * `ThinkingIndicator` reads this prop three times in one expression.
              *
-             * The provider comes from the ROOT tab, never from this one. A
-             * subagent tab is seeded with its parent's provider and carries
-             * NOTHING when that parent tab is not resolvable, and an absent
-             * provider reads as "no goal feature" -- which hid a goal the worker
-             * was reporting, with nothing on screen to say why.
+             * The worker's goal state and supported actions determine visibility.
              */
             const goalSurface = createMemo<GoalSurface | undefined>(() => {
               const rootId = bgRootFor(agentId)
-              if (!agentTabSupportsSessionGoal(view.getAgentTab(rootId)))
-                return undefined
               const surface: GoalSurface = {
                 current: goalFor(agentId),
                 progress: goalProgressFor(agentId),
@@ -890,7 +893,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get startupMessage() { return agent()?.startupMessage },
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
-              get registryRows() { return rootTasks() },
               // A getter keeps the goal reactive. Absence means that the
               // provider has no session-goal feature, or that the card could
               // hold nothing -- the same rule the sidebar applies, through the
@@ -1004,7 +1006,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         forceScrollToBottomRef.set(api.forceScrollToBottom)
                       }
                     }}
-                    lookups={lookups}
+                    messageContext={messages()}
                     onQuote={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
                     onReply={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
                     agentLifecycle={agentLifecycle}
@@ -1118,7 +1120,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     seq={it()?.imageSeq ?? 0n}
                     imageIndex={it()?.imageIndex ?? 0}
                     title={it()?.title}
-                    deps={chatImageDeps}
+                    messages={messageContext(it()?.workerId ?? '', it()?.imageAgentId ?? '')}
                   />
                 </Show>
               </div>
@@ -1169,9 +1171,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
    */
   const focusedQuakeTab = createMemo<Tab | null>(resolveFocusedTab)
 
-  // The composer's queue commands. This module composes tiles and sends no
-  // Worker RPC of its own, so the request shapes, the failure toasts and the
-  // snapshot apply live in `agentInputQueueOperations`.
+  // The composer delegates queue requests and snapshot updates to agentInputQueueOperations.
   const queueOps = createAgentInputQueueOperations({
     view,
     store: agentInputQueueStore,
@@ -1241,6 +1241,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const focusedAgentTab = () => view.getAgentTab(agentId())
     return (
       <AgentEditorPanel
+        messageContext={messageContext(focusedAgentTab()?.workerId ?? '', agentId())}
         suppressAutoFocus={isTabEditing}
         agentId={agentId()}
         agent={agentTabToInfo(focusedAgentTab())}

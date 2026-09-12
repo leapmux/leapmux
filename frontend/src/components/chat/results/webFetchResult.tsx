@@ -14,10 +14,10 @@ import { useCollapsedFlag } from './useCollapsedLines'
 
 /** Provider-neutral source for a WebFetch tool result. */
 export interface WebFetchResultSource {
-  code: number
-  codeText: string
-  bytes: number
-  durationMs: number
+  code?: number
+  codeText?: string
+  bytes?: number
+  durationMs?: number
   /** Markdown body returned by the fetch. */
   result: string
   /** Post-redirect URL (Claude tool_use_result.url). */
@@ -55,14 +55,14 @@ export function WebFetchResultBody(props: {
   })
 
   const summary = () => joinMetaParts([
-    `${props.source.code} ${props.source.codeText}`,
-    props.source.bytes > 0 && formatBytes(props.source.bytes),
-    props.source.durationMs > 0 && formatDuration(props.source.durationMs),
+    props.source.code !== undefined && `${props.source.code} ${props.source.codeText ?? ''}`.trim(),
+    (props.source.bytes ?? 0) > 0 && formatBytes(props.source.bytes!),
+    (props.source.durationMs ?? 0) > 0 && formatDuration(props.source.durationMs!),
   ])
 
   return (
     <div class={toolMessage}>
-      <div class={toolResultPrompt}>{summary()}</div>
+      <Show when={summary()}><div class={toolResultPrompt}>{summary()}</div></Show>
       <Show when={props.source.result}>
         <CollapsibleContent kind="markdown-tool-result" text={props.source.result} isCollapsed={isCollapsed()} context={props.context} />
       </Show>

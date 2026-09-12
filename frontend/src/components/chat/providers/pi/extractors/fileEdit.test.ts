@@ -1,8 +1,28 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
-import { extractPiEdit, extractPiRead, extractPiWrite, piResolveDiffSources } from './fileEdit'
+import { extractPiEdit, extractPiRead, extractPiWrite, piResolveDiffSources, resolvePiResultDiff } from './fileEdit'
 
 describe('extractPiEdit', () => {
+  it.each([
+    { oldText: 'before', newText: 'after' },
+    { edits: { oldText: 'before', newText: 'after' } },
+    { edits: JSON.stringify([{ oldText: 'before', newText: 'after' }]) },
+    { edits: JSON.stringify({ oldText: 'before', newText: 'after' }) },
+  ])('accepts the edit form that Pi normalizes before execution: %j', (args) => {
+    const result = extractPiEdit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'edit', args: { path: '/project/file.ts', ...args } })
+    expect(result?.sources).toEqual([{ filePath: '/project/file.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+  })
+
+  it('combines an edits array with the legacy singleton fields', () => {
+    const result = extractPiEdit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'edit', args: {
+      path: '/project/file.ts',
+      edits: [{ oldText: 'one', newText: 'two' }],
+      oldText: 'three',
+      newText: '',
+    } })
+    expect(result?.sources.map(source => [source.oldStr, source.newStr])).toEqual([['one', 'two'], ['three', '']])
+  })
+
   it('returns null for non-edit tool', () => {
     expect(extractPiEdit({ type: 'tool_execution_end', toolCallId: 'c', toolName: 'bash' })).toBeNull()
   })
@@ -116,6 +136,21 @@ describe('extractPiRead', () => {
 })
 
 describe('piResolveDiffSources', () => {
+  it('uses a request path that becomes available after the first diff lookup', () => {
+    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { details: { diff: '-1 before\n+1 after' } } }
+    expect(resolvePiResultDiff(payload, {}).source?.filePath).toBe('')
+    expect(resolvePiResultDiff(payload, { path: '/project/late.ts' }).source?.filePath).toBe('/project/late.ts')
+  })
+
+  it('prefers the applied standard patch over the display-oriented numbered diff', () => {
+    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { details: {
+      diff: '-1 displayBefore\n+1 displayAfter',
+      patch: '--- a/file.ts\n+++ b/file.ts\n@@ -7 +7 @@\n-actualBefore\n+actualAfter\n',
+    } } }
+    const source = resolvePiResultDiff(payload, { path: '/project/file.ts' }).source
+    expect(source?.structuredPatch?.[0]).toMatchObject({ oldStart: 7, newStart: 7, lines: ['-actualBefore', '+actualAfter'] })
+  })
+
   // A tool_execution_start sibling with the original edit substitutions.
   const startEdit: Record<string, unknown> = {
     type: 'tool_execution_start',

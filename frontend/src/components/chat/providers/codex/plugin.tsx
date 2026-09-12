@@ -1,9 +1,9 @@
-/* eslint-disable solid/components-return-once -- renderMessage is a plain dispatcher returning JSX, not a Solid component */
 import type { JSX } from 'solid-js'
+/* eslint-disable solid/components-return-once -- renderMessage is a plain dispatcher returning JSX, not a Solid component */
 import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
+import type { ClassificationContext, ClassificationInput, Provider, SpanRole } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import { buildJsonRpcResult } from '~/components/chat/controls/types'
@@ -16,6 +16,8 @@ import { getInnerMessage } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
+import { messageCompletionFromProto } from '../../assembledMessage'
+import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
@@ -35,6 +37,7 @@ import {
   sendCodexUserInputResponse,
 } from './controlResponse'
 import { CODEX_RENDERERS } from './defineRenderer'
+import { codexElicitation } from './elicitation'
 import { codexToolResultImages } from './extractors/image'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
@@ -227,11 +230,7 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
   [CODEX_ITEM.FILE_CHANGE]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.FILE_CHANGE, toolUse: item, content: [] }),
   [CODEX_ITEM.MCP_TOOL_CALL]: item => ({ kind: 'tool_use', toolName: pickString(item, 'tool') || 'mcpTool', toolUse: item, content: [] }),
   [CODEX_ITEM.DYNAMIC_TOOL_CALL]: item => ({ kind: 'tool_use', toolName: pickString(item, 'tool') || 'dynamicTool', toolUse: item, content: [] }),
-  [CODEX_ITEM.COLLAB_AGENT_TOOL_CALL]: (item) => {
-    if (item.tool === 'spawnAgent' && item.status === CODEX_STATUS.COMPLETED)
-      return { kind: 'hidden' }
-    return { kind: 'tool_use', toolName: CODEX_ITEM.COLLAB_AGENT_TOOL_CALL, toolUse: item, content: [] }
-  },
+  [CODEX_ITEM.COLLAB_AGENT_TOOL_CALL]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.COLLAB_AGENT_TOOL_CALL, toolUse: item, content: [] }),
   [CODEX_ITEM.IMAGE_GENERATION]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.IMAGE_GENERATION, toolUse: item, content: [] }),
   [CODEX_ITEM.IMAGE_VIEW]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.IMAGE_VIEW, toolUse: item, content: [] }),
   [CODEX_ITEM.WEB_SEARCH]: (item) => {
@@ -310,7 +309,34 @@ function codexContextUsageFromNotification(parsed: ParsedMessageContent): Contex
   return contextUsage
 }
 
+const CODEX_TOOL_SPANS = new Set<string>([
+  CODEX_ITEM.COMMAND_EXECUTION,
+  CODEX_ITEM.FILE_CHANGE,
+  CODEX_ITEM.MCP_TOOL_CALL,
+  CODEX_ITEM.DYNAMIC_TOOL_CALL,
+  CODEX_ITEM.IMAGE_GENERATION,
+  CODEX_ITEM.IMAGE_VIEW,
+  CODEX_ITEM.COLLAB_AGENT_TOOL_CALL,
+])
+
+function codexSpanRole(parsed: ParsedMessageContent): SpanRole {
+  const item = extractItem(parsed.parentObject)
+  if (!item || !CODEX_TOOL_SPANS.has(pickString(item, 'type')))
+    return 'other'
+  const parent = parsed.parentObject
+  if (messageCompletionFromProto(parsed.completion) || Number.isFinite(parent?.completedAtMs) || item.status === CODEX_STATUS.COMPLETED || item.status === CODEX_STATUS.FAILED || (item.type === CODEX_ITEM.COLLAB_AGENT_TOOL_CALL && item.status === 'interrupted'))
+    return 'result'
+  return Number.isFinite(parent?.startedAtMs) || item.status === CODEX_STATUS.IN_PROGRESS ? 'opener' : 'other'
+}
+
 const codexPlugin: Provider = {
+  spanRole: codexSpanRole,
+  relatedMessages: (parsed) => {
+    const item = extractItem(parsed.parentObject)
+    if (item?.type === CODEX_ITEM.IMAGE_VIEW || item?.type === CODEX_ITEM.COLLAB_AGENT_TOOL_CALL)
+      return ['request', 'result']
+    return (item?.type === CODEX_ITEM.MCP_TOOL_CALL || item?.type === CODEX_ITEM.DYNAMIC_TOOL_CALL) && codexSpanRole(parsed) === 'result' ? ['request'] : []
+  },
   permissionPresets: { bypass: CODEX_BYPASS_SETTINGS },
   // Seed a new Codex agent with its default collaboration mode.
   defaultProviderOptions: { [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
@@ -455,7 +481,7 @@ const codexPlugin: Provider = {
   },
 
   toolResultMeta: codexToolResultMeta,
-  toolResultImages: codexToolResultImages,
+  toolResultImages: input => codexToolResultImages(input.parsed.parentObject, input.spanType, input.request),
 
   resultDivider: codexResultDivider,
 
@@ -488,7 +514,7 @@ const codexPlugin: Provider = {
   // `{controlResponse}` row, which classifies as `control_response` and resolves its preview
   // through controlResponseDisplay (chatMarkPreview), not here.
   previewText: defaultMarkPreview,
-  controlResponseDisplay: codexControlResponseDisplay,
+  controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseDisplay),
 
   notificationThreadEntry: codexNotificationThreadEntry,
 
@@ -504,6 +530,7 @@ const codexPlugin: Provider = {
       sendCodexUserInputRejectResponse(sendControlResponse, request.requestId),
   },
 
+  elicitation: codexElicitation,
   buildControlResponse(payload, content, requestId) {
     const method = pickString(payload, 'method', '')
     if (getToolName(payload) === 'CodexPlanModePrompt')

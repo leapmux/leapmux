@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
@@ -38,6 +39,10 @@ describe('pi plugin metadata', () => {
 
 describe('pi classify', () => {
   const plugin = providerFor(AgentProvider.PI)!
+
+  it('hides internal custom state entries', () => {
+    expect(plugin.classify(input({ type: 'entry_appended', entry: { type: 'custom', customType: 'plan-mode-state', data: { enabled: true } } }))).toEqual({ kind: 'hidden' })
+  })
 
   it('declares no trigger mode segment (Pi has no mode axis)', () => {
     expect(plugin.triggerModeGroupKey).toBeUndefined()
@@ -353,7 +358,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'bash',
       result: { content: [{ type: 'text', text: resultText }] },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'bash', undefined)
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'bash', undefined))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -372,7 +377,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'read',
       args: { path: '/tmp/a.ts', offset: 10 },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'read', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'read', input(start)))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -390,7 +395,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'write',
       args: { path: '/tmp/new.ts', content: 'piMetaWriteBody\n' },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'write', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'write', input(start)))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('piMetaWriteBody')
   })
@@ -409,7 +414,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'edit',
       args: { path: '/tmp/a.ts', edits: [{ oldText: 'oldMetaMarker', newText: 'newMetaMarker' }] },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'edit', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'edit', input(start)))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('Found 2 occurrences.')
   })

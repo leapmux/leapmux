@@ -20,7 +20,9 @@ import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageRemove, sessionSto
 import { formatErrorMessage } from '~/lib/errors'
 import { detectFileViewModeFromExt, isImageExt, isLikelyBinaryExt, isSvgExt } from '~/lib/fileType'
 import { formatBytes } from '~/lib/formatBytes'
+import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { basename, detectFlavor, extname } from '~/lib/paths'
+import { readWorkerFile } from '~/lib/readWorkerFile'
 import { DiffModeToolbar } from './DiffModeToolbar'
 import * as styles from './FileViewer.css'
 import { TOOLBAR_CLEARANCE_PX } from './FileViewer.css'
@@ -166,7 +168,7 @@ export const FileViewer: Component<{
   // ReadFile call. Split so the extension check only re-runs on
   // filePath change — the totalSize signal updates more frequently.
   const isImagePath = createMemo(() => isImageExt(ext()))
-  const oversizeImage = createMemo(() => isImagePath() && totalSize() > MAX_FILE_SIZE)
+  const oversizeImage = createMemo(() => isImagePath() && totalSize() > MAX_FILE_IMAGE_BYTES)
 
   // Diff mode state
   const [diffOldContent, setDiffOldContent] = createSignal<string | null>(null)
@@ -228,6 +230,13 @@ export const FileViewer: Component<{
       currentBytesPromise = new Promise<Uint8Array | null>((r) => {
         resolveBytes = r
       })
+      const controller = new AbortController()
+      let active = true
+      onCleanup(() => {
+        active = false
+        controller.abort()
+        resolveBytes(null)
+      })
 
       setLoading(true)
       setError(null)
@@ -257,6 +266,8 @@ export const FileViewer: Component<{
         // card. Never read bytes.
         if (isLikelyBinaryExt(fileExt)) {
           const statResp = await workerRpc.statFile(workerId, { workerId, path: filePath })
+          if (!active)
+            return
           batch(() => {
             setTotalSize(Number(statResp.info?.size ?? 0n))
             setModTime(statResp.info?.modTime ?? '')
@@ -267,23 +278,17 @@ export const FileViewer: Component<{
           return
         }
 
-        // Single readFile for everything else (text, markdown, source,
-        // no-extension, image). `readFile.totalSize` removes the need
-        // for an upfront statFile, and `metaOnlyIfTruncated` lets the
-        // worker short-circuit oversize images — server returns empty
-        // content + totalSize so we don't pay for 256 KiB of bytes
-        // we'd refuse to render. Saves one round-trip on every image
-        // and never wastes bytes on oversize ones.
-        const readResp = await workerRpc.readFile(workerId, {
-          workerId,
-          path: filePath,
-          limit: BigInt(MAX_FILE_SIZE),
-          metaOnlyIfTruncated: isImageExt(fileExt),
-        })
+        // Images use the shared byte limit and paging helper. Text keeps its smaller preview limit.
+        // Oversized images return metadata only, so the viewer does not fetch bytes that it cannot display.
+        const readResp = isImageExt(fileExt)
+          ? await readWorkerFile({ workerId, path: filePath, maxBytes: MAX_FILE_IMAGE_BYTES, signal: controller.signal })
+          : await workerRpc.readFile(workerId, { workerId, path: filePath, limit: BigInt(MAX_FILE_SIZE) })
+        if (!active)
+          return
         const respTotalSize = Number(readResp.totalSize)
         // Oversize image: server skipped the bytes; show the unsupported
         // card with size and no preview.
-        if (isImageExt(fileExt) && respTotalSize > MAX_FILE_SIZE) {
+        if (isImageExt(fileExt) && respTotalSize > MAX_FILE_IMAGE_BYTES) {
           batch(() => {
             setTotalSize(respTotalSize)
             setModTime(readResp.modTime)
@@ -303,11 +308,13 @@ export const FileViewer: Component<{
         resolveBytes(bytes)
       }
       catch (err) {
-        setError(formatErrorMessage(err, 'Failed to load file'))
+        if (active)
+          setError(formatErrorMessage(err, 'Failed to load file'))
         resolveBytes(null)
       }
       finally {
-        setLoading(false)
+        if (active)
+          setLoading(false)
       }
     },
   ))

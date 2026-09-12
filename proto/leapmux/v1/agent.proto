@@ -530,7 +530,7 @@ enum MessageCompletion {
 message AgentChatMessage {
   string id = 1;
   MessageSource source = 2;
-  bytes content = 3; // JSON blob from Claude Code (may be compressed per content_compression)
+  bytes content = 3; // Original provider payload, encoded with content_compression.
   int64 seq = 4;
   string created_at = 5;
   reserved 6;
@@ -557,6 +557,11 @@ message AgentChatMessage {
   MarkType mark_type = 16;
   AssembledMessageKind assembled_kind = 17;
   MessageCompletion completion = 18;
+  // JSON sections "provider" and "metadata" hold recovered provider data and
+  // worker-calculated display fields. The original provider payload stays unchanged.
+  bytes supplemental_content = 19;
+  ContentCompression supplemental_content_compression = 20;
+  int64 supplemental_revision = 21;
 }
 
 // AgentStatusChange notifies of agent status transitions.
@@ -709,6 +714,16 @@ message GetAgentMessageResponse {
   AgentChatMessage message = 1;
 }
 
+// Fetch related tool messages without changing the client's loaded history window.
+message GetAgentSpanMessagesRequest {
+  string agent_id = 1;
+  string span_id = 2;
+}
+
+message GetAgentSpanMessagesResponse {
+  repeated AgentChatMessage messages = 1;
+}
+
 // ListMessageMarks returns the seqs of every marked message (scroll-rail jump
 // targets) plus the agent's whole-history seq range. Drives the chat scroll
 // rail: dot positions (marked seqs) and the seq-space track extent
@@ -843,6 +858,8 @@ message AgentGoal {
   // wire, so a goal restarted with the same objective text is distinguishable
   // only by a fresh created_at.
   string created_at = 4;
+  // The provider's goal identity, when available. This is separate from its creation time.
+  string native_id = 5;
   // No updated_at here. The stamp that ORDERS two answers about the goal must
   // exist when the goal does NOT -- a clear is an answer too -- so it rides the
   // carrier beside the goal: AgentGoalChanged.goal_updated_at and
@@ -935,12 +952,12 @@ message AgentControlRequest {
   string request_id = 2;
   bytes payload = 3;  // Full JSON of the control_request (verbatim)
   AgentProvider agent_provider = 4; // Provider for this agent
-  // claim_token identifies this REQUEST INSTANCE. The worker mints a fresh token per
-  // PersistControlRequest; the frontend echoes it in SendControlResponseRequest so a stale
-  // duplicate answer to a PRIOR instance of a reused request_id (e.g. a Codex/ACP JSON-RPC
-  // counter that reset across a plan-exec restart) cannot re-win the idempotency claim of the
-  // current instance. Empty when the row predates the token (degrades to request_id-only dedup).
+  // claim_token identifies the request instance. An identical pending announcement keeps its token.
+  // A new request after deletion, or a changed payload, receives a fresh token.
+  // The frontend echoes the token in SendControlResponseRequest to deduplicate answers per instance.
   string claim_token = 5;
+  // Optional transcript source, outside the original provider payload. Zero means no source is available.
+  int64 source_seq = 6;
 }
 
 // AgentControlCancelRequest is sent when Claude Code cancels a pending control request.

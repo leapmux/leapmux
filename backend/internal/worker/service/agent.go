@@ -568,6 +568,31 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
 		})
 
+	registerAgentGuarded(d, contracts.RPCMethodGetAgentSpanMessages, leapmuxv1.Scope_SCOPE_AGENT_READ,
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.GetAgentSpanMessagesRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+			if strings.TrimSpace(r.GetSpanId()) == "" {
+				sendInvalidArgument(sender, "span_id must not be empty")
+				return
+			}
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSpanMessagesResponse{})
+				return
+			}
+			rows, err := svc.Queries.ListMessagesByAgentAndSpan(ctx, db.ListMessagesByAgentAndSpanParams{
+				AgentID: agentRow.ID, SpanID: r.GetSpanId(),
+			})
+			if err != nil {
+				slog.Error("Get related tool messages", "agent_id", agentRow.ID, "error", err)
+				sendInternalError(sender, "failed to get related tool messages")
+				return
+			}
+			messages := make([]*leapmuxv1.AgentChatMessage, 0, len(rows))
+			for _, row := range rows {
+				messages = append(messages, messageToProto(&row))
+			}
+			sendProtoResponse(sender, &leapmuxv1.GetAgentSpanMessagesResponse{Messages: messages})
+		})
+
 	// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
 	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
 	// content decompression -- because mark_type is set at write time.
@@ -787,7 +812,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
 			// forward=false for a deduped duplicate / server-side plan-prompt / withheld restart approval.
 			// claimToken is the per-instance token the frontend echoed from the answered AgentControlRequest.
-			if forwardBytes, forward := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken()); forward {
+			forwardBytes, forward, err := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken())
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+			if forward {
 				if err := svc.Agents.SendRawInput(agentID, forwardBytes); err != nil {
 					slog.Error("failed to send control response to agent",
 						"agent_id", agentID, "error", err)
@@ -1473,7 +1503,7 @@ func (svc *Service) replayAgentCatchUp(
 			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{
-					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, cr.RequestID, cr.Payload, cr.ClaimToken),
+					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq}, cr.ClaimToken),
 				},
 			})
 		}
@@ -3148,7 +3178,7 @@ func (svc *Service) persistSyntheticUserMessage(agentID string, provider leapmux
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: innerJSON}, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
@@ -3322,7 +3352,8 @@ func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {
 }
 
 func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAgent db.Agent) error {
-	if newSessionID, ok := svc.Agents.ClearContext(agentID); ok {
+	newSessionID, err := svc.Agents.ClearContext(agentID)
+	if err == nil {
 		if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: newSessionID,
 			ID:             agentID,
@@ -3338,7 +3369,10 @@ func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAg
 		})
 		return nil
 	}
-	return svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent)
+	if errors.Is(err, agent.ErrContextClearUnsupported) || errors.Is(err, agent.ErrAgentNotFound) {
+		return svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent)
+	}
+	return err
 }
 
 // initiatePlanExecutionRestart performs a full stop-and-restart to clear
@@ -3411,11 +3445,12 @@ func broadcastReplayAgentEvent(sink *replaySink, event *leapmuxv1.AgentEvent) {
 	})
 }
 
-func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestID string, payload []byte, claimToken string) *leapmuxv1.AgentControlRequest {
+func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) *leapmuxv1.AgentControlRequest {
 	return &leapmuxv1.AgentControlRequest{
 		AgentId:       agentID,
-		RequestId:     requestID,
-		Payload:       payload,
+		RequestId:     request.RequestID,
+		Payload:       request.Payload,
+		SourceSeq:     request.SourceSeq,
 		AgentProvider: provider,
 		// The per-instance token the frontend echoes in its answer so the idempotency claim can dedup
 		// a reused request_id per INSTANCE (see AgentControlRequest.claim_token).
@@ -3562,22 +3597,25 @@ func reverseMessages(msgs []db.Message) {
 // messageToProto converts a DB Message to a proto AgentChatMessage.
 func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 	return &leapmuxv1.AgentChatMessage{
-		Id:                 m.ID,
-		Source:             m.Source,
-		Content:            m.Content,
-		Seq:                m.Seq,
-		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
-		AgentProvider:      m.AgentProvider,
-		CreatedAt:          timefmt.Format(m.CreatedAt.Time),
-		Depth:              int32(m.Depth),
-		SpanId:             m.SpanID,
-		ParentSpanId:       m.ParentSpanID,
-		SpanType:           m.SpanType,
-		SpanColor:          int32(m.SpanColor),
-		SpanLines:          m.SpanLines,
-		MarkType:           m.MarkType,
-		AssembledKind:      leapmuxv1.AssembledMessageKind(m.AssembledKind),
-		Completion:         leapmuxv1.MessageCompletion(m.Completion),
+		Id:                             m.ID,
+		Source:                         m.Source,
+		Content:                        m.Content,
+		Seq:                            m.Seq,
+		ContentCompression:             leapmuxv1.ContentCompression(m.ContentCompression),
+		SupplementalContent:            m.SupplementalContent,
+		SupplementalContentCompression: leapmuxv1.ContentCompression(m.SupplementalContentCompression),
+		SupplementalRevision:           m.SupplementalRevision,
+		AgentProvider:                  m.AgentProvider,
+		CreatedAt:                      timefmt.Format(m.CreatedAt.Time),
+		Depth:                          int32(m.Depth),
+		SpanId:                         m.SpanID,
+		ParentSpanId:                   m.ParentSpanID,
+		SpanType:                       m.SpanType,
+		SpanColor:                      int32(m.SpanColor),
+		SpanLines:                      m.SpanLines,
+		MarkType:                       m.MarkType,
+		AssembledKind:                  leapmuxv1.AssembledMessageKind(m.AssembledKind),
+		Completion:                     leapmuxv1.MessageCompletion(m.Completion),
 	}
 }
 

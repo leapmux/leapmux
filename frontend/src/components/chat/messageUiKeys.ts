@@ -12,12 +12,9 @@ export const MESSAGE_UI_KEY = {
   AGENT_PROMPT: 'agent-prompt',
   THINKING: 'thinking',
   PLAN_EXECUTION: 'plan-execution',
-  CODEX_MCP_TOOL_CALL: 'codex-mcp-tool-call',
   CODEX_COMMAND_EXECUTION: 'codex-command-execution',
   CODEX_WEB_SEARCH: 'codex-web-search',
-  CODEX_COLLAB_AGENT_TOOL_CALL: 'codex-collab-agent-tool-call',
   CODEX_REASONING: 'codex-reasoning',
-  OPENCODE_TOOL_CALL_UPDATE: 'opencode-tool-call-update',
 } as const
 
 export type MessageUiKey = typeof MESSAGE_UI_KEY[keyof typeof MESSAGE_UI_KEY]
@@ -48,12 +45,9 @@ export const MESSAGE_UI_DEFAULTS: Record<MessageUiKey, (ctx: MessageUiDefaultCon
   [MESSAGE_UI_KEY.AGENT_PROMPT]: () => false,
   [MESSAGE_UI_KEY.THINKING]: ctx => ctx.expandAgentThoughts ?? true,
   [MESSAGE_UI_KEY.PLAN_EXECUTION]: () => false,
-  [MESSAGE_UI_KEY.CODEX_MCP_TOOL_CALL]: () => false,
   [MESSAGE_UI_KEY.CODEX_COMMAND_EXECUTION]: () => false,
   [MESSAGE_UI_KEY.CODEX_WEB_SEARCH]: () => false,
-  [MESSAGE_UI_KEY.CODEX_COLLAB_AGENT_TOOL_CALL]: () => false,
   [MESSAGE_UI_KEY.CODEX_REASONING]: ctx => ctx.expandAgentThoughts ?? true,
-  [MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE]: () => false,
 }
 
 /** Resolve a per-message UI key's default expanded value (see MESSAGE_UI_DEFAULTS). */

@@ -1,9 +1,8 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_METHOD, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import { zcodeControlResponseDisplay } from './controlResponse'
-import { ZCODE_METHOD } from './protocol'
 
 /**
  * A stored answer row. `response` is the SHARED allow/deny envelope: ZCode's own
@@ -83,7 +82,7 @@ describe('zcodeControlResponseDisplay', () => {
   it('delegates a permission allow to the neutral envelope', () => {
     expect(zcodeControlResponseDisplay(cr(
       allow({ 'Which database?': 'Postgres' }),
-      { method: ZCODE_METHOD.RequestPermission, request: { tool_name: ZCODE_TOOL.Bash } },
+      { method: 'interaction/requestPermission', request: { tool_name: ZCODE_TOOL.Bash } },
     ))).toEqual({ kind: 'label', text: 'Approved' })
   })
 

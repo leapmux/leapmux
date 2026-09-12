@@ -70,7 +70,7 @@ import { createQuakeTerminalStore, quakeKeyForTab, quakeKeyId } from '~/stores/q
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabSupportsSessionGoal, agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
@@ -1195,14 +1195,6 @@ export const AppShell: Component = () => {
   const activeBackgroundTasksFailed = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
   )
-  // Read from the ROOT tab, never from the active one. A subagent tab is seeded
-  // with its parent's provider and carries NOTHING when that parent tab is not
-  // resolvable, and an absent provider reads as "no goal feature" -- which hid
-  // a goal the worker was reporting, with nothing on screen to say why.
-  const activeGoalSupported = createMemo(() => {
-    const rootId = activeRootAgentId()
-    return rootId !== null && agentTabSupportsSessionGoal(tabView.getAgentTab(rootId))
-  })
   // ONE goal-action rule, for both surfaces.
   //
   // SET is the one action that needs input, so it opens the editor and the RPC
@@ -1227,17 +1219,15 @@ export const AppShell: Component = () => {
   // One surface replaces three memos and a loose handler. A consumer cannot
   // combine one agent's goal with another agent's actions or progress.
   //
-  // Absent for a provider with no goal feature, and absent when the surface
-  // could hold nothing: a card with no goal and no way to set one is dead
-  // weight that the section then sizes space for. See hasGoalSurface.
+  // Show the card when the worker reports a goal or supports setting one.
   const activeGoalSurface = createMemo<GoalSurface | undefined>(() => {
-    if (!activeGoalSupported())
-      return undefined
     const rootId = activeRootAgentId()
+    if (!rootId)
+      return undefined
     const surface: GoalSurface = {
-      current: rootId ? chatStore.goal.get(rootId) : undefined,
-      progress: rootId ? chatStore.goal.progress(rootId) : {},
-      actions: rootId ? chatStore.goal.supportedActions(rootId) : [],
+      current: chatStore.goal.get(rootId),
+      progress: chatStore.goal.progress(rootId),
+      actions: chatStore.goal.supportedActions(rootId),
       // The sidebar acts on the ACTIVE root, so it resolves the agent at CLICK
       // time and defers to the shared rule below rather than restating it.
       // Resolving it here instead would bind the handler to whichever tab was
@@ -1250,8 +1240,7 @@ export const AppShell: Component = () => {
     }
     return hasGoalSurface(surface) ? surface : undefined
   })
-  // The provider helper already requires an agent tab. A second tab-type guard
-  // would restate the same condition and could drift from it.
+  // The active root identifies an agent tab for both goal surfaces.
   const showGoalsAndTodos = createMemo(() =>
     shouldShowGoalsAndTodosSection(activeTodos(), activeGoalSurface()),
   )

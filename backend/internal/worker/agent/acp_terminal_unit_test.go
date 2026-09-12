@@ -12,7 +12,7 @@ import (
 
 // Init / buffer helpers run on all platforms (no process spawn).
 func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) {
-	raw, err := acpStandardInitParams()
+	raw, err := acpStandardInitParams(nil)
 	require.NoError(t, err)
 
 	var params map[string]interface{}
@@ -24,6 +24,8 @@ func TestAcpStandardInitParams_ClientCapabilitiesTerminal_AllGOOS(t *testing.T) 
 	caps, ok := params["clientCapabilities"].(map[string]interface{})
 	require.True(t, ok, "clientCapabilities must be present")
 	assert.Equal(t, true, caps["terminal"])
+	assert.NotContains(t, caps, "_meta")
+	assert.Equal(t, map[string]any{"form": map[string]any{}, "url": map[string]any{}}, caps["elicitation"])
 
 	fs, ok := caps["fs"].(map[string]interface{})
 	require.True(t, ok)
@@ -40,11 +42,13 @@ func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
 			"term-1": {Output: "stdout\nstderr\n", ExitCode: &exitCode},
 		},
 	}}
-	raw := b.expandACPTerminalResult(json.RawMessage(`{
+	original := json.RawMessage(`{
 		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed",
 		"content":[{"type":"terminal","terminalId":"term-1"}]
-	}`))
-	assert.Contains(t, string(raw), "stdout\\nstderr")
+	}`)
+	content := b.acpMessageContent(original, original)
+	assert.Equal(t, []byte(original), content.Original)
+	assert.Contains(t, string(content.Supplemental), "stdout\\nstderr")
 	_, present := b.takeCompletedTerminal("term-1")
 	assert.False(t, present)
 }

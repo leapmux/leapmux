@@ -1,5 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { uint8ArrayToBase64 } from '~/lib/base64'
+import { messageCompletionFromProto } from './assembledMessage'
 
 function jsonInt64(value: bigint): number | string {
   return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
@@ -8,18 +10,9 @@ function jsonInt64(value: bigint): number | string {
 }
 
 /**
- * Reconstruct a message's full wire envelope as a JSON string for the raw-JSON debug
- * surface (the `hidden` / `unsupported_provider` rows, whose whole purpose is to show
- * the bytes when something is wrong). Mirrors the persisted shape field-for-field,
- * omitting proto3 zero-value fields so the output matches what the backend stored.
- *
- * Two parse guards (span_lines and content) degrade a corrupt payload to its raw
- * string rather than throwing into the ErrorBoundary and hiding the very bytes this
- * view exists to inspect. `sourceName` is the display label for `message.source`
- * (the caller's sourceLabel), passed in so this stays a pure, UI-free function.
- *
- * `heights` (optional) carries the measured DOM height for this row as
- * `geometry.height`. It is omitted until the row has a real DOM measurement.
+ * Show decoded provider content beside LeapMux metadata and supplemental content.
+ * Preserve numeric literals and repeated keys in both stored JSON sources.
+ * The optional geometry field shows the measured row height.
  */
 export function buildRawJsonEnvelope(
   message: AgentChatMessage,
@@ -33,6 +26,13 @@ export function buildRawJsonEnvelope(
     seq: jsonInt64(message.seq),
     created_at: message.createdAt,
   }
+  const completion = messageCompletionFromProto(message.completion)
+  if (completion)
+    envelope.completion = completion
+  if (parsed.contentDecodeFailed)
+    envelope.content_decode_failed = true
+  if (message.supplementalRevision > 0n)
+    envelope.supplemental_revision = jsonInt64(message.supplementalRevision)
   if (message.depth)
     envelope.depth = message.depth
   if (message.spanId)
@@ -53,27 +53,34 @@ export function buildRawJsonEnvelope(
       envelope.span_lines = message.spanLines
     }
   }
-  if (parsed.wrapper && parsed.wrapper.old_seqs.length > 0)
-    envelope.old_seqs = parsed.wrapper.old_seqs
-
-  // Debug geometry: the row's measured DOM height. A `geometry` namespace (not
-  // a flat field) leaves room for future per-row geometry (offset, width).
   if (heights?.measured !== undefined) {
     envelope.geometry = { height: heights.measured }
   }
 
-  if (parsed.wrapper) {
-    envelope.messages = parsed.wrapper.messages
-    return JSON.stringify(envelope)
+  const fields = Object.entries(envelope).flatMap(([key, value]) => {
+    const encoded = JSON.stringify(value)
+    return encoded === undefined ? [] : [`${JSON.stringify(key)}:${encoded}`]
+  })
+  const content = parsed.contentDecodeFailed
+    ? JSON.stringify({ compression: message.contentCompression, base64: uint8ArrayToBase64(message.content) })
+    : rawJsonValue(parsed.rawText)
+  fields.push(`"content":${content}`)
+  if (message.supplementalContent?.length) {
+    const supplemental = parsed.supplementalRawText !== undefined
+      ? rawJsonValue(parsed.supplementalRawText)
+      : JSON.stringify(parsed.supplementalContent !== undefined ? parsed.supplementalContent : { compression: message.supplementalContentCompression, base64: uint8ArrayToBase64(message.supplementalContent) })
+    fields.push(`"supplemental_content":${supplemental}`)
   }
+  return `{${fields.join(',')}}`
+}
 
+/** Validate before embedding a JSON value. Invalid content remains a quoted string. */
+function rawJsonValue(text: string): string {
   try {
-    envelope.content = JSON.parse(parsed.rawText)
-    return JSON.stringify(envelope)
+    JSON.parse(text)
+    return text
   }
   catch {
-    // A non-JSON content payload (or a corrupt one): fall back to the raw text so
-    // the debug view still shows the bytes rather than throwing.
-    return parsed.rawText
+    return JSON.stringify(text)
   }
 }

@@ -1,11 +1,19 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
-import { createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
+
+interface FileImageDisplay {
+  path: string | undefined
+  source: ImageResultSource
+  loading: boolean
+  error: string
+  decodeError: boolean
+}
 
 /**
  * The shared renderer for an image a tool returned.
@@ -71,9 +79,69 @@ export function ImageResultView(props: {
   title?: string
   context?: RenderContext
 }): JSX.Element {
-  const info = createMemo(() => imageRenderInfo(props.source))
+  const [loaded, setLoaded] = createSignal<ImageResultSource>()
+  const [loading, setLoading] = createSignal(false)
+  const [loadError, setLoadError] = createSignal('')
+  const [decodeError, setDecodeError] = createSignal(false)
+  const filePath = () => !props.source.data && !props.source.url ? props.source.filePath : undefined
+  let generation = 0
+  const loadFile = (refresh = false): void => {
+    const path = filePath()
+    const read = props.context?.sources?.fileImage
+    if (!path || !read || props.context?.premeasureMode || props.context?.rowOffscreen?.())
+      return
+    const current = ++generation
+    if (refresh) {
+      setLoaded(undefined)
+      setDecodeError(false)
+    }
+    setLoading(true)
+    setLoadError('')
+    void (refresh ? read(path, { refresh: true }) : read(path)).then((source) => {
+      if (current === generation)
+        setLoaded(source)
+    }).catch((error: unknown) => {
+      if (current === generation)
+        setLoadError(error instanceof Error ? error.message : String(error))
+    }).finally(() => {
+      if (current === generation)
+        setLoading(false)
+    })
+  }
+  createEffect(on(
+    () => [filePath(), props.context?.sources?.fileImage, props.context?.premeasureMode, props.context?.rowOffscreen?.()] as const,
+    () => {
+      generation++
+      setLoaded(undefined)
+      setLoadError('')
+      setLoading(false)
+      loadFile()
+      onCleanup(() => {
+        generation++
+      })
+    },
+  ))
+  const display = createMemo<FileImageDisplay>((previous) => {
+    const path = filePath()
+    const paused = !props.context?.premeasureMode && (props.context?.syntaxHighlightingPaused?.() || props.context?.textSelectionActive?.())
+    // Keep the current geometry while the virtualizer defers height changes.
+    if (path && paused && previous?.path === path)
+      return previous
+    const resolved = loaded() ?? (path ? props.context?.sources?.cachedFileImage(path) : undefined)
+    const error = loadError()
+    return {
+      path,
+      source: resolved ? { ...props.source, ...resolved, description: props.source.description ?? resolved.description } : props.source,
+      loading: loading() || !!(path && props.context?.sources?.fileImage && !resolved && !error),
+      error,
+      decodeError: decodeError(),
+    }
+  })
+  const source = () => display().source
+  const info = createMemo(() => imageRenderInfo(source()))
+  createEffect(on(() => info().src, () => setDecodeError(false)))
   const dims = createMemo(() => {
-    const stated = props.source.dimensions
+    const stated = source().dimensions
     if (stated)
       return stated
     const src = info().src
@@ -84,6 +152,7 @@ export function ImageResultView(props: {
   // back to natural sizing, so a wrong sniff can never permanently distort
   // the box — it just degrades to today's measure-on-load behavior.
   const [reservationBroken, setReservationBroken] = createSignal(false)
+  createEffect(on(() => info().src, () => setReservationBroken(false)))
   const reserved = () => (reservationBroken() ? null : dims())
 
   const sizeStyle = () => {
@@ -92,6 +161,8 @@ export function ImageResultView(props: {
   }
 
   const verifyReservation = (img: HTMLImageElement) => {
+    if (img.getAttribute('src') !== info().src)
+      return
     const d = dims()
     if (!d || reservationBroken())
       return
@@ -104,7 +175,7 @@ export function ImageResultView(props: {
 
   const open = () => props.context?.onOpenImage?.({
     index: props.index ?? 0,
-    filePath: props.source.filePath,
+    filePath: source().filePath,
     title: props.title,
   })
   const openable = () => Boolean(props.context?.onOpenImage)
@@ -114,25 +185,41 @@ export function ImageResultView(props: {
       class={toolImage}
       style={sizeStyle()}
       src={info().src}
-      alt={props.source.mimeType ?? 'image'}
+      alt={source().description || source().mimeType || 'image'}
       loading={props.context?.premeasureMode ? 'eager' : 'lazy'}
       decoding="async"
       referrerpolicy="no-referrer"
       data-size-reserved={reserved() ? '1' : undefined}
       onLoad={e => verifyReservation(e.currentTarget)}
+      onError={(event) => {
+        if (event.currentTarget.getAttribute('src') === info().src)
+          setDecodeError(true)
+      }}
     />
   )
 
   return (
     <Show
-      when={info().src}
-      fallback={<ImageResultPlaceholder source={props.source} reason={info().reason} />}
+      when={info().src && !display().decodeError}
+      fallback={(
+        <Show when={display().loading || display().error || display().decodeError} fallback={<ImageResultPlaceholder source={source()} reason={info().reason} />}>
+          <div class={toolImageRow}>
+            <div class={toolInputSummary}>{display().loading ? 'Loading image…' : display().error || 'The image could not be decoded'}</div>
+            <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
+              <div><button type="button" class="small outline" onClick={() => loadFile(true)}>Retry image</button></div>
+            </Show>
+          </div>
+        </Show>
+      )}
     >
       <div class={toolImageRow}>
         <Show when={openable()} fallback={image()}>
           <button type="button" class={toolImageButton} onClick={open} aria-label="Open image">
             {image()}
           </button>
+        </Show>
+        <Show when={props.source.description}>
+          <div class={toolInputSummary}>{props.source.description}</div>
         </Show>
       </div>
     </Show>

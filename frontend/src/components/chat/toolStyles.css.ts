@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { todoList } from '~/components/todo/TodoList.css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
 import { fadeMaskBottom } from '~/styles/fadeMask'
 import { clippedText, controlReset } from '~/styles/shared.css'
@@ -251,12 +250,6 @@ export const toolBodyContent = style({
 // `bordered={false}`.
 export const toolBodyBorder = style({
   borderLeftColor: 'var(--span-line-color, var(--border))',
-})
-
-// TodoList inside tool body: remove horizontal padding (toolBodyContent already provides it)
-globalStyle(`${toolBodyContent} > .${todoList}`, {
-  paddingLeft: 0,
-  paddingRight: 0,
 })
 
 // File list in Grep/Glob tool results

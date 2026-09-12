@@ -1,13 +1,12 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_METHOD, ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { permissionPillGroup } from '~/test-support/controlRequests'
 import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
 import { createControlAnswerState } from '../../controls/types'
 import { ZCodeControlActions, ZCodeControlContent } from './controls'
-import { ZCODE_METHOD } from './protocol'
 import './plugin'
 
 /**
@@ -23,7 +22,7 @@ function request(
     requestId: 'req-1',
     agentId: 'agent-1',
     payload: {
-      method: toolName === ZCODE_TOOL.Bash ? ZCODE_METHOD.RequestPermission : ZCODE_METHOD.RequestUserInput,
+      method: toolName === ZCODE_TOOL.Bash ? 'interaction/requestPermission' : ZCODE_METHOD.RequestUserInput,
       request: { tool_name: toolName, input },
       params,
     },
@@ -35,10 +34,8 @@ function decode(bytes: unknown): Record<string, unknown> {
 }
 
 describe('zcode plan approval control', () => {
-  // The shared ExitPlanModeContent cannot be reused: it renders Claude's
-  // allowedPrompts summary, which ZCode does not send, and it would show "ready to
-  // proceed" while dropping the plan itself.
-  it('renders the plan the request carries as its question text', () => {
+  // The transcript contains the full plan. The banner contains approval controls.
+  it('keeps the full plan out of the approval area', () => {
     const { container } = render(() => (
       <ZCodeControlContent
         request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: '# Plan\n\nStep one' }] })}
@@ -46,7 +43,7 @@ describe('zcode plan approval control', () => {
       />
     ))
     expect(container.textContent ?? '').toContain('Plan Ready for Review')
-    expect(container.textContent ?? '').toContain('Step one')
+    expect(container.textContent ?? '').not.toContain('Step one')
   })
 
   it('falls back to a sentence when the request states no plan', () => {
@@ -94,6 +91,21 @@ describe('zcode plan approval control', () => {
     fireEvent.click(getByTestId('plan-reject-btn'))
     expect(onTriggerSend).toHaveBeenCalledOnce()
     expect(onRespond).not.toHaveBeenCalled()
+  })
+})
+
+describe('zcode native questions', () => {
+  it('shows the option description through the shared question control', () => {
+    const control = request(ZCODE_TOOL.AskUserQuestion, {
+      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue' }] }],
+    }, {
+      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue', value: 'Blue', description: 'Choose the color blue.' }] }],
+    })
+    const { getByText, getByRole } = render(() => (
+      <ControlRequestContent request={control} answerState={createControlAnswerState()} agentProvider={AgentProvider.ZCODE} />
+    ))
+    expect(getByText('Choose the color blue.')).toBeInTheDocument()
+    expect(getByRole('radio')).toBeInTheDocument()
   })
 })
 

@@ -139,35 +139,3 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 	assert.False(t, svc.Output.claimControlResponseAnswer("agent-1", "2", "instA"),
 		"instance A's stale duplicate STILL loses even after instance B claimed -- the reuse window stays closed")
 }
-
-// TestPersistControlRequest_MintsFreshClaimTokenPerInstance pins that PersistControlRequest stamps a
-// distinct claim_token on each store of a (reused) request id, so the token the frontend echoes back
-// distinguishes instances. This is the store-side half of the id-reuse closure. It ALSO pins the
-// thread-through guarantee the live broadcast relies on: the token PersistControlRequest RETURNS is
-// exactly the one it stored, so the paired BroadcastControlRequest can carry it without a second
-// GetControlRequest readback (and without the readback-failure window that broadcast an empty token).
-func TestPersistControlRequest_MintsFreshClaimTokenPerInstance(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	svc, _, _ := setupTestService(t)
-	createClaimTestAgent(t, svc, "agent-1")
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-
-	returned1 := sink.PersistControlRequest("2", []byte(`{"jsonrpc":"2.0","id":2,"method":"session/request_permission","params":{}}`))
-	first, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "2"})
-	require.NoError(t, err)
-	assert.NotEmpty(t, first.ClaimToken, "a stored control request carries a claim token the frontend echoes back")
-	assert.Equal(t, first.ClaimToken, returned1,
-		"PersistControlRequest returns the SAME token it stored, so the paired broadcast carries it without a readback")
-
-	// Re-store the same id (a reissued instance). The token must be a DIFFERENT one so the two
-	// instances' answers claim distinct keys.
-	returned2 := sink.PersistControlRequest("2", []byte(`{"jsonrpc":"2.0","id":2,"method":"session/request_permission","params":{}}`))
-	second, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "2"})
-	require.NoError(t, err)
-	assert.NotEmpty(t, second.ClaimToken)
-	assert.Equal(t, second.ClaimToken, returned2, "the re-store returns the fresh token it stored")
-	assert.NotEqual(t, first.ClaimToken, second.ClaimToken,
-		"re-issuing a request id mints a fresh token so a stale duplicate of the prior instance can't re-win")
-}

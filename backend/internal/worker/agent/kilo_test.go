@@ -23,7 +23,7 @@ func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []recordedRequest) {
 	)
 }
 
-func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*KiloAgent, func() []recordedRequest) {
+func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*KiloAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *KiloAgent {
 			a := &KiloAgent{}
@@ -44,15 +44,15 @@ func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) j
 func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	agent, _ := newKiloAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+	agent, _ := newKiloAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
 		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{
 				"sessionId": "session-2",
 				"models": {"currentModelId": "anthropic/claude-sonnet-4"},
 				"modes":  {"currentModeId": "code"}
-			}`)
+			}`)}
 		}
-		return json.RawMessage(`{}`)
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "anthropic/claude-opus-4"
 	agent.currentPrimaryAgent = "plan"
@@ -61,8 +61,8 @@ func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
 	agent.reapplySettings = agent.reapplyModelAndSecondary
 	agent.refreshFromSession = agent.applySessionRefresh
 
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := agent.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "session-2", sessionID)
 	assert.Equal(t, "anthropic/claude-sonnet-4", agent.model)
 	assert.Equal(t, "code", agent.currentPrimaryAgent)

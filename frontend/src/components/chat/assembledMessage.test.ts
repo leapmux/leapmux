@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { assembledMessageDisplayText, parseAssembledMessage, parseProviderMessageCompletion } from './assembledMessage'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { assembledMessageDisplayText, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 
 describe('assembled message', () => {
   it('parses completed reasoning', () => {
@@ -21,11 +22,11 @@ describe('assembled message', () => {
     expect(assembledMessageDisplayText(message)).toBe('Partial answer\n\nText truncated by interruption.')
   })
 
-  it('reads completion metadata from a provider message', () => {
-    expect(parseProviderMessageCompletion({
-      sessionUpdate: 'tool_call_update',
-      _leapmux: { completion: 'error' },
-    })).toBe('error')
-    expect(parseProviderMessageCompletion({ _leapmux: { completion: 'unknown' } })).toBeNull()
+  it('reads only typed message completion', () => {
+    expect(messageCompletionFromProto(MessageCompletion.ERROR)).toBe('error')
+    expect(messageCompletionFromProto(MessageCompletion.INTERRUPTED)).toBe('interrupted')
+    expect(messageCompletionFromProto(MessageCompletion.COMPLETE)).toBe('complete')
+    expect(messageCompletionFromProto(MessageCompletion.UNSPECIFIED)).toBeNull()
+    expect(messageCompletionFromProto(undefined)).toBeNull()
   })
 })

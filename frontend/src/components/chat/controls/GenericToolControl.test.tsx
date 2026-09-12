@@ -1,7 +1,8 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
+import { GenericToolActions, GenericToolContent } from '~/components/chat/controls/GenericToolControl'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
 
@@ -281,5 +282,61 @@ describe('genericToolActions', () => {
 
     expect(screen.getByRole('radiogroup', { name: 'Permissions' }))
       .toHaveAccessibleDescription('The selected preset applies when you allow or approve this request')
+  })
+})
+
+const PERMISSION_REQUIRED_RE = /Permission Required:/
+const BASH_RE = /Bash/
+const KEY_19_RE = /key_19/
+
+function makeContentRequest(input: Record<string, unknown>): ControlRequest {
+  return {
+    requestId: 'req-1',
+    agentId: 'agent-1',
+    payload: {
+      request: { tool_name: 'Bash', input },
+    },
+  }
+}
+
+describe('genericToolContent', () => {
+  it('uses Fractured JSON for tool arguments', () => {
+    const request = makeRequest()
+    const { container } = render(() => <GenericToolContent request={request} />)
+    expect(container.querySelector('pre')?.textContent).toBe(prettifyJson({ command: 'ls' }))
+  })
+
+  it('renders tool name and short JSON without toggle', () => {
+    render(() => <GenericToolContent request={makeContentRequest({ command: 'ls' })} />)
+
+    expect(screen.getByText(PERMISSION_REQUIRED_RE)).toBeInTheDocument()
+    expect(screen.getByText(BASH_RE)).toBeInTheDocument()
+    // Short JSON needs no expansion control.
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('truncates long JSON and shows toggle', () => {
+    const longInput: Record<string, string> = {}
+    for (let i = 0; i < 20; i++) {
+      longInput[`key_${i}`] = `value_${i}`
+    }
+    render(() => <GenericToolContent request={makeContentRequest(longInput)} />)
+
+    const toggle = screen.getByRole('button')
+    expect(toggle).toHaveTextContent('more line')
+  })
+
+  it('expands long JSON when toggle is clicked', () => {
+    const longInput: Record<string, string> = {}
+    for (let i = 0; i < 20; i++) {
+      longInput[`key_${i}`] = `value_${i}`
+    }
+    render(() => <GenericToolContent request={makeContentRequest(longInput)} />)
+
+    fireEvent.click(screen.getByRole('button'))
+
+    // Expansion shows every key.
+    expect(screen.getByText(KEY_19_RE)).toBeInTheDocument()
+    expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 })

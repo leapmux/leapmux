@@ -18,6 +18,8 @@ export const optionList = style({
   gap: 'var(--space-1)',
 })
 
+globalStyle(`${optionList} fieldset`, { minWidth: 0 })
+
 export const optionItem = style({
   display: 'flex',
   alignItems: 'flex-start',
@@ -35,6 +37,7 @@ export const optionItem = style({
 })
 
 export const optionContent = style({
+  minWidth: 0,
   display: 'flex',
   flexDirection: 'column',
   gap: '1px',
@@ -111,7 +114,7 @@ export const questionPageHeader = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Control request content in MarkdownEditor banner slot
+// Control request content occupies the MarkdownEditor banner slot.
 export const controlBanner = style({
   position: 'relative',
   padding: 'var(--space-2) var(--space-3)',
@@ -121,6 +124,11 @@ export const controlBanner = style({
   flexShrink: 0,
   maxHeight: '200px',
   overflowY: 'auto',
+  selectors: {
+    '&:has([data-question-preview], [data-elicitation-form], [data-control-json])': {
+      maxHeight: 'min(50dvh, 32rem)',
+    },
+  },
 })
 
 export const controlBannerActions = style({
@@ -142,35 +150,19 @@ export const controlBannerTitle = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Control-request action footer: a full-width row below the editor inside the
-// composer box, using a three-zone [secondary | pagination | primary] grid.
-// Secondary actions stay at the left end. Request decisions stay at the right
-// end. Pagination dots stay between them.
-//
-// NO top border. The line above this row belongs to the composer box, which
-// draws it as `editorSeparator` for every expanded action row -- the compact
-// Interrupt/Send cluster included. A border here as well painted a SECOND line
-// a couple of pixels from the first, because a control request forces the
-// expanded layout and therefore always renders both.
 /**
- * The action row of a control request.
+ * The footer spans the composer below the editor.
+ * Secondary actions stay left, pagination stays central, and decisions stay right.
  *
- * NO vertical padding. The row is the only child of the composer's footer slot
- * that sets its own height, and the slot centres what it holds -- so padding
- * here made the slot taller than the Pause button inside it, and that button
- * then sat 4px above the `[+]` anchored to the same bottom line. The slot's own
- * `bottom` offset is what separates the row from the box edge.
+ * The composer draws the separator. Another border here would draw two lines.
+ * Vertical padding would raise Pause above the adjacent [+] button.
+ * The footer slot's bottom offset supplies the space below this row.
  *
- * It SHRINKS. `flex-shrink: 0` pinned the row at its max-content width, so a
- * row wider than the composer overflowed to the LEFT -- `justify-content:
- * flex-end` pushes the overflow that way -- and the editor's `overflow: hidden`
- * clipped it. On a phone the whole allow-choice group sat off the left edge,
- * invisible and impossible to tap. `min-width: 0` alone could not help, because
- * a shrink factor of zero refuses to shrink at all.
+ * The row must shrink to fit the composer. Otherwise, the editor clips controls
+ * that overflow to the left, and the user cannot reach them.
  *
- * The tracks are `auto auto 1fr`, so a zone the caller omits reserves nothing.
- * `1fr auto 1fr` gave the empty left zone an equal share of the row, which left
- * a decision row half the width it had.
+ * Automatic tracks reserve no space for absent secondary actions or pagination.
+ * Equal outer tracks would reserve half the row for an absent left zone.
  */
 export const controlFooter = style({
   display: 'grid',
@@ -184,20 +176,14 @@ export const controlFooter = style({
 })
 
 /**
- * The track shape that CENTRES the middle zone, for a row that fills it.
- *
- * Equal outer tracks are what put the centre in the middle, and they are also
- * what wastes a row that has no middle -- so the base rule above omits them and
- * this restores them exactly where the centring is the point.
+ * Equal outer tracks centre pagination when the caller supplies it.
+ * The base layout avoids those tracks when the centre is empty.
  */
 export const controlFooterCentred = style({
   gridTemplateColumns: '1fr auto 1fr',
 })
 
-// All three zones pin their own column. Auto-placement would put a zone's column
-// dependent on which OTHER zones the caller passed: with `secondary` omitted,
-// an auto-placed centre becomes the first item and lands in column 1, so the
-// pagination would sit inside the left half rather than in the middle.
+// Explicit columns keep pagination central when the caller omits secondary actions.
 export const controlFooterLeft = style({
   display: 'flex',
   alignItems: 'center',
@@ -214,54 +200,37 @@ export const controlFooterCentre = style({
   gridColumn: 2,
 })
 
-// `minWidth: 0`, so the `1fr` track can actually constrain this zone. A grid
-// item's automatic minimum size is its min-content width, and the decision
-// buttons never wrap, so without this the track grew to fit them and the row
-// overflowed the composer instead of compressing.
+// The complete decision strip scrolls so options cannot shrink to zero width.
+// Safe alignment keeps overflowing controls reachable from the left edge.
+// A zero minimum width lets the grid restrict this strip to the composer.
 export const controlFooterRight = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  justifyContent: 'flex-end',
+  justifyContent: 'safe flex-end',
   gridColumn: 3,
   minWidth: 0,
-})
-
-/**
- * The leading options cluster of a decision row: the request's switches, then
- * the allow-choice pill group, then the permission pill group, on ONE line ahead
- * of the decision buttons. A pill group is button-high, so nothing here needs
- * the second line the switch COLUMN used to occupy.
- *
- * It SCROLLS sideways, and it is the only part of the row that gives way. The
- * decision buttons keep their size, because Allow and Reject must stay readable
- * and reachable at every width; this cluster takes what is left and the user
- * swipes it. The alternative -- letting the pills compress -- squeezed a group
- * to two pixels on a phone, which states nothing and answers nothing.
- *
- * The scrollbar is HIDDEN, as the tab strip hides its own (`tabList` in
- * `~/components/shell/TabBar.css.ts`). A scrollbar inside a 28px row would eat
- * most of it, and this is a swipe surface rather than a scroll region.
- */
-export const controlRequestSwitches = style({
-  display: 'flex',
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-  marginRight: 'var(--space-1)',
-  minWidth: 0,
-  flex: '1 1 auto',
   overflowX: 'auto',
   scrollbarWidth: 'none',
   WebkitOverflowScrolling: 'touch',
   touchAction: 'pan-x',
 })
 
-hideNativeScrollbar(controlRequestSwitches)
+// Hide the native scrollbar so it does not consume the compact row's height.
+hideNativeScrollbar(controlFooterRight)
 
-// A pill group keeps its natural width and the cluster around it scrolls, so
-// `flexShrink: 0`. It used to shrink, and the group's own `max-width: 100%` then
-// resolved against a box the row had already squeezed to nothing.
+// Switches, request choices, and session permissions precede the decisions.
+// Each control keeps its natural width within the shared scroll strip.
+export const controlRequestSwitches = style({
+  display: 'flex',
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  marginRight: 'var(--space-1)',
+  flex: '1 0 auto',
+})
+
+// Pill groups keep their natural width instead of compressing their options.
 export const controlRequestPill = style({
   display: 'flex',
   flexShrink: 0,
@@ -273,9 +242,15 @@ export const bannerReason = style({
   marginBottom: 'var(--space-2)',
 })
 
-export const bannerHint = style({
+const captionText = {
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
+}
+
+export const bannerDetail = style(captionText)
+
+export const bannerHint = style({
+  ...captionText,
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
 })

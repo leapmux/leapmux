@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"sort"
@@ -142,12 +141,11 @@ func (a *zcodeAgent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	}
 }
 
-// persistBytes re-marshals the envelope for persistence.
-//
-// Both arrival paths (a session/event notification and the events array a
-// session/subscribe returns) are normalized to this ONE shape, so the frontend has a
-// single envelope to classify: `{type, payload, ...}`.
+// persistBytes preserves a native envelope. Synthetic events use the same JSON shape.
 func (e zcodeEventEnvelope) persistBytes() []byte {
+	if len(e.raw) > 0 {
+		return e.raw
+	}
 	encoded, err := json.Marshal(e)
 	if err != nil {
 		slog.Warn("zcode marshal event for persist failed", "type", e.Type, "error", err)
@@ -156,11 +154,24 @@ func (e zcodeEventEnvelope) persistBytes() []byte {
 	return encoded
 }
 
-// withPayload returns a copy of the envelope carrying a different payload, so a
-// handler can persist a payload it completed (a tool input recovered from the
-// stream) without mutating the value it was given.
+// withPayload creates a synthetic event without changing the original envelope.
 func (e zcodeEventEnvelope) withPayload(payload json.RawMessage) zcodeEventEnvelope {
 	e.Payload = payload
+	if len(e.raw) > 0 {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(e.raw, &fields) == nil && fields != nil {
+			fields["payload"] = payload
+			encoded, err := json.Marshal(fields)
+			if err != nil {
+				// persistBytes reports the invalid replacement through its normal error path.
+				e.raw = nil
+			} else {
+				e.raw = encoded
+			}
+		} else {
+			e.raw = nil
+		}
+	}
 	return e
 }
 
@@ -365,7 +376,7 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	a.resetCumulativeOutput()
 	a.sink.ReportProgress(ResetModelProgress())
 
-	if err := a.sink.PersistTurnEnd(zcodeAugmentWithUsage(content, a.usageSnapshot()), SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(zcodeTurnContent(content, a.usageSnapshot()), SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.agentID, "type", event.Type, "error", err)
 	}
 	a.sink.ResetSpans()
@@ -563,48 +574,6 @@ func (a *zcodeAgent) openZCodeToolCall(event zcodeEventEnvelope, payload zcodeTo
 	a.openZCodeToolCallInto(a.sink, event, payload)
 }
 
-// zcodeInputIsAbsent reports whether a tool call's `input` states nothing.
-//
-// A field the app-server omits, one it sends as JSON `null`, and one it sends as an
-// empty object all mean the same thing: the input was not delivered here, and the model
-// stream is the only copy. Reading only `len(raw) == 0` misses the other two, because a
-// `null` decodes into a json.RawMessage as the four bytes `null` -- non-empty, so the
-// recovery is skipped and the persisted row carries no command at all.
-//
-// One predicate, so the caller that decides to substitute and the helper that performs
-// the substitution can never disagree about what "absent" means.
-func zcodeInputIsAbsent(raw json.RawMessage) bool {
-	trimmed := string(bytes.TrimSpace(raw))
-	return trimmed == "" || trimmed == "null" || trimmed == "{}"
-}
-
-// zcodeCompleteToolInput returns the scheduled payload with its `input` filled in
-// from the stream cache, and the omission markers removed so the persisted row does
-// not claim an input it now carries.
-//
-// Returns the payload unchanged when there is nothing to fill in, which keeps the
-// common path free of a decode/encode round trip.
-func zcodeCompleteToolInput(payload, input json.RawMessage) json.RawMessage {
-	if zcodeInputIsAbsent(input) || !json.Valid(input) {
-		return payload
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
-		return payload
-	}
-	if existing, ok := obj["input"]; ok && !zcodeInputIsAbsent(existing) {
-		return payload
-	}
-	obj["input"] = input
-	delete(obj, "inputOmitted")
-	delete(obj, "inputRef")
-	encoded, err := json.Marshal(obj)
-	if err != nil {
-		return payload
-	}
-	return encoded
-}
-
 // recordZCodeToolStarted notes that a scheduled call began running.
 func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	if payload.ToolCallID == "" {
@@ -704,14 +673,9 @@ func (a *zcodeAgent) persistIncompleteZCodeTools(completion MessageCompletion) {
 			continue
 		}
 		raw := (zcodeEventEnvelope{Type: contracts.ZCodeEventToolUpdated, Payload: payload}).persistBytes()
-		raw, err = AnnotateMessageCompletion(raw, completion)
-		if err != nil {
-			slog.Warn("annotate incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
-			continue
-		}
 		sink := a.zcodeSinkForToolCall(toolCallID)
 		tool := tools[toolCallID]
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw, Completion: completion}, SpanInfo{
 			SpanID: toolCallID, SpanType: tool.ToolName, Closing: true,
 		}); err != nil {
 			slog.Error("persist incomplete zcode tool", "agent_id", a.agentID, "tool_call_id", toolCallID, "error", err)
@@ -853,7 +817,7 @@ func (a *zcodeAgent) flushZCodeGenerationScope(scopeID string, completion Messag
 		return
 	}
 	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
-		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 	})
 	if err != nil {
 		slog.Error("zcode persist reasoning", "agent_id", a.agentID, "error", err)
@@ -890,7 +854,7 @@ func (a *zcodeAgent) persistZCodeGenerationKind(kind AssembledMessageKind, compl
 }
 
 func (a *zcodeAgent) persistZCodeGenerationRow(raw []byte) error {
-	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 }
 
 func zcodeReasoningScope(assistantMessageID string) string {
@@ -915,7 +879,7 @@ func (a *zcodeAgent) persistZCodeAssistantMessage(event zcodeEventEnvelope, cont
 	if raw == nil {
 		return
 	}
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{}); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{}); err != nil {
 		slog.Error("zcode persist assistant message", "agent_id", a.agentID, "error", err)
 	}
 }

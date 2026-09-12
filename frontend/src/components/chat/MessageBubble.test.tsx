@@ -48,6 +48,20 @@ function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
   return makeMessage({ createdAt: '2025-01-15T10:00:00.000Z', ...overrides })
 }
 
+describe('standalone MCP result actions', () => {
+  const output = Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n')
+  it.each([
+    { provider: AgentProvider.ZCODE, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: output, display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } } } } },
+    { provider: AgentProvider.CODEX, content: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: output }] } } } },
+    { provider: AgentProvider.PI, content: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [{ type: 'text', text: output }], details: { server: 'docs', tool: 'lookup' } } } },
+  ])('renders one result toolbar for provider $provider', ({ provider, content }) => {
+    render(() => <PreferencesProvider><MessageBubble message={makeMsg({ agentProvider: provider, source: MessageSource.AGENT, spanId: 'call', content: rawContent(content) })} /></PreferencesProvider>)
+    expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Expand', hidden: true })).toHaveLength(1)
+    expect(screen.getAllByTestId('message-copy-json')).toHaveLength(1)
+  })
+})
+
 /** Click the "Copy Raw JSON" button and return the parsed clipboard content. */
 async function copyRawJson(): Promise<Record<string, unknown>> {
   const btn = screen.getByTestId('message-copy-json')
@@ -540,8 +554,9 @@ describe('messageBubble rawJson', () => {
     ))
 
     const envelope = await copyRawJson()
-    expect(envelope.old_seqs).toEqual([5, 8])
-    expect((envelope.messages as unknown[]).length).toBe(2)
+    const content = envelope.content as { old_seqs: number[], messages: unknown[] }
+    expect(content.old_seqs).toEqual([5, 8])
+    expect(content.messages.length).toBe(2)
   })
 
   it('renders the raw JSON block without crashing when span_lines is malformed', async () => {

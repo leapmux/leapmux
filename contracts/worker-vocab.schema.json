@@ -13,10 +13,37 @@
     "workerAuthoredNotificationTypes",
     "assembledMessage",
     "notificationThreadWrapperType",
+    "messageMetadataFields",
+    "messageSupplementFields",
+    "rpcMethods",
     "codexRateLimitReachedTimeWindow",
     "modelSentinels"
   ],
   "properties": {
+    "messageSupplementFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Provider", "Metadata"],
+      "properties": {
+        "Provider": { "type": "string", "minLength": 1 },
+        "Metadata": { "type": "string", "minLength": 1 }
+      }
+    },
+    "messageMetadataFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["DurationMs", "ToolUses"],
+      "properties": {
+        "DurationMs": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "ToolUses": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+      }
+    },
+    "rpcMethods": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+    },
     "_readme": {
       "type": "string",
       "minLength": 1
@@ -66,7 +93,7 @@
     "assembledMessage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "types", "kinds", "completions", "metadata"],
+      "required": ["fields", "types", "kinds", "completions"],
       "properties": {
         "fields": {
           "type": "object",
@@ -104,12 +131,6 @@
             "Interrupted": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
             "Error": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
           }
-        },
-        "metadata": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["Field"],
-          "properties": { "Field": { "type": "string", "pattern": "^_[a-z][a-z0-9_]*$" } }
         }
       }
     },

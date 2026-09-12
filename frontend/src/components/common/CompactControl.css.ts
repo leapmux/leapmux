@@ -15,30 +15,22 @@ export const compactControlProperties = {
 } as const
 
 /**
- * Shared typography, padding, and HEIGHT for a compact button.
+ * Shared typography, padding, and height for a compact button.
  *
- * The height is pinned because a button is `inline-flex` (Oat's rule), and a
- * flex container has no line-box strut: its content height is the tallest ITEM.
- * A button showing one line of text is as tall as that line box, and the same
- * button showing a 14px icon alone is 4px shorter -- which is what the composer
- * does below `sm`, where `hideInNarrowComposer` takes the word away from Pause
- * Queue, Interrupt and Send. Those three then no longer matched the `[+]`
- * button beside them, whose `--editor-btn-h` is this very value.
+ * Oat uses inline-flex buttons, whose tallest item determines their content height.
+ * A 14px icon alone is 4px shorter than a text label.
+ * The minimum height keeps icon-only Pause Queue, Interrupt, and Send aligned with [+]
+ * when hideInNarrowComposer removes their labels. The adjacent [+] uses this height through --editor-btn-h.
  *
- * `minHeight` rather than `height`, so a caller that does let a label wrap
- * still grows.
+ * The minimum permits a taller button when a caller allows its label to wrap.
  *
- * The pill options are NOT covered, and must not be: they spread
- * `compactControlProperties` while their GROUP owns the border this height
- * counts, so pinning them here would make every small pill group 2px taller.
- * A group is `inline-flex` at the default `align-items: stretch`, so its
- * options already match the tallest of them.
+ * Pill options use compactControlProperties because their group owns the border.
+ * This minimum would count that border twice and make small pill groups 2px taller.
+ * Each group's default stretch alignment gives its options the height of the tallest option.
  */
 export const compactControl = style({
   ...compactControlProperties,
   minHeight: compactControlHeight,
-  // Never compress. A decision button must stay readable at every width, so the
-  // row gives way somewhere else: the control request's options cluster scrolls,
-  // and the composer's own cluster wraps.
+  // Buttons stay readable. The control request row scrolls, and the composer action group wraps.
   flexShrink: 0,
 })

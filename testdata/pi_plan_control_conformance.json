@@ -1,0 +1,186 @@
+{
+  "cases": [
+    {
+      "name": "native approval",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": true
+    },
+    {
+      "name": "runtime details",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?\nModel: current",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": true
+    },
+    {
+      "name": "windows details",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?\r\nModel: current",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": true
+    },
+    {
+      "name": "additional options",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode",
+          "Export plan…",
+          "Save for later"
+        ]
+      },
+      "expected": true
+    },
+    {
+      "name": "other title",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Choose a plan",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "title shares a prefix",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next? Continue",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "other event",
+      "payload": {
+        "type": "message_end",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "other method",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "input",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "missing fresh action",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Stay in Plan mode"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "duplicate action",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode",
+          "Implement here"
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "malformed option",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode",
+          null
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "empty option",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": [
+          "Implement here",
+          "Start fresh and implement",
+          "Stay in Plan mode",
+          ""
+        ]
+      },
+      "expected": false
+    },
+    {
+      "name": "non-array options",
+      "payload": {
+        "type": "extension_ui_request",
+        "method": "select",
+        "title": "Proposed plan ready. What next?",
+        "options": {}
+      },
+      "expected": false
+    }
+  ]
+}

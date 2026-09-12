@@ -314,7 +314,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 	}
 	a.mu.Unlock()
 
-	content := event.withPayload(zcodeCompleteToolInput(event.Payload, input)).persistBytes()
+	content := event.persistBytes()
 	if content == nil {
 		return
 	}
@@ -329,7 +329,11 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 		}
 		a.children.rememberTitle(payload.ToolCallID, zcodeSpawnTitle(input, payload))
 	}
-	if err := openToolSpan(sink, content, payload.ToolCallID, toolName, spawns); err != nil {
+	supplemental, err := zcodeToolInputSupplement(payload, input)
+	if err != nil {
+		slog.Warn("Encode supplemental ZCode tool input", "agent_id", a.agentID, "error", err)
+	}
+	if err := openToolSpan(sink, MessageContent{Original: content, Supplemental: supplemental}, payload.ToolCallID, toolName, spawns); err != nil {
 		slog.Error("zcode persist tool scheduled", "agent_id", a.agentID, "error", err)
 	}
 }
@@ -370,7 +374,7 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zc
 
 	content := event.persistBytes()
 	if content != nil {
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: content}, SpanInfo{
 			SpanID:   payload.ToolCallID,
 			SpanType: toolName,
 			Closing:  true,

@@ -31,16 +31,10 @@ type ControlResponseResolution struct {
 	// case the row persists with `request` omitted and the frontend degrades gracefully.
 	RequestContext json.RawMessage
 	SelfDisplayed  bool
-	// Withhold tells the service NOT to forward Content to the agent. A provider sets it
-	// when it cannot build a frame the agent can parse -- the pending request is gone, its
-	// wire id is absent, or the answer does not decode. Content still persists the answer
-	// row, so the user's reply is not lost.
-	//
-	// An empty Content cannot carry this meaning: the service backfills the raw frontend
-	// bytes over it (see buildControlResponsePlan), because an empty json.RawMessage makes
-	// the persist marshal fail. Thus a provider that cleared Content to suppress the
-	// forward would forward the frontend envelope instead -- the exact frame it refused to
-	// send.
+	// Withhold prevents forwarding a response that the provider cannot read.
+	// When the request still exists, the service returns an error and keeps the request available.
+	// When the request is gone, the service can preserve the orphaned answer without forwarding it.
+	// Empty Content cannot express this decision because the service restores the original response bytes.
 	Withhold        bool
 	PlanModeControl PlanModeControlKind
 }
@@ -88,6 +82,9 @@ func (noopProvider) ResolveControlResponse(ctx ControlResponseContext) ControlRe
 }
 
 func (p codexProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+	if result, ok := resolveMCPElicitationResponse(ctx); ok {
+		return result
+	}
 	res := defaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
 		return res
@@ -99,6 +96,10 @@ func (p codexProvider) ResolveControlResponse(ctx ControlResponseContext) Contro
 
 func (p claudeProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
 	res := defaultControlResponseResolution(ctx)
+	if isClaudeMCPElicitation(ctx.RequestPayload) {
+		res.RequestContext = mcpElicitationRequestContext(ctx.RequestPayload)
+		return res
+	}
 	res.SelfDisplayed = p.IsSelfDisplayingControlTool(ctx.ToolName)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
 	// The tool name is all the frontend needs to render Claude's approve/reject/feedback answer;
@@ -108,6 +109,9 @@ func (p claudeProvider) ResolveControlResponse(ctx ControlResponseContext) Contr
 }
 
 func (p piProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+	if result, ok := resolvePiMCPApprovalResponse(ctx); ok {
+		return result
+	}
 	res := defaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
 		return res
@@ -118,11 +122,21 @@ func (p piProvider) ResolveControlResponse(ctx ControlResponseContext) ControlRe
 	if !warnUnmarshal(ctx.RequestPayload, &req, "pi control response request") {
 		return res
 	}
-	res.RequestContext = methodRequestContext(req.Method)
+	if isPiPlanApproval(ctx.RequestPayload) {
+		res.RequestContext = marshalControlRequestContext(struct {
+			Method       string `json:"method"`
+			PlanApproval bool   `json:"planApproval"`
+		}{Method: req.Method, PlanApproval: true})
+	} else {
+		res.RequestContext = methodRequestContext(req.Method)
+	}
 	return res
 }
 
 func (p acpProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+	if result, ok := resolveMCPElicitationResponse(ctx); ok {
+		return result
+	}
 	res := defaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
 		return res
@@ -471,7 +485,7 @@ func (zcodeProvider) ResolveControlResponse(ctx ControlResponseContext) ControlR
 	res.RequestContext = zcodeControlRequestContext(stored)
 
 	requestID, behavior, message, ok := DecodeControlBehavior(ctx.ResponseContent)
-	if !ok || behavior == "" {
+	if !ok || (behavior != ControlBehaviorAllow && behavior != ControlBehaviorDeny) {
 		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
 		// the app-server keeps waiting (and the user can answer again) rather than
 		// receiving a frame that means nothing.

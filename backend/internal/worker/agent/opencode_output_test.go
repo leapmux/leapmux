@@ -394,10 +394,9 @@ func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "5", rec.RequestID)
 
 	// Verify payload is the original content.
@@ -423,8 +422,7 @@ func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
 	input := `{"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1"}}}`
 	agent.HandleOutput([]byte(input))
 
-	assert.Equal(t, 0, sink.PersistedControlCount())
-	assert.Equal(t, 0, sink.BroadcastControlCount())
+	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
@@ -540,9 +538,25 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
 	require.Equal(t, "end_turn", parsed["stopReason"])
-	// num_tool_uses must carry the completed turn's count.
-	require.Equal(t, float64(2), parsed["num_tool_uses"])
+	// The worker count stays outside the native result.
+	assert.NotContains(t, parsed, "num_tool_uses")
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(msg.Metadata, &metadata))
+	require.Equal(t, float64(2), metadata["num_tool_uses"])
 	assert.Equal(t, 0, agent.turnToolUses)
+}
+
+func TestACPTurnCounterPreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newOpenCodeAgentWithSink(sink)
+	a.turnToolUses = 2
+	raw := json.RawMessage(`{"stopReason":"end_turn", "future":9007199254740993}`)
+	a.handleACPPromptResponse(raw)
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, []byte(raw), messages[0].Content)
+	assert.Contains(t, string(messages[0].Metadata), `"num_tool_uses":2`)
 }
 
 func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
@@ -773,9 +787,9 @@ func TestHandleACPOutput_NilResultPersistsInterruptedToolOutput(t *testing.T) {
 		"title":"command",
 		"kind":"execute",
 		"status":"in_progress",
-		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}],
-		"_leapmux":{"completion":"interrupted"}
+		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}]
 	}`, string(result.Content))
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
 }
 
 func TestHandleACPOutput_NilResultClosesAToolWithoutAnUpdate(t *testing.T) {
@@ -797,9 +811,9 @@ func TestHandleACPOutput_NilResultClosesAToolWithoutAnUpdate(t *testing.T) {
 		"title":"command",
 		"kind":"execute",
 		"status":"in_progress",
-		"rawInput":{"command":"printf partial"},
-		"_leapmux":{"completion":"interrupted"}
+		"rawInput":{"command":"printf partial"}
 	}`, string(result.Content))
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
 }
 
 func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testing.T) {
@@ -814,7 +828,7 @@ func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testin
 	require.Len(t, sink.Messages(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
-	assert.Contains(t, string(result.Content), `"completion":"error"`)
+	assert.Equal(t, MessageCompletionError, result.Completion)
 	assert.True(t, sink.Messages()[2].TurnEnd)
 }
 

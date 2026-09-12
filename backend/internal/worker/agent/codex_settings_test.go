@@ -19,7 +19,7 @@ type codexRecordedRequest struct {
 	Params map[string]interface{}
 }
 
-func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessage) (*CodexAgent, *testSink, func() []codexRecordedRequest) {
+func newCodexAgentForRPC(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*CodexAgent, *testSink, func() []codexRecordedRequest) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -66,7 +66,7 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessa
 			mu.Lock()
 			requests = append(requests, codexRecordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
-			agent.deliver(req.ID, respond(req.Method))
+			agent.deliver(req.ID, jsonrpcTestResponse(req.ID, respond(req.Method)))
 		}
 	}()
 
@@ -88,8 +88,8 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessa
 func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	t.Parallel()
 
-	agent, sink, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, sink, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	updated := agent.UpdateSettings(map[string]string{
@@ -118,8 +118,8 @@ func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	updated := agent.UpdateSettings(map[string]string{
@@ -142,8 +142,8 @@ func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
 func TestCodexPublishSettings_AutoFallsBackToModelDefault(t *testing.T) {
 	t.Parallel()
 
-	agent, sink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, sink, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	agent.effort = "auto"
@@ -166,8 +166,8 @@ func TestCodexPublishSettings_AutoFallsBackToModelDefault(t *testing.T) {
 func TestCodexPublishSettings_AutoNoModelCatalogStaysAuto(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	agent.effort = "auto"
@@ -186,7 +186,7 @@ func TestCodexPublishSettings_AutoNoModelCatalogStaysAuto(t *testing.T) {
 func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 	agent.availableModels = []*ModelInfo{{Id: "gpt-5.4", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{{Id: "high"}, {Id: "low"}}}}
 	agent.serviceTier = CodexServiceTierFast
 
@@ -226,8 +226,8 @@ func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
 func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(_ string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, requests := newCodexAgentForRPC(t, func(_ string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	require.Equal(t, "high", agent.effort, "precondition")
@@ -245,8 +245,8 @@ func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 
 	agent.effort = "auto"
@@ -323,14 +323,14 @@ func TestCodexFallbackCatalogIsPinned(t *testing.T) {
 func TestCodexQueryAvailableModelsDoesNotInjectAccountDefault(t *testing.T) {
 	t.Parallel()
 
-	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{"data":[
+	agent, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{"data":[
 			{"id":"gpt-5.6-sol","model":"gpt-5.6-sol","displayName":"gpt-5.6-sol","isDefault":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[
 				{"reasoningEffort":"low","description":"Low"},
 				{"reasoningEffort":"high","description":"High"}
 			]},
 			{"id":"hidden-model","model":"hidden-model","displayName":"Hidden","hidden":true,"supportedReasoningEfforts":[]}
-		]}`)
+		]}`)}
 	})
 
 	models := agent.queryAvailableModels(time.Second)
@@ -477,8 +477,8 @@ func TestCodexOffersUltraEffort(t *testing.T) {
 func TestCodexUpdateSettings_AccountDefaultRequiresRestart(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.6-sol"
 
@@ -505,8 +505,8 @@ func TestCodexUpdateSettings_AccountDefaultRequiresRestart(t *testing.T) {
 func TestCodexUpdateSettings_ConcreteModelAppliesLive(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 	agent.model = "gpt-5.6-sol"
 
@@ -545,7 +545,7 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 			// suite while the wire shape it checks was correct.
 			var a *CodexAgent
 			var requests func() []codexRecordedRequest
-			a, _, requests = newCodexAgentForRPC(t, func(method string) json.RawMessage {
+			a, _, requests = newCodexAgentForRPC(t, func(method string) jsonrpcResponsePayload {
 				if method == "turn/start" {
 					a.mu.Lock()
 					ack := a.turnStartAck
@@ -555,7 +555,7 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 						close(ack)
 					}
 				}
-				return json.RawMessage(`{}`)
+				return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 			})
 			a.threadID = "thread-1"
 
@@ -627,11 +627,11 @@ func TestCodexRetiredModelsStayResolvable(t *testing.T) {
 func TestCodexQueryAvailableModelsKeepsTheReportedDescription(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{"data":[
+	agent, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{"data":[
 			{"id":"gpt-daybreak-blue-latest","model":"gpt-daybreak-blue-latest","displayName":"Daybreak Blue","description":"Latest frontier model for defensive cybersecurity work.","defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}]},
 			{"id":"gpt-5.6-sol","model":"gpt-5.6-sol","displayName":"gpt-5.6-sol","description":"the CLI wording","supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}]}
-		]}`)
+		]}`)}
 	})
 
 	models := agent.queryAvailableModels(time.Second)
@@ -662,7 +662,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("adds the account default so a tab can return to it", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.availableModels = live()
 		a.model = "gpt-5.6-sol"
 
@@ -677,7 +677,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("keeps a settled model the live list omits", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.availableModels = live()
 		a.model = "gpt-5.2" // retired: present in the static catalog, absent from model/list
 
@@ -693,7 +693,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("leaves a listed model and an already-present sentinel alone", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.availableModels = append([]*ModelInfo{{Id: DefaultModelSentinel}}, live()...)
 		a.model = "gpt-5.4"
 
@@ -706,7 +706,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("no-ops on an empty live list so the static fallback survives", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.model = "gpt-5.6-sol"
 
 		a.reconcileModelCatalog()
@@ -721,7 +721,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("ranks an account-specific model after every known one", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.availableModels = []*ModelInfo{
 			{Id: "gpt-daybreak-blue-latest", DisplayName: "Daybreak Blue"},
 			{Id: "gpt-5.4", DisplayName: "GPT-5.4"},
@@ -741,7 +741,7 @@ func TestCodexReconcileModelCatalog(t *testing.T) {
 	t.Run("leaves an unknown settled model unlisted", func(t *testing.T) {
 		t.Parallel()
 
-		a, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+		a, _, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload { return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)} })
 		a.availableModels = live()
 		a.model = "gpt-9-unreleased"
 

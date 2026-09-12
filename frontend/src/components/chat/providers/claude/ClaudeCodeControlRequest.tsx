@@ -3,8 +3,9 @@ import type { ActionsProps, ContentProps } from '../../controls/types'
 
 import { Match, Switch } from 'solid-js'
 import { getToolName } from '~/utils/controlResponse'
-import { ExitPlanModeActions, ExitPlanModeContent } from '../../controls/ExitPlanModeControl'
+import { ExitPlanModeActions } from '../../controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
+import { ClaudePlanApprovalContent } from './planApproval'
 
 /** Claude Code control request content dispatcher. */
 export const ClaudeCodeControlContent: Component<ContentProps> = (props) => {
@@ -12,7 +13,7 @@ export const ClaudeCodeControlContent: Component<ContentProps> = (props) => {
   return (
     <Switch fallback={<GenericToolContent request={props.request} />}>
       <Match when={toolName() === 'ExitPlanMode'}>
-        <ExitPlanModeContent request={props.request} />
+        <ClaudePlanApprovalContent request={props.request} />
       </Match>
     </Switch>
   )

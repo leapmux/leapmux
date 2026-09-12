@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { ProviderAskUserQuestion } from '../providers/registry'
 import type { ActionsProps, ControlAnswerState, EditorContentRef, Question } from './types'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ControlRequest } from '~/stores/control.store'
 import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
@@ -9,11 +10,14 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
+import { controlRequestProvider } from '~/stores/control.store'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
+import { QuestionOptionItem } from './QuestionOptionItem'
+import { questionOptionValue } from './types'
 
 // ---------------------------------------------------------------------------
 // Selection helpers
@@ -23,7 +27,7 @@ function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
   return pluginFor(agentProvider)?.preservesSelectionNotes ?? false
 }
 
-function toggleSelection(state: ControlAnswerState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
+function toggleSelection(state: ControlAnswerState, qIdx: number, value: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
   if (!preserveCustomText) {
     state.setCustomTexts((prev) => {
       if (!(qIdx in prev))
@@ -34,12 +38,12 @@ function toggleSelection(state: ControlAnswerState, qIdx: number, label: string,
   state.setSelections((prev) => {
     const current = prev[qIdx] ?? []
     if (multiSelect) {
-      const newSel = current.includes(label)
-        ? current.filter(l => l !== label)
-        : [...current, label]
+      const newSel = current.includes(value)
+        ? current.filter(selected => selected !== value)
+        : [...current, value]
       return { ...prev, [qIdx]: newSel }
     }
-    return { ...prev, [qIdx]: [label] }
+    return { ...prev, [qIdx]: [value] }
   })
   // Auto-advance to next page on single-select option click (multi-question only)
   if (!multiSelect && totalQuestions > 1) {
@@ -50,12 +54,14 @@ function toggleSelection(state: ControlAnswerState, qIdx: number, label: string,
   }
 }
 
-function isSelected(state: ControlAnswerState, qIdx: number, label: string) {
-  return (state.selections()[qIdx] ?? []).includes(label)
+function isSelected(state: ControlAnswerState, qIdx: number, value: string) {
+  return (state.selections()[qIdx] ?? []).includes(value)
 }
 
-/** Check if a question is answered (has selection or non-empty custom text). */
-function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number): boolean {
+/** An answer needs content unless the provider accepts an explicit empty answer. */
+function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, question?: Question): boolean {
+  if (question?.allowEmpty)
+    return true
   const sel = state.selections()[qIdx] ?? []
   if (sel.length > 0)
     return true
@@ -81,6 +87,10 @@ export function buildAskAnswers(
     else if (customText) {
       const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = customText
+    }
+    else if (questions[i].allowEmpty) {
+      const key = questions[i].question || questions[i].header || `q${i}`
+      answers[key] = ''
     }
   }
   const updatedInput = { ...input, answers }
@@ -111,12 +121,13 @@ export interface ControlQuestion {
 export function controlQuestion(
   request: ControlRequest | null | undefined,
   agentProvider?: AgentProvider,
+  source?: ParsedMessageContent,
 ): ControlQuestion | undefined {
   if (!request)
     return undefined
-  const capability = pluginFor(agentProvider)?.askUserQuestion
+  const capability = pluginFor(controlRequestProvider(request, agentProvider))?.askUserQuestion
   return capability?.isRequest(request.payload)
-    ? { capability, questions: capability.extractQuestions(request.payload) }
+    ? { capability, questions: capability.extractQuestions(request.payload, source) }
     : undefined
 }
 
@@ -150,7 +161,7 @@ export function trySubmitAskUserQuestion(
   // Check if every question is now answered.
   let allAnswered = true
   for (let i = 0; i < questions.length; i++) {
-    if (!isPageAnsweredWithOption(state, i)) {
+    if (!isPageAnsweredWithOption(state, i, questions[i])) {
       allAnswered = false
       break
     }
@@ -160,7 +171,7 @@ export function trySubmitAskUserQuestion(
     // Navigate to the next unanswered question with wrap-around.
     for (let offset = 1; offset < questions.length; offset++) {
       const idx = (page + offset) % questions.length
-      if (!isPageAnsweredWithOption(state, idx)) {
+      if (!isPageAnsweredWithOption(state, idx, questions[idx])) {
         state.setCurrentPage(idx)
         editorContentRef?.set(state.customTexts()[idx] ?? '')
         break
@@ -226,24 +237,14 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                           maxVisible={4}
                           moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                           renderItem={opt => (
-                            <label class={styles.optionItem} data-testid={`question-option-${opt.label}`}>
-                              <input
-                                type="radio"
-                                name={radioName}
-                                value={opt.label}
-                                checked={(props.answerState.selections()[qIdx()] ?? [])[0] === opt.label}
-                                onChange={() => {
-                                  toggleSelection(props.answerState, qIdx(), opt.label, false, questions().length, preservesSelectionNotes(props.agentProvider))
-                                }}
-                                disabled={props.optionsDisabled}
-                              />
-                              <span class={styles.optionContent}>
-                                <span class={styles.optionLabel}>{opt.label}</span>
-                                <Show when={opt.description}>
-                                  <span class={styles.optionDescription}>{opt.description}</span>
-                                </Show>
-                              </span>
-                            </label>
+                            <QuestionOptionItem
+                              option={opt}
+                              type="radio"
+                              name={radioName}
+                              checked={(props.answerState.selections()[qIdx()] ?? [])[0] === questionOptionValue(opt)}
+                              onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), false, questions().length, preservesSelectionNotes(props.agentProvider))}
+                              disabled={props.optionsDisabled}
+                            />
                           )}
                         />
                       </fieldset>
@@ -255,23 +256,13 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                     maxVisible={4}
                     moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                     renderItem={opt => (
-                      <label
-                        class={styles.optionItem}
-                        data-testid={`question-option-${opt.label}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected(props.answerState, qIdx(), opt.label)}
-                          onChange={() => toggleSelection(props.answerState, qIdx(), opt.label, true, questions().length, preservesSelectionNotes(props.agentProvider))}
-                          disabled={props.optionsDisabled}
-                        />
-                        <span class={styles.optionContent}>
-                          <span class={styles.optionLabel}>{opt.label}</span>
-                          <Show when={opt.description}>
-                            <span class={styles.optionDescription}>{opt.description}</span>
-                          </Show>
-                        </span>
-                      </label>
+                      <QuestionOptionItem
+                        option={opt}
+                        type="checkbox"
+                        checked={isSelected(props.answerState, qIdx(), questionOptionValue(opt))}
+                        onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), true, questions().length, preservesSelectionNotes(props.agentProvider))}
+                        disabled={props.optionsDisabled}
+                      />
                     )}
                   />
                 </Show>
@@ -293,7 +284,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
 
   /** Check if question at index is answered, accounting for unsaved editor content on the current page. */
   const isPageAnswered = (qIdx: number) => {
-    if (isPageAnsweredWithOption(props.answerState, qIdx))
+    if (isPageAnsweredWithOption(props.answerState, qIdx, questions()[qIdx]))
       return true
     // The current page's editor text hasn't been saved to customTexts yet.
     return qIdx === props.answerState.currentPage() && props.hasEditorContent
@@ -376,7 +367,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const handleYolo = () => {
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
-      if (!isPageAnsweredWithOption(props.answerState, i)) {
+      if (!isPageAnsweredWithOption(props.answerState, i, qs[i])) {
         props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
       }
     }

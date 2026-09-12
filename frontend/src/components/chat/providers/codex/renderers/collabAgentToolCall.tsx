@@ -1,98 +1,49 @@
-import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
-import { createMemo, Show } from 'solid-js'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
+import Check from 'lucide-solid/icons/check'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
+import OctagonX from 'lucide-solid/icons/octagon-x'
+import { createMemo, For, Show } from 'solid-js'
 import { pickString } from '~/lib/jsonPick'
-import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
-import { markdownContent } from '../../../markdownEditor/markdownContent.css'
-import { renderMarkdownForContext, useSharedExpandedState } from '../../../messageRenderers'
-import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
-import { joinMetaParts } from '../../../rendererUtils'
-import { ToolUseLayout } from '../../../toolRenderers'
-import { toolInputSummary, toolResultCollapsed, toolResultContent } from '../../../toolStyles.css'
-import { renderAgentTitle } from '../../../toolTitleRenderers'
+import { AgentRequestMessage } from '../../../results/AgentRequestMessage'
+import { AgentResultBody } from '../../../results/agentResult'
+import { ToolHeaderRow } from '../../../results/ToolStatusHeader'
+import { ToolMessageLayout } from '../../../widgets/ToolMessageLayout'
 import { defineCodexRenderer } from '../defineRenderer'
-import { codexStatusTitle } from './statusTitle'
+import { codexAgentCounterpart, codexAgentRequest, codexAgentResults, resolveCodexAgentItem } from '../extractors/agent'
 
-// Registry-only: dispatched by `item.type === 'collabAgentToolCall'` via
-// `CODEX_RENDERERS` (loaded from `renderers/registerAll.ts`).
 defineCodexRenderer({
   itemTypes: [CODEX_ITEM.COLLAB_AGENT_TOOL_CALL],
   render: (props) => {
-    // Default to the camelCase 'spawnAgent' the wire uses (tools are 'spawnAgent'/'wait'/
-    // 'closeAgent'), so a payload that omits `tool` still matches the checks below
-    // (isSpawnAgent, displayName) and renders the SpawnAgent layout rather than a bare title.
-    const tool = (): string => (props.item.tool as string) || 'spawnAgent'
-    const status = (): string => (props.item.status as string) || ''
-    const prompt = (): string => pickString(props.item, 'prompt')
-    const model = (): string => pickString(props.item, 'model')
-    const reasoningEffort = (): string => pickString(props.item, 'reasoningEffort')
-    const displayName = createMemo(() => {
-      const t = tool()
-      if (t === 'spawnAgent')
-        return 'SpawnAgent'
-      if (t === 'wait')
-        return 'Wait'
-      return t
+    const isResult = () => props.context?.sources?.role() === 'result' || props.item.status !== CODEX_STATUS.IN_PROGRESS
+    const request = () => codexAgentCounterpart(props.item, props.context?.sources?.request(), 'request')
+    const result = () => codexAgentCounterpart(props.item, props.context?.sources?.result(), 'result')
+    const resolved = createMemo(() => resolveCodexAgentItem(props.item, isResult() ? request() : result()))
+    const source = createMemo(() => {
+      const source = codexAgentRequest(resolved())
+      const ids = resolved().receiverThreadIds
+      if (resolved().tool === 'spawnAgent' && Array.isArray(ids) && ids.length === 1 && typeof ids[0] === 'string') {
+        const title = props.context?.sources?.backgroundTask(ids[0])?.title
+        if (title)
+          return { ...source, description: title }
+      }
+      return source
     })
-    const isTerminalWait = (): boolean => tool() === 'wait' && status() !== CODEX_STATUS.IN_PROGRESS && status() !== ''
-    const isWaitInProgress = (): boolean => tool() === 'wait' && !isTerminalWait()
-    const isSpawnAgent = (): boolean => tool() === 'spawnAgent'
-    const hasPrompt = (): boolean => prompt().trim() !== ''
-    const hasCollapsiblePrompt = (): boolean => (isWaitInProgress() || isSpawnAgent()) && hasPrompt()
-    const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.CODEX_COLLAB_AGENT_TOOL_CALL)
-    const modelLabel = (): string => {
-      const m = model()
-      return m ? (getCachedSettingsLabel(AgentProvider.CODEX, 'model', m) || m) : ''
-    }
-    const effortLabel = (): string => {
-      const e = reasoningEffort()
-      return e ? (getCachedSettingsLabel(AgentProvider.CODEX, 'effort', e) || e) : ''
-    }
-    const spawnAgentDetails = createMemo(() => joinMetaParts([
-      modelLabel() && `model: ${modelLabel()}`,
-      effortLabel() && `reasoning effort: ${effortLabel()}`,
-    ]))
-    const titleEl = createMemo(() => {
-      if (isTerminalWait())
-        return `Wait ${status()}`
-      if (isWaitInProgress())
-        return 'Waiting for subagent'
-      if (isSpawnAgent())
-        return spawnAgentDetails() ? `Subagent (${spawnAgentDetails()})` : 'Subagent'
-      return renderAgentTitle(displayName()) || codexStatusTitle(displayName(), status())
-    })
-    const promptHtml = createMemo(() => {
-      if (!hasCollapsiblePrompt())
-        return ''
-      return renderMarkdownForContext(prompt(), props.context)
-    })
-    const summary = (): JSX.Element | undefined => {
-      if (expanded())
-        return undefined
-      if (hasCollapsiblePrompt())
-        return <div class={`${toolResultContent} ${toolResultCollapsed} ${markdownContent}`} ref={cachedInnerHtml(promptHtml)} />
-      if (isWaitInProgress() || isTerminalWait() || isSpawnAgent() || !status())
-        return undefined
-      return <div class={toolInputSummary}>{status()}</div>
-    }
-
+    const results = createMemo(() => codexAgentResults(resolved()))
+    const failed = () => props.item.status === 'failed' || props.item.status === 'interrupted'
     return (
-      <ToolUseLayout
-        icon={Bot}
-        toolName={displayName()}
-        title={titleEl()}
-        summary={summary()}
-        context={props.context}
-        expanded={expanded()}
-        onToggleExpand={hasCollapsiblePrompt() ? () => setExpanded(v => !v) : undefined}
+      <Show
+        when={isResult()}
+        fallback={(
+          <AgentRequestMessage source={source()} hasResult={!!result()} context={props.context} />
+        )}
       >
-        <Show when={hasCollapsiblePrompt()}>
-          <div class={`${toolResultContent} ${markdownContent}`} ref={cachedInnerHtml(promptHtml)} />
-        </Show>
-      </ToolUseLayout>
+        <ToolMessageLayout role="result" hasRequest={!!request()} icon={Bot} toolName={source().toolName} title={source().description} context={props.context} alwaysVisible>
+          <Show when={!props.context?.completionHeader && failed()}><ToolHeaderRow icon={props.item.status === 'interrupted' ? OctagonX : CircleAlert} title={props.item.status === 'interrupted' ? 'Interrupted' : 'Failed'} /></Show>
+          <For each={results()}>{result => <AgentResultBody source={result} context={props.context} />}</For>
+          <Show when={results().length === 0 && !failed()}><ToolHeaderRow icon={Check} title={pickString(props.item, 'status') || 'Result unavailable'} /></Show>
+        </ToolMessageLayout>
+      </Show>
     )
   },
 })

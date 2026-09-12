@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -15,6 +17,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClaudeControlPublicationFailureReturnsProtocolError(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+	a := &ClaudeCodeAgent{processBase: processBase{stdin: nopWriteCloser{&output}}, sink: sink}
+	a.claudeCodeHandleControlRequest([]byte(`{"type":"control_request","request_id":"permission-1","request":{"tool_name":"Bash"}}`))
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"error","request_id":"permission-1","error":"LeapMux could not store this control request."}}`, output.String())
+	assert.Empty(t, sink.PublishedControls())
+}
 
 // outputTestSink extends testSink with permission mode and plan updates. It
 // deliberately does NOT override OpenSpan or CloseSpan: testSink already records
@@ -89,7 +101,7 @@ func TestOutputTestSink_MirrorsTheSpanBookkeepingItExtends(t *testing.T) {
 
 	// Both left the active set, so a row persisted now draws no rail.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`), SpanInfo{SpanID: "span-next"}))
+		MessageContent{Original: []byte(`{"type":"assistant"}`)}, SpanInfo{SpanID: "span-next"}))
 	msgs := sink.Messages()
 	require.Len(t, msgs, 1)
 	assert.Empty(t, msgs[0].SpansOpenAtPersist)
@@ -744,6 +756,20 @@ func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.
 	assert.True(t, source.IsError)
 	assert.Equal(t, "API Error: Stream idle timeout - partial response received", source.Result)
 	assert.Equal(t, 0, source.NumToolUses)
+}
+
+func TestClaudeTurnCounterPreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &outputTestSink{}
+	a := newTestAgent(sink)
+	a.turnToolUses = 2
+	raw := []byte(`{"type":"result", "subtype":"success", "result":"Done", "future":9007199254740993}`)
+	a.HandleOutput(raw)
+	messages := sink.Messages()
+	require.NotEmpty(t, messages)
+	last := messages[len(messages)-1]
+	assert.Equal(t, raw, last.Content)
+	assert.Contains(t, string(last.Metadata), `"num_tool_uses":2`)
 }
 
 func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) {

@@ -4,17 +4,13 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-// controlRequestRecord captures a single PersistControlRequest /
-// BroadcastControlRequest call. ClaimToken is the per-instance token the
-// sink minted (persist) or was handed (broadcast), so a test can assert the
-// broadcast carries the SAME token PersistControlRequest returned.
+// controlRequestRecord captures one provider request for publication.
 type controlRequestRecord struct {
-	RequestID  string
-	Payload    []byte
-	ClaimToken string
+	RequestID string
+	Payload   []byte
+	SourceSeq int64
 }
 
 // planUpdateRecord captures a single UpdatePlan call.
@@ -32,32 +28,24 @@ type recordingControlSink struct {
 	testSink
 
 	crMu              sync.Mutex
-	persistedControls []controlRequestRecord
-	broadcastControls []controlRequestRecord
+	publishedControls []controlRequestRecord
+	publicationError  error
 	planUpdates       []planUpdateRecord
 	notifications     []map[string]interface{}
 }
 
-func (s *recordingControlSink) PersistControlRequest(requestID string, payload []byte) string {
+func (s *recordingControlSink) PublishControlRequest(request ControlRequest) error {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
-	claimToken := id.Generate()
-	s.persistedControls = append(s.persistedControls, controlRequestRecord{
-		RequestID:  requestID,
-		Payload:    append([]byte(nil), payload...),
-		ClaimToken: claimToken,
+	if s.publicationError != nil {
+		return s.publicationError
+	}
+	s.publishedControls = append(s.publishedControls, controlRequestRecord{
+		RequestID: request.RequestID,
+		Payload:   append([]byte(nil), request.Payload...),
+		SourceSeq: request.SourceSeq,
 	})
-	return claimToken
-}
-
-func (s *recordingControlSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	s.broadcastControls = append(s.broadcastControls, controlRequestRecord{
-		RequestID:  requestID,
-		Payload:    append([]byte(nil), payload...),
-		ClaimToken: claimToken,
-	})
+	return nil
 }
 
 func (s *recordingControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
@@ -80,44 +68,23 @@ func (s *recordingControlSink) PersistLeapMuxNotification(info map[string]interf
 	s.notifications = append(s.notifications, cp)
 }
 
-// PersistedControls returns a snapshot of every PersistControlRequest
-// call in order.
-func (s *recordingControlSink) PersistedControls() []controlRequestRecord {
+// PublishedControls returns the requests in publication order.
+func (s *recordingControlSink) PublishedControls() []controlRequestRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
-	return append([]controlRequestRecord(nil), s.persistedControls...)
+	return append([]controlRequestRecord(nil), s.publishedControls...)
 }
 
-// BroadcastControls returns a snapshot of every BroadcastControlRequest
-// call in order.
-func (s *recordingControlSink) BroadcastControls() []controlRequestRecord {
+func (s *recordingControlSink) PublishedControlCount() int {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
-	return append([]controlRequestRecord(nil), s.broadcastControls...)
+	return len(s.publishedControls)
 }
 
-func (s *recordingControlSink) PersistedControlCount() int {
+func (s *recordingControlSink) LastPublishedControl() controlRequestRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
-	return len(s.persistedControls)
-}
-
-func (s *recordingControlSink) BroadcastControlCount() int {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return len(s.broadcastControls)
-}
-
-func (s *recordingControlSink) LastPersistedControl() controlRequestRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.persistedControls[len(s.persistedControls)-1]
-}
-
-func (s *recordingControlSink) LastBroadcastControl() controlRequestRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.broadcastControls[len(s.broadcastControls)-1]
+	return s.publishedControls[len(s.publishedControls)-1]
 }
 
 func (s *recordingControlSink) PlanUpdateCount() int {

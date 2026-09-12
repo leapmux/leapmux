@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -108,6 +109,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 		newAgent:     func() *CursorCLIAgent { return &CursorCLIAgent{} },
 		base:         func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *CursorCLIAgent) {
+			transcript := newCursorToolTranscript(ctx, a.sink, func() string { return cursorACPStorePath(a.currentSessionID()) })
+			a.sink = transcript
 			// Cursor stores the normalized (display) model id, not the wire form. The
 			// live normalizer is sourced from the registry (the same one NormalizeModelID
 			// uses) so the offline-label and live paths can't diverge.
@@ -127,7 +130,10 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 			// the row key.
 			a.subagentFromToolCall = a.spawnObservation
 			a.subagentFromToolCallUpdate = a.finishedObservation
-			a.clearProviderState = a.clearTaskToolCalls
+			a.clearProviderState = func() {
+				a.clearTaskToolCalls()
+				transcript.reset()
+			}
 		},
 		afterHandshake: func(a *CursorCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model()))
@@ -378,7 +384,7 @@ func cursorToolCallIsTaskTool(rawInput json.RawMessage) bool {
 	var input struct {
 		ToolName string `json:"_toolName"`
 	}
-	return json.Unmarshal(rawInput, &input) == nil && input.ToolName == "task"
+	return json.Unmarshal(rawInput, &input) == nil && input.ToolName == contracts.CursorToolTask
 }
 
 // cursorToolCallRanInBackground reports whether a finished Cursor tool call was

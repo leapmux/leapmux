@@ -1,6 +1,6 @@
 import type { SearchResultSource } from '../../../results/searchResult'
 import { pickNumber } from '~/lib/jsonPick'
-import { collectAcpToolText, pickAcpRawOutputMetadata } from '../rendering'
+import { collectAcpToolText, pickAcpRawOutputMetadata } from '../content'
 
 /**
  * Build a SearchResultSource from an ACP `tool_call_update` of kind `search`.
@@ -11,7 +11,7 @@ export function acpSearchFromToolCall(toolUse: Record<string, unknown> | null | 
   if (!toolUse)
     return null
   const matches = pickNumber(pickAcpRawOutputMetadata(toolUse), 'matches', undefined)
-  const text = collectAcpToolText(toolUse)
+  const text = collectAcpToolText(toolUse, { rawObjects: false })
 
   if (matches === undefined && !text)
     return null

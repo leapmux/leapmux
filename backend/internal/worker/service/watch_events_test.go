@@ -481,12 +481,12 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				require.NoError(t, err)
 				seqs = append(seqs, seq)
 			}
-			require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 				AgentID:    "agent-1",
 				RequestID:  "request-1",
 				Payload:    []byte(`{"type":"permission","id":"request-1"}`),
 				ClaimToken: "instance-token-1",
-			}))
+			})
 
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},

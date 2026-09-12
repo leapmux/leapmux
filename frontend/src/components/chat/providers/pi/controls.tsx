@@ -6,12 +6,14 @@ import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import * as styles from '../../ControlRequestBanner.css'
 import { actionButtonClass, ControlActionRow } from '../../controls/ControlActionRow'
+import { PlanApprovalContent } from '../../controls/PlanApprovalContent'
 import {
   piCancelResponse,
   piConfirmResponse,
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
+import { isPiPlanApproval, PiPlanApprovalActions, piPlanApprovalDetails } from './planApproval'
 
 function timeoutHint(payload: Record<string, unknown>): string | null {
   const t = pickNumber(payload, 'timeout')
@@ -27,8 +29,12 @@ interface PiButtonShape {
   primaryClick: () => void
 }
 
-/** Pi-specific control request content (title + body per dialog method). */
-export const PiControlContent: Component<ContentProps> = (props) => {
+/**
+ * Render dialogs that Pi exports through RPC.
+ * Goal task approval needs an upstream fallback for its custom terminal UI:
+ * https://github.com/tmonk/pi-goal-x/issues/52
+ */
+const PiDialogContent: Component<ContentProps> = (props) => {
   const payload = () => props.request.payload
   const method = createMemo(() => pickString(payload(), 'method', undefined))
   const title = createMemo(() => pickString(payload(), 'title') || 'Approval Required')
@@ -66,7 +72,7 @@ export const PiControlContent: Component<ContentProps> = (props) => {
 }
 
 /** Pi-specific control request action buttons (per dialog method). */
-export const PiControlActions: Component<ActionsProps> = (props) => {
+const PiDialogActions: Component<ActionsProps> = (props) => {
   const payload = () => props.request.payload
   const method = createMemo(() => pickString(payload(), 'method', undefined))
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
@@ -160,3 +166,15 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
     />
   )
 }
+
+export const PiControlContent: Component<ContentProps> = props => (
+  <Show when={isPiPlanApproval(props.request.payload)} fallback={<PiDialogContent {...props} />}>
+    <PlanApprovalContent details={piPlanApprovalDetails(props.request.payload)} />
+  </Show>
+)
+
+export const PiControlActions: Component<ActionsProps> = props => (
+  <Show when={isPiPlanApproval(props.request.payload)} fallback={<PiDialogActions {...props} />}>
+    <PiPlanApprovalActions {...props} />
+  </Show>
+)

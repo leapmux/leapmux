@@ -94,25 +94,15 @@ func isHiddenPrimaryAgent(id string) bool {
 	}
 }
 
-// openCodeSubagentFromToolCall detects an OpenCode/Kilo subagent spawn by the
-// rawInput SHAPE {description, prompt, subagent_type} (shape detection, not
-// tool-name guessing). Shared by both providers since they run the same ACP
-// layer (Kilo is an OpenCode fork). Returns nil for a non-spawn tool call.
+// OpenCode and Kilo identify the native task before its arguments arrive.
+// Other titles require the native prompt and subagent discriminator.
 func openCodeSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
-	return openCodeSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput)
+	return openCodeSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, tc.Title == "task" && tc.Kind == "think")
 }
 
-// openCodeSpawnObservation builds the running row for a spawn-shaped payload,
-// or nil when the payload is not a spawn.
-//
-// Taken from the toolCallId + title + rawInput rather than a whole envelope
-// because the spawn shape does not always arrive on the tool_call: Kilo opens
-// the call with `rawInput: {}` and only fills {description, prompt,
-// subagent_type} on the FIRST in-progress tool_call_update. Both entry points
-// therefore run the same detection, and the registry upsert is keyed by
-// toolCallId, so whichever arrives first opens the row and the other is a
-// no-op.
-func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage) *acpSubagentObservation {
+// Build the registry row from a known native task or its later arguments.
+// Both event paths use the tool-call ID, so later arguments update the same row.
+func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask bool) *acpSubagentObservation {
 	var input struct {
 		Description  string          `json:"description"`
 		Prompt       json.RawMessage `json:"prompt"`
@@ -121,29 +111,28 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 		// prompt + a type, so detect on the union.
 		SubagentID string `json:"subagentID"`
 	}
-	if len(rawInput) == 0 {
+	if len(rawInput) == 0 && !knownTask {
 		return nil
 	}
-	if err := json.Unmarshal(rawInput, &input); err != nil {
+	if err := json.Unmarshal(rawInput, &input); err != nil && !knownTask {
 		return nil
 	}
-	// Spawn shape requires at least a prompt and a subagent discriminator.
-	if len(input.Prompt) == 0 || (input.SubagentType == "" && input.SubagentID == "") {
+	// An unidentified tool requires a prompt and a subagent discriminator.
+	if !knownTask && (len(input.Prompt) == 0 || (input.SubagentType == "" && input.SubagentID == "")) {
 		return nil
 	}
 	title := callTitle
-	if title == "" {
+	if title == "" || title == "task" {
 		title = input.Description
 	}
 	if title == "" {
 		title = input.SubagentType
 	}
-	// No Prompt. OpenCode and Kilo are registry-only -- they drop child sessions
-	// over ACP, so they never report a ChildAgentKey and no child transcript is
-	// ever created. A remembered prompt can only be spent when a transcript
-	// appears, so setting it here would record a string that is never read and
-	// never released. `prompt` still discriminates the spawn shape above; it is
-	// its presence that matters, not its value.
+	if title == "" {
+		title = "Subagent"
+	}
+	// ACP omits child-session messages. This registry path has no child transcript
+	// to consume a saved prompt, so it does not retain a separate copy.
 	return &acpSubagentObservation{
 		RowKey: toolCallID,
 		Title:  title,
@@ -171,7 +160,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		// session-id row. RenameBackgroundTask resolves that collision by dropping
 		// the re-created duplicate, so the replay converges on one row instead of
 		// leaving a Running row that no later event closes.
-		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput)
+		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false)
 	}
 	// The terminal rawOutput may carry the child session id under metadata.
 	rowKey := tcu.ToolCallID

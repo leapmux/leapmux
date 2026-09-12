@@ -235,6 +235,14 @@ describe('zcodeRow', () => {
     toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } }),
   )
 
+  it.each([
+    toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolCallId: 'other', toolName: 'Read', input: { file_path: '/other' } }),
+    toolEvent(ZCODE_TOOL_KIND.Result, { toolName: 'Read', input: { file_path: '/other' } }),
+  ])('rejects an unrelated or non-request sibling: %j', (unrelated) => {
+    const row = zcodeRow(resultRow, undefined, parsedOf(unrelated))
+    expect({ toolName: row.toolName, input: zcodeToolInput(row) }).toEqual({ toolName: '', input: {} })
+  })
+
   it('resolves the tool name once, in the payload > span > sibling order', () => {
     const own = toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Read })
     expect(zcodeRow(own, ZCODE_TOOL.Bash, scheduledSibling).toolName).toBe(ZCODE_TOOL.Read)

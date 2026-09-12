@@ -169,10 +169,9 @@ func TestHandleKiloOutput_RequestPermission(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "5", rec.RequestID)
 
 	var parsed struct {

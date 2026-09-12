@@ -1,7 +1,7 @@
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import { pickFirstString, pickObject } from '~/lib/jsonPick'
 import { parseReadContent } from '../../../results/ReadResultView'
-import { ACP_FILE_PATH_KEYS, collectAcpToolText } from '../rendering'
+import { ACP_FILE_PATH_KEYS, collectAcpToolText } from '../content'
 
 /**
  * Build a ReadFileResultSource from an ACP `tool_call_update` of kind `read`.
@@ -19,7 +19,7 @@ export function acpReadFromToolCall(toolUse: Record<string, unknown> | null | un
   const rawInput = pickObject(toolUse, 'rawInput')
   const filePath = pickFirstString(rawInput, ACP_FILE_PATH_KEYS) ?? ''
 
-  const text = collectAcpToolText(toolUse)
+  const text = collectAcpToolText(toolUse, { rawObjects: false })
   const { leading, lines, trailing } = parseReadContent(text)
 
   if (!filePath && !lines)

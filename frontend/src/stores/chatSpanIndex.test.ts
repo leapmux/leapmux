@@ -1,11 +1,16 @@
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { providerFor } from '~/components/chat/providers/registry'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 // Register the provider plugins: createSpanIndex resolves span roles through pluginFor (Claude
 // reads Anthropic tool_use/tool_result blocks, Pi routes by envelope type).
 import '~/components/chat/providers'
+
+function parsed(message: AgentChatMessage | undefined) {
+  return message ? parseMessageContent(message) : undefined
+}
 
 function encode(raw: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(raw))
@@ -78,12 +83,12 @@ function piEnd(id: string, spanId: string) {
   })
 }
 
-/** A Codex command-span row. Codex registers no spanRole hook, so it classifies as 'other'. */
+/** A Codex command row with its native item status. */
 function codexSpan(id: string, spanId: string, seq: bigint, status: string) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.AGENT,
-    content: encode({ item: { type: 'commandExecution', status } }),
+    content: encode({ item: { id: spanId, type: 'commandExecution', status } }),
     contentCompression: ContentCompression.NONE,
     seq,
     spanId,
@@ -97,26 +102,58 @@ describe('createspanindex', () => {
     const idx = createSpanIndex()
     // Out-of-order: the result is indexed before its opener.
     idx.index('a1', toolResult('res', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')).toBeUndefined() // no opener yet
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.type).toBe('user')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))).toBeUndefined() // no opener yet
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.type).toBe('user')
 
     idx.index('a1', toolUse('op', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.type).toBe('assistant')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.type).toBe('user')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.type).toBe('assistant')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.type).toBe('user')
+  })
+
+  it.each([
+    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
+    AgentProvider.CURSOR,
+    AgentProvider.GOOSE,
+    AgentProvider.GITHUB_COPILOT,
+    AgentProvider.REASONIX,
+  ])('pairs ACP provider %s by role when its result arrives first', (agentProvider) => {
+    const idx = createSpanIndex()
+    const request = create(AgentChatMessageSchema, {
+      id: 'request',
+      seq: 1n,
+      spanId: 'call',
+      agentProvider,
+      contentCompression: ContentCompression.NONE,
+      content: encode({ sessionUpdate: 'tool_call', toolCallId: 'call', status: 'pending' }),
+    })
+    const result = create(AgentChatMessageSchema, {
+      id: 'result',
+      seq: 2n,
+      spanId: 'call',
+      agentProvider,
+      contentCompression: ContentCompression.NONE,
+      content: encode({ sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed' }),
+    })
+    idx.index('agent', result)
+    expect(idx.getOpenerMessage('agent', 'call')).toBeUndefined()
+    idx.index('agent', request)
+    expect(idx.getOpenerMessage('agent', 'call')).toBe(request)
+    expect(idx.getResultMessage('agent', 'call')).toBe(result)
   })
 
   it('routes by role when the opener arrives first too', () => {
     const idx = createSpanIndex()
     idx.index('a1', toolUse('op', 's1'), toolResult('res', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.type).toBe('assistant')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.type).toBe('user')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.type).toBe('assistant')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.type).toBe('user')
   })
 
   it('routes Pi tool_execution_start/_end by envelope type, not content blocks', () => {
     const idx = createSpanIndex()
     idx.index('a1', piStart('op', 's1'), piEnd('res', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.type).toBe('tool_execution_start')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.type).toBe('tool_execution_end')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.type).toBe('tool_execution_start')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.type).toBe('tool_execution_end')
   })
 
   it('files a Pi tool_execution_end that arrives BEFORE its start into the result map', () => {
@@ -126,10 +163,10 @@ describe('createspanindex', () => {
     // end as the opener -- leaving getResultParsed undefined. Provider-aware role
     // routing fixes it regardless of arrival order.
     idx.index('a1', piEnd('res', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')).toBeUndefined() // the end is not an opener
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))).toBeUndefined() // the end is not an opener
     idx.index('a1', piStart('op', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.type).toBe('tool_execution_start')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.type).toBe('tool_execution_end')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.type).toBe('tool_execution_start')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.type).toBe('tool_execution_end')
   })
 
   it('routes non-tool kinds by first-seen, but flags a conflict on the second member for a safety reindex', () => {
@@ -139,8 +176,8 @@ describe('createspanindex', () => {
     // member flags a conflict, because role can't order two 'other' members, so the
     // caller reindexes from the authoritative window as a backstop.
     expect(idx.index('a1', plain('first', 's1', 'OPENER'), plain('second', 's1', 'RESULT'))).toBe(true)
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.content).toBe('OPENER')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.content).toBe('RESULT')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.content).toBe('OPENER')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.content).toBe('RESULT')
   })
 
   it('flags a conflict when two "other" members arrive OUT of order, so a reindex fixes the routing', () => {
@@ -154,26 +191,30 @@ describe('createspanindex', () => {
     // The store rebuilds from its seq-ordered window (opener before result on the
     // wire), which routes both correctly.
     idx.reindex('a1', [opener, result])
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.content).toBe('OPENER')
-    expect(idx.getResultParsed('a1', 's1')?.parentObject?.content).toBe('RESULT')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.content).toBe('OPENER')
+    expect(parsed(idx.getResultMessage('a1', 's1'))?.parentObject?.content).toBe('RESULT')
   })
 
-  it('files Codex/ACP span rows (no spanRole hook) first-seen-is-opener, pairing same-span rows via the backstop', () => {
-    // Codex and the ACP providers intentionally register NO spanRole hook: their spans are
-    // single-logical-row (the item IS both opener and terminal state), so createSpanIndex defaults
-    // them to 'other'. Pin that so nobody "fixes" it by adding a Codex/ACP spanRole returning
-    // 'opener' -- that would file two same-span rows both on the opener side and break result lookup
-    // (the very pairing this test asserts). A DISTINCT result-role row would instead need 'result'.
-    expect(providerFor(AgentProvider.CODEX)?.spanRole).toBeUndefined()
-    expect(providerFor(AgentProvider.OPENCODE)?.spanRole).toBeUndefined()
-
+  it('indexes a Codex result before its request without guessing from arrival order', () => {
     const idx = createSpanIndex()
-    // A started row then a re-broadcast completed row (distinct id) share the span. In seq order the
-    // first files as the opener; the second 'other' member flags a conflict and the backstop files it
-    // as the result -- so getResultMessage still resolves.
-    expect(idx.index('a1', codexSpan('started', 's1', 1n, 'in_progress'), codexSpan('completed', 's1', 2n, 'completed'))).toBe(true)
+    expect(idx.index('a1', codexSpan('completed', 's1', 2n, 'completed'))).toBe(false)
+    expect(idx.getOpenerMessage('a1', 's1')).toBeUndefined()
+    expect(idx.index('a1', codexSpan('started', 's1', 1n, 'inProgress'))).toBe(false)
     expect(idx.getOpenerMessage('a1', 's1')?.id).toBe('started')
     expect(idx.getResultMessage('a1', 's1')?.id).toBe('completed')
+  })
+
+  it('keeps repeated messages with an unknown role on their original side', () => {
+    const idx = createSpanIndex()
+    const opener = plain('op', 's1', 'OPENER')
+    const result = plain('res', 's1', 'RESULT')
+    idx.reindex('a1', [opener, result])
+    expect(idx.index('a1', opener)).toBe(false)
+    expect(idx.getOpenerMessage('a1', 's1')?.id).toBe('op')
+    expect(idx.getResultMessage('a1', 's1')?.id).toBe('res')
+    expect(idx.index('a1', result)).toBe(false)
+    expect(idx.getOpenerMessage('a1', 's1')?.id).toBe('op')
+    expect(idx.getResultMessage('a1', 's1')?.id).toBe('res')
   })
 
   it('keeps agents and absent spans isolated', () => {
@@ -182,25 +223,25 @@ describe('createspanindex', () => {
     // A message without a spanId is not indexed.
     idx.index('a1', toolUse('nospan', ''))
     // A different agent shares the spanId namespace but its own map.
-    expect(idx.getOpenerParsed('a2', 's1')).toBeUndefined()
-    expect(idx.getOpenerParsed('a1', 's-missing')).toBeUndefined()
-    expect(idx.getOpenerParsed('a1', 's1')?.parentObject?.type).toBe('assistant')
+    expect(parsed(idx.getOpenerMessage('a2', 's1'))).toBeUndefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's-missing'))).toBeUndefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))?.parentObject?.type).toBe('assistant')
   })
 
   it('reindex replaces the agent window (clears stale entries)', () => {
     const idx = createSpanIndex()
     idx.index('a1', toolUse('op', 's1'), toolResult('res', 's1'))
-    expect(idx.getOpenerParsed('a1', 's1')).toBeDefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))).toBeDefined()
 
     // Rebuild from a window that no longer contains s1.
     idx.reindex('a1', [toolUse('op2', 's2')])
-    expect(idx.getOpenerParsed('a1', 's1')).toBeUndefined()
-    expect(idx.getResultParsed('a1', 's1')).toBeUndefined()
-    expect(idx.getOpenerParsed('a1', 's2')?.parentObject?.type).toBe('assistant')
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))).toBeUndefined()
+    expect(parsed(idx.getResultMessage('a1', 's1'))).toBeUndefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's2'))?.parentObject?.type).toBe('assistant')
 
     // Reindex with an empty window clears everything.
     idx.reindex('a1', [])
-    expect(idx.getOpenerParsed('a1', 's2')).toBeUndefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's2'))).toBeUndefined()
   })
 
   it('reports a conflict when an incremental index reassigns a spanId to a new message id', () => {
@@ -222,7 +263,7 @@ describe('createspanindex', () => {
     const idx = createSpanIndex()
     // 'm1' is first an opener for s1.
     expect(idx.index('a1', toolUse('m1', 's1'))).toBe(false)
-    expect(idx.getOpenerParsed('a1', 's1')).toBeDefined()
+    expect(parsed(idx.getOpenerMessage('a1', 's1'))).toBeDefined()
     // The SAME id is re-indexed as a RESULT (its role flipped). It now sits on
     // BOTH sides, so the opener entry is stale -- a same-side-only check would miss
     // this (the result side is empty), but the cross-side check catches it so the
@@ -230,12 +271,12 @@ describe('createspanindex', () => {
     expect(idx.index('a1', toolResult('m1', 's1'))).toBe(true)
   })
 
-  it('caches the parse per message instance', () => {
+  it('preserves the indexed message reference', () => {
     const idx = createSpanIndex()
     idx.index('a1', toolUse('op', 's1'))
-    const first = idx.getOpenerParsed('a1', 's1')
-    const second = idx.getOpenerParsed('a1', 's1')
+    const first = idx.getOpenerMessage('a1', 's1')
+    const second = idx.getOpenerMessage('a1', 's1')
     expect(first).toBeDefined()
-    expect(second).toBe(first) // same reference -> parse memoized
+    expect(second).toBe(first)
   })
 })

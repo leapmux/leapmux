@@ -1,6 +1,7 @@
 import type { RenderContext } from '~/components/chat/messageRenderers'
 import { render, screen } from '@solidjs/testing-library'
 import ListTodo from 'lucide-solid/icons/list-todo'
+import { createSignal, Show } from 'solid-js'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ToolUseLayout } from '~/components/chat/toolRenderers'
 import { toolBodyBorder, toolBodyContent, toolHeaderTimestamp, toolInputText } from '~/components/chat/toolStyles.css'
@@ -25,6 +26,27 @@ function makeContext(overrides: Partial<RenderContext> = {}): RenderContext {
 }
 
 describe('toolUseLayout', () => {
+  it('omits an empty conditional summary and adds the body when the summary arrives', () => {
+    const [summary, setSummary] = createSignal('')
+    const { container } = render(() => (
+      <ToolUseLayout
+        toolName="Search"
+        title="*.ts"
+        summary={(
+          <>
+            <Show when={summary()}>{text => <span>{text()}</span>}</Show>
+            <Show when={false}>Unused</Show>
+          </>
+        )}
+      />
+    ))
+    expect(container.querySelector(`.${toolBodyContent}`)).toBeNull()
+    setSummary('src')
+    expect(container.querySelector(`.${toolBodyContent}`)?.textContent).toBe('src')
+    setSummary('')
+    expect(container.querySelector(`.${toolBodyContent}`)).toBeNull()
+  })
+
   it('renders title and icon in header', () => {
     const { container } = render(() => (
       <PreferencesProvider>

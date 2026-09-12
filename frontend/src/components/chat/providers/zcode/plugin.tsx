@@ -2,7 +2,7 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '../registry'
+import type { ClassificationInput, Provider, SpanRole, ToolMessageInput, ToolResultMeta } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { ZCODE_DEFAULT_MODE, ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
@@ -11,21 +11,21 @@ import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { sendResponse } from '../../controls/types'
-import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
-import { commandOutputIsCollapsible } from '../../results/commandResult'
-import { fileEditDiffHunks } from '../../results/fileEditDiff'
+import { MarkdownPlanLayout } from '../../widgets/MarkdownPlanLayout'
 import { registerProvider } from '../registry'
 import { zcodeQuestionsFromPayload } from './askUserQuestion'
 import { zcodeControlResponseDisplay } from './controlResponse'
 import { ZCodeControlActions, ZCodeControlContent, zcodeIsAskUserQuestion } from './controls'
-import { extractZCodeBash, zcodeBashToCommandSource } from './extractors/bash'
-import { extractZCodeFileDiff, extractZCodeRead } from './extractors/fileEdit'
-import { zcodeEnvelope, zcodeErrorText, zcodeExtractTool, zcodeRow } from './extractors/toolCommon'
+import { zcodeToolResultImages } from './extractors/image'
+import { zcodeControlPlanText } from './extractors/plan'
+import { zcodeResultMeta, zcodeResultPresentation } from './extractors/result'
+import { resolveZCodeMessage } from './extractors/supplement'
+import { zcodeEnvelope, zcodeExtractTool, zcodeRow } from './extractors/toolCommon'
 import { zcodeAssistantText, zcodeIsBackgroundTask, zcodeIsModelResponse } from './messageContent'
+import { ZCODE_WEB_FETCH } from './protocol'
 import {
   describeZCodeNotification,
   ZCodeAssistantMessage,
@@ -118,6 +118,8 @@ function zcodeToolSpanRole(kind: string): SpanRole {
  * bucket every one of them the same way.
  */
 function zcodeSpanRole(parsed: ParsedMessageContent): SpanRole {
+  if (zcodeControlPlanText(parsed.parentObject) !== null)
+    return 'opener'
   const envelope = zcodeEnvelope(parsed.parentObject)
   if (!envelope || envelope.type !== ZCODE_EVENT.ToolUpdated)
     return 'other'
@@ -133,8 +135,12 @@ type ZCodeRenderer = (
 const ZCODE_RENDERERS: Partial<Record<MessageCategory['kind'], ZCodeRenderer>> = {
   assistant_text: (_cat, parsed, context) =>
     <ZCodeAssistantMessage parsed={parsed} context={context} />,
-  tool_use: (_cat, parsed, context) =>
-    <ZCodeToolExecutionRenderer parsed={parsed} context={context} />,
+  tool_use: (_cat, parsed, context) => {
+    const plan = zcodeControlPlanText(parsed)
+    return plan === null
+      ? <ZCodeToolExecutionRenderer parsed={parsed} context={context} />
+      : <MarkdownPlanLayout toolName={ZCODE_TOOL.ExitPlanMode} title="Proposed Plan" planText={plan} context={context} />
+  },
   tool_result: (_cat, parsed, context) =>
     <ZCodeToolResultRenderer parsed={parsed} context={context} />,
   user_content: (_cat, parsed, context) => <UserContentMessage parsed={parsed} context={context} />,
@@ -144,78 +150,12 @@ const ZCODE_RENDERERS: Partial<Record<MessageCategory['kind'], ZCodeRenderer>> =
   },
 }
 
-function formatZCodeDiff(source: ReturnType<typeof extractZCodeFileDiff>): string | null {
-  if (!source)
-    return null
-  return formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath) || null
-}
-
-/**
- * Toolbar metadata for a ZCode tool result: whether the body clips, whether it draws
- * a diff, and what the copy button ships.
- *
- * The tool name comes from the span, never from the payload -- a result payload carries
- * no tool.
- */
-function zcodeToolResultMeta(
-  category: MessageCategory,
-  parsed: unknown,
-  spanType: string | undefined,
-  toolUseParsed: ParsedMessageContent | undefined,
-): ToolResultMeta | null {
+/** The toolbar reads the same presentation as the result renderer. */
+function zcodeToolResultMeta(category: MessageCategory, input: ToolMessageInput): ToolResultMeta | null {
   if (category.kind !== 'tool_result')
     return null
-  const update = zcodeExtractTool(parsed)
-  if (!update)
-    return null
-  const row = zcodeRow(parsed, spanType, toolUseParsed)
-  const toolName = row.toolName
-  const resultText = update.isError ? zcodeErrorText(update) : (update.result?.content ?? '')
-
-  if (toolName === ZCODE_TOOL.Bash) {
-    const bash = extractZCodeBash(row)
-    if (!bash)
-      return null
-    const output = zcodeBashToCommandSource(bash).output
-    return {
-      collapsible: commandOutputIsCollapsible(output),
-      hasDiff: false,
-      hasCopyable: output !== '',
-      copyableContent: () => output || null,
-    }
-  }
-
-  if (toolName === ZCODE_TOOL.Read) {
-    const read = extractZCodeRead(row)
-    if (!read)
-      return null
-    return {
-      collapsible: (read.source.lines?.length ?? 0) > COLLAPSED_RESULT_ROWS,
-      hasDiff: false,
-      hasCopyable: resultText !== '',
-      copyableContent: () => resultText || null,
-    }
-  }
-
-  if (toolName === ZCODE_TOOL.Edit || toolName === ZCODE_TOOL.Write) {
-    // A failed edit renders its error text, not the edit it attempted, so it declares
-    // no diff -- otherwise the toolbar would offer a split/unified toggle over a
-    // `<pre>` block.
-    const source = update.isError ? null : extractZCodeFileDiff(row)
-    return {
-      collapsible: false,
-      hasDiff: source !== null,
-      hasCopyable: source !== null || resultText !== '',
-      copyableContent: () => formatZCodeDiff(source) ?? (resultText || null),
-    }
-  }
-
-  return {
-    collapsible: commandOutputIsCollapsible(resultText),
-    hasDiff: false,
-    hasCopyable: resultText !== '',
-    copyableContent: () => resultText || null,
-  }
+  const presentation = zcodeResultPresentation(zcodeRow(input.parsed.parentObject, input.spanType, input.request, input.parsed.supplementalContent))
+  return presentation ? zcodeResultMeta(presentation) : null
 }
 
 /**
@@ -246,8 +186,30 @@ function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsag
   return info
 }
 
+const ZCODE_REQUESTS_WITH_TITLES = new Set<string>([
+  ZCODE_TOOL.Bash,
+  ZCODE_TOOL.Read,
+  ZCODE_TOOL.Write,
+  ZCODE_TOOL.Edit,
+  ZCODE_TOOL.Glob,
+  ZCODE_TOOL.Grep,
+  ZCODE_TOOL.TodoWrite,
+  ZCODE_TOOL.Agent,
+  ZCODE_WEB_FETCH,
+])
+
 const zcodePlugin: Provider = {
+  resolveMessage: resolveZCodeMessage,
   spanRole: zcodeSpanRole,
+  relatedMessages: (parsed) => {
+    if (zcodeControlPlanText(parsed.parentObject) !== null)
+      return []
+    const role = zcodeSpanRole(parsed)
+    if (role === 'result')
+      return ['request']
+    const tool = zcodeExtractTool(parsed.parentObject)
+    return role === 'opener' && (tool?.toolName === ZCODE_TOOL.Agent || tool?.toolName === ZCODE_TOOL.TodoWrite || Object.keys(tool?.input ?? {}).length === 0 || !ZCODE_REQUESTS_WITH_TITLES.has(tool?.toolName ?? '')) ? ['result'] : []
+  },
   contextUsageFromMessage: zcodeContextUsageFromMessage,
 
   // Text is inlined into the prompt and an image rides `session/send.attachments`.
@@ -292,6 +254,8 @@ const zcodePlugin: Provider = {
 
     if (!parent)
       return { kind: 'unknown' }
+    if (zcodeControlPlanText(parent) !== null)
+      return { kind: 'tool_use', toolName: ZCODE_TOOL.ExitPlanMode, toolUse: parent, content: [] }
 
     // A user row the service layer persisted is the LeapMux-neutral `{content}`
     // shape, with no ZCode `type`. It is matched BEFORE the event dispatch so a user
@@ -313,14 +277,6 @@ const zcodePlugin: Provider = {
       const payload = pickObject(parent, 'payload') ?? {}
       const role = zcodeToolSpanRole(pickString(payload, 'kind'))
       if (role === 'result') {
-        // A TodoWrite result says only that the list was written. The opener draws
-        // the list itself, so a second row for it is noise -- the same call that
-        // Claude Code's renderer makes for its own TodoWrite.
-        // classify holds no paired sibling: ClassificationInput carries the span type
-        // and nothing else, so the explicit `undefined` states what the two-argument
-        // call used to leave implicit.
-        if (zcodeRow(parent, input.spanType, undefined).toolName === ZCODE_TOOL.TodoWrite)
-          return { kind: 'hidden' }
         return { kind: 'tool_result' }
       }
       if (role === 'opener') {
@@ -365,11 +321,15 @@ const zcodePlugin: Provider = {
   notificationThreadEntry: zcodeNotificationThreadEntry,
   resultDivider: zcodeResultDivider,
   toolResultMeta: zcodeToolResultMeta,
+  toolResultImages: input => zcodeToolResultImages(zcodeRow(input.parsed.parentObject, input.spanType, input.request, input.parsed.supplementalContent)),
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject
     if (!obj)
       return null
+    const plan = zcodeControlPlanText(obj)
+    if (plan !== null)
+      return plan
     if (category.kind === 'assistant_text')
       return zcodeAssistantText(obj).trim() || null
     if ((category.kind === 'user_content' || category.kind === 'plan_execution') && typeof obj.content === 'string')

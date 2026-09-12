@@ -13,25 +13,20 @@ import { parseCatNContent } from '../../../results/ReadResultView'
 import { ZCODE_DISPLAY } from '../protocol'
 import { zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
-/** The tools whose result carries a `file_diff` display. */
+/** These tools can supply an input diff when no explicit display exists. */
 const ZCODE_DIFF_TOOLS = new Set<string>([ZCODE_TOOL.Edit, ZCODE_TOOL.Write])
 
 /**
  * The diff a ZCode edit/write result carries.
  *
- * The app-server hands over a READY structured patch under
- * `result.display.structuredPatch`, in the same hunk shape the shared diff view
- * consumes -- so there is no diff text to parse and no old/new pair to reconstruct.
- * Returns null when the row is not an edit/write, when it failed (the error text is
- * what the body shows then), or when no display arrived.
+ * An explicit display supplies structured hunks for the shared diff view.
+ * Edit and Write requests supply a fallback when the result omits its patch.
+ * Failed calls return null so the renderer shows the error instead of an applied change.
  */
 export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiffSource | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update || update.isError)
     return null
-  if (!ZCODE_DIFF_TOOLS.has(row.toolName))
-    return null
-
   const display = update.result?.display
   if (display && pickString(display, 'kind') === ZCODE_DISPLAY.FileDiff) {
     const hunks = normalizeStructuredPatchHunks(display.structuredPatch)
@@ -44,6 +39,8 @@ export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiffSource | null {
       }
     }
   }
+  if (!ZCODE_DIFF_TOOLS.has(row.toolName))
+    return null
 
   // No display: fall back to what the INPUT states. A Write of a new file reports no
   // patch because there is no old side to diff against, and an Edit's input holds the
@@ -95,7 +92,7 @@ export interface ZCodeReadResult {
  */
 export function extractZCodeRead(row: ZCodeRow): ZCodeReadResult | null {
   const update = zcodeExtractTool(row.parsed)
-  if (!update)
+  if (!update || update.isError)
     return null
   if (row.toolName !== ZCODE_TOOL.Read)
     return null

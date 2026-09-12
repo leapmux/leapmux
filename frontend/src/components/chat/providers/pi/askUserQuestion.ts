@@ -10,8 +10,10 @@
  */
 
 import type { Question } from '../../controls/types'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
+import { piQuestionFromSource, piQuestionOptionLine } from './questionSource'
 
 /**
  * Convert Pi's flat `options: string[]` into the labelled-option shape
@@ -33,18 +35,33 @@ export function piSelectOptions(payload: Record<string, unknown>): Array<{ label
  * source of truth defines the question id, prompt, and options for any
  * given Pi payload.
  */
-export function piQuestionsFromPayload(payload: Record<string, unknown>): Question[] {
+export function piQuestionsFromPayload(payload: Record<string, unknown>, source?: ParsedMessageContent): Question[] {
   const method = pickString(payload, 'method')
+  const question = piQuestionFromSource(payload, source)
+  if (question && method === PI_DIALOG_METHOD.Input && question.multiSelect) {
+    return [{
+      id: pickString(payload, 'id'),
+      question: question.prompt,
+      header: question.header || undefined,
+      multiSelect: true,
+      allowEmpty: true,
+      options: question.options.map((option, index) => ({ ...option, value: String(index + 1) })),
+    }]
+  }
   if (method === PI_DIALOG_METHOD.Select) {
     return [{
       id: pickString(payload, 'id'),
-      question: pickString(payload, 'title') || 'Choose an option',
-      options: piSelectOptions(payload),
+      question: question?.prompt ?? (pickString(payload, 'title') || 'Choose an option'),
+      ...(question?.header ? { header: question.header } : {}),
+      options: question
+        ? question.options.map((option, index) => ({ ...option, value: piQuestionOptionLine(option, index) }))
+        : piSelectOptions(payload),
     }]
   }
   return [{
     id: pickString(payload, 'id'),
-    question: pickString(payload, 'title') || 'Enter a value',
+    question: question?.title ?? (pickString(payload, 'title') || 'Enter a value'),
     options: [],
+    ...(method === PI_DIALOG_METHOD.Input ? { allowEmpty: true } : {}),
   }]
 }

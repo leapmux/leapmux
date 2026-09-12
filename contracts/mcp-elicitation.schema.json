@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-elicitation.schema.json",
+  "title": "MCP elicitation vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "methods",
+    "subtypes",
+    "actions",
+    "approvalKinds",
+    "approvalScopes"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "methods": {
+      "$ref": "#/$defs/table"
+    },
+    "subtypes": {
+      "$ref": "#/$defs/table"
+    },
+    "actions": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalScopes": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

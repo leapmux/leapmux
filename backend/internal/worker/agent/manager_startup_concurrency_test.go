@@ -33,7 +33,7 @@ func (idleAgent) SendRawInput([]byte) error                       { return nil }
 func (idleAgent) Stop()                                           {}
 func (idleAgent) IsStopped() bool                                 { return false }
 func (idleAgent) DiscardOutput()                                  {}
-func (idleAgent) ClearContext() (string, bool)                    { return "", false }
+func (idleAgent) ClearContext() (string, error)                   { return "", ErrContextClearUnsupported }
 func (idleAgent) Wait() error                                     { return nil }
 func (idleAgent) Stderr() string                                  { return "" }
 func (idleAgent) HandleOutput([]byte)                             {}

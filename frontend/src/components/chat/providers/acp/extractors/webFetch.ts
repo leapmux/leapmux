@@ -1,6 +1,7 @@
 import type { WebFetchResultSource } from '../../../results/webFetchResult'
 import { pickObject } from '~/lib/jsonPick'
 import { webFetchFromObj } from '../../../results/webFetchResult'
+import { collectAcpToolText } from '../content'
 
 /**
  * Build a WebFetchResultSource from an ACP `tool_call_update` of kind `fetch`.
@@ -16,5 +17,7 @@ export function acpWebFetchFromToolCall(
 ): WebFetchResultSource | null {
   if (!toolUse)
     return null
-  return webFetchFromObj(pickObject(toolUse, 'rawOutput'))
+  const result = collectAcpToolText(toolUse, { rawObjects: false })
+  return webFetchFromObj(pickObject(toolUse, 'rawOutput'), { resultFallback: result })
+    ?? (result ? { result } : null)
 }

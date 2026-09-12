@@ -2,10 +2,21 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { fileUriToPath } from '~/lib/paths'
 import { CODEX_ITEM } from '~/types/toolMessages'
+import { extractItem } from '../renderHelpers'
 
 /** The one format Codex's image generation returns; it hardcodes the same. */
 const CODEX_GENERATED_IMAGE_MIME = 'image/png'
+
+/** Codex supplies a file path for image views. The shared resolver supplies the pixels. */
+export function codexViewedImage(item: Record<string, unknown> | null | undefined): ImageResultSource | null {
+  if (item?.type !== CODEX_ITEM.IMAGE_VIEW)
+    return null
+  const path = pickString(item, 'path')
+  const filePath = path.startsWith('file:') ? fileUriToPath(path) : path
+  return filePath ? { filePath } : null
+}
 
 /** The generated image an `imageGeneration` item carries, if it produced one. */
 export function codexGeneratedImage(item: Record<string, unknown> | null | undefined): ImageResultSource | null {
@@ -29,9 +40,7 @@ export function codexGeneratedImage(item: Record<string, unknown> | null | undef
  *   - `dynamicToolCall` -- `contentItems[]` with `{type:'inputImage', imageUrl}`.
  *   - `imageGeneration` -- a base64 PNG in `result`.
  *
- * `imageView` is deliberately absent: it states the path of a file the agent
- * looked at and carries no pixels, so there is nothing to render or open from
- * the message. Its renderer links the path instead.
+ * `imageView` supplies a file source that the shared image resolver can read.
  */
 export function codexToolResultImages(
   parsed: unknown,
@@ -40,9 +49,12 @@ export function codexToolResultImages(
 ): ImageResultSource[] {
   if (!isObject(parsed))
     return []
-  const item = pickObject(parsed, 'item')
+  const item = extractItem(parsed)
   if (!item)
     return []
+  const viewed = codexViewedImage(item)
+  if (viewed)
+    return [viewed]
 
   const generated = codexGeneratedImage(item)
   if (generated)

@@ -191,6 +191,31 @@ export function split(p: string, flavor?: PathFlavor): string[] {
   return p.split('/').filter(Boolean)
 }
 
+/** Decode a file URI for the worker's platform, independent of the browser's platform. */
+export function fileUriToPath(uri: string): string | undefined {
+  if (!/^file:\/\//i.test(uri))
+    return undefined
+  try {
+    const url = new URL(uri)
+    if (url.protocol !== 'file:')
+      return undefined
+    const decode = (value: string): string => {
+      try {
+        return decodeURIComponent(value)
+      }
+      catch { return value }
+    }
+    const path = decode(url.pathname)
+    const host = decode(url.host)
+    if (!path || path.includes('\0') || host.includes('\0'))
+      return undefined
+    return host ? `//${host}${path}` : /^\/[a-z]:/i.test(path) ? path.slice(1) : path
+  }
+  catch {
+    return undefined
+  }
+}
+
 export function join(parts: string[], flavor?: PathFlavor): string {
   const filtered = parts.filter(p => p !== undefined && p !== null && p !== '')
   if (filtered.length === 0)

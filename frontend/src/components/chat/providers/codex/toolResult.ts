@@ -1,30 +1,16 @@
 import type { MessageCategory } from '../../messageClassification'
-import type { ToolResultMeta } from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
-import { pickString } from '~/lib/jsonPick'
+import type { ToolMessageInput, ToolResultMeta } from '../registry'
+import { isObject, pickString } from '~/lib/jsonPick'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
+import { messageCompletionFromProto } from '../../assembledMessage'
+import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
+import { mcpToolResultMeta } from '../../results/mcpToolCall'
+import { codexAgentCounterpart, codexAgentResults, resolveCodexAgentItem } from './extractors/agent'
+import { codexMcpFromItem } from './extractors/mcp'
 import { extractItem } from './renderHelpers'
 
 const DIFF_HUNK_HEADER = '@@ '
-
-interface CodexItem {
-  status: string
-  aggregatedOutput: string
-  changes: Array<Record<string, unknown>>
-}
-
-/** Resolve {item, status} for a Codex tool_use message; returns null when the shape doesn't match. */
-function readCodexItem(parsed: unknown): CodexItem | null {
-  const item = extractItem(parsed)
-  if (!item)
-    return null
-  return {
-    status: pickString(item, 'status'),
-    aggregatedOutput: pickString(item, 'aggregatedOutput'),
-    changes: Array.isArray(item.changes) ? item.changes as Array<Record<string, unknown>> : [],
-  }
-}
 
 /**
  * Provider.toolResultMeta implementation for Codex.
@@ -35,30 +21,47 @@ function readCodexItem(parsed: unknown): CodexItem | null {
  */
 export function codexToolResultMeta(
   category: MessageCategory,
-  parsed: unknown,
-  spanType: string | undefined,
-  _toolUseParsed: ParsedMessageContent | undefined,
+  input: ToolMessageInput,
 ): ToolResultMeta | null {
   if (category.kind !== 'tool_use')
     return null
 
-  const item = readCodexItem(parsed)
+  const item = extractItem(input.parsed.parentObject)
   if (!item)
     return null
+  if (item.type === CODEX_ITEM.IMAGE_VIEW && input.role === 'result')
+    return { collapsible: false, hasDiff: false, hasCopyable: false, copyableContent: () => null }
 
-  if (spanType === CODEX_ITEM.COMMAND_EXECUTION && (item.status === CODEX_STATUS.COMPLETED || item.status === CODEX_STATUS.FAILED)) {
+  if (item.type === CODEX_ITEM.COLLAB_AGENT_TOOL_CALL && (input.role === 'result' || (item.status !== CODEX_STATUS.IN_PROGRESS && !!item.status))) {
+    const results = codexAgentResults(resolveCodexAgentItem(item, codexAgentCounterpart(item, input.request, 'request')))
+    const text = results.map(result => result.body).filter(Boolean).join('\n\n')
     return {
-      collapsible: commandOutputIsCollapsible(item.aggregatedOutput),
+      collapsible: results.some(result => hasMoreLinesThan(result.body, COLLAPSED_RESULT_ROWS)),
       hasDiff: false,
-      hasCopyable: item.aggregatedOutput.length > 0,
-      copyableContent: () => item.aggregatedOutput || null,
+      hasCopyable: !!text,
+      copyableContent: () => text || null,
     }
   }
 
-  if (spanType === CODEX_ITEM.FILE_CHANGE && item.status === CODEX_STATUS.COMPLETED) {
+  const mcp = codexMcpFromItem(item)
+  if (mcp)
+    return mcp.status === CODEX_STATUS.IN_PROGRESS && !messageCompletionFromProto(input.parsed.completion) ? null : mcpToolResultMeta(mcp)
+
+  if (input.spanType === CODEX_ITEM.COMMAND_EXECUTION && (messageCompletionFromProto(input.parsed.completion) || item.status === CODEX_STATUS.COMPLETED || item.status === CODEX_STATUS.FAILED)) {
+    const output = pickString(item, 'aggregatedOutput')
+    return {
+      collapsible: commandOutputIsCollapsible(output),
+      hasDiff: false,
+      hasCopyable: output.length > 0,
+      copyableContent: () => output || null,
+    }
+  }
+
+  if (input.spanType === CODEX_ITEM.FILE_CHANGE && item.status === CODEX_STATUS.COMPLETED) {
+    const changes = Array.isArray(item.changes) ? item.changes.filter(isObject) : []
     // Walk once for hasDiff; defer the diffs[] allocation to the lazy
     // copyableContent getter so streaming re-evals don't pay for it.
-    const hasDiff = item.changes.some(c => typeof c.diff === 'string' && (c.diff as string).includes(DIFF_HUNK_HEADER))
+    const hasDiff = changes.some(c => typeof c.diff === 'string' && c.diff.includes(DIFF_HUNK_HEADER))
     return {
       // Completed file-change diffs render in full; the toolbar's expand button
       // would be a no-op, so we report non-collapsible.
@@ -66,7 +69,7 @@ export function codexToolResultMeta(
       hasDiff,
       hasCopyable: hasDiff,
       copyableContent: () => {
-        const diffs = item.changes
+        const diffs = changes
           .map(change => typeof change.diff === 'string' ? change.diff as string : '')
           .filter(Boolean)
         return diffs.length > 0 ? diffs.join('\n\n') : null

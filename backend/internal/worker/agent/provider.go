@@ -64,6 +64,8 @@ type PlanApprovalOptions struct {
 // provider has its own JSONL/JSON-RPC frame shape, and the service layer
 // dispatches via this interface instead of OR-ing all formats together.
 type Provider interface {
+	// ResolveProviderData combines native supplemental fields without changing either source.
+	ResolveProviderData(MessageContent) []byte
 	// Classify categorizes a persisted notification frame for consolidation
 	// in consolidateNotificationThread. Frames the plugin doesn't recognize
 	// return NotificationClassification{} (Consolidatable() == false).
@@ -258,6 +260,10 @@ type Provider interface {
 }
 
 type noopProvider struct{}
+
+func (noopProvider) ResolveProviderData(content MessageContent) []byte {
+	return content.Original
+}
 
 func (noopProvider) Classify(json.RawMessage) NotificationClassification {
 	return NotificationClassification{}
@@ -924,8 +930,8 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, listStoredSessions: cursorStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, listStoredSessions: copilotStoredSessions, resolveOptionConflicts: resolveCopilotOptionConflicts})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, openCodeFamilyProvider{acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, openCodeFamilyProvider{acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions}})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, listStoredSessions: gooseStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})

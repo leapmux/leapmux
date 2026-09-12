@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -24,7 +23,7 @@ func newCopilotAgentWithSink(sink ProviderServices) *CopilotCLIAgent {
 	return a
 }
 
-func TestHandleCopilotOutput_StatuslessOutputMergesIntoCompletion(t *testing.T) {
+func TestHandleCopilotOutput_RetainsStatuslessOutputInSupplement(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -38,9 +37,12 @@ func TestHandleCopilotOutput_StatuslessOutputMergesIntoCompletion(t *testing.T) 
 		"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}`))
 
 	require.Len(t, sink.Messages(), 2)
-	var completed map[string]interface{}
-	require.NoError(t, json.Unmarshal(sink.Messages()[1].Content, &completed))
-	assert.Contains(t, string(sink.Messages()[1].Content), "hello")
+	result := sink.Messages()[1]
+	assert.JSONEq(t, `{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}`, string(result.Content))
+	resolved := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT).ResolveProviderData(MessageContent{
+		Original: result.Content, Supplemental: result.SupplementalContent,
+	})
+	assert.JSONEq(t, `{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","kind":"execute","status":"completed","content":[{"type":"content","content":{"type":"text","text":"hello"}}]}`, string(resolved))
 	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("tool-1"))
 }
 
@@ -53,8 +55,8 @@ func TestHandleCopilotOutput_RequestPermission(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, "7", sink.LastPersistedControl().RequestID)
+	require.Equal(t, 1, sink.PublishedControlCount())
+	require.Equal(t, "7", sink.LastPublishedControl().RequestID)
 }
 
 func TestHandleCopilotOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testing.T) {

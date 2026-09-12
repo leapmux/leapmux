@@ -222,21 +222,101 @@ func TestCopilotGoal_UsesTheAdvertisedAutopilotCommand(t *testing.T) {
 	agent := newCopilotCLIAgent("", false)
 	agent.sink = sink
 
+	assert.Empty(t, agent.SupportedGoalActions())
 	advertiseACPCommands(t, &agent.acpBase, "autopilot")
-	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionClear}, agent.SupportedGoalActions())
+	assert.Equal(t, []GoalAction{GoalActionSet, GoalActionPause}, agent.SupportedGoalActions())
 	setOutcome, err := agent.PerformGoalAction(GoalActionSet, "ship it")
 	require.NoError(t, err)
 	assert.Equal(t, "/goal ship it", setOutcome.QueuedInput)
-	clearOutcome, err := agent.PerformGoalAction(GoalActionClear, "")
+	pauseOutcome, err := agent.PerformGoalAction(GoalActionPause, "")
 	require.NoError(t, err)
-	assert.Equal(t, "/goal off", clearOutcome.QueuedInput)
+	assert.Equal(t, "/goal off", pauseOutcome.QueuedInput)
+	assert.Empty(t, sink.Goals(), "the command must take effect only after delivery")
 
 	agent.ObserveGoalCommand(GoalDeliverySend, setOutcome.QueuedInput)
-	goal, ok := sink.LastGoal()
+	original, ok := sink.LastGoal()
 	require.True(t, ok)
-	assert.Equal(t, "ship it", goal.Objective)
-	agent.ObserveGoalCommand(GoalDeliverySend, clearOutcome.QueuedInput)
-	assert.Equal(t, 1, sink.GoalClears())
+	assert.Equal(t, "ship it", original.Objective)
+	agent.ObserveGoalCommand(GoalDeliverySend, pauseOutcome.QueuedInput)
+	paused, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, GoalStatusPaused, paused.Status)
+	assert.Equal(t, original.Objective, paused.Objective)
+	assert.Equal(t, original.CreatedAt, paused.CreatedAt)
+	assert.Zero(t, sink.GoalClears())
+}
+
+func TestCopilotGoal_OffPreservesTheExistingGoal(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"/goal off", "/goal OFF", "/goal  off  ", "/autopilot off"} {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			sink := &testSink{}
+			agent := newCopilotCLIAgent("", false)
+			agent.sink = sink
+			advertiseACPCommands(t, &agent.acpBase, "autopilot")
+			original := GoalUpdate{NativeID: "native-goal", Objective: "Keep this objective", Status: GoalStatusActive, CreatedAt: time.Unix(123, 0)}
+			sink.UpsertGoal(original)
+
+			agent.ObserveGoalCommand(GoalDeliverySend, command)
+
+			paused, ok := sink.LastGoal()
+			require.True(t, ok)
+			expected := original
+			expected.Status = GoalStatusPaused
+			assert.Equal(t, expected, paused)
+			assert.Zero(t, sink.GoalClears())
+		})
+	}
+}
+
+func TestCopilotGoal_OnDoesNotResumeOrReplaceTheGoal(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := newCopilotCLIAgent("", false)
+	agent.sink = sink
+	advertiseACPCommands(t, &agent.acpBase, "autopilot")
+	original := GoalUpdate{NativeID: "native-goal", Objective: "Keep this objective", Status: GoalStatusPaused}
+	sink.UpsertGoal(original)
+
+	for _, command := range []string{"/goal on", "/goal ON", "continue"} {
+		agent.ObserveGoalCommand(GoalDeliverySend, command)
+	}
+
+	assert.Equal(t, []GoalUpdate{original}, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
+	for _, action := range []GoalAction{GoalActionClear, GoalActionResume} {
+		outcome, err := agent.PerformGoalAction(action, "")
+		assert.ErrorIs(t, err, ErrGoalControlUnsupported)
+		assert.Empty(t, outcome.QueuedInput)
+	}
+}
+
+func TestCopilotGoal_RejectsModeArgumentsAsObjectives(t *testing.T) {
+	t.Parallel()
+	agent := newCopilotCLIAgent("", false)
+	for _, objective := range []string{"off", "on", " OFF ", " ON "} {
+		outcome, err := agent.PerformGoalAction(GoalActionSet, objective)
+		assert.ErrorIs(t, err, ErrGoalObjectiveIsCommand, objective)
+		assert.Empty(t, outcome.QueuedInput)
+	}
+	for _, objective := range []string{"off the queue", "on the release"} {
+		outcome, err := agent.PerformGoalAction(GoalActionSet, objective)
+		require.NoError(t, err)
+		assert.Equal(t, "/goal "+objective, outcome.QueuedInput)
+	}
+}
+
+func TestCopilotGoal_IgnoresUndeliveredAndEmptyGoalPauses(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	agent := newCopilotCLIAgent("", false)
+	agent.sink = sink
+	advertiseACPCommands(t, &agent.acpBase, "autopilot")
+	agent.ObserveGoalCommand(GoalDeliverySend, "/goal off")
+	agent.ObserveGoalCommand(GoalDeliverySteer, "/goal off")
+	assert.Empty(t, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
 }
 
 func TestACPGoal_CommandRemovalRepublishesCapabilities(t *testing.T) {
@@ -287,6 +367,17 @@ func TestZCodeGoal_StatePatchReportsAChange(t *testing.T) {
 	assert.EqualValues(t, 4, *got.Iterations)
 	assert.False(t, got.Snapshot, "a patch reports a change as it happens")
 	assert.Nil(t, got.TokensUsed, "ZCode reports a budget, never a consumed count")
+}
+
+func TestZCodeGoalPreservesDistinctNativeIdentities(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.reportZCodeGoal(json.RawMessage(`{"targetId":"first","objective":"Same objective","status":"active"}`), false)
+	a.reportZCodeGoal(json.RawMessage(`{"targetId":"second","objective":"Same objective","status":"active"}`), false)
+	updates := sink.Goals()
+	require.Len(t, updates, 2)
+	assert.NotEqual(t, updates[0], updates[1], "distinct native goals must not become the same goal update")
 }
 
 // A patch that changed something else omits `goal` entirely. Treating an absent
@@ -912,7 +1003,6 @@ func TestTextGoal_RefusesAnObjectiveThatClears(t *testing.T) {
 	}{
 		{name: "claude", route: claudeGoalRoute},
 		{name: "goose", route: gooseGoalRoute},
-		{name: "copilot", route: copilotGoalRoute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -1097,4 +1187,19 @@ func zcodeGoalInputID(t *testing.T, req zcodeSentRequest) string {
 	require.NoError(t, json.Unmarshal(req.Params, &params))
 	require.NotEmpty(t, params.InputID)
 	return params.InputID
+}
+
+func TestCopilotGoal_OffDoesNotChangeAnInactiveGoal(t *testing.T) {
+	t.Parallel()
+	for _, status := range []GoalStatus{GoalStatusPaused, GoalStatusDone, GoalStatusBlocked} {
+		sink := &testSink{}
+		agent := newCopilotCLIAgent("", false)
+		agent.sink = sink
+		advertiseACPCommands(t, &agent.acpBase, "autopilot")
+		original := GoalUpdate{Objective: "Keep this objective", Status: status}
+		sink.UpsertGoal(original)
+		agent.ObserveGoalCommand(GoalDeliverySend, "/goal off")
+		assert.Equal(t, []GoalUpdate{original}, sink.Goals())
+		assert.Zero(t, sink.GoalClears())
+	}
 }

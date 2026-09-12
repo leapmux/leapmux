@@ -334,7 +334,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     })
     expect(() => fireEvent.click(feedback)).not.toThrow()
 
-    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
+    await vi.waitFor(async () => expect((await loadDraft('a1-ctrl-plan-1')).content).toBe(''))
   })
 
   // Answering discards the drafts of the ANSWERED request only: its editor text
@@ -359,7 +359,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
+    await vi.waitFor(async () => expect((await loadDraft('a1-ctrl-plan-1')).content).toBe(''))
     expect((await loadDraft('a1-ctrl-plan-1-q-3')).content).toBe('not a key this request can write')
     expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:plan-1`)).toBeUndefined()
     expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
@@ -568,7 +568,7 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(await localStorageLoad(key)).toBeUndefined()
+    await vi.waitFor(async () => expect(await localStorageLoad(key)).toBeUndefined())
     // The choice still reached the response; only the saved copy is gone.
     const [, content] = onControlResponse.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toHaveProperty('clearContext', true)

@@ -35,7 +35,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.getByText(PLAN_BODY).last()).toBeVisible()
 
     const firstBanner = await waitForControlBanner(page)
-    await expect(firstBanner.getByText('Implement the proposed plan?')).toBeVisible()
+    await expect(firstBanner.getByText('Plan Ready for Review')).toBeVisible()
     await expect(page.getByTestId('control-deny-btn')).toHaveText('Reject')
     await expect(page.getByTestId('control-allow-btn')).toHaveText('Approve')
     await expect(page.getByTestId('plan-clear-context-checkbox')).toBeVisible()
@@ -59,7 +59,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.getByText('Add tests before implementation.').last()).toBeVisible()
 
     const revisedBanner = await waitForControlBanner(page)
-    await expect(revisedBanner.getByText('Implement the proposed plan?')).toBeVisible()
+    await expect(revisedBanner.getByText('Plan Ready for Review')).toBeVisible()
 
     const clearContextSwitch = page.getByTestId('plan-clear-context-checkbox').locator('input[type="checkbox"]')
     await expect(clearContextSwitch).not.toBeChecked()
@@ -68,7 +68,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     // Scoped to the prompt's own text, not to the banner slot. Executing the
     // approved plan can raise the NEXT control request into that same slot,
     // which says nothing about whether this approval cleared.
-    await expect(revisedBanner.getByText('Implement the proposed plan?')).not.toBeVisible()
+    await expect(revisedBanner.getByText('Plan Ready for Review')).not.toBeVisible()
     await expectSettingsChip(page, 'Default')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()

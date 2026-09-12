@@ -6,10 +6,15 @@ import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
+import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import { MessageBubble } from '../MessageBubble'
 import { claudeToolResultMeta } from './claude/toolResult'
 import { codexToolResultMeta } from './codex/toolResult'
+import { providerFor } from './registry'
+import { input } from './testUtils'
+import './index'
 import './claude'
 import './codex'
 import './opencode'
@@ -18,7 +23,6 @@ import './testMocks'
 
 const normalizeProgressOutputCalls = vi.hoisted(() => vi.fn())
 const normalizedCommandBodyCalls = vi.hoisted(() => vi.fn())
-const stripToolUseHeaderFromOutputCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
   tokenizeAsyncCalls(lang, code)
@@ -64,17 +68,6 @@ vi.mock('~/lib/normalizeProgressOutput', async (importOriginal) => {
   }
 })
 
-vi.mock('./codex/extractors/commandExecution', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./codex/extractors/commandExecution')>()
-  return {
-    ...actual,
-    stripToolUseHeaderFromOutput: (output: string) => {
-      stripToolUseHeaderFromOutputCalls(output)
-      return actual.stripToolUseHeaderFromOutput(output)
-    },
-  }
-})
-
 vi.mock('~/context/PreferencesContext', () => ({
   usePreferences: () => ({
     diffView: () => 'unified',
@@ -84,13 +77,23 @@ vi.mock('~/context/PreferencesContext', () => ({
 
 const { renderMessageContent } = await import('../messageRenderers')
 const { createMessageRenderCacheStore } = await import('../messageRenderCache')
-const { BashHighlightHtml } = await import('../toolRenderers')
+const { CommandHighlightHtml } = await import('../toolRenderers')
 const { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } = await import('../chatHeightShared')
 const { CollapsibleContent } = await import('../results/CollapsibleContent')
 const { CommandInputBody, CommandInputSummary } = await import('../results/multiLineCommandBody')
 const { ToolUseMessage } = await import('./claude/toolUse/genericToolUse')
 const { ToolCallUpdateMessage } = await import('./acp/renderers/toolCallUpdate')
-const { PiBashRenderer } = await import('./pi/renderers/toolExecution')
+const { PiCommandRenderer } = await import('./pi/renderers/toolExecution')
+
+describe('pi command syntax', () => {
+  it('uses PowerShell syntax for the PowerShell tool', async () => {
+    tokenizeAsyncCalls.mockClear()
+    const command = 'Get-ChildItem -Path .'
+    render(() => <PiCommandRenderer payload={{ type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } }} />)
+    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalled())
+    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('powershell', command)
+  })
+})
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
@@ -257,7 +260,7 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('hi')
   })
 
-  it('uses the ACP tool-call expanded key for delegated execute output', () => {
+  it('uses the shared result expansion state for ACP command output', () => {
     const output = Array.from({ length: 8 }, (_, i) => `output line ${i + 1}`).join('\n')
     const [expanded, setExpanded] = createSignal(false)
 
@@ -270,9 +273,9 @@ describe('canonical command status label across providers', () => {
       rawOutput: { metadata: { exit: 0 } },
       content: [{ type: 'content', content: { text: output } }],
     }, {
-      getMessageUiState: key => key === 'opencode-tool-call-update' ? expanded() : undefined,
+      getMessageUiState: key => key === 'tool-result-expanded' ? expanded() : undefined,
       setMessageUiState: (key, value) => {
-        if (key === 'opencode-tool-call-update')
+        if (key === 'tool-result-expanded')
           setExpanded(value)
       },
     })
@@ -409,7 +412,7 @@ describe('command summary syntax highlighting selection stability', () => {
     tokenizeAsyncCalls.mockClear()
 
     const { container } = render(() => (
-      <BashHighlightHtml
+      <CommandHighlightHtml
         class="summary"
         code="echo paused"
         context={{
@@ -440,7 +443,7 @@ describe('command summary syntax highlighting selection stability', () => {
     })
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (
-      <BashHighlightHtml
+      <CommandHighlightHtml
         class="summary"
         code="echo paused"
         context={{
@@ -475,7 +478,7 @@ describe('command summary syntax highlighting selection stability', () => {
     const [selectionActive, setSelectionActive] = createSignal(true)
 
     render(() => (
-      <BashHighlightHtml
+      <CommandHighlightHtml
         class="summary"
         code="echo selected"
         context={{ textSelectionActive: selectionActive }}
@@ -543,7 +546,7 @@ describe('command summary syntax highlighting selection stability', () => {
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
       const { container } = render(() => (
-        <PiBashRenderer
+        <PiCommandRenderer
           payload={{
             type: 'tool_execution_start',
             toolCallId: 'call_bash_1',
@@ -606,7 +609,7 @@ describe('command summary syntax highlighting selection stability', () => {
     tokenizeAsyncCalls.mockClear()
 
     const { container } = render(() => (
-      <BashHighlightHtml
+      <CommandHighlightHtml
         class="summary"
         code="echo highlighted"
         context={{}}
@@ -627,7 +630,7 @@ describe('command summary syntax highlighting selection stability', () => {
     const [paused, setPaused] = createSignal(false)
     const cache = createMessageRenderCacheStore().forRow('command-summary')
     const { container } = render(() => (
-      <BashHighlightHtml
+      <CommandHighlightHtml
         class="summary"
         code="echo hello"
         context={{
@@ -677,10 +680,9 @@ describe('command summary syntax highlighting selection stability', () => {
 })
 
 describe('command result scroll-critical rendering', () => {
-  it('keeps terminal Codex command output mounted while syntax highlighting is paused', () => {
+  it('keeps completed Codex command output mounted while syntax highlighting is paused', () => {
     normalizeProgressOutputCalls.mockClear()
     normalizedCommandBodyCalls.mockClear()
-    stripToolUseHeaderFromOutputCalls.mockClear()
 
     const { container } = renderCodexItem({
       type: 'commandExecution',
@@ -697,12 +699,10 @@ describe('command result scroll-critical rendering', () => {
     expect(text).toContain('expensive-output')
     expect(text).not.toContain('Command output deferred while scrolling')
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
-    expect(stripToolUseHeaderFromOutputCalls).toHaveBeenCalled()
   })
 
-  it('keeps terminal Codex command output mounted while text selection is active', () => {
+  it('keeps completed Codex command output mounted while text selection is active', () => {
     normalizedCommandBodyCalls.mockClear()
-    stripToolUseHeaderFromOutputCalls.mockClear()
 
     const { container } = renderCodexItem({
       type: 'commandExecution',
@@ -719,13 +719,11 @@ describe('command result scroll-critical rendering', () => {
     expect(text).toContain('selected-output')
     expect(text).not.toContain('Command output deferred while scrolling')
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
-    expect(stripToolUseHeaderFromOutputCalls).toHaveBeenCalled()
   })
 
-  it('keeps terminal Codex command toolbar metadata while scroll-critical', () => {
+  it('keeps completed Codex command toolbar metadata while scroll-critical', () => {
     normalizeProgressOutputCalls.mockClear()
     normalizedCommandBodyCalls.mockClear()
-    stripToolUseHeaderFromOutputCalls.mockClear()
 
     const { container } = renderCodexMessageBubble({
       type: 'commandExecution',
@@ -742,10 +740,9 @@ describe('command result scroll-critical rendering', () => {
     expect(container.querySelector('[aria-label="Expand"]')).not.toBeNull()
     expect(normalizeProgressOutputCalls).toHaveBeenCalled()
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
-    expect(stripToolUseHeaderFromOutputCalls).toHaveBeenCalled()
   })
 
-  it('renders terminal Codex ANSI command output with ANSI highlighting when unpaused', () => {
+  it('renders completed Codex ANSI command output with ANSI highlighting when unpaused', () => {
     renderAnsiCalls.mockClear()
 
     const { container } = renderCodexItem({
@@ -761,10 +758,9 @@ describe('command result scroll-critical rendering', () => {
     expect(container.querySelector('pre.shiki')).not.toBeNull()
   })
 
-  it('keeps terminal Codex command output mounted during premeasure without ANSI rendering', () => {
+  it('keeps completed Codex command output mounted during premeasure without ANSI rendering', () => {
     renderAnsiCalls.mockClear()
     normalizedCommandBodyCalls.mockClear()
-    stripToolUseHeaderFromOutputCalls.mockClear()
 
     const { container } = renderCodexItem({
       type: 'commandExecution',
@@ -780,7 +776,6 @@ describe('command result scroll-critical rendering', () => {
     expect(text).toContain('premeasure-output')
     expect(renderAnsiCalls).not.toHaveBeenCalled()
     expect(normalizedCommandBodyCalls).toHaveBeenCalled()
-    expect(stripToolUseHeaderFromOutputCalls).toHaveBeenCalled()
   })
 })
 
@@ -906,7 +901,7 @@ describe('command result collapsibility accounts for \\r-normalized line count',
   it('claude Bash: rebase progress (3 raw lines, 9 normalized lines) is reported as collapsible', () => {
     const stdout = 'From github.com:leapmux/leapmux\n * branch              main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rSuccessfully rebased and updated refs/heads/grid-layout.'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
     expect(meta?.collapsible).toBe(true)
   })
 
@@ -915,32 +910,82 @@ describe('command result collapsibility accounts for \\r-normalized line count',
     // the \r, so 4 ≤ 7 means the body shows everything; meta should agree.
     const stdout = 'Rebasing (1/4)\rRebasing (2/4)\rRebasing (3/4)\rDone'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
     expect(meta?.collapsible).toBe(false)
   })
 
   it('claude Bash: plain output preserves the standard 3-row collapse threshold', () => {
     const stdout = 'a\nb\nc\nd'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
     expect(meta?.collapsible).toBe(true)
   })
 
   it('claude Bash: plain output at the threshold (3 lines, no \\r) is NOT collapsible', () => {
     const stdout = 'a\nb\nc'
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(parsed, 'Bash', undefined))
     expect(meta?.collapsible).toBe(false)
   })
 
   it('codex commandExecution: rebase-style \\r progress is reported as collapsible', () => {
     const aggregatedOutput = 'From origin\n * branch    main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rDone.'
-    const meta = codexToolResultMeta(
-      { kind: 'tool_use', toolName: 'commandExecution', toolUse: {}, content: [] },
-      { item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } },
-      'commandExecution',
-      undefined,
-    )
+    const meta = codexToolResultMeta({ kind: 'tool_use', toolName: 'commandExecution', toolUse: {}, content: [] }, toolMessageInput({ item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } }, 'commandExecution', undefined))
     expect(meta?.collapsible).toBe(true)
+  })
+})
+
+describe('retained command completion', () => {
+  const output = 'partial command output'
+  const command = 'printf partial'
+  const cases = [
+    { provider: AgentProvider.CODEX, result: { item: { id: 'call', type: 'commandExecution', status: 'inProgress', command, aggregatedOutput: output } } },
+    { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', args: { command }, result: { content: [{ type: 'text', text: output }] }, isError: true } },
+    { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', toolName: 'Bash', input: { command }, result: { success: false, content: output } } } },
+    ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GITHUB_COPILOT].map(provider => ({
+      provider,
+      result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'Run command', kind: 'execute', status: 'in_progress', rawInput: { command }, content: [{ type: 'content', content: { type: 'text', text: output } }] },
+    })),
+  ]
+  it.each(cases)('uses the shared interrupted result for provider $provider', ({ provider, result }) => {
+    const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
+    const plugin = providerFor(provider)!
+    expect(['tool_use', 'tool_result']).toContain(plugin.classify(parsed).kind)
+    expect(plugin.spanRole?.(parsed)).toBe('result')
+    const { container } = render(() => renderMessageContent(result, {
+      premeasureMode: true,
+      sources: testMessageSources({ current: () => parsed }),
+    }, plugin.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    expect(container.textContent).toContain(output)
+    expect(container.textContent).toContain('Interrupted')
+    expect(container.textContent).not.toContain('Success')
+    expect(container.textContent).not.toContain('Text truncated')
+    expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
+  })
+})
+
+describe('command output preservation', () => {
+  it('keeps HTML and CSS text that a command prints', () => {
+    const output = '<div class="toolUseHeader__test">Printed HTML</div>\nAfter HTML'
+    const { container } = renderCodexItem({ type: 'commandExecution', id: 'html', command: 'cat fixture.html', aggregatedOutput: output, status: 'completed', exitCode: 0 }, { premeasureMode: true })
+    expect(container.textContent).toContain(output)
+    expect(container.querySelector('div.toolUseHeader__test')).toBeNull()
+  })
+})
+
+describe('retained file completion', () => {
+  it.each([
+    { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'read', toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'partial file output' }] } } },
+    { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'read', toolName: 'Read', result: { success: false, content: 'partial file output' } } } },
+  ])('renders one interruption header for a file result from provider $provider', ({ provider, result }) => {
+    const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
+    const plugin = providerFor(provider)!
+    const { container } = render(() => renderMessageContent(result, {
+      premeasureMode: true,
+      sources: testMessageSources({ current: () => parsed }),
+    }, plugin.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
+    expect(container.textContent).not.toMatch(/Failed|Error|Text truncated/)
+    expect(container.textContent).toContain('partial file output')
   })
 })

@@ -105,16 +105,10 @@ func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 		return
 	}
 	a.sink.UpsertGoal(GoalUpdate{
-		Objective:    state.Objective,
-		Status:       zcodeGoalStatus(state.Status),
-		StatusDetail: state.Status,
-		// ZCode gives the goal a real id, and it is the only identity available:
-		// the state carries no creation time. Feeding the id through CreatedAt
-		// would be a lie about what the field means, so the identity falls back
-		// to the applier's own stamp and a REPLACED goal is recognized by its
-		// changed objective. Two goals with the same objective text in one
-		// session read as one, which is the same trade Codex's createdAt avoids
-		// and ZCode gives no way to avoid.
+		NativeID:        state.TargetID,
+		Objective:       state.Objective,
+		Status:          zcodeGoalStatus(state.Status),
+		StatusDetail:    state.Status,
 		TimeUsedSeconds: state.TimeUsedSeconds,
 		Iterations:      state.Iteration,
 		TokenBudget:     state.TokenBudget,

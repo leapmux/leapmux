@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +16,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+	a := newCodexAgentWithSink(sink)
+	a.stdin = nopWriteCloser{&output}
+	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","id":37,"method":"item/tool/requestUserInput","params":{"threadId":"main-thread","questions":[]}}`)))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":37,"error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, output.String())
+	assert.Empty(t, sink.PublishedControls())
+}
 
 type startupStatusGuardSink struct {
 	testSink
@@ -80,8 +93,8 @@ func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
 }
 
-func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
-	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content))
+func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
+	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
 	return nil
 }
 
@@ -152,18 +165,10 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "42", rec.RequestID)
-
-	// The claim token PersistControlRequest returns is threaded straight into the paired
-	// BroadcastControlRequest (no readback), so the live broadcast carries the SAME token that was
-	// persisted -- the token the frontend echoes in its idempotency claim.
-	bcast := sink.LastBroadcastControl()
-	assert.NotEmpty(t, rec.ClaimToken, "persist mints a claim token")
-	assert.Equal(t, rec.ClaimToken, bcast.ClaimToken, "the broadcast carries the token persist returned")
 
 	// Verify payload is the original content.
 	var parsed struct {
@@ -188,9 +193,9 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "7", rec.RequestID)
 }
 
@@ -204,9 +209,9 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "8", rec.RequestID)
 }
 
@@ -220,9 +225,9 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
+	rec := sink.LastPublishedControl()
 	assert.Equal(t, "9", rec.RequestID)
 }
 
@@ -1419,8 +1424,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	assert.Equal(t, 0, sink.PersistedControlCount())
-	assert.Equal(t, 0, sink.BroadcastControlCount())
+	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
@@ -1616,9 +1620,9 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	assert.JSONEq(t, `{
 		"threadId":"main-thread",
 		"turnId":"turn-1",
-		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"},
-		"_leapmux":{"completion":"interrupted"}
+		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"}
 	}`, string(result.Content))
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
 }
 
 func TestHandleCodexOutput_InterruptedReasoningPreservesSummaryParts(t *testing.T) {
@@ -1707,8 +1711,23 @@ func TestHandleCodexOutput_InterruptedMCPItemGetsAClosingRowAndToolCount(t *test
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	assert.True(t, sink.Messages()[1].Closing)
-	assert.Contains(t, string(sink.Messages()[1].Content), `"completion":"interrupted"`)
-	assert.Contains(t, string(sink.Messages()[2].Content), `"num_tool_uses":1`)
+	assert.Equal(t, MessageCompletionInterrupted, sink.Messages()[1].Completion)
+	assert.Contains(t, string(sink.Messages()[2].Metadata), `"num_tool_uses":1`)
+}
+
+func TestCodexTurnCounterPreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newCodexAgentWithSink(sink)
+	a.threadID = "main-thread"
+	a.turnToolUses = 2
+	raw := json.RawMessage(`{"threadId":"main-thread", "turn":{"id":"turn-1","status":"completed","items":[]}, "future":9007199254740993}`)
+	a.handleTurnCompleted(raw)
+	messages := sink.Messages()
+	require.NotEmpty(t, messages)
+	last := messages[len(messages)-1]
+	assert.Equal(t, []byte(raw), last.Content)
+	assert.Contains(t, string(last.Metadata), `"num_tool_uses":2`)
 }
 
 func TestHandleCodexOutput_LateChildRegistrationMovesBufferedText(t *testing.T) {
@@ -1776,8 +1795,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	require.NoError(t, err)
 	require.Equal(t, "# Design Doc: Rendering fixes\n\n- first\n", string(decoded))
 	require.Equal(t, "Rendering fixes", plan.Title)
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
@@ -1795,8 +1813,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
@@ -1811,8 +1828,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
@@ -1830,8 +1846,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 // lastSessionInfoValue returns the most recent value for a session-info key.
@@ -2339,4 +2354,22 @@ func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's turn still ends, so its input queue is released")
+}
+
+func TestBuildIncompleteCodexToolPreservesUnknownFields(t *testing.T) {
+	t.Parallel()
+	raw, err := buildIncompleteCodexTool(codexIncompleteToolSnapshot{
+		params: []byte(`{"item":{"id":"call","type":"commandExecution","counter":9007199254740993,"_leapmux":"provider"}}`), output: "partial",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"counter":9007199254740993`)
+	assert.Contains(t, string(raw), `"_leapmux":"provider"`)
+}
+
+func TestBuildIncompleteCodexToolRejectsMissingItem(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{`null`, `{}`, `{"item":null}`, `{"item":[]}`} {
+		_, err := buildIncompleteCodexTool(codexIncompleteToolSnapshot{params: []byte(raw), output: "partial"})
+		require.Error(t, err)
+	}
 }

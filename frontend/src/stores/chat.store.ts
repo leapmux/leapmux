@@ -1,12 +1,10 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
-import type { SavedViewportScroll, SpanMessageRevision } from './chatTypes'
+import type { SavedViewportScroll, ToolMessageSide } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { toBinary } from '@bufbuild/protobuf'
-import { untrack } from 'solid-js'
+import { batch, untrack } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
-import { getAgentMessage } from '~/api/workerRpc'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassification'
 import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
@@ -20,7 +18,7 @@ import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
-import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow } from './chatMessageOrder'
+import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, preferNewerSupplement } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { createSpanIndex } from './chatSpanIndex'
 import { createTodoStore } from './chatTodoStore'
@@ -133,6 +131,17 @@ export function createChatStore() {
   // Orthogonal per-concern slices, each its own composed sub-store.
   // The window core reaches into them only for shared window mutations.
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
+  const messageObservers = new Map<string, Set<(message: AgentChatMessage) => void>>()
+  const notifyMessageObservers = (agentId: string, message: AgentChatMessage) => {
+    for (const observer of messageObservers.get(agentId) ?? []) {
+      try {
+        observer(message)
+      }
+      catch (error) {
+        console.warn('Message context observer failed', { agentId, error })
+      }
+    }
+  }
   // A tool-progress update changes only a badge inside an existing header. It must not bump the
   // message version. That bump wakes the auto-scroll effect and the
   // classified-entry cache, which would re-render the row -- the exact thing the
@@ -277,12 +286,6 @@ export function createChatStore() {
   // the bump wakes them to re-classify / re-estimate. See the slice for the full why.
   const contentVersions = createContentVersionStore()
 
-  function spanRevisionOf(message: AgentChatMessage | undefined): SpanMessageRevision | undefined {
-    return message === undefined
-      ? undefined
-      : { id: message.id, seq: message.seq, contentVersion: contentVersions.get(message.id) }
-  }
-
   /** Remove content versions for rows that left the window. */
   function forgetContentVersions(droppedIds: Iterable<string>) {
     const ids = [...droppedIds]
@@ -305,6 +308,7 @@ export function createChatStore() {
    * controlStore/attachment cleanup for the chat slice it omitted.
    */
   function forgetAgent(agentId: string) {
+    messageObservers.delete(agentId)
     // Abort any in-flight history fetch / catch-up loop and drop their controllers
     // so a hung request can't write back into the just-cleared window.
     fetchAbort.get(agentId)?.abort()
@@ -433,6 +437,8 @@ export function createChatStore() {
   function updateExistingMessage(agentId: string, prev: AgentChatMessage[], existingIdx: number, message: AgentChatMessage): boolean {
     if (prev[existingIdx].seq === message.seq) {
       const proxy = prev[existingIdx]
+      if (preferNewerSupplement(proxy, message) === proxy)
+        return false
       // A duplicate/replayed broadcast can re-deliver a byte-identical row (same id,
       // same seq, same content) -- e.g. a reconnect replay or an at-least-once stream
       // dupe overlapping the loaded window. Skip the whole merge then: the setState,
@@ -450,15 +456,27 @@ export function createChatStore() {
       // serving the pre-update derivation. Evict them for the mutated proxy, and bump
       // the content version so the classified-entry cache + height estimate rebuild
       // against the fresh content (seq alone can't reveal a same-seq body change).
-      invalidateMessageParseCache(proxy)
-      invalidateMessageClassificationCache(proxy)
-      spanIdx.invalidate(proxy)
-      contentVersions.bump(message.id)
+      invalidateRenderedMessage(proxy)
       return true
     }
     const without = prev.filter((_, i) => i !== existingIdx)
     setState('messagesByAgent', agentId, insertMessageBySeq(without, message))
     return true
+  }
+
+  function invalidateRenderedMessage(message: AgentChatMessage): void {
+    invalidateMessageParseCache(message)
+    invalidateMessageClassificationCache(message)
+    contentVersions.bump(message.id)
+  }
+
+  function invalidateNewSupplements(previous: AgentChatMessage[], next: AgentChatMessage[]): void {
+    const previousById = new Map(previous.map(message => [message.id, message]))
+    for (const message of next) {
+      const old = previousById.get(message.id)
+      if (old && old.seq === message.seq && message.supplementalRevision > old.supplementalRevision)
+        invalidateRenderedMessage(old)
+    }
   }
 
   /**
@@ -511,100 +529,86 @@ export function createChatStore() {
   function mergeFetchedMessages(agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') {
     if (fetched.length === 0)
       return
+    return batch(() => {
     // Snapshot the previous window so the merge can reclaim dropped row state.
-    const prevWindow = state.messagesByAgent[agentId] ?? []
-    // The pure window-merge (dedup / reseq-collision / seq-ordered insert / older
-    // prepend vs newer splice) lives in chatMessageOrder.mergeWindow so its rules are
-    // unit-testable on plain arrays; the reactive side effects below stay here.
-    setState('messagesByAgent', agentId, (prev = []) =>
-      mergeWindow(prev, fetched, side))
-    // Rebuild the span index over the merged, seq-ascending window rather than
-    // incrementally indexing only the fetched page: a prepended opener whose
-    // result is already in the window would otherwise be misfiled, and the
-    // 'older' prepend never re-establishes opener-first ordering on its own.
-    reindexSpans(agentId)
-    const merged = state.messagesByAgent[agentId] ?? []
-    // Reclaim content versions for rows that left the window.
-    reclaimDroppedRows(prevWindow, merged)
-    if (side === 'newer') {
-      for (const msg of fetched)
-        liveTail.bump(agentId, msg.seq)
-    }
+      const prevWindow = state.messagesByAgent[agentId] ?? []
+      // The pure window-merge (dedup / reseq-collision / seq-ordered insert / older
+      // prepend vs newer splice) lives in chatMessageOrder.mergeWindow so its rules are
+      // unit-testable on plain arrays; the reactive side effects below stay here.
+      const next = mergeWindow(prevWindow, fetched, side)
+      invalidateNewSupplements(prevWindow, next)
+      setState('messagesByAgent', agentId, next)
+      // Rebuild the span index over the merged, seq-ascending window rather than
+      // incrementally indexing only the fetched page: a prepended opener whose
+      // result is already in the window would otherwise be misfiled, and the
+      // 'older' prepend never re-establishes opener-first ordering on its own.
+      reindexSpans(agentId)
+      const merged = state.messagesByAgent[agentId] ?? []
+      for (const message of fetched)
+        notifyMessageObservers(agentId, message)
+      // Reclaim content versions for rows that left the window.
+      reclaimDroppedRows(prevWindow, merged)
+      if (side === 'newer') {
+        for (const msg of fetched)
+          liveTail.bump(agentId, msg.seq)
+      }
+    })
   }
 
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
-    const prevRows = state.messagesByAgent[agentId] ?? []
-    const finalMessages = messages
-    // Reclaim content versions for rows that leave the window.
-    reclaimDroppedRows(prevRows, finalMessages)
-    // Rebuild the span index before the update wakes reactive computations.
-    spanIdx.reindex(agentId, finalMessages)
-    setState('messagesByAgent', agentId, finalMessages)
-    setState('hasMoreOlder', agentId, hasMore)
-    // Default to "at the live tail": initial load, reconnect snapshot, and
-    // jump-to-latest all land on the latest page, so there are no newer messages
-    // beyond the window. The one caller that seeds a NON-tail window
-    // (jumpToOldestMessages) overrides hasMoreNewer immediately after this returns.
-    setState('hasMoreNewer', agentId, false)
-    setState('initialLoadComplete', agentId, true)
-    for (const msg of messages) {
-      liveTail.bump(agentId, msg.seq)
-    }
+    return batch(() => {
+      const prevRows = state.messagesByAgent[agentId] ?? []
+      const previousById = new Map(prevRows.map(message => [message.id, message]))
+      const finalMessages = messages.map((message) => {
+        const previous = previousById.get(message.id)
+        return previous ? preferNewerSupplement(previous, message) : message
+      })
+      invalidateNewSupplements(prevRows, finalMessages)
+      // Reclaim content versions for rows that leave the window.
+      reclaimDroppedRows(prevRows, finalMessages)
+      // Rebuild the span index before the update wakes reactive computations.
+      spanIdx.reindex(agentId, finalMessages)
+      setState('messagesByAgent', agentId, finalMessages)
+      for (const message of finalMessages)
+        notifyMessageObservers(agentId, message)
+      setState('hasMoreOlder', agentId, hasMore)
+      // Default to "at the live tail": initial load, reconnect snapshot, and
+      // jump-to-latest all land on the latest page, so there are no newer messages
+      // beyond the window. The one caller that seeds a NON-tail window
+      // (jumpToOldestMessages) overrides hasMoreNewer immediately after this returns.
+      setState('hasMoreNewer', agentId, false)
+      setState('initialLoadComplete', agentId, true)
+      for (const msg of messages) {
+        liveTail.bump(agentId, msg.seq)
+      }
+    })
   }
 
   const baseStore = {
     state,
 
+    subscribeMessages(agentId: string, observer: (message: AgentChatMessage) => void): () => void {
+      let observers = messageObservers.get(agentId)
+      if (!observers) {
+        observers = new Set()
+        messageObservers.set(agentId, observers)
+      }
+      observers.add(observer)
+      return () => {
+        observers.delete(observer)
+        if (observers.size === 0 && messageObservers.get(agentId) === observers)
+          messageObservers.delete(agentId)
+      }
+    },
+
+    getSpanMessage(agentId: string, spanId: string, side: ToolMessageSide): AgentChatMessage | undefined {
+      void state.messageVersion[agentId]
+      return side === 'request' ? spanIdx.getOpenerMessage(agentId, spanId) : spanIdx.getResultMessage(agentId, spanId)
+    },
+
     getMessages(agentId: string): AgentChatMessage[] {
       return state.messagesByAgent[agentId] ?? []
-    },
-
-    /**
-     * Return the parsed tool_use message for a spanId, or undefined when no
-     * tool_use is indexed for it. The parse is cached per message instance.
-     */
-    getToolUseParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
-      return spanIdx.getOpenerParsed(agentId, spanId)
-    },
-
-    /**
-     * The content version of the tool_use OPENER paired with `spanId` (0 when no
-     * opener is indexed). A tool_result sizes its diff from the opener's parsed
-     * input, but the opener is a DIFFERENT message: an in-place same-seq body
-     * replacement of the opener bumps the OPENER's content version, not the
-     * result's, and leaves the result's seq/id/proxy untouched. Read REACTIVELY
-     * (it reads the messageContentVersions store) and folded into the result row's
-     * classified-entry freshness check and height-estimate key, so an opener change
-     * busts the off-screen result's stale classification / estimate.
-     */
-    getToolUseContentVersionBySpanId(agentId: string, spanId: string): number {
-      const openerId = spanIdx.getOpenerId(agentId, spanId)
-      return openerId !== undefined ? contentVersions.get(openerId) : 0
-    },
-
-    getToolUseRevisionBySpanId(agentId: string, spanId: string): SpanMessageRevision | undefined {
-      return spanRevisionOf(spanIdx.getOpenerMessage(agentId, spanId))
-    },
-
-    /** Symmetric counterpart for the tool_result side. */
-    getToolResultParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
-      return spanIdx.getResultParsed(agentId, spanId)
-    },
-
-    /**
-     * The content version of the tool_result paired with `spanId` (0 when no
-     * result is indexed). Some tool_use rows render from hidden result data, so a
-     * result-side in-place body replacement must bust the opener row's cached
-     * classification and measured height.
-     */
-    getToolResultContentVersionBySpanId(agentId: string, spanId: string): number {
-      const resultId = spanIdx.getResultId(agentId, spanId)
-      return resultId !== undefined ? contentVersions.get(resultId) : 0
-    },
-
-    getToolResultRevisionBySpanId(agentId: string, spanId: string): SpanMessageRevision | undefined {
-      return spanRevisionOf(spanIdx.getResultMessage(agentId, spanId))
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
@@ -740,52 +744,55 @@ export function createChatStore() {
     },
 
     addMessage(agentId: string, message: AgentChatMessage): boolean {
-      // The live tail known BEFORE this message bumps it: the live-append guard's
-      // live-phase comparison measures a beyond-tail arrival against the tail seen so far,
-      // not against its own seq -- see beyondUnloadedNewerTail.
-      const recordedLiveTail = liveTail.get(agentId)
-      // Track the live tail seq even for messages we're about to drop, so
-      // jumpToLatestMessages knows where the true tail is.
-      liveTail.bump(agentId, message.seq)
+      return batch(() => {
+        notifyMessageObservers(agentId, message)
+        // The live tail known BEFORE this message bumps it: the live-append guard's
+        // live-phase comparison measures a beyond-tail arrival against the tail seen so far,
+        // not against its own seq -- see beyondUnloadedNewerTail.
+        const recordedLiveTail = liveTail.get(agentId)
+        // Track the live tail seq even for messages we're about to drop, so
+        // jumpToLatestMessages knows where the true tail is.
+        liveTail.bump(agentId, message.seq)
 
-      // Record the scroll-rail mark BEFORE any beyond-window drop, so a message the
-      // reader scrolled away from still gets its jump dot. The mark rides the proto
-      // set at write time by the worker.
-      // A reseq MOVE (previousSeq set) carries the mark to its new seq, so drop the
-      // stale mark at the vacated old seq first, or it strands a ghost dot. (Threaded
-      // rows are unmarked today, so this is latent -- but the worker now carries
-      // mark_type on the MOVE broadcast, so keep the two ends symmetric.) noteMark/remove
-      // bump the marks store's own seed-race revision only on a real change: an unmarked
-      // reseq MOVE (remove of a never-marked seq) or a re-broadcast of an already-noted
-      // mark are no-ops that must not perturb a concurrent loadMessageMarks.
-      if (message.previousSeq !== 0n)
-        messageMarks.remove(agentId, message.previousSeq)
-      if (message.markType !== MarkType.UNSPECIFIED)
-        messageMarks.noteMark(agentId, message.seq, message.markType)
+        // Record the scroll-rail mark BEFORE any beyond-window drop, so a message the
+        // reader scrolled away from still gets its jump dot. The mark rides the proto
+        // set at write time by the worker.
+        // A reseq MOVE (previousSeq set) carries the mark to its new seq, so drop the
+        // stale mark at the vacated old seq first, or it strands a ghost dot. (Threaded
+        // rows are unmarked today, so this is latent -- but the worker now carries
+        // mark_type on the MOVE broadcast, so keep the two ends symmetric.) noteMark/remove
+        // bump the marks store's own seed-race revision only on a real change: an unmarked
+        // reseq MOVE (remove of a never-marked seq) or a re-broadcast of an already-noted
+        // mark are no-ops that must not perturb a concurrent loadMessageMarks.
+        if (message.previousSeq !== 0n)
+          messageMarks.remove(agentId, message.previousSeq)
+        if (message.markType !== MarkType.UNSPECIFIED)
+          messageMarks.noteMark(agentId, message.seq, message.markType)
 
-      // Notification thread update: LEAPMUX notification messages can be updated
-      // in-place when consolidating. Check if a message with this ID exists.
-      const messages = state.messagesByAgent[agentId] ?? []
-      const existingIdx = messages.findLastIndex(m => m.id === message.id)
+        // Notification thread update: LEAPMUX notification messages can be updated
+        // in-place when consolidating. Check if a message with this ID exists.
+        const messages = state.messagesByAgent[agentId] ?? []
+        const existingIdx = messages.findLastIndex(m => m.id === message.id)
 
-      // Live-append guard: drop a fresh transcript message that would tear a gap into the
-      // loaded window (see shouldDropBeyondWindow). In-place updates (existingIdx !== -1)
-      // are never dropped here.
-      if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail))
-        return false
+        // Live-append guard: drop a fresh transcript message that would tear a gap into the
+        // loaded window (see shouldDropBeyondWindow). In-place updates (existingIdx !== -1)
+        // are never dropped here.
+        if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail))
+          return false
 
-      // Dispatch to the existing-row or fresh-insert path. `inWindow` is whether
-      // message.id actually ends up loaded (a reseq-beyond-window drop / seq-dedup
-      // discard leave it absent); `changed` is whether the window mutated (false on a
-      // pure dedup-discard or an identical same-seq re-delivery, where a version bump
-      // would only re-run the auto-scroll effect + entry cache for nothing).
-      const { inWindow, changed } = existingIdx !== -1
-        ? this.updateExistingArm(agentId, messages, existingIdx, message, recordedLiveTail)
-        : this.freshInsertArm(agentId, messages, message)
+        // Dispatch to the existing-row or fresh-insert path. `inWindow` is whether
+        // message.id actually ends up loaded (a reseq-beyond-window drop / seq-dedup
+        // discard leave it absent); `changed` is whether the window mutated (false on a
+        // pure dedup-discard or an identical same-seq re-delivery, where a version bump
+        // would only re-run the auto-scroll effect + entry cache for nothing).
+        const { inWindow, changed } = existingIdx !== -1
+          ? this.updateExistingArm(agentId, messages, existingIdx, message, recordedLiveTail)
+          : this.freshInsertArm(agentId, messages, message)
 
-      if (changed)
-        bumpMessageVersion(agentId)
-      return inWindow
+        if (changed)
+          bumpMessageVersion(agentId)
+        return inWindow
+      })
     },
 
     getLastSeq(agentId: string): bigint {
@@ -1089,30 +1096,6 @@ export function createChatStore() {
         const hit = messages[idx]
         return hit?.seq === seq ? hit : undefined
       })
-    },
-    /**
-     * Fetch a SINGLE message by its per-agent seq, for a reader that addresses a
-     * message outside the loaded window. Two callers: the scroll rail's hover preview
-     * of a mark, and an IMAGE tab resolving its `(agentId, seq, imageIndex)` reference
-     * back to pixels.
-     *
-     * Resolves undefined ONLY for a definitive absence -- the agent has no message at
-     * that seq (deleted/reseq'd since the reference was recorded), which the worker
-     * returns as an unset message. A transient RPC failure RETHROWS (rather than
-     * collapsing to undefined) so the caller can tell a real absence -- permanent,
-     * stop -- from a blip it should retry, instead of poisoning that reference for
-     * the rest of the session. Does NOT touch the loaded window; it is a read-only
-     * lookup.
-     */
-    async fetchMessageBySeq(workerId: string, agentId: string, seq: bigint): Promise<AgentChatMessage | undefined> {
-      try {
-        const resp = await getAgentMessage(workerId, { agentId, seq })
-        return resp.message
-      }
-      catch (err) {
-        console.warn('failed to fetch message by seq', { agentId, seq, err })
-        throw err
-      }
     },
     /**
      * Persist an agent's viewport scroll for the NEXT mount of the same chat window (a

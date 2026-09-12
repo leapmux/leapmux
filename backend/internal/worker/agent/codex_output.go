@@ -92,7 +92,8 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
 	// they arrive as notifications in the output stream.
-	case "item/commandExecution/requestApproval",
+	case contracts.MCPElicitationMethodCodex,
+		"item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput":
@@ -120,7 +121,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 
 	default:
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 	}
@@ -608,7 +609,7 @@ func (a *CodexAgent) handleCodexItemStartedForSink(
 	case "collabAgentToolCall":
 		collab := parseCollabToolCall(event.item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
-		if err := openToolSpan(sink, event.params, event.itemID, event.itemType, spawns); err != nil {
+		if err := openToolSpan(sink, MessageContent{Original: event.params}, event.itemID, event.itemType, spawns); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", agentID, "error", err)
 		}
 		a.registerCollabReceivers(collab, event.itemID, event.threadID)
@@ -682,7 +683,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			a.turnPlanText = planItem.Text
 			a.mu.Unlock()
 		}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", agentID, "error", err)
@@ -696,7 +697,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
 	case "collabAgentToolCall":
 		collab := parseCollabToolCall(event.item)
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", agentID, "error", err)
@@ -713,7 +714,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
 		}
 	default:
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", agentID, "type", event.itemType, "error", err)
@@ -753,14 +754,10 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
-	// Parse once: enrich with num_tool_uses and extract turn data
-	// from the same map to avoid a second json.Unmarshal.
+	// Read turn data without changing the native parameters.
 	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
-		if b, err := json.Marshal(numToolUses); err == nil {
-			parsed["num_tool_uses"] = b
-		}
 		if turnRaw, ok := parsed["turn"]; ok {
 			var turn struct {
 				ID     string `json:"id"`
@@ -776,9 +773,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				turnErrorMessage = turn.Error.Message
 				turnErrorInfo = turn.Error.CodexErrorInfo
 			}
-		}
-		if b, err := json.Marshal(parsed); err == nil {
-			params = json.RawMessage(b)
 		}
 	}
 	// Clear provider turn state before the deferred publish below releases the
@@ -805,7 +799,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
-	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(withToolUseCount(MessageContent{Original: params}, numToolUses), SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
@@ -833,8 +827,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				},
 			})
 			if err == nil {
-				claimToken := a.sink.PersistControlRequest(requestID, payload)
-				a.sink.BroadcastControlRequest(requestID, payload, claimToken)
+				if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
+					slog.Error("publish plan approval", "agent_id", a.agentID, "request_id", requestID, "error", err)
+				}
 			}
 		}
 	}
@@ -844,7 +839,7 @@ func (a *CodexAgent) handleChildTurnCompleted(threadID string, params json.RawMe
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
-	if err := route.childSink.PersistTurnEnd(params, SpanInfo{}); err != nil {
+	if err := route.childSink.PersistTurnEnd(MessageContent{Original: params}, SpanInfo{}); err != nil {
 		slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", threadID, "error", err)
 	}
 	hadTurn := a.childTurnID(threadID) != ""
@@ -896,7 +891,7 @@ func (a *CodexAgent) persistCodexGeneration(buffer *GenerationBuffer, sink gener
 		return
 	}
 	if err := buffer.PersistAll(completion, func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 	}); err != nil {
 		slog.Error("codex persist partial generation", "agent_id", a.agentID, "error", err)
 	}
@@ -1007,7 +1002,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 	})
 	for _, itemID := range itemIDs {
 		tool := tools[itemID]
-		raw, err := buildIncompleteCodexTool(tool, retainedCompletion)
+		raw, err := buildIncompleteCodexTool(tool)
 		if err != nil {
 			slog.Warn("marshal incomplete codex tool", "agent_id", a.agentID, "item_id", itemID, "error", err)
 			continue
@@ -1021,7 +1016,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 			}
 			sink = route.childSink
 		}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw, Completion: retainedCompletion}, SpanInfo{
 			SpanID: itemID, SpanType: tool.itemType, Closing: true,
 		}); err != nil {
 			slog.Error("persist incomplete codex tool", "agent_id", a.agentID, "item_id", itemID, "error", err)
@@ -1032,31 +1027,30 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 	return len(itemIDs)
 }
 
-func buildIncompleteCodexTool(tool codexIncompleteToolSnapshot, completion MessageCompletion) ([]byte, error) {
+func buildIncompleteCodexTool(tool codexIncompleteToolSnapshot) ([]byte, error) {
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(tool.params, &params); err != nil {
 		return nil, err
 	}
-	var item map[string]interface{}
+	var item map[string]json.RawMessage
 	if err := json.Unmarshal(params["item"], &item); err != nil {
 		return nil, err
 	}
+	if item == nil {
+		return nil, fmt.Errorf("incomplete Codex tool has no item")
+	}
 	if output := tool.output; output != "" {
-		item["aggregatedOutput"] = output
+		item["aggregatedOutput"], _ = json.Marshal(output)
 	}
 	if tool.outputTruncated {
-		item["outputTruncated"] = true
+		item["outputTruncated"] = json.RawMessage(`true`)
 	}
 	encodedItem, err := json.Marshal(item)
 	if err != nil {
 		return nil, err
 	}
 	params["item"] = encodedItem
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return AnnotateMessageCompletion(raw, completion)
+	return json.Marshal(params)
 }
 
 func renderCodexToolOutput(events []codexToolOutputEvent, truncated bool) string {
@@ -1162,8 +1156,7 @@ func (a *CodexAgent) handleApprovalRequest(id string, content []byte) {
 		slog.Warn("codex approval request missing id", "agent_id", a.agentID)
 		return
 	}
-	claimToken := a.sink.PersistControlRequest(id, content)
-	a.sink.BroadcastControlRequest(id, content, claimToken)
+	a.publishControlRequest(a.sink, id, content)
 }
 
 // handleServerRequestResolved processes serverRequest/resolved notifications.
@@ -1700,11 +1693,11 @@ func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID 
 func persistSharedItemStarted(sink ToolSpanServices, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
-		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
+		if err := openToolSpan(sink, MessageContent{Original: params}, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
 	case "reasoning":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning/started", "agent_id", agentID, "error", err)
@@ -1718,13 +1711,13 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 	sink.ReportProgress(CompleteOutputProgress(itemID))
 	switch itemType {
 	case "agentMessage", "plan":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage/plan", "agent_id", agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", agentID, "type", itemType, "error", err)
@@ -1736,7 +1729,7 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 // persistCompletedReasoningItem stores the provider's authoritative item.
 func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, params json.RawMessage, itemID, agentID string) {
 	sink.ReportProgress(CompleteModelProgress(itemID))
-	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 		SpanID: itemID, SpanType: "reasoning",
 	})
 	a.mu.Lock()
