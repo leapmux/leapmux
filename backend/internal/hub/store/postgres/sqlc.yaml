@@ -62,8 +62,8 @@ sql:
               type: "Sidebar"
           # Workspace tab enum
           # sqlc SILENTLY ignores an override whose table does not exist, so this
-          # pair must name the columns the schema actually declares. One entry
-          # here named `workspace_tabs`, a table the store removed, and it did
+          # pair must specify the columns the schema actually declares. One entry
+          # here specified `workspace_tabs`, a table the store removed, and it did
           # nothing at all: both real columns stayed int64, and workspace_tab_index.go
           # went on hand-casting them in both directions.
           - column: "workspace_tab_owned.tab_type"

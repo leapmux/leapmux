@@ -23,17 +23,20 @@ func TestACPUnsupportedRequest(t *testing.T) {
 				// The refusal is written on its OWN goroutine, so that a reply to a
 				// runtime which is not draining its stdin cannot stall the read loop
 				// that must keep draining the runtime's stdout.
-				recorder.mu.Lock()
-				for len(recorder.bufs) == 0 {
-					recorder.mu.Unlock()
-					select {
-					case <-recorder.ch:
-					case <-time.After(20 * time.Millisecond):
-					}
+				//
+				// Eventually, not a bare wait loop. The loop this replaced had a poll
+				// interval and no deadline, so a change that stopped answering -- the
+				// regression this test exists to pin -- spun until the test binary's
+				// own 10-minute panic and took every other result in the package with
+				// it, instead of failing here. The recorder appends under its mutex
+				// from the refusal goroutine, so the read takes that mutex.
+				var responses [][]byte
+				require.Eventually(t, func() bool {
 					recorder.mu.Lock()
-				}
-				responses := append([][]byte(nil), recorder.bufs...)
-				recorder.mu.Unlock()
+					defer recorder.mu.Unlock()
+					responses = append([][]byte(nil), recorder.bufs...)
+					return len(responses) > 0
+				}, 2*time.Second, 5*time.Millisecond, "the unsupported request is answered")
 				require.Len(t, responses, 1)
 				var response struct {
 					ID    json.RawMessage `json:"id"`

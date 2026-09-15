@@ -86,7 +86,7 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 	return err
 }
 
-// answersARetiredInstance reports that this answer names a request instance the
+// answersARetiredInstance reports that this answer identifies a request instance the
 // worker no longer holds, because the stored claim token differs from the one the
 // browser sent.
 //

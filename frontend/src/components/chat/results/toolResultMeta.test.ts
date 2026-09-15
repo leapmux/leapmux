@@ -185,10 +185,18 @@ describe('toolPresentationMeta copyable cost', () => {
       },
     } } as unknown as ToolBodySource))
 
+    // An ABSOLUTE count, not a difference. Capturing the count after the eager build
+    // and comparing it with itself pins only the cache; it says nothing about how many
+    // consumers reached the source before it, so a third eager reader was free.
+    //
+    // Two is the whole budget: toolOutputCollapsible reads the output to size the
+    // collapse, and hasCopyable forces the one build behind both copyable fields.
     expect(meta.hasCopyable).toBe(true)
-    const first = builds
+    expect(builds).toBe(2)
+    // The cache: the Copy button calls the getter again, and the row recomputes on
+    // every streamed token, so neither may reach the source a third time.
     expect(meta.copyableContent()).toContain('one')
     expect(meta.copyableContent()).toContain('one')
-    expect(builds).toBe(first)
+    expect(builds).toBe(2)
   })
 })

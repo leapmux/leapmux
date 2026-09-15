@@ -1,6 +1,5 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
-import type { ControlResponseSender } from '~/components/chat/controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
 
 import { Match, Show, Switch } from 'solid-js'
 import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'

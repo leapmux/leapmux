@@ -132,7 +132,7 @@ const RowAction: Component<{
  * The sibling of {@link RowAction}, and it exists for the same reason
  * `ROW_ACTION_CLASS` does -- Steer and Preempt must render the same control, and
  * a second spelling of the wrapper is what lets one of them drift. Exactly one of
- * the two is ever offered, so a reader who compares them is comparing the styling
+ * the two is ever offered, so a reader who compares them compares the styling
  * and the structure, which now live here once.
  *
  * `tooltip` and `label` are separate: the tooltip may state a whole sentence

@@ -150,11 +150,6 @@ func (q StoredSessionQuery) xdgDataHome() string {
 	return filepath.Join(home, ".local", "share")
 }
 
-// openSessionStoreDB opens another program's SQLite session store for reading.
-//
-// The os.Stat comes first so an absent store is reported as
-// errSessionStoreAbsent rather than as a driver error: `mode=ro` refuses to
-// create the file, but its message describes a failure and this is not one.
 // sessionStoreMoved reports whether a cached session store is no longer the file
 // at `path`, so its handle and everything read through it must be dropped.
 //
@@ -168,6 +163,11 @@ func sessionStoreMoved(cachedPath string, cached os.FileInfo, path string, curre
 	return cachedPath != path || cached == nil || !os.SameFile(cached, current)
 }
 
+// openSessionStoreDB opens another program's SQLite session store for reading.
+//
+// The os.Stat comes first so an absent store is reported as
+// errSessionStoreAbsent rather than as a driver error: `mode=ro` refuses to
+// create the file, but its message describes a failure and this is not one.
 func openSessionStoreDB(ctx context.Context, path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, errSessionStoreAbsent

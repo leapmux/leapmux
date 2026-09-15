@@ -73,29 +73,9 @@ type zcodeAgent struct {
 	// backgroundTurn is true while the running turn was started by a background
 	// task rather than by the user. Such a turn must not end the user's turn.
 	backgroundTurn bool
-	// stoppedTurnTimer ends a turn whose stop the app-server accepted and then never
-	// reported. Armed by Interrupt, restarted by every session event, dropped when the
-	// turn ends on its own. Guarded by a.mu. See armStoppedZCodeTurn.
-	stoppedTurnTimer *time.Timer
-	// stoppedTurnGeneration identifies the window that stoppedTurnTimer watches.
-	// Every arm and every cancel raises it, so a callback proves it still owns the
-	// current window by comparing the generation it captured.
-	//
-	// time.Timer.Stop cannot stop a callback that already began, so a cancel and a
-	// refresh both leave one running with nothing to refuse it. Without the
-	// generation the callback ends a turn whose stop another path already recorded,
-	// and the reader gets TWO interrupted rows for one Stop press. Guarded by a.mu.
-	stoppedTurnGeneration uint64
-	// stopArmedAt is when the app-server ACCEPTED the stop the window watches. Zero
-	// whenever no window is armed. It clocks the two decisions a no-op stop drives:
-	// when the "stop ignored" row may be written (events still arriving past the
-	// grace) and when a second Interrupt may escalate to a forced stop.
-	stopArmedAt time.Time
-	// stopIgnoredNotified keeps the ignored-stop row to ONE per accepted stop.
-	// Cleared where the window is, by a cancel and by the Interrupt that arms the
-	// next one. A REFRESH keeps it, because the window it swaps in watches the same
-	// accepted stop. Guarded by a.mu.
-	stopIgnoredNotified bool
+	// stopWindow ends a turn whose stop the app-server accepted and then never
+	// reported. Guarded by a.mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
+	stopWindow stoppedTurnWindow
 	// afterFunc is time.AfterFunc. A test replaces it to fire the window itself.
 	afterFunc func(time.Duration, func()) *time.Timer
 
@@ -745,8 +725,95 @@ const zcodeStoppedSilenceWindow = 30 * time.Second
 // second press is the one the worker may escalate into a forced restart.
 const zcodeStopIgnoredGrace = 3 * time.Second
 
-// armStoppedZCodeTurn starts the window that ends a turn the app-server accepted a
-// stop for and then never reported.
+// stoppedTurnWindow watches ONE stop that the app-server accepted.
+//
+// The four fields move together under three rules that used to live only in prose,
+// spread over seven methods: an ARM swaps the timer and raises the generation while
+// it KEEPS the stop's timestamp and once-flag, a CANCEL retires all four, and an
+// OPEN stamps a fresh stop. Each is one method here, so a future edit cannot take
+// half of one -- which is how one Stop press wrote two interrupted rows.
+//
+// It takes NO lock of its own. Every caller holds the agent's a.mu, and three of
+// them require the window move and the turnActive write to sit in the SAME critical
+// section: finishZCodeTurn, ClearContext and Stop each say so at their own site. A
+// self-locking window would break that atomicity.
+type stoppedTurnWindow struct {
+	// timer fires once the agent has been silent for zcodeStoppedSilenceWindow.
+	timer *time.Timer
+	// generation identifies the window that timer watches. Every arm and every
+	// cancel raises it, so a callback proves it still owns the current window by
+	// comparing the generation it captured.
+	//
+	// time.Timer.Stop cannot stop a callback that already began, so a cancel and a
+	// refresh both leave one running with nothing to refuse it. Without the
+	// generation the callback ends a turn whose stop another path already recorded,
+	// and the reader gets TWO interrupted rows for one Stop press.
+	generation uint64
+	// armedAt is when the app-server ACCEPTED the stop this window watches. Zero
+	// whenever no window is armed. It clocks the two decisions a no-op stop drives:
+	// when the "stop ignored" row may be written (events still arriving past the
+	// grace) and when a second Interrupt may escalate to a forced stop.
+	armedAt time.Time
+	// notified keeps the ignored-stop row to ONE per accepted stop. A cancel clears
+	// it and an open clears it; an ARM keeps it, because the window an arm swaps in
+	// watches the same accepted stop the old one did.
+	notified bool
+}
+
+// open stamps a newly accepted stop. Interrupt alone calls it, before it arms.
+func (w *stoppedTurnWindow) open(now time.Time) {
+	w.armedAt = now
+	w.notified = false
+}
+
+// arm swaps in a fresh timer and returns the generation it owns.
+//
+// The timer is dropped, not CANCELLED: a cancel also retires the stop's timestamp
+// and once-flag, and an arm must keep both -- the window it swaps in watches the
+// same accepted stop.
+func (w *stoppedTurnWindow) arm(after func(time.Duration, func()) *time.Timer, d time.Duration, fire func(generation uint64)) {
+	w.dropTimer()
+	w.generation++
+	generation := w.generation
+	w.timer = after(d, func() { fire(generation) })
+}
+
+// cancel retires the whole window, because the turn ended on its own.
+//
+// time.Timer.Stop takes no lock of the agent's, so it is safe under a.mu. The
+// callback it cannot stop -- one already running on the timer goroutine -- takes
+// a.mu itself and finds the generation raised past the one it captured. Do NOT
+// rely on turnActive to refuse it: Stop cancels the window without clearing that
+// flag, so the callback would run its whole body and write a second stop row.
+func (w *stoppedTurnWindow) cancel() {
+	w.dropTimer()
+	w.generation++
+	w.armedAt = time.Time{}
+	w.notified = false
+}
+
+// armed reports whether a stop is being watched now.
+func (w *stoppedTurnWindow) armed() bool { return w.timer != nil }
+
+// owns reports that the generation a callback captured is still the current one.
+func (w *stoppedTurnWindow) owns(generation uint64) bool { return w.generation == generation }
+
+// provenIgnored reports that the app-server ACCEPTED a stop and went on speaking
+// past the grace, which is the only evidence a stop was ignored.
+func (w *stoppedTurnWindow) provenIgnored(grace time.Duration) bool {
+	return w.armed() && time.Since(w.armedAt) >= grace
+}
+
+func (w *stoppedTurnWindow) dropTimer() {
+	if w.timer == nil {
+		return
+	}
+	w.timer.Stop()
+	w.timer = nil
+}
+
+// armStoppedZCodeTurnLocked starts the window that ends a turn the app-server
+// accepted a stop for and then never reported. The caller holds a.mu.
 //
 // It replaces an immediate local end. The app-server accepts `session/stop` in both
 // of the cases LeapMux must tell apart: the one where the abort cuts the model
@@ -757,13 +824,6 @@ const zcodeStopIgnoredGrace = 3 * time.Second
 // Silence is the signal, not elapsed time. Every session event restarts the window,
 // so a turn that still speaks keeps the indicator it has earned, and a turn that
 // stops speaking ends once.
-func (a *zcodeAgent) armStoppedZCodeTurn() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.armStoppedZCodeTurnLocked()
-}
-
-// armStoppedZCodeTurnLocked arms the window. The caller holds a.mu.
 //
 // It refuses once the agent goes down. Stop and Wait drop the window, and the read
 // loop can still deliver a frame after they do: a re-armed window would fire into a
@@ -779,13 +839,7 @@ func (a *zcodeAgent) armStoppedZCodeTurnLocked() {
 	if after == nil {
 		after = time.AfterFunc
 	}
-	// The timer is dropped, not CANCELLED: a cancel also retires the stop's
-	// timestamp and once-flag, and a refresh must keep both -- the window it
-	// swaps in watches the same accepted stop the old one did.
-	a.dropStoppedTurnTimerLocked()
-	a.stoppedTurnGeneration++
-	generation := a.stoppedTurnGeneration
-	a.stoppedTurnTimer = after(zcodeStoppedSilenceWindow, func() { a.endStoppedZCodeTurn(generation) })
+	a.stopWindow.arm(after, zcodeStoppedSilenceWindow, a.endStoppedZCodeTurn)
 }
 
 // refreshStoppedZCodeTurn restarts the window, because the agent just spoke.
@@ -801,13 +855,13 @@ func (a *zcodeAgent) armStoppedZCodeTurnLocked() {
 // per accepted stop.
 func (a *zcodeAgent) refreshStoppedZCodeTurn() {
 	a.mu.Lock()
-	if a.stoppedTurnTimer == nil {
+	if !a.stopWindow.armed() {
 		a.mu.Unlock()
 		return
 	}
-	notifyIgnored := !a.stopIgnoredNotified && a.stopProvenIgnoredLocked()
+	notifyIgnored := !a.stopWindow.notified && a.stopWindow.provenIgnored(zcodeStopIgnoredGrace)
 	if notifyIgnored {
-		a.stopIgnoredNotified = true
+		a.stopWindow.notified = true
 	}
 	a.armStoppedZCodeTurnLocked()
 	a.mu.Unlock()
@@ -824,30 +878,9 @@ func (a *zcodeAgent) cancelStoppedZCodeTurn() {
 }
 
 // cancelStoppedZCodeTurnLocked drops the window, because the turn ended on its
-// own. The caller holds a.mu.
-//
-// time.Timer.Stop takes no lock of this agent's, so it is safe to call here. The
-// callback it cannot stop -- one already running on the timer goroutine -- takes
-// a.mu itself and finds the generation raised past the one it captured. Do NOT
-// rely on turnActive to refuse it: Stop cancels the window without clearing that
-// flag, so the callback would run its whole body and write a second stop row.
+// own. The caller holds a.mu. See stoppedTurnWindow.cancel.
 func (a *zcodeAgent) cancelStoppedZCodeTurnLocked() {
-	a.dropStoppedTurnTimerLocked()
-	// Raise the generation so a callback that time.Timer.Stop could not stop finds
-	// the window it captured retired, and writes nothing.
-	a.stoppedTurnGeneration++
-	a.stopArmedAt = time.Time{}
-	a.stopIgnoredNotified = false
-}
-
-// dropStoppedTurnTimerLocked stops and clears the timer alone. The caller holds
-// a.mu.
-func (a *zcodeAgent) dropStoppedTurnTimerLocked() {
-	if a.stoppedTurnTimer == nil {
-		return
-	}
-	a.stoppedTurnTimer.Stop()
-	a.stoppedTurnTimer = nil
+	a.stopWindow.cancel()
 }
 
 // Interrupt aborts the running turn.
@@ -870,12 +903,11 @@ func (a *zcodeAgent) Interrupt() error {
 		// finished would hide a live agent behind an idle chat.
 		return err
 	}
-	// The stamp and the arm share ONE critical section. Split in two, a reader that
-	// ran between them saw a fresh stopArmedAt with no window armed -- the
-	// half-applied state that stopProvenIgnoredLocked must never observe.
+	// The open and the arm share ONE critical section. Split in two, a reader that
+	// ran between them saw a fresh armedAt with no window armed -- the half-applied
+	// state that stopProvenIgnoredLocked must never observe.
 	a.mu.Lock()
-	a.stopArmedAt = time.Now()
-	a.stopIgnoredNotified = false
+	a.stopWindow.open(time.Now())
 	a.armStoppedZCodeTurnLocked()
 	a.mu.Unlock()
 	return nil
@@ -902,7 +934,7 @@ func (a *zcodeAgent) InterruptEscalationReady() bool {
 // refreshStoppedZCodeTurn writes, and the escalation to a forced restart that
 // InterruptEscalationReady permits. Spelled twice, the two drift apart.
 func (a *zcodeAgent) stopProvenIgnoredLocked() bool {
-	return a.stoppedTurnTimer != nil && time.Since(a.stopArmedAt) >= zcodeStopIgnoredGrace
+	return a.stopWindow.provenIgnored(zcodeStopIgnoredGrace)
 }
 
 // endStoppedZCodeTurn records what session/stop actually cut.
@@ -930,7 +962,7 @@ func (a *zcodeAgent) stopProvenIgnoredLocked() bool {
 // See ZC-001 in docs/provider-parity/protocol-evidence.md.
 func (a *zcodeAgent) endStoppedZCodeTurn(generation uint64) {
 	a.mu.Lock()
-	if a.stoppedTurnGeneration != generation {
+	if !a.stopWindow.owns(generation) {
 		// This callback watched a window that a cancel or a refresh already retired.
 		// time.Timer.Stop cannot stop a callback that already started, so the one
 		// that lost that race arrives here. It must write nothing: the path that
@@ -1026,7 +1058,7 @@ func (a *zcodeAgent) Stop() {
 	// break it. The cancel raises the window's generation, so the late callback now
 	// refuses itself.
 	a.mu.Lock()
-	stopWasPending := a.stoppedTurnTimer != nil
+	stopWasPending := a.stopWindow.armed()
 	a.cancelStoppedZCodeTurnLocked()
 	stopped, turnActive, sessionID := a.stopped, a.turnActive, a.sessionID
 	a.mu.Unlock()

@@ -220,10 +220,10 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 
-	// A paused queue with a reported turn holds the head in place without
-	// dispatching it, so the RPC's answer is deterministic.
-	_, err = svc.InputQueue.SetPaused(ctx, "agent-1", true)
-	require.NoError(t, err)
+	// The mock provider reports no turn end of its own, so the head stays in place
+	// after the interrupt and the RPC's answer is deterministic. The queue must NOT be
+	// paused for that: a pause is precisely the state preemption has to refuse, and
+	// using one here pinned the defect instead of the behaviour.
 	_, err = svc.InputQueue.TurnStarted(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
@@ -240,6 +240,48 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 	assert.Equal(t, "one", response.GetSnapshot().GetItems()[0].GetId())
 	// The item stays queued: the cancelled turn's end is what dispatches it.
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, response.GetSnapshot().GetItems()[0].GetState())
+}
+
+// Preemption cancels the running turn and then waits for the ORDINARY turn-end drain
+// to deliver. A paused queue refuses that drain, so the cancel destroys the turn and
+// delivers nothing: the reader loses the turn AND the message, and sees no error.
+func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}))
+	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	_, err = svc.InputQueue.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	// SetPaused leaves active_turn set, so this is a manual pause during a running
+	// turn -- the state the offer used to answer true for.
+	_, err = svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.False(t, snapshot.Items[0].CanPreempt, "a paused queue offers no Preempt")
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
+	require.Len(t, writer.errors, 1, "the RPC refuses what the snapshot did not offer")
+	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
 }
 
 // TestLiveStatusChangePublishesSteeringCapability covers the LIVE pushes. The
@@ -1361,4 +1403,69 @@ func TestQueueReadErrorLeavesAMissingRowPermanent(t *testing.T) {
 	assert.NotErrorIs(t, err, nil)
 	assert.False(t, errors.As(err, &delivery), "a missing row must not become a transient delivery error")
 	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// The classification must reach every store read on the dispatch path, not just
+// the one helper that carries it.
+//
+// queueReadError's own doc claims "ONE rule at the boundary, so a read added to
+// either path inherits it". It was applied BY HAND at four sites and missed five
+// more, and three of those failed the reader's typed message PERMANENTLY for a
+// database error that never reached the provider. These pin the two reads the
+// helper now owns: the agent row, and the control responses that claim an input.
+func TestDispatchClassifiesAStoreFaultRatherThanFailingTheInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	// The store itself fails, which is what tells a transient fault apart from a
+	// missing row: a missing row is permanent, a closed database is not.
+	require.NoError(t, svc.DB.Close())
+
+	_, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
+	})
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome,
+		"a read that never reached the provider leaves the input as undelivered as it was")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
+		delivery.PauseReason,
+		"AGENT_STOPPED is the default an unset reason falls back to, and it is false for a database error")
+}
+
+// resolveControlInput reads the control responses that claim this input. Its own
+// comment states that every error there is a store fault -- the query is `:many`,
+// so a missing row gives an empty slice and cannot produce sql.ErrNoRows -- yet it
+// wrapped them with notReadyInput, which leaves the pause reason unset and lands on
+// the AGENT_STOPPED fallback.
+func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NoError(t, svc.DB.Close())
+
+	_, err = svc.resolveControlInput(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+	}, dbAgent)
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
+		delivery.PauseReason)
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -103,4 +104,40 @@ func TestCodexControlResolutionKeepsNativeIDTypesSeparate(t *testing.T) {
 		a.handleServerRequestResolved(json.RawMessage(invalid))
 	}
 	require.Len(t, sink.cancelled, 4)
+}
+
+// A JSON number is valid at any magnitude, so the id of an inbound control request is
+// attacker-shaped input: eight bytes of literal expand to a megabyte of key. The old
+// float64 parse refused those by accident, through ErrRange; big.Rat accepts them and
+// pays for the expansion on the goroutine that drains the provider's stdout.
+func TestControlRequestIdentityRefusesAnUnrenderableNumber(t *testing.T) {
+	for _, refused := range []string{
+		`1e999999`,
+		`1E999999`,
+		`1e-999999`,
+		`-1e999999`,
+		`1e65`,
+		`1e-65`,
+		`123456789012345678901234567890123456789012345678901234567890123456789`,
+	} {
+		start := time.Now()
+		key, ok := JSONRPCControlRequestID(json.RawMessage(refused))
+		require.Falsef(t, ok, "%s must be refused", refused)
+		require.Empty(t, key)
+		require.Lessf(t, time.Since(start), time.Second, "%s must be refused without rendering it", refused)
+	}
+	// The limit must not refuse an id a real runtime sends: a counter, a timestamp in
+	// nanoseconds, a value past 2^53, and exponent notation within the limit.
+	for _, accepted := range []string{`7`, `1763212800000000000`, `9007199254740993`, `1.2e1`, `1e64`, `-42`, `0`} {
+		key, ok := JSONRPCControlRequestID(json.RawMessage(accepted))
+		require.Truef(t, ok, "%s must be accepted", accepted)
+		require.NotEmpty(t, key)
+		require.Lessf(t, len(key), 128, "%s must canonicalize to a short key", accepted)
+	}
+	// 1.2e1 and 12 are the same value, so they must reach the same key.
+	scientific, ok := JSONRPCControlRequestID(json.RawMessage(`1.2e1`))
+	require.True(t, ok)
+	plain, ok := JSONRPCControlRequestID(json.RawMessage(`12`))
+	require.True(t, ok)
+	require.Equal(t, plain, scientific)
 }

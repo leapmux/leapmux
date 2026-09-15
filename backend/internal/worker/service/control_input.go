@@ -63,8 +63,11 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	if err != nil {
 		// A missing row gives an empty slice here, so every error is a store
 		// fault rather than an answer about this input. Nothing reached the
-		// provider, and the next read can succeed.
-		return controlInput{}, notReadyInput(fmt.Errorf("read the control responses for this input: %w", err))
+		// provider, and the next read can succeed. notReadyInput leaves the pause
+		// reason unset, which recordDispatchFailure then answers with AGENT_STOPPED
+		// -- a false sentence about a database error, on the very read this
+		// classification exists for.
+		return controlInput{}, notReadyStoreFault(fmt.Errorf("read the control responses for this input: %w", err))
 	}
 	if len(sources) > 1 {
 		return controlInput{}, errors.New("the input matches more than one control response")
@@ -115,7 +118,9 @@ func (svc *Service) sendResolvedInput(agentID string, input controlInput, attach
 		return svc.Agents.SendInput(agentID, input.text, attachments)
 	}
 	provider, release := svc.Agents.LockProvider(agentID)
-	current, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	// Only the READ is classified. validateSession's answer is about this input --
+	// the original provider session is gone -- and stays a permanent failure.
+	current, err := svc.queueAgentRow(agentID)
 	if err == nil {
 		err = input.validateSession(current)
 	}

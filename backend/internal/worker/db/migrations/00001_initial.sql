@@ -158,6 +158,9 @@ CREATE TABLE messages (
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
+    -- AssembledMessageKind and MessageCompletion ordinals. 0 is a real state in both
+    -- (this message is not an assembled one, and it reports no completion), so both
+    -- CHECKs start at 0. TestEnumColumnChecksMatchTheirProtoRanges pins both ranges.
     assembled_kind      INTEGER NOT NULL DEFAULT 0 CHECK (assembled_kind BETWEEN 0 AND 3),
     completion          INTEGER NOT NULL DEFAULT 0 CHECK (completion BETWEEN 0 AND 3),
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -177,12 +180,17 @@ CREATE TABLE agent_input_queue_state (
     agent_id        TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+    -- AgentInputQueuePauseReason ordinal. 0 is the real state "not paused", so this
+    -- CHECK starts at 0. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     pause_reason    INTEGER NOT NULL DEFAULT 0 CHECK (pause_reason BETWEEN 0 AND 6),
     -- Which cause created the pause that still holds. Only that cause may lift
     -- it: an archive resume, or the end of a planned restart, matches its own
     -- owner and leaves a pause that a later crash or the user created. A pause
     -- writer always overwrites this column, so the newest cause owns the pause.
     -- See pauseOwner* in inputqueue/model.go for the values.
+    -- AgentInputQueuePauseOwner ordinal. 0 is the real state "nobody owns this
+    -- pause", so this CHECK starts at 0.
+    -- TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     pause_owner     INTEGER NOT NULL DEFAULT 0 CHECK (pause_owner BETWEEN 0 AND 6),
     -- Set while the Worker replaces this agent's process. It answers a
     -- different question from pause_owner: not "who paused" but "is a write to
@@ -201,11 +209,13 @@ CREATE TABLE agent_input_queue_items (
     id              TEXT PRIMARY KEY,
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
+    -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 6),
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
     reclassify_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (reclassify_on_edit IN (0, 1)),
+    -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (state BETWEEN 1 AND 4),
     error           TEXT NOT NULL DEFAULT '',
     edit_owner      TEXT NOT NULL DEFAULT '',

@@ -1,14 +1,15 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// Storage vocabularies for the hub's own tables.
+// Storage vocabularies for the hub's and the worker's own tables.
 //
-// Every enum here numbers ONE enum column in internal/hub/store. None of them
-// appears in a request, a response or an event: no RPC carries them, and the
-// browser never sees one. They live in proto for the same reason every other
-// enum column in this project does -- so the column, the Go constant and the
-// SQL CHECK share one numbering that a renumber moves together, instead of a
-// token spelled once in Go and again in three dialects of SQL.
+// Every enum here numbers ONE enum column in internal/hub/store or
+// internal/worker/db. None of them appears in a request, a response or an
+// event: no RPC carries them, and the browser never sees one. They live in
+// proto for the same reason every other enum column in this project does -- so
+// the column, the Go constant and the SQL CHECK share one numbering that a
+// renumber moves together, instead of a token spelled once in Go and again in
+// three dialects of SQL.
 //
 // The rule that puts them here is in CLAUDE.md, under "Enum columns store proto
 // enum ordinals". The short form: a closed set of values in a database column
@@ -16,9 +17,11 @@ package leapmux.v1;
 // also crosses a language boundary. Crossing one is what adds a CONTRACT entry
 // on top, which none of these needs.
 //
-// UNSPECIFIED is 0 in each, as proto3 requires, and NO column below accepts it:
-// every CHECK starts at 1. A zero in one of these columns is an unset Go field
-// rather than a state, and the write fails instead of recording it.
+// UNSPECIFIED is 0 in each, as proto3 requires. No column below accepts it
+// except agent_input_queue_state.pause_owner, where 0 is the real state "nobody
+// owns this pause" and the enum says so at its own declaration. Everywhere else
+// a zero is an unset Go field rather than a state, every CHECK starts at 1, and
+// the write fails instead of recording it.
 
 // RevocationEventKind is what one row of the durable revocation stream
 // announces. Numbers revocation_events.kind.
@@ -106,4 +109,29 @@ enum WorkspaceLifecycleOp {
   WORKSPACE_LIFECYCLE_OP_CREATE = 1;
   WORKSPACE_LIFECYCLE_OP_RENAME = 2;
   WORKSPACE_LIFECYCLE_OP_DELETE = 3;
+}
+
+// AgentInputQueuePauseOwner records which cause created the pause that still
+// holds, so only that cause lifts it again. Numbers
+// agent_input_queue_state.pause_owner.
+//
+// A pause writer always overwrites the owner, so the newest cause owns the
+// pause: an archive resume, or the end of a planned restart, then leaves a pause
+// that a later crash or the user created.
+//
+// UNSPECIFIED is the ONE zero any column here accepts, and it is a real state:
+// the queue is not paused, so nobody owns a pause. The CHECK therefore starts at
+// 0, like agents.goal_status.
+//
+// It is NOT AgentInputQueuePauseReason. The reason is the SENTENCE the pause
+// banner shows the reader and travels to the browser; the owner is who may lift
+// the pause and never leaves the worker.
+enum AgentInputQueuePauseOwner {
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_UNSPECIFIED = 0;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_MANUAL = 1;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_ARCHIVE = 2;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_PLANNED_RESTART = 3;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_DELIVERY = 4;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_AGENT_STOPPED = 5;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY = 6;
 }

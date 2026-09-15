@@ -828,6 +828,25 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			compressed, compression := msgcodec.Compress([]byte(planText))
 			a.sink.UpdatePlan(compressed, compression, extractPlanTitle(planText))
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
+			// One plan is stored for each agent, and the UpdatePlan above just
+			// REPLACED it. A card from an earlier turn identifies the plan the reader
+			// saw and would execute THIS one, so it is invalid from this line on --
+			// whether or not the new card publishes. Retiring it only on a successful
+			// publish left a publish failure with a live card pointing at a plan that
+			// is gone; the composer renders the OLDEST card, so approving what the
+			// reader could see executed a plan it never showed.
+			//
+			// CancelControlRequest returns in silence for a row that is already gone,
+			// so an answered card costs nothing. Nothing else can retire this request:
+			// it is LeapMux's own, it carries no JSON-RPC id, and so the
+			// outstanding-control registrar never held it.
+			a.mu.Lock()
+			superseded := a.planPromptRequestID
+			a.planPromptRequestID = requestID
+			a.mu.Unlock()
+			if superseded != "" && superseded != requestID {
+				a.sink.CancelControlRequest(superseded)
+			}
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
 				"request_id": requestID,
@@ -839,23 +858,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			if err == nil {
 				if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
 					slog.Error("publish plan approval", "agent_id", a.agentID, "request_id", requestID, "error", err)
-				} else {
-					// One plan is stored for each agent, and the UpdatePlan above just
-					// REPLACED it. A card from an earlier turn names the plan the reader
-					// saw and would execute THIS one, so the new card retires it.
-					//
-					// The retirement runs only after the replacement is live, and
-					// CancelControlRequest returns in silence for a row that is already
-					// gone, so an answered card costs nothing. Nothing else can retire
-					// this request: it is LeapMux's own, it carries no JSON-RPC id, and
-					// so the outstanding-control registrar never held it.
-					a.mu.Lock()
-					superseded := a.planPromptRequestID
-					a.planPromptRequestID = requestID
-					a.mu.Unlock()
-					if superseded != "" && superseded != requestID {
-						a.sink.CancelControlRequest(superseded)
-					}
 				}
 			}
 		}

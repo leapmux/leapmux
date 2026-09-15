@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +19,19 @@ import (
 
 func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
-	var output bytes.Buffer
+	output := &syncBuffer{}
 	sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
 	a := newCodexAgentWithSink(sink)
-	a.stdin = nopWriteCloser{&output}
+	a.stdin = nopWriteCloser{output}
 	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","id":37,"method":"item/tool/requestUserInput","params":{"threadId":"main-thread","questions":[]}}`)))
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":37,"error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, output.String())
+	// handleCodexOutput runs on the goroutine that drains Codex's stdout, so the
+	// failure reply is QUEUED rather than written before it returns.
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = output.String()
+		return answer != ""
+	}, 2*time.Second, 5*time.Millisecond, "the publication failure is answered")
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":37,"error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, answer)
 	assert.Empty(t, sink.PublishedControls())
 }
 
@@ -2531,3 +2538,68 @@ func TestHandleCodexOutput_AnswersNoUnsupportedNotification(t *testing.T) {
 	require.Len(t, sink.Messages(), 1)
 	assert.Empty(t, stdin.String(), "a notification needs no answer")
 }
+
+// An interrupt that FAILS must leave the reader a control that can still answer.
+//
+// Codex's four approval methods register a nil cancel answer, because Codex retires
+// its own approval requests. Withdrawing one therefore sends the CLI nothing and only
+// deletes the reader's card -- so retiring them BEFORE turn/interrupt left a refused
+// or timed-out interrupt with the CLI still blocked on an approval and the card
+// already gone. Nothing could answer it and the thinking indicator never stopped.
+func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
+	sink := &controlIdentityCancelSink{}
+	a := newCodexAgentWithSink(sink)
+	// A closed pipe: the turn/interrupt request cannot be written, so Interrupt fails
+	// exactly as it does when the app-server refuses it or the request times out.
+	a.ctx = context.Background()
+	a.stdin = nopWriteCloser{refusingWriter{}}
+	a.mu.Lock()
+	a.threadID, a.turnID = "thread", "turn"
+	a.mu.Unlock()
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`))
+	request := sink.LastPublishedControl()
+	require.NotEmpty(t, request.RequestID, "the approval card is published")
+
+	require.Error(t, a.Interrupt(), "the interrupt cannot be written")
+
+	assert.NotContains(t, sink.cancelled, request.RequestID,
+		"an interrupt that failed must not delete the only control that can answer")
+	a.outstandingMu.Lock()
+	defer a.outstandingMu.Unlock()
+	assert.Contains(t, a.outstandingControls, request.RequestID,
+		"and the record stays, so a later answer still routes")
+}
+
+// The elicitation is the opposite case, and it must be released FIRST.
+//
+// It registers a real cancel answer, because Codex defines no outcome for an
+// elicitation the client withdraws. Nothing else delivers that answer, so the
+// elicitation stays blocked inside the CLI for the rest of the session.
+func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
+	sink := &controlIdentityCancelSink{}
+	a := newCodexAgentWithSink(sink)
+	a.ctx = context.Background()
+	a.stdin = nopWriteCloser{refusingWriter{}}
+	a.mu.Lock()
+	a.threadID, a.turnID = "thread", "turn"
+	a.mu.Unlock()
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"` + contracts.MCPElicitationMethodCodex + `","params":{}}`))
+	request := sink.LastPublishedControl()
+	require.NotEmpty(t, request.RequestID)
+
+	require.Error(t, a.Interrupt())
+
+	assert.Contains(t, sink.cancelled, request.RequestID,
+		"an elicitation is released even when the interrupt then fails")
+	a.outstandingMu.Lock()
+	defer a.outstandingMu.Unlock()
+	assert.NotContains(t, a.outstandingControls, request.RequestID)
+}
+
+// refusingWriter is a stdin that refuses every write, which is what a closed pipe
+// gives a request the runtime can no longer receive.
+type refusingWriter struct{}
+
+func (refusingWriter) Write([]byte) (int, error) { return 0, errors.New("stdin is closed") }

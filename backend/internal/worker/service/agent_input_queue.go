@@ -65,9 +65,13 @@ func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attac
 // queueReadError classifies a read of the worker's own store that a dispatch or a
 // steer made before it reached the provider.
 //
-// ONE rule at the boundary, so a read added to either path inherits it instead of
-// having to remember it. A store fault requeues and pauses; a missing row stays a
-// permanent failure, because the agent it names is gone.
+// A store fault requeues and pauses; a missing row stays a permanent failure, because
+// the agent it identifies is gone.
+//
+// Prefer queueAgentRow to calling this by hand. The rule belongs at the READ, not at
+// each call site: applied by hand it covered four of the nine store reads on these two
+// paths, and three of the five it missed failed the reader's typed message PERMANENTLY
+// for a database error that never reached the provider.
 func queueReadError(err error) error {
 	if storeFault(err) {
 		return notReadyStoreFault(err)
@@ -75,12 +79,34 @@ func queueReadError(err error) error {
 	return err
 }
 
+// queueAgentRow reads the agent row for a dispatch or a steer, already classified.
+//
+// Every read on those two paths goes through here, so a read added later inherits the
+// classification instead of having to remember it.
+func (svc *Service) queueAgentRow(agentID string) (db.Agent, error) {
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		return db.Agent{}, queueReadError(err)
+	}
+	return dbAgent, nil
+}
+
+// queueChildRouteRow reads a subagent's background-task row for a dispatch or a steer,
+// already classified. It is queueAgentRow for the other row these two paths read.
+func (svc *Service) queueChildRouteRow(childAgentID string) (db.AgentBackgroundTask, error) {
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), childAgentID)
+	if err != nil {
+		return db.AgentBackgroundTask{}, queueReadError(err)
+	}
+	return row, nil
+}
+
 func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	svc := a.svc
 	spanLines := svc.Output.snapshotPassthroughSpanLines(item.AgentID)
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	dbAgent, err := svc.queueAgentRow(item.AgentID)
 	if err != nil {
-		return inputqueue.DispatchResult{}, queueReadError(err)
+		return inputqueue.DispatchResult{}, err
 	}
 	resolvedInput, err := svc.resolveControlInput(item, dbAgent)
 	if err != nil {
@@ -108,9 +134,9 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 			return inputqueue.DispatchResult{}, fmt.Errorf("subagent accepts only messages")
 		}
-		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
+		row, err := svc.queueChildRouteRow(item.AgentID)
 		if err != nil {
-			return inputqueue.DispatchResult{}, queueReadError(err)
+			return inputqueue.DispatchResult{}, err
 		}
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
@@ -262,9 +288,9 @@ func classifyQueueSteerError(err error) error {
 }
 
 func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
-	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	dbAgent, err := a.svc.queueAgentRow(item.AgentID)
 	if err != nil {
-		return inputqueue.DispatchResult{}, queueReadError(err)
+		return inputqueue.DispatchResult{}, err
 	}
 	resolvedInput, err := a.svc.resolveControlInput(item, dbAgent)
 	if err != nil {
@@ -276,9 +302,9 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		return inputqueue.DispatchResult{}, err
 	}
 	if dbAgent.ParentAgentID.Valid {
-		row, rowErr := a.svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
+		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {
-			return inputqueue.DispatchResult{}, queueReadError(rowErr)
+			return inputqueue.DispatchResult{}, rowErr
 		}
 		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else {

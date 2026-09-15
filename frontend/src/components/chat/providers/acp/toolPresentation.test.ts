@@ -176,7 +176,7 @@ describe('a wire kind the shared tables do not know', () => {
 
   it('narrows the kind but keeps the provider word as the label', () => {
     expect(call().kind).toBe('other')
-    expect(call().label).toBe('Switch_mode')
+    expect(call().label).toBe('Switch mode')
   })
 
   it('reads a raw result object, as a literal other does', () => {

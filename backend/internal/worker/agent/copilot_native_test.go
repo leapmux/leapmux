@@ -153,7 +153,23 @@ func TestCopilotAnswersNoNotification(t *testing.T) {
 	} {
 		a.HandleOutput([]byte(raw))
 	}
-	assert.Empty(t, written.String())
+	// Never, not a bare Empty. refuseUnsupportedRequest answers on its own goroutine,
+	// so NOTHING is written on the calling goroutine for any input at all -- an Empty
+	// assertion straight after a synchronous call is therefore true whether or not the
+	// guard holds, and deleting the guard left this test green.
+	require.Never(t, func() bool { return written.String() != "" },
+		200*time.Millisecond, 5*time.Millisecond, "a notification draws no reply")
+
+	// And the machinery is live rather than merely idle: one genuine unsupported
+	// REQUEST is answered, exactly once, with no null identifier beside it.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":1,"method":"session/requestSomethingNew","params":{}}`))
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = written.String()
+		return strings.Contains(answer, `"code":-32601`)
+	}, 2*time.Second, 5*time.Millisecond, "the unsupported request is answered")
+	assert.Equal(t, 1, strings.Count(answer, `"code":-32601`), "only the request draws a reply")
+	assert.NotContains(t, answer, `"id":null`, "a reply with a null id cannot be routed")
 }
 
 // A response the correlator already declined must not draw an error reply: it carries
@@ -171,7 +187,11 @@ func TestCopilotAnswersNoOrphanResponse(t *testing.T) {
 		Raw: []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`),
 		ID:  json.RawMessage(`7`),
 	})
-	assert.Empty(t, written.String())
+	// Never, not a bare Empty: the reply travels on its own goroutine, so an Empty
+	// assertion straight after this call cannot tell a held guard from an unscheduled
+	// goroutine. See TestCopilotAnswersNoNotification.
+	require.Never(t, func() bool { return written.String() != "" },
+		200*time.Millisecond, 5*time.Millisecond, "a response is nobody's request and draws no reply")
 }
 
 // syncBuffer records what the agent wrote to the process. A reply travels on a

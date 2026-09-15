@@ -1,7 +1,6 @@
 import type { Component } from 'solid-js'
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
-import type { ActionsProps, ContentProps } from '../../controls/types'
-import type { ControlResponseSender } from '~/components/chat/controls/types'
+import type { ActionsProps, ContentProps, ControlResponseSender } from '../../controls/types'
 
 import { createEffect, createMemo, onCleanup, untrack } from 'solid-js'
 import { pickObject, pickString } from '~/lib/jsonPick'

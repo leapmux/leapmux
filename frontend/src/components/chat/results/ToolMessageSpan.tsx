@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
+import type { SpanRole } from '../providers/registry'
 import type { ToolMessageSource } from './toolPresentation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createMemo, Show } from 'solid-js'
@@ -14,30 +15,56 @@ import { ToolMessage } from './ToolMessage'
  * separately, and they did not agree: three guarded with `<Show>` and one with a
  * ternary, for the same question.
  *
- * Each caller supplies only what differs: how ITS payload becomes a row. The
- * accessors below hand each callback the parsed message of its own side, so a
- * provider never reads `context.sources` for a side the helper already resolved.
+ * Each caller supplies only what differs: how ITS payload becomes a row. Every
+ * callback receives ALL THREE parsed sides plus the span role, so a provider never
+ * reads `context.sources` for a side this helper already resolved.
+ *
+ * All three, not just its own. Every caller needs a second side: ACP needs the
+ * request's parent object and the role inside `source`, Copilot needs the request
+ * inside `source` and `result`, ZCode needs all three, and Pi needs the request and
+ * the result. A callback that took only its own side sent each of them back to
+ * `context.sources`, which is the wiring this helper exists to own -- and each read
+ * there is a fresh call outside the memo that resolved it here.
  *
  * A row that resolves to nothing draws nothing. A `source` callback that always
  * answers is welcome — the guard is then simply always true.
  */
+/** Every side of one tool span, resolved once, plus the role of the current row. */
+export interface ToolSpanSides {
+  /** The parsed message of the side the callback is building. */
+  own: ParsedMessageContent | undefined
+  /** The message this renderer was called for. Equals `own` in the source callback. */
+  current: ParsedMessageContent | undefined
+  /** The span's opener, or undefined when the span states none. */
+  request: ParsedMessageContent | undefined
+  /** The span's result, or undefined while the call still runs. */
+  result: ParsedMessageContent | undefined
+  role: SpanRole
+}
+
 export function ToolMessageSpan(props: {
   context?: RenderContext
   /** The row this renderer was called for, from the CURRENT message. */
-  source: (parsed: ParsedMessageContent | undefined) => ToolMessageSource | undefined
-  /** The span's opener, or undefined when the span states none. */
-  request: (parsed: ParsedMessageContent) => ToolMessageSource | undefined
-  /** The span's result, or undefined while the call still runs. */
-  result: (parsed: ParsedMessageContent) => ToolMessageSource | undefined
+  source: (sides: ToolSpanSides) => ToolMessageSource | undefined
+  /** The span's opener. Called only when the span states one. */
+  request: (sides: ToolSpanSides & { own: ParsedMessageContent }) => ToolMessageSource | undefined
+  /** The span's result. Called only once the call finishes. */
+  result: (sides: ToolSpanSides & { own: ParsedMessageContent }) => ToolMessageSource | undefined
 }): JSX.Element {
-  const source = createMemo(() => props.source(props.context?.sources?.current()))
+  const sides = createMemo<Omit<ToolSpanSides, 'own'>>(() => ({
+    current: props.context?.sources?.current(),
+    request: props.context?.sources?.request(),
+    result: props.context?.sources?.result(),
+    role: props.context?.sources?.role() ?? 'other',
+  }))
+  const source = createMemo(() => props.source({ ...sides(), own: sides().current }))
   const request = createMemo(() => {
-    const parsed = props.context?.sources?.request()
-    return parsed ? props.request(parsed) : undefined
+    const own = sides().request
+    return own ? props.request({ ...sides(), own }) : undefined
   })
   const result = createMemo(() => {
-    const parsed = props.context?.sources?.result()
-    return parsed ? props.result(parsed) : undefined
+    const own = sides().result
+    return own ? props.result({ ...sides(), own }) : undefined
   })
   return (
     <Show when={source()}>

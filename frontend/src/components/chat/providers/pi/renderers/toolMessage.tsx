@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
+import type { ToolSpanSides } from '../../../results/ToolMessageSpan'
 import type { ToolMessageSource } from '../../../results/toolPresentation'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMemo, For, Show } from 'solid-js'
@@ -23,18 +24,16 @@ interface RendererProps {
  * the icon, the title and the label without a second table to keep in step.
  */
 function PiToolMessage(props: RendererProps): JSX.Element {
-  const request = () => props.context?.sources?.request()
-  const result = () => props.context?.sources?.result()
-  const build = (payload: unknown, completion: MessageCompletion | undefined): ToolMessageSource | undefined => {
-    const row = piToolRow(payload, request(), result(), completion)
+  const build = (payload: unknown, sides: ToolSpanSides, completion: MessageCompletion | undefined): ToolMessageSource | undefined => {
+    const row = piToolRow(payload, sides.request, sides.result, completion)
     return row ? piToolMessageSource(row, completion) : undefined
   }
   return (
     <ToolMessageSpan
       context={props.context}
-      source={parsed => build(props.parsed, parsed?.completion)}
-      request={parsed => build(parsed.parentObject, parsed.completion)}
-      result={parsed => build(parsed.parentObject, parsed.completion)}
+      source={sides => build(props.parsed, sides, sides.own?.completion)}
+      request={sides => build(sides.own.parentObject, sides, sides.own.completion)}
+      result={sides => build(sides.own.parentObject, sides, sides.own.completion)}
     />
   )
 }

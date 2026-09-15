@@ -41,14 +41,22 @@ const (
 // the newest cause owns the pause: an archive resume, or the end of a planned
 // restart, then leaves a pause that a later crash or the user created. The
 // values persist in agent_input_queue_state.pause_owner.
+//
+// A DEFINED type over the proto enum, not an independent iota. The column is a
+// closed set, so its numbering comes from proto like every other enum column
+// here -- the Go constant, the column and the SQL CHECK then share one numbering
+// that a renumber moves together. TestEnumColumnChecksMatchTheirProtoRanges pins
+// the range. An iota let the three drift with nothing to notice.
+type pauseOwner leapmuxv1.AgentInputQueuePauseOwner
+
 const (
-	pauseOwnerNone = iota
-	pauseOwnerManual
-	pauseOwnerArchive
-	pauseOwnerPlannedRestart
-	pauseOwnerDelivery
-	pauseOwnerAgentStopped
-	pauseOwnerRecovery
+	pauseOwnerNone           = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_UNSPECIFIED)
+	pauseOwnerManual         = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_MANUAL)
+	pauseOwnerArchive        = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_ARCHIVE)
+	pauseOwnerPlannedRestart = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_PLANNED_RESTART)
+	pauseOwnerDelivery       = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_DELIVERY)
+	pauseOwnerAgentStopped   = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_AGENT_STOPPED)
+	pauseOwnerRecovery       = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY)
 )
 
 var (
@@ -71,7 +79,7 @@ var (
 	// route: the running provider cannot steer and Preempt refuses outright.
 	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
 	// ErrPreemptionState is ErrSteeringState's counterpart. It must not reuse
-	// ErrTurnEnded, whose text names STEERING and asserts that a turn ended: the
+	// ErrTurnEnded, whose text states STEERING and asserts that a turn ended: the
 	// head can also be refused because another tab holds its edit, and the reader
 	// saw "active turn ended before steering" for a request that neither steered
 	// nor followed a turn that ended.

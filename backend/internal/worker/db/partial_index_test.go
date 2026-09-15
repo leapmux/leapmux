@@ -3,6 +3,9 @@ package db_test
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -222,3 +225,155 @@ func explainPlan(t *testing.T, connection *sql.DB, query string, args []any) str
 	require.NoError(t, rows.Close())
 	return strings.Join(details, "\n")
 }
+
+// inequalityIndexPredicate matches one `column <> ”` or `column <> 0` term of a
+// partial index predicate.
+//
+// That family is the whole subject of the sweep below. SQLite PROVES an equality
+// term implies `IS NOT NULL`, so an index predicated on that rides without the term
+// spelled; it can make no such inference for `<>`, so every query that wants such an
+// index must repeat the term itself.
+var inequalityIndexPredicate = regexp.MustCompile(`(\w+)\s*<>\s*(''|0)`)
+
+// sqlcStatementMarker matches the `-- name: X :one` line that opens each statement
+// of a sqlc query file.
+//
+// The MARKER alone, with the body sliced between consecutive markers. A single
+// pattern that also captured the body had to consume the NEXT marker as its
+// terminator, and Go's regexp has no lookahead -- so FindAll resumed past that
+// marker and silently skipped every other statement. The sweep still passed, with
+// half its subject matter missing.
+var sqlcStatementMarker = regexp.MustCompile(`(?m)^--\s*name:\s*(\w+)\s*:\w+`)
+
+// sqlWhereKeyword matches the WHERE keyword on ANY whitespace, not a space alone.
+// Two of these indexes put WHERE at the start of its own line, where a
+// space-delimited match finds nothing and the index silently leaves the scan.
+var sqlWhereKeyword = regexp.MustCompile(`(?i)\sWHERE\s`)
+
+// TestEveryQueryRepeatsThePartialIndexPredicateItNeeds refuses a query that filters
+// an inequality-family partial index's column against a parameter and omits the
+// index's own term.
+//
+// This is the RULE the case list above states but cannot enforce. That list is keyed
+// by INDEX, so one pinned query marks its index covered and the NEXT query on the
+// same column rides no index at all -- a silent whole-table scan, which is how two
+// of these drifted before. This is keyed by QUERY, and it is derived from the sqlc
+// files rather than hand-written, so a new query inherits the rule.
+//
+// It is ADDITIVE, not a replacement. A text sweep proves only that the term is
+// PRESENT; the EXPLAIN assertions above prove the planner really seeks the index.
+//
+// Three limits, each deliberate:
+//   - It reads the WHERE clause alone. `child_agent_id` also appears in an INSERT
+//     column list, an ON CONFLICT assignment and two RETURNING clauses, and a bare
+//     "the statement mentions the column" test reports all four.
+//   - A query that filters the column against a LITERAL is exempt. `child_agent_id
+//     = ”` deliberately selects the rows the index excludes.
+//   - It reaches sqlc statements only. A raw SQL string in Go (inputqueue/store.go
+//     builds several) is outside it, and the EXPLAIN cases above are what cover
+//     those.
+func TestEveryQueryRepeatsThePartialIndexPredicateItNeeds(t *testing.T) {
+	t.Parallel()
+
+	connection, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, connection.Close()) })
+	require.NoError(t, workerdb.Migrate(t.Context(), connection))
+
+	// Every inequality term the schema declares, by the table it indexes.
+	type indexTerm struct{ index, column, predicate string }
+	terms := map[string][]indexTerm{}
+	rows, err := connection.QueryContext(t.Context(),
+		`SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var name, table, create string
+		require.NoError(t, rows.Scan(&name, &table, &create))
+		where := sqlWhereKeyword.FindStringIndex(create)
+		if where == nil {
+			continue
+		}
+		for _, match := range inequalityIndexPredicate.FindAllStringSubmatch(create[where[0]:], -1) {
+			terms[table] = append(terms[table], indexTerm{index: name, column: match[1], predicate: match[0]})
+		}
+	}
+	require.NoError(t, rows.Close())
+	require.Len(t, terms, 5, "the schema declares inequality-family partial indexes on five tables")
+
+	files, err := filepath.Glob(filepath.Join("queries", "*.sql"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "the worker declares sqlc queries; a scan that finds none is broken")
+
+	checked := 0
+	for _, file := range files {
+		body, err := os.ReadFile(file)
+		require.NoError(t, err)
+		text := string(body)
+		markers := sqlcStatementMarker.FindAllStringSubmatchIndex(text, -1)
+		for i, marker := range markers {
+			end := len(text)
+			if i+1 < len(markers) {
+				end = markers[i+1][0]
+			}
+			name, statement := text[marker[2]:marker[3]], text[marker[1]:end]
+			where := whereClauseOf(statement)
+			if where == "" {
+				continue
+			}
+			for table, indexTerms := range terms {
+				if !queryReadsTable(statement, table) {
+					continue
+				}
+				for _, term := range indexTerms {
+					if !filtersColumnByParameter(where, term.column) {
+						continue
+					}
+					checked++
+					assert.Containsf(t, squashSpaces(where), term.predicate,
+						"%s (%s) filters %s.%s against a parameter, so it wants %s -- "+
+							"but it omits that index's own %q term, and SQLite matches a partial "+
+							"index SYNTACTICALLY: without the term the query reads the WHOLE table, "+
+							"with no error and no warning",
+						name, filepath.Base(file), table, term.column, term.index, term.predicate)
+				}
+			}
+		}
+	}
+	require.Positive(t, checked, "the sweep found no query to check; the scan is broken")
+}
+
+// whereClauseOf returns the statement text from its first WHERE to the end, minus a
+// trailing RETURNING clause. It answers an empty string for a statement with no WHERE.
+func whereClauseOf(statement string) string {
+	start := sqlWhereKeyword.FindStringIndex(statement)
+	if start == nil {
+		return ""
+	}
+	clause := statement[start[0]:]
+	if end := sqlReturningKeyword.FindStringIndex(clause); end != nil {
+		clause = clause[:end[0]]
+	}
+	return clause
+}
+
+var sqlReturningKeyword = regexp.MustCompile(`(?i)\sRETURNING\s`)
+
+// queryReadsTable reports whether the statement names the table after FROM, JOIN,
+// UPDATE or DELETE FROM -- the four positions that make the table's indexes relevant.
+func queryReadsTable(statement, table string) bool {
+	for _, keyword := range []string{"FROM ", "JOIN ", "UPDATE ", "INTO "} {
+		if regexp.MustCompile(`(?i)\b` + keyword + table + `\b`).MatchString(statement) {
+			return true
+		}
+	}
+	return false
+}
+
+// filtersColumnByParameter reports whether the WHERE clause compares the column to a
+// bound parameter. A comparison against a LITERAL is deliberately excluded: a query
+// that asks for `child_agent_id = ”` selects the rows the index excludes.
+func filtersColumnByParameter(where, column string) bool {
+	return regexp.MustCompile(`(?i)\b` + column + `\s*=\s*(\?|sqlc\.(arg|narg)\()`).MatchString(where)
+}
+
+func squashSpaces(s string) string { return strings.Join(strings.Fields(s), " ") }

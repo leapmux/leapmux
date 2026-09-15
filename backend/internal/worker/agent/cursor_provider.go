@@ -34,8 +34,8 @@ type cursorProvider struct {
 // Reasonix while Cursor silently keeps a stale copy.
 func (p cursorProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
 	res := p.acpProvider.ResolveControlResponse(ctx)
-	// An empty payload reaches warnUnmarshal below and logs a failure for a request
-	// that carried nothing to parse.
+	// Without this guard an empty payload would reach warnUnmarshal below and log a
+	// failure for a request that carried nothing to parse.
 	if len(ctx.RequestPayload) == 0 {
 		return res
 	}

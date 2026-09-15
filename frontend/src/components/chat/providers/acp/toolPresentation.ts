@@ -1,4 +1,5 @@
 import type { SpanRole } from '../registry'
+import type { ToolKind } from '~/components/chat/results/toolKind'
 import type { ToolBodySource, ToolPresentation } from '~/components/chat/results/toolPresentation'
 import type { ToolRowOutcome } from '~/components/chat/toolOutcomeLabel'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -7,7 +8,7 @@ import { TOOL_FILE_PATH_KEYS } from '~/components/chat/results/toolInputs'
 import { toolKind } from '~/components/chat/results/toolKind'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickObject, pickString } from '~/lib/jsonPick'
-import { capitalize } from '../../rendererUtils'
+import { humanizeWireWord } from '../../rendererUtils'
 import { fileEditHasDiff } from '../../results/fileEditDiff'
 import { mcpStatusFromToolStatus, parseMcpContentItem } from '../../results/mcpToolCall'
 import { retainedOutcome, retainedRowIsFinal } from '../registry'
@@ -19,6 +20,12 @@ import { acpSearchFromToolCall } from './extractors/search'
 import { acpTerminalIds, acpTerminalResults } from './extractors/terminal'
 import { acpWebFetchFromToolCall } from './extractors/webFetch'
 import { unwrapACPResult } from './resultWrapper'
+
+// The kind groups these tables ask about, as sets the compiler checks against the
+// closed ToolKind union. `['read', …].includes(kind)` infers a `string[]`, so a
+// misspelled or renamed member stayed a branch that simply never fired.
+const FILE_TARGET_KINDS = new Set<ToolKind>(['read', 'edit', 'write', 'delete'])
+const QUERY_KINDS = new Set<ToolKind>(['search', 'glob', 'grep'])
 
 /**
  * Each provider keeps its native fields and tool semantics in its own adapter.
@@ -68,11 +75,11 @@ export function acpToolNeedsResult(tool: Record<string, unknown>, adapter?: ACPT
     return true
   if (model.requestedChanges?.length)
     return false
-  if (['read', 'edit', 'write', 'delete', 'move'].includes(model.kind))
+  if (FILE_TARGET_KINDS.has(model.kind) || model.kind === 'move')
     return !pickFirstString(model.input, TOOL_FILE_PATH_KEYS)
   if (model.kind === 'execute')
     return !pickString(model.input, 'command')
-  if (['search', 'glob', 'grep'].includes(model.kind))
+  if (QUERY_KINDS.has(model.kind))
     return !pickString(model.input, 'pattern') && !pickString(model.input, 'query')
   if (model.kind === 'fetch')
     return !pickString(model.input, 'url')
@@ -138,9 +145,12 @@ function acpToolBase(rawTool: Record<string, unknown>, adapter?: ACPToolAdapter,
   const body = acpToolBody(tool, kind)
   const presentation: ToolPresentation = {
     kind,
-    // The provider's own word for a kind the shared table does not know. Without
-    // it the name chip reads "Other" where the wire said `switch_mode`.
-    label: kind === 'other' && rawKind !== 'other' ? capitalize(rawKind) : undefined,
+    // The provider's own word for a kind the shared table does not know. Without it
+    // the row's tool name reads "Other" where the wire said `switch_mode`. That name
+    // is the icon's tooltip AND its accessible name, so the raw wire spelling has to
+    // be formatted: `capitalize` alone left "Switch_mode" beside the single human
+    // words toolKindLabel supplies.
+    label: kind === 'other' && rawKind !== 'other' ? humanizeWireWord(rawKind) : undefined,
     title: pickString(input, 'description') || pickString(tool, 'title') || rawKind || 'Tool',
     input,
     inputText: typeof tool.rawInput === 'string' ? tool.rawInput : undefined,
@@ -181,9 +191,9 @@ function acpToolBase(rawTool: Record<string, unknown>, adapter?: ACPToolAdapter,
  * Several paths are an ambiguity that this refuses to resolve, because picking one
  * would show a file that the call may not have touched.
  */
-function acpToolInput(tool: Record<string, unknown>, kind: string): Record<string, unknown> {
+function acpToolInput(tool: Record<string, unknown>, kind: ToolKind): Record<string, unknown> {
   const input = pickObject(tool, 'rawInput') ?? {}
-  if (!['read', 'edit', 'write', 'delete'].includes(kind) || pickFirstString(input, TOOL_FILE_PATH_KEYS))
+  if (!FILE_TARGET_KINDS.has(kind) || pickFirstString(input, TOOL_FILE_PATH_KEYS))
     return input
   const paths = Array.isArray(tool.locations)
     ? [...new Set(tool.locations.filter(isObject).map(location => pickString(location, 'path')).filter(Boolean))]
@@ -200,7 +210,7 @@ function acpToolInput(tool: Record<string, unknown>, kind: string): Record<strin
  * is the exception, and it still draws its command body -- the output that the command
  * produced before the stop is real.
  */
-function acpToolBody(tool: Record<string, unknown>, kind: string): ToolBodySource {
+function acpToolBody(tool: Record<string, unknown>, kind: ToolKind): ToolBodySource {
   if (tool.status === 'completed') {
     const sources = Array.isArray(tool.content)
       ? tool.content.flatMap((entry) => {

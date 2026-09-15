@@ -61,6 +61,19 @@ describe('toolMessageTitle coverage', () => {
     expect(typeof title === 'string' ? title : '').toBe(kindHasTitleRenderer(kind) ? '' : 'RAW TITLE')
   })
 
+  // `search` already reads either key, and acpToolNeedsResult accepts either for a
+  // grep kind, so a provider that spells the pattern `query` is a shape the code
+  // already anticipates. Reading `pattern` alone left the row with NO title and no
+  // raw-input summary either, because kindHasTitleRenderer suppresses that summary
+  // from the KIND rather than from whether a title was produced.
+  it.each(['pattern', 'query'])('draws a grep title from the %s key', (key) => {
+    const model = probe('grep')
+    model.input = { [key]: 'needle' }
+    const { container } = render(() => toolMessageTitle(model))
+    expect(container.textContent).toContain('needle')
+    expect(container.textContent).not.toBe(model.title)
+  })
+
   // Reasonix's `move_file` sends these two keys and no `filePath`. The row is in
   // this state while the move runs, and after one that failed or was cancelled;
   // a move that COMPLETED takes the diff branch above the table instead.

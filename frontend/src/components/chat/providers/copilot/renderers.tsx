@@ -58,10 +58,10 @@ export function CopilotToolMessage(props: { parsed: unknown, context?: RenderCon
   return (
     <ToolMessageSpan
       context={props.context}
-      source={parsed => copilotToolSource(props.parsed, props.context?.spanType, props.context?.sources?.request(), parsed?.completion)}
+      source={sides => copilotToolSource(props.parsed, props.context?.spanType, sides.request, sides.own?.completion)}
       // The opener resolves against ITSELF, which is what an opener's own row needs.
-      request={parsed => copilotToolSource(parsed.parentObject, props.context?.spanType, parsed, parsed.completion)}
-      result={parsed => copilotToolSource(parsed.parentObject, props.context?.spanType, props.context?.sources?.request(), parsed.completion)}
+      request={sides => copilotToolSource(sides.own.parentObject, props.context?.spanType, sides.own, sides.own.completion)}
+      result={sides => copilotToolSource(sides.own.parentObject, props.context?.spanType, sides.request, sides.own.completion)}
     />
   )
 }

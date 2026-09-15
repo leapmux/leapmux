@@ -2553,7 +2553,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 // unchanged request when the restart fails.
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	if err := svc.restartAgentPreservingSession(dbAgent, newOptions, "an agent settings restart"); err != nil {
+	if _, err := svc.restartAgentPreservingSession(dbAgent, newOptions, settingsRestartMessages); err != nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
 	// Read the typed snapshot from the relaunched provider. A startup readback
@@ -2605,9 +2605,12 @@ func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
 	defer svc.forceStops.Delete(agentID)
 
 	// The agent keeps the settings its row already holds; only the process is
-	// replaced.
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-	if err := svc.restartAgentPreservingSession(dbAgent, parseOptions(dbAgent.Options), "a forced stop"); err != nil {
+	// replaced. The id comes BACK from the restart rather than being resolved again
+	// here: resolveResumeSessionID issues a HasUserMessages query, and two separate
+	// resolutions can disagree, so the log line stated an id the relaunch may not have
+	// used -- for exactly the incident a reader consults it for.
+	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, parseOptions(dbAgent.Options), forcedStopMessages)
+	if err != nil {
 		return err
 	}
 	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
@@ -2625,25 +2628,33 @@ func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
 // the same for both. They were the same when spelled twice too, which is the
 // problem: the next correction to any of the three would have landed in one copy.
 //
-// `reason` is the only axis that varies. It composes the five sentences each caller
-// needs, so the two differ in the words the reader sees and in nothing else.
-func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options OptionMap, reason string) error {
+// The WORDS are the only axis that varies, and each caller supplies them whole. A
+// bare sentence FRAGMENT interpolated into four frames read correctly in some frames
+// and not in others: "failed to finish input queue a forced stop" was the result for
+// BOTH callers, "failed to restart agent after an agent settings restart" was circular,
+// and the one message no frame could reach at all told a reader who pressed Stop that
+// the agent failed to RESTART. None of these six lines exists as a searchable literal
+// once it is concatenated either, so a reader holding a log line cannot find its site.
+//
+// It returns the resume session id it actually launched with, so a caller that reports
+// that id reports the one that was used rather than resolving it a second time.
+func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options OptionMap, messages restartMessages) (string, error) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
 	if err != nil {
-		slog.Error("failed to pause input before "+reason, "agent_id", agentID, "error", err)
+		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
 			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
+			"error": messages.pauseFailedNotice + err.Error(),
 		})
-		return err
+		return "", err
 	}
 	queueRestartFinished := false
 	defer func() {
 		if !queueRestartFinished {
 			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
-				slog.Error("failed to finish input queue "+reason, "agent_id", agentID, "error", finishErr)
+				slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
 			}
 		}
 	}()
@@ -2675,21 +2686,55 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
 	}()
 	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
-		slog.Error("failed to finish input queue "+reason, "agent_id", agentID, "error", finishErr)
+		slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
 	}
 	queueRestartFinished = true
 	if err != nil {
-		slog.Error("failed to restart agent after "+reason, "agent_id", agentID, "error", err)
+		slog.Error(messages.restartFailedLog, "agent_id", agentID, "error", err)
 		// Clear stale session ID so ensureAgentRunning won't try to resume a
 		// non-existent session on the next message.
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
 			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart the agent after " + reason + ": " + err.Error(),
+			"error": messages.restartFailedNotice + err.Error(),
 		})
-		return err
+		return "", err
 	}
-	return nil
+	return resumeSessionID, nil
+}
+
+// restartMessages holds every sentence one caller of restartAgentPreservingSession
+// shows, whole.
+//
+// Each notice ends where the error text begins, so the caller states the punctuation
+// its own sentence needs.
+type restartMessages struct {
+	// The three log lines, in the order the function can reach them.
+	pauseFailedLog   string
+	finishFailedLog  string
+	restartFailedLog string
+	// The two notifications the reader sees in the chat.
+	pauseFailedNotice   string
+	restartFailedNotice string
+}
+
+// settingsRestartMessages speaks for a settings change that needs a relaunch.
+var settingsRestartMessages = restartMessages{
+	pauseFailedLog:      "failed to pause input before applying new agent settings",
+	finishFailedLog:     "failed to finish the input queue pause after applying new agent settings",
+	restartFailedLog:    "failed to restart agent with new settings",
+	pauseFailedNotice:   "Failed to apply the new settings because the input queue could not pause: ",
+	restartFailedNotice: "Failed to restart the agent with the new settings: ",
+}
+
+// forcedStopMessages speaks for a Stop the provider would not honour, which LeapMux
+// answers by replacing the process.
+var forcedStopMessages = restartMessages{
+	pauseFailedLog:      "failed to pause input before a forced stop",
+	finishFailedLog:     "failed to finish the input queue pause after a forced stop",
+	restartFailedLog:    "failed to restart agent after a forced stop",
+	pauseFailedNotice:   "Failed to force-stop the agent because the input queue could not pause: ",
+	restartFailedNotice: "Failed to force-stop the agent because its replacement could not start: ",
 }
 
 // buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
@@ -2898,7 +2943,11 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	// The queue is the only caller, so the read is classified: a database error here
+	// never reached the provider, and failing the item permanently makes the reader
+	// retype what a retry would have sent. The mintAndLaunch error below is NOT
+	// classified -- a start that failed is a real answer about this input.
+	dbAgent, err := svc.queueAgentRow(agentID)
 	if err != nil {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
 		return nil, err

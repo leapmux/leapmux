@@ -164,7 +164,7 @@ func NormalizeRowKey(s string) string {
 //
 // The same class as a row key, because the two are the same KIND of value: an
 // identity the registry joins on, chosen by the provider, with nothing else on
-// the path that limits it. `LabelByteLimit`'s own doc names them together and says
+// the path that limits it. `LabelByteLimit`'s own doc states them together and says
 // why neither may be cut; the refusal was then built for one of the two.
 //
 // What a caller DOES with the refusal differs, and that difference is the whole

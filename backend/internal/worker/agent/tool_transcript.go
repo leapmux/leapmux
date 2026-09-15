@@ -127,9 +127,12 @@ type toolTranscript struct {
 	mu sync.Mutex
 	// work wakes the supplement worker. idle reports that no interim pass waits or
 	// runs. Both wait on mu.
-	work       *sync.Cond
-	idle       *sync.Cond
-	children   map[string]*toolTranscript
+	work     *sync.Cond
+	idle     *sync.Cond
+	children map[string]*toolTranscript
+	// retired holds a child transcript that CleanupChildAgent detached and that still
+	// owes a final pass. finishPending drains it beside the live children.
+	retired    []*toolTranscript
 	sessionKey string
 	sessionID  string
 	pending    map[string]MessageContent
@@ -177,7 +180,8 @@ const toolSupplementReadBudget = 100 * time.Millisecond
 //
 // The turn end runs this pass on the goroutine that drains the provider's stdout, so
 // this budget is what that goroutine waits at a turn boundary. Each interim pass moved
-// to the supplement worker, so this is the only provider read that still stops the
+// to the supplement worker, and a child that CleanupChildAgent retires waits for the
+// same turn end, so a turn boundary is the only point where a provider read stops the
 // reader.
 const toolSupplementFinalReadBudget = time.Second
 
@@ -195,26 +199,41 @@ func (s *toolTranscript) reset() {
 	s.sessionKey = ""
 	s.sessionID = ""
 	s.pending = nil
-	children := s.children
+	children := make([]*toolTranscript, 0, len(s.children)+len(s.retired))
+	for _, child := range s.children {
+		children = append(children, child)
+	}
+	children = append(children, s.retired...)
 	s.children = nil
+	s.retired = nil
 	s.source.resetRecords()
 	s.mu.Unlock()
-	for _, child := range children {
-		child.closeSupplementWorker()
-	}
+	retireToolTranscripts(children)
 }
 
 // adoptLocation preserves replay results until the first session ID arrives.
 // A different session clears pending results. A new path within that session keeps them.
 // It reports the location's path and whether that location can be read.
 //
+// A session change orphans every child transcript of the old session, and this returns
+// them rather than dropping them. The caller holds mu, which finishPending needs, so
+// the caller must pass them to retireToolTranscripts AFTER it releases mu. Dropping
+// them here lost each child's last supplement and stranded its worker goroutine and
+// its context watch for the life of the agent.
+//
 // The caller holds mu.
-func (s *toolTranscript) adoptLocation() (string, bool) {
+func (s *toolTranscript) adoptLocation() (string, bool, []*toolTranscript) {
+	var orphans []*toolTranscript
 	location := s.source.locate(s.sessionID)
 	if location.sessionKey != s.sessionKey {
 		if s.sessionKey != "" {
 			s.pending = nil
+			for _, child := range s.children {
+				orphans = append(orphans, child)
+			}
+			orphans = append(orphans, s.retired...)
 			s.children = nil
+			s.retired = nil
 			s.source.resetRecords()
 		}
 		s.sessionKey = location.sessionKey
@@ -222,7 +241,7 @@ func (s *toolTranscript) adoptLocation() (string, bool) {
 	if s.pending == nil {
 		s.pending = make(map[string]MessageContent)
 	}
-	return location.path, location.ready
+	return location.path, location.ready, orphans
 }
 
 // supplementContext caps one pass of provider reads.
@@ -312,10 +331,14 @@ func (s *toolTranscript) waitForSupplements() {
 
 func (s *toolTranscript) UpdateSessionID(sessionID string) {
 	s.ProviderServices.UpdateSessionID(sessionID)
+	// Registered before the unlock, so LIFO runs it after the unlock:
+	// retireToolTranscripts takes each orphan's own mu through finishPending.
+	var orphans []*toolTranscript
+	defer func() { retireToolTranscripts(orphans) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionID = sessionID
-	_, ready := s.adoptLocation()
+	_, ready, orphans := s.adoptLocation()
 	if ready && len(s.pending) > 0 {
 		s.requestSupplementPass()
 	}
@@ -325,9 +348,13 @@ func (s *toolTranscript) PersistMessage(source leapmuxv1.MessageSource, content 
 	if source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
 		return s.ProviderServices.PersistMessage(source, content, span)
 	}
+	// Registered before the unlock, so LIFO runs it after the unlock:
+	// retireToolTranscripts takes each orphan's own mu through finishPending.
+	var orphans []*toolTranscript
+	defer func() { retireToolTranscripts(orphans) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, ready := s.adoptLocation()
+	path, ready, orphans := s.adoptLocation()
 	if ready && len(s.pending) > 0 {
 		// The supplement worker reads the provider's store. This goroutine drains the
 		// provider's stdout, so it must not wait for that read.
@@ -394,9 +421,28 @@ func (s *toolTranscript) finishPending() {
 	for _, child := range s.children {
 		children = append(children, child)
 	}
+	retired := s.retired
+	s.retired = nil
 	s.mu.Unlock()
 	for _, child := range children {
 		child.finishPending()
+	}
+	retireToolTranscripts(retired)
+}
+
+// retireToolTranscripts drains each transcript, then ends its worker.
+//
+// The order is the point, and it is the same order for each of the three paths that
+// drop a child: CleanupChildAgent, reset and adoptLocation. Dropping without the drain
+// loses every supplement the child still holds, and dropping without the close strands
+// the child's worker goroutine and the context watch that would have ended it, both for
+// the life of the agent.
+//
+// The caller must NOT hold mu, because finishPending takes it.
+func retireToolTranscripts(children []*toolTranscript) {
+	for _, child := range children {
+		child.finishPending()
+		child.closeSupplementWorker()
 	}
 }
 
@@ -409,22 +455,26 @@ func (s *toolTranscript) finishPending() {
 //
 // It DRAINS before it drops, and that order is the point. Dropping alone loses every
 // supplement the child still holds: nothing calls PersistChildTurnEnd anywhere, so
-// this is the only end a child transcript ever reaches, and the row the child was
-// enriching keeps the bare content its provider first forwarded. A subagent's LAST
-// tool call is always the one at risk, because PersistMessage asks for its pass
-// before it adds the entry -- so the entry is never covered by a pass already
-// running, and closeSupplementWorker also clears one that is merely queued. The
-// final pass runs on this goroutine, which the doc on toolSupplementSource states is
-// allowed for a closed transcript.
+// the three paths here are the only end a child transcript reaches, and the row the
+// child was enriching keeps the bare content its provider first forwarded. A
+// subagent's LAST tool call is always the one at risk, because PersistMessage asks
+// for its pass before it adds the entry -- so the entry is never covered by a pass
+// already running, and closeSupplementWorker also clears one that is merely queued.
+//
+// The drain waits for the turn end rather than running here. This method runs on the
+// goroutine that drains the provider's stdout, and it runs each time ONE subagent
+// finishes, so a final pass here stops the whole tab's output for up to
+// toolSupplementFinalReadBudget per subagent -- which the doc on toolSupplementSource
+// forbids. The retired list moves that cost to the turn boundary, where finishPending
+// already pays it once for every live child. The child keeps its worker until then,
+// so its interim passes go on enriching in the meantime.
 func (s *toolTranscript) CleanupChildAgent(childAgentID string) {
 	s.mu.Lock()
-	child := s.children[childAgentID]
-	delete(s.children, childAgentID)
-	s.mu.Unlock()
-	if child != nil {
-		child.finishPending()
-		child.closeSupplementWorker()
+	if child := s.children[childAgentID]; child != nil {
+		delete(s.children, childAgentID)
+		s.retired = append(s.retired, child)
 	}
+	s.mu.Unlock()
 	s.ProviderServices.CleanupChildAgent(childAgentID)
 }
 
@@ -486,12 +536,13 @@ func (s *toolTranscript) runSupplementPass(final bool) {
 	s.passMu.Lock()
 	defer s.passMu.Unlock()
 	s.mu.Lock()
-	path, ready := s.adoptLocation()
+	path, ready, orphans := s.adoptLocation()
 	protocol := make(map[string]MessageContent, len(s.pending))
 	for id, content := range s.pending {
 		protocol[id] = content
 	}
 	s.mu.Unlock()
+	retireToolTranscripts(orphans)
 	if !ready || len(protocol) == 0 {
 		return
 	}

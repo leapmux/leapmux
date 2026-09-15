@@ -61,6 +61,22 @@ describe('copilot patch requests', () => {
     expect(diffStatsFromHunks(fileEditDiffHunks(files![0]))).toEqual({ added: 1, deleted: 1 })
   })
 
+  // The patch is a model-written tool argument, so a second trailing newline is
+  // ordinary output. Trimming ONE left an empty string as the last line, the
+  // `*** End Patch` test failed, and the whole patch was refused: the row drew the raw
+  // patch text instead of a diff, for one extra newline byte.
+  it.each([
+    ['one trailing newline', '*** Begin Patch\n*** Add File: a.ts\n+one\n*** End Patch\n'],
+    ['two trailing newlines', '*** Begin Patch\n*** Add File: a.ts\n+one\n*** End Patch\n\n'],
+    ['four trailing newlines', '*** Begin Patch\n*** Add File: a.ts\n+one\n*** End Patch\n\n\n\n'],
+    ['two trailing CRLFs', '*** Begin Patch\r\n*** Add File: a.ts\r\n+one\r\n*** End Patch\r\n\r\n'],
+  ])('parses a patch that ends with %s', (_name, patch) => {
+    const files = copilotPatchRequest(patch)
+    expect(files).toHaveLength(1)
+    expect(files![0]).toMatchObject({ filePath: 'a.ts', operation: 'add' })
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual(['+one'])
+  })
+
   it.each([
     '',
     '*** Begin Patch\n*** End Patch',

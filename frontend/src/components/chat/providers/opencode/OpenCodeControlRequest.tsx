@@ -1,7 +1,6 @@
 import type { Component } from 'solid-js'
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
-import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
-import type { ControlResponseSender } from '~/components/chat/controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
 
 import { PermissionDecisionActions } from '../../controls/PermissionDecisionActions'
 import { sendResponse, sendSelectedOptionResponse } from '../../controls/types'

@@ -16,6 +16,20 @@ export function capitalize(s: string): string {
   return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s
 }
 
+const UNDERSCORE = /_/g
+
+/**
+ * Turn a raw snake_case wire word into a title a reader can read.
+ *
+ * `capitalize` alone leaves the underscore, so a provider's own word for a tool kind
+ * drew "Switch_mode" beside the single human words the shared table supplies (Read,
+ * Search, Execute). This formats a raw string and knows nothing about any provider's
+ * vocabulary, so it belongs here and not in a plugin.
+ */
+export function humanizeWireWord(word: string): string {
+  return capitalize(word.replace(UNDERSCORE, ' '))
+}
+
 /** Return the first non-empty trimmed line from text, or null. */
 export function firstNonEmptyLine(text?: string): string | null {
   if (!text)

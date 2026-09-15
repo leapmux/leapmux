@@ -26,8 +26,15 @@ const workerMigration = "migrations/00001_initial.sql"
 //
 // The upper limit is the last ordinal the column ACCEPTS, which is not always
 // the last the enum declares -- two columns deliberately admit less than the
-// whole enum, and each says why. Every lower limit is 1 except goal_status,
-// where 0 is the real state "no goal".
+// whole enum, and each says why.
+//
+// A lower limit of 1 is the rule, because proto3 fixes UNSPECIFIED at 0 and an
+// unset Go field holds 0, so a write that forgot the value fails instead of
+// recording a state nobody chose. Five columns start at 0, and in each the zero
+// IS a state the code chose: goal_status means "no goal", assembled_kind and
+// completion both mean "this message is not an assembled one and reports no
+// completion", pause_reason means "not paused", and pause_owner means "nobody
+// owns this pause".
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +51,36 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		// narrower says the column admits LESS than the enum declares, and why.
 		narrower string
 	}{
+		{
+			column:       "messages.assembled_kind",
+			check:        "CHECK (assembled_kind BETWEEN 0 AND 3)",
+			lastAccepted: int32(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AssembledMessageKind_name),
+		},
+		{
+			column:       "messages.completion",
+			check:        "CHECK (completion BETWEEN 0 AND 3)",
+			lastAccepted: int32(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.MessageCompletion_name),
+		},
+		{
+			column:       "agent_input_queue_state.pause_reason",
+			check:        "CHECK (pause_reason BETWEEN 0 AND 6)",
+			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputQueuePauseReason_name),
+		},
+		{
+			column:       "agent_input_queue_items.kind",
+			check:        "CHECK (kind BETWEEN 1 AND 6)",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+		},
+		{
+			column:       "agent_input_queue_items.state",
+			check:        "CHECK (state BETWEEN 1 AND 4)",
+			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputState_name),
+		},
 		{
 			column:       "agent_todos.status",
 			check:        "CHECK (status BETWEEN 1 AND 4)",

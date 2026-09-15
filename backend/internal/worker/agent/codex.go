@@ -563,14 +563,26 @@ func (a *CodexAgent) Interrupt() error {
 	// withdraws. Without this drain that answer can never be delivered: the
 	// elicitation stays blocked inside the CLI for the rest of the session, well
 	// past the point the user believes the turn ended.
-	a.withdrawAllControlRequests(a.sink)
+	a.answerOutstandingControlRequests(a.sink)
 	if threadID == "" || turnID == "" {
 		// No active turn — nothing to interrupt. Treat as benign so
 		// scripts can call Interrupt unconditionally without first
 		// probing turn state.
 		return nil
 	}
-	return a.interruptCodexTurn(threadID, turnID)
+	if err := a.interruptCodexTurn(threadID, turnID); err != nil {
+		return err
+	}
+	// The ANSWERLESS requests go last, and only once the interrupt is accepted.
+	// Codex's four approval methods register a nil cancel answer, because Codex
+	// retires its own approval requests -- so withdrawing one sends the CLI nothing
+	// and only deletes the reader's card. Retiring them before `turn/interrupt` meant
+	// that a turn/interrupt which timed out or was refused left the CLI still blocked
+	// on an approval with the card already gone: the reader had no control that could
+	// answer it, no later SendRawInput could route one, and the thinking indicator
+	// never stopped.
+	a.withdrawAllControlRequests(a.sink)
+	return nil
 }
 
 // Stop retains unfinished model output before it stops the process.

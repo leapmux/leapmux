@@ -1,18 +1,13 @@
 import type { ResultDividerModel } from '../registry'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
+import { humanizeWireWord } from '../../rendererUtils'
 import { turnEndLabel } from '../../turnEndLabel'
 
 /** The interface's own word for a turn that stopped before it finished. */
 const CLAUDE_SUBTYPE_CANCELLED = 'cancelled'
 
-const UNDERSCORE = /_/g
-const FIRST_CHAR = /^\w/
 const apiErrorPattern = /^API Error: (\d+) (.*)$/
-
-function humanizeSubtype(subtype: string): string {
-  return subtype.replace(UNDERSCORE, ' ').replace(FIRST_CHAR, c => c.toUpperCase())
-}
 
 /**
  * Cleans up synthetic API error messages from Claude Code.
@@ -59,7 +54,7 @@ function buildErrorResult(
     const errorDetail = errors.length > 0 ? errors.join('\n') : resultText
     // `detail` must be undefined (never '') so the shared renderer skips the <pre>.
     return {
-      label: turnEndLabel('failed', { durationMs: duration, reason: humanizeSubtype(subtype) }),
+      label: turnEndLabel('failed', { durationMs: duration, reason: humanizeWireWord(subtype) }),
       isError: true,
       detail: errorDetail || undefined,
     }

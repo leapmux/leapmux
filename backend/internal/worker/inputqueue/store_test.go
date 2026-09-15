@@ -1061,3 +1061,156 @@ func TestStoreAbandonUnownedTurnKeepsTheTurnADispatchOwns(t *testing.T) {
 	assert.True(t, accepted.ActiveTurn, "the dispatched turn survives the boundary")
 	assert.True(t, accepted.ActiveTurnSteerable)
 }
+
+// CanPreempt must answer for the SAME guard the turn-end drain runs through.
+//
+// It used to restate a hand-written subset of that guard, and the subset omitted two
+// terms. Pressing Preempt then cancelled the running turn and the drain refused the
+// item in silence, so the reader lost the turn AND the message and saw no error.
+func TestStoreSnapshotRefusesToPreemptWhatTheDrainWouldRefuse(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		// seed puts the queue into the state under test, with one QUEUED head and one
+		// running turn already in place.
+		seed func(t *testing.T, database *sql.DB, store *Store)
+		want bool
+	}{
+		{
+			name: "a plain head behind a running turn",
+			seed: func(*testing.T, *sql.DB, *Store) {},
+			want: true,
+		},
+		{
+			// SetPaused leaves active_turn set, so a manual pause during a running turn
+			// is exactly this state. The drain returns at `if snapshot.Paused`, so the
+			// cancel bought nothing.
+			name: "a paused queue",
+			seed: func(t *testing.T, _ *sql.DB, store *Store) {
+				_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+				require.NoError(t, err)
+			},
+			want: false,
+		},
+		{
+			// A head another tab is editing is not this reader's to send.
+			name: "a head under an edit owner",
+			seed: func(t *testing.T, database *sql.DB, _ *Store) {
+				_, err := database.ExecContext(t.Context(),
+					`UPDATE agent_input_queue_items SET edit_owner = 'other-tab' WHERE id = 'head'`)
+				require.NoError(t, err)
+			},
+			want: false,
+		},
+		{
+			// A planned restart stops the old process, so a write reaches a closed pipe.
+			name: "a planned restart in flight",
+			seed: func(t *testing.T, database *sql.DB, _ *Store) {
+				_, err := database.ExecContext(t.Context(),
+					`UPDATE agent_input_queue_state SET restarting = 1 WHERE agent_id = 'agent-1'`)
+				require.NoError(t, err)
+			},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			_, err := store.Enqueue(t.Context(), NewItem{
+				ID: "head", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "next",
+			})
+			require.NoError(t, err)
+			_, _, err = store.TurnStarted(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			tc.seed(t, database, store)
+
+			snapshot, err := store.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, snapshot.Items[0].CanPreempt)
+
+			// The offer and the drain must agree: whatever the snapshot promises, the
+			// drain must do once the turn ends.
+			_, _, err = store.TurnEnded(t.Context(), "agent-1")
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, prepared != nil,
+				"a Preempt the snapshot offers must be a dispatch the drain then performs")
+		})
+	}
+}
+
+// A plan approval whose control-response row is not COMPLETED must offer no Preempt.
+//
+// The reader would lose the running turn and the item would stay queued: prepare
+// refuses an unrecorded approval both before and after the interrupt.
+func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []leapmuxv1.ControlResponseState{
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+	} {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			// PrepareContext is UNSET, so this head does NOT replace the turn: it waits
+			// for the turn to end like ordinary input, and a cancel would carry it.
+			_, err := store.Enqueue(t.Context(), NewItem{
+				ID: "plan", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+				Text: "Execute the approved plan.",
+			})
+			require.NoError(t, err)
+			_, _, err = store.TurnStarted(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			_, err = database.ExecContext(t.Context(), `INSERT INTO control_response_answers
+                (agent_id, request_id, claim_token, state, input_id, plan_approval_settings, agent_provider)
+                VALUES ('agent-1','approval','claim',?,'plan',?,?)`,
+				int64(state), []byte(`{}`), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+			require.NoError(t, err)
+
+			snapshot, err := store.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			recorded := state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
+			assert.Equal(t, recorded, snapshot.Items[0].CanPreempt,
+				"only a recorded approval has a turn worth cancelling")
+
+			_, _, err = store.TurnEnded(t.Context(), "agent-1")
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, recorded, prepared != nil,
+				"a Preempt the snapshot offers must be a dispatch the drain then performs")
+		})
+	}
+}
+
+// CanSteer answers for PrepareSteer, which refuses a planned restart with
+// ErrPlannedRestart. The offer used to ignore that term, so the button stayed on a
+// queue whose provider process was already stopping.
+func TestStoreSnapshotRefusesToSteerDuringAPlannedRestart(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	_, err := store.Enqueue(t.Context(), NewItem{
+		ID: "head", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "next",
+	})
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+
+	snapshot, err := store.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.True(t, snapshot.Items[0].CanSteer, "a steerable turn offers a steer")
+
+	_, err = database.ExecContext(t.Context(), `UPDATE agent_input_queue_state SET restarting = 1 WHERE agent_id = 'agent-1'`)
+	require.NoError(t, err)
+
+	snapshot, err = store.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.False(t, snapshot.Items[0].CanSteer, "a restart in flight refuses the steer the offer promised")
+	_, _, err = store.PrepareSteer(t.Context(), "agent-1", "head")
+	assert.ErrorIs(t, err, ErrPlannedRestart)
+}

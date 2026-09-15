@@ -13,6 +13,7 @@ import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import Wrench from 'lucide-solid/icons/wrench'
+import { assertNever } from '~/lib/assertNever'
 
 /**
  * Every tool kind a `ToolPresentation` can carry.
@@ -85,9 +86,7 @@ export function toolKindIcon(kind: ToolKind): LucideIcon {
     case 'think':
       return Wrench
     default: {
-      const exhaustive: never = kind
-      void exhaustive
-      return Wrench
+      assertNever(kind)
     }
   }
 }
@@ -112,9 +111,7 @@ export function toolKindLabel(kind: ToolKind): string {
     case 'write': return 'Write'
     case '': return 'Tool'
     default: {
-      const exhaustive: never = kind
-      void exhaustive
-      return 'Tool'
+      assertNever(kind)
     }
   }
 }

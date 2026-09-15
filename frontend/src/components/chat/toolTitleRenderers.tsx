@@ -256,12 +256,17 @@ const TOOL_TITLE_RENDERERS: Record<ToolKind, ((model: ToolPresentation, context?
   },
   'list': (model, context) => renderReadTitle(titlePath(model) || '.', undefined, undefined, context?.workingDir, context?.homeDir) || model.title,
   'glob': (model, context) => renderGlobTitle(pickString(model.input, 'pattern'), titlePath(model), context?.workingDir, context?.homeDir) || model.title,
-  'grep': (model, context) => renderSearchTitle(pickString(model.input, 'pattern'), undefined, context?.workingDir, context?.homeDir) || model.title,
+  // `pattern || query`, like 'search' below and like acpToolNeedsResult, which
+  // accepts either key for a grep kind. Reading `pattern` alone left a provider that
+  // spells it `query` with no title AND no raw-input summary, because
+  // kindHasTitleRenderer suppresses that summary from the KIND rather than from
+  // whether a title was produced -- so the row stated neither the pattern nor the path.
+  'grep': (model, context) => renderSearchTitle(pickString(model.input, 'pattern') || pickString(model.input, 'query'), undefined, context?.workingDir, context?.homeDir) || model.title,
   'search': (model, context) => renderSearchTitle(pickString(model.input, 'pattern') || pickString(model.input, 'query'), titlePath(model), context?.workingDir, context?.homeDir) || model.title,
   'edit': renderEditKindTitle,
   'write': renderEditKindTitle,
   'delete': renderEditKindTitle,
-  // A move names its source and its destination, and neither arrives under a
+  // A move states its source and its destination, and neither arrives under a
   // `filePath` key. `FileEditDiffTitle` in {@link toolMessageTitle} draws the
   // rename arrow once the provider resolves both paths into a diff, so this
   // entry serves the row that it has not: the running move, the failed one and
@@ -302,6 +307,13 @@ export function kindHasTitleRenderer(kind: ToolKind): boolean {
  */
 export function toolMessageTitle(model: ToolPresentation, context?: RenderContext): JSX.Element {
   const args = model.input
+  // BEFORE the table, and before the `changes` block, on purpose. A write row can
+  // carry `input.content` AND a one-file `requestedChanges` at the same time --
+  // OpenCode and Kilo set the kind FROM that content, while acpToolBase has already
+  // built the diff from `{filePath, content}` -- and this precedence is what keeps
+  // its "(N lines)" title instead of the rename-arrow diff title. It is NOT a
+  // duplicate of the table's `write` entry, so folding it in changes what those rows
+  // read.
   if (model.kind === 'write' && typeof args.content === 'string')
     return renderWriteTitle(titlePath(model), args.content, context?.workingDir, context?.homeDir) || model.title
   const changes = model.body.type === 'diff' ? model.body.sources : model.requestedChanges

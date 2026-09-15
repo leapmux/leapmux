@@ -20,23 +20,41 @@ type jsonrpcBase struct {
 	// A nil encoder selects newline framing. Native Copilot selects Content-Length framing.
 	frameMessage func([]byte) []byte
 
-	// outstandingMu guards outstandingControls.
+	// outstandingMu guards outstandingControls and withdrawGeneration.
 	outstandingMu sync.Mutex
 	// outstandingControls holds every control request the provider still waits on,
 	// keyed by the LeapMux request id. publishControlRequest is the one writer that
 	// adds an entry, and withdrawControlRequest the one that removes it, so the
 	// provider-side record and the browser-side card cannot move apart.
 	outstandingControls map[string]outstandingControlRequest
+	// withdrawGeneration counts the WITHDRAWALS, so an absent record tells
+	// publishControlRequest which of the two removers took it.
+	//
+	// The ANSWER path removes a record too: every control response reaches the
+	// provider through SendRawInput, which calls forgetOutstandingControl. A bare
+	// presence test therefore reads "the reader answered while I published" and "a
+	// stop stole this record" as the same state, and the publisher then cancelled a
+	// card the reader had just decided. Only a withdrawal raises this.
+	withdrawGeneration uint64
 }
 
-func (b *jsonrpcBase) writeJSONRPCMessage(data []byte) error {
+// frameJSONRPCMessage wraps one message in the transport's frame.
+//
+// ONE framing, shared by the waiting write and the detached one. Spelled twice, the
+// detached copy omitted the newline that a line transport needs, and every reply it
+// sent sat in the pipe as an unterminated line the peer's scanner never returned.
+func (b *jsonrpcBase) frameJSONRPCMessage(data []byte) []byte {
 	if b.frameMessage != nil {
-		return b.writeStdin(b.frameMessage(data))
+		return b.frameMessage(data)
 	}
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	return b.writeStdin(data)
+	return data
+}
+
+func (b *jsonrpcBase) writeJSONRPCMessage(data []byte) error {
+	return b.writeStdin(b.frameJSONRPCMessage(data))
 }
 
 // SendRawInput keeps provider JSON unchanged inside the selected transport frame, then
@@ -213,13 +231,19 @@ const jsonrpcErrMethodNotFound = -32601
 // the same code and two message strings -- until Codex, the fourth, never spelled
 // it at all.
 //
-// It answers on its OWN goroutine, and that is the load-bearing part. Every caller
+// It does NOT wait for the write, and that is the load-bearing part. Every caller
 // runs inside the read loop, so the reply's stdin write happens while nothing
 // drains the child's stdout. A child that is not reading its stdin then blocks the
 // write, the unread stdout backs up against it, and neither side moves again. One
 // caller made it worse still by holding its own output mutex across the write,
 // which left Stop unable to take the lock it needs to close stdin and end the
-// stall. `zcodeReplyFrame` states the same rule for the same reason.
+// stall. `interceptResponse` in zcode_rpc.go states the same rule for the same
+// reason.
+//
+// One QUEUE behind one writer, not a goroutine for each reply. A goroutine each
+// made the cost of an unresponsive child unlimited -- one 8 KiB stack per
+// unanswered frame -- and left the replies in no particular order relative to each
+// other.
 //
 // The raw identifier travels back unchanged, so an id above 2^53 keeps its exact
 // value rather than rounding through a float.
@@ -227,12 +251,43 @@ func (b *jsonrpcBase) refuseUnsupportedRequest(line *parsedLine) {
 	if line.Method == "" || !line.HasID() {
 		return
 	}
-	id, method := line.ID, line.Method
-	go func() {
-		if err := b.sendErrorResponse(id, jsonrpcErrMethodNotFound, "Method not supported: "+method); err != nil {
-			slog.Warn("Answer an unsupported request", "agent_id", b.agentID, "method", method, "error", err)
-		}
-	}()
+	b.sendErrorResponseDetached(line.ID, jsonrpcErrMethodNotFound,
+		"Method not supported: "+line.Method, "refuse "+line.Method)
+}
+
+// sendResponseDetached queues a reply WITHOUT waiting for its write, for a caller
+// on the goroutine that drains the child's stdout.
+//
+// That goroutine must not wait for a stdin write. A child that is not reading its
+// stdin blocks the write, the unread stdout backs up against it, and neither side
+// moves again -- which is the deadlock the reply exists to prevent. The frames stay
+// in ORDER behind one writer, so a reply sent this way still reaches the child
+// before anything queued after it: the "answers go FIRST, then the cancel"
+// invariant that acpBase.Interrupt and CodexAgent.Interrupt both rely on holds
+// whether the sender waits or not.
+//
+// `describe` labels the frame in the writer's failure log, because no caller is
+// left to report the error.
+func (b *jsonrpcBase) sendResponseDetached(id json.RawMessage, result any, describe string) {
+	b.writeDetachedJSONRPCResponse(jsonrpcResponseMessage{JSONRPC: "2.0", ID: id, Result: result}, describe)
+}
+
+// sendErrorResponseDetached is sendResponseDetached for an error reply.
+func (b *jsonrpcBase) sendErrorResponseDetached(id json.RawMessage, code int, message, describe string) {
+	b.writeDetachedJSONRPCResponse(jsonrpcResponseMessage{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   map[string]interface{}{"code": code, "message": message},
+	}, describe)
+}
+
+func (b *jsonrpcBase) writeDetachedJSONRPCResponse(resp jsonrpcResponseMessage, describe string) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		slog.Warn("Marshal a response", "agent_id", b.agentID, "frame", describe, "error", err)
+		return
+	}
+	b.writeStdinDetached(b.frameJSONRPCMessage(data), describe)
 }
 
 func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {

@@ -191,14 +191,21 @@ func TestToolTranscriptCleanupDropsTheChildTranscript(t *testing.T) {
 	transcript.CleanupChildAgent("child-1")
 	transcript.mu.Lock()
 	remaining := len(transcript.children)
+	retired := len(transcript.retired)
 	transcript.mu.Unlock()
 	assert.Zero(t, remaining)
-	// The cleanup drains the child before it drops it, which is one pass. What must
-	// not happen is a SECOND pass, at the turn end, for a child that is already gone.
-	childPasses.Store(0)
+	assert.Equal(t, 1, retired, "the cleanup retires the child rather than dropping it")
+	// The cleanup runs on the goroutine that drains the provider's stdout, and it runs
+	// once per finished subagent, so it must read the provider's store ZERO times.
+	assert.Zero(t, childPasses.Load(), "the cleanup must not read the provider's store")
 
 	require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
-	assert.Zero(t, childPasses.Load(), "a turn end must not re-run a pass for a drained child")
+	// EXACTLY one: the turn end owes the retired child its final pass, and a count
+	// rather than a lower limit is what refuses a cleanup that re-enters or recurses.
+	assert.Equal(t, int64(1), childPasses.Swap(0), "the turn end drains the retired child exactly once")
+
+	require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
+	assert.Zero(t, childPasses.Load(), "a second turn end must not re-run a pass for a drained child")
 }
 
 // Nothing calls PersistChildTurnEnd anywhere in the worker, so CleanupChildAgent is
@@ -234,13 +241,78 @@ func TestToolTranscriptCleanupFlushesWhatTheChildStillHolds(t *testing.T) {
 
 	transcript.CleanupChildAgent("child-1")
 
-	// The child's own recording sink holds the row the drain enriched.
 	childRecorder, ok := sink.ChildSink("child-1").(*testSink)
 	require.True(t, ok)
 	rows := childRecorder.Messages()
 	require.Len(t, rows, 1)
+	assert.NotContains(t, string(rows[0].SupplementalContent), "recovered",
+		"the cleanup itself must not read the provider's store, because it runs on the stdout reader")
+
+	require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
+
+	// The child's own recording sink holds the row the drain enriched.
+	rows = childRecorder.Messages()
+	require.Len(t, rows, 1)
 	assert.Contains(t, string(rows[0].SupplementalContent), "recovered",
-		"the cleanup must flush the supplement the child still held")
+		"the turn end must flush the supplement the retired child still held")
+}
+
+// reset drops every child transcript, and adoptLocation drops them again when the
+// session key changes. Both used to drop them WITHOUT a drain, so the child's last
+// supplement was lost exactly as it was before CleanupChildAgent learned to drain --
+// and adoptLocation dropped them without closing the worker either, which stranded the
+// child's goroutine and its context watch for the life of the agent.
+func TestToolTranscriptDroppingAChildDrainsAndClosesItOnEveryPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		drop func(transcript *toolTranscript)
+	}{
+		{name: "reset", drop: func(transcript *toolTranscript) { transcript.reset() }},
+		{name: "session change", drop: func(transcript *toolTranscript) { transcript.UpdateSessionID("session-2") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &testSink{}
+			transcript, source := newTestToolTranscript(t, sink, func(map[string]MessageContent, bool) map[string][]byte { return nil })
+			source.childHook = func() toolSupplementSource {
+				child := &testToolSource{}
+				child.locateHook = source.locateHook
+				child.readHook = func(_ context.Context, pending map[string]MessageContent, _ bool) map[string][]byte {
+					out := make(map[string][]byte, len(pending))
+					for id := range pending {
+						out[id] = []byte(`{"nativeTool":{"recovered":true}}`)
+					}
+					return out
+				}
+				return child
+			}
+			transcript.UpdateSessionID("session-1")
+			childSink := transcript.ChildSink("child-1")
+			require.NotNil(t, childSink)
+			require.NoError(t, childSink.PersistMessage(
+				leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+				MessageContent{Original: []byte(`{"toolCallId":"call","result":"done"}`)},
+				SpanInfo{SpanID: "call", Closing: true},
+			))
+			child, ok := childSink.(*toolTranscript)
+			require.True(t, ok)
+
+			tc.drop(transcript)
+
+			childRecorder, ok := sink.ChildSink("child-1").(*testSink)
+			require.True(t, ok)
+			rows := childRecorder.Messages()
+			require.Len(t, rows, 1)
+			assert.Contains(t, string(rows[0].SupplementalContent), "recovered",
+				"dropping a child must flush the supplement it still held")
+
+			child.mu.Lock()
+			defer child.mu.Unlock()
+			assert.True(t, child.closed, "dropping a child must end its worker and its context watch")
+			assert.Nil(t, child.stopWatch)
+		})
+	}
 }
 
 // A source with no child hook has no child transcript, so the wrapped sink serves the

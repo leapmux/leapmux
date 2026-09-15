@@ -567,7 +567,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, proces
 	}
 	var paused, active bool
 	var reason leapmuxv1.AgentInputQueuePauseReason
-	var owner int
+	var owner pauseOwner
 	if err := tx.QueryRowContext(ctx, `
 		SELECT paused, pause_reason, pause_owner, active_turn
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &owner, &active); err != nil {
@@ -630,6 +630,121 @@ func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string) (*Pre
 	return s.prepare(ctx, agentID, inputID, true, true)
 }
 
+// dispatchGate holds every input the dispatch guard reads, so ONE predicate answers
+// for the drain and for the snapshot.
+//
+// The snapshot's CanSteer and CanPreempt state what the Worker will do, and the browser
+// draws a button from each. They used to RESTATE a hand-written subset of prepare's
+// terms, and the two drifted every time prepare gained one: CanPreempt borrowed
+// steering's kind filter and hid the button from a queued clear, then answered true for
+// a paused queue and for a head whose approval is not recorded -- so pressing Preempt
+// destroyed the running turn and the drain then refused the item in silence, leaving
+// the reader with neither the turn nor the message.
+type dispatchGate struct {
+	Paused        bool
+	Restarting    bool
+	ActiveTurn    bool
+	TurnSteerable bool
+	Head          StoredItem
+	HeadFound     bool
+	// ApprovalSources counts the control-response rows that claim the head, and
+	// ApprovalsComplete reports that every one of them is COMPLETED.
+	ApprovalSources   int
+	ApprovalsComplete bool
+}
+
+// dispatchRefusal states why the gate refuses. The zero value admits.
+type dispatchRefusal int
+
+const (
+	dispatchAdmitted dispatchRefusal = iota
+	dispatchRefusedPlannedRestart
+	dispatchRefusedSteeringState
+	dispatchRefusedNotReady
+)
+
+// admits reports whether prepare would hand this head to its caller.
+//
+// The two parameters are prepare's own dispensations, spelled the same way:
+// allowPaused lets retry and steering dispatch through a pause, and requireActive
+// selects the steering path over the drain path.
+func (g dispatchGate) admits(allowPaused, requireActive bool) dispatchRefusal {
+	if !g.HeadFound {
+		return dispatchRefusedNotReady
+	}
+	// A restart in flight is what a pause dispensation must still respect: the old
+	// process is stopping, so a write reaches a closed pipe and fails the item
+	// permanently.
+	if allowPaused && g.Restarting {
+		return dispatchRefusedPlannedRestart
+	}
+	if requireActive && g.ActiveTurn && (!steerableInputKind(g.Head.Kind) || !g.TurnSteerable) {
+		return dispatchRefusedSteeringState
+	}
+	blockedByTurn := g.ActiveTurn
+	if requireActive {
+		blockedByTurn = !g.ActiveTurn
+	}
+	canReplaceTurn := !requireActive && g.Head.requiresContextReplacement()
+	if (g.Paused && !allowPaused) || (blockedByTurn && !canReplaceTurn) ||
+		g.Head.EditOwner != "" || g.Head.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+		return dispatchRefusedNotReady
+	}
+	// A recorded approval permits the context replacement that the old turn waits for.
+	// Ordinary input and unconfirmed approvals still wait for that turn to end.
+	if !g.ApprovalsComplete || g.ApprovalSources > 1 {
+		return dispatchRefusedNotReady
+	}
+	// A head that REPLACES the turn needs exactly one recorded approval, whether or not
+	// a turn is running now. The qualifier used to be "while the turn blocks it", which
+	// says the same thing for every head the turn blocks -- the term above it already
+	// refuses a blocked head that cannot replace the turn -- and says nothing once the
+	// turn ends. A replacement that reached the drain with no approval was dispatched
+	// and then failed PERMANENTLY at resolveControlInput, with "the context replacement
+	// has no recorded approval"; refusing it here leaves it queued for the approval
+	// instead, and keeps the Preempt button off an item that would fail either way.
+	if g.Head.requiresContextReplacement() && g.ApprovalSources != 1 {
+		return dispatchRefusedNotReady
+	}
+	return dispatchAdmitted
+}
+
+// readDispatchGate reads the queue state, the head and the head's approval rows.
+//
+// It is the ONE reader of those three, so prepare and snapshotTx cannot disagree about
+// what the guard sees. The head read takes metadata only: the guards reject most calls,
+// and the head can carry up to MaxItemBytes of attachment data that the call then
+// discards. The dispatch path loads the data after the guards pass.
+func readDispatchGate(ctx context.Context, tx *sql.Tx, agentID string) (dispatchGate, error) {
+	var gate dispatchGate
+	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).
+		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable); err != nil {
+		return dispatchGate{}, err
+	}
+	item, _, found, err := headItem(ctx, tx, agentID, false)
+	if err != nil {
+		return dispatchGate{}, err
+	}
+	gate.Head, gate.HeadFound = item, found
+	gate.ApprovalsComplete = true
+	if !found {
+		return gate, nil
+	}
+	sources, err := db.New(tx).GetControlResponseSourcesForInput(ctx, db.GetControlResponseSourcesForInputParams{
+		AgentID: agentID, InputID: item.ID,
+	})
+	if err != nil {
+		return dispatchGate{}, err
+	}
+	gate.ApprovalSources = len(sources)
+	for _, source := range sources {
+		if source.State != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED {
+			gate.ApprovalsComplete = false
+		}
+	}
+	return gate, nil
+}
+
 func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, allowPaused, requireActive bool) (*PreparedDispatch, Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -639,59 +754,26 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
-	var paused, active, activeTurnSteerable, restarting bool
-	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &restarting, &active, &activeTurnSteerable); err != nil {
-		return nil, Snapshot{}, err
-	}
-	// allowPaused lets retry and steering dispatch through a pause. A restart
-	// in flight is what they must still respect: the old process is stopping,
-	// so a write reaches a closed pipe and fails the item permanently.
-	if allowPaused && restarting {
-		return nil, Snapshot{}, ErrPlannedRestart
-	}
-	// Read the metadata only. The guards below reject most calls, and the head
-	// item can carry up to MaxItemBytes of attachment data that this call then
-	// discards. The dispatch path loads the data after the guards pass.
-	item, _, found, err := headItem(ctx, tx, agentID, false)
+	gate, err := readDispatchGate(ctx, tx, agentID)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
-	if expectedInputID != "" && (!found || item.ID != expectedInputID) {
+	item := gate.Head
+	// ErrNotHead is about the CALLER's identity, not about the guard, so it stays here
+	// and the gate never sees expectedInputID.
+	if expectedInputID != "" && (!gate.HeadFound || item.ID != expectedInputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	if requireActive && active && (!steerableInputKind(item.Kind) || !activeTurnSteerable) {
+	switch gate.admits(allowPaused, requireActive) {
+	case dispatchRefusedPlannedRestart:
+		return nil, Snapshot{}, ErrPlannedRestart
+	case dispatchRefusedSteeringState:
 		return nil, Snapshot{}, ErrSteeringState
-	}
-	blockedByTurn := active
-	if requireActive {
-		blockedByTurn = !active
-	}
-	canReplaceTurn := !requireActive && item.requiresContextReplacement()
-	if !found || (paused && !allowPaused) || (blockedByTurn && !canReplaceTurn) || item.EditOwner != "" || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
-		snapshot, err := snapshotTx(ctx, tx, agentID)
-		if err != nil {
-			return nil, Snapshot{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, Snapshot{}, err
-		}
-		return nil, snapshot, nil
-	}
-	sources, err := db.New(tx).GetControlResponseSourcesForInput(ctx, db.GetControlResponseSourcesForInputParams{
-		AgentID: agentID, InputID: item.ID,
-	})
-	if err != nil {
-		return nil, Snapshot{}, err
-	}
-	pendingApproval := len(sources) > 1
-	for _, source := range sources {
-		pendingApproval = pendingApproval || source.State != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
-	}
-	// A recorded approval permits the context replacement that the old turn waits for.
-	// Ordinary input and unconfirmed approvals still wait for that turn to end.
-	if pendingApproval || blockedByTurn && len(sources) != 1 {
+	case dispatchRefusedNotReady:
 		snapshot, err := commitSnapshot(ctx, tx, agentID)
 		return nil, snapshot, err
+	case dispatchAdmitted:
+		// Fall through to the dispatch below.
 	}
 	attachments, _, err := loadItemAttachments(ctx, tx, item.ID, true)
 	if err != nil {
@@ -1075,7 +1157,7 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 // failure had stopped.
 //
 // The result reports whether the row changed.
-func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner int) (sql.Result, error) {
+func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '',
@@ -1089,7 +1171,7 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 
 // resumeOwnedPause lifts a pause only when the given cause still owns it.
 // The result reports whether the row changed.
-func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner int) (sql.Result, error) {
+func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET paused = 0, pause_reason = 0, pause_owner = 0,
@@ -1409,30 +1491,32 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	}
 	for i := range snapshot.Items {
 		snapshot.Items[i].Metadata = metadata[snapshot.Items[i].ID]
-		// Answer both preconditions where the store already knows them, from the
-		// same predicates that prepare applies. A browser that derives either from
-		// the kind alone offers an action the Worker then refuses.
-		headReady := i == 0 &&
-			snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
-			snapshot.Items[i].EditOwner == "" &&
-			snapshot.ActiveTurn
-		snapshot.Items[i].CanSteer = headReady &&
-			steerableInputKind(snapshot.Items[i].Kind) &&
-			snapshot.ActiveTurnSteerable
-		// Preemption's own kind term, NOT steering's. Steering injects into the
-		// running turn, so it admits only a kind the model can take mid-turn.
-		// Preemption injects nothing: it cancels the turn and lets the ordinary
-		// turn-end drain deliver, and that drain dispatches EVERY kind once the
-		// turn is over. A queued clear or compact therefore has a turn worth
-		// cancelling, and borrowing steering's list hid the button from it.
-		//
-		// The one exclusion is the plan approval that REPLACES the turn: prepare
-		// already dispatches that head THROUGH the active turn (canReplaceTurn),
-		// so cancelling would destroy work for nothing. Deriving the term from
-		// requiresContextReplacement -- the predicate prepare itself uses -- is
-		// what keeps preemption and dispatch from disagreeing again.
-		snapshot.Items[i].CanPreempt = headReady && !snapshot.Items[i].requiresContextReplacement()
 	}
+	if len(snapshot.Items) == 0 {
+		return snapshot, nil
+	}
+	// Only the head can be steered or preempted, so only the head asks the gate.
+	gate, err := readDispatchGate(ctx, tx, agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	// Steering dispatches THROUGH the running turn, which is prepare's requireActive
+	// path, and it dispatches through a pause, which is allowPaused.
+	snapshot.Items[0].CanSteer = gate.admits(true, true) == dispatchAdmitted
+	// Preemption asks two questions of the SAME guard, which is why it needs no terms
+	// of its own. Would the turn-end drain deliver this head once the turn is
+	// cancelled? And does it need the cancel at all -- a plan approval that REPLACES
+	// the turn already dispatches through it, so cancelling would destroy work for
+	// nothing.
+	//
+	// Preemption borrows no kind filter. Steering injects into the running turn, so it
+	// admits only a kind the model can take mid-turn; preemption injects nothing, and
+	// the drain dispatches every kind once the turn is over.
+	afterInterrupt := gate
+	afterInterrupt.ActiveTurn = false
+	snapshot.Items[0].CanPreempt = snapshot.ActiveTurn &&
+		afterInterrupt.admits(false, false) == dispatchAdmitted &&
+		gate.admits(false, false) != dispatchAdmitted
 	return snapshot, nil
 }
 

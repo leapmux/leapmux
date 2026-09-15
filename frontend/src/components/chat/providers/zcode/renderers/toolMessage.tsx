@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
+import type { ToolSpanSides } from '../../../results/ToolMessageSpan'
 import type { ToolMessageSource } from '../../../results/toolPresentation'
 import type { ZCodeRow } from '../extractors/toolCommon'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -17,10 +18,10 @@ interface ToolProps {
 }
 
 /** Build the row of one side of a span, with the sources that side needs to resolve. */
-function zcodeSideRow(parent: unknown, parsed: ParsedMessageContent | undefined, context: RenderContext | undefined, request: ParsedMessageContent | undefined): ZCodeRow {
+function zcodeSideRow(parent: unknown, sides: ToolSpanSides, context: RenderContext | undefined, request: ParsedMessageContent | undefined): ZCodeRow {
   return {
-    ...zcodeRow(parent, context?.spanType, request, parsed?.supplementalContent),
-    result: context?.sources?.result(),
+    ...zcodeRow(parent, context?.spanType, request, sides.own?.supplementalContent),
+    result: sides.result,
   }
 }
 
@@ -32,17 +33,18 @@ function zcodeSideRow(parent: unknown, parsed: ParsedMessageContent | undefined,
  */
 function ZCodeToolMessage(props: ToolProps): JSX.Element {
   // A scheduled row IS the request of its own span, and the store resolves no
-  // separate one for it.
-  const request = () => props.context?.sources?.request()
-    ?? (zcodeExtractTool(props.parsed)?.kind === ZCODE_TOOL_KIND.Scheduled ? props.context?.sources?.current() : undefined)
-  const build = (payload: unknown, parsed: ParsedMessageContent | undefined): ToolMessageSource | undefined =>
-    zcodeToolMessageSource(zcodeSideRow(payload, parsed, props.context, request()), parsed) ?? undefined
+  // separate one for it. `current` is the row this renderer was called for, which
+  // every callback receives -- so the fallback holds on the result side too.
+  const spanRequest = (sides: ToolSpanSides): ParsedMessageContent | undefined => sides.request
+    ?? (zcodeExtractTool(props.parsed)?.kind === ZCODE_TOOL_KIND.Scheduled ? sides.current : undefined)
+  const build = (payload: unknown, sides: ToolSpanSides): ToolMessageSource | undefined =>
+    zcodeToolMessageSource(zcodeSideRow(payload, sides, props.context, spanRequest(sides)), sides.own) ?? undefined
   return (
     <ToolMessageSpan
       context={props.context}
-      source={parsed => build(props.parsed, parsed)}
-      request={parsed => build(parsed.parentObject, parsed)}
-      result={parsed => build(parsed.parentObject, parsed)}
+      source={sides => build(props.parsed, sides)}
+      request={sides => build(sides.own.parentObject, sides)}
+      result={sides => build(sides.own.parentObject, sides)}
     />
   )
 }

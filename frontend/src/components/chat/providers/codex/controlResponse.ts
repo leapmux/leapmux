@@ -1,6 +1,5 @@
-import type { ControlAnswerState, Question } from '../../controls/types'
+import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
-import type { ControlResponseSender } from '~/components/chat/controls/types'
 import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'

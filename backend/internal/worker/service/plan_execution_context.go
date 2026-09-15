@@ -15,7 +15,7 @@ import (
 func (svc *Service) prepareApprovedPlanContext(item inputqueue.DispatchItem, input *controlInput) error {
 	provider, release := svc.Agents.LockProvider(item.AgentID)
 	defer release()
-	current, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	current, err := svc.queueAgentRow(item.AgentID)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func (svc *Service) prepareApprovedPlanContext(item inputqueue.DispatchItem, inp
 func (svc *Service) confirmPreparedPlanSettings(item inputqueue.DispatchItem, input controlInput) error {
 	_, release := svc.Agents.LockProvider(item.AgentID)
 	defer release()
-	current, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	current, err := svc.queueAgentRow(item.AgentID)
 	if err != nil {
 		return err
 	}

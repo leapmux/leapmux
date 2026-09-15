@@ -27,7 +27,12 @@ function hunkBodyLine(lines: string[], index: number): boolean {
 /** Read the file operations from Copilot's text patch argument. These changes describe a request. */
 export function copilotPatchRequest(patch: string): FileEditDiffSource[] | null {
   const lines = patch.replace(/\r\n/g, '\n').split('\n')
-  if (lines.at(-1) === '')
+  // EVERY trailing blank, not one. The patch is a model-written tool argument, so a
+  // second trailing newline is ordinary output -- and a single `pop` left one empty
+  // string as the last line, which failed the `*** End Patch` test below and refused
+  // the WHOLE patch. The row then drew the raw patch text instead of a diff, for one
+  // extra newline byte.
+  while (lines.at(-1) === '')
     lines.pop()
   if (lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch')
     return null

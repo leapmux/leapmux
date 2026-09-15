@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"math/big"
+	"strconv"
+	"strings"
 )
 
 // controlRequestIdentity is one JSON-RPC request id in the two spellings LeapMux needs.
@@ -74,8 +76,21 @@ func newControlRequestIdentity(nativeID json.RawMessage) (controlRequestIdentity
 // sends one; what matters is that the spelling is deterministic and that two equal
 // values cannot reach two keys. A negative zero needs no special case, because
 // big.Rat holds no sign for zero.
+//
+// The magnitude check is what big.Rat does NOT supply, and it must run BEFORE the
+// parse. `Rat.SetString` refuses a base-5 exponent above 1e6 and nothing else, so it
+// accepts the eight-byte literal 1e999999 and expands it to a million-digit integer:
+// it computes 5^999999, shifts left 999999 bits, and renders a one-megabyte decimal
+// that then becomes a map key in outstandingControls, the request_id of a stored row,
+// and the id of a browser card. That is tens of milliseconds and megabytes of
+// allocation on the goroutine that drains the provider's stdout, for one frame the
+// child can repeat. 1e-999999 costs the same through RatString.
 func canonicalJSONNumber(number json.Number) (string, bool) {
-	rational, ok := new(big.Rat).SetString(number.String())
+	text := number.String()
+	if !jsonNumberWithinIDLimit(text) {
+		return "", false
+	}
+	rational, ok := new(big.Rat).SetString(text)
 	if !ok {
 		return "", false
 	}
@@ -83,6 +98,31 @@ func canonicalJSONNumber(number json.Number) (string, bool) {
 		return rational.Num().String(), true
 	}
 	return rational.RatString(), true
+}
+
+// canonicalJSONNumberDigitLimit caps the significant digits of a numeric JSON-RPC id,
+// and its exponent in either direction.
+//
+// A JSON-RPC id is a counter, a timestamp, or a random integer, so 64 digits is far
+// above every real id and far below a magnitude that costs anything to render. A
+// runtime that needs more can send a string id, which takes no canonical form.
+const canonicalJSONNumberDigitLimit = 64
+
+// jsonNumberWithinIDLimit reports whether a JSON number is small enough to canonicalize.
+//
+// It reads the LITERAL, because the expansion is the cost this refuses to pay. The
+// literal is already valid JSON: encoding/json checked the syntax when it decoded the
+// frame, so this only measures it.
+func jsonNumberWithinIDLimit(text string) bool {
+	mantissa := text
+	if marker := strings.IndexAny(text, "eE"); marker >= 0 {
+		mantissa = text[:marker]
+		exponent, err := strconv.Atoi(text[marker+1:])
+		if err != nil || exponent > canonicalJSONNumberDigitLimit || exponent < -canonicalJSONNumberDigitLimit {
+			return false
+		}
+	}
+	return len(mantissa) <= canonicalJSONNumberDigitLimit
 }
 
 // JSONRPCControlRequestID is the canonical LeapMux id of one JSON-RPC control request.

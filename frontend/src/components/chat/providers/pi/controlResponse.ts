@@ -14,9 +14,8 @@
  * trailing newline before forwarding to Pi's stdin.
  */
 
-import type { ControlAnswerState, Question } from '../../controls/types'
+import type { ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
-import type { ControlResponseSender } from '~/components/chat/controls/types'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'

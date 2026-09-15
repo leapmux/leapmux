@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"log/slog"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -21,9 +20,12 @@ func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 		return false
 	}
 
+	// A `cursor/` NOTIFICATION reaches the shared default too. It needs no answer,
+	// and refuseUnsupportedRequest returns at once for a frame with no id, but the
+	// frame still belongs in the transcript.
 	idRaw, _, ok := ExtractJSONRPCID(line.Raw)
 	if !ok {
-		return true
+		return false
 	}
 
 	switch line.Method {
@@ -36,12 +38,18 @@ func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 		a.publishControlRequest(a.sink, line.Raw, cursorPlanCancelAnswer())
 		return true
 	case cursorMethodUpdateTodos, cursorMethodTask, cursorMethodGenerateImage:
-		if err := a.sendResponse(idRaw, map[string]interface{}{}); err != nil {
-			slog.Warn("cursor extension ack failed", "agent_id", a.agentID, "method", line.Method, "error", err)
-		}
+		// Queued, not waited for: this runs on the goroutine that drains Cursor's
+		// stdout, and an ack is a write to a stdin Cursor may not be reading.
+		a.sendResponseDetached(idRaw, map[string]interface{}{}, "cursor ack "+line.Method)
 		return true
 	default:
-		a.refuseUnsupportedRequest(line)
-		return true
+		// FALSE, so the shared ACP default answers -32601 AND persists the frame.
+		// Answering here and returning true short-circuited that default, so Cursor
+		// alone dropped the frame: the runtime got a correct error reply and the
+		// reader got no transcript row and no way to see what Cursor sent. The
+		// `cursor/` namespace is open and only the five names above are known, so
+		// this is the ordinary case for a new one. Reasonix already returns false
+		// here for the same reason.
+		return false
 	}
 }

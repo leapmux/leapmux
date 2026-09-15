@@ -67,6 +67,11 @@ type zcodeToolSource struct {
 	// The agent holds its own mutex for that answer, so both goroutines may ask.
 	resolveLocation func() zcodeToolStoreLocation
 
+	// artifacts holds the decoded artifact bodies of THIS transcript's turn. Each
+	// transcript owns one, so a subagent's turn end empties its own and never the
+	// parent's. See zcodeArtifactCache.
+	artifacts *zcodeArtifactCache
+
 	mu       sync.Mutex
 	requests map[string]zcodeToolLookup
 }
@@ -80,7 +85,12 @@ func newZCodeToolTranscript(ctx context.Context, services ProviderServices, reso
 }
 
 func newZCodeToolSource(store *zcodeToolStore, resolveLocation func() zcodeToolStoreLocation) *zcodeToolSource {
-	return &zcodeToolSource{store: store, resolveLocation: resolveLocation, requests: make(map[string]zcodeToolLookup)}
+	return &zcodeToolSource{
+		store:           store,
+		resolveLocation: resolveLocation,
+		artifacts:       &zcodeArtifactCache{},
+		requests:        make(map[string]zcodeToolLookup),
+	}
 }
 
 func (z *zcodeToolSource) providerName() string { return "ZCode" }
@@ -117,19 +127,26 @@ func (z *zcodeToolSource) resetRecords() { z.clearRequests() }
 func (z *zcodeToolSource) finishTurn() { z.clearRequests() }
 
 // clearRequests drops what this source holds for a turn or a session that ended,
-// AND the artifact bodies the store read for it. Only a pass of the same turn can
+// AND the artifact bodies it read for that turn. Only a pass of the same turn can
 // read one of those, because the turn end clears the pending set a later pass asks
 // about -- so keeping them past this point retains every artifact of the session
-// for nothing. A child source shares the one store, and so shares this reset.
+// for nothing.
+//
+// The cache is this source's own, not the store's. Its drop therefore takes no lock
+// that a database read holds: this runs inside the transcript's own mutex on the
+// goroutine that drains the provider's stdout, and readZCodeToolRecords holds the
+// store mutex for a whole multi-statement SQLite read, so a shared cache made every
+// turn end wait for whatever another transcript was reading.
 func (z *zcodeToolSource) clearRequests() {
 	z.mu.Lock()
 	clear(z.requests)
 	z.mu.Unlock()
-	z.store.dropArtifacts()
+	z.artifacts.drop()
 }
 
 // newChild builds a source on the SAME store, which is how each child transcript
-// shares the agent's one database handle.
+// shares the agent's one database handle. It gets its OWN artifact cache, because a
+// child's turn ends the instant its Agent result lands and the parent's has not.
 func (z *zcodeToolSource) newChild() toolSupplementSource {
 	return newZCodeToolSource(z.store, z.resolveLocation)
 }
@@ -152,7 +169,7 @@ func (z *zcodeToolSource) readSupplements(ctx context.Context, _ string, pending
 		}
 	}
 	z.mu.Unlock()
-	records, readErr := readZCodeToolRecords(ctx, z.store, location, lookups)
+	records, readErr := readZCodeToolRecords(ctx, z.store, z.artifacts, location, lookups)
 	out := make(map[string][]byte)
 	answered := make([]string, 0, len(records))
 	for id, record := range records {

@@ -23,10 +23,19 @@ type outstandingControlRequest struct {
 
 // publishControlRequest registers one control request and publishes it to the reader.
 //
-// This is the single registrar. Every JSON-RPC provider reaches the reader through it,
-// so the provider-side record and the browser-side card are created together and
-// withdrawControlRequest can retire both. A storage failure registers nothing,
-// publishes nothing, and answers the provider with a JSON-RPC error.
+// This is the single registrar for an inbound JSON-RPC control REQUEST: one the
+// provider raised with a JSON-RPC id, which LeapMux answers with a JSON-RPC response.
+// Every such request reaches the reader through it, so the provider-side record and
+// the browser-side card are created together and withdrawControlRequest can retire
+// both. A storage failure registers nothing, publishes nothing, and answers the
+// provider with a JSON-RPC error.
+//
+// A provider whose control requests are NOT JSON-RPC requests keeps its own registry
+// and its own withdrawal path, because there is no id here to key them by and no
+// JSON-RPC response shape to answer them with. Claude sends a `control_request`
+// envelope, Pi an extension_ui_response, ZCode re-announces with a fresh wire id per
+// announcement, Copilot raises native events keyed by session and request id, and the
+// Codex plan prompt is LeapMux's own and carries no id at all.
 func (b *jsonrpcBase) publishControlRequest(sink ControlServices, content []byte, cancelAnswer any) {
 	wireID, _, found := ExtractJSONRPCID(content)
 	identity, valid := newControlRequestIdentity(wireID)
@@ -39,15 +48,19 @@ func (b *jsonrpcBase) publishControlRequest(sink ControlServices, content []byte
 		b.outstandingControls = make(map[string]outstandingControlRequest)
 	}
 	b.outstandingControls[identity.key] = outstandingControlRequest{wireID: identity.native, cancelAnswer: cancelAnswer}
+	// Sampled in the SAME critical section that registers the record, so the check
+	// below compares against the state this registration saw.
+	generation := b.withdrawGeneration
 	b.outstandingMu.Unlock()
 	if err := sink.PublishControlRequest(ControlRequest{RequestID: identity.key, Payload: content}); err != nil {
 		slog.Error("publish control request", "agent_id", b.agentID, "request_id", identity.key, "error", err)
 		b.outstandingMu.Lock()
 		delete(b.outstandingControls, identity.key)
 		b.outstandingMu.Unlock()
-		if err := b.sendErrorResponse(identity.native, -32603, controlPublicationFailure); err != nil {
-			slog.Warn("send control request failure", "agent_id", b.agentID, "request_id", identity.key, "error", err)
-		}
+		// Queued, not waited for: publishControlRequest runs on the goroutine that
+		// drains the provider's stdout.
+		b.sendErrorResponseDetached(identity.native, -32603, controlPublicationFailure,
+			"control publication failure")
 		return
 	}
 	// A withdrawal that ran between the registration above and this publish took the
@@ -60,10 +73,20 @@ func (b *jsonrpcBase) publishControlRequest(sink ControlServices, content []byte
 	// The registration and the publish cannot share one critical section: the publish
 	// is a store write and a broadcast, and holding outstandingMu across it would
 	// stall every other publisher behind it.
+	//
+	// BOTH terms are needed, and each one alone is wrong. The record being gone does
+	// not mean a withdrawal took it: PublishControlRequest completes the browser
+	// broadcast before it returns, so the reader can answer inside this window, and
+	// the answer's own SendRawInput removes the record too -- on which a bare presence
+	// test cancelled the card the reader had just allowed, and the browser showed it
+	// vanishing as CANCELLED. The generation moving does not mean THIS record was
+	// withdrawn either, because a withdrawal of any other request raises it. Only both
+	// together describe the case this exists for.
 	b.outstandingMu.Lock()
 	_, stillRegistered := b.outstandingControls[identity.key]
+	withdrawn := b.withdrawGeneration != generation
 	b.outstandingMu.Unlock()
-	if !stillRegistered {
+	if !stillRegistered && withdrawn {
 		sink.CancelControlRequest(identity.key)
 	}
 }
@@ -80,6 +103,7 @@ func (b *jsonrpcBase) publishControlRequest(sink ControlServices, content []byte
 func (b *jsonrpcBase) withdrawControlRequest(sink ControlServices, requestID string) {
 	b.outstandingMu.Lock()
 	delete(b.outstandingControls, requestID)
+	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	sink.CancelControlRequest(requestID)
 }
@@ -94,8 +118,36 @@ func (b *jsonrpcBase) withdrawAllControlRequests(sink ControlServices) {
 	b.outstandingMu.Lock()
 	outstanding := b.outstandingControls
 	b.outstandingControls = nil
+	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	for requestID, record := range outstanding {
+		b.answerWithdrawnControl(requestID, record)
+		sink.CancelControlRequest(requestID)
+	}
+}
+
+// answerOutstandingControlRequests answers and retires every control request that
+// carries a cancel answer, and LEAVES the rest registered.
+//
+// It exists for a caller whose next step can fail. A request that carries a cancel
+// answer blocks the runtime, so it must be released before anything else is tried; a
+// request that carries none releases nothing, so retiring it early buys nothing and
+// costs the reader their only control if that next step then fails.
+func (b *jsonrpcBase) answerOutstandingControlRequests(sink ControlServices) {
+	b.outstandingMu.Lock()
+	answerable := make(map[string]outstandingControlRequest)
+	for requestID, record := range b.outstandingControls {
+		if record.cancelAnswer == nil {
+			continue
+		}
+		answerable[requestID] = record
+		delete(b.outstandingControls, requestID)
+	}
+	if len(answerable) > 0 {
+		b.withdrawGeneration++
+	}
+	b.outstandingMu.Unlock()
+	for requestID, record := range answerable {
 		b.answerWithdrawnControl(requestID, record)
 		sink.CancelControlRequest(requestID)
 	}

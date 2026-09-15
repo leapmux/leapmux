@@ -1,5 +1,6 @@
 import type { ToolResultMeta } from '../providers/registry'
 import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
+import { assertNever } from '~/lib/assertNever'
 import { todosToMarkdown } from '~/lib/messageParser'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { commandOutputIsCollapsible } from './commandResult'
@@ -49,9 +50,7 @@ export function toolOutputCollapsible(presentation: ToolPresentation): boolean {
     case 'text':
       return outputCollapsible()
     default: {
-      const exhaustive: never = body
-      void exhaustive
-      return outputCollapsible()
+      assertNever(body)
     }
   }
 }
@@ -92,9 +91,7 @@ function toolBodyCopyableText(presentation: ToolPresentation): string {
     case 'text':
       return presentation.output
     default: {
-      const exhaustive: never = body
-      void exhaustive
-      return presentation.output
+      assertNever(body)
     }
   }
 }
@@ -152,9 +149,7 @@ export function toolBodyRepeatsInput(body: ToolPresentation['body']): boolean {
     case 'text':
       return true
     default: {
-      const exhaustive: never = body
-      void exhaustive
-      return true
+      assertNever(body)
     }
   }
 }
@@ -183,9 +178,7 @@ export function toolBodyStatesOwnOutcome(body: ToolPresentation['body']): boolea
     case 'todo':
       return false
     default: {
-      const exhaustive: never = body
-      void exhaustive
-      return false
+      assertNever(body)
     }
   }
 }

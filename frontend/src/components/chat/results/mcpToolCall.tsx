@@ -94,7 +94,7 @@ export function parseMcpToolName(name: string): { server: string, tool: string }
  * Split `<prefix><server><separator><tool>` into its two halves.
  *
  * The mechanism behind {@link parseMcpToolName}, and Reasonix calls it directly
- * with its own capability prefix and a `/` separator. Both identifiers name a
+ * with its own capability prefix and a `/` separator. Both identifiers hold a
  * server and a tool inside one string, and the only difference between them is
  * the two strings that delimit the halves.
  *

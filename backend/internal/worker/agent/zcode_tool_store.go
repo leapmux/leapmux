@@ -79,28 +79,54 @@ type zcodeToolStore struct {
 	// Reasonix already compared this way; see sessionStoreMoved.
 	file os.FileInfo
 	db   *sql.DB
-	// artifacts maps an artifact URI to the data URI this store already built
-	// for it. ZCode writes an artifact file once and never rewrites it, so a
-	// record that still waits for a SECOND artifact no longer re-reads the first
-	// one, and a session whose artifacts are all cached reads no directory.
-	//
-	// The TURN owns it. dropArtifacts empties it at the turn end and at a session
-	// reset, because each entry is a fully decoded data URI as large as
-	// liveStdoutMaxTokenSize (16 MiB) and only a pass of the SAME turn can read one
-	// -- the turn end clears the pending set that a later pass would ask about.
-	// Held for the life of the agent instead, a session of computer-use screenshots
-	// retained every screenshot it ever took, which is the growth Reasonix's own
-	// event graph refuses for the same reason.
-	artifacts map[string]string
 }
 
-// dropArtifacts empties the artifact cache without closing the database handle.
-// The handle is per AGENT and costs one file descriptor; the cache is per TURN and
-// costs the bytes of every artifact that turn read.
-func (s *zcodeToolStore) dropArtifacts() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	clear(s.artifacts)
+// zcodeArtifactCache maps an artifact URI to the data URI already built for it.
+//
+// ZCode writes an artifact file once and never rewrites it, so a record that still
+// waits for a SECOND artifact no longer re-reads the first one, and a session whose
+// artifacts are all cached reads no directory.
+//
+// ONE TRANSCRIPT'S TURN owns it, and that is why it does not live on the store beside
+// the handle. The handle is per AGENT: the agent's transcript and every child
+// transcript share it, deliberately, so they open one file. The cache is per TURN, and
+// drop empties it at the turn end and at a session reset -- each entry is a fully
+// decoded data URI as large as liveStdoutMaxTokenSize (16 MiB), and only a pass of the
+// SAME turn can read one, because the turn end clears the pending set a later pass
+// would ask about. Held for the life of the agent instead, a session of computer-use
+// screenshots retained every screenshot it ever took, which is the growth Reasonix's
+// own event graph refuses for the same reason.
+//
+// Sharing ONE cache across the parent and its children was the same mistake in the
+// other direction: a subagent reaches its turn end the instant its Agent result lands,
+// which is mid-turn for the parent, so one subagent finishing emptied every artifact
+// the parent and every sibling had already decoded.
+type zcodeArtifactCache struct {
+	mu      sync.Mutex
+	entries map[string]string
+}
+
+func (c *zcodeArtifactCache) lookup(uri string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.entries[uri]
+}
+
+func (c *zcodeArtifactCache) remember(uri, data string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]string)
+	}
+	c.entries[uri] = data
+}
+
+// drop empties the cache. It touches no database handle, so a turn end waits for no
+// read that another transcript runs.
+func (c *zcodeArtifactCache) drop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.entries)
 }
 
 // handle returns the open database for `path`, opening one when the file moved.
@@ -109,7 +135,20 @@ func (s *zcodeToolStore) handle(ctx context.Context, path string) (*sql.DB, erro
 	// canonical errSessionStoreAbsent for a store that is not there, and every
 	// caller tests for that.
 	current, statErr := os.Stat(path)
-	if statErr == nil && s.db != nil && !sessionStoreMoved(s.path, s.file, path, current) {
+	if statErr != nil {
+		// The stat is how a REPLACED store is noticed, so a stat that failed answers
+		// nothing about the handle already open. Closing on it would discard a working
+		// handle for a rename window or an EIO, and openSessionStoreDB below would then
+		// fail too and report errSessionStoreAbsent for a store that is present. Keep
+		// the handle and let the next pass ask again; Cursor and Reasonix keep theirs
+		// for the same reason.
+		if s.db != nil && s.path == path {
+			return s.db, nil
+		}
+		s.closeLocked()
+		return nil, errSessionStoreAbsent
+	}
+	if s.db != nil && !sessionStoreMoved(s.path, s.file, path, current) {
 		return s.db, nil
 	}
 	s.closeLocked()
@@ -136,12 +175,11 @@ func (s *zcodeToolStore) closeLocked() {
 		s.db = nil
 	}
 	s.path, s.file = "", nil
-	clear(s.artifacts)
 }
 
 // The scheduled request supplies messageID, which selects an existing index in ZCode's database.
 // A missing request uses the session index and still requires an unambiguous tool-call ID.
-func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
+func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts *zcodeArtifactCache, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
 	if location.sessionID == "" || len(requests) == 0 {
 		return nil, nil
 	}
@@ -256,7 +294,7 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, location z
 	for sessionID, refs := range groups {
 		childLocation := location
 		childLocation.sessionID = sessionID
-		if err := readZCodeArtifacts(ctx, store, childLocation, refs, out, maximum); err != nil {
+		if err := readZCodeArtifacts(ctx, store, artifacts, childLocation, refs, out, maximum); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -323,8 +361,8 @@ func zcodeArtifactSegment(value string) string {
 // artifact is re-read on every agent message until that artifact appears, and
 // without the cache each of those reads swept the whole session directory and
 // read every artifact the record already held.
-func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, location zcodeToolStoreLocation, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
-	if adoptCachedZCodeArtifacts(store, references, records) {
+func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, artifacts *zcodeArtifactCache, location zcodeToolStoreLocation, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
+	if adoptCachedZCodeArtifacts(artifacts, references, records) {
 		return nil
 	}
 	root, err := os.OpenRoot(location.artifactRoot)
@@ -394,10 +432,7 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, location zco
 				continue
 			}
 			record.artifacts[ref.uri] = data
-			if store.artifacts == nil {
-				store.artifacts = make(map[string]string)
-			}
-			store.artifacts[ref.uri] = data
+			artifacts.remember(ref.uri, data)
 			remaining -= len(data)
 		}
 		record.ready = true
@@ -412,9 +447,9 @@ func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, location zco
 	return errors.Join(failures...)
 }
 
-// adoptCachedZCodeArtifacts copies what the store already read into each record,
+// adoptCachedZCodeArtifacts copies what this transcript already read into each record,
 // and reports whether every reference is now answered.
-func adoptCachedZCodeArtifacts(store *zcodeToolStore, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord) bool {
+func adoptCachedZCodeArtifacts(artifacts *zcodeArtifactCache, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord) bool {
 	complete := true
 	for id, refs := range references {
 		record := records[id]
@@ -423,7 +458,7 @@ func adoptCachedZCodeArtifacts(store *zcodeToolStore, references map[string][]zc
 			if record.artifacts[ref.uri] != "" {
 				continue
 			}
-			if cached := store.artifacts[ref.uri]; cached != "" {
+			if cached := artifacts.lookup(ref.uri); cached != "" {
 				record.artifacts[ref.uri] = cached
 				continue
 			}

@@ -112,7 +112,7 @@ func TestZCodeClearContext_DropsTheStoppedTurnWindow(t *testing.T) {
 	a.cancelStoppedZCodeTurn()
 
 	a.mu.Lock()
-	armed := a.stoppedTurnTimer
+	armed := a.stopWindow.timer
 	a.mu.Unlock()
 	assert.Nil(t, armed, "the window goes with the session it watched")
 }
@@ -195,7 +195,7 @@ func TestZCodeStoppedTurn_WritesNoRowWhenTheTurnReportsItsOwnEnd(t *testing.T) {
 	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"turn.completed","payload":{"resultType":"cancelled","duration":900}}}}`)))
 
 	a.mu.Lock()
-	armed := a.stoppedTurnTimer
+	armed := a.stopWindow.timer
 	a.mu.Unlock()
 	assert.Nil(t, armed, "the turn reported its own end, so the window is spent")
 	assert.Empty(t, sink.PersistedNotifications(), "the app-server's own frame is the row")
@@ -214,17 +214,21 @@ func TestZCodeStoppedTurn_ArmingRefusesWhileTheAgentGoesDown(t *testing.T) {
 	a.turnActive = true
 	a.mu.Unlock()
 
-	a.armStoppedZCodeTurn()
+	a.mu.Lock()
+	a.armStoppedZCodeTurnLocked()
+	a.mu.Unlock()
 	require.Equal(t, 1, timer.armed)
 
 	// The order Stop uses: mark the graceful stop, then drop the window.
 	a.noteIntentionalStop()
 	a.cancelStoppedZCodeTurn()
-	a.armStoppedZCodeTurn()
+	a.mu.Lock()
+	a.armStoppedZCodeTurnLocked()
+	a.mu.Unlock()
 
 	assert.Equal(t, 1, timer.armed, "an agent that goes down arms no window")
 	a.mu.Lock()
-	armed := a.stoppedTurnTimer
+	armed := a.stopWindow.timer
 	a.mu.Unlock()
 	assert.Nil(t, armed)
 }
@@ -300,7 +304,7 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	// The accepted stop is now older than the grace, exactly as a live run is
 	// by the time the ignored turn's next frame arrives.
 	a.mu.Lock()
-	a.stopArmedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
+	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.mu.Unlock()
 
 	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"still going"}}}}`)))
@@ -334,7 +338,7 @@ func TestZCodeInterruptEscalationReady(t *testing.T) {
 	assert.False(t, a.InterruptEscalationReady(), "a stop inside its grace has not been judged yet")
 
 	a.mu.Lock()
-	a.stopArmedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
+	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.mu.Unlock()
 	assert.True(t, a.InterruptEscalationReady(), "an accepted stop the turn outlived may be escalated")
 

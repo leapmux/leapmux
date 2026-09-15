@@ -92,7 +92,7 @@ export async function readWorkerFile(options: {
   // An abort must never RESOLVE. Each worker's loop condition tests the signal,
   // so a worker parked at that test when the abort lands returns rather than
   // throws; with every worker parked there at once, `Promise.all` resolves and
-  // this function would answer with the half-filled buffer it was assembling --
+  // this function would answer with the half-filled buffer it assembled --
   // a successful read whose unread ranges are still NUL bytes. The serial loop
   // this replaced could not reach that state, because it tested the signal at
   // the top of every page.

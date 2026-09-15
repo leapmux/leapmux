@@ -2,14 +2,16 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,12 +19,19 @@ func TestCursorControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
 	for _, method := range []string{contracts.CursorMethodAskQuestion, contracts.CursorMethodCreatePlan} {
 		t.Run(method, func(t *testing.T) {
-			var output bytes.Buffer
+			output := &syncBuffer{}
 			sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
 			a := newCursorAgentWithSink(sink)
-			a.stdin = nopWriteCloser{&output}
+			a.stdin = nopWriteCloser{output}
 			a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":"007","method":"` + method + `","params":{}}`))
-			require.JSONEq(t, `{"jsonrpc":"2.0","id":"007","error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, output.String())
+			// HandleOutput runs on the goroutine that drains Cursor's stdout, so the
+			// failure reply is QUEUED rather than written before it returns.
+			var answer string
+			require.Eventually(t, func() bool {
+				answer = output.String()
+				return answer != ""
+			}, 2*time.Second, 5*time.Millisecond, "the publication failure is answered")
+			require.JSONEq(t, `{"jsonrpc":"2.0","id":"007","error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, answer)
 			require.Empty(t, sink.PublishedControls())
 		})
 	}
@@ -148,4 +157,58 @@ func TestHandleCursorOutput_UpdateTodosAcknowledgesRequest(t *testing.T) {
 	require.Equal(t, 9, int(resp["id"].(float64)))
 	_, ok := resp["result"]
 	require.True(t, ok)
+}
+
+// An unrecognized `cursor/` method must reach the transcript, like every other
+// provider's unknown frame.
+//
+// Cursor answered -32601 from its own default and returned true, which
+// short-circuited the shared ACP default that persists the frame. The runtime got a
+// correct reply and the reader got no row at all, with no way to see what Cursor sent.
+// The `cursor/` namespace is open and only five names are known, so a new one is the
+// ordinary case.
+func TestCursorUnknownExtensionMethodReachesTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		raw       string
+		wantReply bool
+	}{
+		{
+			name:      "a request draws a refusal and a row",
+			raw:       `{"jsonrpc":"2.0","id":7,"method":"cursor/something_new","params":{"value":1}}`,
+			wantReply: true,
+		},
+		{
+			name:      "a notification draws a row and no reply",
+			raw:       `{"jsonrpc":"2.0","method":"cursor/something_happened","params":{"value":1}}`,
+			wantReply: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &testSink{}
+			written := &syncBuffer{}
+			a := newCursorAgentWithSink(sink)
+			a.ctx = context.Background()
+			a.stdin = nopWriteCloser{written}
+
+			a.HandleOutput([]byte(tc.raw))
+
+			require.Eventually(t, func() bool {
+				return len(sink.Messages()) == 1
+			}, 2*time.Second, 5*time.Millisecond, "the frame must reach the transcript")
+			assert.Equal(t, []byte(tc.raw), sink.Messages()[0].Content)
+
+			if tc.wantReply {
+				require.Eventually(t, func() bool {
+					return strings.Contains(written.String(), `"code":-32601`)
+				}, 2*time.Second, 5*time.Millisecond, "an unsupported request is still answered")
+			} else {
+				require.Never(t, func() bool { return written.String() != "" },
+					200*time.Millisecond, 5*time.Millisecond, "a notification draws no reply")
+			}
+		})
+	}
 }

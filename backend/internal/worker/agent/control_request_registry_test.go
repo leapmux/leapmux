@@ -255,3 +255,42 @@ func (s *stealingPublishSink) PublishControlRequest(request ControlRequest) erro
 	s.cancelled = nil // The stop's own cancel found no row; only the publish's counts.
 	return nil
 }
+
+// The OTHER half of the same window: the reader answers while the publish is still
+// in flight.
+//
+// PublishControlRequest completes the browser broadcast before it returns, so the card
+// is on screen and answerable inside the window. Every control response reaches the
+// provider through SendRawInput, which removes the record -- so a bare "is the record
+// still there?" test read an ANSWERED request as a stolen one and cancelled it. The
+// provider had the answer, but the transcript row was deleted and a controlCancel was
+// broadcast, so the card the reader had just allowed vanished as CANCELLED.
+func TestControlRegistryKeepsACardTheReaderAnsweredDuringThePublish(t *testing.T) {
+	t.Parallel()
+
+	base, _ := newRegistryBase()
+	sink := &answeringPublishSink{base: base}
+	base.publishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), acpPermissionCancelAnswer())
+
+	assert.Empty(t, sink.cancelled, "an answer inside the publish window must not cancel the card")
+	base.outstandingMu.Lock()
+	defer base.outstandingMu.Unlock()
+	assert.NotContains(t, base.outstandingControls, "jsonrpc:7", "the answer still retires the record")
+}
+
+// answeringPublishSink ANSWERS the request from inside PublishControlRequest, which is
+// the window a fast reader lands in: the card is broadcast, and the publisher has not
+// yet re-taken outstandingMu.
+type answeringPublishSink struct {
+	registryCancelSink
+	base *jsonrpcBase
+}
+
+func (s *answeringPublishSink) PublishControlRequest(ControlRequest) error {
+	// The ordinary answer path: the frame carries the request's own id, and
+	// SendRawInput forgets the record after it writes.
+	if err := s.base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":"allow"}}`)); err != nil {
+		return err
+	}
+	return nil
+}

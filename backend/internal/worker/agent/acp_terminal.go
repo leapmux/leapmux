@@ -323,19 +323,24 @@ func (b *acpTerminalHost) handleTerminalMethod(line *parsedLine) {
 	}
 }
 
+// terminalError and terminalOK are the two funnels for every terminal reply, and
+// both hand the frame to the stdin writer WITHOUT waiting for it.
+//
+// terminal/create, terminal/output and terminal/kill are all answered from the
+// goroutine that drains the child's stdout. Waiting for the write there is the
+// deadlock the reply exists to prevent: a child that is not reading its stdin
+// blocks the write, its unread stdout backs up against it, and neither side moves
+// again. The frames stay in order behind one writer, so nothing that follows a
+// reply can overtake it.
 func (b *acpBase) terminalError(id json.RawMessage, code int, message string) {
-	if err := b.sendErrorResponse(id, code, message); err != nil {
-		slog.Warn("acp terminal error response", "agent_id", b.ownerAgentID(), "error", err)
-	}
+	b.sendErrorResponseDetached(id, code, message, "terminal error")
 }
 
 func (b *acpBase) terminalOK(id json.RawMessage, result any) {
 	if result == nil {
 		result = map[string]interface{}{}
 	}
-	if err := b.sendResponse(id, result); err != nil {
-		slog.Warn("acp terminal response", "agent_id", b.ownerAgentID(), "error", err)
-	}
+	b.sendResponseDetached(id, result, "terminal reply")
 }
 
 func (b *acpBase) currentSessionID() string {
