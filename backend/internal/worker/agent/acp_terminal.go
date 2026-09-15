@@ -323,19 +323,24 @@ func (b *acpTerminalHost) handleTerminalMethod(line *parsedLine) {
 	}
 }
 
+// terminalError and terminalOK are the two funnels for every terminal reply, and
+// both hand the frame to the stdin writer WITHOUT waiting for it.
+//
+// terminal/create, terminal/output and terminal/kill are all answered from the
+// goroutine that drains the child's stdout. Waiting for the write there is the
+// deadlock the reply exists to prevent: a child that is not reading its stdin
+// blocks the write, its unread stdout backs up against it, and neither side moves
+// again. The frames stay in order behind one writer, so nothing that follows a
+// reply can overtake it.
 func (b *acpBase) terminalError(id json.RawMessage, code int, message string) {
-	if err := b.sendErrorResponse(id, code, message); err != nil {
-		slog.Warn("acp terminal error response", "agent_id", b.ownerAgentID(), "error", err)
-	}
+	b.sendErrorResponseDetached(id, code, message, "terminal error")
 }
 
 func (b *acpBase) terminalOK(id json.RawMessage, result any) {
 	if result == nil {
 		result = map[string]interface{}{}
 	}
-	if err := b.sendResponse(id, result); err != nil {
-		slog.Warn("acp terminal response", "agent_id", b.ownerAgentID(), "error", err)
-	}
+	b.sendResponseDetached(id, result, "terminal reply")
 }
 
 func (b *acpBase) currentSessionID() string {
@@ -588,6 +593,30 @@ func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (acpTerminalR
 	result, ok := b.completedTerminals[terminalID]
 	delete(b.completedTerminals, terminalID)
 	return result, ok
+}
+
+// terminalResultFor gives the output a stored row carries for one terminal.
+//
+// A terminal that EXITED is taken from the completed set, which spends it. One that is
+// still RUNNING is read where it stands, because LeapMux owns that process and holds
+// every byte it printed: a stop cuts the turn, the agent sends its final tool update at
+// once, and the process is alive when that row is stored. Without this the row said
+// `[output unavailable]` for output LeapMux had in hand.
+//
+// A terminal LeapMux no longer holds returns false, and the row states that nothing can
+// be read for it. That is the one case "unavailable" describes.
+func (b *acpTerminalHost) terminalResultFor(terminalID string) (acpTerminalResult, bool) {
+	if result, present := b.takeCompletedTerminal(terminalID); present {
+		return result, true
+	}
+	b.terminalsMu.Lock()
+	session := b.terminals[terminalID]
+	b.terminalsMu.Unlock()
+	if session == nil {
+		return acpTerminalResult{}, false
+	}
+	output, truncated, exitCode, signal, _ := session.snapshot()
+	return acpTerminalResult{Output: output, Truncated: truncated, ExitCode: exitCode, Signal: signal}, true
 }
 
 func (b *acpTerminalHost) clearCompletedTerminals() {

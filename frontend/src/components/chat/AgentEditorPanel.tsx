@@ -1,11 +1,12 @@
 import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
-import type { EditorContentRef } from './controls/types'
+import type { ControlResponseHandler, EditorContentRef } from './controls/types'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { PermissionPresetController, ProviderSettingChangeHandler } from './providerSettings'
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
-import type { AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentActivityState, AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -63,6 +64,7 @@ import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
 export interface AgentEditorPanelProps {
+  messageContext?: MessageContextResolver
   /** See `MarkdownEditorProps.suppressAutoFocus`. Forwarded unchanged. */
   suppressAutoFocus?: () => boolean
   agentId: string
@@ -86,10 +88,11 @@ export interface AgentEditorPanelProps {
   onMoveQueueItem?: (item: QueuedAgentInput, beforeInputId: string) => Promise<void>
   onRetryQueueItem?: (item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
   onSteerQueueItem?: (item: QueuedAgentInput) => Promise<void>
+  onPreemptQueueItem?: (item: QueuedAgentInput) => Promise<void>
   onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
-  onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
+  onControlResponse?: ControlResponseHandler
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
   onInterrupt?: () => void
@@ -102,7 +105,8 @@ export interface AgentEditorPanelProps {
   canInterrupt?: boolean
   settingsLoading?: boolean
   agentSessionInfo?: AgentSessionInfo
-  agentWorking?: boolean
+  /** The activity level the Worker last published; the Interrupt button reads it. */
+  agentActivity?: AgentActivityState
   /**
    * Every branch-menu action for the agent's repo, already bound to that
    * branch. Wired from the shell, which built them over the BranchRef the
@@ -385,12 +389,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         }
       },
       get controlRequests() { return props.controlRequests },
+      get messageContext() { return props.messageContext },
       get onControlResponse() { return props.onControlResponse },
       get onSettingChange() { return props.onSettingChange },
       get onSendMessage() { return props.onSendMessage },
       get onSendControlFeedback() { return props.onSendControlFeedback },
       get settingsLoading() { return props.settingsLoading },
-      get agentWorking() { return props.agentWorking },
+      get agentActivity() { return props.agentActivity },
       get canInterrupt() { return props.canInterrupt },
     },
     answerState,
@@ -609,6 +614,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           clientId={props.queueClientId ?? ''}
           activeEditInputId={queueEdit.activeEditingInput()?.id}
           supportsSteering={props.agent?.supportsSteering ?? false}
+          supportsPreemption={props.agent?.supportsPreemption ?? false}
           onEdit={(item, takeover) => {
             queueEdit.loadQueueEdit(item, takeover, false)
           }}
@@ -626,6 +632,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               fireQueueRpc(props.onRetryQueueItem?.(item, false))
           }}
           onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(item))}
+          onPreempt={item => fireQueueRpc(props.onPreemptQueueItem?.(item))}
         />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
@@ -656,6 +663,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               editorContentRef?.set(pending)
           }}
           disabled={disabled()}
+          hideInput={ctrl.editorPurpose() === 'none'}
           disabledPlaceholder={props.disabledReason}
           onTogglePlanMode={ctrl.togglePlanMode}
           pinnedHeight={editorMinHeightSignal()}
@@ -711,7 +719,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),
               }
             : undefined}
-          placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
+          placeholder={ctrl.editorPlaceholder()}
           allowEmptySend={allowEmptySend()}
           // The keyed owner is what reacts in this slot. `createComponent`
           // untracks the element that this prop getter builds, so the editor's
@@ -727,10 +735,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
                 <ControlRequestContent
+                  messageContext={props.messageContext}
                   request={request}
                   answerState={answerState}
-                  optionsDisabled={hasContent()}
-                  agentProvider={props.agent?.agentProvider}
+                  optionsDisabled={ctrl.editorPurpose() !== 'none' && hasContent()}
+                  agentProvider={ctrl.activeControlProvider()}
+                  controlSurface={ctrl.activeControlSurface()}
+                  onInterrupt={ctrl.showInterrupt() ? () => props.onInterrupt?.() : undefined}
                 />
               )}
             </Show>
@@ -763,42 +774,32 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               onToggleStatusBar={() => preferences.setShowComposerStatusBar(!preferences.showComposerStatusBar())}
             />
           )}
-          // One action row, carrying its own layout: a control request takes the
-          // whole width for its two-zone [secondary | primary] row, while the
-          // composer's own cluster hugs the corner.
-          // ONE read of the active request decides both halves of this slot.
-          // `MarkdownEditor` reads this getter inside the effect that owns the
-          // row, so a new head rebuilds the whole slot; a second read inside
-          // `node` would let the layout flag and the rendered row disagree,
-          // which is exactly what the prop's own doc forbids. The captured
-          // `request` is a plain value, so it stays the instance the user
-          // answers even after the store drops it.
+          // Control requests use the full footer width.
+          // Read the active request once so the layout and handlers use the same request.
+          // The response callback retains that request after the store removes it.
+          // The surface stays a LIVE read beside it, because it settles later:
+          // it reclassifies the request once its source message loads.
           actions={(() => {
             const request = ctrl.activeControlRequest()
             return request
               ? {
                   layout: 'fullWidth' as const,
                   node: () => (
-                    <>
-                      <div class={styles.actionCluster}>
-                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
-                      </div>
-                      <ControlRequestActions
-                        request={request}
-                        answerState={answerState}
-                        agentProvider={props.agent?.agentProvider}
-                        onRespond={(content) => {
-                          ctrl.finishAnswer(request)
-                          return ctrl.respondTo(request)(content)
-                        }}
-                        hasEditorContent={hasContent()}
-                        onTriggerSend={() => { void triggerSend?.() }}
-                        editorContentRef={() => editorContentRef}
-                        presets={permissionPresets()}
-                        contextUsage={props.agentSessionInfo?.contextUsage}
-                        modelContextWindow={modelContextWindow()}
-                      />
-                    </>
+                    <ControlRequestActions
+                      request={request}
+                      messageContext={props.messageContext}
+                      answerState={answerState}
+                      agentProvider={ctrl.activeControlProvider()}
+                      controlSurface={ctrl.activeControlSurface()}
+                      onRespond={ctrl.respondTo(request)}
+                      onRecordResponse={() => ctrl.recordResponse(request)}
+                      hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
+                      onTriggerSend={() => { void triggerSend?.() }}
+                      editorContentRef={() => editorContentRef}
+                      presets={permissionPresets()}
+                      contextUsage={props.agentSessionInfo?.contextUsage}
+                      modelContextWindow={modelContextWindow()}
+                    />
                   ),
                 }
               : {

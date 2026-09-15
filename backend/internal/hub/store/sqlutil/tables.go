@@ -1,5 +1,11 @@
 package sqlutil
 
+import (
+	"fmt"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
 // SQLTruncateTableOrder is the ordered list of SQL tables for truncation.
 // Tables are ordered so that foreign key constraints are satisfied
 // (children before parents).
@@ -38,7 +44,15 @@ var SQLTruncateTableOrder = []string{
 func TruncateStatement(table string) string {
 	if table == "oauth_clients" {
 		// The built-in registrations are schema, not fixture data.
-		return "DELETE FROM oauth_clients WHERE registration_source <> 'builtin'"
+		//
+		// The ordinal is interpolated from the enum rather than spelled, so a
+		// renumber moves the predicate with it. It cannot be a bound parameter:
+		// callers pass this to Exec with no arguments, and the one before it
+		// compared the column against the WORD `builtin` -- which, once the
+		// column held an ordinal, matched no row and deleted every built-in,
+		// leaving api_tokens.client_id with nothing to point at.
+		return fmt.Sprintf("DELETE FROM oauth_clients WHERE registration_source <> %d",
+			leapmuxv1.AppRegistrationSource_APP_REGISTRATION_SOURCE_BUILTIN)
 	}
 	return "DELETE FROM " + table
 }

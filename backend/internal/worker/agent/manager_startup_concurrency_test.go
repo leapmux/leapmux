@@ -26,6 +26,9 @@ type idleAgent struct{}
 
 func (idleAgent) AgentID() string                                 { return "idle" }
 func (idleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (idleAgent) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
+	return ErrInputSessionChanged
+}
 func (idleAgent) PublishTurnActive() TurnState {
 	return TurnState{}
 }
@@ -33,7 +36,7 @@ func (idleAgent) SendRawInput([]byte) error                       { return nil }
 func (idleAgent) Stop()                                           {}
 func (idleAgent) IsStopped() bool                                 { return false }
 func (idleAgent) DiscardOutput()                                  {}
-func (idleAgent) ClearContext() (string, bool)                    { return "", false }
+func (idleAgent) ClearContext() (string, error)                   { return "", ErrContextClearUnsupported }
 func (idleAgent) Wait() error                                     { return nil }
 func (idleAgent) Stderr() string                                  { return "" }
 func (idleAgent) HandleOutput([]byte)                             {}

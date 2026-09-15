@@ -194,7 +194,7 @@ message ListAgentsResponse {
   repeated AgentInfo agents = 1;
   // One entry per REQUESTED tab_id, so the caller can tell an omission
   // that is transient from one that is permanent. Empty when the request
-  // named no tab_ids (the list-everything form).
+  // listed no tab_ids (the list-everything form).
   repeated TabHydrationVerdict verdicts = 2;
 }
 
@@ -273,6 +273,13 @@ message AgentInfo {
   // regular turn. The Worker computes this from the live provider capability.
   bool supports_steering = 20;
 
+  // True when the running provider cannot steer but CAN interrupt: the queue
+  // head can still be sent promptly by cancelling the active turn first and
+  // letting the normal dispatch take over. The Worker computes this from the
+  // live provider capability (running, root, and not steerable). The client
+  // offers a Preempt control in place of Steer for such an agent.
+  bool supports_preemption = 24;
+
   // What the agent is doing, derived by the Worker from the provider's turn
   // bookkeeping, the background-task registry, the pending control requests and
   // the process state. This is the hydration path for the same state
@@ -329,7 +336,7 @@ message AvailableOption {
   repeated OptionSideEffect clears = 6;
 }
 
-// OptionSideEffect names one option value that another option's selection settles.
+// OptionSideEffect identifies one option value that another option's selection settles.
 message OptionSideEffect {
   string group_id = 1;  // The group whose value changes (e.g. "allow_all")
   string value = 2;     // The value that group takes (e.g. "off")
@@ -385,6 +392,11 @@ enum AgentInputQueuePauseReason {
   AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED = 3;
   AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED = 4;
   AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN = 5;
+  // A read of the worker's own store failed, so the dispatch never reached the
+  // provider. It says nothing about the agent, which is why it is not
+  // AGENT_STOPPED: that sentence is false for a database fault, and it is what
+  // the reader sees.
+  AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT = 6;
 }
 
 message QueuedAgentInputAttachment {
@@ -413,6 +425,11 @@ message QueuedAgentInput {
   // client never offers a Steer that the Worker then refuses. A client that
   // derives this from the kind alone drifts the moment AgentInputKind grows.
   bool can_steer = 13;
+  // Preemption's counterpart of can_steer: true when PreemptQueuedAgentInput
+  // accepts this item right now (head, queued, editable, an active turn to
+  // cancel). The Worker computes it from the same predicate its preemption
+  // guard applies, for the same reason can_steer exists.
+  bool can_preempt = 14;
 }
 
 message AgentInputQueueSnapshot {
@@ -498,6 +515,16 @@ message SteerQueuedAgentInputRequest {
 }
 message SteerQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 
+// PreemptQueuedAgentInput cancels the agent's active turn and leaves the specified
+// queued item to dispatch through the ordinary turn-end drain, so the message
+// is sent as soon as the cancelled turn reports its end. Offered for providers
+// that cannot steer (no mid-turn injection) but can interrupt.
+message PreemptQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+}
+message PreemptQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
 message RetryQueuedAgentInputRequest {
   string agent_id = 1;
   string input_id = 2;
@@ -530,7 +557,7 @@ enum MessageCompletion {
 message AgentChatMessage {
   string id = 1;
   MessageSource source = 2;
-  bytes content = 3; // JSON blob from Claude Code (may be compressed per content_compression)
+  bytes content = 3; // Original provider payload, encoded with content_compression.
   int64 seq = 4;
   string created_at = 5;
   reserved 6;
@@ -557,6 +584,14 @@ message AgentChatMessage {
   MarkType mark_type = 16;
   AssembledMessageKind assembled_kind = 17;
   MessageCompletion completion = 18;
+  // JSON sections "provider" and "metadata" hold recovered provider data and
+  // worker-calculated display fields. The original provider payload stays unchanged.
+  bytes supplemental_content = 19;
+  ContentCompression supplemental_content_compression = 20;
+  int64 supplemental_revision = 21;
+  // Provider session identity, separate from the original message bytes.
+  // Related tool messages must belong to this session as well as this agent.
+  string agent_session_id = 22;
 }
 
 // AgentStatusChange notifies of agent status transitions.
@@ -578,6 +613,9 @@ message AgentStatusChange {
   // Git.
   GitRepoStatus git_status = 9; // Git status for the agent's working directory
   bool supports_steering = 10;
+  // Steering's counterpart for providers that can only interrupt: true when the
+  // running provider cannot steer but a queued head may pre-empt the active turn.
+  bool supports_preemption = 11;
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
@@ -707,6 +745,17 @@ message GetAgentMessageResponse {
   // with that seq (deleted/reseq'd since the mark was recorded, or a closed
   // agent). The client treats an unset message as "no preview available".
   AgentChatMessage message = 1;
+}
+
+// Fetch related tool messages without changing the client's loaded history window.
+message GetAgentSpanMessagesRequest {
+  string agent_id = 1;
+  string span_id = 2;
+  string agent_session_id = 3;
+}
+
+message GetAgentSpanMessagesResponse {
+  repeated AgentChatMessage messages = 1;
 }
 
 // ListMessageMarks returns the seqs of every marked message (scroll-rail jump
@@ -843,6 +892,8 @@ message AgentGoal {
   // wire, so a goal restarted with the same objective text is distinguishable
   // only by a fresh created_at.
   string created_at = 4;
+  // The provider's goal identity, when available. This is separate from its creation time.
+  string native_id = 5;
   // No updated_at here. The stamp that ORDERS two answers about the goal must
   // exist when the goal does NOT -- a clear is an answer too -- so it rides the
   // carrier beside the goal: AgentGoalChanged.goal_updated_at and
@@ -929,38 +980,65 @@ message AgentGoalChanged {
 
 // --- Control Request/Response ---
 
-// AgentControlRequest is sent when Claude Code needs user approval (e.g. ExitPlanMode, AskUserQuestion).
+// AgentControlRequest carries a provider request that needs a user response.
 message AgentControlRequest {
   string agent_id = 1;
   string request_id = 2;
   bytes payload = 3;  // Full JSON of the control_request (verbatim)
   AgentProvider agent_provider = 4; // Provider for this agent
-  // claim_token identifies this REQUEST INSTANCE. The worker mints a fresh token per
-  // PersistControlRequest; the frontend echoes it in SendControlResponseRequest so a stale
-  // duplicate answer to a PRIOR instance of a reused request_id (e.g. a Codex/ACP JSON-RPC
-  // counter that reset across a plan-exec restart) cannot re-win the idempotency claim of the
-  // current instance. Empty when the row predates the token (degrades to request_id-only dedup).
+  // claim_token identifies the request instance. An identical pending announcement keeps its token.
+  // A new request after deletion, or a changed payload, receives a fresh token.
+  // The frontend echoes the token in SendControlResponseRequest to deduplicate answers per instance.
   string claim_token = 5;
+  // Optional transcript source, outside the original provider payload. Zero means no source is available.
+  int64 source_seq = 6;
+  string agent_session_id = 7;
+  ControlResponseState response_state = 8;
 }
 
-// AgentControlCancelRequest is sent when Claude Code cancels a pending control request.
+// ControlResponseState describes the worker's evidence for one response instance.
+enum ControlResponseState {
+  CONTROL_RESPONSE_STATE_UNSPECIFIED = 0;
+  CONTROL_RESPONSE_STATE_READY = 1;
+  CONTROL_RESPONSE_STATE_PENDING = 2;
+  CONTROL_RESPONSE_STATE_UNCERTAIN = 3;
+  CONTROL_RESPONSE_STATE_DELIVERED = 4;
+  CONTROL_RESPONSE_STATE_COMPLETED = 5;
+  CONTROL_RESPONSE_STATE_CANCELED = 6;
+}
+
+// AgentControlCancelRequest identifies the removed request instance.
 message AgentControlCancelRequest {
   string agent_id = 1;
   string request_id = 2;
+  string claim_token = 3;
+  // A delivered response can still need recording after the provider cancels its prompt.
+  ControlResponseState response_state = 4;
+}
+
+// PlanApprovalSettings carries LeapMux settings separately from provider response bytes.
+message PlanApprovalSettings {
+  string permission_mode = 1;
+  bool clear_context = 2;
 }
 
 // SendControlResponseRequest sends a control response back to the agent.
 message SendControlResponseRequest {
   string agent_id = 1;
-  bytes content = 2;  // Raw JSON control_response for Claude Code stdin
-  // claim_token is the per-instance token the frontend echoes from the AgentControlRequest it is
-  // answering (see AgentControlRequest.claim_token). The worker keys the idempotency claim on it so
-  // a stale duplicate of a prior instance of a reused request_id cannot re-win. Empty falls back to
-  // request_id-only dedup.
+  bytes content = 2;  // The response that the provider adapter prepares for delivery.
+  // The request ID and claim token identify the exact request instance.
   string claim_token = 3;
+  string request_id = 4;
+  // Check the saved state and complete confirmed delivery. Never send to the provider.
+  bool record_only = 5;
+  // LeapMux applies these settings with the plan decision. They are not provider JSON.
+  PlanApprovalSettings plan_approval = 6;
 }
 
-message SendControlResponseResponse {}
+message SendControlResponseResponse {
+  ControlResponseState state = 1;
+  string error = 2;
+}
 
 // AgentSettings holds option values to apply, keyed by option-group id
 // (e.g. "model", "effort", "permissionMode", "sandbox_policy"). Sparse: only

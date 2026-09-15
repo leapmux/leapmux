@@ -3,6 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import './claude'
 import './opencode'
 import './pi'
@@ -70,10 +71,7 @@ function renderPiReadResult(content: string, startArgs: Record<string, unknown> 
     args: startArgs,
   }
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(payload, {
-    spanType: 'read',
-    toolUseParsed: parsed(start),
-  }, category, AgentProvider.PI)
+  const result = renderMessageContent(payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start)) }) }, category, AgentProvider.PI)
   return render(() => result)
 }
 

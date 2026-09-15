@@ -25,14 +25,14 @@ export function getMessageContentArray(parsed: unknown): ContentBlock[] | null {
 }
 
 /** Extract tool name and input from a parsed Claude tool_use message. */
-export function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: string, input: Record<string, unknown> } | null {
+export function extractToolUseInfo(parsed: ParsedMessageContent, toolUseId?: string): { toolName: string, input: Record<string, unknown> } | null {
   const obj = parsed.parentObject
   if (!obj)
     return null
   const content = getAssistantContent(obj)
   if (!content)
     return null
-  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
+  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && (toolUseId === undefined || c.id === toolUseId))
   if (!toolUse)
     return null
   const toolData = toolUse as Record<string, unknown>
@@ -40,6 +40,13 @@ export function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: st
     toolName: pickString(toolData, 'name'),
     input: pickObject(toolData, 'input', {}),
   }
+}
+
+/** Resolve input only from the request that matches the result's tool-use ID. */
+export function extractPairedToolUseInfo(parsed: unknown, request?: ParsedMessageContent): ReturnType<typeof extractToolUseInfo> {
+  const result = getMessageContentArray(parsed)?.find(block => isObject(block) && block.type === 'tool_result')
+  const id = pickString(result, 'tool_use_id')
+  return id && request ? extractToolUseInfo(request, id) : null
 }
 
 /**

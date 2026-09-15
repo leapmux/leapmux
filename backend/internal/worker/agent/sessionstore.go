@@ -150,6 +150,28 @@ func (q StoredSessionQuery) xdgDataHome() string {
 	return filepath.Join(home, ".local", "share")
 }
 
+// sessionStoreMoved reports whether a cached session store is no longer the file
+// at `path`, so its handle and everything read through it must be dropped.
+//
+// A path comparison alone is NOT enough, and that is the whole reason this exists.
+// A runtime that deletes and recreates its store at the SAME path leaves the cached
+// handle open on the unlinked inode -- sqlitedb.OpenReadOnly holds one connection
+// with no lifetime -- and every later read answers from the deleted file for the
+// life of the agent. os.SameFile is what catches that; `cached == nil` catches a
+// store that was never stated.
+//
+// On Windows the file-identity half does no work, and it never needs to. SQLite opens
+// every file with FILE_SHARE_READ|FILE_SHARE_WRITE and no FILE_SHARE_DELETE, so an
+// open handle refuses the owning runtime the delete that a replacement needs: the file
+// under a cached handle cannot be replaced there. os.SameFile is also unable to see
+// one. A Windows os.FileInfo carries a file id that loads lazily, by a re-open of the
+// PATH, so a stale FileInfo resolves to whatever that path holds at the first
+// comparison. The path comparison is what does the work on that platform, and
+// TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath skips there for both reasons.
+func sessionStoreMoved(cachedPath string, cached os.FileInfo, path string, current os.FileInfo) bool {
+	return cachedPath != path || cached == nil || !os.SameFile(cached, current)
+}
+
 // openSessionStoreDB opens another program's SQLite session store for reading.
 //
 // The os.Stat comes first so an absent store is reported as

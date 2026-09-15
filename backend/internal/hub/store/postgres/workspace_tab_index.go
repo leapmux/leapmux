@@ -148,7 +148,7 @@ func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.Upsert
 	return mapErr(s.conn.q.UpsertOwnedTab(ctx, gendb.UpsertOwnedTabParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
-		TabType:     int32(p.TabType),
+		TabType:     p.TabType,
 		TabID:       p.TabID,
 		WorkerID:    p.WorkerID,
 		TileID:      p.TileID,
@@ -246,7 +246,7 @@ func (s *workspaceTabIndexStore) UpsertRendered(ctx context.Context, p store.Ups
 	return mapErr(s.conn.q.UpsertRenderedTab(ctx, gendb.UpsertRenderedTabParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
-		TabType:     int32(p.TabType),
+		TabType:     p.TabType,
 		TabID:       p.TabID,
 		WorkerID:    p.WorkerID,
 		TileID:      p.TileID,
@@ -313,7 +313,7 @@ func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRen
 	row, err := s.conn.q.GetRenderedTab(ctx, gendb.GetRenderedTabParams{
 		UserID:      owner,
 		WorkspaceID: p.WorkspaceID,
-		TabType:     int32(p.TabType),
+		TabType:     p.TabType,
 		TabID:       p.TabID,
 	})
 	if err != nil {
@@ -334,8 +334,11 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 		return nil, store.ErrNotFound
 	}
 	row, err := s.conn.q.LocateAccessibleRenderedTab(ctx, gendb.LocateAccessibleRenderedTabParams{
-		UserID:  owner,
-		TabID:   p.TabID,
+		UserID: owner,
+		TabID:  p.TabID,
+		// This parameter alone still needs the conversion: sqlc types it from the
+		// query's own expression rather than from the column, so the override on
+		// workspace_tab_rendered.tab_type does not reach it.
 		TabType: int32(p.TabType),
 	})
 	if err != nil {
@@ -356,7 +359,7 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 func ownedTabRefFromDB(r gendb.ListOwnedTabsByWorkspaceRow) store.OwnedTabRef {
 	return store.OwnedTabRef{
 		WorkerID: r.WorkerID,
-		TabType:  leapmuxv1.TabType(r.TabType),
+		TabType:  r.TabType,
 		TabID:    r.TabID,
 	}
 }
@@ -365,7 +368,7 @@ func ownedTabStateRowFromDB(r gendb.ListOwnedTabsByWorkerRow) store.WorkerTabSta
 	return store.WorkerTabStateRow{
 		UserID:       r.UserID,
 		WorkspaceID:  r.WorkspaceID,
-		TabType:      leapmuxv1.TabType(r.TabType),
+		TabType:      r.TabType,
 		TabID:        r.TabID,
 		WorkerID:     r.WorkerID,
 		ArchiveState: leapmuxv1.WorkspaceArchiveState(r.ArchiveState),
@@ -382,7 +385,7 @@ func ownedTabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 	return store.WorkspaceTabRow{
 		UserID:      r.UserID,
 		WorkspaceID: r.WorkspaceID,
-		TabType:     leapmuxv1.TabType(r.TabType),
+		TabType:     r.TabType,
 		TabID:       r.TabID,
 		WorkerID:    r.WorkerID,
 		TileID:      r.TileID,
@@ -396,7 +399,7 @@ func renderedTabRowFromDB(r gendb.WorkspaceTabRendered) store.WorkspaceTabRow {
 	return store.WorkspaceTabRow{
 		UserID:      r.UserID,
 		WorkspaceID: r.WorkspaceID,
-		TabType:     leapmuxv1.TabType(r.TabType),
+		TabType:     r.TabType,
 		TabID:       r.TabID,
 		WorkerID:    r.WorkerID,
 		TileID:      r.TileID,

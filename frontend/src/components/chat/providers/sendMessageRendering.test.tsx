@@ -4,6 +4,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageRenderers')
@@ -108,7 +109,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('shows the recipient the way the Background tasks list shows it', () => {
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { resolveBackgroundTaskRow: () => subagentRow(), onOpenSubagent: vi.fn() },
+      { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => subagentRow() }) },
     )
     expect(container.textContent).toContain('Explore the parser')
   })
@@ -118,7 +119,7 @@ describe('claude SendMessage tool_use rendering', () => {
     const row = subagentRow()
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { resolveBackgroundTaskRow: () => row, onOpenSubagent },
+      { onOpenSubagent, sources: testMessageSources({ backgroundTask: () => row }) },
     )
     const button = container.querySelector<HTMLButtonElement>('[data-testid="send-message-recipient"]')
     expect(button).not.toBeNull()
@@ -131,7 +132,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('renders an unresolvable recipient as plain text', () => {
     const container = renderToolUse(
       { to: 'bridge:another-machine', message: 'keep going' },
-      { resolveBackgroundTaskRow: () => undefined, onOpenSubagent: vi.fn() },
+      { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => undefined }) },
     )
     expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     expect(container.textContent).toContain('bridge:another-machine')
@@ -143,7 +144,7 @@ describe('claude SendMessage tool_use rendering', () => {
     for (const row of [subagentRow({ childAgentId: undefined }), subagentRow({ kind: 'shell' })]) {
       const container = renderToolUse(
         { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-        { resolveBackgroundTaskRow: () => row, onOpenSubagent: vi.fn() },
+        { onOpenSubagent: vi.fn(), sources: testMessageSources({ backgroundTask: () => row }) },
       )
       expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     }
@@ -154,7 +155,7 @@ describe('claude SendMessage tool_use rendering', () => {
   it('is not clickable when the host supplied no open handler', () => {
     const container = renderToolUse(
       { to: 'a1b2c3d4e5f60718', message: 'keep going' },
-      { resolveBackgroundTaskRow: () => subagentRow() },
+      { sources: testMessageSources({ backgroundTask: () => subagentRow() }) },
     )
     expect(container.querySelector('[data-testid="send-message-recipient"]')).toBeNull()
     expect(container.textContent).toContain('Explore the parser')

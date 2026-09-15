@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -379,7 +380,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		insert := func() int64 {
 			require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
 				UserID:  userid.MustNew(user.ID),
-				OpType:  "create",
+				OpType:  leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE,
 				Payload: []byte("payload"),
 			}))
 			pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{

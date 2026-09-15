@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { ChatImageDeps, ChatImageResolution } from './chatImageResolve'
+import type { ChatImageResolution } from './chatImageResolve'
+import type { MessageContextResolver } from './messageContextResolver'
 import type { ZoomMode } from '~/components/fileviewer/ImageToolbar'
 import { createEffect, createMemo, createSignal, Match, on, onCleanup, Switch } from 'solid-js'
 import * as styles from '~/components/fileviewer/FileViewer.css'
@@ -27,14 +28,14 @@ export function ChatImageViewer(props: {
   agentId: string
   seq: bigint
   imageIndex: number
-  /** Display name for the alt text; the tab strip shows the same title. */
+  /** The tab title supplies alternative text when the provider supplies no image description. */
   title?: string
-  deps: ChatImageDeps
+  messages: MessageContextResolver | undefined
 }): JSX.Element {
   const [resolution, setResolution] = createSignal<ChatImageResolution>({ status: 'pending' })
   const [zoom, setZoom] = createSignal<ZoomMode>('fit')
 
-  // `on()`, and the four props are the WHOLE dependency list. A bare effect
+  // `on()` keeps these props as the complete dependency list. A bare effect
   // tracks whatever its body reads, and this body reads the chat store:
   // `resolveChatImage` is async, so it runs synchronously as far as the first
   // `await`, and when the message is already in the loaded window it reaches
@@ -49,6 +50,7 @@ export function ChatImageViewer(props: {
       agentId: props.agentId,
       seq: props.seq,
       imageIndex: props.imageIndex,
+      messages: props.messages,
     }),
     (ref) => {
       let live = true
@@ -58,7 +60,7 @@ export function ChatImageViewer(props: {
       setResolution({ status: 'pending' })
       // A resolution that lands after the props moved on belongs to a reference
       // nobody is looking at; writing it would show the previous tab's image.
-      void resolveChatImage(ref, props.deps).then((next) => {
+      void resolveChatImage(ref, ref.messages).then((next) => {
         if (live)
           setResolution(next)
       })
@@ -72,6 +74,10 @@ export function ChatImageViewer(props: {
     const r = resolution()
     return r.status === 'ready' ? decodeImageBytes(r.source) : null
   })
+  const imageDescription = () => {
+    const r = resolution()
+    return r.status === 'ready' ? r.source.description : undefined
+  }
 
   return (
     <Switch fallback={<div class={styles.loadingState}>Loading image…</div>}>
@@ -80,7 +86,7 @@ export function ChatImageViewer(props: {
           <ImageRender
             content={decoded().content}
             mimeType={decoded().mimeType}
-            name={props.title ?? 'Image'}
+            name={imageDescription() || props.title || 'Image'}
             zoom={zoom()}
             onZoomChange={setZoom}
           />

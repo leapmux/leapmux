@@ -17,6 +17,9 @@ codexTest.describe('Codex Interrupt', () => {
     // After interrupt, the thinking indicator must clear, and at least
     // one user + partial-response bubble must be present.
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
+    // And the button goes with it. The press publishes the stop, so neither
+    // survives the provider's round trip, and there is nothing left to press.
+    await expect(interruptBtn).not.toBeVisible()
     const bubbles = messageBubbles(page)
     expect(await bubbles.count()).toBeGreaterThan(1)
   })

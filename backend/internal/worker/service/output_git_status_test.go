@@ -148,10 +148,7 @@ func TestPersistTurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
 
 	sink, mock := newGitStatusFixture(t)
 
-	require.NoError(t, sink.PersistTurnEnd(
-		[]byte(`{"type":"result","subtype":"success"}`),
-		agent.SpanInfo{},
-	))
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{}))
 
 	require.Eventually(t, func() bool {
 		return mock.lastStatus() != nil
@@ -176,7 +173,7 @@ func TestPersistMessage_DoesNotBroadcastGitStatus(t *testing.T) {
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
 	} {
-		require.NoError(t, sink.PersistMessage(source, []byte(`{}`), agent.SpanInfo{}))
+		require.NoError(t, sink.PersistMessage(source, agent.MessageContent{Original: []byte(`{}`)}, agent.SpanInfo{}))
 	}
 
 	// Give any spurious goroutine fire enough time to land. With the

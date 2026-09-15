@@ -6,6 +6,7 @@
       "name": "leapmux-frontend",
       "dependencies": {
         "@bufbuild/protobuf": "^2.14.0",
+        "@cfworker/json-schema": "^4.1.1",
         "@connectrpc/connect": "^2.1.2",
         "@connectrpc/connect-web": "^2.1.2",
         "@knadh/oat": "^0.7.2",
@@ -141,6 +142,8 @@
     "@bramus/specificity": ["@bramus/specificity@2.4.2", "", { "dependencies": { "css-tree": "^3.0.0" }, "bin": { "specificity": "bin/cli.js" } }, "sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.0", "", {}, "sha512-C3UGsiCwSprE2NKIIFA3hCDlpXTMCAXRZuEVp88L1GY36Y41+rYL5fryE+nOFhp4p4JPQvdV8PQ4DWgHgeTE+w=="],
+
+    "@cfworker/json-schema": ["@cfworker/json-schema@4.1.1", "", {}, "sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og=="],
 
     "@clack/core": ["@clack/core@1.4.3", "", { "dependencies": { "fast-wrap-ansi": "^0.2.0", "sisteransi": "^1.0.5" } }, "sha512-/kr3UWNtdJfxZtPgDqUOmG2pvwlmcLGheex5yiZKdwbzZJxhV+HMNR9QNmyY5cGwTNV6LrR7Jtp+KjhUAP1qBQ=="],
 

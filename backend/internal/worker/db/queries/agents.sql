@@ -195,16 +195,19 @@ UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ?, title_auto_gene
 -- statement run hundreds of times per turn.
 -- name: UpdateAgentGoal :exec
 UPDATE agents
-SET goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
+SET goal_native_id = ?, goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
 WHERE id = ?;
 
 -- ClearAgentGoal removes the goal. It is unconditional on purpose. Codex's
 -- thread/resume pushes thread/goal/cleared to mean "this thread has no goal",
 -- and a caller that skipped the write because its in-memory copy was already
 -- empty would leave a goal from a previous process in the table forever.
+-- goal_status returns to 0, AGENT_GOAL_STATUS_UNSPECIFIED. The literal is safe
+-- where a status ordinal would not be: proto3 fixes the first enumerator at 0,
+-- so no renumber can move it.
 -- name: ClearAgentGoal :exec
 UPDATE agents
-SET goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
+SET goal_native_id = '', goal_objective = '', goal_status = 0, goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
 WHERE id = ?;
 
 -- GetAgentGoal reads only the goal columns. `SELECT *` would deserialize the
@@ -212,7 +215,7 @@ WHERE id = ?;
 -- completed tool call, exactly the cost GetAgentID and GetAgentTitle above
 -- exist to avoid.
 -- name: GetAgentGoal :one
-SELECT id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
+SELECT id, goal_native_id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
 FROM agents WHERE id = ?;
 
 -- name: ListAgentsByIDs :many
@@ -243,8 +246,15 @@ INSERT INTO agents (id, parent_agent_id, spawn_span_id, working_dir, home_dir, t
 -- EnsureChildAgent: re-attach a child row when the registry upsert did not
 -- land before the restart. The (parent_agent_id, spawn_span_id) pair is unique
 -- among children (idx_agents_spawn_span), so this is at most one row.
+--
+-- The spawn_span_id <> '' term repeats the index predicate, which is what makes
+-- the query eligible for that index. SQLite proves parent_agent_id = ? implies
+-- IS NOT NULL, but it cannot prove a bound parameter differs from '', so without
+-- the term the plan falls back to idx_agents_parent and reads EVERY child of the
+-- parent plus a table row for each -- the opposite of the single unique seek the
+-- comment above promises. See partial_index_test.go.
 -- name: GetChildAgentBySpawnSpan :one
-SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ?;
+SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ? AND spawn_span_id <> '';
 
 -- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan. It reads
 -- the only DURABLE copy of a spawn span. A provider's own index of them is

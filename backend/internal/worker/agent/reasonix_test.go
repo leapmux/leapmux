@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,6 +25,8 @@ func newReasonixAgentForRPC(t *testing.T) (*ReasonixAgent, func() []recordedRequ
 	)
 }
 
+const reasonixSessionFixture = `{"sessionId":"reasonix-new","models":{"currentModelId":"deepseek-flash","availableModels":[{"modelId":"deepseek-flash","name":"Flash"},{"modelId":"deepseek-pro","name":"Pro"}]},"modes":{"currentModeId":"normal","availableModes":[{"id":"normal","name":"Normal"},{"id":"plan","name":"Plan"},{"id":"goal","name":"Goal"}]},"configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"deepseek-flash","options":[{"value":"deepseek-flash","name":"Flash"},{"value":"deepseek-pro","name":"Pro"}]},{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"max","options":[{"value":"high","name":"High"},{"value":"max","name":"Max"}]},{"id":"tool_approval","name":"Tool Approval","category":"tool_approval","type":"select","currentValue":"ask","options":[{"value":"ask","name":"Ask"},{"value":"auto","name":"Auto"},{"value":"yolo","name":"Yolo"}]}]}`
+
 // installFakeReasonixCLI puts a fake `reasonix` on PATH. The launcher records the
 // argv it was invoked with to argsFile so a test can assert the startup `--model`
 // flag, then exec's the helper process that speaks ACP.
@@ -36,16 +39,18 @@ func installFakeReasonixCLI(t *testing.T, argsFile string) {
 	})
 }
 
-// TestHelperProcessReasonixCLI is the fake Reasonix ACP server. Reasonix's
-// session/new returns ONLY a sessionId -- no models/modes/configOptions channel.
+// TestHelperProcessReasonixCLI supplies the advertised Reasonix session settings.
 func TestHelperProcessReasonixCLI(*testing.T) {
 	runFakeACPServer("GO_WANT_HELPER_PROCESS_REASONIX", func(method string) (string, bool, bool) {
 		switch method {
 		case acpMethodInitialize:
 			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":true}}}`, false, true
 		case acpMethodSessionNew:
-			// Minimal: only a sessionId, no models/modes/configOptions.
-			return `{"sessionId":"reasonix-new"}`, false, true
+			return reasonixSessionFixture, false, true
+		case acpMethodSessionSetModel, acpMethodSessionSetMode:
+			return `{}`, false, true
+		case acpMethodSessionSetConfigOption:
+			return reasonixSessionFixture, false, true
 		case acpMethodSessionLoad, acpMethodSessionPrompt:
 			return `{}`, false, true
 		default:
@@ -76,14 +81,147 @@ func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
 
 	assert.Equal(t, "reasonix-new", agent.sessionID)
 	assert.Equal(t, "deepseek-flash", agent.model)
-	// Reasonix's session reports no model catalog or config-option channel, so no
-	// option groups surface from the running agent.
-	assert.Nil(t, agent.OptionGroups())
+	current := CurrentOptions(agent.OptionGroups())
+	assert.Equal(t, "normal", current[OptionIDPermissionMode])
+	assert.Equal(t, "max", current[OptionIDEffort])
+	assert.Equal(t, "ask", current["tool_approval"])
 
-	// The model is fixed at startup via the `--model` flag.
+	// The launch flag selects the initial model.
 	recorded, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
 	assert.Contains(t, string(recorded), "acp --model deepseek-flash")
+}
+
+func TestReasonixAppliesAdvertisedSettingsWithoutRestart(t *testing.T) {
+	values := map[string]string{"model": "deepseek-flash", "effort": "max", "tool_approval": "ask"}
+	var fixture struct {
+		ConfigOptions []map[string]any `json:"configOptions"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(reasonixSessionFixture), &fixture))
+	a, requests := newACPAgentForRPCWithRequestResponder(t,
+		func() *ReasonixAgent { return &ReasonixAgent{} },
+		func(a *ReasonixAgent) *acpBase { return &a.acpBase },
+		func(req recordedRequest) jsonrpcResponsePayload {
+			if req.Method == acpMethodSessionSetConfigOption {
+				id, _ := req.Params["configId"].(string)
+				value, _ := req.Params["value"].(string)
+				values[id] = value
+				for _, option := range fixture.ConfigOptions {
+					option["currentValue"] = values[option["id"].(string)]
+				}
+				data, err := json.Marshal(fixture)
+				require.NoError(t, err)
+				return jsonrpcResponsePayload{Result: data}
+			}
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
+		},
+	)
+	a.sink = &testSink{}
+	a.modeChannel = modeChannelPermissionMode
+	handshake, err := parseACPSessionResult(json.RawMessage(reasonixSessionFixture))
+	require.NoError(t, err)
+	a.applyHandshakeModels(handshake)
+	a.applyHandshakeMode(handshake, "normal")
+	a.handleACPConfigOptionUpdate(json.RawMessage(reasonixSessionFixture))
+	result := a.UpdateSettings(map[string]string{OptionIDModel: "deepseek-pro", OptionIDEffort: "high", OptionIDPermissionMode: "plan", "tool_approval": "yolo"})
+	assert.True(t, result.AppliedLive)
+	current := CurrentOptions(a.OptionGroups())
+	assert.Equal(t, "deepseek-pro", current[OptionIDModel])
+	assert.Equal(t, "high", current[OptionIDEffort])
+	assert.Equal(t, "plan", current[OptionIDPermissionMode])
+	assert.Equal(t, "yolo", current["tool_approval"])
+	assert.NotEmpty(t, requests())
+}
+
+func TestReasonixTaskCompletionClosesRegistry(t *testing.T) {
+	installFakeReasonixCLI(t, filepath.Join(t.TempDir(), "args.txt"))
+	sink := &testSink{}
+	provider, err := StartReasonix(t.Context(), Options{AgentID: "reasonix-new", WorkingDir: t.TempDir(), Shell: testutil.TestShell(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX}, sink)
+	require.NoError(t, err)
+	a := provider.(*ReasonixAgent)
+	t.Cleanup(func() { a.Stop(); _ = a.Wait() })
+	for _, tt := range []struct {
+		name, status, output string
+		background           bool
+		want                 bgtask.Status
+	}{
+		{name: "completed", status: "completed", output: "Subagent reference: sa_example\nSubagent outcome: status=completed retryable=false\n\nFinal answer:\nReport", want: bgtask.StatusCompleted},
+		{name: "partial", status: "completed", output: "Subagent reference: sa_example\nSubagent outcome: status=partial retryable=true error_code=max_steps", want: bgtask.StatusCompleted},
+		{name: "native failure", status: "completed", output: "Subagent reference (failed): sa_example\nSubagent outcome: status=failed retryable=false error_code=subagent_error", want: bgtask.StatusFailed},
+		{name: "native cancellation", status: "completed", output: "Subagent reference: sa_example\nSubagent outcome: status=cancelled retryable=false", want: bgtask.StatusStopped},
+		{name: "transport failure", status: "failed", output: "Unavailable", want: bgtask.StatusFailed},
+		{name: "transport cancellation", status: "cancelled", want: bgtask.StatusStopped},
+		{name: "background acknowledgement", status: "completed", background: true, output: "Started background task \"job-1\" (Inspect sample).", want: bgtask.StatusRunning},
+		{name: "background failure", status: "failed", background: true, output: "Cannot start", want: bgtask.StatusFailed},
+		{name: "progress", status: "in_progress", output: "Working", want: bgtask.StatusRunning},
+		{name: "unstructured result", status: "completed", output: "Report\nSubagent outcome: status=failed retryable=false", want: bgtask.StatusCompleted},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call", "toolCallId": tt.name, "title": "use_capability", "kind": "other", "status": "pending",
+				"rawInput": map[string]any{"action": "call", "capability_id": "tool:task", "arguments": map[string]any{"description": "Inspect sample", "prompt": "Read sample.py", "run_in_background": tt.background}},
+			})
+			require.NoError(t, err)
+			a.handleACPUpdate(request, nil)
+			update, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call_update", "toolCallId": tt.name, "status": tt.status,
+				"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": tt.output}}},
+			})
+			require.NoError(t, err)
+			a.handleACPUpdate(update, nil)
+			found := false
+			for _, task := range sink.BackgroundTasks() {
+				if task.RowKey == tt.name {
+					found = true
+					assert.Equal(t, tt.want, task.Status)
+				}
+			}
+			require.True(t, found)
+		})
+	}
+}
+
+func TestReasonixRecoversTruncatedToolResults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REASONIX_HOME", dir)
+	installFakeReasonixCLI(t, filepath.Join(t.TempDir(), "args.txt"))
+	full := strings.Repeat("reader result line\n", 1000)
+	stored, err := json.Marshal(map[string]any{
+		"role": "tool", "id": "native-result", "tool_call_id": "read-call", "name": "read_file",
+		"tool_run_state": "completed", "content": full,
+	})
+	require.NoError(t, err)
+	writeFixtureFile(t, filepath.Join(dir, "sessions", "reasonix-new.jsonl"), string(stored)+"\n")
+	sink := &testSink{}
+	provider, err := StartReasonix(t.Context(), Options{
+		AgentID: "reasonix-new", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	}, sink)
+	require.NoError(t, err)
+	a := provider.(*ReasonixAgent)
+	t.Cleanup(func() {
+		a.Stop()
+		_ = a.Wait()
+	})
+	original, err := json.Marshal(map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": "read-call", "status": "completed",
+		"content": []any{map[string]any{"type": "content", "content": map[string]any{
+			"type": "text", "text": full[:8000] + "\n…(11000 more chars truncated)",
+		}}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "read-call", Closing: true}))
+	require.NoError(t, a.sink.PersistTurnEnd(MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, SpanInfo{}))
+	var result *testSinkMessage
+	for _, message := range sink.Messages() {
+		if message.SpanID == "read-call" {
+			result = &message
+			break
+		}
+	}
+	require.NotNil(t, result)
+	assert.Equal(t, original, result.Content)
+	assert.Equal(t, 1000, strings.Count(string(result.SupplementalContent), "reader result line"))
 }
 
 func TestStartReasonix_DefaultsModelFlagWhenUnset(t *testing.T) {
@@ -142,24 +280,6 @@ func TestStartReasonix_LoadSessionUsesResumeID(t *testing.T) {
 	assert.Equal(t, "deepseek-pro", agent.model)
 }
 
-// TestReasonixUpdateSettingsRelaunchesOnModelChange pins the relaunch contract:
-// Reasonix can't switch its model over ACP, so a model change returns false
-// (the service falls back to stop+restart with the new --model); an unchanged or
-// empty model is a no-op that needs no restart.
-func TestReasonixUpdateSettingsRelaunchesOnModelChange(t *testing.T) {
-	agent := &ReasonixAgent{}
-	agent.model = "deepseek-flash"
-
-	assert.False(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-pro"}).AppliedLive,
-		"a model change must signal a relaunch")
-	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-flash"}).AppliedLive,
-		"the same model needs no restart")
-	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: ""}).AppliedLive,
-		"an empty model is a no-op")
-	// UpdateSettings must not mutate the stored model (the relaunch carries it).
-	assert.Equal(t, "deepseek-flash", agent.model)
-}
-
 func TestReasonixCancelSessionSendsACPMethod(t *testing.T) {
 	agent, requests := newReasonixAgentForRPC(t)
 
@@ -175,23 +295,14 @@ func TestReasonixAvailableOptionGroupsIsNil(t *testing.T) {
 	assert.Nil(t, agent.OptionGroups())
 }
 
-// TestReasonixIgnoresConfigOptionModelUpdate pins the modelFixedAtLaunch guard:
-// Reasonix's model is set once via the --model launch flag and cannot change
-// over ACP, so a server config_option_update advertising a different model must
-// not overwrite the stored model (which would desync it from the running
-// process).
-func TestReasonixIgnoresConfigOptionModelUpdate(t *testing.T) {
+func TestReasonixAppliesConfigOptionModelUpdate(t *testing.T) {
 	agent, _ := newReasonixAgentForRPC(t)
 	agent.sink = &testSink{}
-	agent.modelFixedAtLaunch = true
 	agent.model = "deepseek-flash"
-
 	agent.handleACPConfigOptionUpdate(json.RawMessage(
 		`{"configOptions":[{"id":"model","currentValue":"deepseek-pro","options":[{"value":"deepseek-flash"},{"value":"deepseek-pro"}]}]}`,
 	))
-
-	assert.Equal(t, "deepseek-flash", agent.model,
-		"a launch-fixed model must not be overwritten by a config_option_update")
+	assert.Equal(t, "deepseek-pro", agent.model)
 }
 
 func TestReasonixModelCatalog(t *testing.T) {

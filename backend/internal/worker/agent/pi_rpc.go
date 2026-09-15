@@ -27,6 +27,16 @@ type piResponseEnvelope struct {
 // failure (success:false), returns an error containing the server's `error`
 // string. Wire-level failures (write/timeout) wrap the underlying error.
 func (a *PiAgent) sendPiCommand(method string, payload map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	wait, err := a.beginPiCommand(method, payload)
+	if err != nil {
+		return nil, err
+	}
+	return wait(timeout)
+}
+
+// beginPiCommand writes the command before returning its response waiter.
+// Call the waiter exactly once to release the response registration.
+func (a *PiAgent) beginPiCommand(method string, payload map[string]any) (func(time.Duration) (json.RawMessage, error), error) {
 	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
 
 	envelope := make(map[string]any, len(payload)+2)
@@ -43,25 +53,28 @@ func (a *PiAgent) sendPiCommand(method string, payload map[string]any, timeout t
 	data = append(data, '\n')
 
 	ch, release := a.register(id)
-	defer release()
 
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
 	if stopped {
+		release()
 		return nil, fmt.Errorf("agent is stopped")
 	}
 
 	if err := a.writeStdin(data); err != nil {
+		release()
 		return nil, fmt.Errorf("write %s: %w", method, err)
 	}
 
-	respLine, err := a.awaitResponse(ch, method, timeout)
-	if err != nil {
-		return nil, err
-	}
-
-	return parsePiResponse(method, respLine)
+	return func(timeout time.Duration) (json.RawMessage, error) {
+		defer release()
+		respLine, err := a.awaitResponse(ch, method, timeout)
+		if err != nil {
+			return nil, err
+		}
+		return parsePiResponse(method, respLine)
+	}, nil
 }
 
 func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, error) {
@@ -79,36 +92,12 @@ func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, 
 }
 
 func (a *PiAgent) sendPiCommandDetached(method string, payload map[string]any, handle func(error)) error {
-	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
-	envelope := make(map[string]any, len(payload)+2)
-	for key, value := range payload {
-		envelope[key] = value
-	}
-	envelope["id"] = id
-	envelope["type"] = method
-	data, err := json.Marshal(envelope)
+	wait, err := a.beginPiCommand(method, payload)
 	if err != nil {
-		return fmt.Errorf("marshal %s: %w", method, err)
-	}
-	data = append(data, '\n')
-	response, release := a.register(id)
-	a.mu.Lock()
-	stopped := a.stopped
-	a.mu.Unlock()
-	if stopped {
-		release()
-		return fmt.Errorf("agent is stopped")
-	}
-	if err := a.writeStdin(data); err != nil {
-		release()
-		return fmt.Errorf("write %s: %w", method, err)
+		return err
 	}
 	go func() {
-		defer release()
-		line, err := a.awaitResponse(response, method, 0)
-		if err == nil {
-			_, err = parsePiResponse(method, line)
-		}
+		_, err := wait(0)
 		handle(err)
 	}()
 	return nil

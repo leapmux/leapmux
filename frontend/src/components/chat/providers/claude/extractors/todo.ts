@@ -22,3 +22,11 @@ export function claudeTodoWriteFromInput(
     todos,
   }
 }
+
+/** The result supplies the saved list. The matching request supplies omitted items. */
+export function claudeTodoWriteFromResult(
+  result: Record<string, unknown> | undefined,
+  input: Record<string, unknown> | undefined,
+): TodoListSource | null {
+  return claudeTodoWriteFromInput(Array.isArray(result?.newTodos) ? { todos: result.newTodos } : input)
+}

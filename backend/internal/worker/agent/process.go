@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,12 +55,34 @@ type processBase struct {
 	// the token atomic with the flag read -- lives here too.
 	turnSeqSource
 
-	// stdinMu serializes Write syscalls to p.stdin without coupling them to
-	// p.mu, so a slow stdin (full kernel pipe buffer, e.g. when a large
-	// inline image attachment is being shipped) cannot stall state operations
-	// or Stop. Held only across the Write — never together with p.mu — so
-	// callers must check `stopped` separately before taking it.
+	// stdinMu guards the write queue below. It is NOT held across a Write, so a
+	// slow stdin (a full kernel pipe buffer, for example while a large inline
+	// image attachment ships) cannot stall state operations or Stop. It is never
+	// held together with p.mu, so callers must check `stopped` separately.
 	stdinMu sync.Mutex
+	// stdinQueue carries every outbound frame to ONE writer goroutine, which is
+	// what serializes the writes.
+	//
+	// Order is the reason it is one goroutine and not a pool. A cancel that
+	// overtook the answer it follows would re-open the hang the answer exists to
+	// end: acpBase.Interrupt and CodexAgent.Interrupt both send their answers
+	// FIRST and then cancel, and each says so at its own site. FIFO keeps that
+	// true whether the caller waits for its write or not.
+	//
+	// It also caps what an unresponsive child costs. A reply written from the read
+	// loop had to be moved off it -- the loop must keep draining the child's
+	// stdout, and the reply is a write to a stdin the child may not be reading --
+	// and a goroutine for each one made that cost unlimited. A frame holds its
+	// bytes; a goroutine held an 8 KiB stack as well.
+	stdinQueue chan stdinFrame
+	// stdinClosed ends the writer. Stop closes it, after it closes stdin.
+	//
+	// It is never set back to nil, and stdinClosedOnce is what makes the close
+	// idempotent instead. A nil channel blocks a select arm FOREVER, so clearing it
+	// left the next writeStdin waiting on a queue whose writer had already exited
+	// and on a `closed` arm that could never fire -- a permanent hang, not an error.
+	stdinClosed     chan struct{}
+	stdinClosedOnce bool
 
 	// jobObject, when non-nil, is the Windows kill-on-close job group that
 	// holds the shell wrapper and every descendant it spawns. Terminating or
@@ -114,18 +137,166 @@ func (p *processBase) resetCumulativeOutput() {
 	p.mu.Unlock()
 }
 
-// writeStdin serializes a Write to p.stdin under stdinMu. The lock is held
-// only across the Write — never together with p.mu — so a slow stdin can't
-// stall state operations or Stop, and callers that already hold p.mu (e.g.
-// ClaudeCodeAgent.SendInput) won't recursively deadlock. If Stop closes
-// stdin concurrently, the Write returns a broken-pipe error which is
-// surfaced unchanged. Callers that need a deterministic "agent is stopped"
-// error must check `stopped` themselves before calling.
+// stdinQueueDepth caps the frames one unresponsive child can hold.
+//
+// A child that stops reading its stdin blocks the writer, and the queue then
+// fills. 256 frames is far above any real burst and far below a memory cost that
+// matters. The ASYNC path refuses beyond it, which loses a reply to a child that
+// is not reading its stdin -- a child that would not have read that reply either.
+const stdinQueueDepth = 256
+
+// errStdinClosed refuses a frame for a process whose stdin is gone.
+var errStdinClosed = errors.New("agent stdin is closed")
+
+// stdinFrame is one outbound write waiting for the process's stdin.
+type stdinFrame struct {
+	data []byte
+	// done carries the write's error back to a caller that waits for it. A nil
+	// done means the caller does not wait, and the writer logs a failure instead.
+	done chan error
+	// describe labels a frame with no waiter in that log line.
+	describe string
+}
+
+// stdinWriterLocked returns the queue, starting the writer on first use. The
+// caller holds stdinMu.
+//
+// Lazily, because a processBase is built in several places and a test assigns
+// `stdin` after construction. A process that never writes costs no goroutine.
+func (p *processBase) stdinWriterLocked() (chan stdinFrame, chan struct{}) {
+	// The close signal FIRST, and reused rather than replaced. Stop may have created
+	// and closed it already, with no write ever asked for -- the writer then starts
+	// here, sees it closed at once, answers this frame and exits, instead of running
+	// for the life of the worker with nothing able to end it.
+	if p.stdinClosed == nil {
+		p.stdinClosed = make(chan struct{})
+	}
+	if p.stdinQueue == nil {
+		p.stdinQueue = make(chan stdinFrame, stdinQueueDepth)
+		go p.runStdinWriter(p.stdinQueue, p.stdinClosed)
+	}
+	return p.stdinQueue, p.stdinClosed
+}
+
+// runStdinWriter performs every write to this process's stdin, one at a time.
+func (p *processBase) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
+	deliver := func(frame stdinFrame, err error) {
+		if frame.done != nil {
+			frame.done <- err
+			return
+		}
+		if err != nil {
+			slog.Warn("write to agent stdin", "agent_id", p.agentID, "frame", frame.describe, "error", err)
+		}
+	}
+	for {
+		select {
+		case frame := <-queue:
+			deliver(frame, p.writeStdinNow(frame.data))
+		case <-closed:
+			// Answer what is already queued rather than abandoning it, so no caller
+			// waits on a `done` that never arrives.
+			for {
+				select {
+				case frame := <-queue:
+					deliver(frame, errStdinClosed)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// writeStdinNow performs one Write.
+//
+// The writer goroutine is the caller while the writer runs, which is what serializes
+// the syscalls. The two paths that run once Stop ended the writer call it directly,
+// and by then stdin is closed, so those writes fail at once and cannot overlap
+// anything.
+//
+// A failed write that transferred bytes has an uncertain delivery outcome. The
+// returned error retains the writer's error for callers that inspect it.
+func (p *processBase) writeStdinNow(data []byte) error {
+	// The writer runs on its OWN goroutine, so a nil stdin has to be an error here.
+	// A panic on a bare goroutine takes down the whole worker process, where the
+	// same panic used to reach the caller that asked for the write.
+	if p.stdin == nil {
+		return errStdinClosed
+	}
+	written, err := p.stdin.Write(data)
+	if err == nil && written != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil && written > 0 {
+		return fmt.Errorf("%w: %w", ErrDeliveryUncertain, err)
+	}
+	return err
+}
+
+// writeStdin queues one frame and waits for its write.
+//
+// It never acquires p.mu, so state operations and Stop stay available during a
+// slow write. Callers must check stopped when they need a specific
+// stopped-process error.
 func (p *processBase) writeStdin(data []byte) error {
 	p.stdinMu.Lock()
-	defer p.stdinMu.Unlock()
-	_, err := p.stdin.Write(data)
-	return err
+	queue, closed := p.stdinWriterLocked()
+	p.stdinMu.Unlock()
+	select {
+	case <-closed:
+		// The writer is gone, so write INLINE rather than refuse. Stop closed stdin
+		// already, so this fails at once and cannot block -- and a caller that asks
+		// for a write after Stop still gets the real error rather than a
+		// substituted one.
+		return p.writeStdinNow(data)
+	default:
+	}
+	done := make(chan error, 1)
+	select {
+	case queue <- stdinFrame{data: data, done: done}:
+	case <-closed:
+		return p.writeStdinNow(data)
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-closed:
+		return errStdinClosed
+	}
+}
+
+// writeStdinDetached queues one frame and returns WITHOUT waiting for its write.
+//
+// For a caller on the goroutine that drains the child's stdout. A reply is a write
+// to a stdin the child may not be reading, and waiting for it there stops the loop
+// that has to keep draining the child's stdout -- which is the deadlock the reply
+// was meant to prevent. `describe` labels the frame in the failure log, because no
+// caller is left to report it.
+//
+// It refuses rather than blocks when the queue is full. A child that has not read
+// 256 frames is not going to read this one either, and blocking here would put the
+// read loop back where this exists to take it out of.
+func (p *processBase) writeStdinDetached(data []byte, describe string) {
+	p.stdinMu.Lock()
+	queue, closed := p.stdinWriterLocked()
+	p.stdinMu.Unlock()
+	select {
+	case <-closed:
+		// The writer is gone, so write INLINE. Stop closed stdin already, so the
+		// write fails at once and cannot stall this goroutine -- and a request that
+		// arrives during tear-down still draws its refusal instead of vanishing.
+		if err := p.writeStdinNow(data); err != nil {
+			slog.Debug("write to a closed agent stdin", "agent_id", p.agentID, "frame", describe, "error", err)
+		}
+	default:
+		select {
+		case queue <- stdinFrame{data: data, describe: describe}:
+		default:
+			slog.Warn("drop a frame for an unresponsive agent stdin",
+				"agent_id", p.agentID, "frame", describe, "queued", stdinQueueDepth)
+		}
+	}
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without
@@ -163,6 +334,18 @@ func (p *processBase) Stop() {
 	p.mu.Unlock()
 
 	_ = p.stdin.Close()
+	// The writer goes last. Closing stdin first makes every queued frame fail
+	// rather than hang, and the writer then answers each waiting caller with that
+	// failure instead of leaving it on a `done` nobody sends to.
+	p.stdinMu.Lock()
+	if p.stdinClosed == nil {
+		p.stdinClosed = make(chan struct{})
+	}
+	if !p.stdinClosedOnce {
+		p.stdinClosedOnce = true
+		close(p.stdinClosed)
+	}
+	p.stdinMu.Unlock()
 
 	select {
 	case <-p.processDone:
@@ -215,17 +398,6 @@ func (p *processBase) recordProcessExit(err error) {
 	p.mu.Unlock()
 }
 
-// Interrupt is a default no-op implementation. Providers that have a
-// well-defined "abort current turn" signal (Codex turn/interrupt,
-// Claude Code interrupt control payload, ACP session/cancel, Pi
-// abort) override this with their own logic. The base implementation
-// is reached only by providers with no native interrupt path; rather
-// than fail the RPC we treat it as a no-op so the worker's
-// InterruptAgent handler stays uniform.
-func (p *processBase) Interrupt() error {
-	return nil
-}
-
 // APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
 func (p *processBase) APITimeout() time.Duration {
 	if p.apiTimeout > 0 {
@@ -234,7 +406,7 @@ func (p *processBase) APITimeout() time.Duration {
 	return DefaultAPITimeout
 }
 
-func (p *processBase) ClearContext() (string, bool) { return "", false }
+func (p *processBase) ClearContext() (string, error) { return "", ErrContextClearUnsupported }
 
 // DiscardOutput marks the process so that the readOutput loop silently
 // drops all remaining lines. Use this before stopping an agent that will
@@ -565,6 +737,8 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 			"agent_id", p.agentID,
 			"error", err,
 		)
+		// The worker cannot receive further replies after framing fails.
+		p.cancel()
 	}
 
 	p.recordProcessExit(p.cmd.Wait())
@@ -574,31 +748,12 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 	close(p.processDone)
 }
 
-// enrichWithToolUses injects num_tool_uses into a JSON message so the
-// frontend can determine whether the turn involved tool use. Returns the
-// original content unchanged if enrichment fails.
-func (p *processBase) enrichWithToolUses(content []byte) []byte {
+// messageWithToolUses captures the completed tool count as separate worker metadata.
+func (p *processBase) messageWithToolUses(original []byte) MessageContent {
 	p.mu.Lock()
-	numToolUses := p.turnToolUses
+	count := p.turnToolUses
 	p.mu.Unlock()
-	return enrichWithToolUseCount(content, numToolUses)
-}
-
-func enrichWithToolUseCount(content []byte, numToolUses int) []byte {
-	enriched := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(content, &enriched); err != nil {
-		return content
-	}
-	b, err := json.Marshal(numToolUses)
-	if err != nil {
-		return content
-	}
-	enriched["num_tool_uses"] = b
-	out, err := json.Marshal(enriched)
-	if err != nil {
-		return content
-	}
-	return out
+	return withToolUseCount(MessageContent{Original: original}, count)
 }
 
 // drainStderr starts a goroutine that reads from the given reader into

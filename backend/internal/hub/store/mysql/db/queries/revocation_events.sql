@@ -18,9 +18,14 @@ SELECT NOW(3);
 -- full scan of the retention window's events, and it runs while the caller
 -- holds the user-auth row lock. The same dialect split already applies to
 -- idx_revocation_events_pending.
+--
+-- `kind = 2` is REVOCATION_EVENT_KIND_SESSION_REVOKED. The literal keeps the
+-- three dialects on one query text. MySQL indexes every row of this table, so
+-- a bound parameter serves the same plan here.
+-- TestRevocationEventKindNumbering pins the number.
 SELECT EXISTS(
     SELECT 1 FROM revocation_events
-    WHERE subject_id = ? AND kind = 'session_revoked'
+    WHERE subject_id = ? AND kind = 2
 );
 
 -- name: LockRevocationEventSequence :one

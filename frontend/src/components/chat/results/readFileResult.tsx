@@ -5,6 +5,7 @@ import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
 import { toolMessage, toolResultCollapsed, toolResultContentPre } from '../toolStyles.css'
+import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ReadResultView } from './ReadResultView'
 import { useCollapsedItems } from './useCollapsedLines'
 
@@ -57,6 +58,18 @@ export function readFileSourceFromContent(args: {
   }
 }
 
+/**
+ * The file text a read body DRAWS.
+ *
+ * The parsed lines win, because a provider that returns its file already numbered
+ * (`1\tfirst`) keeps those prefixes in `fallbackContent`, and the body strips them.
+ * A presentation sets its `output` from this, so the Copy button hands over the text
+ * on screen rather than the wire form of it.
+ */
+export function readFileBodyText(source: ReadFileResultSource): string {
+  return source.lines ? source.lines.map(line => line.text).join('\n') : source.fallbackContent
+}
+
 // Stable empty fallback so memo equality holds when `lines` is null —
 // otherwise every read re-allocates `[]` and downstream `displayItems`
 // trips its equality check on every render.
@@ -83,7 +96,7 @@ export function ReadFileResultBody(props: {
       </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
-        fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || 'Empty file'}</div>}
+        fallback={<div class={toolResultContentPre}>{props.source.fallbackContent || EMPTY_RESULT_NOTICE}</div>}
       >
         <ReadResultView
           lines={displayItems()}

@@ -15,6 +15,7 @@ import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { errorText } from '~/styles/shared.css'
+import { unescapeAutolinkDots } from './autolinkDotEscape'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
@@ -150,6 +151,8 @@ interface MarkdownEditorProps {
   onAfterSend?: () => void
   onDraftKeyChanged?: (key: string | null) => void
   disabled?: boolean
+  /** Hide the text input when the banner supplies the request's input controls. */
+  hideInput?: boolean
   /**
    * A height the box HOLDS once the content passes it: the composer's
    * drag-to-resize.
@@ -424,7 +427,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const handleSend = async () => {
-    if (props.disabled || !editorInstance)
+    if (props.disabled || props.hideInput || !editorInstance)
       return
     // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
     // and `replaceAll` rebuilds the document under the selection.
@@ -441,7 +444,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         const serializer = ctx.get(serializerCtx)
         const view = ctx.get(editorViewCtx)
         initialDocument = view.state.doc
-        text = serializer(view.state.doc).trim()
+        text = unescapeAutolinkDots(serializer(view.state.doc)).trim()
       })
     }
     catch {
@@ -577,7 +580,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // decorations (placeholder, code-language labels, syntax highlight), and the
   // earlier ones ran against refs the later effects had not assigned yet.
   createEffect(() => {
-    disabledRef = props.disabled ?? false
+    disabledRef = props.disabled === true || props.hideInput === true
     placeholderRef = props.placeholder ?? 'Send a message...'
     disabledPlaceholderRef = props.disabledPlaceholder ?? ''
     forceDecorationUpdate()
@@ -782,7 +785,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // re-serializes for the same reason; this is the same path for a draft.
       try {
         editor.action((ctx: Ctx) => {
-          emitDocument(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc))
+          emitDocument(unescapeAutolinkDots(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)))
         })
       }
       catch {
@@ -803,9 +806,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       editor,
       onDocument: emitDocument,
       sendRef: props.imperative?.sendRef,
-      focusRef: props.imperative?.focusRef,
+      focusRef: focus => props.imperative?.focusRef?.(() => {
+        if (!disabledRef)
+          focus()
+      }),
       contentRef: props.imperative?.contentRef,
-      insertRef: props.imperative?.insertRef,
+      insertRef: insert => props.imperative?.insertRef?.((text) => {
+        if (!disabledRef)
+          insert(text)
+      }),
       handleSend,
     })
 
@@ -985,7 +994,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Disable/enable the editor view when disabled prop changes
   createEffect(on(
-    () => props.disabled,
+    () => props.disabled === true || props.hideInput === true,
     (disabled) => {
       if (editorInstance) {
         try {
@@ -1042,6 +1051,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // the class name is a build-mode-dependent hash.
       data-testid={ids().box}
       data-expanded={isExpanded() ? '' : undefined}
+      data-input-hidden={props.hideInput ? '' : undefined}
       // Whether a `[+]` button is rendered at all. The stylesheet reserves the
       // left column for it, and a box without one starts its text 40px in for
       // no reason -- see `--editor-left-pad` in the stylesheet.
@@ -1065,6 +1075,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         <div class={styles.plusSlot} data-testid={ids().plusSlot}>{plusNode()}</div>
         <div
           class={styles.editorWrapper}
+          hidden={props.hideInput}
           ref={editorRef}
           data-testid={ids().editor}
           // Only the message composer claims it. `useShortcuts` reads it for the

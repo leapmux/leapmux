@@ -2,6 +2,8 @@ import { globalStyle, style } from '@vanilla-extract/css'
 
 export const compactSwitch = style({
   marginBottom: 0,
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
 })
 
 globalStyle(`${compactSwitch} input[type="checkbox"][role="switch"]`, {

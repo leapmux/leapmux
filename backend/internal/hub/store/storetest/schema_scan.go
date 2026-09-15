@@ -107,8 +107,9 @@ var createTableRe = regexp.MustCompile(`CREATE[ \t]+TABLE`)
 
 // WalkCreateTableColumns strips line comments from migration SQL, walks every
 // CREATE TABLE body line by line, and yields each line that tokenizes as a
-// column definition: fn receives the column name (lowercased) and its type
-// token (uppercased, trailing comma removed). Shared by the per-dialect static
+// column definition: fn receives the owning table name (lowercased, unquoted),
+// the column name (lowercased) and its type token (uppercased, trailing comma
+// removed). Shared by the per-dialect static
 // decltype scans (mysql/postgres schema_internal_test.go) so the fragile text
 // parse lives once and a parser fix cannot land in one dialect and silently
 // miss the other; the dialect-specific type assertions stay at each call site.
@@ -120,28 +121,48 @@ var createTableRe = regexp.MustCompile(`CREATE[ \t]+TABLE`)
 // read the resolved types from information_schema and are immune to the
 // migration text's line shape; the static scans exist so the everyday
 // Docker-free suite still guards the decltype spelling.
-func WalkCreateTableColumns(migrationSQL string, fn func(column, typeTok string)) {
-	inTable := false
+func WalkCreateTableColumns(migrationSQL string, fn func(table, column, typeTok string)) {
+	table := ""
 	for _, line := range strings.Split(StripSQLLineComments(migrationSQL), "\n") {
-		upper := strings.ToUpper(strings.TrimSpace(line))
+		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
 		// Match "CREATE TABLE" tolerant of the whitespace between the keywords
 		// (Fields collapses any run) and stricter than HasPrefix, which would
 		// also match "CREATE TABLEX".
 		if flds := strings.Fields(upper); len(flds) >= 2 && flds[0] == "CREATE" && flds[1] == "TABLE" {
-			inTable = true
+			table = createTableName(strings.Fields(trimmed))
 			continue
 		}
-		if inTable && strings.HasPrefix(upper, ")") {
-			inTable = false
+		if table != "" && strings.HasPrefix(upper, ")") {
+			table = ""
 			continue
 		}
-		if !inTable {
+		if table == "" {
 			continue
 		}
-		fields := strings.Fields(strings.TrimSpace(line))
+		fields := strings.Fields(trimmed)
 		if len(fields) < 2 {
 			continue
 		}
-		fn(strings.ToLower(fields[0]), strings.ToUpper(strings.TrimSuffix(fields[1], ",")))
+		fn(table, strings.ToLower(fields[0]), strings.ToUpper(strings.TrimSuffix(fields[1], ",")))
 	}
+}
+
+// createTableName reads the table name out of a tokenized CREATE TABLE line.
+//
+// It tolerates the `IF NOT EXISTS` prefix and the three quoting styles the
+// migrations use, plus a name that runs straight into its opening parenthesis.
+func createTableName(fields []string) string {
+	rest := fields[2:]
+	for len(rest) >= 3 && strings.EqualFold(rest[0], "IF") && strings.EqualFold(rest[1], "NOT") && strings.EqualFold(rest[2], "EXISTS") {
+		rest = rest[3:]
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	name := strings.ToLower(rest[0])
+	if open := strings.IndexByte(name, '('); open >= 0 {
+		name = name[:open]
+	}
+	return strings.Trim(name, "`\"'")
 }

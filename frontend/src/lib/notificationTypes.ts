@@ -9,7 +9,7 @@
  *
  * This module keeps the classification logic that has no generated twin.
  */
-import { WORKER_AUTHORED_NOTIFICATION_TYPES } from '~/generated/contracts/worker-vocab'
+import { NOTIFICATION_TYPE, WORKER_AUTHORED_NOTIFICATION_TYPES } from '~/generated/contracts/worker-vocab'
 
 /**
  * The types the WORKER synthesizes, as opposed to the ones an agent emits.
@@ -35,4 +35,35 @@ export function isWorkerAuthoredNotification(parentObject: unknown): boolean {
     return false
   const type = (parentObject as { type?: unknown }).type
   return typeof type === 'string' && WORKER_AUTHORED.has(type)
+}
+
+/**
+ * The notification types a provider renders as an ordinary row, unchanged.
+ *
+ * Each arrives in LeapMux's own envelope -- a `type` and no provider frame -- so a
+ * plugin has nothing of its own to read in one, and every plugin that meets one
+ * reaches the same answer. The set is NOT worker-authored: an agent writes several of
+ * these (Claude Code emits its own `interrupted`), which is why `classifyMessage`
+ * cannot take them ahead of the plugin the way it takes the worker-authored ones.
+ *
+ * `rate_limit_event` stays out. Claude Code applies its own hidden test to that type,
+ * so it is not one answer for every provider.
+ */
+const PLAIN_ROW_TYPES: ReadonlySet<string> = new Set([
+  NOTIFICATION_TYPE.SettingsChanged,
+  NOTIFICATION_TYPE.ContextCleared,
+  NOTIFICATION_TYPE.Interrupted,
+  NOTIFICATION_TYPE.AgentError,
+  NOTIFICATION_TYPE.PlanUpdated,
+  NOTIFICATION_TYPE.Compacting,
+])
+
+/**
+ * True for a notification type that renders as a plain row in every provider.
+ *
+ * A plugin calls this where its own vocabulary found no match, so a LeapMux row
+ * reaches the notification renderer rather than the raw-JSON fallback.
+ */
+export function isPlainNotificationType(type: string | undefined): boolean {
+  return type !== undefined && PLAIN_ROW_TYPES.has(type)
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -42,7 +43,7 @@ SET event.seq = ? + pending.seq_offset,
 func insertRevocationEvent(
 	ctx context.Context,
 	conn *mysqlConn,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
 	revokedAt time.Time,

@@ -400,7 +400,7 @@ function DiffGapScaffold<E extends { hunkIndex: number }>(props: {
   )
 
   return (
-    <div class={props.containerClass}>
+    <div class={props.containerClass} data-file-diff data-file-path={props.filePath}>
       <Show
         when={props.gapData()}
         fallback={(

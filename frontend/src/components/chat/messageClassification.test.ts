@@ -5,6 +5,8 @@ import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
+import { makeControlResponseMessage } from '~/test-support/messageFactory'
 
 it('classifies an assembled plan from typed row metadata', () => {
   expect(classifyMessage({
@@ -372,14 +374,11 @@ describe('classifyMessage', () => {
 
   // -- control_response -----------------------------------------------------
 
-  it('classifies a persisted control-response row as control_response for EVERY provider (before plugin dispatch)', () => {
-    // The {isSynthetic, controlResponse} row is a LeapMux-neutral synthetic shape classified once in
-    // classifyMessage -- not per plugin -- so it resolves identically for every provider and a new
-    // plugin can't forget it. Exercise a spread of provider plugins (Claude / Codex / an ACP question
-    // provider / Pi / Cursor) through the real dispatch.
+  it('classifies separate control-response metadata for every provider', () => {
     for (const provider of ALL_PROVIDERS) {
-      const row = { isSynthetic: true, controlResponse: { provider: 'X', requestId: 'r', response: { response: { behavior: 'allow' } } } }
-      expect(classifyMessage(input(row, null, provider)).kind).toBe('control_response')
+      const message = makeControlResponseMessage(provider, { result: { decision: 'accept' } })
+      const parsed = parseMessageContent(message)
+      expect(classifyMessage({ ...parsed, agentProvider: provider }).kind).toBe('control_response')
     }
   })
 

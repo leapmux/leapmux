@@ -6,27 +6,27 @@ import { renderControlResponseRow, renderMessageContent } from './messageRendere
 // Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.
 import '~/components/chat/providers'
 
-function row(parsed: unknown, display?: (cr: PersistedControlResponse) => ControlResponseDisplay | null) {
+function row(parsed: PersistedControlResponse, display?: (cr: PersistedControlResponse) => ControlResponseDisplay | null) {
   return render(() => <>{renderControlResponseRow(parsed, undefined, display)}</>)
 }
 
-const ENVELOPE = { isSynthetic: true, controlResponse: { provider: 'CODEX', response: {} } }
+const RESPONSE: PersistedControlResponse = { requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: {} }
 
 describe('rendercontrolresponserow', () => {
   it('renders a label as line-broken plain text', () => {
-    const { container } = row(ENVELOPE, () => ({ kind: 'label', text: 'Task: Build\nEnv: Dev' }))
+    const { container } = row(RESPONSE, () => ({ kind: 'label', text: 'Task: Build\nEnv: Dev' }))
     expect(container.textContent).toBe('Task: Build\nEnv: Dev')
   })
 
   it('renders feedback under the "Sent feedback:" lead as markdown', () => {
-    const { container } = row(ENVELOPE, () => ({ kind: 'feedback', message: 'use ripgrep instead' }))
+    const { container } = row(RESPONSE, () => ({ kind: 'feedback', message: 'use ripgrep instead' }))
     expect(container.textContent).toContain('Sent feedback:')
     expect(container.textContent).toContain('use ripgrep instead')
   })
 
   it('degrades to the neutral/generic fallback when the deriver returns null', () => {
-    // No plugin display + an unrecognized response -> the generic terminal label.
-    const { container } = row(ENVELOPE, () => null)
+    // No plugin display + an unrecognized response -> the generic label.
+    const { container } = row(RESPONSE, () => null)
     expect(container.textContent).toBe('Responded')
   })
 
@@ -37,57 +37,37 @@ describe('rendercontrolresponserow', () => {
     const throwing = (): never => {
       throw new Error('bad payload')
     }
-    const { container } = row(ENVELOPE, throwing)
+    const { container } = row(RESPONSE, throwing)
     expect(container.textContent).toBe('Responded')
   })
 
   it('uses the coarse behavior envelope as the fallback when no deriver is given', () => {
-    const parsed = { isSynthetic: true, controlResponse: { provider: 'CLAUDE_CODE', response: { response: { response: { behavior: 'allow' } } } } }
+    const parsed = { ...RESPONSE, response: { response: { response: { behavior: 'allow' } } } }
     const { container } = row(parsed, undefined)
-    expect(container.textContent).toBe('Approved')
-  })
-
-  it('returns null (no row) for a non-control-response object', () => {
-    const { container } = row({ content: 'hello' }, () => ({ kind: 'label', text: 'x' }))
-    expect(container.textContent).toBe('')
+    expect(container.textContent).toBe('Allow')
   })
 })
 
 describe('rendermessagecontent control_response dispatch', () => {
-  // The transcript-side counterpart to chatMarkPreview's rail-side end-to-end test: a
-  // control_response category dispatches through renderMessageContent's shared branch to the
-  // resolved plugin's controlResponseDisplay -- no per-plugin renderMessage case needed.
-  function renderRow(parsed: unknown, provider: AgentProvider) {
-    return render(() => <>{renderMessageContent(parsed, undefined, { kind: 'control_response' }, provider)}</>)
+  function renderRow(response: PersistedControlResponse, provider: AgentProvider) {
+    return render(() => <>{renderMessageContent(response.response, undefined, { kind: 'control_response', response }, provider)}</>)
   }
 
-  it('renders a Codex decision label through the codex plugin', () => {
-    const parsed = {
-      isSynthetic: true,
-      controlResponse: {
-        provider: 'CODEX',
-        request: { method: 'item/commandExecution/requestApproval' },
-        response: { result: { decision: 'accept' } },
-      },
-    }
-    expect(renderRow(parsed, AgentProvider.CODEX).container.textContent).toBe('Allow')
+  it('renders a Codex decision through the provider plugin', () => {
+    const response = { ...RESPONSE, request: { method: 'item/commandExecution/requestApproval' }, response: { result: { decision: 'accept' } } }
+    expect(renderRow(response, AgentProvider.CODEX).container.textContent).toBe('Allow')
   })
 
-  it('renders a Claude deny-with-feedback through the claude plugin', () => {
-    const parsed = {
-      isSynthetic: true,
-      controlResponse: {
-        provider: 'CLAUDE_CODE',
-        response: { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'add tests' } } },
-      },
-    }
-    const text = renderRow(parsed, AgentProvider.CLAUDE_CODE).container.textContent ?? ''
+  it('renders Claude rejection feedback through the provider plugin', () => {
+    const response = { ...RESPONSE, response: { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'add tests' } } } }
+    const text = renderRow(response, AgentProvider.CLAUDE_CODE).container.textContent ?? ''
     expect(text).toContain('Sent feedback:')
     expect(text).toContain('add tests')
   })
 
-  it('degrades an unrecognized payload to the generic label', () => {
-    const parsed = { isSynthetic: true, controlResponse: { provider: 'CODEX', response: {} } }
-    expect(renderRow(parsed, AgentProvider.CODEX).container.textContent).toBe('Responded')
+  it('uses the generic label for malformed original response content', () => {
+    const response = { ...RESPONSE, response: undefined }
+    const rendered = render(() => <>{renderMessageContent('{unfinished', undefined, { kind: 'control_response', response }, AgentProvider.CODEX)}</>)
+    expect(rendered.container.textContent).toBe('Responded')
   })
 })

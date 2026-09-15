@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { create } from '@bufbuild/protobuf'
+import { MESSAGE_METADATA_FIELD, NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
 export function rawContent(obj: unknown): Uint8Array {
@@ -13,37 +14,37 @@ export function wrapContent(messages: unknown[], oldSeqs: number[] = []): Uint8A
 }
 
 /** Build a minimal AgentChatMessage for testing. */
-export function makeMessage(overrides: Partial<{
-  id: string
-  source: MessageSource
-  seq: bigint
-  createdAt: string
-  content: Uint8Array
-  contentCompression: ContentCompression
-  agentProvider: number
-  depth: number
-  spanId: string
-  parentSpanId: string
-  spanType: string
-  spanLines: string
-  spanColor: number
-}>): AgentChatMessage {
-  return {
-    $typeName: 'leapmux.v1.AgentChatMessage' as const,
+export function makeMessage(overrides: Partial<Omit<AgentChatMessage, '$typeName' | '$unknown'>>): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    ...overrides,
     id: overrides.id ?? 'msg-1',
     source: overrides.source ?? MessageSource.AGENT,
     seq: overrides.seq ?? 1n,
-    createdAt: overrides.createdAt ?? '',
-    content: overrides.content ?? new Uint8Array(),
     contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
-    depth: overrides.depth ?? 0,
-    spanId: overrides.spanId ?? '',
-    parentSpanId: overrides.parentSpanId ?? '',
-    spanType: overrides.spanType ?? '',
+    supplementalContentCompression: overrides.supplementalContentCompression ?? ContentCompression.NONE,
     spanLines: overrides.spanLines ?? '[]',
     agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanColor: overrides.spanColor ?? -1,
-    previousSeq: 0n,
-    markType: MarkType.UNSPECIFIED,
-  } as AgentChatMessage
+  })
+}
+
+/** Keep native response and request fixtures separate from the worker's control identity. */
+export function makeControlResponseMessage(
+  provider: AgentProvider,
+  response: unknown,
+  request?: unknown,
+): AgentChatMessage {
+  return makeMessage({
+    agentProvider: provider,
+    source: MessageSource.USER,
+    markType: MarkType.CONTROL_RESPONSE,
+    content: rawContent(response),
+    supplementalContent: rawContent({
+      provider: request,
+      metadata: {
+        [MESSAGE_METADATA_FIELD.ControlRequestID]: 'request-1',
+        [MESSAGE_METADATA_FIELD.ControlRequestClaimToken]: 'claim-1',
+      },
+    }),
+  })
 }

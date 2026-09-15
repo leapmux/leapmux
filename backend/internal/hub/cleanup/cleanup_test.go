@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -259,11 +260,11 @@ func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
 	now := time.Now().UTC()
 	// Two users, same kind: one live ceremony per (user_id, kind).
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: expiredID, Kind: "login", UserID: expiredUserID, PayloadJSON: "{}",
+		ID: expiredID, Kind: leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, UserID: expiredUserID, PayloadJSON: "{}",
 		SessionData: []byte("x"), ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour),
 	}))
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: liveID, Kind: "login", UserID: liveUserID, PayloadJSON: "{}",
+		ID: liveID, Kind: leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, UserID: liveUserID, PayloadJSON: "{}",
 		SessionData: []byte("y"), ExpiresAt: now.Add(time.Hour), CreatedAt: now,
 	}))
 

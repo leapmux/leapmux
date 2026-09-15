@@ -392,6 +392,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           parentAgentId: m.parentAgentId,
           acceptsMessages: m.acceptsMessages,
           supportsSteering: m.supportsSteering,
+          supportsPreemption: m.supportsPreemption,
           rootAgentId: m.rootAgentId,
         } satisfies Complete<AgentTab>
       case TabType.TERMINAL:

@@ -1,0 +1,67 @@
+{
+  "_readme": "Shared cases for Copilot's update_todo markdown checklist. The Go worker parses it for the to-do sidebar and the browser parses it for the tool body, so both suites replay this corpus. Copilot's own tool schema describes the argument as 'a markdown checklist of TODO items showing completed and pending tasks'; only the two markers the markdown task-list syntax defines are read, and every other marker stays pending.",
+  "cases": [
+    {
+      "name": "reads both task-list markers",
+      "checklist": "- [x] Read the code\n- [ ] Write the test",
+      "expected": [
+        { "content": "Read the code", "status": "completed" },
+        { "content": "Write the test", "status": "pending" }
+      ]
+    },
+    {
+      "name": "accepts every list bullet and leading whitespace",
+      "checklist": "* [ ] Star item\n+ [ ] Plus item\n  \t- [x] Indented item",
+      "expected": [
+        { "content": "Star item", "status": "pending" },
+        { "content": "Plus item", "status": "pending" },
+        { "content": "Indented item", "status": "completed" }
+      ]
+    },
+    {
+      "name": "accepts an upper-case completion marker",
+      "checklist": "- [X] Finished",
+      "expected": [{ "content": "Finished", "status": "completed" }]
+    },
+    {
+      "name": "keeps an unread marker pending",
+      "checklist": "- [~] Half done\n- [-] Dashed\n- [/] Slashed",
+      "expected": [
+        { "content": "Half done", "status": "pending" },
+        { "content": "Dashed", "status": "pending" },
+        { "content": "Slashed", "status": "pending" }
+      ]
+    },
+    {
+      "name": "skips every line that is not a checklist item",
+      "checklist": "# Plan\n\nSome prose.\n- Plain bullet\n- [] Malformed\n- [ ]\n- [ ]   \n- [x] Real item",
+      "expected": [{ "content": "Real item", "status": "completed" }]
+    },
+    {
+      "name": "keeps the item text intact",
+      "checklist": "- [ ] Run `task test` and check the [report](./out.html)\n- [x] 한글 항목",
+      "expected": [
+        { "content": "Run `task test` and check the [report](./out.html)", "status": "pending" },
+        { "content": "한글 항목", "status": "completed" }
+      ]
+    },
+    {
+      "name": "tolerates carriage returns",
+      "checklist": "- [ ] First\r\n- [x] Second\r\n",
+      "expected": [
+        { "content": "First", "status": "pending" },
+        { "content": "Second", "status": "completed" }
+      ]
+    },
+    {
+      "name": "an empty checklist is an empty list",
+      "checklist": "",
+      "expected": []
+    },
+    {
+      "name": "whitespace alone is an empty list",
+      "checklist": "\n  \n\t\n",
+      "expected": []
+    }
+  ]
+}

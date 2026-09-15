@@ -840,7 +840,7 @@ func TestQueryGitPathInfo_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
 
 func createAgentForPath(t *testing.T, svc *Service, agentID, workingDir string) {
 	t.Helper()
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: workingDir,
 		HomeDir:    workingDir,

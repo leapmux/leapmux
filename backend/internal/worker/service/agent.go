@@ -319,11 +319,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			content := r.GetContent()
 			isInterrupt := agent.IsInterruptRequest(dbAgent.AgentProvider, content)
 			if isInterrupt {
-				// The raw interrupt frame is the fallback stop path, so it
-				// continues past a failed pause for the same reason.
-				if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
-					slog.Warn("failed to pause agent input queue before raw interrupt", "agent_id", agentID, "error", err)
-				}
+				// The raw interrupt frame is the fallback stop path, so it opens
+				// the stop exactly as the RPC does, in the same order. This
+				// handler rejected a child above, so the agent is its own root.
+				svc.Output.NoteAgentStopRequested(agentID, agentID)
+				svc.pauseInputQueueForStop(agentID)
 			}
 			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
 				// An interrupt notice is not the user's answer to a control request, so it
@@ -331,7 +331,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
 			}
 
-			svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
+			delivered := svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
+			if isInterrupt && delivered {
+				svc.cancelControlRequestsForStop(agentID)
+			}
+			if isInterrupt && !delivered {
+				svc.Output.NoteAgentStopFailed(agentID, agentID)
+			}
 			sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 		})
 
@@ -568,6 +574,31 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
 		})
 
+	registerAgentGuarded(d, contracts.RPCMethodGetAgentSpanMessages, leapmuxv1.Scope_SCOPE_AGENT_READ,
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.GetAgentSpanMessagesRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+			if strings.TrimSpace(r.GetSpanId()) == "" {
+				sendInvalidArgument(sender, "span_id must not be empty")
+				return
+			}
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSpanMessagesResponse{})
+				return
+			}
+			rows, err := svc.Queries.ListMessagesByAgentAndSpan(ctx, db.ListMessagesByAgentAndSpanParams{
+				AgentID: agentRow.ID, AgentSessionID: r.GetAgentSessionId(), SpanID: r.GetSpanId(),
+			})
+			if err != nil {
+				slog.Error("Get related tool messages", "agent_id", agentRow.ID, "error", err)
+				sendInternalError(sender, "failed to get related tool messages")
+				return
+			}
+			messages := make([]*leapmuxv1.AgentChatMessage, 0, len(rows))
+			for _, row := range rows {
+				messages = append(messages, messageToProto(&row))
+			}
+			sendProtoResponse(sender, &leapmuxv1.GetAgentSpanMessagesResponse{Messages: messages})
+		})
+
 	// ListMessageMarks returns the seqs of every marked message (scroll-rail jump
 	// targets) plus the agent's whole-history seq range. Plain indexed SQL -- no
 	// content decompression -- because mark_type is set at write time.
@@ -775,44 +806,36 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			})
 		})
 
-	// SendControlResponse forwards the user's allow/deny on a tool-use
-	// request to the agent subprocess. The forward must reach the agent
-	// even if the originating client window closed (the agent process is
-	// blocked waiting for it); dispatcher ctx is intentionally not threaded.
+	// A response must finish even if the requesting client disconnects.
+	// The saved delivery state distinguishes provider delivery from local recording.
 	registerAgentGuarded(d, "SendControlResponse", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
-			agentID := r.GetAgentId()
-
-			// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
-			// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
-			// forward=false for a deduped duplicate / server-side plan-prompt / withheld restart approval.
-			// claimToken is the per-instance token the frontend echoed from the answered AgentControlRequest.
-			if forwardBytes, forward := svc.processControlResponse(agentID, dbAgent, r.GetContent(), r.GetClaimToken()); forward {
-				if err := svc.Agents.SendRawInput(agentID, forwardBytes); err != nil {
-					slog.Error("failed to send control response to agent",
-						"agent_id", agentID, "error", err)
-					sendNotFoundError(sender, "agent not found or not running")
-					return
-				}
+			response, err := svc.respondToControlRequest(dbAgent, r)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
 			}
 
-			sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
+			sendProtoResponse(sender, response)
 		})
 
 	// InterruptAgent sends a signal to the agent subprocess; the signal
 	// delivery must happen even if the requesting client disconnects mid-
 	// RPC. Dispatcher ctx is intentionally not threaded.
+	//
+	// The row read runs first, and the two halves of opening a stop follow it in
+	// the order each branch can supply them. A ROOT publishes the stop before it
+	// closes the queue, so no write stands between the press and the indicator
+	// stopping. A CHILD closes its queue first, because the id its stop publishes
+	// against is the OWNER's, which only the registry row below states.
+	//
+	// Only the missing-row exit opens neither half, and it is the one exit that
+	// needs neither: the handler's own existence probe passed, so a read that
+	// fails here means the row went away in between, and an agent with no row has
+	// no queue to close and no tab to publish to.
 	registerAgentGuardedByID(d, "InterruptAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
-			// The interrupt must run even when the pause write fails. A stop
-			// that a database error or a stopping queue can refuse leaves a
-			// runaway agent with no way to stop it. The queue then possibly
-			// dispatches the next item after the interrupt, which the user
-			// can pause; an agent that ignores Stop, the user cannot.
-			if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
-				slog.Warn("failed to pause agent input queue before interrupt", "agent_id", agentID, "error", err)
-			}
 			// A child agent: resolve its registry row, then interrupt the child
 			// conversation inside the owner process via ChildInterrupter.
 			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
@@ -821,6 +844,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			if dbAgent.ParentAgentID.Valid {
+				svc.pauseInputQueueForStop(agentID)
 				// Resolve the registry row and check the owner is running before
 				// calling InterruptChild: a not-running owner is a clean no-op
 				// (nothing to interrupt), distinct from a missing child.
@@ -832,8 +856,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					sendNotFoundError(sender, "agent not found or not running")
 					return
 				}
-				svc.Output.NoteAgentInterrupted(agentID, row.OwnerAgentID)
+				svc.Output.NoteAgentStopRequested(agentID, row.OwnerAgentID)
 				if err := svc.Agents.InterruptChild(row.OwnerAgentID, row.RowKey); err != nil {
+					svc.Output.NoteAgentStopFailed(agentID, row.OwnerAgentID)
 					if errors.Is(err, agent.ErrChildOperationUnsupported) {
 						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
 						return
@@ -847,15 +872,38 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					sendNotFoundError(sender, "agent not found or not running")
 					return
 				}
+				svc.cancelControlRequestsForStop(agentID)
 				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 				return
 			}
-			svc.Output.NoteAgentInterrupted(agentID, agentID)
+			svc.Output.NoteAgentStopRequested(agentID, agentID)
+			// The escalation branch is the second press, for a provider that has
+			// PROVEN its own stop signal ineffective -- the running agent states
+			// that fact through the Manager's escalation probe, the same
+			// capability discovery steering uses, so no provider enum appears
+			// here. Only then may this press replace the process instead of
+			// signalling it. No pauseInputQueueForStop on this branch: the first
+			// press already set that pause, and the planned-restart guard inside
+			// the force stop owns the restart window.
+			if svc.Agents.InterruptEscalationReady(agentID) {
+				if err := svc.forceStopAgentTurn(dbAgent); err != nil {
+					svc.Output.NoteAgentStopFailed(agentID, agentID)
+					slog.Warn("forced stop failed", "agent_id", agentID, "error", err)
+					sendFailedPrecondition(sender, "failed to force-stop the agent; press Stop again")
+					return
+				}
+				svc.cancelControlRequestsForStop(agentID)
+				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+				return
+			}
+			svc.pauseInputQueueForStop(agentID)
 			if err := svc.Agents.Interrupt(agentID); err != nil {
+				svc.Output.NoteAgentStopFailed(agentID, agentID)
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
 				return
 			}
+			svc.cancelControlRequestsForStop(agentID)
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 		})
 
@@ -909,21 +957,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// returns command text that takes effect after queue delivery.
 			command, err := svc.Agents.UpdateGoal(agentID, action, objective)
 			if err != nil {
-				if errors.Is(err, agent.ErrGoalControlUnsupported) {
-					sendFailedPrecondition(sender, "this agent cannot perform that session-goal action")
-					return
-				}
-				if errors.Is(err, agent.ErrGoalObjectiveIsCommand) {
-					// A text-route provider reads its own clear word as a
-					// command, so this objective would remove the goal it asks
-					// for. Say so, rather than reporting a success the card
-					// then contradicts.
-					sendInvalidArgument(sender,
-						"this objective is a word that clears the goal; write a longer objective")
-					return
-				}
 				slog.Warn("update agent goal failed", "agent_id", agentID, "action", r.GetAction(), "error", err)
-				sendNotFoundError(sender, "agent not found or not running")
+				sendGoalUpdateError(sender, err)
 				return
 			}
 			if command != "" {
@@ -1465,16 +1500,39 @@ func (svc *Service) replayAgentCatchUp(
 	}
 
 	// Replay pending control requests.
+	replayedControls := make(map[controlRequestInstance]struct{})
 	controlReqs, err := svc.Queries.ListControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("failed to list control requests for replay", "agent_id", agentID, "error", err)
 	} else {
 		for _, cr := range controlReqs {
+			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
 			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{
-					ControlRequest: buildAgentControlRequest(agentID, dbAgent.AgentProvider, cr.RequestID, cr.Payload, cr.ClaimToken),
+					ControlRequest: buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID}, cr.ClaimToken),
 				},
+			})
+		}
+	}
+	// A confirmed response can outlive the provider's original pending request.
+	// Its immutable snapshot retains the original content and request identity.
+	answers, err := svc.Queries.ListControlResponsesAwaitingRecording(bgCtx(), db.ListControlResponsesAwaitingRecordingParams{
+		AgentID: agentID, State: storedStateDelivered,
+	})
+	if err != nil {
+		slog.Error("could not list control responses that need recording", "agent_id", agentID, "error", err)
+	} else {
+		for _, answer := range answers {
+			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
+				continue
+			}
+			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: buildAgentControlRequest(svc.Queries, agentID,
+					answer.AgentProvider, agent.ControlRequest{
+						RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID,
+					}, answer.ClaimToken)},
 			})
 		}
 	}
@@ -1534,20 +1592,21 @@ func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
-		Id:               a.ID,
-		Title:            a.Title,
-		Status:           status,
-		WorkingDir:       a.WorkingDir,
-		AgentSessionId:   a.AgentSessionID,
-		HomeDir:          a.HomeDir,
-		WorkerId:         svc.WorkerID,
-		CreatedAt:        timefmt.Format(a.CreatedAt.Time),
-		GitStatus:        gs,
-		AgentProvider:    a.AgentProvider,
-		OptionGroups:     svc.optionGroupsForAgent(a),
-		StartupError:     startupError,
-		StartupMessage:   startupMessage,
-		SupportsSteering: isRunning && svc.agentSupportsSteering(a),
+		Id:                 a.ID,
+		Title:              a.Title,
+		Status:             status,
+		WorkingDir:         a.WorkingDir,
+		AgentSessionId:     a.AgentSessionID,
+		HomeDir:            a.HomeDir,
+		WorkerId:           svc.WorkerID,
+		CreatedAt:          timefmt.Format(a.CreatedAt.Time),
+		GitStatus:          gs,
+		AgentProvider:      a.AgentProvider,
+		OptionGroups:       svc.optionGroupsForAgent(a),
+		StartupError:       startupError,
+		StartupMessage:     startupMessage,
+		SupportsSteering:   isRunning && svc.agentSupportsSteering(a),
+		SupportsPreemption: isRunning && svc.agentSupportsPreemption(a),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -2010,6 +2069,7 @@ func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmux
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
 	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
 	sc.SupportsSteering = svc.agentSupportsSteering(dbAgent)
+	sc.SupportsPreemption = svc.agentSupportsPreemption(dbAgent)
 	return sc
 }
 
@@ -2354,7 +2414,8 @@ func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.Agen
 
 // resetEffortToAutoIfUnsupported resets newOptions' effort to EffortAuto, in place, when it
 // wouldn't be valid for the model the edit settles on -- for a provider that owns a model-dependent
-// effort catalog (Claude/Codex/Pi):
+// effort catalog, which ProviderManagesEffort states (Claude/Codex/Pi from their static catalogs,
+// and native Copilot, whose account decides both the models and their tiers):
 //   - on a model switch, also when the client sent NO effort (explicitEffort == "") -- so the new
 //     model picks its own default rather than silently inheriting the previous model's tier;
 //   - whether or not the model switched, when the effort that WOULD persist -- whether explicitly
@@ -2447,7 +2508,7 @@ func optionsChangeDelta(from, to OptionMap) OptionMap {
 func (svc *Service) applySettingsToRunningAgent(agentID string, applied OptionMap) agent.SettingsApplyResult {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
-	return svc.Agents.UpdateSettings(agentID, applied)
+	return svc.updateAgentSettingsFn(agentID, applied)
 }
 
 // applySettingsLive attempts to apply newOptions to a running agent without a restart.
@@ -2492,64 +2553,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 // unchanged request when the restart fails.
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
-	if err != nil {
-		slog.Error("failed to pause input before agent settings restart", "agent_id", agentID, "error", err)
-		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
-		})
-		return newOptions, unresolvedSettingsResult(newOptions)
-	}
-	queueRestartFinished := false
-	defer func() {
-		if !queueRestartFinished {
-			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
-				slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
-			}
-		}
-	}()
-
-	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
-	agentOpts.ResumeSessionID = resumeSessionID
-	agentOpts.Options = newOptions
-	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(newOptions, provider)
-
-	sink := svc.Output.NewSink(agentID, provider)
-
-	// Hold the per-agent lifecycle lock across the mint AND the restart, which
-	// is why this calls restartAgentLocked. The closure exists so the release is
-	// deferred: a panic inside the mint or the start would otherwise hold this
-	// agent's lifecycle lock for the life of the process, and the dispatcher
-	// recovers a handler panic, so the worker would survive to deadlock every
-	// later restart, close and cold start of that tab.
-	//
-	// The mint retires the previous spawn's cleanup and registers a new one
-	// under the same tab id, and cleanupRegistry.register overwrites. Two
-	// relaunches for one tab that interleave their mints would therefore drop
-	// one of the two cleanups, and a close that lands between a mint's retire
-	// and its register would leave the fresh socket registered for a tab that
-	// is already gone. The other three relaunch paths already mint inside this
-	// lock; this one is the odd path out.
-	_, launched, err := func() (map[string]string, bool, error) {
-		unlock := svc.Agents.LockAgent(agentID)
-		defer unlock()
-		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
-	}()
-	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
-		slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
-	}
-	queueRestartFinished = true
-	if err != nil {
-		slog.Error("failed to restart agent with new settings", "agent_id", agentID, "error", err)
-		// Clear stale session ID so ensureAgentRunning won't try to resume a
-		// non-existent session on the next message.
-		svc.clearAgentSessionID(agentID)
-		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart agent with new settings: " + err.Error(),
-		})
+	if _, err := svc.restartAgentPreservingSession(dbAgent, newOptions, settingsRestartMessages); err != nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
 	// Read the typed snapshot from the relaunched provider. A startup readback
@@ -2575,6 +2579,162 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	slog.Info("agent restarted with new settings",
 		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
 	return settled, result
+}
+
+// forceStopAgentTurn replaces the provider process to end a turn whose stop
+// the running provider already accepted and then ignored -- the escalation a
+// provider asks for by answering the Manager's InterruptEscalationReady probe,
+// which is the only way this is reached.
+//
+// When the provider's own stop signal aborts nothing, the only real stop is
+// process-level. The replacement runs the same planned-restart shape
+// applySettingsViaRestart runs: the queue pauses for the swap and resumes only
+// its own pause, and the fresh process resumes the SAME session, so the
+// conversation and the queued input survive. Any stop row the reader sees is
+// the provider's own -- Stop runs inside the replacement and knows whether a
+// stop was pending.
+//
+// A press that lands while a replacement is already starting answers nil: that
+// press's intent was carried by the one that began it, and the restart is not
+// something a second concurrent copy would improve.
+func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
+	agentID := dbAgent.ID
+	if _, inFlight := svc.forceStops.LoadOrStore(agentID, struct{}{}); inFlight {
+		return nil
+	}
+	defer svc.forceStops.Delete(agentID)
+
+	// The agent keeps the settings its row already holds; only the process is
+	// replaced. The id comes BACK from the restart rather than being resolved again
+	// here: resolveResumeSessionID issues a HasUserMessages query, and two separate
+	// resolutions can disagree, so the log line stated an id the relaunch may not have
+	// used -- for exactly the incident a reader consults it for.
+	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, parseOptions(dbAgent.Options), forcedStopMessages)
+	if err != nil {
+		return err
+	}
+	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
+	return nil
+}
+
+// restartAgentPreservingSession replaces the agent's PROCESS while it keeps its
+// session: it pauses the durable input queue, mints and launches a replacement
+// under the per-agent lifecycle lock, resumes the queue, and on failure clears the
+// stale session id and tells the reader.
+//
+// ONE policy, written once. Two callers reach it -- a settings change that needs a
+// relaunch, and a forced stop that replaces a turn the provider would not end --
+// and the lock discipline, the pause/resume pairing and the stale-session clear are
+// the same for both. They were the same when spelled twice too, which is the
+// problem: the next correction to any of the three would have landed in one copy.
+//
+// The WORDS are the only axis that varies, and each caller supplies them whole. A
+// bare sentence FRAGMENT interpolated into four frames read correctly in some frames
+// and not in others: "failed to finish input queue a forced stop" was the result for
+// BOTH callers, "failed to restart agent after an agent settings restart" was circular,
+// and the one message no frame could reach at all told a reader who pressed Stop that
+// the agent failed to RESTART. None of these six lines exists as a searchable literal
+// once it is concatenated either, so a reader holding a log line cannot find its site.
+//
+// It returns the resume session id it actually launched with, so a caller that reports
+// that id reports the one that was used rather than resolving it a second time.
+func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options OptionMap, messages restartMessages) (string, error) {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
+	if err != nil {
+		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  contracts.NotificationTypeAgentError,
+			"error": messages.pauseFailedNotice + err.Error(),
+		})
+		return "", err
+	}
+	queueRestartFinished := false
+	defer func() {
+		if !queueRestartFinished {
+			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
+				slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
+			}
+		}
+	}()
+
+	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
+	agentOpts.ResumeSessionID = resumeSessionID
+	agentOpts.Options = options
+	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(options, provider)
+
+	sink := svc.Output.NewSink(agentID, provider)
+
+	// Hold the per-agent lifecycle lock across the mint AND the restart, which
+	// is why this calls restartAgentLocked. The closure exists so the release is
+	// deferred: a panic inside the mint or the start would otherwise hold this
+	// agent's lifecycle lock for the life of the process, and the dispatcher
+	// recovers a handler panic, so the worker would survive to deadlock every
+	// later restart, close and cold start of that tab.
+	//
+	// The mint retires the previous spawn's cleanup and registers a new one
+	// under the same tab id, and cleanupRegistry.register overwrites. Two
+	// relaunches for one tab that interleave their mints would therefore drop
+	// one of the two cleanups, and a close that lands between a mint's retire
+	// and its register would leave the fresh socket registered for a tab that
+	// is already gone. The other three relaunch paths already mint inside this
+	// lock; this one is the odd path out.
+	_, launched, err := func() (map[string]string, bool, error) {
+		unlock := svc.Agents.LockAgent(agentID)
+		defer unlock()
+		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
+	}()
+	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
+		slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
+	}
+	queueRestartFinished = true
+	if err != nil {
+		slog.Error(messages.restartFailedLog, "agent_id", agentID, "error", err)
+		// Clear stale session ID so ensureAgentRunning won't try to resume a
+		// non-existent session on the next message.
+		svc.clearAgentSessionID(agentID)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  contracts.NotificationTypeAgentError,
+			"error": messages.restartFailedNotice + err.Error(),
+		})
+		return "", err
+	}
+	return resumeSessionID, nil
+}
+
+// restartMessages holds every sentence one caller of restartAgentPreservingSession
+// shows, whole.
+//
+// Each notice ends where the error text begins, so the caller states the punctuation
+// its own sentence needs.
+type restartMessages struct {
+	// The three log lines, in the order the function can reach them.
+	pauseFailedLog   string
+	finishFailedLog  string
+	restartFailedLog string
+	// The two notifications the reader sees in the chat.
+	pauseFailedNotice   string
+	restartFailedNotice string
+}
+
+// settingsRestartMessages speaks for a settings change that needs a relaunch.
+var settingsRestartMessages = restartMessages{
+	pauseFailedLog:      "failed to pause input before applying new agent settings",
+	finishFailedLog:     "failed to finish the input queue pause after applying new agent settings",
+	restartFailedLog:    "failed to restart agent with new settings",
+	pauseFailedNotice:   "Failed to apply the new settings because the input queue could not pause: ",
+	restartFailedNotice: "Failed to restart the agent with the new settings: ",
+}
+
+// forcedStopMessages speaks for a Stop the provider would not honour, which LeapMux
+// answers by replacing the process.
+var forcedStopMessages = restartMessages{
+	pauseFailedLog:      "failed to pause input before a forced stop",
+	finishFailedLog:     "failed to finish the input queue pause after a forced stop",
+	restartFailedLog:    "failed to restart agent after a forced stop",
+	pauseFailedNotice:   "Failed to force-stop the agent because the input queue could not pause: ",
+	restartFailedNotice: "Failed to force-stop the agent because its replacement could not start: ",
 }
 
 // buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
@@ -2783,7 +2943,11 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	// The queue is the only caller, so the read is classified: a database error here
+	// never reached the provider, and failing the item permanently makes the reader
+	// retype what a retry would have sent. The mintAndLaunch error below is NOT
+	// classified -- a start that failed is a real answer about this input.
+	dbAgent, err := svc.queueAgentRow(agentID)
 	if err != nil {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
 		return nil, err
@@ -3091,7 +3255,11 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 // (e.g. Claude control_request JSON or Codex JSON-RPC interrupt).
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
-func (svc *Service) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
+//
+// It reports whether the payload reached the agent. The raw stop path reads that
+// answer: a stop it published but could not deliver has to be withdrawn, or the
+// reader keeps a running agent that reads idle.
+func (svc *Service) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string) bool {
 	// The provider owns the wire-format parse; the service owns the DB write + forward. Persist an
 	// eager set_permission_mode to the DB so that /clear (which reads the DB) always sees the latest
 	// mode. Some providers (e.g. Claude Code) don't echo the mode back in their control_response, so
@@ -3104,39 +3272,76 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 		svc.setAgentPermissionMode(agentID, mode)
 
 		if !svc.Agents.HasAgent(agentID) {
-			return
+			return false
 		}
 
 		if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
 			slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
+			return false
 		}
-		return
+		return true
 	}
 
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
 		if agent.IsInterruptRequest(provider, content) {
-			// Agent is already gone — nothing to interrupt.
-			return
+			// Agent is already gone -- nothing to interrupt, and nothing that a
+			// withdrawn stop could put back on screen. The stop stands.
+			return true
 		}
 		// Other control requests need the agent running.
 		if err := svc.ensureAgentRunning(agentID, nil, interactiveStart); err != nil {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
-			return
+			return false
 		}
 	}
 
 	// Send as raw input to the agent's stdin.
 	if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
 		slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
+		return false
+	}
+	return true
+}
+
+// pauseInputQueueForStop closes the input queue behind a stop the reader asked
+// for, so the queue does not dispatch the next item into a turn they cancelled.
+//
+// It is bookkeeping, and it NEVER refuses the stop: a database error or a
+// stopping queue leaves a queue that possibly dispatches one more item, which the
+// reader can pause, and an agent that ignores Stop, the reader cannot. Every stop
+// path therefore runs it for its own effect and reads no answer from it, on every
+// branch -- including the ones that then find nothing to interrupt.
+//
+// Its partner is OutputHandler.NoteAgentStopRequested, which publishes the stop.
+// A root publishes first and pauses second, because this write must not stand
+// between the press and the indicator stopping. See the InterruptAgent handler
+// for the one branch that cannot take that order.
+func (svc *Service) pauseInputQueueForStop(agentID string) {
+	if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
+		slog.Warn("failed to pause agent input queue for the stop", "agent_id", agentID, "error", err)
 	}
 }
 
-// persistSyntheticUserMessage persists a backend-synthesized `{content}` user row that is NOT the
-// user's answer to a control request -- the interrupt notice, whose text is the provider's
-// SyntheticInterruptNotice. It is left UNMARKED (MARK_TYPE_UNSPECIFIED) so it draws no scroll-rail
-// dot; genuine control answers persist through persistControlResponseRow, which owns the
-// CONTROL_RESPONSE mark.
+// cancelControlRequestsForStop withdraws the control requests the stopped turn was
+// blocked on. It is one of the two enders of a published stop, the other being
+// OutputHandler.NoteAgentStopFailed.
+//
+// A permission request belongs to the turn that asked it. Four providers were measured
+// waiting on one when the reader pressed Stop: the turn ended and the card stayed,
+// asking a live-looking question about a turn that no longer existed, and an answer to
+// it had nowhere to go.
+//
+// It runs only after the stop was DELIVERED, which is where this differs from the
+// queue pause beside it. A pause that outlives a failed stop is a state the reader can
+// correct; a question withdrawn from a turn that is still running is not -- it would
+// leave the agent waiting for an answer with no way left to give one.
+func (svc *Service) cancelControlRequestsForStop(agentID string) {
+	svc.Output.ClearPendingControlRequests(agentID)
+}
+
+// persistSyntheticUserMessage stores the provider's interrupt notice as an unmarked user row.
+// Control responses use finalizeControlResponse and carry their own control-response mark.
 func (svc *Service) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -3148,7 +3353,7 @@ func (svc *Service) persistSyntheticUserMessage(agentID string, provider leapmux
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: innerJSON}, agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
@@ -3230,39 +3435,12 @@ func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec 
 		}
 	}
 
-	// Persist ONLY the axes we changed (with their provider-confirmed value), via a
-	// compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh -- which holds
-	// no lifecycle lock -- can neither lose our keys nor have its keys clobbered by a stale
-	// full-map blob. The lifecycle lock above does not serialize against that reader-goroutine
-	// writer, so the blind full-map write this path used before could drop a key the refresh
-	// had just merged in.
-	delta := make(OptionMap, len(applied))
-	for id := range applied {
-		delta[id] = opts[id]
-	}
-	settled, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options, delta)
+	updated, err := svc.persistOptionChanges(dbAgent, oldVals, opts, spec.notifyFirstSet)
 	if err != nil {
 		slog.Error("apply option changes: DB update failed", "agent_id", agentID, "options", applied, "error", err)
 		return dbAgent
 	}
-	dbAgent.Options = settled
-
-	svc.broadcastSettingsStatusChange(dbAgent)
-
-	// Build the settings_changed notification from the CONFIRMED values (opts, after the live
-	// readback), diffing each applied axis against its prior value, so a clamp the provider applied
-	// is announced as the settled value -- matching the row and broadcast catalog. buildSettingsChanges
-	// resolves labels against the SETTLED-model catalog (avoiding the empty-model effort-id leak) and
-	// honors spec.notifyFirstSet, the same emitter the model-settle path uses.
-	changes := svc.buildSettingsChanges(&dbAgent, oldVals, opts, sortedOptionKeys(applied), spec.notifyFirstSet)
-	if len(changes) > 0 {
-		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":    contracts.NotificationTypeSettingsChanged,
-			"changes": changes,
-		})
-	}
-
-	return dbAgent
+	return updated
 }
 
 func (svc *Service) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
@@ -3281,64 +3459,53 @@ func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leap
 	return err
 }
 
-func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {
+// planExecutionPromptText is the turn that an approved plan starts when the
+// Worker holds no plan text of its own. The provider wrote the plan into its own
+// transcript, and the fresh context keeps that transcript, so the agent still
+// knows which plan this refers to.
+const planExecutionPromptText = "Implement the plan."
+
+// enqueuePlanExecution queues the approved plan as the next turn, in a fresh
+// context.
+//
+// A provider that saves NO plan file reaches here, so an absent path is a normal
+// state and not a fault. Only Claude Code and Codex record plan_file_path
+// (updatePlan writes it from their output readers), while Claude Code, ZCode and
+// native Copilot all raise the plan-exit control. The queued turn then carries
+// the neutral instruction above.
+//
+// The degraded turn is what keeps the approval consistent. The caller already
+// persisted the new permission mode, so a hard failure here leaves the mode
+// moved with no turn to use it, and each retry repeats that move and fails the
+// same way -- the plan can never be approved. A path that EXISTS and cannot be
+// read is the opposite case: the plan text is there, the read is the fault, and
+// a retry can still succeed.
+func (svc *Service) enqueuePlanExecution(agentID, targetMode, inputID string) error {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
-		slog.Error("plan exec: failed to fetch agent", "agent_id", agentID, "error", err)
-		return
+		return err
 	}
-
-	// Read plan content from disk. The agents row carries the path; the
-	// file is the sole source of truth for plan content.
-	var planContent string
+	var planContent []byte
 	if dbAgent.PlanFilePath != "" {
-		if data, readErr := os.ReadFile(dbAgent.PlanFilePath); readErr == nil && len(data) > 0 {
-			planContent = string(data)
+		planContent, err = os.ReadFile(dbAgent.PlanFilePath)
+		if err != nil {
+			return fmt.Errorf("read the saved plan: %w", err)
 		}
 	}
-
-	if planContent == "" {
-		slog.Warn("plan exec: no plan content found, broadcasting notification without restart",
-			"agent_id", agentID)
-		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":           contracts.NotificationTypePlanExecution,
-			"plan_file_path": dbAgent.PlanFilePath,
-		})
-		return
+	planMessage := planExecutionPromptText
+	if len(planContent) > 0 {
+		planMessage = "Execute the following plan:\n\n---\n\n" + string(planContent)
+		planMessage += "\n\n---\n\nThe plan is stored at " + dbAgent.PlanFilePath + ". Read it again if needed."
+	} else {
+		slog.Warn("plan execution has no saved plan text, so the queued turn carries the neutral instruction",
+			"agent_id", agentID, "plan_file_path", dbAgent.PlanFilePath)
 	}
-
-	planMsg := "Execute the following plan:\n\n---\n\n" + planContent
-	if dbAgent.PlanFilePath != "" {
-		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
-	}
-
-	if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
-		ID: id.Generate(), AgentID: agentID,
+	_, err = svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+		ID: inputID, AgentID: agentID,
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
-		Text: planMsg, TargetMode: targetMode, PrepareContext: true,
-	}); err != nil {
-		slog.Error("plan execution input enqueue failed", "agent_id", agentID, "error", err)
-	}
-}
-
-func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAgent db.Agent) error {
-	if newSessionID, ok := svc.Agents.ClearContext(agentID); ok {
-		if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
-			AgentSessionID: newSessionID,
-			ID:             agentID,
-		}); err != nil {
-			return err
-		}
-		svc.Output.ResetSpanTracker(agentID)
-		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypeContextCleared,
-		})
-		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypePlanExecution, "plan_file_path": dbAgent.PlanFilePath,
-		})
-		return nil
-	}
-	return svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent)
+		Text: planMessage, TargetMode: targetMode, PrepareContext: true,
+	})
+	return err
 }
 
 // initiatePlanExecutionRestart performs a full stop-and-restart to clear
@@ -3346,7 +3513,13 @@ func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAg
 func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbAgent db.Agent) error {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
+	_, err := svc.restartPlanContextLocked(agentID, targetMode, dbAgent)
+	return err
+}
 
+// restartPlanContextLocked returns the created session even if later settings persistence fails.
+// The caller holds the lifecycle lock.
+func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent db.Agent) (string, error) {
 	// DiscardOutput before stop so shutdown noise ("stream closed") does not
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
@@ -3385,14 +3558,18 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
-		return err
+		return "", err
+	}
+	current, readErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if readErr != nil {
+		return "", readErr
 	}
 	if _, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings); err != nil {
-		slog.Warn("plan exec: failed to persist confirmed settings", "agent_id", agentID, "error", err)
+		return current.AgentSessionID, err
 	}
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
-	return nil
+	return current.AgentSessionID, nil
 }
 
 // broadcastReplayAgentEvent wraps an AgentEvent in the WatchEventsResponse
@@ -3411,12 +3588,19 @@ func broadcastReplayAgentEvent(sink *replaySink, event *leapmuxv1.AgentEvent) {
 	})
 }
 
-func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, requestID string, payload []byte, claimToken string) *leapmuxv1.AgentControlRequest {
+func buildAgentControlRequest(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) *leapmuxv1.AgentControlRequest {
+	state, err := controlResponseState(queries, agentID, request.RequestID, claimToken)
+	if err != nil {
+		slog.Error("could not read the control response state", "agent_id", agentID, "request_id", request.RequestID, "error", err)
+	}
 	return &leapmuxv1.AgentControlRequest{
-		AgentId:       agentID,
-		RequestId:     requestID,
-		Payload:       payload,
-		AgentProvider: provider,
+		ResponseState:  state,
+		AgentSessionId: request.AgentSessionID,
+		AgentId:        agentID,
+		RequestId:      request.RequestID,
+		Payload:        request.Payload,
+		SourceSeq:      request.SourceSeq,
+		AgentProvider:  provider,
 		// The per-instance token the frontend echoes in its answer so the idempotency claim can dedup
 		// a reused request_id per INSTANCE (see AgentControlRequest.claim_token).
 		ClaimToken: claimToken,
@@ -3562,22 +3746,26 @@ func reverseMessages(msgs []db.Message) {
 // messageToProto converts a DB Message to a proto AgentChatMessage.
 func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 	return &leapmuxv1.AgentChatMessage{
-		Id:                 m.ID,
-		Source:             m.Source,
-		Content:            m.Content,
-		Seq:                m.Seq,
-		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
-		AgentProvider:      m.AgentProvider,
-		CreatedAt:          timefmt.Format(m.CreatedAt.Time),
-		Depth:              int32(m.Depth),
-		SpanId:             m.SpanID,
-		ParentSpanId:       m.ParentSpanID,
-		SpanType:           m.SpanType,
-		SpanColor:          int32(m.SpanColor),
-		SpanLines:          m.SpanLines,
-		MarkType:           m.MarkType,
-		AssembledKind:      leapmuxv1.AssembledMessageKind(m.AssembledKind),
-		Completion:         leapmuxv1.MessageCompletion(m.Completion),
+		Id:                             m.ID,
+		AgentSessionId:                 m.AgentSessionID,
+		Source:                         m.Source,
+		Content:                        m.Content,
+		Seq:                            m.Seq,
+		ContentCompression:             leapmuxv1.ContentCompression(m.ContentCompression),
+		SupplementalContent:            m.SupplementalContent,
+		SupplementalContentCompression: leapmuxv1.ContentCompression(m.SupplementalContentCompression),
+		SupplementalRevision:           m.SupplementalRevision,
+		AgentProvider:                  m.AgentProvider,
+		CreatedAt:                      timefmt.Format(m.CreatedAt.Time),
+		Depth:                          int32(m.Depth),
+		SpanId:                         m.SpanID,
+		ParentSpanId:                   m.ParentSpanID,
+		SpanType:                       m.SpanType,
+		SpanColor:                      int32(m.SpanColor),
+		SpanLines:                      m.SpanLines,
+		MarkType:                       m.MarkType,
+		AssembledKind:                  leapmuxv1.AssembledMessageKind(m.AssembledKind),
+		Completion:                     leapmuxv1.MessageCompletion(m.Completion),
 	}
 }
 

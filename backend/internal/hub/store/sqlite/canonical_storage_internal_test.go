@@ -207,7 +207,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// lifecycle_outbox.consumed_at.
 	require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
 		UserID:  userid.MustNew(user.ID),
-		OpType:  "create",
+		OpType:  leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE,
 		Payload: []byte("payload"),
 	}))
 	pending, err := st.LifecycleOutbox().ListPending(ctx, store.ListPendingLifecycleOutboxParams{
@@ -385,7 +385,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	webauthnSessionID := id.Generate()
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
 		ID:          webauthnSessionID,
-		Kind:        "elevation",
+		Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_ELEVATION,
 		UserID:      user.ID,
 		PayloadJSON: "{}",
 		SessionData: []byte("canon-session"),

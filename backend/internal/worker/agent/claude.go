@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -91,6 +92,7 @@ type ClaudeCodeAgent struct {
 	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
+	sessionID  string
 	effort     string
 	workingDir string
 	homeDir    string
@@ -100,6 +102,8 @@ type ClaudeCodeAgent struct {
 	contextUsage    *contextUsageSnapshot
 	lastAgentStatus string
 	turnActive      bool
+	inputMu         sync.Mutex
+	turnEndRevision uint64
 	// sessionStateReported records that this CLI publishes
 	// `system`/`session_state_changed`. Once it does, the output heuristic
 	// stands down for the life of the process: the CLI states its own turn
@@ -107,14 +111,13 @@ type ClaudeCodeAgent struct {
 	// the vendor adds later can arm a turn that nothing ends.
 	sessionStateReported bool
 
-	// awaitingResult is true from the moment a message reaches the CLI's stdin
-	// until the `result` that answers it. It is what tells a STALE
-	// session_state_changed idle from a live one: the CLI emits idle before it
-	// reads the next message, so an idle that arrives after this Worker handed
-	// one over describes the state before that hand-over, and clearing the turn
-	// on it would open the queue on a turn about to start. See
-	// ClaudeCodeAgent.noteSessionIdle.
-	awaitingResult         bool
+	// awaitingResult covers the input write and its reply. An unsuccessful write clears it unless native output proves a turn started.
+	// This prevents an older idle notification from releasing a queued prompt before the CLI reads it.
+	awaitingResult bool
+	// interruptRequested records that the user stopped the RUNNING turn. The
+	// `result` that ends that turn spends the note, and disarmTurn drops a note that
+	// no `result` spent. Guarded by a.mu. See noteInterruptRequested.
+	interruptRequested     bool
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 	// hasGoalCommand records whether the running CLI advertises /goal in its
 	// init frame's slash_commands. The command shipped in 2.1.139, so this is
@@ -191,9 +194,13 @@ type ClaudeCodeAgent struct {
 //
 // The start fails instead. It never drops the flag and launches on a fresh
 // session; see resumeFailedError.
-func claudeResumeArgs(resumeSessionID string) ([]string, error) {
+func claudeSessionArgs(resumeSessionID string) ([]string, error) {
 	if resumeSessionID == "" {
-		return nil, nil
+		sessionID, err := uuid.NewRandom()
+		if err != nil {
+			return nil, fmt.Errorf("create Claude session ID: %w", err)
+		}
+		return []string{"--session-id", sessionID.String()}, nil
 	}
 	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
 		return nil, resumeFailedError(resumeSessionID,
@@ -283,12 +290,12 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 		"--forward-subagent-text",
 	}
 
-	resumeArgs, err := claudeResumeArgs(opts.ResumeSessionID)
+	sessionArgs, err := claudeSessionArgs(opts.ResumeSessionID)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	baseArgs = append(baseArgs, resumeArgs...)
+	baseArgs = append(baseArgs, sessionArgs...)
 
 	// opts.Model() is the raw stored/operator-default value, which may be a legacy
 	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from
@@ -342,6 +349,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 	a := &ClaudeCodeAgent{
 		processBase:            newProcessBase(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
 		model:                  launchModel,
+		sessionID:              sessionArgs[1],
 		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
@@ -380,6 +388,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 		cleanup()
 		return nil, err
 	}
+	a.sink.UpdateSessionID(a.sessionID)
 
 	return a, nil
 }
@@ -391,7 +400,11 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 // returns a formatted startup error on a hard failure (initialize / set_permission_mode);
 // the caller tears the process down. Every field write here runs on the StartClaudeCode
 // goroutine before the agent is registered with the manager -- the same lock-free
-// pre-registration window buildStartupFlagSettings documents -- so no a.mu is taken.
+// pre-registration window buildStartupFlagSettings documents -- so a bare field write
+// needs no a.mu. The permission-mode writes still go through their own locked helpers
+// (settlePermissionMode, setAutoModeAvailable), because the READER goroutine already
+// runs: HandleOutput delivers the control responses this handshake waits for, and a
+// deferred one reaches claudeCodeHandleControlResponse, which writes the same fields.
 func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options) error {
 	timeout := opts.startupTimeout()
 
@@ -424,11 +437,11 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_permission_mode")
-	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout)
-	if err != nil {
+	// applyStartupPermissionMode records the acknowledged mode as the confirmed one, so
+	// this discards the response rather than writing the field a second time.
+	if _, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout); err != nil {
 		return a.formatStartupError("set_permission_mode", err)
 	}
-	a.confirmedPermissionMode = resp.Mode
 	TraceStartupPhase(opts.AgentID, "after_permission_mode")
 
 	// Apply persisted options that differ from initialized defaults.
@@ -702,11 +715,52 @@ func (a *ClaudeCodeAgent) Interrupt() error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}
+	// Noted BEFORE the request goes out, the way every other provider notes its
+	// own stop. The reader goroutine hands the acknowledgement to the wait below
+	// and reads the NEXT line at once, and that line is the `result` of the turn
+	// the interrupt just aborted -- so a note taken after the wait races the
+	// takeInterruptRequest that spends it, and loses whenever the reader wins.
+	// The turn then reads as the failure its subtype claims.
+	//
+	// A failed send leaves the note standing, because the failure that reaches
+	// here is a control TIMEOUT far more often than a lost write, and the CLI
+	// that answered late still aborted the turn. The note costs nothing if it is
+	// wrong: disarmTurn drops one that no `result` spent.
+	a.noteInterruptRequested()
 	// Use the agent's own context so a process exit unblocks the
 	// wait. APITimeout caps how long we hold the caller; the control
 	// protocol itself is fast (single round-trip).
 	_, err := a.sendControlAndWait(a.ctx, `{"subtype":"interrupt"}`, a.APITimeout())
 	return err
+}
+
+// noteInterruptRequested records that the USER stopped the running turn, so the
+// `result` that ends it carries LeapMux's own completion.
+//
+// The command-line interface reports an interrupted turn as
+// `subtype: error_during_execution` with `is_error: true`, which is the same shape it
+// uses for a genuine failure, and its `errors` array carries its own diagnostics. The
+// subtype therefore cannot tell the two apart. LeapMux can: it asked for the stop.
+//
+// The note is taken only while a turn is running. Claude acknowledges an interrupt
+// sent outside a turn and sends no `result` for it, so a note taken there would wait
+// and then mislabel the NEXT turn's outcome.
+func (a *ClaudeCodeAgent) noteInterruptRequested() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.turnActive {
+		a.interruptRequested = true
+	}
+}
+
+// takeInterruptRequest reports whether the turn that is ending was interrupted, and
+// clears the note. One `result` ends one turn, so the note is spent there.
+func (a *ClaudeCodeAgent) takeInterruptRequest() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	interrupted := a.interruptRequested
+	a.interruptRequested = false
+	return interrupted
 }
 
 // SendInput writes a user message to the agent's stdin.
@@ -814,10 +868,14 @@ func (a *ClaudeCodeAgent) noteSessionIdle() {
 // already reset.
 func (a *ClaudeCodeAgent) disarmTurn() {
 	a.mu.Lock()
+	a.turnEndRevision++
 	a.turnActive = false
 	// The `result` this ends is the answer to whatever the Worker sent, so a
 	// later idle is no longer stale.
 	a.awaitingResult = false
+	// The note belongs to the turn that just ended. A turn end that ran without one
+	// (a process exit, a refused dispatch) must not leave it for the next turn.
+	a.interruptRequested = false
 	a.mu.Unlock()
 	a.PublishTurnActive()
 }
@@ -838,23 +896,14 @@ func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.At
 }
 
 func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
-	// Registered BEFORE the unlock below, so it runs AFTER it: deferred calls
-	// run last-registered-first. Publishing under a.mu would hold the agent lock
-	// across a broadcast. It re-reads the flag, so the error paths below -- and a
-	// steer, which opens no turn -- publish the unchanged value, and the Worker
-	// reconciles rather than moves. That covers the busy refusal for this
-	// provider, which the other providers publish explicitly.
+	return a.sendInputForSession(nil, content, attachments, priority)
+}
+
+func (a *ClaudeCodeAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, priority string) error {
+	// Serialize input writes without blocking state updates or Stop on the process mutex.
 	defer a.PublishTurnActive()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.stopped {
-		return fmt.Errorf("agent is stopped")
-	}
-	if priority == "" && a.turnActive {
-		return ErrAgentBusy
-	}
-
+	a.inputMu.Lock()
+	defer a.inputMu.Unlock()
 	msg := UserInputMessage{
 		Type:     MessageTypeUser,
 		Priority: priority,
@@ -864,7 +913,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	}
 
 	if len(attachments) == 0 {
-		// Plain text — backward compatible string content.
+		// Plain text uses the protocol's string content.
 		msg.Message.Content = content
 	} else {
 		// Multimodal — build a content block array.
@@ -878,18 +927,37 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	}
 
 	data = append(data, '\n')
-	if err := a.writeStdin(data); err != nil {
-		return fmt.Errorf("write stdin: %w", err)
+	a.mu.Lock()
+	if err := checkInputSession(expected, a.sessionID); err != nil {
+		a.mu.Unlock()
+		return err
 	}
-	// The turn opens once the message is actually on stdin, not before: a write
-	// that failed started nothing, and marking it busy would leave the agent
-	// working forever with no envelope coming to clear it. A steer joins the turn
-	// already in flight, so it opens none.
+	if a.stopped {
+		a.mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	if priority == "" && a.turnActive {
+		a.mu.Unlock()
+		return ErrAgentBusy
+	}
+	endRevision := a.turnEndRevision
 	if priority == "" {
-		a.turnActive = true
 		a.awaitingResult = true
 	}
-
+	a.mu.Unlock()
+	writeErr := a.writeStdin(data)
+	a.mu.Lock()
+	if priority == "" && a.turnEndRevision == endRevision {
+		if writeErr == nil && !a.stopped {
+			a.turnActive = true
+		} else if !a.turnActive {
+			a.awaitingResult = false
+		}
+	}
+	a.mu.Unlock()
+	if writeErr != nil {
+		return fmt.Errorf("write stdin: %w", writeErr)
+	}
 	return nil
 }
 
@@ -1421,6 +1489,35 @@ func (a *ClaudeCodeAgent) SettingsSnapshot() SettingsApplyResult {
 	return result
 }
 
+// settlePermissionMode adopts the mode the CLI acknowledged and drops the deferred
+// ack, in ONE critical section. The caller holds no lock.
+//
+// An acknowledged set_permission_mode SETTLES the axis. It supersedes two requests that
+// record their own request id as the deferred ack: an older toggle, and the startup auto
+// probe that timed out. An id that outlives its request costs two things.
+//
+//   - SettingsSnapshot reports the axis UNRESOLVED while an id is set, and
+//     applyPlanOptionsLocked then refuses every plan that specifies the permission mode.
+//   - claudeCodeHandleControlResponse folds the mode of the MATCHING ack back into the
+//     confirmed state. A late ack of a superseded request would therefore replace the
+//     mode this session runs with the mode that request asked for.
+//
+// A mode that LANDED on auto proves the session can enter it, so this also clears a
+// stale autoModeAvailable=false that a transient startup probe failure left behind.
+// Without that, OptionGroups keeps filtering "auto" out of the picker although the
+// session runs it. (livePermissionModeGroup still keeps the current value selectable as
+// a backstop, but the flag then states the catalog accurately instead of only
+// self-correcting.)
+func (a *ClaudeCodeAgent) settlePermissionMode(mode string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.confirmedPermissionMode = mode
+	a.deferredPermissionModeReqID = ""
+	if mode == contracts.ClaudeModeAuto {
+		a.autoModeAvailable = true
+	}
+}
+
 // applyPermissionModeLive applies a permission-mode change to the running CLI via
 // set_permission_mode. The first result reports whether the caller can keep the process. The
 // second result reports whether the command acknowledged the value. The caller holds no lock.
@@ -1433,20 +1530,7 @@ func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) (applied, confirm
 	resp, err := a.sendSetPermissionMode(a.ctx, mode, min(permissionModeApplyTimeout, a.APITimeout()))
 	switch {
 	case err == nil:
-		a.mu.Lock()
-		a.confirmedPermissionMode = resp.Mode
-		// This acknowledged request supersedes any older deferred toggle. Its
-		// late response must not keep the current value unresolved.
-		a.deferredPermissionModeReqID = ""
-		// A live switch that LANDED on auto proves the session can enter it, so clear a stale
-		// autoModeAvailable=false a transient startup probe failure may have left behind. Without
-		// this, OptionGroups would keep filtering "auto" out of the picker even though the session
-		// is running it. (livePermissionModeGroup still keeps the current value selectable as a
-		// backstop, but updating the flag makes the catalog state accurate, not just self-correcting.)
-		if resp.Mode == contracts.ClaudeModeAuto {
-			a.autoModeAvailable = true
-		}
-		a.mu.Unlock()
+		a.settlePermissionMode(resp.Mode)
 		confirmed = true
 	case errors.Is(err, errControlTimeout):
 		// The ack is deferred because a turn is in progress, but the CLI still queues
@@ -2172,7 +2256,7 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 		resp, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout)
 		if err == nil {
 			a.setAutoModeAvailable(true)
-			return resp, nil
+			return a.settleStartupPermissionMode(resp, nil)
 		}
 		// EVERY new session requests auto (setNewAgentOptionDefaults), so this branch
 		// decides whether a failure here costs the picker one entry or costs the user the
@@ -2190,7 +2274,7 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 				"agent_id", a.agentID, "error", err)
 		}
 		a.setAutoModeAvailable(false)
-		return a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout)
+		return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout))
 	}
 
 	if _, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout); err != nil {
@@ -2202,7 +2286,22 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 	} else {
 		a.setAutoModeAvailable(true)
 	}
-	return a.sendSetPermissionMode(ctx, requested, timeout)
+	return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, requested, timeout))
+}
+
+// settleStartupPermissionMode records an acknowledged startup mode through
+// settlePermissionMode and passes a failure through unchanged, so every exit of
+// applyStartupPermissionMode settles the axis from one place.
+//
+// The auto PROBE runs before the requested mode, and a probe that times out records its
+// own request id as the deferred ack (see sendSetPermissionMode). The mode that follows
+// it supersedes that request, so the id must go with it. A failure needs no settlement:
+// the caller tears the process down.
+func (a *ClaudeCodeAgent) settleStartupPermissionMode(resp claudeCodeControlResult, err error) (claudeCodeControlResult, error) {
+	if err == nil {
+		a.settlePermissionMode(resp.Mode)
+	}
+	return resp, err
 }
 
 // sendSetPermissionMode issues set_permission_mode and falls back to the
@@ -2632,6 +2731,7 @@ func init() {
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
 		"claude",
 	)
+	setFixedPermissionModes(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	// Each Claude model carries its effort AND extended-thinking groups, so the
 	// frontend rebuilds both on a model switch (the static fallback needs this
 	// too, hence the registry override rather than only Claude.OptionGroups).

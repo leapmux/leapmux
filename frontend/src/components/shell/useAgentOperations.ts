@@ -1,5 +1,6 @@
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
+import type { ControlResponseHandler } from '~/components/chat/controls/types'
 import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -9,7 +10,7 @@ import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalAction } from '~/stores/chatGoal'
-import type { ControlRequest, createControlStore } from '~/stores/control.store'
+import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
@@ -19,11 +20,12 @@ import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 
 import * as workerRpc from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
+import { ControlResponseDeliveryError } from '~/components/chat/controls/controlResponseError'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
-import { AgentOptionSettlementState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentOptionSettlementState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
@@ -281,31 +283,34 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // answer cannot pair an id from one instance with a token from another. It
   // still carries all three after the request leaves the store, which is what a
   // double-submit or an answer-after-cancel race needs.
-  const handleControlResponse = async (request: ControlRequest, content: Uint8Array) => {
+  const handleControlResponse: ControlResponseHandler = async (request, content, options) => {
     props.forceScrollToBottom?.()
     const { agentId, requestId } = request
+    const workerId = getAgentWorkerId(agentId)
+    // Use the captured request's token even if a new request reuses its ID.
+    let response
     try {
-      const workerId = getAgentWorkerId(agentId)
-      // Echo the per-instance claimToken the worker minted for THIS instance, so its
-      // idempotency claim dedups per instance -- a reused request_id gets a fresh token
-      // (see AgentControlRequest.claim_token). A synthetic request carries none, and the
-      // worker then degrades to request_id-only dedup rather than dropping the answer.
-      //
-      // Never read the token back from the store. A reused request_id can hold a SECOND
-      // instance there, and that instance's token would claim the wrong answer.
-      await workerRpc.sendControlResponse(workerId, {
+      response = await workerRpc.sendControlResponse(workerId, {
         agentId,
+        requestId,
         content,
+        recordOnly: options?.recordOnly ?? false,
+        planApproval: options?.planApproval,
         claimToken: request.claimToken ?? '',
       })
-
-      if (requestId)
-        props.controlStore.removeRequest(agentId, requestId)
     }
-    catch (err) {
-      showWarnToast('Failed to send response', err)
-      throw err
+    catch (error) {
+      props.controlStore.setResponseState(request, ControlResponseState.UNSPECIFIED)
+      throw error
     }
+    props.controlStore.setResponseState(request, response.state)
+    if (response.error)
+      throw new ControlResponseDeliveryError(response.state, response.error)
+    if (response.state === ControlResponseState.COMPLETED || response.state === ControlResponseState.CANCELED) {
+      props.controlStore.removeRequest(agentId, requestId, request.claimToken)
+      return true
+    }
+    return false
   }
 
   // Interrupt the given agent's current turn. The worker dispatches
@@ -323,27 +328,39 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   /**
-   * Set, clear, pause or resume an agent's session goal.
+   * Ask the worker to set, clear, pause or resume a session goal, and let a refusal
+   * reach the caller.
    *
    * Writes nothing locally on success. Every provider echoes a goal change back
    * as a notification, so an optimistic write would race an echo already in
    * flight and the control would visibly flip back -- the same discipline
    * handleInterrupt keeps.
    *
-   * The worker refuses an action the running agent does not support, so a stale
-   * capability list produces a toast rather than a silent no-op.
+   * A provider states its own reason -- ZCode answers "Cannot manage goals while a prompt
+   * is running" -- and where the reader reads it depends on which surface asked. The Set
+   * dialog stays open and has a slot for a refusal, so it states the provider's words
+   * there. See RL-004.
+   */
+  const updateGoal = async (agentId: string, action: GoalAction, objective?: string): Promise<void> => {
+    await workerRpc.updateAgentGoal(getAgentWorkerId(agentId), {
+      agentId,
+      action: goalActionToProto(action),
+      objective: objective ?? '',
+    })
+  }
+
+  /**
+   * A goal verb from the card's own menu. Its refusal has no dialog to land in, so it
+   * reports through a toast and answers whether the verb took effect.
    */
   const handleGoalAction = async (agentId: string, action: GoalAction, objective?: string) => {
     try {
-      const workerId = getAgentWorkerId(agentId)
-      await workerRpc.updateAgentGoal(workerId, {
-        agentId,
-        action: goalActionToProto(action),
-        objective: objective ?? '',
-      })
+      await updateGoal(agentId, action, objective)
+      return true
     }
     catch (err) {
       showWarnToast('Failed to update the session goal', err)
+      return false
     }
   }
 
@@ -604,6 +621,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleOpenAgent,
     handleControlResponse,
     handleInterrupt,
+    updateGoal,
     handleGoalAction,
     handleAgentSettingChange,
     handleAgentClose,

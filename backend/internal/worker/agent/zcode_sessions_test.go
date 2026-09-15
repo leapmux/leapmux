@@ -2,12 +2,95 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// zcodeStorePathsFor resolves the store location for a home directory with no
+// environment override.
+func zcodeStorePathsFor(home string) zcodeToolStoreLocation {
+	return zcodeToolStorePaths(StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(nil)})
+}
+
+// writeZCodeSessionDBPath states storage.sessionDbPath in the CLI configuration.
+func writeZCodeSessionDBPath(t *testing.T, home, databasePath string) {
+	t.Helper()
+	writeFixtureFile(t, filepath.Join(home, ".zcode", "cli", "config.json"),
+		`{"storage":{"sessionDbPath":`+fixtureJSONString(databasePath)+`}}`)
+}
+
+func TestZCodeToolStorePaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the stock layout keeps the database and the artifacts as siblings", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".zcode", "cli", "artifacts"), 0o700))
+		location := zcodeStorePathsFor(home)
+		assert.Equal(t, filepath.Join(home, ".zcode", "cli", "db", "db.sqlite"), location.databasePath)
+		assert.Equal(t, filepath.Join(home, ".zcode", "cli", "artifacts"), location.artifactRoot,
+			"a live installation holds cli/db/db.sqlite beside cli/artifacts")
+	})
+
+	t.Run("an absent artifact directory still reports the stock path", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		assert.Equal(t, filepath.Join(home, ".zcode", "cli", "artifacts"), zcodeStorePathsFor(home).artifactRoot,
+			"the fallback is the grandparent of the database, which is the same cli directory")
+	})
+
+	t.Run("sessionDbPath moves the artifact root with the database", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		moved := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(moved, "cli", "artifacts"), 0o700))
+		writeZCodeSessionDBPath(t, home, filepath.Join(moved, "cli", "db", "db.sqlite"))
+		location := zcodeStorePathsFor(home)
+		assert.Equal(t, filepath.Join(moved, "cli", "db", "db.sqlite"), location.databasePath)
+		assert.Equal(t, filepath.Join(moved, "cli", "artifacts"), location.artifactRoot,
+			"the setting states one file, so the artifacts follow the layout around it")
+	})
+
+	t.Run("an existing storage-root artifact directory stays the first choice", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		moved := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".zcode", "cli", "artifacts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(moved, "cli", "artifacts"), 0o700))
+		writeZCodeSessionDBPath(t, home, filepath.Join(moved, "cli", "db", "db.sqlite"))
+		assert.Equal(t, filepath.Join(home, ".zcode", "cli", "artifacts"), zcodeStorePathsFor(home).artifactRoot)
+	})
+
+	t.Run("a regular file at the artifact path is not an artifact directory", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		moved := t.TempDir()
+		writeFixtureFile(t, filepath.Join(home, ".zcode", "cli", "artifacts"), "not a directory")
+		require.NoError(t, os.MkdirAll(filepath.Join(moved, "cli", "artifacts"), 0o700))
+		writeZCodeSessionDBPath(t, home, filepath.Join(moved, "cli", "db", "db.sqlite"))
+		assert.Equal(t, filepath.Join(moved, "cli", "artifacts"), zcodeStorePathsFor(home).artifactRoot)
+	})
+
+	t.Run("a database with no grandparent directory keeps the storage-root path", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		writeZCodeSessionDBPath(t, home, "db.sqlite")
+		assert.Equal(t, filepath.Join(home, ".zcode", "cli", "artifacts"), zcodeStorePathsFor(home).artifactRoot)
+	})
+}
+
+func TestZCodeArtifactRootBesideDatabase(t *testing.T) {
+	t.Parallel()
+	assert.Empty(t, zcodeArtifactRootBesideDatabase(""))
+	assert.Empty(t, zcodeArtifactRootBesideDatabase("db.sqlite"), "a bare file name has no grandparent directory")
+	root := absPath("moved", "zcode", "cli")
+	assert.Equal(t, filepath.Join(root, "artifacts"),
+		zcodeArtifactRootBesideDatabase(filepath.Join(root, "db", "db.sqlite")))
+}
 
 func TestZCodeSessionDBPath(t *testing.T) {
 	t.Parallel()

@@ -1,0 +1,137 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// Storage vocabularies for the hub's and the worker's own tables.
+//
+// Every enum here numbers ONE enum column in internal/hub/store or
+// internal/worker/db. None of them appears in a request, a response or an
+// event: no RPC carries them, and the browser never sees one. They live in
+// proto for the same reason every other enum column in this project does -- so
+// the column, the Go constant and the SQL CHECK share one numbering that a
+// renumber moves together, instead of a token spelled once in Go and again in
+// three dialects of SQL.
+//
+// The rule that puts them here is in CLAUDE.md, under "Enum columns store proto
+// enum ordinals". The short form: a closed set of values in a database column
+// is an enum, and an enum takes its numbering from proto -- whether or not it
+// also crosses a language boundary. Crossing one is what adds a CONTRACT entry
+// on top, which none of these needs.
+//
+// UNSPECIFIED is 0 in each, as proto3 requires. No column below accepts it
+// except agent_input_queue_state.pause_owner, where 0 is the real state "nobody
+// owns this pause" and the enum says so at its own declaration. Everywhere else
+// a zero is an unset Go field rather than a state, every CHECK starts at 1, and
+// the write fails instead of recording it.
+
+// RevocationEventKind is what one row of the durable revocation stream
+// announces. Numbers revocation_events.kind.
+enum RevocationEventKind {
+  REVOCATION_EVENT_KIND_UNSPECIFIED = 0;
+  // One session's own credential changed.
+  REVOCATION_EVENT_KIND_SESSION = 1;
+  // One session was revoked. This is the one kind with its own partial index,
+  // because the session-close path seeks it by subject.
+  REVOCATION_EVENT_KIND_SESSION_REVOKED = 2;
+  REVOCATION_EVENT_KIND_API_TOKEN = 3;
+  REVOCATION_EVENT_KIND_API_TOKEN_ROTATION = 4;
+  REVOCATION_EVENT_KIND_DELEGATION_TOKEN = 5;
+  // Every credential of one user, at once.
+  REVOCATION_EVENT_KIND_USER_TOKENS = 6;
+  // Not a revocation: the user's own profile changed, and a cache that copied
+  // it must read again. It rides this stream because it needs the same gapless
+  // ordering and the same cross-process delivery.
+  REVOCATION_EVENT_KIND_USER_INFO = 7;
+}
+
+// AppRegistrationSource is who put an OAuth app registration in the table.
+// Numbers oauth_clients.registration_source.
+enum AppRegistrationSource {
+  APP_REGISTRATION_SOURCE_UNSPECIFIED = 0;
+  // A constant of the build, reconciled on every store open by SeedBuiltIns.
+  APP_REGISTRATION_SOURCE_BUILTIN = 1;
+  // An administrator registered it for the whole hub.
+  APP_REGISTRATION_SOURCE_ADMIN = 2;
+  // A user registered it as their own private app.
+  APP_REGISTRATION_SOURCE_USER = 3;
+  // The app registered itself through RFC 7591 dynamic registration. Nobody
+  // vouched for it, which is what keeps it out of the hub-wide catalogue.
+  APP_REGISTRATION_SOURCE_DYNAMIC = 4;
+}
+
+// OAuthStatePurpose is what the identity-provider round trip that owns a
+// short-lived state row will do when it comes back. Numbers
+// oauth_states.purpose.
+//
+// The callback branches on this, and the two branches differ in what they are
+// allowed to do, so the column may not carry an unset value: a LOGIN may create
+// a session and link an identity, and a REAUTH must do neither. The CHECK
+// excludes UNSPECIFIED for that reason -- an insert that forgot the purpose
+// fails rather than defaulting into the branch with more authority.
+enum OAuthStatePurpose {
+  OAUTH_STATE_PURPOSE_UNSPECIFIED = 0;
+  // Starts a sign-in. May create a session or link an identity.
+  OAUTH_STATE_PURPOSE_LOGIN = 1;
+  // Proves the identity again for a session that is already signed in, to
+  // elevate it. Must never create a session or link an identity.
+  OAUTH_STATE_PURPOSE_REAUTH = 2;
+}
+
+// WebAuthnSessionKind is which ceremony a short-lived WebAuthn session row
+// belongs to. Numbers webauthn_sessions.kind.
+enum WebAuthnSessionKind {
+  WEB_AUTHN_SESSION_KIND_UNSPECIFIED = 0;
+  // The one kind with no user yet, which is why it sits outside the
+  // one-live-ceremony-per-user unique index.
+  WEB_AUTHN_SESSION_KIND_SIGNUP = 1;
+  WEB_AUTHN_SESSION_KIND_LOGIN = 2;
+  WEB_AUTHN_SESSION_KIND_REGISTER = 3;
+  WEB_AUTHN_SESSION_KIND_ELEVATION = 4;
+  WEB_AUTHN_SESSION_KIND_RECOVERY = 5;
+}
+
+// IdentityProviderType is the protocol an administrator-configured identity
+// provider speaks. Numbers oauth_providers.provider_type.
+//
+// It is NOT the preset a user picked. Four presets (github, google, apple,
+// oidc) map onto these two protocols, and the preset name stays a string on the
+// admin RPC because it names a configuration rather than a behaviour.
+enum IdentityProviderType {
+  IDENTITY_PROVIDER_TYPE_UNSPECIFIED = 0;
+  IDENTITY_PROVIDER_TYPE_OIDC = 1;
+  IDENTITY_PROVIDER_TYPE_GITHUB = 2;
+}
+
+// WorkspaceLifecycleOp is what one row of the transactional lifecycle outbox
+// asks the per-user manager to do after the transaction commits. Numbers
+// lifecycle_outbox.op_type.
+enum WorkspaceLifecycleOp {
+  WORKSPACE_LIFECYCLE_OP_UNSPECIFIED = 0;
+  WORKSPACE_LIFECYCLE_OP_CREATE = 1;
+  WORKSPACE_LIFECYCLE_OP_RENAME = 2;
+  WORKSPACE_LIFECYCLE_OP_DELETE = 3;
+}
+
+// AgentInputQueuePauseOwner records which cause created the pause that still
+// holds, so only that cause lifts it again. Numbers
+// agent_input_queue_state.pause_owner.
+//
+// A pause writer always overwrites the owner, so the newest cause owns the
+// pause: an archive resume, or the end of a planned restart, then leaves a pause
+// that a later crash or the user created.
+//
+// UNSPECIFIED is the ONE zero any column here accepts, and it is a real state:
+// the queue is not paused, so nobody owns a pause. The CHECK therefore starts at
+// 0, like agents.goal_status.
+//
+// It is NOT AgentInputQueuePauseReason. The reason is the SENTENCE the pause
+// banner shows the reader and travels to the browser; the owner is who may lift
+// the pause and never leaves the worker.
+enum AgentInputQueuePauseOwner {
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_UNSPECIFIED = 0;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_MANUAL = 1;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_ARCHIVE = 2;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_PLANNED_RESTART = 3;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_DELIVERY = 4;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_AGENT_STOPPED = 5;
+  AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY = 6;
+}

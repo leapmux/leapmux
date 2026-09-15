@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,13 +15,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPiControlPublicationFailureCancelsEachDialog(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"select", "input", "confirm", "editor"} {
+		t.Run(method, func(t *testing.T) {
+			var output bytes.Buffer
+			sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+			a := newPiAgentWithSink(sink)
+			a.stdin = nopWriteCloser{&output}
+			a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"dialog-1","method":"` + method + `","title":"Choose"}`))
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"dialog-1","cancelled":true}`, output.String())
+			assert.Empty(t, sink.PublishedControls())
+		})
+	}
+}
+
+func TestPiQuestionControlKeepsItsOriginalAndLinksTheToolRequest(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	tool := []byte(`{"type":"tool_execution_start","toolCallId":"question-tool","toolName":"ask_user_question","args":{"questions":[{"question":"Choose a layout","header":"Layout","options":[{"label":"Compact","description":"Small","preview":"complete preview"},{"label":"Wide","description":"Large"}]}]}}`)
+	handlePiOutput(a, parseLine(tool))
+	dialog := []byte(` {"type":"extension_ui_request","id":"dialog","method":"select","title":"[Layout] Choose a layout\n\n--- 1. Compact preview ---\ncomplete preview","options":["1. Compact — Small","2. Wide — Large","3. Type something."]} `)
+	handlePiOutput(a, parseLine(dialog))
+	require.Len(t, sink.PublishedControls(), 1)
+	request := sink.LastPublishedControl()
+	assert.Equal(t, dialog, request.Payload)
+	assert.Equal(t, int64(1), request.SourceSeq)
+	assert.Equal(t, tool, sink.Messages()[0].Content)
+}
+
+func TestPiMCPPermissionLinksItsToolRequest(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	tool := []byte(`{"type":"tool_execution_start","toolCallId":"mcp-call","toolName":"mcp","args":{"tool":"probe_write","args":{"path":"sample.py","content":"complete arguments"}}}`)
+	handlePiOutput(a, parseLine(tool))
+	dialog := []byte(`{"type":"extension_ui_request","id":"permission","method":"select","title":"MCP: probe wants to run write\n\nArguments:\n{ \"path\": \"sample.py\", \"content\": \"complete arguments\" }","options":["Allow once","Allow for session","Deny"]}`)
+	handlePiOutput(a, parseLine(dialog))
+	require.Len(t, sink.PublishedControls(), 1)
+	assert.Equal(t, int64(1), sink.LastPublishedControl().SourceSeq)
+	assert.Equal(t, dialog, sink.LastPublishedControl().Payload)
+}
+
 func newPiAgentWithSink(sink ProviderServices) *PiAgent {
 	a := &PiAgent{
 		processBase: processBase{agentID: "test-agent"},
 		sink:        sink,
 		sessionFile: "/tmp/pi-session.jsonl",
 	}
-	a.sink = newModelProgressResetSink(a.sink)
+	a.sink = newModelProgressResetSink(newPiToolTranscript(context.Background(), a.sink))
 	return a
 }
 
@@ -90,7 +135,9 @@ func piPersistedAgentEnd(t *testing.T, sink *recordingControlSink, index int) ma
 	msgs := sink.Messages()
 	require.Greater(t, len(msgs), index)
 	var persisted map[string]any
-	require.NoError(t, json.Unmarshal(msgs[index].Content, &persisted))
+	message := msgs[index]
+	resolved := ResolveMessageContent(piProvider{}, MessageContent{Original: message.Content, Supplemental: message.SupplementalContent, Metadata: message.Metadata})
+	require.NoError(t, json.Unmarshal(resolved, &persisted))
 	return persisted
 }
 
@@ -107,9 +154,28 @@ func TestHandlePiOutput_AgentSettled_PersistsNothing(t *testing.T) {
 
 	assert.Equal(t, 0, sink.MessageCount(), "agent_settled must not reach the transcript")
 	assert.Equal(t, 0, sink.NotificationCount())
-	assert.Equal(t, 0, len(sink.PersistedControls()))
+	assert.Equal(t, 0, len(sink.PublishedControls()))
 	assert.Equal(t, 0, sink.ResetSpanCount())
 	assert.Equal(t, 0, sink.SessionInfoCount())
+}
+
+func TestPiTurnCountMetadata(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"read-call","toolName":"read","args":{"path":"sample.txt"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_end","toolCallId":"read-call","toolName":"read","result":{"content":[]}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`)))
+	assert.Equal(t, float64(1), piPersistedAgentEnd(t, sink, 2)["num_tool_uses"])
+	assert.False(t, sink.Messages()[2].TurnEnd)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	assert.Equal(t, float64(1), piPersistedAgentEnd(t, sink, 3)["num_tool_uses"])
+	assert.True(t, sink.Messages()[3].TurnEnd)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	assert.Equal(t, float64(0), piPersistedAgentEnd(t, sink, 4)["num_tool_uses"])
 }
 
 func TestHandlePiOutput_AgentEnd_ReportsTurnDuration(t *testing.T) {
@@ -266,15 +332,29 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
+	// The row is the agent's own tool_execution_start frame, byte for byte. An
+	// earlier build wrote a tool_execution_end event Pi never sent, and declared
+	// `isError: true` although no failure was reported.
+	assert.JSONEq(t,
+		`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"printf partial"}}`,
+		string(result.Content))
 	assert.JSONEq(t, `{
-		"type":"tool_execution_end",
+		"toolCallId":"tool-1",
+		"toolName":"bash",
+		"partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}
+	}`, string(result.SupplementalContent))
+	assert.Equal(t, MessageCompletionError, result.Completion)
+
+	// Both halves read back as one finished call, so every extractor sees the output.
+	assert.JSONEq(t, `{
+		"type":"tool_execution_start",
 		"toolCallId":"tool-1",
 		"toolName":"bash",
 		"args":{"command":"printf partial"},
-		"result":{"content":[{"type":"text","text":"partial output"}],"details":{}},
-		"isError":true,
-		"_leapmux":{"completion":"error"}
-	}`, string(result.Content))
+		"result":{"content":[{"type":"text","text":"partial output"}],"details":{}}
+	}`, string(ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI).ResolveProviderData(MessageContent{
+		Original: result.Content, Supplemental: result.SupplementalContent,
+	})))
 }
 
 func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
@@ -289,15 +369,28 @@ func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
 	closing := sink.Messages()[1]
 	assert.True(t, closing.Closing)
 	assert.Equal(t, "tool-empty", closing.SpanID)
-	assert.JSONEq(t, `{
-		"type":"tool_execution_end",
-		"toolCallId":"tool-empty",
-		"toolName":"bash",
-		"args":{"command":"sleep 10"},
-		"result":{"content":[]},
-		"isError":true,
-		"_leapmux":{"completion":"error"}
-	}`, string(closing.Content))
+	assert.JSONEq(t,
+		`{"type":"tool_execution_start","toolCallId":"tool-empty","toolName":"bash","args":{"command":"sleep 10"}}`,
+		string(closing.Content))
+	assert.Empty(t, closing.SupplementalContent, "the call reported nothing, so nothing was recovered")
+	assert.Equal(t, MessageCompletionError, closing.Completion)
+}
+
+// A supplement that names another call cannot reach this row's result.
+func TestPiResolveProviderData_RefusesASupplementForAnotherCall(t *testing.T) {
+	t.Parallel()
+
+	original := []byte(`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash"}`)
+	for _, supplement := range []string{
+		`{"toolCallId":"tool-2","toolName":"bash","partialResult":{"content":[]}}`,
+		`{"toolCallId":"tool-1","toolName":"read","partialResult":{"content":[]}}`,
+		`{"toolCallId":"tool-1","toolName":"bash"}`,
+	} {
+		assert.JSONEq(t, string(original),
+			string(ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI).ResolveProviderData(MessageContent{
+				Original: original, Supplemental: []byte(supplement),
+			})), supplement)
+	}
 }
 
 func TestHandlePiOutput_InterruptedGenerationPreservesContentOrder(t *testing.T) {
@@ -480,7 +573,7 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 	assert.JSONEq(t, string(raw), string(msg.Content))
 }
 
-func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *testing.T) {
+func TestHandlePiOutput_MessageEnd_PreservesContentAndStoresUsageMetadata(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
@@ -494,9 +587,10 @@ func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *test
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
+	assert.Equal(t, raw, msg.Content)
 
 	var persisted map[string]any
-	require.NoError(t, json.Unmarshal(msg.Content, &persisted))
+	require.NoError(t, json.Unmarshal(msg.Metadata, &persisted))
 	assert.Equal(t, 0.00033, persisted["total_cost_usd"])
 	usage, ok := persisted["context_usage"].(map[string]any)
 	require.True(t, ok)
@@ -537,12 +631,11 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	result := msgs[1]
 	assert.True(t, result.TurnEnd, "agent_end must route through PersistTurnEnd")
 
-	var persisted map[string]any
-	require.NoError(t, json.Unmarshal(result.Content, &persisted))
+	persisted := piPersistedAgentEnd(t, sink, 1)
 	assert.Equal(t, "agent_end", persisted["type"])
 	assert.Equal(t, 0.00033, persisted["total_cost_usd"])
 	assert.Equal(t, float64(750), persisted["duration_ms"],
-		"the duration rides the same envelope as the usage fields")
+		"the supplement carries the duration and usage fields")
 	usage, ok := persisted["context_usage"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, float64(100), usage["input_tokens"])
@@ -828,15 +921,11 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogPersistsControlRequest(t *testi
 
 			handlePiOutput(a, parseLine([]byte(tc.raw)))
 
-			persisted := sink.PersistedControls()
+			persisted := sink.PublishedControls()
 			require.Equal(t, 1, len(persisted), "should persist one control request")
 			assert.Equal(t, tc.id, persisted[0].RequestID)
 			// Payload must round-trip the raw line verbatim.
 			assert.JSONEq(t, tc.raw, string(persisted[0].Payload))
-
-			broadcast := sink.BroadcastControls()
-			require.Equal(t, 1, len(broadcast))
-			assert.JSONEq(t, tc.raw, string(broadcast[0].Payload))
 
 			// Should NOT be persisted as a regular message or notification.
 			assert.Equal(t, 0, sink.MessageCount())
@@ -855,8 +944,7 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogWithoutIDIsDropped(t *testing.T
 		`{"type":"extension_ui_request","method":"select","title":"x","options":["a"]}`,
 	)))
 
-	assert.Empty(t, sink.PersistedControls(), "missing id must not persist a control request")
-	assert.Empty(t, sink.BroadcastControls())
+	assert.Empty(t, sink.PublishedControls(), "missing id must not persist a control request")
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T) {
@@ -881,7 +969,7 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T
 		"synthesized agent_notify must no longer be emitted; raw passthrough alone carries the same info")
 
 	// Should NOT be a control request.
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t *testing.T) {
@@ -1004,7 +1092,7 @@ func TestHandlePiOutput_ExtensionUIRequest_UnknownMethod_PersistAsNotification(t
 	)))
 
 	assert.Equal(t, 1, sink.NotificationCount())
-	assert.Empty(t, sink.PersistedControls())
+	assert.Empty(t, sink.PublishedControls())
 }
 
 func TestHandlePiOutput_ResponseLineWithoutPendingID_LoggedNotPersisted(t *testing.T) {
@@ -1207,7 +1295,7 @@ func TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID(t *testing.T) {
 // TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID verifies that a
 // tool_execution_end whose result carries status:"background" and an agentId
 // re-keys the registry row from toolCallId to details.agentId and leaves it
-// Running (the close of the old toolCallId row prevents a stale Running entry).
+// running. The registry rename removes the provisional key.
 func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 	t.Parallel()
 
@@ -1220,33 +1308,17 @@ func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-bg","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"starting"}}}`)))
 
-	// tool_execution_end whose result is the pi-subagents details shape with
-	// status:"background" + agentId. piApplySubagentEnd unmarshals the result
-	// directly as the details shape.
+	// Pi nests child status under result.details.
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_end","toolCallId":"call-bg","toolName":"Agent","result":{"status":"background","agentId":"agent-bg-1"}}`)))
+		`{"type":"tool_execution_end","toolCallId":"call-bg","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-bg-1"}}}`)))
 
 	tasks := sink.BackgroundTasks()
-	// Two rows: the old toolCallId row closed (Completed) and the new
-	// agentId-keyed row still Running.
-	require.Len(t, tasks, 2)
+	// The stable ID replaces the provisional key without a duplicate row.
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "agent-bg-1", tasks[0].RowKey)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
 
-	var bgRow, toolCallRow *bgtask.Item
-	for i := range tasks {
-		switch tasks[i].RowKey {
-		case "agent-bg-1":
-			bgRow = &tasks[i]
-		case "call-bg":
-			toolCallRow = &tasks[i]
-		}
-	}
-	require.NotNil(t, bgRow, "background re-key must upsert a row keyed by details.agentId")
-	assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "background row stays Running")
-	assert.Equal(t, bgtask.KindSubagent, bgRow.Kind)
-
-	require.NotNil(t, toolCallRow, "the old toolCallId row must be present (closed)")
-	assert.Equal(t, bgtask.StatusCompleted, toolCallRow.Status,
-		"old toolCallId row is closed so it does not pin a stale Running indicator")
 }
 
 // TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry verifies
@@ -1259,24 +1331,22 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
-	// Seed a running subagent row keyed by agentId (the notification carries
-	// agentId, not toolCallId).
+	// The Agent result uses agentId. Its completion notification uses id.
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_start","toolCallId":"call-notif","toolName":"Agent","args":{"description":"notif task"}}`)))
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-notif","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"busy","agentId":"agent-notif-1"}}}`)))
 	require.Len(t, sink.BackgroundTasks(), 1)
 
-	// A message_end with customType:"subagent-notification" carrying a terminal
-	// status in details.
-	msgEnd := []byte(`{"type":"message_end","customType":"subagent-notification","message":{"role":"assistant","content":[{"type":"text","text":"subagent finished"}]},"details":{"status":"completed","activity":"done","agentId":"agent-notif-1"}}`)
+	// The custom message carries the final status in details.
+	msgEnd := []byte(`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"subagent finished","details":{"status":"completed","id":"agent-notif-1"}}}`)
 	handlePiOutput(a, parseLine(msgEnd))
 
 	// Registry row closed.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status,
-		"subagent-notification with a terminal status must close the registry row")
+		"subagent-notification with a final status must close the registry row")
 	assert.True(t, tasks[0].Status.IsFinished())
 
 	// The message STILL persisted to the parent transcript (alongside the
@@ -1313,4 +1383,120 @@ func TestPiExtractDescriptionFallsThroughAnInvisibleDescription(t *testing.T) {
 			assert.Equal(t, tc.want, piExtractDescription([]byte(tc.input), "pi_spawn"))
 		})
 	}
+}
+
+// piInterruptedAgentEnd is the frame Pi sends when the user stops a turn whose
+// tool was still running. It is the SAME shape as a genuine failure: the stop
+// reason is `error` and the message is prose. A turn Pi aborts cleanly carries
+// `stopReason:"aborted"` instead, so the frame alone cannot tell the two apart.
+// Captured from `.tmp/provider-parity/interrupt5` (RL-015).
+const piInterruptedAgentEnd = `{"type":"agent_end","messages":[{"role":"assistant","content":[],` +
+	`"stopReason":"error","errorMessage":"This operation was aborted"}]}`
+
+func TestHandlePiOutput_AgentEnd_AfterInterrupt_MarksTheTurnInterrupted(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.currentTurnActive = true
+	a.noteInterruptRequested()
+
+	handlePiOutput(a, parseLine([]byte(piInterruptedAgentEnd)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	msg := sink.Messages()[0]
+	assert.True(t, msg.TurnEnd)
+	assert.Equal(t, MessageCompletionInterrupted, msg.Completion,
+		"a stop LeapMux asked for must not reach the reader as a failure")
+}
+
+func TestHandlePiOutput_AgentEnd_WithoutInterrupt_KeepsTheError(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.currentTurnActive = true
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant",`+
+		`"stopReason":"error","errorMessage":"rate limit"}]}`)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.Empty(t, sink.Messages()[0].Completion,
+		"a genuine failure carries no worker outcome, so the reader sees the frame own stop reason")
+}
+
+// The note belongs to ONE turn. A stop that Pi never ended -- the process died,
+// the session was replaced -- must not label the next turn's divider.
+func TestHandlePiOutput_AgentStart_DropsAStaleInterruptNote(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.currentTurnActive = true
+	a.noteInterruptRequested()
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant",`+
+		`"stopReason":"error","errorMessage":"rate limit"}]}`)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.Empty(t, sink.Messages()[0].Completion)
+}
+
+// A run Pi retries itself keeps the turn open, so the note must survive to the
+// agent_end that really ends it.
+func TestHandlePiOutput_AgentEnd_RetryKeepsTheInterruptNote(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.currentTurnActive = true
+	a.noteInterruptRequested()
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant",`+
+		`"stopReason":"error","errorMessage":"WebSocket error"}]}`)))
+	handlePiOutput(a, parseLine([]byte(piInterruptedAgentEnd)))
+
+	require.Equal(t, 2, sink.MessageCount())
+	assert.Equal(t, MessageCompletionInterrupted, sink.Messages()[1].Completion)
+}
+
+func TestPiIncompleteToolsReleaseOutputForACallWithNoStartFrame(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := &PiAgent{sink: sink}
+	// A partial result can arrive for a call whose start frame this worker never saw.
+	// The call opens no row, and the counter still holds its whole text.
+	a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"orphan","toolName":"bash","partialResult":{"content":[{"type":"text","text":"a long line of output"}]}}`))
+	a.mu.Lock()
+	_, observed := a.cumulativeOutput["orphan"]
+	a.mu.Unlock()
+	require.True(t, observed, "the partial result must reach the output counter")
+
+	a.persistIncompletePiTools(MessageCompletionError)
+	a.mu.Lock()
+	_, retained := a.cumulativeOutput["orphan"]
+	a.mu.Unlock()
+	assert.False(t, retained, "a call with no start frame must still release its output")
+	assert.Empty(t, sink.Messages(), "a call that opened no row persists nothing")
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("orphan"))
+}
+
+func TestPiAgentStartProbesTheSessionOnlyOnTheFirstAttempt(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.mu.Lock()
+	rig.agent.sessionID = "sess"
+	rig.agent.mu.Unlock()
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		return json.RawMessage(`{"sessionId":"sess","sessionFile":"/tmp/pi-test.jsonl","cost":1}`), true, ""
+	})
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	require.Eventually(t, func() bool { return len(rig.requests()) == 1 }, time.Second, time.Millisecond)
+	assert.Equal(t, PiCommandGetSessionStats, rig.requests()[0].Type)
+	// Pi restarts a failed run itself. A retry continues the SAME turn, so it cannot
+	// have replaced the session, and a retry storm must not repeat the probe.
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	assert.Never(t, func() bool { return len(rig.requests()) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
 }

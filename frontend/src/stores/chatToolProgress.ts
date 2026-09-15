@@ -1,11 +1,21 @@
+import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import { createStore } from 'solid-js/store'
+import { messageSpanKey } from '~/lib/messageSpan'
 
 // ---------------------------------------------------------------------------
 // Tool-progress slice
 //
 // Live per-span progress for a tool that still runs (keyed
-// agentId -> spanId -> entry), fed by the ephemeral `running_tool`
+// agentId -> messageSpanKey -> entry), fed by the ephemeral `running_tool`
 // agent_session_info key.
+//
+// The key is the SPAN IDENTITY -- the provider session plus the span id -- and
+// not the span id alone, because a span id is unique inside one provider
+// session and not across every session of one agent. The worker states the
+// session on the payload for that reason. The three paths that reach an entry
+// derive the key the same way: `apply` keys the update, `drop` keys the result
+// row, and `get` keys the row that renders the badge. A path that keyed by span
+// alone would read another session's entry.
 //
 // An entry holds ONLY what the badge renders. A field that no component reads
 // does not belong here: the wire carries it, the store merges it, and nothing
@@ -53,16 +63,15 @@ export interface ToolProgressEntry {
 }
 
 /**
- * One `running_tool` broadcast, already translated from the wire. `spanId`
- * addresses the tool_use row; every other field is optional because a family
- * reports only what it knows.
+ * One `running_tool` broadcast, already translated from the wire. `spanId` and
+ * `agentSessionId` together address the tool_use row; every other field is
+ * optional because a family reports only what it knows.
  *
  * `retry` distinguishes three states on purpose: absent leaves the entry's
  * retry alone (a heartbeat), an object sets it, and `null` clears it (the CLI's
  * resolved-retry signal).
  */
-export interface ToolProgressUpdate {
-  spanId: string
+export interface ToolProgressUpdate extends MessageSpanIdentity {
   elapsedSeconds?: number
   retry?: ToolProgressRetry | null
 }
@@ -97,12 +106,13 @@ export function createToolProgressStore() {
     apply(agentId: string, update: ToolProgressUpdate) {
       if (!update.spanId)
         return
+      const key = messageSpanKey(update)
       ensureAgentRecord(agentId)
       // A function returning a plain object MERGES into the existing entry, so
       // returning only the fields this update carries is what keeps the other
       // fields. An omitted key is left alone by construction; there is nothing
       // to copy forward by hand.
-      setState('byAgent', agentId, update.spanId, (): Partial<ToolProgressEntry> => {
+      setState('byAgent', agentId, key, (): Partial<ToolProgressEntry> => {
         const next: Partial<ToolProgressEntry> = {}
         if (update.elapsedSeconds !== undefined)
           next.elapsedSeconds = update.elapsedSeconds
@@ -115,21 +125,24 @@ export function createToolProgressStore() {
       // "explicitly undefined", and a store proxy does not drop an omitted key.
       // This is the same explicit-undefined idiom clearThinkingTokens uses.
       if (update.retry === null)
-        setState('byAgent', agentId, update.spanId, 'retry', undefined!)
+        setState('byAgent', agentId, key, 'retry', undefined!)
     },
 
     /** One span's live progress, or undefined when the tool is not running. */
-    get(agentId: string, spanId: string): ToolProgressEntry | undefined {
-      if (!spanId)
+    get(agentId: string, identity: MessageSpanIdentity): ToolProgressEntry | undefined {
+      if (!identity.spanId)
         return undefined
-      return state.byAgent[agentId]?.[spanId]
+      return state.byAgent[agentId]?.[messageSpanKey(identity)]
     },
 
     /** Drop one span's entry -- its tool finished. */
-    drop(agentId: string, spanId: string) {
-      if (!spanId || !state.byAgent[agentId]?.[spanId])
+    drop(agentId: string, identity: MessageSpanIdentity) {
+      if (!identity.spanId)
         return
-      setState('byAgent', agentId, spanId, undefined!)
+      const key = messageSpanKey(identity)
+      if (!state.byAgent[agentId]?.[key])
+        return
+      setState('byAgent', agentId, key, undefined!)
     },
 
     /**

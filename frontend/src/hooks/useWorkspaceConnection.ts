@@ -26,6 +26,7 @@ import {
   handleActivityChanged,
   handleAgentMessage,
   handleAgentStatusChange,
+  handleControlCancellation,
   handleControlRequest,
 } from './agentEvents'
 import {
@@ -382,7 +383,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         )
         break
       case 'controlRequest':
-        markLiveAgentActive()
+      case 'controlResponseChanged':
+        if (inner.case === 'controlRequest')
+          markLiveAgentActive()
         handleControlRequest(
           agentId,
           inner.value,
@@ -392,7 +395,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       case 'controlCancel': {
         const cc = inner.value
-        controlStore.removeRequest(cc.agentId, cc.requestId)
+        handleControlCancellation(cc, controlStore)
         break
       }
       case 'turnEnd':

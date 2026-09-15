@@ -42,6 +42,90 @@ func TestZCodeInterrupt_SendsSessionStop(t *testing.T) {
 	assert.Equal(t, "sess-1", params["sessionId"])
 }
 
+// The app-server accepts session/stop and then announces nothing: no turn.completed,
+// no turn.failed. A live interrupt therefore left the turn active for the rest of the
+// session -- the thinking indicator ran without end, the input queue could never
+// drain, and the unfinished model output was never stored.
+//
+// The silence is what ends it now. An accepted stop alone does not, because the
+// app-server accepts one for a turn that goes on working as well (RL-016).
+func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	// The app-server's own answer to a stop: an empty object, and no event after it.
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	require.NotNil(t, timer.fire, "the stop arms the silence window")
+	timer.fire()
+
+	a.mu.Lock()
+	turnActive := a.turnActive
+	a.mu.Unlock()
+	assert.False(t, turnActive, "an app-server that says nothing more ends the turn")
+
+	reset := false
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == ProgressReset {
+			reset = true
+		}
+	}
+	assert.True(t, reset, "the thinking indicator stops with the turn")
+}
+
+// The abort reaches the model stream, not a command the runtime already launched: an
+// interrupted `sleep 90` ran its full ninety seconds and then reported success. A row
+// that claimed the call was interrupted would state an outcome the runtime contradicts.
+func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	a.mu.Lock()
+	a.turnActive = true
+	a.toolCalls["call-1"] = &zcodeToolCall{name: "bash", lastFrame: []byte(`{"toolCallId":"call-1"}`)}
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+
+	assert.Empty(t, sink.Messages(), "the call keeps its running card until its own update arrives")
+	a.mu.Lock()
+	_, stillOpen := a.toolCalls["call-1"]
+	a.mu.Unlock()
+	assert.True(t, stillOpen, "the call is still the runtime's to finish")
+}
+
+// A stop the app-server REFUSES leaves the turn alone: the turn is still running, and
+// reporting it finished would hide a live agent behind an idle chat.
+func TestZCodeInterrupt_ARefusedStopLeavesTheTurnRunning(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	refuseZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, -32000, "the session is busy")
+	require.Error(t, a.Interrupt())
+
+	a.mu.Lock()
+	turnActive := a.turnActive
+	a.mu.Unlock()
+	assert.True(t, turnActive, "a refused stop stopped nothing")
+}
+
 func TestZCodeInterrupt_StoppedAgentReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -338,8 +422,8 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
 	}()
 
-	sessionID, ok := a.ClearContext()
-	require.True(t, ok)
+	sessionID, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
 	assert.Equal(t, "sess-fresh", sessionID)
 	for _, req := range stdin.Requests(t) {
 		assert.NotEqual(t, ZCodeMethodSetMode, req.Method, "session/create already opened the session in that mode")
@@ -361,4 +445,27 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	_, hasTool := a.children.toolChild("sub-1")
 	assert.False(t, hasTool)
 	assert.Empty(t, a.children.takeTitle("spawn-2"))
+}
+
+func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	a.mu.Lock()
+	a.lastSeq = 42
+	a.stateRevision = 17
+	a.modeObserved = true
+	a.mu.Unlock()
+	go func() {
+		request := waitZCodeRequest(t, stdin, ZCodeMethodSessionCreate)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+	}()
+	_, clearErr := a.ClearContext()
+	assert.Error(t, clearErr)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	assert.Equal(t, "sess-1", a.sessionID)
+	assert.Equal(t, int64(42), a.lastSeq)
+	assert.Equal(t, int64(17), a.stateRevision)
+	assert.True(t, a.modeObserved)
 }

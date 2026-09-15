@@ -1,8 +1,17 @@
 {
-  "_readme": "Single source of truth for the Codex settings change that disables permission prompts. The frontend applies every entry as one atomic settings change. The Go worker applies entries marked as plan options after a plan-mode approval; permissionMode travels separately in the plan response, so it is not a plan option. task generate-contracts emits both views from this list, which keeps the option ids, values, and plan membership from drifting across languages.",
+  "_readme": "The complete Codex preset that disables permission prompts. The frontend and worker apply the same option map. Plan approval selects this preset only when the requested permission mode matches its mode. task generate-contracts emits both language definitions from this list.",
   "settings": [
-    { "id": "permissionMode", "value": "never", "planOption": false },
-    { "id": "network_access", "value": "enabled", "planOption": true },
-    { "id": "sandbox_policy", "value": "danger-full-access", "planOption": true }
+    {
+      "id": "permissionMode",
+      "value": "never"
+    },
+    {
+      "id": "network_access",
+      "value": "enabled"
+    },
+    {
+      "id": "sandbox_policy",
+      "value": "danger-full-access"
+    }
   ]
 }

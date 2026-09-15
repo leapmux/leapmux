@@ -915,7 +915,7 @@ func TestUpsertBackgroundTask_ABlankTitleKeepsTheStoredTitle(t *testing.T) {
 	row := registryRow(t, svc)
 	assert.Equal(t, "Ship the parser", row.Title, "a blank title still means 'keep the stored one'")
 	assert.Equal(t, "/tmp/out.txt", row.Description, "the rest of the partial upsert still lands")
-	assert.Equal(t, "completed", row.Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), row.Status)
 }
 
 // Claude's real sequence for a Task spawn: task_started upserts the registry

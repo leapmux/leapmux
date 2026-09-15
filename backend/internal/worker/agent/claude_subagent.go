@@ -630,10 +630,11 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if ev.TaskID == "" {
 		return
 	}
-	// An unrecognized status must NOT give a final status to the row. The map returns the
-	// zero value StatusPending on a miss; closing with it writes a Running row
-	// to status='pending' with ended_at set (active+ended) and pins the parent's
-	// thinking indicator. Ignore statuses the map does not know.
+	// An unrecognized status must NOT give a final status to the row. The map
+	// returns the zero value StatusUnspecified on a miss, and closing with it
+	// writes a row that is ended but carries no state -- which the column's
+	// CHECK refuses outright, failing the whole close. Ignore statuses the map
+	// does not know.
 	status, known := claudeTaskStatusMap[ev.Status]
 	if !known {
 		return
@@ -801,7 +802,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	if msgType == claudeMsgTypeResult {
 		// The subagent's final result. Also drives the registry as a
 		// fallback when no task_notification arrived.
-		if err := childSink.PersistTurnEnd(content, spanInfo); err != nil {
+		if err := childSink.PersistTurnEnd(MessageContent{Original: content}, spanInfo); err != nil {
 			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
 		}
 		// Both branches below report the same outcome, so one reading of IsError
@@ -835,7 +836,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		return
 	}
 
-	if err := childSink.PersistMessage(source, content, spanInfo); err != nil {
+	if err := childSink.PersistMessage(source, MessageContent{Original: content}, spanInfo); err != nil {
 		slog.Warn("claude route subagent message failed", "child", childID, "error", err)
 	}
 	if spanType != "" {

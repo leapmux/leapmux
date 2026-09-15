@@ -2,6 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudeToolResultMeta } from './claude/toolResult'
 import './testMocks'
@@ -108,23 +109,13 @@ describe('claudeToolResultMeta for ListAgents', () => {
   // The toolbar's expand button and Copy must act on the text the body shows,
   // which is the structured listing whenever there is one.
   it('reports a long listing as collapsible and copies it', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      listAgentsToolResult('', { listing: LISTING }),
-      'ListAgents',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: LISTING }), 'ListAgents', undefined))
     expect(meta?.collapsible).toBe(true)
     expect(meta?.copyableContent()).toBe(LISTING)
   })
 
   it('reports a one-line listing as not collapsible', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      listAgentsToolResult('', { listing: 'No agents are reachable.' }),
-      'ListAgents',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: 'No agents are reachable.' }), 'ListAgents', undefined))
     expect(meta?.collapsible).toBe(false)
   })
 
@@ -133,12 +124,7 @@ describe('claudeToolResultMeta for ListAgents', () => {
   // offer a Copy button on a card whose body came from somewhere else, and yield
   // spaces.
   it('offers no Copy for a whitespace-only listing', () => {
-    const meta = claudeToolResultMeta(
-      { kind: 'tool_result' },
-      listAgentsToolResult('', { listing: '   \n\t  ' }),
-      'ListAgents',
-      undefined,
-    )
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(listAgentsToolResult('', { listing: '   \n\t  ' }), 'ListAgents', undefined))
     expect(meta?.hasCopyable).toBe(false)
     expect(meta?.copyableContent()).toBeNull()
   })

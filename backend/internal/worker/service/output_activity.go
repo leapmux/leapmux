@@ -90,7 +90,7 @@ type agentActivity struct {
 	// chokepoint. A worker restart drops the map, which is correct: the boot
 	// sweep marks every active row interrupted and no process is running yet, so
 	// the agent derives idle either way.
-	pendingControl map[string]struct{}
+	pendingControl map[string]string
 
 	// settledToolUses carries the tool-call count of the turn that most recently
 	// ended, waiting for the busy->false edge that turn leads to. A turn that
@@ -117,15 +117,37 @@ type agentActivity struct {
 	// Cleared where the settle reaches the wire, and where the work comes back.
 	settlePending bool
 
-	// interrupted says the USER stopped this agent, so the stop it produces
-	// cannot be resumed and publishes at once. InterruptAgent pauses the input
-	// queue before it signals, so nothing wakes the agent back into the turn it
-	// just cancelled.
+	// stopRequested says the USER stopped this agent and the provider has not
+	// answered yet. It does two things, and both exist because the turn flag
+	// beside it is stale for as long as that answer takes.
 	//
-	// Cleared wherever the agent moves on: a fresh turn, any publish, and a
-	// process boundary. Without that bound, an interrupt the agent IGNORES would
-	// leave the mark set and let a LATER resumable stop publish early.
-	interrupted bool
+	//   - activityStateLocked stops reading the turn flag as work. A stop the
+	//     reader asked for is not work, and withdrawing the question that turn
+	//     was blocked on would otherwise re-derive WORKING and put the spinner
+	//     back at the moment they pressed Stop.
+	//   - settleCanResumeLocked refuses the debounce window. InterruptAgent
+	//     pauses the input queue before it signals, so nothing wakes the agent
+	//     back into the turn it just cancelled, and a held stop would leave the
+	//     indicator and the Interrupt button on screen for settleDelay.
+	//
+	// The provider's own next turn-flag publish clears it, when that publish
+	// CHANGES the flag: the turn ended, or another one opened, and either
+	// answers the stop. A refused delivery clears it too (NoteAgentStopFailed),
+	// and so does a process boundary.
+	//
+	// A REPEAT publish of the value the entry already holds does NOT clear it.
+	// It answers nothing, because the provider reports the state it reported
+	// before. Providers do send one: pi_output.go republishes the turn flag on a
+	// retried run, and zcode_output.go publishes it at every turn start. Spending
+	// the mark there let the withdrawal of the pending prompt re-derive WORKING
+	// before the stop the mark was taken for arrived.
+	//
+	// One residual, stated because it is not free to close. A provider that
+	// accepts a delivered stop, ignores it, and reports no turn flag again keeps
+	// this entry not-working while it runs. Nothing else here can see that the
+	// agent carried on, because the derivation reads no output. The next turn
+	// flag, and every process boundary, correct it.
+	stopRequested bool
 
 	// settleGen counts the windows this entry opened. holdSettleLocked captures
 	// the current value in the timer's closure, and deliverHeldSettle publishes
@@ -250,13 +272,12 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 	if st.settlePending {
 		return true
 	}
-	if h.shuttingDown.Load() {
+	if !h.beginActivityRefresh() {
 		return false
 	}
 	st.settleGen++
 	gen := st.settleGen
 	st.settlePending = true
-	h.activityRefreshes.Add(1)
 	st.settleTimer = h.afterSettleDelay(func() {
 		h.deliverHeldSettle(agentID, rootAgentID, gen)
 	})
@@ -268,23 +289,9 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 // A Stop that reports false means the timer already fired and its callback runs
 // now. This call cannot recall it, so it retires the callback instead: moving
 // settleGen makes deliverHeldSettle return without publishing. That token is
-// what the comment
-// here used to
-// claim the
-// re-derivation
-// gave for free,
-// and the
-// re-derivation
-// does not give
-// it. Against a
-// retired entry or
-// a dead process,
-// the callback
-// derives a state
-// that DIFFERS
-// from `published`
-// and publishes
-// it.
+// what the comment here used to claim the re-derivation gave for free, and the
+// re-derivation does not give it. Against a retired entry or a dead process,
+// the callback derives a state that DIFFERS from `published` and publishes it.
 //
 // It leaves settlePending alone. Stopping the timer says nothing about whether a
 // client learned the work stopped; only a publish and voidHeldSettleLocked do.
@@ -363,19 +370,82 @@ func (h *OutputHandler) deliverHeldSettle(agentID, rootAgentID string, gen uint6
 	h.refreshActivityIn(st, agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
 }
 
-// NoteAgentInterrupted records that the USER stopped this agent, so the stop it
-// produces reaches the client at once rather than waiting out settleDelay.
+// NoteAgentStopRequested records that the USER stopped this agent, and publishes
+// that at once rather than waiting for the provider to answer.
 //
-// The window exists for a stop the CLI takes back microseconds later. An
-// interrupt is the opposite: InterruptAgent pauses the input queue before it
+// The debounce window exists for a stop the CLI takes back microseconds later.
+// An interrupt is the opposite: InterruptAgent pauses the input queue before it
 // signals, so no wake follows. Holding it left the thinking indicator and the
 // Interrupt button on screen for three seconds after the user cancelled, which
 // invites a second interrupt.
-func (h *OutputHandler) NoteAgentInterrupted(agentID, rootAgentID string) {
+//
+// The publish is what makes the press feel like the stop. Every provider answers
+// a stop with a round trip -- Claude Code waits for the acknowledgement of its
+// interrupt control request, and the ACP servers report the end of the cancelled
+// turn later still -- and until that answer lands the turn flag reads WORKING.
+// So the mark, not the answer, is what drops the spinner. NoteAgentStopFailed is
+// the other half: a delivery that never reached the agent puts it back.
+//
+// Call it BEFORE the delivery. The MARK is set synchronously, so every reader
+// that derives its own answer -- AgentActivitySnapshot, and the close guard
+// through it -- sees the stop the moment the caller returns.
+func (h *OutputHandler) NoteAgentStopRequested(agentID, rootAgentID string) {
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
-	st.interrupted = true
+	st.stopRequested = true
 	st.mu.Unlock()
+	h.publishStopMark(agentID, rootAgentID)
+}
+
+// NoteAgentStopFailed withdraws a stop that never reached the agent, and
+// republishes.
+//
+// The agent still runs whatever it was running, so the indicator and the
+// Interrupt button belong back on screen. Without this the optimistic publish
+// above would leave a runaway agent reading idle, with the button that stops it
+// hidden -- which is the one failure the button exists to prevent.
+func (h *OutputHandler) NoteAgentStopFailed(agentID, rootAgentID string) {
+	st := h.activityFor(agentID, rootAgentID)
+	st.mu.Lock()
+	requested := st.stopRequested
+	st.stopRequested = false
+	st.mu.Unlock()
+	if requested {
+		h.publishStopMark(agentID, rootAgentID)
+	}
+}
+
+// publishStopMark republishes agentID after its stop mark moved, off the
+// caller's goroutine.
+//
+// The broadcast ends in SendStream, which blocks on a slow watcher, and the stop
+// itself is on the other side of this call: a delivery that waited here would be
+// as late as the slowest open tab. resetAgentActivity defers its publish for the
+// same reason, and the two share the WaitActivityRefreshes join that keeps a
+// refresh from reading the registry after Shutdown closed the database.
+//
+// The TICKET is taken HERE and not inside the goroutine. A refused stop calls
+// both halves in order, and the ticket is what makes the entry apply them in
+// that order however the two goroutines are scheduled -- otherwise the
+// withdrawal could publish first and the optimistic stop would overwrite it,
+// leaving a running agent reading idle.
+//
+// settleImmediate, because no wake can undo a stop the reader asked for, and
+// because the withdrawal that follows a refusal must void a window rather than
+// land behind one.
+func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
+	// The count this takes is the GOROUTINE's, which Shutdown joins. Without it the
+	// goroutine reads the registry and broadcasts after the caller closed the
+	// database. holdSettleLocked takes its count the same way.
+	if !h.beginActivityRefresh() {
+		return
+	}
+	seq := h.activitySeq.Add(1)
+	go func() {
+		defer h.activityRefreshes.Done()
+		root := h.resolveRoot(agentID, rootAgentID)
+		h.refreshActivityFrom(agentID, root, h.backgroundTaskRows(root), seq, settleImmediate)
+	}()
 }
 
 // CancelHeldSettles drops every settle window still open. Shutdown calls it
@@ -383,12 +453,9 @@ func (h *OutputHandler) NoteAgentInterrupted(agentID, rootAgentID string) {
 // broadcasts once the caller closes the database.
 //
 // The order matters in both directions. An armed window holds an
-// activityRefreshes count, so joining
-// first would park Shutdown for a whole
-// settleDelay. And holdSettleLocked
-// refuses to arm once the latch is set,
-// so nothing can open a window after this
-// call.
+// activityRefreshes count, so joining first would park Shutdown for a whole
+// settleDelay. And holdSettleLocked refuses to arm once the latch is set, so
+// nothing can open a window after this call.
 //
 // The process exits already cancel each window they reach, because they publish
 // through settleImmediate. This call is the redundant guard: it stays correct
@@ -429,16 +496,24 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	if in.childID != "" {
 		return idleOrWorking(in.activeTasks > 0)
 	}
+	// The turn the provider reports, minus the one the reader stopped. The flag
+	// stays true until the provider answers the stop, and that answer is a whole
+	// round trip away -- so every read of it below is this value, or the
+	// Interrupt button puts its own spinner back. See stopRequested.
+	//
+	// It covers the TURN alone. A background task the agent launched runs on
+	// past a stop, and activeTasks still reports it.
+	turnRunning := st.turnActive && !st.stopRequested
 	// A prompt with no turn behind it does NOT make the agent wait: a shell task
 	// can ask for permission after its agent's turn ended, and what a close would
 	// interrupt there is the task, which activeTasks already reports.
-	if len(st.pendingControl) > 0 && st.turnActive {
+	if len(st.pendingControl) > 0 && turnRunning {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
 	}
 	if len(st.pendingControl) > 0 {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 	}
-	return idleOrWorking(st.turnActive || in.activeTasks > 0)
+	return idleOrWorking(turnRunning || in.activeTasks > 0)
 }
 
 // settleCanResumeLocked answers whether a wake can undo the stop this refresh
@@ -458,13 +533,13 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 //
 // A dead process is the same class, reached the other way: nothing can resume a
 // stop whose process is gone. So is a stop the USER asked for -- see
-// NoteAgentInterrupted. The rule lives here rather than at each call site, so no
-// caller can hold a settle that nothing can ever undo.
+// NoteAgentStopRequested. The rule lives here rather than at each call site, so
+// no caller can hold a settle that nothing can ever undo.
 //
 // Only a ROOT can be blocked, because activityStateLocked answers a child from
 // its registry row and never reads pendingControl.
 func settleCanResumeLocked(st *agentActivity, in activityInputs) bool {
-	if !in.processAlive || st.interrupted {
+	if !in.processAlive || st.stopRequested {
 		return false
 	}
 	return in.childID != "" || len(st.pendingControl) == 0
@@ -975,10 +1050,11 @@ func (h *OutputHandler) refreshActivityIn(
 	// drops the count it should have carried.
 	st.cancelSettleLocked(h)
 	st.settlePending = false
-	// The stop the user asked for reached them, so the mark has done its work.
-	// An interrupt the agent IGNORED is cleared here too, by the WORKING publish
-	// that says so -- otherwise it would exempt a later, resumable stop.
-	st.interrupted = false
+	// stopRequested is NOT cleared here. A publish is not the provider's answer
+	// to the stop, and the one that withdraws the prompt the stopped turn was
+	// blocked on runs BEFORE that answer -- clearing it there spent the mark on
+	// the wrong transition and left the real stop to wait out settleDelay.
+	// setTurnActive owns the clear; see stopRequested.
 	retire = retire && st.retirableLocked()
 	st.mu.Unlock()
 
@@ -1013,26 +1089,15 @@ func (h *OutputHandler) refreshActivityIn(
 // entry and publishes WORKING, which is a real transition. Everything else is,
 // and each field here is a way to lose something real. An unspent count belongs
 // to a turn end whose settle has not landed. A held settle has not reached the
-// client. A prompt is unanswered. An interrupt mark is unspent. And a turn flag
-// means a COLLAB
-// child, whose
-// own input queue
-// follows that
-// flag. Its token
-// also orders two
-// publishes that
-// can arrive out
-// of order, so
-// re-minting
-// would reset
-// that token and
-// let a stale
-// publish latch a
-// turn that is
+// client. A prompt is unanswered. A stop mark waits for the provider's answer.
+//
+// And a turn flag means a COLLAB child, whose own input queue follows that flag.
+// Its token also orders two publishes that can arrive out of order, so
+// re-minting would reset that token and let a stale publish latch a turn that is
 // over.
 func (st *agentActivity) retirableLocked() bool {
 	return !st.turnActive && st.turnSeq == 0 && len(st.pendingControl) == 0 &&
-		st.settledToolUses == nil && !st.settlePending && st.settleTimer == nil && !st.interrupted
+		st.settledToolUses == nil && !st.settlePending && st.settleTimer == nil && !st.stopRequested
 }
 
 // refreshActivityTree recomputes the root and every child that owns a registry
@@ -1122,15 +1187,24 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 		// A fresh turn supersedes whatever the previous one left unspent, so a
 		// stale count cannot silence the alert for the turn now starting.
 		st.settledToolUses = nil
-		// And it is not the turn the user interrupted, so its settle is an
-		// ordinary one that waits out its window.
-		st.interrupted = false
 	}
 	st.mu.Unlock()
 	if !changed {
+		// A REPEAT publish reports the state the entry already holds, so it
+		// answers no stop and must spend no mark: see stopRequested.
 		return
 	}
 	h.refreshActivity(agentID, rootAgentID)
+	if root {
+		// A CHANGED flag IS the provider's answer to a stop the reader asked
+		// for: it ended the turn, or it opened another one, and either way the
+		// mark has nothing left to describe. The clear runs AFTER the refresh
+		// above, because that refresh is the stop the mark exists to publish at
+		// once -- clearing first would hand it to the debounce window instead.
+		st.mu.Lock()
+		st.stopRequested = false
+		st.mu.Unlock()
+	}
 	if active || !root {
 		return
 	}
@@ -1244,35 +1318,40 @@ func (h *OutputHandler) noteTurnEnded(agentID, rootAgentID string, count int32, 
 
 // noteControlRequestAdded records a permission prompt the agent is now blocked
 // on, and republishes: an agent waiting for the user is not busy.
-func (h *OutputHandler) noteControlRequestAdded(agentID, rootAgentID, requestID string) {
+func (h *OutputHandler) noteControlRequestAdded(agentID, rootAgentID, requestID, claimToken string) {
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	if st.pendingControl == nil {
-		st.pendingControl = make(map[string]struct{}, 1)
+		st.pendingControl = make(map[string]string, 1)
 	}
-	_, dup := st.pendingControl[requestID]
-	st.pendingControl[requestID] = struct{}{}
+	previousToken, dup := st.pendingControl[requestID]
+	st.pendingControl[requestID] = claimToken
 	st.mu.Unlock()
-	if dup {
+	if dup && previousToken == claimToken {
 		return
 	}
 	h.refreshActivity(agentID, rootAgentID)
 }
 
-// noteControlRequestsRemoved drops answered or cancelled prompts and
-// republishes. Passing no ids clears every pending prompt, which is what a
-// subprocess teardown does.
-func (h *OutputHandler) noteControlRequestsRemoved(agentID, rootAgentID string, requestIDs ...string) {
+// controlRequestInstance distinguishes replacements that reuse a provider request ID.
+type controlRequestInstance struct {
+	RequestID  string
+	ClaimToken string
+}
+
+// noteControlRequestsRemoved removes only the supplied request instances.
+// An empty list clears all pending requests during process teardown.
+func (h *OutputHandler) noteControlRequestsRemoved(agentID, rootAgentID string, requests ...controlRequestInstance) {
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	changed := false
-	if len(requestIDs) == 0 {
+	if len(requests) == 0 {
 		changed = len(st.pendingControl) > 0
 		st.pendingControl = nil
 	} else {
-		for _, requestID := range requestIDs {
-			if _, ok := st.pendingControl[requestID]; ok {
-				delete(st.pendingControl, requestID)
+		for _, request := range requests {
+			if claimToken, ok := st.pendingControl[request.RequestID]; ok && claimToken == request.ClaimToken {
+				delete(st.pendingControl, request.RequestID)
 				changed = true
 			}
 		}
@@ -1344,15 +1423,36 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	// settle it produces alerts unconditionally, the way an agent going INACTIVE
 	// always has.
 	st.settledToolUses = nil
-	// The interrupt mark belongs to the process that carried it, so it dies with
-	// that process rather than exempting the next one's first stop.
-	st.interrupted = false
+	// The stop mark belongs to the process that carried it, so it dies with that
+	// process rather than exempting the next one's first stop.
+	st.stopRequested = false
 	st.mu.Unlock()
-	h.activityRefreshes.Add(1)
+	// The field writes above run whatever the latch says, because
+	// AgentActivitySnapshot reads them and a process boundary must leave the
+	// entry truthful. Only the deferred refresh is refused: see publishStopMark.
+	if !h.beginActivityRefresh() {
+		return
+	}
 	go func() {
 		defer h.activityRefreshes.Done()
 		h.refreshActivityTree(rootAgentID, settleImmediate)
 	}()
+}
+
+// beginActivityRefresh takes one count of the refresh group, and reports false
+// once shutdown began.
+//
+// The latch test and the Add share refreshLifecycleMu with SetShuttingDown, which
+// is what makes the Add happen-before the Wait that Shutdown runs afterwards. The
+// caller must pair a true answer with exactly one activityRefreshes.Done.
+func (h *OutputHandler) beginActivityRefresh() bool {
+	h.refreshLifecycleMu.Lock()
+	defer h.refreshLifecycleMu.Unlock()
+	if h.shuttingDown.Load() {
+		return false
+	}
+	h.activityRefreshes.Add(1)
+	return true
 }
 
 // WaitActivityRefreshes joins the deferred tree refreshes resetAgentActivity

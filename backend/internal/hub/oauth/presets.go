@@ -1,11 +1,14 @@
 package oauth
 
-import "github.com/leapmux/leapmux/internal/util/ptrconv"
+import (
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
+)
 
 // Preset holds default values for a known OAuth provider type.
 type Preset struct {
 	Name         string
-	ProviderType string // "oidc" or "github"
+	ProviderType leapmuxv1.IdentityProviderType
 	IssuerURL    string // empty for GitHub
 	Scopes       string
 	TrustEmail   *bool // nil means the user must specify --trust-email explicitly

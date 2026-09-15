@@ -1,17 +1,8 @@
 import { expect, test } from './fixtures'
-import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
 import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
 import { expectSettingsChip, measureBubbleEdges, sendMessage, settingsBar, userBubbles, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
-  // Both tests here depend on the model actually CALLING ExitPlanMode when
-  // asked to leave plan mode. `sendPlanStep` already re-prompts a few times
-  // within a test, but a model that narrates its plan instead of calling the
-  // tool three times running leaves nothing for the UI assertions to see.
-  // That is the model's output varying, not the app misbehaving --
-  // see MODEL_NONDETERMINISM_RETRIES.
-  test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
-
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -68,10 +59,11 @@ test.describe('Plan Mode', () => {
     // ── Step 6: Approve the plan (without clearing context) ──
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
+    await expect(page.getByRole('radiogroup', { name: 'Permissions' }).getByRole('radio', { name: 'Smart' })).toBeChecked()
     await approveBtn.click()
 
-    // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
-    await expectSettingsChip(page, 'Accept Edits')
+    // Claude's Smart preset selects Auto Mode.
+    await expectSettingsChip(page, 'Auto Mode')
 
     // Without clear context, the agent continues in current context —
     // no plan_execution notification, so no plan file row in the popover.

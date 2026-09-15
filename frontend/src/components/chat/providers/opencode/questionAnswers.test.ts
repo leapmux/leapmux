@@ -35,13 +35,13 @@ describe('opencodequestionanswerstext', () => {
 
 describe('opencodecontrolresponsedisplay', () => {
   it('renders question answers for a question.asked request', () => {
-    const cr: PersistedControlResponse = { provider: 'OPENCODE', requestId: 'q1', request: QUESTION_REQUEST, response: { result: { answers: [['Build']] } } }
+    const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: QUESTION_REQUEST, response: { result: { answers: [['Build']] } } }
     expect(opencodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Task: Build' })
   })
 
   it('delegates to the ACP permission path for a non-question request', () => {
     const cr: PersistedControlResponse = {
-      provider: 'OPENCODE',
+      claimToken: 'claim-1',
       requestId: '7',
       request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
       response: { result: { outcome: { optionId: 'proceed_once' } } },
@@ -54,17 +54,17 @@ describe('opencodecontrolresponsedisplay', () => {
     // shape (answers array / rejected flag), so it renders -- labeled by position, not the missing
     // question headers -- instead of degrading to the generic label.
     it('recovers question answers from the response, labeled by position', () => {
-      const cr: PersistedControlResponse = { provider: 'OPENCODE', requestId: 'q1', request: undefined, response: { result: { answers: [['Build'], ['Dev']] } } }
+      const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: undefined, response: { result: { answers: [['Build'], ['Dev']] } } }
       expect(opencodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Question 1: Build\nQuestion 2: Dev' })
     })
 
     it('recovers a rejected question from the response', () => {
-      const cr: PersistedControlResponse = { provider: 'OPENCODE', requestId: 'q1', request: undefined, response: { result: { rejected: true } } }
+      const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: 'q1', request: undefined, response: { result: { rejected: true } } }
       expect(opencodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Reject' })
     })
 
     it('still resolves a request-gone permission via the response-based ACP path', () => {
-      const cr: PersistedControlResponse = { provider: 'OPENCODE', requestId: '7', request: undefined, response: { result: { outcome: { optionId: 'proceed_once' } } } }
+      const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: '7', request: undefined, response: { result: { outcome: { optionId: 'proceed_once' } } } }
       expect(opencodeControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Allow once' })
     })
   })

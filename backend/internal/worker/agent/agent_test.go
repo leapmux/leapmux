@@ -16,7 +16,7 @@ func TestOpenToolSpan_OrdinaryToolReservesPersistsAndOpens(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	require.NoError(t, openToolSpan(sink, []byte(`{"type":"tool_call"}`), "tc-read", "read", false))
+	require.NoError(t, openToolSpan(sink, MessageContent{Original: []byte(`{"type":"tool_call"}`)}, "tc-read", "read", false))
 
 	assert.Equal(t, []string{"tc-read"}, sink.ReservedColorSpans())
 	open := sink.OpenSpans()
@@ -38,7 +38,7 @@ func TestOpenToolSpan_SpawnOpensNothingButRecordsItsType(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	require.NoError(t, openToolSpan(sink, []byte(`{"type":"tool_call"}`), "tc-spawn", "Agent", true))
+	require.NoError(t, openToolSpan(sink, MessageContent{Original: []byte(`{"type":"tool_call"}`)}, "tc-spawn", "Agent", true))
 
 	assert.Empty(t, sink.ReservedColorSpans(), "a spawn blocks no color")
 	assert.Empty(t, sink.OpenSpans(), "and draws no rail")
@@ -56,8 +56,8 @@ func TestOpenToolSpan_ASpawnLeavesTheNextToolAtTheSameDepth(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
-	require.NoError(t, openToolSpan(sink, []byte(`{}`), "tc-spawn", "Agent", true))
-	require.NoError(t, openToolSpan(sink, []byte(`{}`), "tc-read", "read", false))
+	require.NoError(t, openToolSpan(sink, MessageContent{Original: []byte(`{}`)}, "tc-spawn", "Agent", true))
+	require.NoError(t, openToolSpan(sink, MessageContent{Original: []byte(`{}`)}, "tc-read", "read", false))
 
 	msgs := sink.Messages()
 	require.Len(t, msgs, 2)
@@ -79,7 +79,7 @@ func TestTestSink_SpanStateComesFromTheRealEngine(t *testing.T) {
 	sink.OpenSpan("tu-b", "tu-a")
 
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{}`), SpanInfo{SpanID: "tu-c"}))
+		MessageContent{Original: []byte(`{}`)}, SpanInfo{SpanID: "tu-c"}))
 	msgs := sink.Messages()
 	require.Len(t, msgs, 1)
 	// Column order, and the parentage the engine recorded -- neither of which a
@@ -105,7 +105,7 @@ func TestOpenToolSpan_ReturnsThePersistErrorAndStillOpensTheSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{persistErr: assert.AnError}
-	err := openToolSpan(sink, []byte(`{}`), "tc-read", "read", false)
+	err := openToolSpan(sink, MessageContent{Original: []byte(`{}`)}, "tc-read", "read", false)
 
 	require.ErrorIs(t, err, assert.AnError, "the caller logs this")
 	open := sink.OpenSpans()

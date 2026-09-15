@@ -9,7 +9,6 @@ import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { EVENTS_REJECTION_RETRY } from '~/generated/contracts/retry'
 import { WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
-import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
 import { shouldRetryRejection, watchPlanKey } from './watchPlan'
@@ -113,9 +112,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return s
   }
 
-  /** True when `key` is already the acked interest or is mid-flight on the wire. */
+  /** Compare the newest requested interest. An older acknowledgment cannot supersede a queued or transmitted change. */
   function interestMatches(s: WorkerStream, key: string): boolean {
-    return key === s.sentKey || key === s.inflightKey
+    if (s.pendingPlan)
+      return key === watchPlanKey(s.pendingPlan)
+    return key === (s.inflightPlan ? s.inflightKey : s.sentKey)
   }
 
   /**
@@ -283,7 +284,6 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     s.opening = true
     try {
       const nextId = ++s.updateId
-      emitDevEvent('leapmux:watch-events-open', () => ({ workerId, updateId: nextId }))
       s.inflightId = nextId
       s.inflightPlan = plan
       s.inflightKey = watchPlanKey(plan)
@@ -298,8 +298,12 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       }
       s.handle?.close()
       s.handle = handle
+      // A delayed callback from a replaced stream cannot change its successor.
+      const isCurrentHandle = () => !s.closed && s.handle === handle
 
       handle.onEvent((resp) => {
+        if (!isCurrentHandle())
+          return
         reconnectBackoff.reset(workerId)
         if (resp.event.case === 'updateAck') {
           // Only reset the rejection budget when this ack settles — a
@@ -314,14 +318,14 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         }
       })
       handle.onEnd(() => {
-        if (s.closed)
+        if (!isCurrentHandle())
           return
         markWorkerOffline(workerId)
         resetForReconnect(s)
         scheduleReconnect(workerId)
       })
       handle.onError((err) => {
-        if (s.closed)
+        if (!isCurrentHandle())
           return
         if (isTransportError(err) || isDisconnectError(err))
           markWorkerOffline(workerId)
@@ -469,13 +473,8 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       return
     }
     const plan = s.pendingPlan
-    if (!plan) {
-      if (!s.handle)
-        return
-      s.handle.close()
-      resetForReconnect(s)
+    if (!plan)
       return
-    }
     s.pendingPlan = null
     const key = watchPlanKey(plan)
     // Already acked, or the same revision is already on the wire.

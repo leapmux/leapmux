@@ -409,7 +409,22 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 	if err != nil {
 		return err
 	}
-	err = p.SendInput(content, attachments)
+	return deliverProviderInput(p, nil, content, attachments)
+}
+
+// SendInputToSession uses a provider instance that the caller validated under its lifecycle lock.
+// The provider checks the expected session while constructing the native request.
+func SendInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	return deliverProviderInput(provider, &sessionID, content, attachments)
+}
+
+func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	var err error
+	if expected == nil {
+		err = p.SendInput(content, attachments)
+	} else {
+		err = p.SendInputForSession(*expected, content, attachments)
+	}
 	if errors.Is(err, ErrAgentBusy) {
 		// The refusal disproves the Worker's view of the turn, and both consumers
 		// of the turn flag -- the activity state and the input queue's dispatch
@@ -494,17 +509,24 @@ func (m *Manager) SupportsSteering(agentID string) bool {
 // restart is destroying. The lock is released before the caller writes, so
 // nothing that blocks on a provider ever holds it.
 func (m *Manager) providerAfterLifecycle(agentID string) (Agent, error) {
-	unlock := m.LockAgent(agentID)
-	defer unlock()
-
-	m.mu.RLock()
-	p, ok := m.agents[agentID]
-	m.mu.RUnlock()
-
-	if !ok {
+	provider, release := m.LockProvider(agentID)
+	release()
+	if provider == nil {
 		return nil, fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
-	return p, nil
+	return provider, nil
+}
+
+// LockProvider returns the current provider, which can be nil, and retains the lifecycle lock.
+// Always call release. Release the lock before an input operation waits for its response.
+func (m *Manager) LockProvider(agentID string) (Agent, func()) {
+	unlock := m.LockAgent(agentID)
+
+	m.mu.RLock()
+	p := m.agents[agentID]
+	m.mu.RUnlock()
+
+	return p, unlock
 }
 
 // SendRawInput writes raw bytes directly to the specified agent's stdin
@@ -531,6 +553,22 @@ func (m *Manager) Interrupt(agentID string) error {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 	return p.Interrupt()
+}
+
+// InterruptEscalationReady reports whether an earlier interrupt of this agent
+// was PROVEN ineffective and the caller may escalate the next one past the
+// provider's own signal -- the ZCode case, whose app-server acknowledges a stop
+// and then ignores it. Only a provider that can state the fact implements the
+// probe; every other provider answers false and every interrupt stays ordinary.
+func (m *Manager) InterruptEscalationReady(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	escalatable, ok := p.(interface{ InterruptEscalationReady() bool })
+	return ok && escalatable.InterruptEscalationReady()
 }
 
 // SendChildInput routes a user message to a subagent conversation (identified
@@ -742,10 +780,8 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	return true
 }
 
-// ClearContext attempts to clear the agent's context in-place (e.g. by
-// starting a new Codex thread). Returns the new session ID and true if
-// successful, or ("", false) if the provider doesn't support it.
-func (m *Manager) ClearContext(agentID string) (string, bool) {
+// ClearContext returns the new session ID or the provider's refusal or failure.
+func (m *Manager) ClearContext(agentID string) (string, error) {
 	unlock := m.LockAgent(agentID)
 	defer unlock()
 
@@ -753,7 +789,7 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 	if !ok {
-		return "", false
+		return "", ErrAgentNotFound
 	}
 	return p.ClearContext()
 }
@@ -1022,11 +1058,13 @@ func cachedCatalogUsable(cached cachedCatalog, currentModel string, provider lea
 // model-dependent sub-groups (per-model effort tiers, and for Claude the per-model
 // extended-thinking group) that must be rebuilt when the model changes. A provider has
 // them exactly when it owns a model-dependent effort catalog -- ProviderManagesEffort
-// (Claude/Codex/Pi). The ACP permission-mode / primary-agent providers do NOT: although
-// every provider shares the default effortSubGroups builder, it produces nothing for a
-// model with no SupportedEfforts, and their effort/reasoning axes are model-independent
-// server-driven config options -- so a model change doesn't invalidate any cached group, and
-// falling through to the static fallback would needlessly drop those config options.
+// (Claude/Codex/Pi, and native Copilot, whose account decides both the models and each
+// model's effort tiers). The ACP permission-mode / primary-agent providers do NOT:
+// although every provider shares the default effortSubGroups builder, it produces nothing
+// for a model with no SupportedEfforts, and their effort/reasoning axes are
+// model-independent server-driven config options -- so a model change doesn't invalidate
+// any cached group, and falling through to the static fallback would needlessly drop
+// those config options.
 func providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
 	return ProviderManagesEffort(provider)
 }

@@ -339,11 +339,9 @@ export const controlResponseMessage = style({
   alignSelf: 'stretch',
 })
 
-// A control-response LABEL row (Allow / Approved / "Task: Build\nEnv: Dev"). `pre-line` preserves
-// the `\n` line breaks a multi-question answer joins its lines with, so they render one per line
-// instead of collapsing to a single run.
+// Preserve spaces and line breaks in native answers while allowing long text to wrap.
 export const controlResponseLabel = style({
-  whiteSpace: 'pre-line',
+  whiteSpace: 'pre-wrap',
 })
 
 /**

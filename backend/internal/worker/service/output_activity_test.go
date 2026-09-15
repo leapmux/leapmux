@@ -250,6 +250,20 @@ func TestActivity_FirstIdleIsPublishedEvenThoughFalseIsTheZeroValue(t *testing.T
 	assert.Equal(t, []bool{false}, rec.busyStates())
 }
 
+func TestActivityAnOlderControlCancellationKeepsTheReplacementWaiting(t *testing.T) {
+	t.Parallel()
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteControlRequestAdded("agent-1", "agent-1", "request", "old-claim")
+	h.noteControlRequestAdded("agent-1", "agent-1", "request", "new-claim")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "request", ClaimToken: "old-claim"})
+	require.Zero(t, settles.close())
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "request", ClaimToken: "new-claim"})
+	require.Equal(t, []bool{true, false, true}, rec.busyStates())
+}
+
 func TestActivity_PendingControlRequestMakesAnAgentIdleMidTurn(t *testing.T) {
 	t.Parallel()
 
@@ -261,11 +275,11 @@ func TestActivity_PendingControlRequestMakesAnAgentIdleMidTurn(t *testing.T) {
 	// The agent is blocked on the user, and the user is looking straight at the
 	// prompt. Reporting busy there would spin an indicator at somebody who is
 	// being asked a question.
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 	require.Equal(t, 0, settles.close(), "a prompt publishes at once, so there is no window")
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
 
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1"})
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
 		"answering the prompt hands the turn back")
 }
@@ -280,7 +294,7 @@ func TestActivity_APromptMidTurnIsWaitingRatherThanIdle(t *testing.T) {
 	h, rec := newActivityHandler(t, "agent-1")
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 
 	got := h.AgentActivitySnapshot("agent-1", "agent-1")
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER, got.State)
@@ -301,7 +315,7 @@ func TestActivity_APromptWithNoTurnBehindItIsPlainIdle(t *testing.T) {
 	// close interrupts there is the task, which the count already reports -- so
 	// claiming a turn is waiting would name work that does not exist.
 	h, _ := newActivityHandler(t, "agent-1")
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 
 	got := h.AgentActivitySnapshot("agent-1", "agent-1")
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, got.State)
@@ -315,9 +329,9 @@ func TestActivity_DuplicateControlRequestPublishesOnce(t *testing.T) {
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
 
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-unknown")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-unknown"})
 
 	require.Equal(t, 0, settles.close(), "a prompt publishes at once, so there is no window")
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
@@ -329,15 +343,15 @@ func TestActivity_TwoPromptsNeedBothAnswersBeforeWorkResumes(t *testing.T) {
 	h, rec := newActivityHandler(t, "agent-1")
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-2")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-2", "")
 	require.Equal(t, 0, settles.close(), "a prompt publishes at once, so there is no window")
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1"})
 	assert.Equal(t, []bool{true, false}, rec.busyStates(), "still blocked on the second prompt")
 
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-2")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-2"})
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates())
 }
 
@@ -367,7 +381,7 @@ func TestActivity_ProcessExitClearsEverythingAndSettles(t *testing.T) {
 	h, rec := newActivityHandler(t, "agent-1")
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 	require.Equal(t, 0, settles.close(), "a prompt publishes at once, so there is no window")
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
@@ -422,7 +436,7 @@ func TestActivity_RestartWhileBlockedOnAPromptAlsoStartsIdle(t *testing.T) {
 
 	h, _ := newActivityHandler(t, "agent-1")
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 
 	h.NoteAgentProcessStarted("agent-1")
 
@@ -506,7 +520,7 @@ func TestActivity_SettleWithNoTurnEndCarriesNoCount(t *testing.T) {
 	// The next turn is blocked on a prompt. That settle carries no count, and it
 	// publishes at once, because only the user can answer.
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 
 	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
 		rec.last().GetState())
@@ -589,14 +603,14 @@ func TestActivity_AFallThroughPublishSupersedesTheWindow(t *testing.T) {
 
 	// A shell task asks for permission after the turn ended, so the agent is
 	// plain idle and only the user can move it. That publishes at once.
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
 
 	assert.Empty(t, settles.openWindows(), "the publish superseded the window")
 	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, rec.last().GetState(),
 		"a prompt with no turn behind it is plain idle, and that is what lands")
 
 	// The next turn's settle must own its own window and its own count.
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1"})
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.noteTurnEnded("agent-1", "agent-1", 7, true)
 	h.setTurnActive("agent-1", "agent-1", false)
@@ -1304,7 +1318,7 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	// a single "is it working" boolean could not see, so a list read that
 	// flattened it back to IDLE would let a mid-turn tab close unwarned.
 	svc.Output.setTurnActive(rootID, rootID, true)
-	svc.Output.noteControlRequestAdded(rootID, rootID, "req-1")
+	svc.Output.noteControlRequestAdded(rootID, rootID, "req-1", "")
 	rootRow, err = svc.Queries.GetAgentByID(ctx, rootID)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
@@ -1656,8 +1670,8 @@ func TestActivity_APromptAnsweredAtOnceStillReachesTheClient(t *testing.T) {
 	h.setTurnActive("agent-1", "agent-1", true)
 	require.Equal(t, []bool{true}, rec.busyStates())
 
-	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
-	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "")
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1"})
 
 	assert.Equal(t, 0, settles.close(), "a prompt opens no window, whoever answers it")
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
@@ -1980,7 +1994,7 @@ func TestActivity_AChildWithAnUnspentCountIsNotReaped(t *testing.T) {
 		"and the entry that carries it is still reachable")
 }
 
-func TestActivity_AUserInterruptPublishesWithoutWaiting(t *testing.T) {
+func TestActivity_AUserStopPublishesWithoutWaiting(t *testing.T) {
 	t.Parallel()
 
 	// The window exists for a stop the CLI takes back microseconds later. An
@@ -1993,32 +2007,211 @@ func TestActivity_AUserInterruptPublishesWithoutWaiting(t *testing.T) {
 	h.setTurnActive("agent-1", "agent-1", true)
 	require.Equal(t, []bool{true}, rec.busyStates())
 
-	h.NoteAgentInterrupted("agent-1", "agent-1")
-	h.setTurnActive("agent-1", "agent-1", false)
-
+	// The press alone drops the spinner. The provider's answer is a whole round
+	// trip away, and the turn flag reads WORKING until it lands.
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
 	assert.Equal(t, 0, settles.close(), "the user stopped it, so nothing can resume it")
 	assert.Equal(t, []bool{true, false}, rec.busyStates())
+
+	h.setTurnActive("agent-1", "agent-1", false)
+	assert.Equal(t, 0, settles.close(), "the answer agrees with what the client holds")
+	assert.Equal(t, []bool{true, false}, rec.busyStates(), "and says nothing twice")
 }
 
-func TestActivity_AnIgnoredInterruptDoesNotExemptTheNextTurn(t *testing.T) {
+// The regression this pairs with. Stopping a turn that is BLOCKED on a prompt
+// withdraws that prompt, and the withdrawal re-derives against a turn flag the
+// provider has not answered yet.
+//
+// That re-derivation used to publish WORKING -- the spinner restarted at the
+// moment the reader pressed Stop -- and spend the mark with it, so the real stop
+// then waited out settleDelay behind it. Both halves are asserted here.
+func TestActivity_StoppingAnAgentBlockedOnAPromptNeverRestartsTheSpinner(t *testing.T) {
 	t.Parallel()
 
-	// The bound on that mark, and the reason it is not simply latched. An agent
-	// can IGNORE an interrupt and keep working. The stop that eventually comes
-	// then belongs to work the user never cancelled, and it is resumable like
-	// any other -- so it must wait out its window.
 	h, rec := newActivityHandler(t, "agent-1")
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.NoteAgentInterrupted("agent-1", "agent-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "tok-1")
+	require.Equal(t, []bool{true, false}, rec.busyStates(), "the prompt stops the indicator")
 
-	// The agent carries on: a new turn opens, and its WORKING publish is what
-	// says the interrupt did not land.
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	// What cancelControlRequestsForStop does once the stop is delivered.
+	h.noteControlRequestsRemoved("agent-1", "agent-1")
 	h.setTurnActive("agent-1", "agent-1", false)
-	require.Equal(t, 0, settles.close(), "the interrupt published at once")
+
+	assert.Equal(t, 0, settles.close(), "the stop the reader asked for waits for nothing")
+	// Three publishes, and none of them is WORKING: the turn opens, the prompt
+	// stops the indicator, and the stop moves the agent off WAITING -- nobody is
+	// waiting for an answer to a question that is being withdrawn, and a tab
+	// closed here interrupts nothing.
+	assert.Equal(t, []bool{true, false, false}, rec.busyStates(),
+		"withdrawing the stopped turn's question is not the agent going back to work")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State)
+}
+
+// A stop that never reached the agent puts the indicator back. The agent runs
+// whatever it was running, and the button that stops it belongs on screen --
+// hiding it is the one failure the button exists to prevent.
+func TestActivity_ARefusedStopPutsTheIndicatorBack(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+
+	h.NoteAgentStopFailed("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true, false, true}, rec.busyStates(), "the turn never stopped")
+	assert.Equal(t, 0, settles.close(), "a WORKING publish opens no window")
+
+	// And the turn that eventually ends settles like any other, because no stop
+	// stands behind it any more.
+	h.setTurnActive("agent-1", "agent-1", false)
+	assert.Equal(t, 1, settles.close(), "an ordinary stop waits out its window")
+}
+
+// A stop reaches the TURN. Every background task the agent launched runs on, and
+// the tab must keep saying so: closing it still kills them.
+func TestActivity_AStopLeavesABackgroundTaskRunning(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	rows := []bgtask.Item{{RowKey: "a", Status: bgtask.StatusRunning}}
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+
+	h.refreshActivityFrom("agent-1", "agent-1", rows, h.activitySeq.Add(1), settleHeld)
+
+	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
+		"the shell the agent started is not what the reader stopped")
+}
+
+func TestActivity_AnIgnoredStopDoesNotExemptTheNextTurn(t *testing.T) {
+	t.Parallel()
+
+	// The bound on that mark, and the reason it is not simply latched. An agent
+	// can IGNORE a stop and keep working. The stop that eventually comes then
+	// belongs to work the user never cancelled, and it is resumable like any
+	// other -- so it must wait out its window.
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, 0, settles.close(), "the stop published at once")
+
+	// The agent carries on: it answers the stop by opening another turn, and
+	// that turn flag is what says the stop did not land.
+	h.setTurnActive("agent-1", "agent-1", false)
 	h.setTurnActive("agent-1", "agent-1", true)
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	require.Equal(t, 1, settles.close(), "the next stop is an ordinary settle again")
 	assert.Equal(t, []bool{true, false, true, false}, rec.busyStates())
+}
+
+// A REPEAT publish of the turn flag is not the provider's answer to a stop. It
+// reports the state the entry already holds, so it withdraws nothing and must
+// leave the mark for the answer that really comes. Two providers send one: pi
+// republishes the flag on a retried run, and zcode publishes it at every turn
+// start.
+func TestActivity_ARepeatTurnFlagDoesNotSpendTheStopMark(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "tok-1")
+	require.Equal(t, []bool{true, false}, rec.busyStates(), "the prompt stops the indicator")
+
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false, false}, rec.busyStates(), "the stop moves the agent off WAITING")
+
+	// The repeat. Nothing changed, so nothing is published either.
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true, false, false}, rec.busyStates(), "a repeat publishes nothing")
+
+	// The withdrawal of the question the stopped turn was blocked on. With the
+	// mark spent, this re-derives WORKING and puts the spinner back at the
+	// moment the reader pressed Stop.
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1", ClaimToken: "tok-1"})
+
+	assert.Equal(t, []bool{true, false, false}, rec.busyStates(),
+		"withdrawing the stopped turn's question is not the agent going back to work")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State)
+	assert.Equal(t, 0, settles.close(), "the stop the reader asked for waits for nothing")
+}
+
+// The turn flag that CHANGES still spends the mark, whichever way it moved.
+func TestActivity_AChangedTurnFlagStillSpendsTheStopMark(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+
+	// The provider ends the turn: its answer to the stop. The mark has nothing
+	// left to describe.
+	h.setTurnActive("agent-1", "agent-1", false)
+	// The next turn is ordinary again, so its own stop waits out a window.
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	assert.Equal(t, 1, settles.close(), "the mark cannot exempt a later turn")
+	assert.Equal(t, []bool{true, false, true, false}, rec.busyStates())
+}
+
+// Shutdown latches, then joins the deferred refreshes. A count taken after that
+// join starts is a WaitGroup misuse, and the goroutine it guards reads the
+// registry after the caller closes the database. holdSettleLocked already tests
+// the latch; these two paths must too.
+//
+// The synchronous field writes are exempt, because AgentActivitySnapshot reads
+// them and the entry must stay truthful whatever the latch says.
+func TestActivity_AStopAfterShutdownWritesTheMarkAndPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.SetShuttingDown()
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "no broadcast leaves after the latch")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State, "the mark itself is still recorded")
+}
+
+func TestActivity_AProcessBoundaryAfterShutdownClearsTheEntryAndPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.SetShuttingDown()
+	h.resetAgentActivity("agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "no broadcast leaves after the latch")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State, "the turn flag is still cleared")
 }

@@ -1,14 +1,31 @@
 import type { Accessor, Setter } from 'solid-js'
+import type { MessageContextResolver } from '../messageContextResolver'
 import type { PermissionPresetController } from '../providerSettings'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ControlSurface } from './controlSurface'
+import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import { createSignal } from 'solid-js'
 
-interface QuestionOption {
-  id?: string
+export interface ControlResponseOptions {
+  recordOnly?: boolean
+  planApproval?: Pick<PlanApprovalSettings, 'permissionMode' | 'clearContext'>
+}
+
+export type ControlResponseHandler = (request: ControlRequest, content: Uint8Array, options?: ControlResponseOptions) => Promise<boolean | void>
+
+export type ControlResponseSender = (content: Uint8Array, options?: ControlResponseOptions) => Promise<void>
+
+export interface QuestionOption {
+  /** The response value stays stable when supplemental data changes the label. */
+  value?: string
   label: string
   description?: string
+  preview?: string
+}
+
+export function questionOptionValue(option: QuestionOption): string {
+  return option.value ?? option.label
 }
 
 export interface Question {
@@ -17,6 +34,8 @@ export interface Question {
   header?: string
   options: QuestionOption[]
   multiSelect?: boolean
+  /** The provider accepts an explicit empty answer. */
+  allowEmpty?: boolean
 }
 
 /**
@@ -49,6 +68,10 @@ export interface ControlAnswerState {
   /** Whether the active request's persisted answer is ready to use. */
   ready: Accessor<boolean>
   setReady: Setter<boolean>
+  responsePending: Accessor<boolean>
+  setResponsePending: Setter<boolean>
+  responseError: Accessor<string>
+  setResponseError: Setter<string>
 }
 
 /** The saved shape of a {@link ControlAnswerState}, as it is stored and restored. */
@@ -73,6 +96,8 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
   const [switches, setSwitches] = createSignal(seed.switches ?? {})
   const [choices, setChoices] = createSignal(seed.choices ?? {})
   const [ready, setReady] = createSignal(true)
+  const [responsePending, setResponsePending] = createSignal(false)
+  const [responseError, setResponseError] = createSignal('')
   return {
     selections,
     setSelections,
@@ -86,6 +111,10 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
     setChoices,
     ready,
     setReady,
+    responsePending,
+    setResponsePending,
+    responseError,
+    setResponseError,
   }
 }
 
@@ -142,10 +171,12 @@ export interface ContentProps {
   answerState: ControlAnswerState
   optionsDisabled?: boolean
   agentProvider?: AgentProvider
+  messageContext?: MessageContextResolver
 }
 
 export interface ActionsProps {
   request: ControlRequest
+  messageContext?: MessageContextResolver
   answerState: ControlAnswerState
   /**
    * Sends ONE answer for {@link request}.
@@ -155,7 +186,7 @@ export interface ActionsProps {
    * id and the per-instance claim token. An id passed alongside could name a
    * different instance, so the parameter is not offered.
    */
-  onRespond: (content: Uint8Array) => Promise<void>
+  onRespond: ControlResponseSender
   hasEditorContent: boolean
   onTriggerSend: () => void
   /**
@@ -191,6 +222,34 @@ export interface ActionsProps {
 }
 
 /**
+ * What both halves of the banner take, beyond the props a plugin's control
+ * takes.
+ *
+ * The banner CLASSIFIES nothing. Its caller derives the surface and the
+ * provider once, with `createControlSurface`, and hands the same two values to
+ * the content and to the actions. Both mount for the SAME request in two
+ * different slots, so a banner that classified its own request built that graph
+ * twice and the composer built it a third time.
+ */
+interface BannerProps {
+  /**
+   * Which surface answers the request: the question form, the elicitation form,
+   * or the provider's own plugin.
+   *
+   * `undefined` for an absent request. The caller must pass the surface of the
+   * request in {@link BannerContentProps.request}, and the composer does: both
+   * come from the one active request.
+   */
+  controlSurface: ControlSurface | undefined
+  /**
+   * The provider whose plugin renders the request, ALREADY resolved against the
+   * request's own provider. It is not the agent's provider, which the caller
+   * resolves beside the surface so that both answers come from one place.
+   */
+  agentProvider?: AgentProvider
+}
+
+/**
  * The banner's own prop types, which admit an ABSENT request.
  *
  * A provider's `ControlContent` / `ControlActions` takes `ContentProps` /
@@ -201,30 +260,40 @@ export interface ActionsProps {
  * reactive prop does exactly that. These types state it, so the compiler
  * requires the guard instead of a reader trusting that one is present.
  */
-export interface BannerContentProps extends Omit<ContentProps, 'request'> {
+export interface BannerContentProps extends Omit<ContentProps, 'request'>, BannerProps {
   request: ControlRequest | null
+  /**
+   * Stops the turn the request belongs to. Absent when this agent cannot be
+   * interrupted on its own, which is how a subagent tab gets no such control.
+   *
+   * It lives with the QUESTION rather than with the answers: a stop is not a decision,
+   * and a button next to Allow and Deny would read as one.
+   */
+  onInterrupt?: () => void
 }
 
-export interface BannerActionsProps extends Omit<ActionsProps, 'request'> {
+export interface BannerActionsProps extends Omit<ActionsProps, 'request'>, BannerProps {
+  onRecordResponse?: () => Promise<void>
   request: ControlRequest | null
 }
 
 export function sendResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   response: unknown,
+  options?: ControlResponseOptions,
 ): Promise<void> {
   const bytes = new TextEncoder().encode(JSON.stringify(response))
-  return onRespond(bytes)
+  return options ? onRespond(bytes, options) : onRespond(bytes)
 }
 
-/** Builds a JSON-RPC result with the request ID converted to its wire type. */
+/** Keep the worker request ID intact. The worker restores the native ID from the persisted request. */
 export function buildJsonRpcResult(requestId: string, result: unknown): Record<string, unknown> {
-  return { jsonrpc: '2.0', id: toRpcId(requestId), result }
+  return { jsonrpc: '2.0', id: requestId, result }
 }
 
-/** Sends a JSON-RPC result with the request ID converted to its wire type. */
+/** Send the result with the unchanged worker request ID. */
 export function sendJsonRpcResult(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   result: unknown,
 ): Promise<void> {
@@ -237,15 +306,9 @@ export function sendJsonRpcResult(
  * senders delegate here instead of building it twice.
  */
 export function sendSelectedOptionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {
   return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: 'selected', optionId } })
-}
-
-/** Convert a string request ID to a numeric JSON-RPC id when possible. */
-export function toRpcId(requestId: string): number | string {
-  const numId = Number(requestId)
-  return Number.isFinite(numId) ? numId : requestId
 }

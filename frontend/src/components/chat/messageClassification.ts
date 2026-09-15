@@ -1,4 +1,5 @@
 import type { MessageBandKind } from './chatRowGeometry'
+import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -8,7 +9,7 @@ import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
 import { parseAssembledMessage } from './assembledMessage'
 import { messageBandKind } from './chatRowGeometry'
 import * as chatStyles from './messageStyles.css'
-import { isPersistedControlResponse } from './persistedControlResponse'
+import { parsePersistedControlResponse } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
 import './providers'
 
@@ -33,7 +34,7 @@ export type MessageCategory
     | { kind: 'user_content' }
     | { kind: 'plan_execution' }
     | { kind: 'result_divider' }
-    | { kind: 'control_response' }
+    | { kind: 'control_response', response: PersistedControlResponse }
     | { kind: 'compact_summary' }
     | { kind: 'unknown' }
     // The message's `agentProvider` is UNSPECIFIED or has no registered plugin,
@@ -53,10 +54,7 @@ export function toClassificationInput(
   message: AgentChatMessage,
 ): ClassificationInput {
   return {
-    rawText: parsed.rawText,
-    topLevel: parsed.topLevel,
-    parentObject: parsed.parentObject,
-    wrapper: parsed.wrapper,
+    ...parsed,
     agentProvider: message.agentProvider,
     source: message.source,
     assembledKind: message.assembledKind,
@@ -123,6 +121,10 @@ export function classifyMessage(
         return { kind: 'assistant_text' }
     }
   }
+  const response = parsePersistedControlResponse(input)
+  if (response)
+    return { kind: 'control_response', response }
+
   const plugin = pluginFor(input.agentProvider)
   if (!plugin) {
     // A USER row is the one message no plugin is needed to read: LeapMux writes
@@ -133,15 +135,6 @@ export function classifyMessage(
       return { kind: 'user_content' }
     return { kind: 'unsupported_provider' }
   }
-
-  // A persisted control-response row ({isSynthetic, controlResponse}) is a LeapMux-NEUTRAL synthetic
-  // shape, not a provider wire format, so its classification lives here once instead of being
-  // re-hardcoded in every plugin's classify (where a new provider plugin could forget it and render
-  // the row as raw JSON). It is persisted as a standalone row, never inside a notification thread, so
-  // guard on !input.wrapper to preserve the plugins' wrapper-first precedence: a notification thread
-  // whose first message somehow looks synthetic still classifies as a notification, not this.
-  if (!input.wrapper && isPersistedControlResponse(input.parentObject))
-    return { kind: 'control_response' }
 
   // A worker-authored notification is provider-neutral BY CONSTRUCTION: the worker writes it, the
   // agent never does, so no plugin can recognize it from its own wire format. Classifying it here

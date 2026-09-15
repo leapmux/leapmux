@@ -3,14 +3,17 @@
 -- NOT MAX(live seq) + 1, so a deleted tail seq is never reused. The agent row is
 -- guaranteed to exist (messages.agent_id REFERENCES agents); the COALESCE is a
 -- defensive fallback. A trigger advances message_seq_hwm after the insert.
-INSERT INTO messages (id, agent_id, seq, source, content, content_compression, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, created_at)
+INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
   (COALESCE((SELECT a.message_seq_hwm FROM agents a WHERE a.id = sqlc.arg(agent_id)), 0) + 1),
+  sqlc.arg(agent_session_id),
   sqlc.arg(source),
   sqlc.arg(content),
   sqlc.arg(content_compression),
+  COALESCE(CAST(sqlc.arg(supplemental_content) AS BLOB), X''),
+  sqlc.arg(supplemental_content_compression),
   sqlc.arg(depth),
   sqlc.arg(span_id),
   sqlc.arg(parent_span_id),
@@ -58,12 +61,20 @@ SELECT * FROM messages WHERE id = ? AND agent_id = ?;
 SELECT * FROM messages WHERE agent_id = ? AND seq = ?;
 
 -- GetAgentMessageBySpanIDAndSource finds the first message that opened the
--- given span (the tool_use / item-started side). Used by the to-do extractor
--- when a tool_result arrives and needs the paired request's input fields
--- (subject/description/activeForm for Claude TaskCreate).
+-- given span (the tool_use / item-started side). readToolRequest is the one
+-- caller, and it serves both the provider controls and the to-do extractor,
+-- which need the paired request's input fields (subject/description/activeForm
+-- for Claude TaskCreate).
+--
+-- `span_id <> ''` repeats the predicate of the PARTIAL idx_messages_span_id.
+-- SQLite matches a partial index syntactically, so without that term the
+-- planner falls back to the (agent_id, seq) unique index, and ORDER BY seq ASC
+-- then reads the agent's transcript from seq 1. Both siblings in
+-- message_enrichment.sql carry the same term.
 -- name: GetAgentMessageBySpanIDAndSource :one
 SELECT * FROM messages
-WHERE agent_id = ? AND span_id = ? AND source = ?
+WHERE agent_id = ? AND agent_session_id = ? AND span_id = ? AND source = ?
+  AND span_id <> ''
 ORDER BY seq ASC
 LIMIT 1;
 

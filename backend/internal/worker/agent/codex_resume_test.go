@@ -18,10 +18,10 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	const timeout = 5 * time.Second
 
-	resume := func(t *testing.T, body string) (codexThreadResult, func() []codexRecordedRequest, error) {
+	resume := func(t *testing.T, body jsonrpcResponsePayload) (codexThreadResult, func() []codexRecordedRequest, error) {
 		t.Helper()
-		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-			return json.RawMessage(body)
+		a, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+			return body
 		})
 		thread, err := a.startOrResumeThread(map[string]interface{}{}, "thread-old", timeout)
 		return thread, requests, err
@@ -29,7 +29,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	t.Run("adopts the resumed thread and sends no thread/start", func(t *testing.T) {
 		t.Parallel()
-		thread, requests, err := resume(t, `{"thread":{"id":"thread-old"},"model":"gpt-5.6-sol"}`)
+		thread, requests, err := resume(t, jsonrpcResponsePayload{Result: json.RawMessage(`{"thread":{"id":"thread-old"},"model":"gpt-5.6-sol"}`)})
 		require.NoError(t, err)
 		assert.Equal(t, "thread-old", thread.ID)
 		require.NotNil(t, thread.settings[OptionIDModel])
@@ -70,8 +70,8 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				t.Parallel()
 
-				a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-					return json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)
+				a, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+					return jsonrpcResponsePayload{Result: json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)}
 				})
 				a.model = test.storedModel
 				params := codexThreadParams(test.storedModel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
@@ -104,7 +104,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 	// it: "carried no thread ID" identifies the symptom and hides the reason.
 	t.Run("fails with the agent's own reason when the resume is refused", func(t *testing.T) {
 		t.Parallel()
-		_, requests, err := resume(t, `{"code":-32000,"message":"thread not found"}`)
+		_, requests, err := resume(t, jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32000,"message":"thread not found"}`)})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "thread-old")
 		assert.Contains(t, err.Error(), "thread not found")
@@ -114,7 +114,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	t.Run("fails when the response does not parse", func(t *testing.T) {
 		t.Parallel()
-		_, requests, err := resume(t, `not json`)
+		_, requests, err := resume(t, jsonrpcResponsePayload{Result: json.RawMessage(`not json`)})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "thread-old")
 		assert.Contains(t, err.Error(), "/clear")
@@ -123,7 +123,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	t.Run("fails when the response carries no thread ID", func(t *testing.T) {
 		t.Parallel()
-		_, requests, err := resume(t, `{"thread":{}}`)
+		_, requests, err := resume(t, jsonrpcResponsePayload{Result: json.RawMessage(`{"thread":{}}`)})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "thread-old")
 		assert.Contains(t, err.Error(), "/clear")
@@ -134,8 +134,8 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 	// only path that mints a new thread now.
 	t.Run("starts a thread when there is nothing to resume", func(t *testing.T) {
 		t.Parallel()
-		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-			return json.RawMessage(`{"thread":{"id":"thread-new"},"model":"gpt-5.4"}`)
+		a, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"thread":{"id":"thread-new"},"model":"gpt-5.4"}`)}
 		})
 		thread, err := a.startOrResumeThread(map[string]interface{}{}, "", timeout)
 		require.NoError(t, err)
@@ -147,8 +147,8 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	t.Run("keeps the server reason when thread start fails", func(t *testing.T) {
 		t.Parallel()
-		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-			return json.RawMessage(`{"code":-32000,"message":"model unavailable"}`)
+		a, _, requests := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+			return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32000,"message":"model unavailable"}`)}
 		})
 
 		_, err := a.startOrResumeThread(map[string]interface{}{}, "", timeout)
@@ -162,15 +162,15 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	t.Parallel()
 
-	a, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+	a, sink, requests := newCodexAgentForRPC(t, func(method string) jsonrpcResponsePayload {
 		require.Equal(t, "thread/start", method)
-		return json.RawMessage(`{
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{
 			"thread":{"id":"thread-new"},
 			"model":"gpt-5.6-sol",
 			"reasoningEffort":"medium",
 			"approvalPolicy":"never",
 			"sandbox":{"type":"dangerFullAccess"}
-		}`)
+		}`)}
 	})
 	a.threadID = "thread-old"
 	a.turnID = "turn-old"
@@ -182,9 +182,9 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	a.sandboxPolicy = CodexSandboxDangerFullAccess
 	a.serviceTier = CodexServiceTierFast
 
-	sessionID, ok := a.ClearContext()
+	sessionID, clearErr := a.ClearContext()
 
-	require.True(t, ok)
+	require.NoError(t, clearErr)
 	assert.Equal(t, "thread-new", sessionID)
 	assert.Equal(t, "thread-new", a.threadID)
 	assert.Empty(t, a.turnID)
@@ -210,20 +210,20 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 func TestCodexClearContextDoesNotRouteLateChildOutputToTheNewRoot(t *testing.T) {
 	t.Parallel()
 
-	a, sink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{
+	a, sink, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{
 			"thread":{"id":"thread-new"},
 			"model":"gpt-5.4",
 			"reasoningEffort":"high",
 			"approvalPolicy":"on-request",
 			"sandbox":{"type":"workspaceWrite"}
-		}`)
+		}`)}
 	})
 	a.threadID = "thread-old"
 	handleCodexOutput(a, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"thread-old","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"old-child","agentPath":"/root/old_child"}}}`)))
 
-	_, ok := a.ClearContext()
-	require.True(t, ok)
+	_, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
 	handleCodexOutput(a, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"old-child","turnId":"child-turn","item":{"type":"agentMessage","id":"late-message","text":"LATE_OLD_CHILD_OUTPUT","phase":"final_answer"}}}`)))
 
 	assert.Empty(t, sink.Messages(), "an old child item must not enter the new root transcript")
@@ -232,14 +232,14 @@ func TestCodexClearContextDoesNotRouteLateChildOutputToTheNewRoot(t *testing.T) 
 func TestCodexClearContextRejectsAChildRouteThatFinishesLate(t *testing.T) {
 	t.Parallel()
 
-	a, baseSink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
-		return json.RawMessage(`{
+	a, baseSink, _ := newCodexAgentForRPC(t, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{
 			"thread":{"id":"thread-new"},
 			"model":"gpt-5.4",
 			"reasoningEffort":"high",
 			"approvalPolicy":"on-request",
 			"sandbox":{"type":"workspaceWrite"}
-		}`)
+		}`)}
 	})
 	a.threadID = "thread-old"
 	blockingSink := &blockingCodexEnsureSink{
@@ -255,14 +255,14 @@ func TestCodexClearContextRejectsAChildRouteThatFinishesLate(t *testing.T) {
 	}()
 	<-blockingSink.started
 
-	clearDone := make(chan bool, 1)
+	clearDone := make(chan error, 1)
 	go func() {
-		_, ok := a.ClearContext()
-		clearDone <- ok
+		_, clearErr := a.ClearContext()
+		clearDone <- clearErr
 	}()
 	close(blockingSink.release)
-	ok := <-clearDone
-	require.True(t, ok)
+	clearErr := <-clearDone
+	require.NoError(t, clearErr)
 	<-done
 
 	a.mu.Lock()

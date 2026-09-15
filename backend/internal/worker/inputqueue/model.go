@@ -41,14 +41,22 @@ const (
 // the newest cause owns the pause: an archive resume, or the end of a planned
 // restart, then leaves a pause that a later crash or the user created. The
 // values persist in agent_input_queue_state.pause_owner.
+//
+// A DEFINED type over the proto enum, not an independent iota. The column is a
+// closed set, so its numbering comes from proto like every other enum column
+// here -- the Go constant, the column and the SQL CHECK then share one numbering
+// that a renumber moves together. TestEnumColumnChecksMatchTheirProtoRanges pins
+// the range. An iota let the three drift with nothing to notice.
+type pauseOwner leapmuxv1.AgentInputQueuePauseOwner
+
 const (
-	pauseOwnerNone = iota
-	pauseOwnerManual
-	pauseOwnerArchive
-	pauseOwnerPlannedRestart
-	pauseOwnerDelivery
-	pauseOwnerAgentStopped
-	pauseOwnerRecovery
+	pauseOwnerNone           = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_UNSPECIFIED)
+	pauseOwnerManual         = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_MANUAL)
+	pauseOwnerArchive        = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_ARCHIVE)
+	pauseOwnerPlannedRestart = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_PLANNED_RESTART)
+	pauseOwnerDelivery       = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_DELIVERY)
+	pauseOwnerAgentStopped   = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_AGENT_STOPPED)
+	pauseOwnerRecovery       = pauseOwner(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY)
 )
 
 var (
@@ -67,7 +75,16 @@ var (
 	ErrTurnEnded             = errors.New("active turn ended before steering")
 	ErrSteeringState         = errors.New("queue state does not permit steering")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
-	ErrManagerStopped        = errors.New("agent input queue is stopped")
+	// ErrPreemptionUnsupported is steering's counterpart for the interrupt-only
+	// route: the running provider cannot steer and Preempt refuses outright.
+	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
+	// ErrPreemptionState is ErrSteeringState's counterpart. It must not reuse
+	// ErrTurnEnded, whose text states STEERING and asserts that a turn ended: the
+	// head can also be refused because another tab holds its edit, and the reader
+	// saw "active turn ended before steering" for a request that neither steered
+	// nor followed a turn that ended.
+	ErrPreemptionState = errors.New("queue state does not permit preemption")
+	ErrManagerStopped  = errors.New("agent input queue is stopped")
 	// ErrPlannedRestart refuses an explicit dispatch while the Worker replaces
 	// the agent process. The durable pause_owner records the restart, so the
 	// refusal survives a Worker restart that leaves the marker behind.
@@ -148,6 +165,11 @@ type StoredItem struct {
 	UpdatedAt        string
 }
 
+// requiresContextReplacement identifies a plan approval that replaces the blocked provider turn.
+func (item StoredItem) requiresContextReplacement() bool {
+	return item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION && item.PrepareContext
+}
+
 type DispatchItem struct {
 	StoredItem
 	Attachments []Attachment
@@ -158,6 +180,15 @@ type SnapshotItem struct {
 	Metadata []AttachmentMetadata
 	// CanSteer uses the same predicate as the store's steering guard.
 	CanSteer bool
+	// CanPreempt uses the same predicate the manager's preemption guard applies:
+	// head, queued, unedited, and an active turn to cancel. Unlike CanSteer it does
+	// NOT require a steerable turn, nor a kind the model can take mid-turn -- the
+	// whole point is the turn the provider can only cancel, not inject into, and
+	// the ordinary turn-end drain is what delivers the item afterwards.
+	//
+	// It excludes the one head that REPLACES the turn, because the store already
+	// dispatches that one through the running turn.
+	CanPreempt bool
 }
 
 type Snapshot struct {
@@ -215,6 +246,11 @@ type DeliveryError struct {
 	Err                 error
 	Outcome             DispatchOutcome
 	ActiveTurnSteerable bool
+	// PauseReason is the sentence the reader sees when a NotReady outcome pauses
+	// the queue. The zero value keeps AGENT_STOPPED, which is what the provider
+	// paths mean; a store fault sets STORE_FAULT, because "the agent stopped" is
+	// a false statement about a database error.
+	PauseReason leapmuxv1.AgentInputQueuePauseReason
 }
 
 func (e *DeliveryError) Error() string {
@@ -251,6 +287,15 @@ type Dispatcher interface {
 	Dispatch(item DispatchItem) (DispatchResult, error)
 	Steer(item DispatchItem) (DispatchResult, error)
 	SupportsSteering(agentID string) bool
+	// Interrupt cancels the agent's active turn without any of the stop-side
+	// bookkeeping the InterruptAgent RPC applies (queue pause, control
+	// withdrawal). Preempt is its only caller: the queued item it unblocks
+	// dispatches through the ordinary turn-end drain, and that drain must not
+	// find a stop-pause holding it.
+	Interrupt(agentID string) error
+	// SupportsPreemption answers whether Preempt may be offered for this agent:
+	// a running provider that cannot steer but can interrupt.
+	SupportsPreemption(agentID string) bool
 	// AcceptsKind answers whether this agent accepts the kind at all. Enqueue
 	// and Update ask before they store the item, so an input that dispatch can
 	// never deliver is refused at the RPC instead of failing the whole queue.

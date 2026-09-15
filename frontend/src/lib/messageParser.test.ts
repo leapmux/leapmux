@@ -2,7 +2,7 @@ import type { ParsedMessageContent } from './messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
-import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import {
   extractCompactionContextTokens,
@@ -39,6 +39,72 @@ function wrap(...messages: unknown[]): { type: typeof NOTIFICATION_THREAD_TYPE, 
 // ---------------------------------------------------------------------------
 
 describe('parseMessageContent', () => {
+  it('keeps typed completion when provider JSON is invalid', () => {
+    const content = new TextEncoder().encode('{unfinished')
+    const result = parseMessageContent(makeMessage({ content, completion: MessageCompletion.INTERRUPTED }))
+    expect(result.rawText).toBe('{unfinished')
+    expect(result.parentObject).toBeUndefined()
+    expect(result.completion).toBe(MessageCompletion.INTERRUPTED)
+  })
+
+  it('separates typed completion from a provider field with the same name', () => {
+    const original = { _leapmux: { completion: 'complete' }, completion: 'provider-specific' }
+    const result = parseMessageContent(makeMessage({ content: rawContent(original), completion: MessageCompletion.ERROR }))
+    expect(result.completion).toBe(MessageCompletion.ERROR)
+    expect(result.parentObject).toEqual(original)
+  })
+
+  it('keeps original and supplemental JSON in separate fields', () => {
+    const original = { type: 'tool_call', supplemental_content: { native: true }, _leapmux: 'native' }
+    const supplemental = { rawInput: { command: 'npm test' } }
+    const result = parseMessageContent(makeMessage({ content: rawContent(original), supplementalContent: rawContent({ provider: supplemental, metadata: { duration_ms: 0 } }) }))
+    expect(result.topLevel).toEqual(original)
+    expect(result.parentObject).toEqual(original)
+    expect(result.rawText).toBe(JSON.stringify(original))
+    expect(result.supplementalContent).toEqual(supplemental)
+    expect(result.messageMetadata).toEqual({ duration_ms: 0 })
+  })
+
+  it('preserves the original when supplemental JSON is invalid', () => {
+    const original = { content: 'Original text' }
+    const result = parseMessageContent(makeMessage({ content: rawContent(original), supplementalContent: new TextEncoder().encode('{invalid') }))
+    expect(result.parentObject).toEqual(original)
+    expect(result.supplementalContent).toBeUndefined()
+    expect(result.supplementalRawText).toBe('{invalid')
+  })
+
+  it('preserves the original when supplemental compression is invalid', () => {
+    const original = { content: 'Original text' }
+    const message = makeMessage({
+      content: rawContent(original),
+      supplementalContent: new Uint8Array([1, 2, 3]),
+      supplementalContentCompression: ContentCompression.ZSTD,
+    })
+    expect(parseMessageContent(message).parentObject).toEqual(original)
+  })
+
+  it('retains a byte order mark in the original text', () => {
+    const original = '\uFEFF{"content":"Native text"}'
+    const message = makeMessage({ content: new TextEncoder().encode(original) })
+    expect(parseMessageContent(message).rawText).toBe(original)
+  })
+
+  it('reports invalid original text encoding without replacing its bytes', () => {
+    const message = makeMessage({ content: new Uint8Array([0xFF, 0xFE]) })
+    const parsed = parseMessageContent(message)
+    expect(parsed.contentDecodeFailed).toBe(true)
+    expect(message.content).toEqual(new Uint8Array([0xFF, 0xFE]))
+  })
+
+  it('keeps the original readable when supplemental text encoding is invalid', () => {
+    const original = { content: 'Native text' }
+    const message = makeMessage({ content: rawContent(original), supplementalContent: new Uint8Array([0xFF, 0xFE]) })
+    const parsed = parseMessageContent(message)
+    expect(parsed.parentObject).toEqual(original)
+    expect(parsed.supplementalRawText).toBeUndefined()
+    expect(parsed.supplementalContent).toBeUndefined()
+  })
+
   it('parses LEAPMUX notification wrapper content', () => {
     const inner = { type: 'settings_changed', changes: {} }
     const msg = makeMsg(MessageSource.LEAPMUX, wrap(inner))

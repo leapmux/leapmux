@@ -3,6 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import './claude'
 import './codex'
 import './opencode'
@@ -151,9 +152,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
     const { container } = renderClaudeToolUse('TaskUpdate', {
       taskId: '42',
       status: 'completed',
-    }, {
-      getTodoById: id => id === '42' ? { id: '42', rowKey: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined,
-    })
+    }, { sources: testMessageSources({ todo: id => id === '42' ? { id: '42', rowKey: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Stored subject')
     expect(text).not.toContain('Task #42')
@@ -165,9 +164,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
       taskId: '7',
       subject: 'Fresh subject from this patch',
       status: 'in_progress',
-    }, {
-      getTodoById: id => id === '7' ? { id: '7', rowKey: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined,
-    })
+    }, { sources: testMessageSources({ todo: id => id === '7' ? { id: '7', rowKey: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Fresh subject from this patch')
     expect(text).not.toContain('Stale stored subject')
@@ -177,9 +174,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
     const { container } = renderClaudeToolUse('TaskUpdate', {
       taskId: '8',
       status: 'deleted',
-    }, {
-      getTodoById: id => id === '8' ? { id: '8', rowKey: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined,
-    })
+    }, { sources: testMessageSources({ todo: id => id === '8' ? { id: '8', rowKey: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Will be removed')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
@@ -206,7 +201,7 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
         },
       },
     } as Record<string, unknown>
-    const { container } = renderClaudeToolUse('TaskGet', {}, { toolResultParsed: toolUseResult as never })
+    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (toolUseResult as never) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Get me')
     expect(text).toContain('A long task')
@@ -221,7 +216,7 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
         },
       },
     } as Record<string, unknown>
-    const { container } = renderClaudeToolUse('TaskGet', {}, { toolResultParsed: toolUseResult as never })
+    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (toolUseResult as never) }) })
     expect(container.textContent ?? '').toContain('Already gone')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
   })

@@ -2,24 +2,21 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { FileEditDiffSource } from '../../results/fileEditDiff'
-import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '../registry'
+import type { ClassificationInput, Provider, SpanRole, ToolMessageInput, ToolResultMeta } from '../registry'
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { messageUsage } from '~/lib/messageParser'
 import { validateSessionFilePath, validateSessionId } from '~/lib/validate'
-import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
-import { fileEditDiffHunks } from '../../results/fileEditDiff'
-import { registerProvider } from '../registry'
+import { toolPresentationMeta } from '../../results/toolResultMeta'
+import { registerProvider, retainedRowIsFinal } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
   piAskAnswerValue,
@@ -30,11 +27,12 @@ import {
   sendPiExtensionResponse,
 } from './controlResponse'
 import { PiControlActions, PiControlContent } from './controls'
-import { extractPiBash } from './extractors/bash'
-import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
+import { piSubagentNotificationSources, piVisibleCustomMessage } from './extractors/customMessage'
 import { piToolResultImages } from './extractors/image'
-import { piExtractTool } from './extractors/toolCommon'
+import { resolvePiMessage } from './extractors/supplement'
+import { isPiMcpApproval, piMcpApproval } from './mcpApproval'
 import { piContentText, piIsThinkingOnly } from './messageContent'
+import { isPiPlanApproval } from './planRequest'
 import {
   describePiNotification,
   PiAssistantMessage,
@@ -44,6 +42,7 @@ import {
   PiToolExecutionRenderer,
   PiToolResultRenderer,
 } from './renderers'
+import { piToolPresentation, piToolRow } from './toolPresentation'
 
 /**
  * Pi event types that carry no UI surface (lifecycle markers / fan-out).
@@ -98,15 +97,6 @@ function isHiddenPiNotification(m: unknown): boolean {
   return describePiNotification(m) === null
 }
 
-function formatPiDiffSources(sources: FileEditDiffSource[]): string | null {
-  if (sources.length === 0)
-    return null
-  return sources
-    .map(source => formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath))
-    .filter(Boolean)
-    .join('\n') || null
-}
-
 type PiRenderer = (
   category: MessageCategory,
   parsed: unknown,
@@ -132,67 +122,30 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
 }
 
+/**
+ * Toolbar metadata for one Pi tool-result row.
+ *
+ * The row's own display model answers it, so the toolbar always describes the body the
+ * reader sees. Two things stay here, because neither is a tool: a consolidated subagent
+ * notification, which carries no tool call at all, and the guards that reject a row
+ * this hook does not own.
+ */
 function piToolResultMeta(
   category: MessageCategory,
-  parsed: unknown,
-  _spanType: string | undefined,
-  toolUseParsed: ParsedMessageContent | undefined,
+  input: ToolMessageInput,
 ): ToolResultMeta | null {
+  const parsed = input.parsed.parentObject
   if (category.kind !== 'tool_result' || !isObject(parsed))
     return null
 
-  const tool = piExtractTool(parsed)
-  if (!tool)
-    return null
-
-  const resultText = tool.result?.text ?? ''
-  const startArgs = pickObject(toolUseParsed?.parentObject, 'args') ?? {}
-
-  if (tool.toolName === PI_TOOL.Bash) {
-    const bash = extractPiBash(parsed)
-    if (!bash)
-      return null
-    return {
-      collapsible: commandOutputIsCollapsible(bash.output),
-      hasDiff: false,
-      hasCopyable: bash.output !== '',
-      copyableContent: () => bash.output || null,
-    }
+  const notifications = piSubagentNotificationSources(parsed)
+  if (notifications) {
+    const text = notifications.map(source => source.body).filter(Boolean).join('\n\n')
+    return { collapsible: notifications.some(source => commandOutputIsCollapsible(source.body)), hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
   }
 
-  if (tool.toolName === PI_TOOL.Read) {
-    const read = extractPiRead(parsed, startArgs)
-    if (!read)
-      return null
-    return {
-      collapsible: (read.source.lines?.length ?? 0) > COLLAPSED_RESULT_ROWS,
-      hasDiff: false,
-      hasCopyable: resultText !== '',
-      copyableContent: () => resultText || null,
-    }
-  }
-
-  if (tool.toolName === PI_TOOL.Edit || tool.toolName === PI_TOOL.Write) {
-    if (tool.isError) {
-      return {
-        collapsible: false,
-        hasDiff: false,
-        hasCopyable: resultText !== '',
-        copyableContent: () => resultText || null,
-      }
-    }
-
-    const sources = piResolveDiffSources(parsed, toolUseParsed)
-    const hasDiff = sources.length > 0
-    return {
-      collapsible: false,
-      hasDiff,
-      hasCopyable: hasDiff || resultText !== '',
-      copyableContent: () => formatPiDiffSources(sources) ?? (resultText || null),
-    }
-  }
-
-  return null
+  const row = piToolRow(parsed, input.request, undefined, input.parsed.completion)
+  return row ? toolPresentationMeta(piToolPresentation(row)) : null
 }
 
 /**
@@ -233,11 +186,13 @@ function piContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsageIn
  */
 function piSpanRole(parsed: ParsedMessageContent): SpanRole {
   const type = pickString(parsed.parentObject, 'type')
-  if (type === PI_EVENT.ToolExecutionStart)
-    return 'opener'
   if (type === PI_EVENT.ToolExecutionEnd)
     return 'result'
-  return 'other'
+  if (type !== PI_EVENT.ToolExecutionStart)
+    return 'other'
+  // A turn that ended while the call ran stores the start frame AGAIN as the closing
+  // row, so the completion is what separates the two copies.
+  return retainedRowIsFinal(parsed.completion) ? 'result' : 'opener'
 }
 
 /**
@@ -269,7 +224,9 @@ export function piValidateResumeHandle(value: string): string | null {
 }
 
 const piPlugin: Provider = {
+  resolveMessage: resolvePiMessage,
   spanRole: piSpanRole,
+  relatedMessages: parsed => piSpanRole(parsed) === 'result' ? ['request'] : piSpanRole(parsed) === 'opener' ? ['result'] : [],
   contextUsageFromMessage: piContextUsageFromMessage,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
   // display and labels the copy action "session file path".
@@ -310,6 +267,9 @@ const piPlugin: Provider = {
 
     const type = pickString(parent, 'type')
 
+    if (type === PI_EVENT.EntryAppended && pickObject(parent, 'entry')?.type === 'custom')
+      return { kind: 'hidden' }
+
     // User messages persisted by the LeapMux service layer are stored as
     // plain `{"content":"...","attachments":[...]}` with no `type` field —
     // not a Pi RPC event. Match this shape *before* event-type dispatch so
@@ -330,6 +290,11 @@ const piPlugin: Provider = {
       return { kind: 'hidden' }
 
     if (type === PI_EVENT.MessageEnd) {
+      if (piVisibleCustomMessage(parent)) {
+        if (piSubagentNotificationSources(parent))
+          return { kind: 'tool_result' }
+        return piContentText(parent, 'text').trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+      }
       // Pi emits message_end for *every* message added to the conversation —
       // the user's prompt, tool results, and bash-execution echoes — not just
       // the assistant's reply. LeapMux already persists the user message via
@@ -350,6 +315,11 @@ const piPlugin: Provider = {
     }
 
     if (type === PI_EVENT.ToolExecutionStart) {
+      // A turn that ended while the call ran stores this frame AGAIN as the closing
+      // row, with the partial result Pi did report beside it. That copy is the
+      // call's result, so it reads as one; see piSpanRole.
+      if (retainedRowIsFinal(input.completion))
+        return { kind: 'tool_result' }
       const toolName = pickString(parent, 'toolName') || 'tool'
       return { kind: 'tool_use', toolName, toolUse: parent, content: [] }
     }
@@ -390,7 +360,7 @@ const piPlugin: Provider = {
   resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
-  toolResultImages: piToolResultImages,
+  toolResultImages: input => piToolResultImages(input.parsed.parentObject, input.spanType, input.request),
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject
@@ -411,27 +381,33 @@ const piPlugin: Provider = {
   // controlResponseDisplay (chatMarkPreview), not here.
   previewText: defaultMarkPreview,
   controlResponseDisplay: piControlResponseDisplay,
+  elicitation: piMcpApproval,
 
   askUserQuestion: {
     isRequest: payload => payload.type === PI_EVENT.ExtensionUIRequest
-      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select),
+      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select) && !isPiPlanApproval(payload) && !isPiMcpApproval(payload),
     extractQuestions: piQuestionsFromPayload,
-    async sendAnswer(request, sendControlResponse, _questions, answerState) {
+    async sendAnswer(request, sendControlResponse, questions, answerState) {
       const method = pickString(request.payload, 'method')
       if (method === PI_DIALOG_METHOD.Select) {
-        const value = piAskAnswerValue(answerState)
+        const value = piAskAnswerValue(answerState, questions, request.payload)
         const response = value.trim() ? piValueResponse(request.requestId, value) : piCancelResponse(request.requestId)
         await sendPiExtensionResponse(sendControlResponse, response)
         return
       }
-      const text = answerState.customTexts()[0] ?? ''
+      const text = piAskAnswerValue(answerState, questions, request.payload)
       await sendPiExtensionResponse(sendControlResponse, piValueResponse(request.requestId, text))
     },
     sendReject: (request, sendControlResponse) =>
       sendPiExtensionResponse(sendControlResponse, piCancelResponse(request.requestId)),
   },
 
+  controlFeedbackAsFollowUpMessage: isPiPlanApproval,
+  controlEditorPurpose: payload => isPiPlanApproval(payload) ? 'feedback' : 'none',
+
   buildControlResponse(payload, content, requestId) {
+    if (isPiPlanApproval(payload))
+      return piValueResponse(requestId, PI_PLAN_ACTION.Stay)
     const method = pickString(payload, 'method')
     let response: PiExtensionResponse
     switch (method) {

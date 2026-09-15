@@ -50,8 +50,6 @@ describe('real-agent end-to-end settings', () => {
     expect(env.LEAPMUX_CLAUDE_DEFAULT_MODEL).toBe(REAL_AGENT_E2E_SETTINGS[AgentProvider.CLAUDE_CODE].model)
     expect(env.LEAPMUX_CODEX_DEFAULT_EFFORT).toBe(REAL_AGENT_E2E_SETTINGS[AgentProvider.CODEX].effort)
     expect(env.LEAPMUX_COPILOT_DEFAULT_MODEL).toBe(REAL_AGENT_E2E_SETTINGS[AgentProvider.GITHUB_COPILOT].model)
-    // Copilot registers no env effort key: its reasoning axis is the daemon's
-    // `reasoning_effort` config option, so the worker reads no such variable.
-    expect(env).not.toHaveProperty('LEAPMUX_COPILOT_DEFAULT_EFFORT')
+    expect(env.LEAPMUX_COPILOT_DEFAULT_EFFORT).toBe(REAL_AGENT_E2E_SETTINGS[AgentProvider.GITHUB_COPILOT].effort)
   })
 })

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { ProviderAskUserQuestion } from '../providers/registry'
 import type { ActionsProps, ControlAnswerState, EditorContentRef, Question } from './types'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ControlRequest } from '~/stores/control.store'
 import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
@@ -9,11 +10,14 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
+import { controlRequestProvider } from '~/stores/control.store'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
+import { QuestionOptionItem } from './QuestionOptionItem'
+import { questionOptionValue } from './types'
 
 // ---------------------------------------------------------------------------
 // Selection helpers
@@ -23,7 +27,7 @@ function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
   return pluginFor(agentProvider)?.preservesSelectionNotes ?? false
 }
 
-function toggleSelection(state: ControlAnswerState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
+function toggleSelection(state: ControlAnswerState, qIdx: number, value: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
   if (!preserveCustomText) {
     state.setCustomTexts((prev) => {
       if (!(qIdx in prev))
@@ -34,12 +38,12 @@ function toggleSelection(state: ControlAnswerState, qIdx: number, label: string,
   state.setSelections((prev) => {
     const current = prev[qIdx] ?? []
     if (multiSelect) {
-      const newSel = current.includes(label)
-        ? current.filter(l => l !== label)
-        : [...current, label]
+      const newSel = current.includes(value)
+        ? current.filter(selected => selected !== value)
+        : [...current, value]
       return { ...prev, [qIdx]: newSel }
     }
-    return { ...prev, [qIdx]: [label] }
+    return { ...prev, [qIdx]: [value] }
   })
   // Auto-advance to next page on single-select option click (multi-question only)
   if (!multiSelect && totalQuestions > 1) {
@@ -50,17 +54,48 @@ function toggleSelection(state: ControlAnswerState, qIdx: number, label: string,
   }
 }
 
-function isSelected(state: ControlAnswerState, qIdx: number, label: string) {
-  return (state.selections()[qIdx] ?? []).includes(label)
+function isSelected(state: ControlAnswerState, qIdx: number, value: string) {
+  return (state.selections()[qIdx] ?? []).includes(value)
 }
 
-/** Check if a question is answered (has selection or non-empty custom text). */
-function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number): boolean {
+/** An answer needs content unless the provider accepts an explicit empty answer. */
+function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, question?: Question): boolean {
+  if (question?.allowEmpty)
+    return true
   const sel = state.selections()[qIdx] ?? []
   if (sel.length > 0)
     return true
   const customText = state.customTexts()[qIdx]?.trim()
   return !!customText
+}
+
+/**
+ * Why the submit refuses to send, or the empty string when nothing blocks it.
+ *
+ * The control already states what it ASKS. This states what it WAITS for, which a
+ * disabled button cannot. A submit greyed out beside four preset options reads as
+ * "these options are the only answer", and the composer is the other half of the
+ * answer surface: it carries the placeholder "Type a custom answer..." for as long
+ * as a question is open. The parity census read the disabled button that way and
+ * reported the typed answer as a state no provider could reach.
+ *
+ * `isAnswered` is the caller's own predicate, because the actions component counts
+ * unsaved composer text as an answer and this reason must agree with the `disabled`
+ * it explains. A reason that disagrees with the button is worse than no reason.
+ */
+export function submitBlockedReason(questions: Question[], isAnswered: (index: number) => boolean): string {
+  // `allAnswered` refuses an empty list, so the submit is disabled with no question
+  // on screen to explain it. A payload that parsed to nothing reaches this, and the
+  // reader otherwise sees a dead button beside a bare title.
+  if (questions.length === 0)
+    return 'This request carries no question to answer.'
+  const waiting = questions.findIndex((_, index) => !isAnswered(index))
+  if (waiting < 0)
+    return ''
+  const reason = questions[waiting].options?.length
+    ? 'Choose an option, or type a custom answer below.'
+    : 'Type a custom answer below.'
+  return questions.length > 1 ? `Every question needs an answer. ${reason}` : reason
 }
 
 export function buildAskAnswers(
@@ -81,6 +116,10 @@ export function buildAskAnswers(
     else if (customText) {
       const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = customText
+    }
+    else if (questions[i].allowEmpty) {
+      const key = questions[i].question || questions[i].header || `q${i}`
+      answers[key] = ''
     }
   }
   const updatedInput = { ...input, answers }
@@ -111,12 +150,13 @@ export interface ControlQuestion {
 export function controlQuestion(
   request: ControlRequest | null | undefined,
   agentProvider?: AgentProvider,
+  source?: ParsedMessageContent,
 ): ControlQuestion | undefined {
   if (!request)
     return undefined
-  const capability = pluginFor(agentProvider)?.askUserQuestion
+  const capability = pluginFor(controlRequestProvider(request, agentProvider))?.askUserQuestion
   return capability?.isRequest(request.payload)
-    ? { capability, questions: capability.extractQuestions(request.payload) }
+    ? { capability, questions: capability.extractQuestions(request.payload, source) }
     : undefined
 }
 
@@ -150,7 +190,7 @@ export function trySubmitAskUserQuestion(
   // Check if every question is now answered.
   let allAnswered = true
   for (let i = 0; i < questions.length; i++) {
-    if (!isPageAnsweredWithOption(state, i)) {
+    if (!isPageAnsweredWithOption(state, i, questions[i])) {
       allAnswered = false
       break
     }
@@ -160,7 +200,7 @@ export function trySubmitAskUserQuestion(
     // Navigate to the next unanswered question with wrap-around.
     for (let offset = 1; offset < questions.length; offset++) {
       const idx = (page + offset) % questions.length
-      if (!isPageAnsweredWithOption(state, idx)) {
+      if (!isPageAnsweredWithOption(state, idx, questions[idx])) {
         state.setCurrentPage(idx)
         editorContentRef?.set(state.customTexts()[idx] ?? '')
         break
@@ -226,24 +266,14 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                           maxVisible={4}
                           moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                           renderItem={opt => (
-                            <label class={styles.optionItem} data-testid={`question-option-${opt.label}`}>
-                              <input
-                                type="radio"
-                                name={radioName}
-                                value={opt.label}
-                                checked={(props.answerState.selections()[qIdx()] ?? [])[0] === opt.label}
-                                onChange={() => {
-                                  toggleSelection(props.answerState, qIdx(), opt.label, false, questions().length, preservesSelectionNotes(props.agentProvider))
-                                }}
-                                disabled={props.optionsDisabled}
-                              />
-                              <span class={styles.optionContent}>
-                                <span class={styles.optionLabel}>{opt.label}</span>
-                                <Show when={opt.description}>
-                                  <span class={styles.optionDescription}>{opt.description}</span>
-                                </Show>
-                              </span>
-                            </label>
+                            <QuestionOptionItem
+                              option={opt}
+                              type="radio"
+                              name={radioName}
+                              checked={(props.answerState.selections()[qIdx()] ?? [])[0] === questionOptionValue(opt)}
+                              onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), false, questions().length, preservesSelectionNotes(props.agentProvider))}
+                              disabled={props.optionsDisabled}
+                            />
                           )}
                         />
                       </fieldset>
@@ -255,23 +285,13 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                     maxVisible={4}
                     moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                     renderItem={opt => (
-                      <label
-                        class={styles.optionItem}
-                        data-testid={`question-option-${opt.label}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected(props.answerState, qIdx(), opt.label)}
-                          onChange={() => toggleSelection(props.answerState, qIdx(), opt.label, true, questions().length, preservesSelectionNotes(props.agentProvider))}
-                          disabled={props.optionsDisabled}
-                        />
-                        <span class={styles.optionContent}>
-                          <span class={styles.optionLabel}>{opt.label}</span>
-                          <Show when={opt.description}>
-                            <span class={styles.optionDescription}>{opt.description}</span>
-                          </Show>
-                        </span>
-                      </label>
+                      <QuestionOptionItem
+                        option={opt}
+                        type="checkbox"
+                        checked={isSelected(props.answerState, qIdx(), questionOptionValue(opt))}
+                        onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), true, questions().length, preservesSelectionNotes(props.agentProvider))}
+                        disabled={props.optionsDisabled}
+                      />
                     )}
                   />
                 </Show>
@@ -293,7 +313,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
 
   /** Check if question at index is answered, accounting for unsaved editor content on the current page. */
   const isPageAnswered = (qIdx: number) => {
-    if (isPageAnsweredWithOption(props.answerState, qIdx))
+    if (isPageAnsweredWithOption(props.answerState, qIdx, questions()[qIdx]))
       return true
     // The current page's editor text hasn't been saved to customTexts yet.
     return qIdx === props.answerState.currentPage() && props.hasEditorContent
@@ -352,6 +372,15 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const { loading: submitting, start: startSubmitting, stop: stopSubmitting } = createLoadingSignal(apiLoadingTimeoutMs())
   const { loading: stopping, start: startStopping, stop: stopStopping } = createLoadingSignal(apiLoadingTimeoutMs())
 
+  // The reset goes in `finally`, not in `catch`. A send that RESOLVES can still
+  // leave the request open: the worker records a response it cannot confirm, the
+  // store keeps the request, and this component stays mounted. With the reset in
+  // the catch alone, the button then read "Submitting..." and refused every further
+  // answer until the loading timeout fired, on a card that still needs one. A
+  // COMPLETED answer unmounts this component, where the reset costs nothing.
+  //
+  // The `catch` stays. A bare `finally` would let the rejection escape, and
+  // handleYolo calls this with `void`, which makes it an unhandled rejection.
   const handleSubmit = async () => {
     startSubmitting()
     saveEditorToCurrentPage()
@@ -359,6 +388,9 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       await props.onSubmitAnswers()
     }
     catch {
+      // submitResponse already reported the failure on answerState.
+    }
+    finally {
       stopSubmitting()
     }
   }
@@ -369,6 +401,9 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       await props.onReject('User stopped')
     }
     catch {
+      // As above: the failure already reached answerState.
+    }
+    finally {
       stopStopping()
     }
   }
@@ -376,7 +411,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const handleYolo = () => {
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
-      if (!isPageAnsweredWithOption(props.answerState, i)) {
+      if (!isPageAnsweredWithOption(props.answerState, i, qs[i])) {
         props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
       }
     }
@@ -412,7 +447,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
           </Tooltip>
         </>
       )}
-      centre={(
+      navigation={(
         <Show when={questions().length > 1}>
           <div class={styles.paginationContainer} data-testid="control-pagination">
             <For each={questions()}>
@@ -434,15 +469,17 @@ export const AskUserQuestionActions: Component<ActionsProps & {
         </Show>
       )}
       primary={(
-        <button
-          class={actionButtonClass()}
-          onClick={handleSubmit}
-          disabled={!allAnswered() || submitting()}
-          data-testid="control-submit-btn"
-        >
-          <Show when={submitting()}><Spinner /></Show>
-          {submitting() ? 'Submitting...' : 'Submit'}
-        </button>
+        <Tooltip text={submitBlockedReason(questions(), isPageAnswered)}>
+          <button
+            class={actionButtonClass()}
+            onClick={handleSubmit}
+            disabled={!allAnswered() || submitting()}
+            data-testid="control-submit-btn"
+          >
+            <Show when={submitting()}><Spinner /></Show>
+            {submitting() ? 'Submitting...' : 'Submit'}
+          </button>
+        </Tooltip>
       )}
     />
   )

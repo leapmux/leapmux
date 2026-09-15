@@ -61,10 +61,12 @@ describe('fileEditHasDiff', () => {
     expect(fileEditHasDiff(source({ structuredPatch: malformed as unknown as StructuredPatchHunk[] }))).toBe(false)
   })
 
-  it('returns false for an "all-removed" change (non-empty old, empty new)', () => {
-    // The new-file shortcut intentionally only applies to oldStr=''+newStr='something'.
-    // An empty replacement is not currently treated as a renderable diff by itself.
-    expect(fileEditHasDiff(source({ oldStr: 'gone', newStr: '' }))).toBe(false)
+  it('renders a deletion when the replacement is empty', () => {
+    const deletion = source({ oldStr: 'gone\n', newStr: '' })
+    expect(fileEditHasDiff(deletion)).toBe(true)
+    expect(fileEditDiffHunks(deletion)).toEqual([
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 0, lines: ['-gone'] },
+    ])
   })
 })
 

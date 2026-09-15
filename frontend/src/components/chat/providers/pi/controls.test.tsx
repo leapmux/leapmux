@@ -3,7 +3,9 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
+import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { testMessageContext } from '~/test-support/messageContext'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { createControlAnswerState } from '../../controls/types'
 import { PiControlActions, PiControlContent } from './controls'
 import './plugin'
@@ -25,6 +27,112 @@ function makeSelectRequest(): ControlRequest {
 }
 
 describe('pi select control requests', () => {
+  it('renders complete MCP permission arguments through the shared source reader', async () => {
+    const args = { query: 'x'.repeat(900), limit: 0, tail: 'END_MCP_ARGUMENTS' }
+    const preview = `${JSON.stringify(args, null, 2).replace(/\s+/g, ' ').slice(0, 500)}...`
+    const request = { requestId: 'mcp-permission', agentId: 'agent-1', sourceSeq: 7n, payload: {
+      type: 'extension_ui_request',
+      id: 'mcp-permission',
+      method: 'select',
+      title: `MCP: probe wants to run write\n\nArguments:\n${preview}`,
+      options: ['Allow once', 'Allow for session', 'Deny'],
+    } }
+    const source = makeMessage({ seq: 7n, agentProvider: AgentProvider.PI, spanId: 'mcp-tool', content: rawContent({ type: 'tool_execution_start', toolCallId: 'mcp-tool', toolName: 'mcp', args: { tool: 'probe_write', args } }) })
+    const messageContext = testMessageContext({ fetchMessage: async () => source })
+    const original = JSON.stringify(request.payload)
+    const { findByText, container } = render(() => <ControlRequestContent request={request} messageContext={messageContext} answerState={makeAskState()} agentProvider={AgentProvider.PI} />)
+    expect(await findByText('Permission Required')).toBeVisible()
+    await vi.waitFor(() => expect(container.querySelector('pre')?.textContent).toContain('END_MCP_ARGUMENTS'))
+    expect(JSON.stringify(request.payload)).toBe(original)
+  })
+
+  it.each([false, true])('uses shared plan approval controls (clearContext=%s)', async (clearContext) => {
+    const request = {
+      requestId: 'plan-dialog',
+      agentId: 'agent-1',
+      payload: {
+        type: 'extension_ui_request',
+        id: 'plan-dialog',
+        method: 'select',
+        title: 'Proposed plan ready. What next?\nPlan details belong in the transcript.',
+        options: ['Implement here', 'Start fresh and implement', 'Implementation options…', 'Export plan…', 'Save for later', 'Stay in Plan mode', 'Discard plan and exit'],
+      },
+    }
+    const answerState = makeAskState()
+    const onRespond = vi.fn(async (_content: Uint8Array) => {})
+    const { getByText, getByTestId, queryByRole } = render(() => (
+      <>
+        <ControlRequestContent request={request} answerState={answerState} agentProvider={AgentProvider.PI} />
+        <ControlRequestActions request={request} answerState={answerState} agentProvider={AgentProvider.PI} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
+      </>
+    ))
+    expect(getByText('Plan Ready for Review')).toBeVisible()
+    expect(queryByRole('radio')).toBeNull()
+    if (clearContext)
+      fireEvent.click(getByTestId('plan-clear-context-checkbox'))
+    fireEvent.click(getByTestId('plan-approve-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0])))
+      .toEqual({ type: 'extension_ui_response', id: 'plan-dialog', value: clearContext ? 'Start fresh and implement' : 'Implement here' })
+  })
+
+  it('allows an explicit empty answer to a native input dialog', async () => {
+    const request = { requestId: 'empty', agentId: 'agent-1', payload: { type: 'extension_ui_request', id: 'empty', method: 'input', title: 'Choose any options', placeholder: '1,3' } }
+    const onRespond = vi.fn(async (_content: Uint8Array) => {})
+    const { getByTestId } = render(() => <ControlRequestActions request={request} answerState={makeAskState()} agentProvider={AgentProvider.PI} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />)
+    const submit = getByTestId('control-submit-btn')
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toEqual({ type: 'extension_ui_response', id: 'empty', value: '' })
+  })
+
+  it('loads complete previews from the stored source outside the visible transcript', async () => {
+    const preview = `\`\`\`txt\n${'preview line\n'.repeat(80)}complete-preview-end\n\`\`\``
+    const questions = [{ question: 'Choose a layout', header: 'Layout', options: [{ label: 'Compact', description: 'Small', preview }, { label: 'Wide', description: 'Large' }] }]
+    const source = makeMessage({ seq: 7n, agentProvider: AgentProvider.PI, spanId: 'question-tool', content: rawContent({ type: 'tool_execution_start', toolCallId: 'question-tool', toolName: 'ask_user_question', args: { questions } }) })
+    const fetchMessage = vi.fn(async () => source)
+    const messageContext = testMessageContext({ fetchMessage })
+    const request = {
+      requestId: 'dialog',
+      agentId: 'agent-1',
+      sourceSeq: 7n,
+      payload: { type: 'extension_ui_request', id: 'dialog', method: 'select', title: `[Layout] Choose a layout\n\n--- 1. Compact preview ---\n${preview.slice(0, 600)}`, options: ['1. Compact — Small', '2. Wide — Large', '3. Type something.'] },
+    }
+    const original = JSON.stringify(request.payload)
+    const { findByRole } = render(() => <ControlRequestContent request={request} messageContext={messageContext} answerState={makeAskState()} agentProvider={AgentProvider.PI} />)
+    expect(await findByRole('region', { name: 'Compact preview' })).toHaveTextContent('complete-preview-end')
+    expect(fetchMessage).toHaveBeenCalledOnce()
+    expect(fetchMessage).toHaveBeenCalledWith(7n, expect.any(AbortSignal))
+    expect(JSON.stringify(request.payload)).toBe(original)
+  })
+
+  it('sends source-backed multi-select choices as the native comma-separated numbers', async () => {
+    const questions = [{ question: 'Choose', multiSelect: true, options: [{ label: 'A', description: 'first', preview: 'A preview' }, { label: 'B', description: 'second', preview: 'B preview' }] }]
+    const source = makeMessage({ seq: 7n, agentProvider: AgentProvider.PI, spanId: 'question-tool', content: rawContent({ type: 'tool_execution_start', toolCallId: 'question-tool', toolName: 'ask_user_question', args: { questions } }) })
+    const messageContext = testMessageContext({ messages: () => [source] })
+    const request = {
+      requestId: 'dialog',
+      agentId: 'agent-1',
+      sourceSeq: 7n,
+      payload: { type: 'extension_ui_request', id: 'dialog', method: 'input', title: 'Choose\n\n1. A — first\n2. B — second\n\nChoose all that apply', placeholder: '1,3' },
+    }
+    const answerState = makeAskState()
+    const onRespond = vi.fn(async (_content: Uint8Array) => {})
+    const { getByTestId, getAllByRole } = render(() => (
+      <>
+        <ControlRequestContent request={request} messageContext={messageContext} answerState={answerState} agentProvider={AgentProvider.PI} />
+        <ControlRequestActions request={request} messageContext={messageContext} answerState={answerState} agentProvider={AgentProvider.PI} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
+      </>
+    ))
+    const options = getAllByRole('checkbox')
+    fireEvent.click(options[0])
+    fireEvent.click(options[1])
+    fireEvent.click(getByTestId('control-submit-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toEqual({ type: 'extension_ui_response', id: 'dialog', value: '1,2' })
+  })
+
   it('renders select options through the shared AskUserQuestion content', () => {
     const { container, getByTestId } = render(() => (
       <ControlRequestContent request={makeSelectRequest()} answerState={makeAskState()} agentProvider={AgentProvider.PI} />
@@ -315,15 +423,43 @@ describe('pi input control requests', () => {
 })
 
 describe('pi editor control requests', () => {
+  it('disables the native editor while a response is pending', () => {
+    const answerState = makeAskState()
+    const { getByTestId } = render(() => (
+      <ControlRequestContent request={makeEditorRequest('draft')} answerState={answerState} agentProvider={AgentProvider.PI} />
+    ))
+    const editor = getByTestId('pi-editor')
+    expect(editor).toBeEnabled()
+    answerState.setResponsePending(true)
+    expect(editor).toBeDisabled()
+    answerState.setResponsePending(false)
+    expect(editor).toBeEnabled()
+  })
+
+  it.each([false, true])('places the editor in the request body and respects disabled state: %s', (disabled) => {
+    const { getByTestId } = render(() => (
+      <PiControlContent request={makeEditorRequest('  first\n  second\n')} answerState={makeAskState()} optionsDisabled={disabled} />
+    ))
+    const editor = getByTestId('pi-editor') as HTMLTextAreaElement
+    expect(editor.value).toBe('  first\n  second\n')
+    expect(editor.disabled).toBe(disabled)
+  })
+
+  it.each(['  first\n  second\n', ''])('retains the edited value across remount: %j', (value) => {
+    const answerState = makeAskState()
+    const renderEditor = () => render(() => (
+      <PiControlContent request={makeEditorRequest('initial')} answerState={answerState} />
+    ))
+    const first = renderEditor()
+    fireEvent.input(first.getByTestId('pi-editor'), { target: { value } })
+    first.unmount()
+    const second = renderEditor()
+    expect((second.getByTestId('pi-editor') as HTMLTextAreaElement).value).toBe(value)
+  })
+
   it('renders a multi-line textarea pre-populated with prefill', () => {
     const { getByTestId } = render(() => (
-      <PiControlActions
-        request={makeEditorRequest('first\nsecond')}
-        answerState={makeAskState()}
-        onRespond={vi.fn()}
-        hasEditorContent={false}
-        onTriggerSend={vi.fn()}
-      />
+      <PiControlContent request={makeEditorRequest('first\nsecond')} answerState={makeAskState()} />
     ))
     const textarea = getByTestId('pi-editor') as HTMLTextAreaElement
     expect(textarea.value).toBe('first\nsecond')
@@ -331,14 +467,18 @@ describe('pi editor control requests', () => {
 
   it('send ships the textarea contents as a value response', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
+    const answerState = makeAskState()
     const { getByTestId } = render(() => (
-      <PiControlActions
-        request={makeEditorRequest()}
-        answerState={makeAskState()}
-        onRespond={onRespond}
-        hasEditorContent={false}
-        onTriggerSend={vi.fn()}
-      />
+      <>
+        <PiControlContent request={makeEditorRequest()} answerState={answerState} />
+        <PiControlActions
+          request={makeEditorRequest()}
+          answerState={answerState}
+          onRespond={onRespond}
+          hasEditorContent={false}
+          onTriggerSend={vi.fn()}
+        />
+      </>
     ))
     const textarea = getByTestId('pi-editor') as HTMLTextAreaElement
     fireEvent.input(textarea, { target: { value: 'multi\nline' } })

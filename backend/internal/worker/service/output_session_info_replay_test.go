@@ -124,8 +124,7 @@ func TestSessionInfoReplay_SurvivesControlRequestCleanup(t *testing.T) {
 
 	svc, sink, _ := newSessionInfoServiceFixture(t)
 	sink.ReportProgress(agent.NativeTokenProgress("model", 42))
-	svc.deleteControlRequest("agent-1",
-		controlResponseRequestMetadata{RequestID: "request-1"}, false)
+	sink.CancelControlRequest("request-1")
 
 	event := svc.Output.SessionInfoReplayEvent("agent-1")
 	require.NotNil(t, event)
@@ -193,7 +192,7 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 

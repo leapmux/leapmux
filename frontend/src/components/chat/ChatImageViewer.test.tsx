@@ -3,6 +3,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { MAX_INLINE_IMAGE_BASE64_LEN } from '~/lib/imageBlocks'
+import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ChatImageViewer, decodeImageBytes } from './ChatImageViewer'
 import './providers/claude'
@@ -99,7 +100,7 @@ function claudeImageMessage(blocks: unknown[], seq = 7n): AgentChatMessage {
 }
 
 function renderViewer(message: AgentChatMessage | undefined) {
-  const fetchMessageBySeq = vi.fn(async () => undefined)
+  const fetchMessage = vi.fn(async () => undefined)
   const result = render(() => (
     <ChatImageViewer
       workerId="w-1"
@@ -107,15 +108,15 @@ function renderViewer(message: AgentChatMessage | undefined) {
       seq={7n}
       imageIndex={0}
       title="screenshot"
-      deps={{ getLoadedMessageBySeq: () => message, fetchMessageBySeq }}
+      messages={testMessageContext({ messageBySeq: () => message, fetchMessage })}
     />
   ))
-  return { ...result, fetchMessageBySeq }
+  return { ...result, fetchMessage }
 }
 
 describe('chatImageViewer', () => {
   it('draws the image the reference points at, resolved from the loaded window', async () => {
-    const { container, fetchMessageBySeq } = renderViewer(
+    const { container, fetchMessage } = renderViewer(
       claudeImageMessage([{ type: 'image', data: PNG_BASE64, mimeType: 'image/png' }]),
     )
 
@@ -129,7 +130,7 @@ describe('chatImageViewer', () => {
     expect(img.getAttribute('src')).toMatch(/^blob:/)
     expect(img.getAttribute('alt')).toBe('screenshot')
     // The message was already in the window, so nothing was fetched.
-    expect(fetchMessageBySeq).not.toHaveBeenCalled()
+    expect(fetchMessage).not.toHaveBeenCalled()
   })
 
   it('says so when the message no longer holds an image at that index', async () => {

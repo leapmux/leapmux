@@ -14,11 +14,11 @@ import (
 )
 
 // acpEffortConfigOptionIDs are the well-known ids ACP providers use for a reasoning-effort
-// axis: OpenCode/Kilo "effort", Copilot "reasoning_effort", Goose "thinking_effort". They
-// are the id-fallback for the effort axis, mirroring the model/mode channels' well-known-id
-// fallback (acpConfigOptionIDModel/Mode) -- so the effort override and the strongest-first
-// sort fire whether or not the daemon sets the `thought_level` category.
-var acpEffortConfigOptionIDs = []string{OptionIDEffort, CopilotConfigReasoningEffort, GooseConfigThinkingEffort}
+// axis: OpenCode/Kilo "effort", Goose "thinking_effort". They are the id-fallback for the
+// effort axis, mirroring the model/mode channels' well-known-id fallback
+// (acpConfigOptionIDModel/Mode) -- so the effort override and the strongest-first sort fire
+// whether or not the daemon sets the `thought_level` category.
+var acpEffortConfigOptionIDs = []string{OptionIDEffort, GooseConfigThinkingEffort}
 
 // isEffortConfigOption reports whether option is a reasoning-effort axis -- by its ACP
 // `category` ("thought_level"), or, for a provider that omits category, by a well-known
@@ -162,8 +162,8 @@ func (b *acpBase) startupEffortConfigID() string {
 // display-only rewrite would leave the daemon reasoning-disabled while the UI claimed
 // otherwise. options is the configOptions payload just folded by the model write; the
 // effort axis is matched by its ACP `category` ("thought_level") or a well-known effort id
-// (isEffortConfigOption), the signal shared by every provider that has one (OpenCode/Kilo
-// "effort", Copilot "reasoning_effort", Goose "thinking_effort").
+// (isEffortConfigOption), the signal shared by every provider that has one (OpenCode and
+// Kilo "effort", Goose "thinking_effort").
 //
 // Scope: only the model-write path (setModelViaConfigOption) calls this, so the override
 // fires when a model SWITCH surfaces or resets the axis -- never on an explicit effort edit

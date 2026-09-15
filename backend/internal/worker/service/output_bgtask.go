@@ -38,14 +38,14 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 		RowKey:         r.RowKey,
 		ChildAgentID:   r.ChildAgentID,
 		ParentAgentID:  r.ParentAgentID,
-		Kind:           bgtask.KindFromWire(r.Kind),
+		Kind:           bgtask.Kind(r.Kind),
 		GroupKey:       r.GroupKey,
 		GroupLabel:     r.GroupLabel,
 		Title:          r.Title,
 		TitleIsCommand: ptrconv.Int64ToBool(r.TitleIsCommand),
 		Description:    r.Description,
 		ActiveForm:     r.ActiveForm,
-		Status:         bgtask.StatusFromWire(r.Status),
+		Status:         bgtask.Status(r.Status),
 		CreatedAt:      r.CreatedAt.Time,
 		UpdatedAt:      r.UpdatedAt.Time,
 		EndedAt:        endedAt,
@@ -56,10 +56,10 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 // queries so every cache instance shares the same type-specific behaviour.
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 	return registryOps[bgtask.Item]{
-		listRows: func(ctx context.Context, ownerID, bucket string, limit int32) ([]seedEntry[bgtask.Item], error) {
+		listRows: func(ctx context.Context, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
 			rows, err := h.queries.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
-				Kind:         bucket,
+				Kind:         leapmuxv1.BackgroundTaskKind(bucket),
 				Limit:        int64(limit),
 			})
 			if err != nil {
@@ -71,11 +71,12 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			}
 			return entries, nil
 		},
-		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID, bucket string, seq int64) error {
+		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID string, bucket, seq int64) error {
 			_, err := h.queries.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
-				OwnerAgentID: ownerID,
-				Kind:         bucket,
-				Seq:          seq,
+				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+				OwnerAgentID:   ownerID,
+				Kind:           leapmuxv1.BackgroundTaskKind(bucket),
+				Seq:            seq,
 			})
 			return err
 		},
@@ -114,8 +115,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		// One cap pool per KIND. A run that opens hundreds of shells would
 		// otherwise evict every finished subagent, and the subagent rows are the
 		// ones carrying a transcript worth reopening.
-		bucketOf: func(r bgtask.Item) string { return bgtask.KindWire(r.Kind) },
-		buckets:  bgtask.KindWires(),
+		bucketOf: func(r bgtask.Item) int64 { return int64(r.Kind) },
+		buckets:  bgtask.KindBuckets(),
 		label:    "background tasks",
 	}
 }
@@ -158,6 +159,11 @@ func (h *OutputHandler) bgTaskCache(rootAgentID string) *bgTaskCache {
 // StopAll leaves background-task rows active (the next boot labels them
 // 'interrupted'). Called at the top of Service.Shutdown.
 func (h *OutputHandler) SetShuttingDown() {
+	// Under refreshLifecycleMu, so that every beginActivityRefresh which saw the
+	// latch false has already taken its count by the time this returns. Shutdown
+	// then calls WaitActivityRefreshes with no Add left that could race the Wait.
+	h.refreshLifecycleMu.Lock()
+	defer h.refreshLifecycleMu.Unlock()
 	h.shuttingDown.Store(true)
 }
 
@@ -314,7 +320,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// read does (no Go-time.Now-vs-SQLite-strftime drift).
 		now := nowMillis()
 		if err := h.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
-			Status:       bgtask.StatusWire(status),
+			Status:       leapmuxv1.BackgroundTaskStatus(status),
 			ActiveForm:   activeForm,
 			UpdatedAt:    sqltime.NewSQLiteTime(now),
 			OwnerAgentID: rootAgentID,
@@ -332,9 +338,10 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// the idempotent stamp can be retried by any later final update.
 		if status.IsFinished() {
 			if err := h.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
-				EndedAt:      sqltime.SQLiteNullTimeOf(now),
-				OwnerAgentID: rootAgentID,
-				RowKey:       rowKey,
+				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+				EndedAt:        sqltime.SQLiteNullTimeOf(now),
+				OwnerAgentID:   rootAgentID,
+				RowKey:         rowKey,
 			}); err != nil {
 				return registryChange{}, err
 			}
@@ -381,11 +388,12 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 		}
 		now := nowMillis()
 		if err := h.queries.CloseAgentBackgroundTask(ctx, db.CloseAgentBackgroundTaskParams{
-			Status:       bgtask.StatusWire(status),
-			EndedAt:      sqltime.SQLiteNullTimeOf(now),
-			UpdatedAt:    sqltime.NewSQLiteTime(now),
-			OwnerAgentID: rootAgentID,
-			RowKey:       rowKey,
+			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+			Status:         leapmuxv1.BackgroundTaskStatus(status),
+			EndedAt:        sqltime.SQLiteNullTimeOf(now),
+			UpdatedAt:      sqltime.NewSQLiteTime(now),
+			OwnerAgentID:   rootAgentID,
+			RowKey:         rowKey,
 		}); err != nil {
 			return registryChange{}, err
 		}
@@ -425,9 +433,11 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 		// matches a cold-start read (no Go-time.Now-vs-SQLite drift).
 		now := nowMillis()
 		rows, err := h.queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-			UpdatedAt:    sqltime.NewSQLiteTime(now),
-			OwnerAgentID: rootAgentID,
-			RowKey:       rowKey,
+			Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+			UpdatedAt:      sqltime.NewSQLiteTime(now),
+			OwnerAgentID:   rootAgentID,
+			RowKey:         rowKey,
 		})
 		if err != nil {
 			return registryChange{}, err
@@ -553,10 +563,11 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	// divider, permanently. Without a divider a subagent whose owner process died
 	// keeps a transcript that simply stops.
 	endedChildIDs, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
-		Status:       bgtask.StatusWire(status),
-		EndedAt:      sqltime.SQLiteNullTimeOf(now),
-		UpdatedAt:    sqltime.NewSQLiteTime(now),
-		OwnerAgentID: rootAgentID,
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		Status:         leapmuxv1.BackgroundTaskStatus(status),
+		EndedAt:        sqltime.SQLiteNullTimeOf(now),
+		UpdatedAt:      sqltime.NewSQLiteTime(now),
+		OwnerAgentID:   rootAgentID,
 	})
 	if err != nil {
 		cache.Mu.Unlock()
@@ -948,6 +959,7 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices 
 		plugin:        s.plugin,
 		tracker:       s.h.childTracker(childAgentID),
 	}
+	child.restoreMessageSession()
 	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		s.h.broadcastAgentSessionInfo(childAgentID, info)
 	})
@@ -964,10 +976,10 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices 
 }
 
 func (s *agentOutputSink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
-	return s.ChildSink(childAgentID).PersistMessage(source, content, span)
+	return s.ChildSink(childAgentID).PersistMessage(source, agent.MessageContent{Original: content}, span)
 }
 
-func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byte, span agent.SpanInfo) error {
+func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
@@ -996,7 +1008,7 @@ func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error 
 		return fmt.Errorf("marshal child prompt: %w", err)
 	}
 	return s.ChildSink(childAgentID).PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{})
 }
 
 // userMessageContent encodes text as a transcript's user-message envelope: the
@@ -1027,7 +1039,7 @@ func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) err
 		return fmt.Errorf("marshal child user message: %w", err)
 	}
 	return s.ChildSink(childAgentID).PersistMessage(
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content},
 		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE})
 }
 
@@ -1121,7 +1133,7 @@ func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bg
 		return
 	}
 	if err := h.persistAndBroadcast(childAgentID, child.AgentProvider,
-		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, agent.SpanInfo{},
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}, agent.SpanInfo{},
 		h.closingChildTracker(childAgentID)); err != nil {
 		slog.Warn("persist subagent end divider", "child", childAgentID, "error", err)
 	}
@@ -1290,8 +1302,9 @@ func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Statu
 }
 
 func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
-	// The zero Status is StatusPending, a real value rather than an "unknown"
-	// sentinel, so a miss returns it alongside ok=false and callers must read ok.
+	// The zero Status is StatusUnspecified, so a miss returns that alongside
+	// ok=false. Callers must still read ok: the two are different answers, and
+	// only ok tells "no such row" from "a row with no status".
 	var noStatus bgtask.Status
 	// Checked and passed through unchanged, never rewritten, exactly as the
 	// mutation path checks it: a rewrite is not injective, so two provider keys
@@ -1543,8 +1556,8 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		// Preserve descriptive fields the incoming upsert left blank so a partial
 		// upsert cannot blank a previously-set row (a final-status output_file write
 		// would otherwise wipe the title). Status is exempt: callers set it
-		// deliberately, and StatusPending is a valid value, not a sentinel for
-		// "preserve".
+		// deliberately, and an unset one is StatusUnspecified, which the column
+		// refuses rather than quietly inheriting the existing status.
 		merged = merged.PreservingBlanksFrom(existing)
 		// A final status is monotonic and absorbing: a late or replayed
 		// non-final upsert (a duplicate task_started, a replayed running
@@ -1590,7 +1603,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		// registry indexes. An unlinked active row (a running shell) does lose
 		// its persisted row, which is the honest cost of a pool that is full of
 		// running work, and is what the warning records.
-		bucket := bgtask.KindWire(merged.Kind)
+		bucket := int64(merged.Kind)
 		evictedRow, dropped, err := cache.makeRoomLocked(ctx, rootAgentID, bucket)
 		if err != nil {
 			return registryChange{}, err
@@ -1616,7 +1629,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		OwnerAgentID:   rootAgentID,
 		RowKey:         task.RowKey,
 		Seq:            cache.nextSeq,
-		Kind:           bgtask.KindWire(merged.Kind),
+		Kind:           leapmuxv1.BackgroundTaskKind(merged.Kind),
 		ChildAgentID:   merged.ChildAgentID,
 		ParentAgentID:  merged.ParentAgentID,
 		GroupKey:       merged.GroupKey,
@@ -1625,7 +1638,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		TitleIsCommand: ptrconv.BoolToInt64(merged.TitleIsCommand),
 		Description:    merged.Description,
 		ActiveForm:     merged.ActiveForm,
-		Status:         bgtask.StatusWire(merged.Status),
+		Status:         leapmuxv1.BackgroundTaskStatus(merged.Status),
 		// created_at binds on INSERT only (the ON CONFLICT UPDATE does not touch
 		// it); updated_at binds on both. Both derive from the same `now` so the
 		// cache and the persisted row agree to the millisecond.

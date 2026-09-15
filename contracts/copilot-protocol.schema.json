@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "copilot-protocol.schema.json",
+  "title": "Copilot native protocol vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "methods",
+    "events",
+    "eventPrefixes",
+    "tools",
+    "options",
+    "modes",
+    "permissionModes",
+    "approvalScopes",
+    "decisions",
+    "supplement"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "methods": {
+      "$ref": "#/$defs/table"
+    },
+    "events": {
+      "$ref": "#/$defs/table"
+    },
+    "eventPrefixes": {
+      "$ref": "#/$defs/table"
+    },
+    "tools": {
+      "$ref": "#/$defs/table"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionModes": {
+      "$ref": "#/$defs/table"
+    },
+    "supplement": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalScopes": {
+      "$ref": "#/$defs/table"
+    },
+    "decisions": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

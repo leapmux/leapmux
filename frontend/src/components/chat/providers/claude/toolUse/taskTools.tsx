@@ -18,7 +18,7 @@ export function renderTaskCreate(toolUse: Record<string, unknown>, context?: Ren
   const input = pickObject(toolUse, 'input')
   if (!input)
     return null
-  const source = buildTaskCreateSource(input, readToolUseResult(context?.toolResultParsed))
+  const source = buildTaskCreateSource(input, readToolUseResult(context?.sources?.result()))
   return <TaskCardMessage source={source} context={context} />
 }
 
@@ -32,7 +32,7 @@ export function renderTaskCreate(toolUse: Record<string, unknown>, context?: Ren
  */
 export function renderTaskUpdate(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const input = pickObject(toolUse, 'input')
-  const source = buildTaskUpdateSource(input, readToolUseResult(context?.toolResultParsed), context?.getTodoById)
+  const source = buildTaskUpdateSource(input, readToolUseResult(context?.sources?.result()), context?.sources?.todo)
   if (!source)
     return null
   return <TaskCardMessage source={source} context={context} />
@@ -44,7 +44,7 @@ export function renderTaskUpdate(toolUse: Record<string, unknown>, context?: Ren
  * the result arrives (no flicker bubble pre-resolve).
  */
 export function renderTaskGet(context?: RenderContext): JSX.Element | null {
-  const source = buildTaskGetSource(readToolUseResult(context?.toolResultParsed))
+  const source = buildTaskGetSource(readToolUseResult(context?.sources?.result()))
   if (!source)
     return null
   return <TaskCardMessage source={source} context={context} />

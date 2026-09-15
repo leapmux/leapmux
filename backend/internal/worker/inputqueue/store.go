@@ -110,6 +110,11 @@ func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
 }
 
 func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	return s.enqueue(ctx, input, nil)
+}
+
+// enqueue applies the extra database mutation before committing the input and snapshot.
+func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
 		return Snapshot{}, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
@@ -123,6 +128,14 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	commit := func() (Snapshot, error) {
+		if apply != nil {
+			if err := apply(tx); err != nil {
+				return Snapshot{}, err
+			}
+		}
+		return commitSnapshot(ctx, tx, input.AgentID)
+	}
 	if err := ensureState(ctx, tx, input.AgentID); err != nil {
 		return Snapshot{}, err
 	}
@@ -137,14 +150,7 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 			!attachmentsEqual(existingAttachments, input.Attachments) {
 			return Snapshot{}, ErrConflict
 		}
-		snapshot, err := snapshotTx(ctx, tx, input.AgentID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return Snapshot{}, err
-		}
-		return snapshot, nil
+		return commit()
 	}
 	var acceptedAgentID, acceptedFingerprint string
 	err = tx.QueryRowContext(ctx, `SELECT agent_id, input_fingerprint FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedFingerprint)
@@ -152,14 +158,7 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 		if acceptedAgentID != input.AgentID || acceptedFingerprint == "" || acceptedFingerprint != inputFingerprint(input) {
 			return Snapshot{}, ErrConflict
 		}
-		snapshot, snapshotErr := snapshotTx(ctx, tx, input.AgentID)
-		if snapshotErr != nil {
-			return Snapshot{}, snapshotErr
-		}
-		if err := tx.Commit(); err != nil {
-			return Snapshot{}, err
-		}
-		return snapshot, nil
+		return commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, err
@@ -199,10 +198,15 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
 		return Snapshot{}, err
 	}
+	if input.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+		if err := placeControlFeedback(ctx, tx, input.AgentID, input.ID); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	if err := bumpRevision(ctx, tx, input.AgentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, input.AgentID)
+	return commit()
 }
 
 func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -563,7 +567,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, proces
 	}
 	var paused, active bool
 	var reason leapmuxv1.AgentInputQueuePauseReason
-	var owner int
+	var owner pauseOwner
 	if err := tx.QueryRowContext(ctx, `
 		SELECT paused, pause_reason, pause_owner, active_turn
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &owner, &active); err != nil {
@@ -626,6 +630,121 @@ func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string) (*Pre
 	return s.prepare(ctx, agentID, inputID, true, true)
 }
 
+// dispatchGate holds every input the dispatch guard reads, so ONE predicate answers
+// for the drain and for the snapshot.
+//
+// The snapshot's CanSteer and CanPreempt state what the Worker will do, and the browser
+// draws a button from each. They used to RESTATE a hand-written subset of prepare's
+// terms, and the two drifted every time prepare gained one: CanPreempt borrowed
+// steering's kind filter and hid the button from a queued clear, then answered true for
+// a paused queue and for a head whose approval is not recorded -- so pressing Preempt
+// destroyed the running turn and the drain then refused the item in silence, leaving
+// the reader with neither the turn nor the message.
+type dispatchGate struct {
+	Paused        bool
+	Restarting    bool
+	ActiveTurn    bool
+	TurnSteerable bool
+	Head          StoredItem
+	HeadFound     bool
+	// ApprovalSources counts the control-response rows that claim the head, and
+	// ApprovalsComplete reports that every one of them is COMPLETED.
+	ApprovalSources   int
+	ApprovalsComplete bool
+}
+
+// dispatchRefusal states why the gate refuses. The zero value admits.
+type dispatchRefusal int
+
+const (
+	dispatchAdmitted dispatchRefusal = iota
+	dispatchRefusedPlannedRestart
+	dispatchRefusedSteeringState
+	dispatchRefusedNotReady
+)
+
+// admits reports whether prepare would hand this head to its caller.
+//
+// The two parameters are prepare's own dispensations, spelled the same way:
+// allowPaused lets retry and steering dispatch through a pause, and requireActive
+// selects the steering path over the drain path.
+func (g dispatchGate) admits(allowPaused, requireActive bool) dispatchRefusal {
+	if !g.HeadFound {
+		return dispatchRefusedNotReady
+	}
+	// A restart in flight is what a pause dispensation must still respect: the old
+	// process is stopping, so a write reaches a closed pipe and fails the item
+	// permanently.
+	if allowPaused && g.Restarting {
+		return dispatchRefusedPlannedRestart
+	}
+	if requireActive && g.ActiveTurn && (!steerableInputKind(g.Head.Kind) || !g.TurnSteerable) {
+		return dispatchRefusedSteeringState
+	}
+	blockedByTurn := g.ActiveTurn
+	if requireActive {
+		blockedByTurn = !g.ActiveTurn
+	}
+	canReplaceTurn := !requireActive && g.Head.requiresContextReplacement()
+	if (g.Paused && !allowPaused) || (blockedByTurn && !canReplaceTurn) ||
+		g.Head.EditOwner != "" || g.Head.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+		return dispatchRefusedNotReady
+	}
+	// A recorded approval permits the context replacement that the old turn waits for.
+	// Ordinary input and unconfirmed approvals still wait for that turn to end.
+	if !g.ApprovalsComplete || g.ApprovalSources > 1 {
+		return dispatchRefusedNotReady
+	}
+	// A head that REPLACES the turn needs exactly one recorded approval, whether or not
+	// a turn is running now. The qualifier used to be "while the turn blocks it", which
+	// says the same thing for every head the turn blocks -- the term above it already
+	// refuses a blocked head that cannot replace the turn -- and says nothing once the
+	// turn ends. A replacement that reached the drain with no approval was dispatched
+	// and then failed PERMANENTLY at resolveControlInput, with "the context replacement
+	// has no recorded approval"; refusing it here leaves it queued for the approval
+	// instead, and keeps the Preempt button off an item that would fail either way.
+	if g.Head.requiresContextReplacement() && g.ApprovalSources != 1 {
+		return dispatchRefusedNotReady
+	}
+	return dispatchAdmitted
+}
+
+// readDispatchGate reads the queue state, the head and the head's approval rows.
+//
+// It is the ONE reader of those three, so prepare and snapshotTx cannot disagree about
+// what the guard sees. The head read takes metadata only: the guards reject most calls,
+// and the head can carry up to MaxItemBytes of attachment data that the call then
+// discards. The dispatch path loads the data after the guards pass.
+func readDispatchGate(ctx context.Context, tx *sql.Tx, agentID string) (dispatchGate, error) {
+	var gate dispatchGate
+	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).
+		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable); err != nil {
+		return dispatchGate{}, err
+	}
+	item, _, found, err := headItem(ctx, tx, agentID, false)
+	if err != nil {
+		return dispatchGate{}, err
+	}
+	gate.Head, gate.HeadFound = item, found
+	gate.ApprovalsComplete = true
+	if !found {
+		return gate, nil
+	}
+	sources, err := db.New(tx).GetControlResponseSourcesForInput(ctx, db.GetControlResponseSourcesForInputParams{
+		AgentID: agentID, InputID: item.ID,
+	})
+	if err != nil {
+		return dispatchGate{}, err
+	}
+	gate.ApprovalSources = len(sources)
+	for _, source := range sources {
+		if source.State != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED {
+			gate.ApprovalsComplete = false
+		}
+	}
+	return gate, nil
+}
+
 func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, allowPaused, requireActive bool) (*PreparedDispatch, Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -635,42 +754,26 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
-	var paused, active, activeTurnSteerable, restarting bool
-	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &restarting, &active, &activeTurnSteerable); err != nil {
-		return nil, Snapshot{}, err
-	}
-	// allowPaused lets retry and steering dispatch through a pause. A restart
-	// in flight is what they must still respect: the old process is stopping,
-	// so a write reaches a closed pipe and fails the item permanently.
-	if allowPaused && restarting {
-		return nil, Snapshot{}, ErrPlannedRestart
-	}
-	// Read the metadata only. The guards below reject most calls, and the head
-	// item can carry up to MaxItemBytes of attachment data that this call then
-	// discards. The dispatch path loads the data after the guards pass.
-	item, _, found, err := headItem(ctx, tx, agentID, false)
+	gate, err := readDispatchGate(ctx, tx, agentID)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
-	if expectedInputID != "" && (!found || item.ID != expectedInputID) {
+	item := gate.Head
+	// ErrNotHead is about the CALLER's identity, not about the guard, so it stays here
+	// and the gate never sees expectedInputID.
+	if expectedInputID != "" && (!gate.HeadFound || item.ID != expectedInputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	if requireActive && active && (!steerableInputKind(item.Kind) || !activeTurnSteerable) {
+	switch gate.admits(allowPaused, requireActive) {
+	case dispatchRefusedPlannedRestart:
+		return nil, Snapshot{}, ErrPlannedRestart
+	case dispatchRefusedSteeringState:
 		return nil, Snapshot{}, ErrSteeringState
-	}
-	blockedByTurn := active
-	if requireActive {
-		blockedByTurn = !active
-	}
-	if !found || (paused && !allowPaused) || blockedByTurn || item.EditOwner != "" || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
-		snapshot, err := snapshotTx(ctx, tx, agentID)
-		if err != nil {
-			return nil, Snapshot{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, Snapshot{}, err
-		}
-		return nil, snapshot, nil
+	case dispatchRefusedNotReady:
+		snapshot, err := commitSnapshot(ctx, tx, agentID)
+		return nil, snapshot, err
+	case dispatchAdmitted:
+		// Fall through to the dispatch below.
 	}
 	attachments, _, err := loadItemAttachments(ctx, tx, item.ID, true)
 	if err != nil {
@@ -772,7 +875,7 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, re
 // RequeueAndPause returns a prepared item to the queue and pauses the queue.
 // It records the reason on the item without a failed state, so the queue
 // resumes the same input when the agent can take it again.
-func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, dispatchErr error) (Snapshot, error) {
+func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, dispatchErr error, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {
 	errText := "agent cannot accept input yet"
 	if dispatchErr != nil {
 		errText = dispatchErr.Error()
@@ -789,8 +892,7 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, errText, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := pauseAndEndTurn(ctx, tx, agentID,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped); err != nil {
+	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -1055,7 +1157,7 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 // failure had stopped.
 //
 // The result reports whether the row changed.
-func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner int) (sql.Result, error) {
+func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '',
@@ -1069,7 +1171,7 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 
 // resumeOwnedPause lifts a pause only when the given cause still owns it.
 // The result reports whether the row changed.
-func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner int) (sql.Result, error) {
+func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET paused = 0, pause_reason = 0, pause_owner = 0,
@@ -1389,16 +1491,32 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	}
 	for i := range snapshot.Items {
 		snapshot.Items[i].Metadata = metadata[snapshot.Items[i].ID]
-		// Answer the steering precondition where the store already knows it,
-		// from the same predicate that prepare applies. A browser that derives
-		// this from the kind alone offers a Steer the Worker then refuses.
-		snapshot.Items[i].CanSteer = i == 0 &&
-			snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
-			snapshot.Items[i].EditOwner == "" &&
-			snapshot.ActiveTurn &&
-			steerableInputKind(snapshot.Items[i].Kind) &&
-			snapshot.ActiveTurnSteerable
 	}
+	if len(snapshot.Items) == 0 {
+		return snapshot, nil
+	}
+	// Only the head can be steered or preempted, so only the head asks the gate.
+	gate, err := readDispatchGate(ctx, tx, agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	// Steering dispatches THROUGH the running turn, which is prepare's requireActive
+	// path, and it dispatches through a pause, which is allowPaused.
+	snapshot.Items[0].CanSteer = gate.admits(true, true) == dispatchAdmitted
+	// Preemption asks two questions of the SAME guard, which is why it needs no terms
+	// of its own. Would the turn-end drain deliver this head once the turn is
+	// cancelled? And does it need the cancel at all -- a plan approval that REPLACES
+	// the turn already dispatches through it, so cancelling would destroy work for
+	// nothing.
+	//
+	// Preemption borrows no kind filter. Steering injects into the running turn, so it
+	// admits only a kind the model can take mid-turn; preemption injects nothing, and
+	// the drain dispatches every kind once the turn is over.
+	afterInterrupt := gate
+	afterInterrupt.ActiveTurn = false
+	snapshot.Items[0].CanPreempt = snapshot.ActiveTurn &&
+		afterInterrupt.admits(false, false) == dispatchAdmitted &&
+		gate.admits(false, false) != dispatchAdmitted
 	return snapshot, nil
 }
 
@@ -1441,6 +1559,43 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, 
 	return snapshot, nil
 }
 
+// placeControlFeedback keeps the current request's feedback before future queued work.
+// Existing feedback and a dispatch or failure at the front retain their order.
+func placeControlFeedback(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	position := -1
+	for rows.Next() {
+		var id string
+		var kind leapmuxv1.AgentInputKind
+		var state leapmuxv1.AgentInputState
+		if err := rows.Scan(&id, &kind, &state); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if id == inputID {
+			continue
+		}
+		if position < 0 && kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK && state == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+			position = len(ids)
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if position < 0 {
+		return nil
+	}
+	ids = append(ids, "")
+	copy(ids[position+1:], ids[position:])
+	ids[position] = inputID
+	return writeOrder(ctx, tx, agentID, ids)
+}
+
 func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
@@ -1455,7 +1610,7 @@ func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
 		}
 		itemIDs = append(itemIDs, itemID)
 	}
-	if err := rows.Close(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
 	return writeOrder(ctx, tx, agentID, itemIDs)

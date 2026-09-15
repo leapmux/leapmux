@@ -451,7 +451,7 @@ func TestCloseChildAgent_LeavesTheQuakeTerminalAlone(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	require.NoError(t, svc.Queries.CreateChildAgent(context.Background(), db.CreateChildAgentParams{
+	require.NoError(t, svc.Queries.CreateChildAgent(context.Background(), db.CreateChildAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:            "child-1",
 		ParentAgentID: sql.NullString{String: "agent-1", Valid: true},
 		WorkingDir:    dir,

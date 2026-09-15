@@ -569,7 +569,7 @@ func createWorktreeForTest(t *testing.T, svc *Service, repoDir, branchName strin
 func createAgentRowForTest(t *testing.T, svc *Service, workingDir string) db.Agent {
 	t.Helper()
 	agentID := "a-" + t.Name()
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: agentID, WorkingDir: workingDir, HomeDir: workingDir,
 	}))
 	row, err := svc.getAgentByID(context.Background(), agentID)

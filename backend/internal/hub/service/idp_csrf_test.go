@@ -396,7 +396,7 @@ func createTestOIDCProviderWithStub(t *testing.T, st store.Store, ks *keystore.K
 	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test OIDC",
 		IssuerURL:    server.URL,
 		ClientID:     "test-client-id",
@@ -657,7 +657,7 @@ func createTestOIDCProviderWithAuthTime(
 	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test OIDC",
 		IssuerURL:    server.URL,
 		ClientID:     "test-client-id",

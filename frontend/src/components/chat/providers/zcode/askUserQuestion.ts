@@ -3,16 +3,18 @@
  *
  * The worker already stores the questions in the shared control's own shape, under
  * `request.input.questions`, so the shared `AskUserQuestionContent` reads them with
- * no adapter at all. This module exists for the two things it cannot do:
+ * no adapter at all. This module exists for the three things it cannot do:
  *
  *   - Normalize a question the app-server sent with an empty label or an empty
  *     value, so an option always has something to click.
  *   - Give the plugin ONE reader that both its registry hook and its control
  *     components call, so the two surfaces cannot disagree about what is on screen.
+ *   - Give the saved-answer display (`zcodeControlResponseDisplay`) the SAME question
+ *     list, in the same order, that the reader answered.
  */
 
 import type { Question } from '../../controls/types'
-import { isObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getToolInput } from '~/utils/controlResponse'
 
 /**
@@ -24,7 +26,7 @@ import { getToolInput } from '~/utils/controlResponse'
  * other keeps the option answerable; an option with neither is dropped, because it
  * has nothing to send.
  */
-function zcodeOptions(question: Record<string, unknown>): Array<{ label: string, description?: string }> {
+function zcodeOptions(question: Record<string, unknown>): Question['options'] {
   const options = question.options
   if (!Array.isArray(options))
     return []
@@ -35,8 +37,49 @@ function zcodeOptions(question: Record<string, unknown>): Array<{ label: string,
     if (!label)
       return []
     const description = pickString(option, 'description')
-    return [description ? { label, description } : { label }]
+    const preview = pickString(option, 'preview')
+    return [{ label, ...(description ? { description } : {}), ...(preview.trim() ? { preview } : {}) }]
   })
+}
+
+/**
+ * The raw question records of a stored ZCode user-input control request, in the order
+ * that the request declares.
+ *
+ * This is the ONE question list of the provider. The control surface answers this list,
+ * and `zcodeControlResponseDisplay` reads the saved answer back through it. A second
+ * list lets the two surfaces disagree about which question one answer belongs to, and
+ * the positional `answer_<index>` fallback then shows an answer under the wrong
+ * question.
+ *
+ * The precedence puts the native request (`params`) first, because it retains the
+ * descriptions that the worker's compact header omits. An EMPTY native list stays a
+ * real answer: it does not fall back to a populated one, because the app-server that
+ * sent it declares no question. The worker's compact header
+ * (`request.input.questions`) is the last source, for a request that carries no native
+ * params at all.
+ */
+export function zcodeQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const params = pickObject(payload, 'params')
+  const candidates = [pickObject(params, 'schema')?.questions, params?.questions, pickObject(params, 'input')?.questions]
+  const questions = candidates.find(value => Array.isArray(value) && value.length)
+    ?? candidates.find(Array.isArray)
+    ?? getToolInput(payload).questions
+  if (!Array.isArray(questions))
+    return []
+  return questions.filter(isObject)
+}
+
+/**
+ * The text that keys one question's answer: the question itself, or the header when the
+ * app-server sent a header alone.
+ *
+ * The shared control shows this text and keys the answer map by it, so the saved-answer
+ * display must look the answer up under the same text. An empty result marks a record
+ * that nothing can answer.
+ */
+export function zcodeQuestionText(question: Record<string, unknown>): string {
+  return pickString(question, 'question') || pickString(question, 'header')
 }
 
 /**
@@ -46,20 +89,15 @@ function zcodeOptions(question: Record<string, unknown>): Array<{ label: string,
  * reaches the plan surface instead, which needs none.
  */
 export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Question[] {
-  const questions = getToolInput(payload).questions
-  if (!Array.isArray(questions))
-    return []
-  return questions.flatMap((raw) => {
-    if (!isObject(raw))
-      return []
-    const question = pickString(raw, 'question')
-    const header = pickString(raw, 'header')
+  return zcodeQuestionRecords(payload).flatMap((raw) => {
+    const text = zcodeQuestionText(raw)
     // The answer is keyed by the question TEXT, so a question with neither text nor
     // header could never be answered in a way the app-server matches.
-    if (!question && !header)
+    if (!text)
       return []
+    const header = pickString(raw, 'header')
     const built: Question = {
-      question: question || header,
+      question: text,
       options: zcodeOptions(raw),
     }
     if (header)
@@ -68,31 +106,4 @@ export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Que
       built.multiSelect = true
     return [built]
   })
-}
-
-/**
- * The plan text of a stored plan-approval request.
- *
- * `plan` is where the worker puts it, and it is read FIRST. A plan approval carries no
- * question of its own, so the worker synthesizes one — and that question's text is
- * fixed boilerplate ("Review this implementation plan."). Reading the question first
- * would render that boilerplate as the plan and the real plan would never appear.
- *
- * The question text and then `prompt` remain as fallbacks, for a build that states the
- * plan in one of them and sends no `plan`.
- */
-export function zcodePlanText(payload: Record<string, unknown>): string {
-  const input = getToolInput(payload)
-  const plan = pickString(input, 'plan')
-  if (plan)
-    return plan
-  const questions = input.questions
-  if (Array.isArray(questions)) {
-    for (const raw of questions) {
-      const question = isObject(raw) ? pickString(raw, 'question') : ''
-      if (question)
-        return question
-    }
-  }
-  return pickString(input, 'prompt')
 }

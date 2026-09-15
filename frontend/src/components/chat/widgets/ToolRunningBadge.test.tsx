@@ -8,6 +8,9 @@ import { retryDetailText, ToolRunningBadge } from './ToolRunningBadge'
 
 const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
 
+/** The tool_use row the live-store cases render: one span of one provider session. */
+const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
+
 /**
  * Render the badge over signals, so a test can change the live progress or the
  * selection state and observe what the badge did with it.
@@ -109,15 +112,15 @@ describe('toolRunningBadge', () => {
    */
   it('freezes against a live store entry, whose identity never changes', () => {
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const [selecting, setSelecting] = createSignal(false)
     const { container } = render(() => (
-      <ToolRunningBadge toolProgress={() => store.get('a1', 'toolu_A')} textSelectionActive={selecting} />
+      <ToolRunningBadge toolProgress={() => store.get('a1', SPAN)} textSelectionActive={selecting} />
     ))
     expect(container.textContent).toBe('30s')
 
     setSelecting(true)
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 60 })
     expect(container.textContent).toBe('30s')
 
     setSelecting(false)
@@ -126,15 +129,15 @@ describe('toolRunningBadge', () => {
 
   it('freezes a live store retry the same way', () => {
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', retry: RETRY })
+    store.apply('a1', { ...SPAN, retry: RETRY })
     const [selecting, setSelecting] = createSignal(false)
     const { container } = render(() => (
-      <ToolRunningBadge toolProgress={() => store.get('a1', 'toolu_A')} textSelectionActive={selecting} />
+      <ToolRunningBadge toolProgress={() => store.get('a1', SPAN)} textSelectionActive={selecting} />
     ))
     expect(container.textContent).toBe('Retrying 2/5')
 
     setSelecting(true)
-    store.apply('a1', { spanId: 'toolu_A', retry: { ...RETRY, attempt: 3 } })
+    store.apply('a1', { ...SPAN, retry: { ...RETRY, attempt: 3 } })
     expect(container.textContent).toBe('Retrying 2/5')
 
     setSelecting(false)
@@ -150,20 +153,20 @@ describe('toolRunningBadge', () => {
    */
   it('disappears when the span is dropped, as it is when the result row lands', () => {
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const { container } = render(() => (
-      <ToolRunningBadge toolProgress={() => store.get('a1', 'toolu_A')} />
+      <ToolRunningBadge toolProgress={() => store.get('a1', SPAN)} />
     ))
     expect(container.textContent).toBe('30s')
-    store.drop('a1', 'toolu_A')
+    store.drop('a1', SPAN)
     expect(container.textContent).toBe('')
   })
 
   it('disappears when the agent is cleared, as it is at every turn boundary', () => {
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const { container } = render(() => (
-      <ToolRunningBadge toolProgress={() => store.get('a1', 'toolu_A')} />
+      <ToolRunningBadge toolProgress={() => store.get('a1', SPAN)} />
     ))
     expect(container.textContent).toBe('30s')
     store.clearAgent('a1')
@@ -174,13 +177,13 @@ describe('toolRunningBadge', () => {
     // A second tool call can reuse a span id after a clear. The badge must come
     // back rather than stay dead because its subscription was torn down.
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const { container } = render(() => (
-      <ToolRunningBadge toolProgress={() => store.get('a1', 'toolu_A')} />
+      <ToolRunningBadge toolProgress={() => store.get('a1', SPAN)} />
     ))
     store.clearAgent('a1')
     expect(container.textContent).toBe('')
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 60 })
     expect(container.textContent).toBe('1m')
   })
 

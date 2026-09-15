@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -25,6 +26,12 @@ var zcodeCLIConfigRelPath = []string{".zcode", "cli", "config.json"}
 // zcodeSessionDBRelPath is the session database's path under ZCode's storage
 // directory.
 var zcodeSessionDBRelPath = []string{"cli", "db", "db.sqlite"}
+
+// zcodeArtifactRelPath is the artifact directory's path under ZCode's storage
+// directory. A live installation holds `cli/db/db.sqlite` beside `cli/artifacts`, so
+// the artifact root is a SIBLING of the database's own directory rather than that
+// directory itself.
+var zcodeArtifactRelPath = []string{"cli", "artifacts"}
 
 // zcodeCLIConfig is the subset of ZCode's CLI configuration this file reads.
 type zcodeCLIConfig struct {
@@ -58,6 +65,27 @@ func zcodeStorageDir(q StoredSessionQuery, cfg zcodeCLIConfig) string {
 
 // zcodeSessionDBPath resolves ZCode's session database.
 func zcodeSessionDBPath(q StoredSessionQuery) string {
+	return zcodeToolStorePaths(q).databasePath
+}
+
+// zcodeToolStorePaths resolves ZCode's session database and its artifact directory.
+//
+// The storage root gives both, and the storage-root artifact directory stays the first
+// choice. `storage.sessionDbPath` then moves the DATABASE alone, because that setting
+// states one FILE and cannot relocate a directory.
+//
+// A storage-root artifact directory that does not exist falls back to the grandparent
+// of the resolved database path. The two branches match these layouts:
+//
+//   - `<root>/cli/artifacts` beside `<root>/cli/db/db.sqlite`, which is what a stock
+//     installation holds.
+//   - `<x>/artifacts` beside a database at `<x>/db/db.sqlite` that `sessionDbPath`
+//     moved, which keeps ZCode's own layout around the file that the setting points
+//     at.
+//
+// The fallback reports the first choice again for a stock installation, because the
+// grandparent of `<root>/cli/db/db.sqlite` is `<root>/cli`.
+func zcodeToolStorePaths(q StoredSessionQuery) zcodeToolStoreLocation {
 	home := q.home()
 	var cfg zcodeCLIConfig
 	if home != "" {
@@ -69,14 +97,40 @@ func zcodeSessionDBPath(q StoredSessionQuery) string {
 			return json.Unmarshal(data, &cfg)
 		})
 	}
-	if explicit := strings.TrimSpace(cfg.Storage.SessionDbPath); explicit != "" {
-		return pathutil.ExpandHome(explicit, home)
-	}
 	dir := zcodeStorageDir(q, cfg)
-	if dir == "" {
+	location := zcodeToolStoreLocation{}
+	if dir != "" {
+		location.databasePath = filepath.Join(append([]string{dir}, zcodeSessionDBRelPath...)...)
+		location.artifactRoot = filepath.Join(append([]string{dir}, zcodeArtifactRelPath...)...)
+	}
+	if explicit := strings.TrimSpace(cfg.Storage.SessionDbPath); explicit != "" {
+		location.databasePath = pathutil.ExpandHome(explicit, home)
+	}
+	if info, err := os.Stat(location.artifactRoot); err != nil || !info.IsDir() {
+		if beside := zcodeArtifactRootBesideDatabase(location.databasePath); beside != "" {
+			location.artifactRoot = beside
+		}
+	}
+	return location
+}
+
+// zcodeArtifactRootBesideDatabase reproduces ZCode's layout around the database file
+// that `storage.sessionDbPath` points at: `<x>/db/db.sqlite` puts the artifacts at
+// `<x>/artifacts`.
+//
+// It reports "" when the path has no grandparent directory, which is what a bare file
+// name and a path at a filesystem root both give. The caller then keeps the artifact
+// root that the storage root supplied.
+func zcodeArtifactRootBesideDatabase(databasePath string) string {
+	if databasePath == "" {
 		return ""
 	}
-	return filepath.Join(append([]string{dir}, zcodeSessionDBRelPath...)...)
+	parent := filepath.Dir(databasePath)
+	grandparent := filepath.Dir(parent)
+	if grandparent == parent || grandparent == "." {
+		return ""
+	}
+	return filepath.Join(grandparent, "artifacts")
 }
 
 // zcodeStoredSessions is ZCode's Provider.ListStoredSessions.

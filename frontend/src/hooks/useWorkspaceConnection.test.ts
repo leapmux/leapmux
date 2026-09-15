@@ -1,14 +1,15 @@
 import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
+import { create } from '@bufbuild/protobuf'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentControlCancelRequestSchema, AgentProvider, AgentStatus, ContentCompression, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -71,6 +72,10 @@ vi.mock('~/components/common/Toast', async () => {
  * being collapsed to a known literal by TS const-narrowing.
  */
 const WS = 'ws-test'
+
+/** The two tool_use rows the tool-progress cases below address, both of one provider session. */
+const TOOL_A = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
+const TOOL_B = { spanId: 'toolu_B', agentSessionId: 'sess-1' }
 
 let nextPosition = 0
 
@@ -1042,6 +1047,37 @@ describe('handleAgentStatusChange for background agents', () => {
 })
 
 describe('handleAgentInactive', () => {
+  it('retains a confirmed response that still needs recording', () => {
+    createRoot((dispose) => {
+      const stores = makeStores()
+      stores.controlStore.addRequest('agent-1', { requestId: 'record', agentId: 'agent-1', payload: {}, claimToken: 'record-claim', responseState: ControlResponseState.DELIVERED })
+      handleAgentInactive('agent-1', {} as AgentStatusChange, 'live', stores)
+      expect(stores.controlStore.getRequests('agent-1').map(request => request.requestId)).toEqual(['record'])
+      dispose()
+    })
+  })
+
+  it('retains delivered cancellation state until recording completes', () => {
+    const store = createControlStore()
+    const request = { requestId: 'record', agentId: 'agent-1', payload: {}, claimToken: 'record-claim', responseState: ControlResponseState.READY }
+    store.addRequest('agent-1', request)
+    handleControlCancellation(create(AgentControlCancelRequestSchema, { ...request, responseState: ControlResponseState.DELIVERED }), store)
+    expect(store.getRequests('agent-1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
+    handleControlCancellation(create(AgentControlCancelRequestSchema, { ...request, responseState: ControlResponseState.COMPLETED }), store)
+    expect(store.getRequests('agent-1')).toEqual([])
+  })
+
+  it('accepts confirmed delivery after cancellation but ignores replay after completion', () => {
+    const store = createControlStore()
+    const request = { requestId: 'record', agentId: 'agent-1', payload: {}, claimToken: 'record-claim' }
+    store.addRequest('agent-1', request)
+    handleControlCancellation(create(AgentControlCancelRequestSchema, { ...request, responseState: ControlResponseState.CANCELED }), store)
+    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
+    expect(store.getRequests('agent-1')).toHaveLength(1)
+    handleControlCancellation(create(AgentControlCancelRequestSchema, { ...request, responseState: ControlResponseState.COMPLETED }), store)
+    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
+    expect(store.getRequests('agent-1')).toEqual([])
+  })
   function makeStores() {
     const tabs = makeTabStores()
     tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
@@ -1408,10 +1444,10 @@ describe('agentMessage sub-handlers', () => {
       const stores = sessionInfoStores()
       const msg = agentMessage({
         type: 'agent_session_info',
-        info: { running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } },
+        info: { running_tool: { span_id: 'toolu_A', agent_session_id: 'sess-1', tool_name: 'Bash', elapsed_seconds: 30 } },
       })
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
-      expect(stores.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
+      expect(stores.chatStore.getToolProgress('a1', TOOL_A)).toEqual({ elapsedSeconds: 30 })
       // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
       // persisted minus its ephemeral keys).
       expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
@@ -1967,8 +2003,69 @@ describe('extracted handleAgentEvent branch handlers', () => {
   })
 
   describe('handleControlRequest', () => {
-    const req = (agentId: string) =>
-      ({ requestId: 'r1', agentId, payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })) }) as unknown as AgentControlRequest
+    it('retains a delivered response after the agent stops', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.INACTIVE })
+        const request = { ...req('a1'), responseState: ControlResponseState.DELIVERED }
+        handleControlRequest('a1', request, 'catchingUp', s)
+        expect(s.controlStore.getRequests('a1')).toHaveLength(1)
+        expect(s.controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.DELIVERED)
+        expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
+        dispose()
+      })
+    })
+    it('retains the exact native bytes after parsing the request', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        const original = '{"method":"item/commandExecution/requestApproval","large":9007199254740993,"value":1,"value":2}'
+        const request = { requestId: 'raw', agentId: 'a1', payload: enc(original) } as unknown as AgentControlRequest
+        handleControlRequest('a1', request, 'live', s)
+        expect(new TextDecoder().decode(s.controlStore.getRequests('a1')[0].originalPayload)).toBe(original)
+        dispose()
+      })
+    })
+
+    function req(agentId: string): AgentControlRequest {
+      return { requestId: 'r1', agentId, payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })) } as unknown as AgentControlRequest
+    }
+
+    // An agent that sends a control request BLOCKS on the answer. Dropping the request
+    // because LeapMux cannot read its payload leaves the reader with no question, no way
+    // to answer it, and a turn that never ends -- the shape ACP-005 records. The request
+    // is kept instead, with the bytes that arrived, so the reader can see it and release
+    // the agent.
+    it.each([
+      ['malformed', '{"method":'],
+      ['not-an-object', '[1,2]'],
+      ['not-an-object', '"a string"'],
+      ['not-an-object', 'null'],
+    ])('keeps a request whose payload is %s (%s)', (fault, bytes) => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        const request = { requestId: 'r1', agentId: 'a1', payload: enc(bytes) } as unknown as AgentControlRequest
+        handleControlRequest('a1', request, 'live', s)
+        const [kept] = s.controlStore.getRequests('a1')
+        expect(kept).toBeDefined()
+        expect(kept.payloadFault).toBe(fault)
+        // The payload stays EMPTY rather than guessing a shape a plugin would then read.
+        expect(kept.payload).toEqual({})
+        // The bytes that arrived are still there, so Copy JSON shows what the agent sent.
+        expect(new TextDecoder().decode(kept.originalPayload)).toBe(bytes)
+        dispose()
+      })
+    })
+
+    it('states no fault for a payload it could read', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        handleControlRequest('a1', req('a1'), 'live', s)
+        expect(s.controlStore.getRequests('a1')[0].payloadFault).toBeUndefined()
+        dispose()
+      })
+    })
 
     it('skips a replayed (catch-up) request for an already-INACTIVE agent', () => {
       createRoot((dispose) => {
@@ -2023,13 +2120,14 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    it('ignores a malformed JSON payload instead of throwing out of the stream handler', () => {
+    it('keeps a malformed JSON payload instead of throwing out of the stream handler', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         const malformed = { requestId: 'r1', agentId: 'a1', payload: enc('{not json') } as unknown as AgentControlRequest
         expect(() => handleControlRequest('a1', malformed, 'live', s)).not.toThrow()
-        expect(s.controlStore.getRequests('a1')).toHaveLength(0)
+        expect(s.controlStore.getRequests('a1')).toHaveLength(1)
+        expect(s.controlStore.getRequests('a1')[0].payloadFault).toBe('malformed')
         dispose()
       })
     })
@@ -2327,8 +2425,8 @@ describe('clearOfflineAgentState', () => {
     const chatStore = createChatStore()
     const agentSessionStore = createAgentSessionStore()
     const agentActivityStore = createAgentActivityStore()
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
+    chatStore.applyToolProgress('a1', { ...TOOL_A, elapsedSeconds: 30 })
+    chatStore.applyToolProgress('a1', { ...TOOL_B, elapsedSeconds: 90 })
     agentSessionStore.applyProgress('a1', { revision: 1, thinkingTokens: 500, output: { bytes: 4096, minimum: true } })
     agentActivityStore.apply('a1', AgentActivityState.WORKING)
     return { chatStore, agentSessionStore, agentActivityStore }
@@ -2341,8 +2439,8 @@ describe('clearOfflineAgentState', () => {
 
       // The two the sweep used to miss. Each badge would otherwise read "30s" /
       // "1m 30s" for as long as the worker stayed away.
-      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toBeUndefined()
-      expect(s.chatStore.getToolProgress('a1', 'toolu_B')).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', TOOL_B)).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
       // The worker that was going to report the settle is gone, so a retained
@@ -2356,13 +2454,13 @@ describe('clearOfflineAgentState', () => {
   it('leaves another agent on a healthy worker untouched', () => {
     createRoot((dispose) => {
       const s = seededStores()
-      s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 60 })
+      s.chatStore.applyToolProgress('a2', { ...TOOL_A, elapsedSeconds: 60 })
       s.agentSessionStore.applyProgress('a2', { revision: 1, thinkingTokens: 700 })
       s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
 
       clearOfflineAgentState('a1', s)
 
-      expect(s.chatStore.getToolProgress('a2', 'toolu_A')?.elapsedSeconds).toBe(60)
+      expect(s.chatStore.getToolProgress('a2', TOOL_A)?.elapsedSeconds).toBe(60)
       expect(s.agentSessionStore.getProgress('a2').thinkingTokens).toBe(700)
       expect(s.agentActivityStore.isBusy('a2')).toBe(true)
       dispose()

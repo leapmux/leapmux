@@ -32,13 +32,6 @@ package agent
 // match the wire format exactly.
 // The values are generated: see contracts/pi-protocol.json.
 
-// PiToolAgent is the tool the pi-subagents extension registers to spawn a
-// subagent (SUBAGENT_TOOL_NAMES.AGENT in its src/agent-runner.ts; its nested
-// variant in src/nested-tools.ts reuses the same name). The extension's two
-// other tools, get_subagent_result and steer_subagent, act on an agent that
-// already runs and are ordinary tool spans, so they need no constant here.
-const PiToolAgent = "Agent"
-
 // Pi RPC command methods — the "type" field on JSONL commands the
 // worker writes to Pi's stdin. Pi replies with a matching {type:
 // "response", id} envelope.
@@ -49,9 +42,17 @@ const (
 	PiCommandSetThinkingLevel   = "set_thinking_level"
 	PiCommandGetSessionStats    = "get_session_stats"
 	PiCommandGetState           = "get_state"
+	PiCommandGetEntries         = "get_entries"
+	PiCommandGetCommands        = "get_commands"
 	PiCommandGetAvailableModels = "get_available_models"
 	PiCommandNewSession         = "new_session"
 )
+
+// piGoalDisplayKey is the status key and the widget key that pi-goal-x writes its
+// own display under. A set_status or a set_widget under that key is the only hint
+// LeapMux gets for a goal that changed with no tool result and no focus entry.
+// The key stays on the Go side: no browser code reads it.
+const piGoalDisplayKey = "goal"
 
 // Pi `prompt` command's `streamingBehavior` — how Pi should treat a new
 // prompt that arrives while a turn is already streaming. "steer" injects
@@ -65,7 +66,7 @@ const PiStreamingBehaviorSteer = "steer"
 const PiContentBlockText = "text"
 
 // Pi message roles — the `role` field on entries inside `agent_end.messages`
-// and on `message_end.message`. Only assistant entries carry the terminal
+// and on `message_end.message`. Only assistant entries carry the final
 // stop-reason for a turn.
 const PiRoleAssistant = "assistant"
 

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -17,9 +18,10 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	output.appendAssistant("answer")
 	assert.True(t, output.appendThought("first "))
 	assert.False(t, output.appendThought("second"))
+	opener := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"pending"}`)
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{
 		"toolCallId": json.RawMessage(`"tool-1"`),
-	})
+	}, opener)
 	output.completeTool("tool-complete")
 
 	turn := output.drainTurn()
@@ -28,6 +30,8 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	require.Len(t, turn.incompleteTools, 1)
 	assert.Equal(t, "tool-1", turn.incompleteTools[0].toolCallID)
 	assert.NoError(t, turn.incompleteTools[0].encodeErr)
+	assert.JSONEq(t, string(opener), string(turn.incompleteTools[0].original),
+		"the snapshot carries the agent's own frame, not the merged fields")
 	assert.Equal(t, 1, turn.completedToolUses)
 
 	turn = output.drainTurn()
@@ -100,4 +104,25 @@ func TestACPTerminalHostReadsTheCurrentServiceFacet(t *testing.T) {
 	)
 	assert.Empty(t, first.ProgressUpdates())
 	assert.Len(t, second.ProgressUpdates(), 1)
+}
+
+// session_info_update carries the runtime's own title and modified time, and one
+// arrives for EVERY turn. A flush at that update split each assembled message in two,
+// so the reader saw one answer as two rows.
+func TestACPSessionInfoUpdateKeepsOneAssembledMessage(t *testing.T) {
+	t.Parallel()
+	var stdin bytes.Buffer
+	b, sink := newACPTurnBase(t, nopWriteCloser{&stdin})
+	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"one "}}`), nil)
+	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"session_info_update","info":{"title":"A title","modifiedAt":"now"}}`), nil)
+	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"two"}}`), nil)
+	assert.Empty(t, sink.Messages(), "session metadata writes no row and closes no segment")
+	b.flushAssistantBuffer()
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	var assembled struct {
+		Text string `json:"text"`
+	}
+	require.NoError(t, json.Unmarshal(messages[0].Content, &assembled))
+	assert.Equal(t, "one two", assembled.Text)
 }

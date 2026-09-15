@@ -1,7 +1,3 @@
-export { acpAgentMessageRenderer } from './agentMessage'
 export { acpPlanRenderer } from './plan'
 export { acpResultDivider } from './resultDivider'
-export { acpSubagentToolRequestRenderer } from './subagentToolRequest'
-export { acpThoughtRenderer } from './thought'
-export { acpToolCallRenderer } from './toolCall'
 export { acpToolCallUpdateRenderer } from './toolCallUpdate'

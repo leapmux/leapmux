@@ -33,9 +33,10 @@ type watchSession struct {
 
 	// pending is a COALESCING SLOT, not a queue: every request states the whole
 	// interest, so a newer one supersedes an older one outright.
-	mu      sync.Mutex
-	pending *leapmuxv1.WatchEventsRequest
-	notify  chan struct{} // cap 1
+	mu           sync.Mutex
+	pending      *leapmuxv1.WatchEventsRequest
+	latestUpdate uint64
+	notify       chan struct{} // cap 1
 }
 
 func newWatchSession(svc *Service, caller channel.Caller, sender channel.ResponseWriter) *watchSession {
@@ -53,9 +54,15 @@ func newWatchSession(svc *Service, caller channel.Caller, sender channel.Respons
 	}
 }
 
-// submit parks req as the newest pending revision and wakes the apply loop.
+// submit replaces the pending request unless its nonzero update ID is older.
+// Zero supports clients that do not track revisions.
 func (s *watchSession) submit(req *leapmuxv1.WatchEventsRequest) {
 	s.mu.Lock()
+	if req.GetUpdateId() != 0 && req.GetUpdateId() < s.latestUpdate {
+		s.mu.Unlock()
+		return
+	}
+	s.latestUpdate = max(s.latestUpdate, req.GetUpdateId())
 	s.pending = req
 	s.mu.Unlock()
 	select {

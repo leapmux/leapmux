@@ -92,11 +92,16 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
 	// they arrive as notifications in the output stream.
+	case contracts.MCPElicitationMethodCodex:
+		a.publishControlRequest(a.sink, line.Raw, mcpElicitationCancelAnswer())
+
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput":
-		a.handleApprovalRequest(line.IDString(), line.Raw)
+		// Codex retires its own approval requests through serverRequest/resolved, and it
+		// defines no outcome for one the client withdraws, so LeapMux sends no answer.
+		a.publishControlRequest(a.sink, line.Raw, nil)
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(line.Params)
@@ -119,8 +124,13 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleErrorNotification(line.Params)
 
 	default:
+		// An inbound REQUEST needs an answer. The comment above states that Codex
+		// sends its approval requests with an "id", so one whose method this
+		// dispatcher does not recognize reaches here carrying a runtime that waits.
+		// A transcript row alone leaves it waiting for its own timeout.
+		a.refuseUnsupportedRequest(line)
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 	}
@@ -333,12 +343,13 @@ type codexIncompleteTool struct {
 }
 
 type codexIncompleteToolSnapshot struct {
-	params          json.RawMessage
-	itemType        string
-	childThreadID   string
-	output          string
-	outputTruncated bool
-	order           uint64
+	params        json.RawMessage
+	itemType      string
+	childThreadID string
+	// output is the joined delta text. A limited join already leads with the shared
+	// truncation prefix, so the snapshot needs no flag of its own.
+	output string
+	order  uint64
 }
 
 // observeReasoningText feeds a reasoning delta into the token counter,
@@ -608,7 +619,7 @@ func (a *CodexAgent) handleCodexItemStartedForSink(
 	case "collabAgentToolCall":
 		collab := parseCollabToolCall(event.item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
-		if err := openToolSpan(sink, event.params, event.itemID, event.itemType, spawns); err != nil {
+		if err := openToolSpan(sink, MessageContent{Original: event.params}, event.itemID, event.itemType, spawns); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", agentID, "error", err)
 		}
 		a.registerCollabReceivers(collab, event.itemID, event.threadID)
@@ -682,7 +693,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			a.turnPlanText = planItem.Text
 			a.mu.Unlock()
 		}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", agentID, "error", err)
@@ -696,7 +707,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
 	case "collabAgentToolCall":
 		collab := parseCollabToolCall(event.item)
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", agentID, "error", err)
@@ -713,7 +724,7 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
 		}
 	default:
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", agentID, "type", event.itemType, "error", err)
@@ -753,14 +764,10 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
-	// Parse once: enrich with num_tool_uses and extract turn data
-	// from the same map to avoid a second json.Unmarshal.
+	// Read turn data without changing the native parameters.
 	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
-		if b, err := json.Marshal(numToolUses); err == nil {
-			parsed["num_tool_uses"] = b
-		}
 		if turnRaw, ok := parsed["turn"]; ok {
 			var turn struct {
 				ID     string `json:"id"`
@@ -776,9 +783,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				turnErrorMessage = turn.Error.Message
 				turnErrorInfo = turn.Error.CodexErrorInfo
 			}
-		}
-		if b, err := json.Marshal(parsed); err == nil {
-			params = json.RawMessage(b)
 		}
 	}
 	// Clear provider turn state before the deferred publish below releases the
@@ -805,7 +809,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
-	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(withToolUseCount(MessageContent{Original: params}, numToolUses), SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
@@ -824,6 +828,25 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			compressed, compression := msgcodec.Compress([]byte(planText))
 			a.sink.UpdatePlan(compressed, compression, extractPlanTitle(planText))
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
+			// One plan is stored for each agent, and the UpdatePlan above just
+			// REPLACED it. A card from an earlier turn identifies the plan the reader
+			// saw and would execute THIS one, so it is invalid from this line on --
+			// whether or not the new card publishes. Retiring it only on a successful
+			// publish left a publish failure with a live card pointing at a plan that
+			// is gone; the composer renders the OLDEST card, so approving what the
+			// reader could see executed a plan it never showed.
+			//
+			// CancelControlRequest returns in silence for a row that is already gone,
+			// so an answered card costs nothing. Nothing else can retire this request:
+			// it is LeapMux's own, it carries no JSON-RPC id, and so the
+			// outstanding-control registrar never held it.
+			a.mu.Lock()
+			superseded := a.planPromptRequestID
+			a.planPromptRequestID = requestID
+			a.mu.Unlock()
+			if superseded != "" && superseded != requestID {
+				a.sink.CancelControlRequest(superseded)
+			}
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
 				"request_id": requestID,
@@ -833,8 +856,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				},
 			})
 			if err == nil {
-				claimToken := a.sink.PersistControlRequest(requestID, payload)
-				a.sink.BroadcastControlRequest(requestID, payload, claimToken)
+				if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
+					slog.Error("publish plan approval", "agent_id", a.agentID, "request_id", requestID, "error", err)
+				}
 			}
 		}
 	}
@@ -844,7 +868,7 @@ func (a *CodexAgent) handleChildTurnCompleted(threadID string, params json.RawMe
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
-	if err := route.childSink.PersistTurnEnd(params, SpanInfo{}); err != nil {
+	if err := route.childSink.PersistTurnEnd(MessageContent{Original: params}, SpanInfo{}); err != nil {
 		slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", threadID, "error", err)
 	}
 	hadTurn := a.childTurnID(threadID) != ""
@@ -896,7 +920,7 @@ func (a *CodexAgent) persistCodexGeneration(buffer *GenerationBuffer, sink gener
 		return
 	}
 	if err := buffer.PersistAll(completion, func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{})
+		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: raw}, SpanInfo{})
 	}); err != nil {
 		slog.Error("codex persist partial generation", "agent_id", a.agentID, "error", err)
 	}
@@ -980,12 +1004,11 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 		}
 		itemIDs = append(itemIDs, itemID)
 		tools[itemID] = codexIncompleteToolSnapshot{
-			params:          append(json.RawMessage(nil), tool.params...),
-			itemType:        tool.itemType,
-			childThreadID:   tool.childThreadID,
-			output:          renderCodexToolOutput(tool.outputEvents, tool.outputTruncated),
-			outputTruncated: tool.outputTruncated,
-			order:           tool.order,
+			params:        append(json.RawMessage(nil), tool.params...),
+			itemType:      tool.itemType,
+			childThreadID: tool.childThreadID,
+			output:        renderCodexToolOutput(tool.outputEvents, tool.outputTruncated),
+			order:         tool.order,
 		}
 		delete(a.incompleteTools, itemID)
 		delete(a.collabChildItems, itemID)
@@ -1007,7 +1030,7 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 	})
 	for _, itemID := range itemIDs {
 		tool := tools[itemID]
-		raw, err := buildIncompleteCodexTool(tool, retainedCompletion)
+		supplement, err := buildIncompleteCodexToolSupplement(itemID, tool)
 		if err != nil {
 			slog.Warn("marshal incomplete codex tool", "agent_id", a.agentID, "item_id", itemID, "error", err)
 			continue
@@ -1021,7 +1044,12 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 			}
 			sink = route.childSink
 		}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
+		// The row is the agent's own item/started frame. The output arrived as a run of
+		// delta events, so the joined text is recovered provider data and rides beside
+		// the frame rather than inside it.
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{
+			Original: tool.params, Supplemental: supplement, Completion: retainedCompletion,
+		}, SpanInfo{
 			SpanID: itemID, SpanType: tool.itemType, Closing: true,
 		}); err != nil {
 			slog.Error("persist incomplete codex tool", "agent_id", a.agentID, "item_id", itemID, "error", err)
@@ -1032,31 +1060,82 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 	return len(itemIDs)
 }
 
-func buildIncompleteCodexTool(tool codexIncompleteToolSnapshot, completion MessageCompletion) ([]byte, error) {
+// codexToolSupplement is the output LeapMux joined for a tool call that reported no
+// completed item of its own.
+//
+// Codex streams a command's output as a run of `outputDelta` events and puts the
+// whole text in `aggregatedOutput` only on the COMPLETED item. A turn that ends
+// first leaves the started item, which has no output at all, so the join is the only
+// copy. It names the item it belongs to, so a row cannot take another call's output.
+type codexToolSupplement struct {
+	ItemID           string `json:"itemId"`
+	ItemType         string `json:"itemType"`
+	AggregatedOutput string `json:"aggregatedOutput"`
+}
+
+// buildIncompleteCodexToolSupplement encodes the joined output, or nothing when the
+// call produced none.
+//
+// The truncation is already inside the text: renderCodexToolOutput leads a limited
+// join with the shared prefix. An earlier build also wrote an `outputTruncated` field
+// into the item, which no reader ever read.
+func buildIncompleteCodexToolSupplement(itemID string, tool codexIncompleteToolSnapshot) ([]byte, error) {
+	if !json.Valid(tool.params) {
+		return nil, fmt.Errorf("incomplete Codex tool %q has no valid frame", itemID)
+	}
+	if tool.output == "" {
+		return nil, nil
+	}
+	return json.Marshal(codexToolSupplement{
+		ItemID:           itemID,
+		ItemType:         tool.itemType,
+		AggregatedOutput: tool.output,
+	})
+}
+
+// ResolveProviderData puts the joined output back on the item it belongs to.
+//
+// The identity keys are checked first: a supplement that names another item, or
+// another item type, cannot reach this row. The original bytes stay unchanged; this
+// returns a resolved COPY for the extractors.
+func (codexProvider) ResolveProviderData(content MessageContent) []byte {
+	if len(content.Supplemental) == 0 {
+		return content.Original
+	}
+	var extra codexToolSupplement
+	if json.Unmarshal(content.Supplemental, &extra) != nil || extra.ItemID == "" || extra.AggregatedOutput == "" {
+		return content.Original
+	}
 	var params map[string]json.RawMessage
-	if err := json.Unmarshal(tool.params, &params); err != nil {
-		return nil, err
+	if json.Unmarshal(content.Original, &params) != nil || params == nil {
+		return content.Original
 	}
-	var item map[string]interface{}
-	if err := json.Unmarshal(params["item"], &item); err != nil {
-		return nil, err
+	var item map[string]json.RawMessage
+	if json.Unmarshal(params["item"], &item) != nil || item == nil {
+		return content.Original
 	}
-	if output := tool.output; output != "" {
-		item["aggregatedOutput"] = output
+	var itemID, itemType string
+	if json.Unmarshal(item["id"], &itemID) != nil || itemID != extra.ItemID {
+		return content.Original
 	}
-	if tool.outputTruncated {
-		item["outputTruncated"] = true
+	if json.Unmarshal(item["type"], &itemType) != nil || itemType != extra.ItemType {
+		return content.Original
 	}
+	encodedOutput, err := json.Marshal(extra.AggregatedOutput)
+	if err != nil {
+		return content.Original
+	}
+	item["aggregatedOutput"] = encodedOutput
 	encodedItem, err := json.Marshal(item)
 	if err != nil {
-		return nil, err
+		return content.Original
 	}
 	params["item"] = encodedItem
-	raw, err := json.Marshal(params)
+	resolved, err := json.Marshal(params)
 	if err != nil {
-		return nil, err
+		return content.Original
 	}
-	return AnnotateMessageCompletion(raw, completion)
+	return resolved
 }
 
 func renderCodexToolOutput(events []codexToolOutputEvent, truncated bool) string {
@@ -1154,31 +1233,23 @@ func (a *CodexAgent) isRetiredCodexThread(threadID string) bool {
 	return retired
 }
 
-// handleApprovalRequest processes server requests (approval requests from Codex).
-// These arrive as JSON-RPC requests (with an "id" field) from the server.
-// The id is already extracted from the outer envelope to avoid re-parsing content.
-func (a *CodexAgent) handleApprovalRequest(id string, content []byte) {
-	if id == "" {
-		slog.Warn("codex approval request missing id", "agent_id", a.agentID)
-		return
-	}
-	claimToken := a.sink.PersistControlRequest(id, content)
-	a.sink.BroadcastControlRequest(id, content, claimToken)
-}
-
 // handleServerRequestResolved processes serverRequest/resolved notifications.
 // For user-initiated responses the control request is already deleted by the
 // SendControlResponse handler, but this also covers agent-initiated
 // resolutions (e.g. the agent moves on without waiting for user input).
 func (a *CodexAgent) handleServerRequestResolved(params json.RawMessage) {
 	var notif struct {
-		RequestID json.Number `json:"requestId"`
+		RequestID json.RawMessage `json:"requestId"`
 	}
-	if json.Unmarshal(params, &notif) == nil {
-		requestID := notif.RequestID.String()
-		a.sink.DeleteControlRequest(requestID)
-		a.sink.BroadcastControlCancel(requestID)
+	if json.Unmarshal(params, &notif) != nil {
+		return
 	}
+	identity, valid := newControlRequestIdentity(notif.RequestID)
+	if !valid {
+		return
+	}
+	// Codex withdrew the request itself, so it waits for no answer.
+	a.withdrawControlRequest(a.sink, identity.key)
 }
 
 // handleErrorNotification processes error notifications.
@@ -1197,10 +1268,29 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 // handleRateLimitsUpdated processes account/rateLimits/updated notifications.
 // The raw content is persisted as-is via PersistNotification, and converted
 // rate limit info is broadcast via BroadcastSessionInfo for the live popover.
+//
+// The transcript takes a row for each CHANGE. Codex sends the snapshot after every
+// model call, so an ordinary turn with one tool call reported it twice with identical
+// numbers, and the reader saw the same sentence twice. The live surfaces below take
+// every report: the popover must stay correct for a subscriber that arrives late, and
+// the resume decision reads the newest snapshot whether or not it moved.
 func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
-	// Persist the raw Codex notification — agent-emitted metadata, AGENT source.
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
-		slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
+	var envelope struct {
+		RateLimits json.RawMessage `json:"rateLimits"`
+	}
+	// An envelope this build cannot read compares as changed, so such a frame still
+	// reaches the reader, and it leaves the remembered snapshot alone.
+	readable := json.Unmarshal(params, &envelope) == nil
+	if !readable || !jsonEqual(a.lastRateLimits, envelope.RateLimits) {
+		if readable {
+			// Copy: the raw message points into the read buffer, which the next line
+			// overwrites.
+			a.lastRateLimits = append(json.RawMessage(nil), envelope.RateLimits...)
+		}
+		// Persist the raw Codex notification — agent-emitted metadata, AGENT source.
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+			slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
+		}
 	}
 
 	// Extract and convert tiers for live session info broadcast.
@@ -1700,11 +1790,11 @@ func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID 
 func persistSharedItemStarted(sink ToolSpanServices, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
-		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
+		if err := openToolSpan(sink, MessageContent{Original: params}, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
 	case "reasoning":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning/started", "agent_id", agentID, "error", err)
@@ -1718,13 +1808,13 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 	sink.ReportProgress(CompleteOutputProgress(itemID))
 	switch itemType {
 	case "agentMessage", "plan":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage/plan", "agent_id", agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", agentID, "type", itemType, "error", err)
@@ -1736,7 +1826,7 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 // persistCompletedReasoningItem stores the provider's authoritative item.
 func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, params json.RawMessage, itemID, agentID string) {
 	sink.ReportProgress(CompleteModelProgress(itemID))
-	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
+	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 		SpanID: itemID, SpanType: "reasoning",
 	})
 	a.mu.Lock()

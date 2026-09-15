@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -135,7 +136,7 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		now := time.Now().UTC()
 		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
 			ID:          sessionID,
-			Kind:        "login",
+			Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
 			UserID:      user.ID,
 			PayloadJSON: "{}",
 			SessionData: []byte("encrypted-session"),
@@ -145,7 +146,7 @@ func (s *Suite) testPasskeys(t *testing.T) {
 
 		got, err := st.WebAuthnSessions().Get(ctx, sessionID)
 		require.NoError(t, err)
-		assert.Equal(t, "login", got.Kind)
+		assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, got.Kind)
 		assert.Equal(t, []byte("encrypted-session"), got.SessionData)
 
 		require.NoError(t, st.WebAuthnSessions().Delete(ctx, sessionID))
@@ -160,7 +161,7 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		now := time.Now().UTC()
 		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
 			ID:          sessionID,
-			Kind:        "login",
+			Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
 			UserID:      user.ID,
 			PayloadJSON: "{}",
 			SessionData: []byte("ceremony"),
@@ -168,15 +169,15 @@ func (s *Suite) testPasskeys(t *testing.T) {
 			CreatedAt:   now,
 		}))
 
-		n, err := st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, "login", time.Now().UTC())
+		n, err := st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, time.Now().UTC())
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n)
 
-		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, "login", time.Now().UTC())
+		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, time.Now().UTC())
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
 
-		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, "register", time.Now().UTC())
+		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, time.Now().UTC())
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
 	})

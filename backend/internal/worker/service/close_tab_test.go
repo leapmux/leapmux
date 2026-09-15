@@ -191,7 +191,7 @@ func TestCloseAgent_NoWorktree_Succeeds(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	// Agent without any worktree association.
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-noworktree",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -729,7 +729,7 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	})
 	require.NoError(t, cwErr)
 
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-fail",
 		WorkingDir: bogusPath,
 		HomeDir:    bogusPath,
@@ -799,7 +799,7 @@ func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-idem",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -1167,7 +1167,7 @@ func TestShutdown_WaitsForInFlightClose(t *testing.T) {
 	// Intentionally do NOT defer drainAllInFlight — this test invokes
 	// Shutdown explicitly, which performs the same wait.
 
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-slow",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -1287,7 +1287,7 @@ func TestOrphanReconciler_ClosesAnAgentThroughTheSharedTeardown(t *testing.T) {
 	ctx := context.Background()
 
 	const agentID = "reconcile-teardown-agent"
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),

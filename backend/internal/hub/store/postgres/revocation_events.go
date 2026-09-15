@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -45,7 +46,7 @@ WHERE event.id = pending.id
 func insertRevocationEvent(
 	ctx context.Context,
 	conn *pgConn,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
 	revokedAt time.Time,
@@ -77,7 +78,7 @@ func emitCredentialEvent(ctx context.Context, conn *pgConn, event store.Credenti
 func revokedCredentialEvent(
 	subjectID, userID string,
 	revokedAt pgtime.NullTime,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	err error,
 ) (*store.CredentialEvent, error) {
 	if err != nil {

@@ -84,18 +84,31 @@ export function createAgentActivityStore() {
 
   return {
     /**
-     * Whether the agent is working, which is what the thinking indicator and the
-     * Interrupt button read. An agent nothing has reported on yet is not
-     * working: a spinner that appears before any evidence is worse than one that
-     * appears a beat late.
+     * Whether the agent is working, which is what the thinking indicator reads.
+     * An agent nothing has reported on yet is not working: a spinner that
+     * appears before any evidence is worse than one that appears a beat late.
      *
      * WAITING_FOR_USER answers false here on purpose. The user is looking
      * straight at the permission prompt, so spinning an indicator at them says
-     * nothing -- but see activityInterruptsWork, which the close guard applies
-     * to the exact state it fetches instead of to this debounced one.
+     * nothing -- but see activityInterruptsWork, which the close guard and the
+     * Interrupt button both apply to the level instead.
      */
     isBusy(agentId: string): boolean {
       return stateOf(agentId) === AgentActivityState.WORKING
+    },
+
+    /**
+     * The level the Worker last published for this agent, for a reader that
+     * needs more than the working/not-working answer isBusy gives.
+     *
+     * The Interrupt button is that reader. It has to tell an agent blocked on a
+     * permission prompt (WAITING_FOR_USER -- stop it, and the turn behind the
+     * prompt ends) from a prompt that a background task raised after its turn
+     * ended (IDLE -- there is no turn left to stop). Both carry a live request,
+     * so the request list cannot tell them apart and the Worker's level can.
+     */
+    publishedState(agentId: string): AgentActivityState {
+      return stateOf(agentId)
     },
 
     /**

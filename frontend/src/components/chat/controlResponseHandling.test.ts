@@ -5,7 +5,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
@@ -319,6 +319,107 @@ describe('restoring saved answers', () => {
 })
 
 describe('handleControlSend', () => {
+  it('keeps plan settings with the captured request through the composer handler', async () => {
+    const request = makeControlRequest('plan', 'test-agent')
+    request.payload = { request: { tool_name: 'ExitPlanMode' } }
+    const onControlResponse = vi.fn().mockResolvedValue(true)
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: setup({ controlRequests: [request], onControlResponse }).result,
+    }))
+    try {
+      const bytes = new TextEncoder().encode('{"response":{"request_id":"plan","response":{"behavior":"allow"}}}')
+      const options = { planApproval: { permissionMode: '', clearContext: false } }
+      await result.respondTo(request)(bytes, options)
+      expect(onControlResponse).toHaveBeenCalledExactlyOnceWith(request, bytes, options)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('cleans only the captured agent after the editor switches during delivery', async () => {
+    let finish!: () => void
+    const delivery = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const first: ControlRequest = { ...makeControlRequest('request', 'agent-A'), claimToken: 'token', agentProvider: AgentProvider.CLAUDE_CODE }
+    const second: ControlRequest = { ...first, agentId: 'agent-B' }
+    const firstKey: AsyncLocalKey = `${PREFIX_CONTROL_STATE}agent-A:request:token`
+    const secondKey: AsyncLocalKey = `${PREFIX_CONTROL_STATE}agent-B:request:token`
+    await localStorageStore(firstKey, { choices: { scope: 'once' } }).durable
+    await localStorageStore(secondKey, { choices: { scope: 'session' } }).durable
+    const [agentId, setAgentId] = createSignal('agent-A')
+    const [requests, setRequests] = createSignal([first])
+    const state = createControlAnswerState()
+    const reset = vi.fn()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: useControlResponseHandling({
+        get agentId() { return agentId() },
+        get controlRequests() { return requests() },
+        onControlResponse: () => delivery,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, reset),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.choices()).toEqual({ scope: 'once' }))
+      const sending = result.respondTo(first)(new Uint8Array())
+      batch(() => {
+        setAgentId('agent-B')
+        setRequests([second])
+      })
+      await vi.waitFor(() => expect(state.choices()).toEqual({ scope: 'session' }))
+      finish()
+      await sending
+      await flushStorageWrites()
+      expect(await localStorageLoad(firstKey)).toBeUndefined()
+      expect(await localStorageLoad(secondKey)).toMatchObject({ choices: { scope: 'session' } })
+      expect(reset).not.toHaveBeenCalled()
+    }
+    finally {
+      finish()
+      dispose()
+    }
+  })
+
+  it('keeps saved answers until delivery succeeds and permits retry after failure', async () => {
+    let resolveDelivery!: () => void
+    let rejectDelivery!: (error: Error) => void
+    const delivery = new Promise<void>((resolve, reject) => {
+      resolveDelivery = resolve
+      rejectDelivery = reject
+    })
+    const onControlResponse = vi.fn().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
+    const request: ControlRequest = { requestId: 'pending', agentId: 'test-agent', agentProvider: AgentProvider.CLAUDE_CODE, claimToken: 'token', payload: { request: { tool_name: 'Bash', input: { command: 'pwd' } } } }
+    const key: AsyncLocalKey = `${PREFIX_CONTROL_STATE}test-agent:pending:token`
+    const state = createControlAnswerState()
+    const reset = vi.fn()
+    const { result, dispose } = createRoot(dispose => ({ dispose, result: useControlResponseHandling({ agentId: 'test-agent', controlRequests: [request], onControlResponse, onSendMessage: vi.fn() }, state, () => undefined, reset) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      state.setChoices({ scope: 'once' })
+      await flushStorageWrites()
+      const sending = Promise.resolve(result.handleControlSend('Use a safer command')).catch(() => {})
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toMatchObject({ choices: { scope: 'once' } })
+      expect(reset).not.toHaveBeenCalled()
+      rejectDelivery(new Error('offline'))
+      await sending
+      state.setChoices({ scope: 'session' })
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toMatchObject({ choices: { scope: 'session' } })
+      await result.handleControlSend('Use a safer command')
+      await flushStorageWrites()
+      expect(await localStorageLoad(key)).toBeUndefined()
+      expect(reset).toHaveBeenCalledOnce()
+    }
+    finally {
+      resolveDelivery()
+      dispose()
+    }
+  })
+
   // Answering discards the saved answers of the answered instance, and the
   // outcome must not depend on whether a caller batches.
   //
@@ -361,7 +462,7 @@ describe('handleControlSend', () => {
     expect(await localStorageLoad(key)).toBeDefined()
     await vi.waitFor(() => expect(answerState.ready()).toBe(true))
 
-    batch(() => result.handleControlSend(''))
+    await batch(() => result.handleControlSend(''))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
     expect(await localStorageLoad(key)).toBeUndefined()
@@ -476,6 +577,38 @@ describe('handleControlSend', () => {
     })
   })
 
+  it('sends Pi plan feedback only after the native stay decision', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        let finishResponse!: () => void
+        const onControlResponse = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+          finishResponse = resolve
+        }))
+        const onSendControlFeedback = vi.fn()
+        const { result } = setup({
+          agent: { agentProvider: AgentProvider.PI },
+          controlRequests: [makeControlRequest('plan', 'test-agent', {
+            type: 'extension_ui_request',
+            method: 'select',
+            title: 'Proposed plan ready. What next?',
+            options: ['Implement here', 'Start fresh and implement', 'Stay in Plan mode'],
+          })],
+          onControlResponse,
+          onSendControlFeedback,
+        })
+        result.handleControlSend('Revise the second step.')
+        const [, bytes] = onControlResponse.mock.calls[0]
+        expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ type: 'extension_ui_response', id: 'plan', value: 'Stay in Plan mode' })
+        expect(onSendControlFeedback).not.toHaveBeenCalled()
+        finishResponse()
+        await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Revise the second step.'))
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('does not duplicate Codex plan feedback that the worker forwards', async () => {
     await createRoot(async (dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
@@ -583,7 +716,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('uses Codex-native request_user_input responses', async () => {
+  it.each(['7', '007', '9007199254740993'])('preserves worker control ID %s in Codex question responses', (requestId) => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -591,7 +724,7 @@ describe('handleControlSend', () => {
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CODEX },
-        controlRequests: [makeControlRequest('7', 'test-agent', {
+        controlRequests: [makeControlRequest(requestId, 'test-agent', {
           method: 'item/tool/requestUserInput',
           params: {
             questions: [
@@ -616,7 +749,7 @@ describe('handleControlSend', () => {
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
-        id: 7,
+        id: requestId,
         result: {
           answers: {
             q1: { answers: ['Build'] },
@@ -743,15 +876,26 @@ describe('handleControlSend', () => {
 })
 
 /**
- * The Interrupt button is offered only when the click can actually land. A
- * subagent tab whose provider cannot interrupt one subagent gets no button:
- * the worker routes a child interrupt through a separate child capability.
- * A provider without that capability returns FailedPrecondition.
+ * The Interrupt button is offered only when the click can actually land. Two
+ * conditions decide that, and the cases below cover both.
+ *
+ * The Worker states whether anything is running, and its level is the only
+ * input: it owns the turn bookkeeping, the background-task registry, the
+ * pending prompts and the process state, so a second answer assembled here
+ * would disagree with the one that the click reaches.
+ *
+ * And a subagent tab whose provider cannot interrupt one subagent gets no
+ * button: the worker routes a child interrupt through a separate child
+ * capability, and a provider without that capability returns
+ * FailedPrecondition.
  */
 describe('showInterrupt', () => {
+  const pendingRequest = () =>
+    ({ requestId: 'r1', payload: {}, agentId: 'test-agent' } as unknown as ControlRequest)
+
   it('shows the button while the agent works and nothing is being asked', async () => {
     createRoot((dispose) => {
-      const { result } = setup({ agentWorking: true })
+      const { result } = setup({ agentActivity: AgentActivityState.WORKING })
       expect(result.showInterrupt()).toBe(true)
       dispose()
     })
@@ -759,16 +903,56 @@ describe('showInterrupt', () => {
 
   it('hides the button when the agent is idle', async () => {
     createRoot((dispose) => {
-      const { result } = setup({ agentWorking: false })
+      const { result } = setup({ agentActivity: AgentActivityState.IDLE })
       expect(result.showInterrupt()).toBe(false)
       dispose()
     })
   })
 
-  it('hides the button while a control request is pending', async () => {
+  it('hides the button for an agent nothing has reported on yet', async () => {
     createRoot((dispose) => {
-      const request = { requestId: 'r1', payload: {}, agentId: 'test-agent' } as unknown as ControlRequest
-      const { result } = setup({ agentWorking: true, controlRequests: [request] })
+      const { result } = setup({ agentActivity: undefined })
+      expect(result.showInterrupt()).toBe(false)
+      dispose()
+    })
+  })
+
+  // An agent blocked on a question is mid-turn, and stopping it ends the turn
+  // behind the question. That is when a reader most wants out, so the button
+  // stays even though the indicator does not spin.
+  it('shows the button while the agent is blocked on a question', async () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agentActivity: AgentActivityState.WAITING_FOR_USER,
+        controlRequests: [pendingRequest()],
+      })
+      expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
+
+  // The case the request list alone cannot tell apart. A background shell can
+  // ask for permission after its agent's turn ended, and the Worker calls that
+  // IDLE: there is no turn left, so the button would offer a stop that stops
+  // nothing.
+  it('hides the button for a question with no turn behind it', async () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agentActivity: AgentActivityState.IDLE,
+        controlRequests: [pendingRequest()],
+      })
+      expect(result.showInterrupt()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('hides the button for a pending request on an agent that cannot be interrupted', async () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agentActivity: AgentActivityState.WAITING_FOR_USER,
+        controlRequests: [pendingRequest()],
+        canInterrupt: false,
+      })
       expect(result.showInterrupt()).toBe(false)
       dispose()
     })
@@ -776,7 +960,7 @@ describe('showInterrupt', () => {
 
   it('hides the button when this agent cannot be interrupted on its own', async () => {
     createRoot((dispose) => {
-      const { result } = setup({ agentWorking: true, canInterrupt: false })
+      const { result } = setup({ agentActivity: AgentActivityState.WORKING, canInterrupt: false })
       expect(result.showInterrupt()).toBe(false)
       dispose()
     })
@@ -784,8 +968,80 @@ describe('showInterrupt', () => {
 
   it('treats an unset capability as interruptible (the root-agent default)', async () => {
     createRoot((dispose) => {
-      const { result } = setup({ agentWorking: true, canInterrupt: undefined })
+      const { result } = setup({ agentActivity: AgentActivityState.WORKING, canInterrupt: undefined })
       expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
+})
+
+// Both halves of the banner take these two, so the composer and the banner
+// cannot classify the same request differently, and one graph answers all three
+// readers. See `createControlSurface`.
+describe('activeControlSurface and activeControlProvider', () => {
+  const question = {
+    request: {
+      tool_name: 'AskUserQuestion',
+      input: { questions: [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] }] },
+    },
+  }
+
+  it('classifies the active request and reports its provider', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', question)],
+      })
+      expect(result.activeControlProvider()).toBe(AgentProvider.CLAUDE_CODE)
+      expect(result.activeControlSurface()?.kind).toBe('question')
+      expect(result.isAskUserQuestion()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('leaves a payload no shared form answers to the provider plugin', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent')],
+      })
+      expect(result.activeControlSurface()).toEqual({ kind: 'plugin' })
+      dispose()
+    })
+  })
+
+  // The request's own provider wins over the agent's, so a queued request from
+  // another provider reaches its own plugin.
+  it('prefers the provider the request carries', () => {
+    createRoot((dispose) => {
+      const request = makeControlRequest('req-1', 'test-agent')
+      request.agentProvider = AgentProvider.CODEX
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [request],
+      })
+      expect(result.activeControlProvider()).toBe(AgentProvider.CODEX)
+      dispose()
+    })
+  })
+
+  it('reports no surface once the store removes the request', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agent: { agentProvider: AgentProvider.CLAUDE_CODE }, controlRequests: [] })
+      expect(result.activeControlSurface()).toBeUndefined()
+      dispose()
+    })
+  })
+
+  // ONE graph: both halves of the banner and the composer read the same memo,
+  // so a read from three places recomputes nothing.
+  it('classifies once for every reader of the same request', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', question)],
+      })
+      expect(result.activeControlSurface()).toBe(result.activeControlSurface())
       dispose()
     })
   })
@@ -890,5 +1146,159 @@ describe('activeControlRequest', () => {
 
       dispose()
     })
+  })
+})
+
+describe('a request whose payload LeapMux cannot read', () => {
+  // The banner offers no decision for a faulted request, so the composer must not offer
+  // to send one either: a rejection reason still builds a DENY, and composing one needs
+  // the option list or decision vocabulary the unreadable payload was carrying. The stop
+  // is the way out. See RL-002.
+  it('offers no editor, and sends nothing when one is driven anyway', async () => {
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const request: ControlRequest = {
+      agentId: 'test-agent',
+      requestId: 'faulted',
+      payload: {},
+      payloadFault: 'malformed',
+      originalPayload: new TextEncoder().encode('{not json'),
+    }
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({ dispose, handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.GOOSE }, controlRequests: [request], onControlResponse, onSendMessage: vi.fn() }, state, () => undefined, vi.fn()) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.editorPurpose()).toBe('none')
+      expect(handling.editorPlaceholder()).toBeUndefined()
+      expect(handling.handleControlSend('why did this fail')).toBe(false)
+      expect(onControlResponse).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  // The turn is still blocked, and a payload nobody can read leaves the stop as
+  // the ONLY way out -- there is no question to answer. The Worker says the turn
+  // is blocked the same way it does for a readable prompt, so the button reads
+  // its level and the fault changes nothing here.
+  it('still offers the stop', async () => {
+    const request: ControlRequest = { agentId: 'test-agent', requestId: 'faulted', payload: {}, payloadFault: 'malformed' }
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({ dispose, handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.GOOSE }, controlRequests: [request], agentActivity: AgentActivityState.WAITING_FOR_USER, onControlResponse: vi.fn(), onSendMessage: vi.fn() }, state, () => undefined, vi.fn()) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.showInterrupt()).toBe(true)
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
+describe('elicitation composer submission', () => {
+  it('prevents a hidden editor from submitting form answers', async () => {
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const request: ControlRequest = { agentId: 'test-agent', requestId: 'form-submit', claimToken: 'form-token', payload: {
+      method: 'elicitation/create',
+      params: { mode: 'form', requestedSchema: { type: 'object', required: ['count'], properties: { count: { type: 'integer' } } } },
+    } }
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({ dispose, handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.GOOSE }, controlRequests: [request], onControlResponse, onSendMessage: vi.fn() }, state, () => undefined, vi.fn()) }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.editorPurpose()).toBe('none')
+      expect(handling.editorPlaceholder()).toBeUndefined()
+      expect(handling.handleControlSend('Keep this note')).toBe(false)
+      expect(onControlResponse).not.toHaveBeenCalled()
+      expect(handling.handleControlSend('')).toBe(false)
+      state.setChoices({ 'elicitation:"count"': '0' })
+      expect(handling.handleControlSend('')).toBe(false)
+      expect(onControlResponse).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
+// A control response that the worker RECORDS but does not complete leaves the
+// request open. `handleControlSend` resolved with nothing for it, and the editor
+// refuses only on a literal `false` -- so the composer cleared the text the user
+// still had to send. See SCAN-S8-1.
+describe('handleControlSend completion', () => {
+  const denyRequest = (): ControlRequest => ({
+    requestId: 'open',
+    agentId: 'test-agent',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    payload: { request: { tool_name: 'Bash', input: { command: 'pwd' } } },
+  })
+
+  async function sendWith(completed: boolean | undefined) {
+    const request = denyRequest()
+    const onControlResponse = vi.fn().mockResolvedValue(completed)
+    const state = createControlAnswerState()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: useControlResponseHandling(
+        { agentId: 'test-agent', controlRequests: [request], onControlResponse, onSendMessage: vi.fn() },
+        state,
+        () => undefined,
+        vi.fn(),
+      ),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      return await result.handleControlSend('No, use a safer command')
+    }
+    finally {
+      dispose()
+    }
+  }
+
+  it('refuses the send when the worker leaves the request open', async () => {
+    expect(await sendWith(false)).toBe(false)
+  })
+
+  it('reports the send when the worker completes the response', async () => {
+    expect(await sendWith(true)).toBe(true)
+  })
+
+  // A handler that answers nothing is the LEGACY shape, and it means completed.
+  it('treats a handler that reports nothing as completed', async () => {
+    expect(await sendWith(undefined)).toBe(true)
+  })
+})
+
+// The three presentation surfaces all refuse to offer a decision for a request
+// whose bytes LeapMux could not read, and the one place that SENDS tested the
+// delivery state alone -- so a faulted request in the READY state passed it.
+// See ALTITUDE-FE-4.
+describe('submitResponse payload fault', () => {
+  const faulted = (): ControlRequest => ({
+    requestId: 'faulted',
+    agentId: 'test-agent',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    payload: {},
+    payloadFault: 'malformed',
+    responseState: ControlResponseState.READY,
+  })
+
+  it('refuses an answer and still admits the recording', async () => {
+    const request = faulted()
+    const onControlResponse = vi.fn().mockResolvedValue(true)
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: setup({ controlRequests: [request], onControlResponse }).result,
+    }))
+    try {
+      await expect(result.respondTo(request)(new TextEncoder().encode('{}'))).rejects.toThrow()
+      expect(onControlResponse).not.toHaveBeenCalled()
+      await result.recordResponse(request)
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      expect(onControlResponse.mock.calls[0][2]).toMatchObject({ recordOnly: true })
+    }
+    finally {
+      dispose()
+    }
   })
 })

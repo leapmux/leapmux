@@ -12,11 +12,43 @@
     "goalTransitions",
     "workerAuthoredNotificationTypes",
     "assembledMessage",
+    "toolOutcome",
     "notificationThreadWrapperType",
+    "messageMetadataFields",
+    "messageSupplementFields",
+    "rpcMethods",
     "codexRateLimitReachedTimeWindow",
     "modelSentinels"
   ],
   "properties": {
+    "messageSupplementFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Provider", "Metadata"],
+      "properties": {
+        "Provider": { "type": "string", "minLength": 1 },
+        "Metadata": { "type": "string", "minLength": 1 }
+      }
+    },
+    "messageMetadataFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["DurationMs", "ToolUses", "ControlRequestID", "ControlRequestClaimToken", "PlanApprovalSettings", "ToolOutcome"],
+      "properties": {
+        "DurationMs": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "ToolUses": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "ControlRequestID": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "ControlRequestClaimToken": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "PlanApprovalSettings": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "ToolOutcome": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+      }
+    },
+    "rpcMethods": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+    },
     "_readme": {
       "type": "string",
       "minLength": 1
@@ -66,7 +98,7 @@
     "assembledMessage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "types", "kinds", "completions", "metadata"],
+      "required": ["fields", "types", "kinds", "completions"],
       "properties": {
         "fields": {
           "type": "object",
@@ -104,12 +136,37 @@
             "Interrupted": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
             "Error": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
           }
-        },
-        "metadata": {
+        }
+      }
+    },
+    "toolOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "sources", "outcomes"],
+      "properties": {
+        "fields": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Field"],
-          "properties": { "Field": { "type": "string", "pattern": "^_[a-z][a-z0-9_]*$" } }
+          "required": ["Source", "Outcome"],
+          "properties": {
+            "Source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Outcome": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["BatchSummary"],
+          "properties": { "BatchSummary": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } }
+        },
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["Succeeded", "Unknown"],
+          "properties": {
+            "Succeeded": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "Unknown": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+          }
         }
       }
     },

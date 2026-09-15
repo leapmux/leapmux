@@ -118,10 +118,12 @@ export type ClaudeToolName = typeof CLAUDE_TOOL[keyof typeof CLAUDE_TOOL]
  * Canonical ACP `sessionUpdate` literals (the discriminator used by the Agent
  * Client Protocol on incoming updates). Use these constants in classifiers and
  * routers so wire-format strings are typo-checked and centralized.
+ *
+ * The two text chunks (`agent_message_chunk`, `agent_thought_chunk`) are absent.
+ * The worker joins a run of them into one assembled-message row, so no chunk ever
+ * reaches the browser and no classifier can name one.
  */
 export const ACP_SESSION_UPDATE = {
-  AGENT_MESSAGE_CHUNK: 'agent_message_chunk',
-  AGENT_THOUGHT_CHUNK: 'agent_thought_chunk',
   TOOL_CALL: 'tool_call',
   TOOL_CALL_UPDATE: 'tool_call_update',
   PLAN: 'plan',

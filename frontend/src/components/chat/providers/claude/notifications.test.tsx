@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { elementText, renderDivider } from '../../messageRenderTestUtils'
 import { renderNotificationThread } from '../../notificationRenderers'
 import { renderResultDivider } from '../../resultDividerRenderers'
@@ -42,12 +42,12 @@ describe('result_divider: Claude', () => {
   it('renders is_error=true as error', () => {
     const parsed = { type: 'result', is_error: true, result: 'Something went wrong' }
     expect(isRenderedAsError(parsed)).toBe(true)
-    expect(renderResultText(parsed)).toBe('Something went wrong')
+    expect(renderResultText(parsed)).toBe('Turn failed — Something went wrong')
   })
 
   it('renders a zero-turn unknown-command result (is_error:false) as a plain divider, not a danger dump', () => {
     // Claude Code reports unknown slash commands as is_error:false results that
-    // echo their already-shown message. Trust is_error: show "Took Xs" rather
+    // echo their already-shown message. Trust is_error: show the turn end rather
     // than a red dump of the result text. (The renderer ignores stop_reason /
     // num_turns now, so the fixture omits them.)
     const parsed = {
@@ -59,7 +59,7 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(false)
     const text = renderResultText(parsed)
-    expect(text).toBe('Took 24ms')
+    expect(text).toBe('Turn ended (24ms)')
     expect(text).not.toContain('Unknown command')
   })
 
@@ -73,11 +73,11 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(false)
     const text = renderResultText(parsed)
-    expect(text).toBe('Took 3ms')
+    expect(text).toBe('Turn ended (3ms)')
     expect(text).not.toContain('subscription')
   })
 
-  it('renders a success result as a plain "Took Xs" divider, discarding its raw result text', () => {
+  it('renders a success result as a plain turn-end divider, discarding its raw result text', () => {
     const parsed = {
       type: 'result',
       is_error: false,
@@ -87,14 +87,14 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(false)
     const text = renderResultText(parsed)
-    expect(text).toBe('Took 1.1s')
+    expect(text).toBe('Turn ended (1.1s)')
     expect(text).not.toContain('Context Usage')
   })
 
   it('renders a non-error result with an absent subtype as a plain divider, not its raw text', () => {
     // A non-error result that omits `subtype` must be treated as success-like
     // (mirroring the error branch's `subtype && ...` guard), so it collapses to
-    // "Took Xs" rather than leaking the raw echo text into the label.
+    // the turn end rather than leaking the raw echo text into the label.
     const parsed = {
       type: 'result',
       is_error: false,
@@ -103,52 +103,61 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(false)
     const text = renderResultText(parsed)
-    expect(text).toBe('Took 7ms')
+    expect(text).toBe('Turn ended (7ms)')
     expect(text).not.toContain('subscription')
   })
 
   it('renders a non-error success result with a missing duration_ms as "Turn ended"', () => {
-    // A missing duration_ms has no meaningful "Took" value, so the duration-only
-    // divider falls back to "Turn ended" instead of a fake "Took 0ms".
+    // A missing duration_ms has no duration to state, so the label carries none
+    // rather than a fake zero.
     const parsed = { type: 'result', is_error: false, subtype: 'success', result: 'done' }
     expect(isRenderedAsError(parsed)).toBe(false)
     expect(renderResultText(parsed)).toBe('Turn ended')
   })
 
-  it('renders a non-error success result with a real zero duration_ms as "Took 0ms"', () => {
-    // A genuine zero is distinct from missing — an instant turn is "Took 0ms".
+  it('renders a non-error success result with a real zero duration_ms as "Turn ended (0ms)"', () => {
+    // A genuine zero is distinct from missing — an instant turn states "(0ms)".
     const parsed = { type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 0 }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toBe('Took 0ms')
+    expect(renderResultText(parsed)).toBe('Turn ended (0ms)')
   })
 
-  it('renders a non-success non-error result with a missing duration_ms as just its text', () => {
-    // displayText present + no duration -> the suffix is dropped, not "(0ms)".
+  it('renders a cancelled result with a missing duration_ms as a bare interruption', () => {
+    // No duration to state, so the interruption stands alone.
     const parsed = { type: 'result', is_error: false, subtype: 'cancelled', result: 'Cancelled' }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toBe('Cancelled')
+    expect(renderResultText(parsed)).toBe('Turn interrupted')
   })
 
-  it('renders a non-success non-error result with a real zero duration_ms as "<text> (0ms)"', () => {
-    // displayText present + real zero -> the suffix is kept, mirroring "Took 0ms".
+  it('renders a cancelled result with a real zero duration_ms as "Turn interrupted (0ms)"', () => {
+    // A real zero is kept, exactly as it is for a turn that ended normally.
     const parsed = { type: 'result', is_error: false, subtype: 'cancelled', result: 'Cancelled', duration_ms: 0 }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toBe('Cancelled (0ms)')
+    expect(renderResultText(parsed)).toBe('Turn interrupted (0ms)')
   })
 
   it('renders success subtype with duration', () => {
     const parsed = { type: 'result', subtype: 'success', stop_reason: 'end_turn', result: 'done', duration_ms: 5000 }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toBe('Took 5.0s')
+    expect(renderResultText(parsed)).toBe('Turn ended (5.0s)')
   })
 
-  it('renders non-success subtype with result text and duration', () => {
+  it('renders a cancelled subtype as an interruption with its duration', () => {
     const parsed = { type: 'result', subtype: 'cancelled', stop_reason: 'end_turn', result: 'Cancelled', duration_ms: 2000 }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toBe('Cancelled (2.0s)')
+    expect(renderResultText(parsed)).toBe('Turn interrupted (2.0s)')
   })
 
-  it('renders error with subtype as humanized divider + detail', () => {
+  // The command-line interface marks its own cancellation with `is_error: true`, the same
+  // shape it uses for a genuine failure. The cancelled test used to live past that branch,
+  // so a stop the interface reported drew "Turn failed — Cancelled" in the danger color.
+  it('renders a cancelled subtype as an interruption even when is_error is set', () => {
+    const parsed = { type: 'result', is_error: true, subtype: 'cancelled', result: 'Cancelled', errors: ['Error: Request was aborted.'], duration_ms: 2000 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Turn interrupted (2.0s)')
+  })
+
+  it('renders error with subtype as a shared turn-failed divider plus detail', () => {
     const parsed = {
       type: 'result',
       is_error: true,
@@ -158,9 +167,40 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(true)
     const text = renderResultText(parsed)
-    expect(text).toContain('Error during execution (29s)')
+    expect(text).toContain('Turn failed (29s) — Error during execution')
     expect(text).toContain('[ede_diagnostic] result_type=user')
     expect(text).toContain('Error: Request was aborted.')
+  })
+
+  // The command-line interface reports a turn the user stopped with the same error
+  // subtype it uses for a genuine failure, and its own diagnostics ride in `errors`.
+  // LeapMux asked for the stop, so its completion column decides the words.
+  it('states the interruption rather than the runtime error subtype', () => {
+    const parsed = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_during_execution',
+      errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+      duration_ms: 12000,
+    }
+    const divider = renderDivider(parsed, AgentProvider.CLAUDE_CODE, MessageCompletion.INTERRUPTED)
+    expect(divider.text).toBe('Turn interrupted (12s)')
+    expect(divider.isError).toBe(false)
+  })
+
+  // Without that column the frame is all there is, so a real failure still reads as
+  // one.
+  it('keeps the runtime error when no completion states an interruption', () => {
+    const parsed = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_during_execution',
+      errors: ['Error: Request was aborted.'],
+      duration_ms: 12000,
+    }
+    const divider = renderDivider(parsed, AgentProvider.CLAUDE_CODE)
+    expect(divider.text).toContain('Turn failed (12s) — Error during execution')
+    expect(divider.isError).toBe(true)
   })
 
   it('renders error with subtype but no errors array shows subtype only', () => {
@@ -171,13 +211,13 @@ describe('result_divider: Claude', () => {
       duration_ms: 5000,
     }
     const text = renderResultText(parsed)
-    expect(text).toBe('Error during execution (5.0s)')
+    expect(text).toBe('Turn failed (5.0s) — Error during execution')
   })
 
   it('renders error without subtype as inline error (legacy behavior)', () => {
     const parsed = { type: 'result', is_error: true, result: 'Something went wrong', duration_ms: 100 }
     const text = renderResultText(parsed)
-    expect(text).toBe('Something went wrong (100ms)')
+    expect(text).toBe('Turn failed (100ms) — Something went wrong')
     expect(text).not.toContain('\n')
   })
 
@@ -194,7 +234,7 @@ describe('result_divider: Claude', () => {
     }
     expect(isRenderedAsError(parsed)).toBe(false)
     const text = renderResultText(parsed)
-    expect(text).toBe('Took 2.1s')
+    expect(text).toBe('Turn ended (2.1s)')
     expect(text).not.toContain('Context Usage')
   })
 

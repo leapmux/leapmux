@@ -101,9 +101,9 @@ func TestBgTask_UpsertCreatesRowAndBroadcasts(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "task-1", rows[0].RowKey)
-	assert.Equal(t, "subagent", rows[0].Kind)
+	assert.Equal(t, leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), rows[0].Kind)
 	assert.Equal(t, "build feature", rows[0].Title)
-	assert.Equal(t, "running", rows[0].Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning), rows[0].Status)
 }
 
 func TestBgTask_UpsertIdenticalReplaySkipsBroadcast(t *testing.T) {
@@ -161,7 +161,7 @@ func TestBgTask_UpdateStatusFinalStampsEndedAt(t *testing.T) {
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, ""))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status)
 	assert.True(t, rows[0].EndedAt.Valid, "final status update stamps ended_at")
 }
 
@@ -181,7 +181,7 @@ func TestBgTask_UpdateStatusMonotonicOnFinal(t *testing.T) {
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "late progress"))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status, "finished row stays finished")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status, "finished row stays finished")
 	assert.True(t, rows[0].EndedAt.Valid, "ended_at stays stamped")
 }
 
@@ -202,7 +202,7 @@ func TestBgTask_UpsertMonotonicOnFinal(t *testing.T) {
 	}))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "interrupted", rows[0].Status, "replayed running upsert does not resurrect a finished row")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), rows[0].Status, "replayed running upsert does not resurrect a finished row")
 	assert.True(t, rows[0].EndedAt.Valid, "ended_at stays stamped")
 }
 
@@ -234,11 +234,11 @@ func TestBgTask_PartialUpsertPreservesExistingFields(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "run tests", rows[0].Title, "title preserved from first upsert")
-	assert.Equal(t, "shell", rows[0].Kind, "kind preserved")
+	assert.Equal(t, leapmuxv1.BackgroundTaskKind(bgtask.KindShell), rows[0].Kind, "kind preserved")
 	assert.Equal(t, "ci", rows[0].GroupKey, "group_key preserved")
 	assert.Equal(t, "CI", rows[0].GroupLabel, "group_label preserved")
 	assert.Equal(t, "/tmp/out.log", rows[0].Description, "description updated")
-	assert.Equal(t, "completed", rows[0].Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status)
 }
 
 // TestBgTask_ParentAgentIDAutoPopulated verifies the neutral sink layer fills in
@@ -269,7 +269,7 @@ func TestBgTask_CloseStampsEndedAt(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status)
 	assert.True(t, rows[0].EndedAt.Valid, "final close stamps ended_at")
 }
 
@@ -292,7 +292,7 @@ func TestBgTask_CloseIsIdempotentOnFinishedRow(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
 	rows = listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status, "first final status wins")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status, "first final status wins")
 	assert.Equal(t, endedAt, rows[0].EndedAt, "ended_at must not change on re-close")
 }
 
@@ -528,7 +528,7 @@ func TestBgTask_RenameRekeysRowAndPreservesStatus(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1, "rename collapsed the lifecycle to one row")
 	assert.Equal(t, "sess-stable", rows[0].RowKey)
-	assert.Equal(t, "completed", rows[0].Status, "status preserved across the rename")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status, "status preserved across the rename")
 	// The old spawn key is gone.
 	for _, r := range rows {
 		assert.NotEqual(t, "spawn-key", r.RowKey, "spawn key renamed away")
@@ -572,7 +572,7 @@ func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1, "the duplicate is dropped rather than left Running")
 	assert.Equal(t, "sess-stable", rows[0].RowKey)
-	assert.Equal(t, "completed", rows[0].Status, "the surviving row keeps its final status")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status, "the surviving row keeps its final status")
 }
 
 // The losing duplicate leaves the display list, but its PERSISTED row goes only
@@ -751,7 +751,7 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 	// Seed a row directly in the DB (cold-start path).
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "agent-1", RowKey: "seeded", Seq: 1,
-		Kind: "subagent", Title: "seeded row", Status: "running",
+		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "seeded row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	}))
 	items, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
@@ -779,7 +779,7 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	statusOf := func(rowKey string) string {
+	statusOf := func(rowKey string) bgtask.Status {
 		t.Helper()
 		rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 			OwnerAgentID: "agent-1", Limit: 1000,
@@ -787,11 +787,11 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 		require.NoError(t, err)
 		for _, r := range rows {
 			if r.RowKey == rowKey {
-				return r.Status
+				return bgtask.Status(r.Status)
 			}
 		}
 		t.Fatalf("no row %q", rowKey)
-		return ""
+		return bgtask.StatusUnspecified
 	}
 
 	// Both kinds, plus a row that already ended: a crash must end the work in
@@ -809,17 +809,17 @@ func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
 
 	// A crash: the work did not stop, it was cut off.
 	svc.HandleAgentProcessExit("agent-1", 1, errors.New("boom"), false)
-	assert.Equal(t, "interrupted", statusOf("sub"), "a running subagent row ends when its process dies")
-	assert.Equal(t, "interrupted", statusOf("shell"), "a queued shell row ends too -- it will never run")
-	assert.Equal(t, "completed", statusOf("done"), "a row that already ended keeps its own outcome")
+	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "a running subagent row ends when its process dies")
+	assert.Equal(t, bgtask.StatusInterrupted, statusOf("shell"), "a queued shell row ends too -- it will never run")
+	assert.Equal(t, bgtask.StatusCompleted, statusOf("done"), "a row that already ended keeps its own outcome")
 
 	// An explicit stop is a deliberate user action, not a failure.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "later", Kind: bgtask.KindShell, Title: "sleep 60", Status: bgtask.StatusRunning,
 	}))
 	svc.HandleAgentProcessExit("agent-1", 0, nil, true)
-	assert.Equal(t, "stopped", statusOf("later"))
-	assert.Equal(t, "interrupted", statusOf("sub"), "the earlier exit's verdict is not rewritten")
+	assert.Equal(t, bgtask.StatusStopped, statusOf("later"))
+	assert.Equal(t, bgtask.StatusInterrupted, statusOf("sub"), "the earlier exit's verdict is not rewritten")
 }
 
 func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {
@@ -854,7 +854,7 @@ func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 2)
 	for _, r := range rows {
-		assert.Equal(t, "stopped", r.Status, "stopped=true maps to StatusStopped")
+		assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusStopped), r.Status, "stopped=true maps to StatusStopped")
 		assert.True(t, r.EndedAt.Valid)
 	}
 
@@ -872,7 +872,7 @@ func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {
 		}
 	}
 	require.NotNil(t, cRow)
-	assert.Equal(t, "interrupted", cRow.Status, "stopped=false maps to StatusInterrupted")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), cRow.Status, "stopped=false maps to StatusInterrupted")
 }
 
 func TestBgTask_CleanupDropsCache(t *testing.T) {
@@ -930,7 +930,7 @@ func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask(key, bgtask.StatusCompleted))
 	rows = listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), rows[0].Status)
 	assert.Equal(t, "working", rows[0].ActiveForm)
 }
 
@@ -1016,7 +1016,7 @@ func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 			require.NoError(t, sink.CloseBackgroundTask(tc.key, bgtask.StatusCompleted))
 
 			row := findRow(t, listRows(), stored)
-			assert.Equal(t, "completed", row.Status, "the close must find the row the upsert opened")
+			assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), row.Status, "the close must find the row the upsert opened")
 			assert.Equal(t, "working", row.ActiveForm)
 			assert.Equal(t, "derived "+tc.name, row.Title)
 		})
@@ -1224,9 +1224,9 @@ func TestBgTask_SeedReclaimsFinishedSurplus(t *testing.T) {
 			OwnerAgentID: "agent-1",
 			RowKey:       fmt.Sprintf("shell-%03d", i),
 			Seq:          int64(i),
-			Kind:         "shell",
+			Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindShell),
 			Title:        "s",
-			Status:       "completed",
+			Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
 			CreatedAt:    sqltime.NewSQLiteTime(now),
 			UpdatedAt:    sqltime.NewSQLiteTime(now),
 		}))
@@ -1269,10 +1269,10 @@ func TestBgTask_SeedReclaimSparesLinkedRows(t *testing.T) {
 			OwnerAgentID: ownerID,
 			RowKey:       fmt.Sprintf("task-%03d", i),
 			Seq:          int64(i),
-			Kind:         "subagent",
+			Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
 			ChildAgentID: childID,
 			Title:        "t",
-			Status:       "completed",
+			Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
 			CreatedAt:    sqltime.NewSQLiteTime(now),
 			UpdatedAt:    sqltime.NewSQLiteTime(now),
 		}))
@@ -1391,7 +1391,7 @@ func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
 	}))
 
 	row := storedRow(t, svc, ownerID, "task-1")
-	assert.Equal(t, "completed", row.Status, "the replay must not resurrect the row")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), row.Status, "the replay must not resurrect the row")
 	assert.Equal(t, endedAt, row.EndedAt, "ended_at survives the replay")
 }
 
@@ -1430,7 +1430,7 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
 	row := storedRow(t, svc, ownerID, "task-1")
-	assert.Equal(t, "completed", row.Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), row.Status)
 	assert.True(t, row.EndedAt.Valid, "the close stamps ended_at")
 
 	msgs := transcriptMessages(t, svc, childID)
@@ -1457,7 +1457,7 @@ func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
 	row := storedRow(t, svc, ownerID, "task-1")
-	assert.Equal(t, "running", row.Status, "the subagent runs again")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning), row.Status, "the subagent runs again")
 	assert.False(t, row.EndedAt.Valid, "the revive clears ended_at")
 }
 
@@ -1558,9 +1558,9 @@ func TestBgTask_ANoOpMutationOnARetainedRowDeletesNothing(t *testing.T) {
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
 
 	assert.Len(t, listRows(), before, "no persisted row is deleted for a no-op")
-	assert.Equal(t, "completed", storedRow(t, svc, ownerID, "unlinked-1").Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), storedRow(t, svc, ownerID, "unlinked-1").Status,
 		"the unlinked row an eviction would have destroyed is still there")
-	assert.Equal(t, "completed", storedRow(t, svc, ownerID, "task-1").Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), storedRow(t, svc, ownerID, "task-1").Status,
 		"the absorbing guard still holds")
 }
 
@@ -1581,9 +1581,11 @@ func TestBgTask_AReviveThatMatchesNothingAdoptsTheStoredRow(t *testing.T) {
 	// The cache says finished; the ROW is active. Only the DB moves, so the
 	// revive's UPDATE (which filters on a final status) matches nothing.
 	_, err := svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-		UpdatedAt:    sqltime.NewSQLiteTime(nowMillis()),
-		OwnerAgentID: ownerID,
-		RowKey:       "task-1",
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:      sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:   ownerID,
+		RowKey:         "task-1",
 	})
 	require.NoError(t, err)
 

@@ -19,6 +19,7 @@ export const NODE_TEST_FILES = [
   'src/components/chat/chatScrollRailGeometry.test.ts',
   'src/components/chat/chatScrollVelocity.test.ts',
   'src/components/chat/compassPhysics.test.ts',
+  'src/components/chat/controls/permissionOptionLabels.test.ts',
   'src/components/chat/diff/wordDiffCache.test.ts',
   'src/components/chat/disabledReason.test.ts',
   'src/components/chat/markPreviewShared.test.ts',

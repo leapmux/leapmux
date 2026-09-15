@@ -1,34 +1,27 @@
 /**
- * ZCode wire-protocol vocabulary (frontend mirror).
+ * ZCode vocabulary that only the frontend consumes.
  *
- * ZCode's app-server speaks line-delimited JSON with no `jsonrpc` field. Every
- * conversation row LeapMux persists is one SESSION EVENT ENVELOPE:
+ * ZCode's app-server uses line-delimited JSON without a `jsonrpc` field.
+ * LeapMux stores native session events as envelopes with `type` and `payload`.
+ * The frontend dispatches on `type` and reads event data from `payload`.
+ * User rows, control rows, and native plan-request rows use other shapes.
  *
- *   {eventId, sessionId, turnId, seq, timestamp, deliveryKind, type, payload}
- *
- * so the frontend dispatches on the envelope's `type` and reads the shapes out of
- * `payload`.
- *
- * The tables BOTH languages read live in contracts/zcode-protocol.json and reach this
- * plugin through `~/generated/contracts/zcode-protocol`, so they cannot drift from the
- * worker's copy. What stays here is the vocabulary the FRONTEND alone reads: no Go file
- * mentions `file_diff`, and of the three methods below only `session/stop` has a Go
- * twin. Adding a table here that the worker also reads puts it back in two places --
- * put it in the contract instead.
+ * Vocabulary that Go and TypeScript both consume belongs in
+ * contracts/zcode-protocol.json. Import the generated values from
+ * `~/generated/contracts/zcode-protocol`.
  */
 
-/** The interaction methods the app-server asks LeapMux to answer. */
-export const ZCODE_METHOD = {
-  SessionStop: 'session/stop',
-  RequestPermission: 'interaction/requestPermission',
-  RequestUserInput: 'interaction/requestUserInput',
-} as const
+/** This tool name is used only by the frontend. */
+export const ZCODE_WEB_FETCH = 'WebFetch'
 
-/**
- * `result.display.kind` — the app-server's own hint about how to draw a tool
- * result. `file_diff` is the only one it emits today, and it carries a
- * ready-to-render structured patch.
- */
+/** The display kinds that the app-server supplies with tool results. */
 export const ZCODE_DISPLAY = {
   FileDiff: 'file_diff',
+  LocalAgentMessage: 'local_agent_message',
+  TaskStop: 'task_stop',
+  TaskOutput: 'task_output',
+  RespondToCoordinator: 'respond_to_coordinator',
+  ComputerUse: 'cua',
+  NodeImages: 'node_repl_images',
+  McpTool: 'mcp_tool',
 } as const

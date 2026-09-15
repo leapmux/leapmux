@@ -18,7 +18,7 @@ func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -49,7 +49,7 @@ func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",

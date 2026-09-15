@@ -15,6 +15,7 @@ import type {
   DeleteQueuedAgentInputResponse,
   EnqueueAgentInputResponse,
   GetAgentMessageResponse,
+  GetAgentSpanMessagesResponse,
   InterruptAgentResponse,
   ListAgentMessagesResponse,
   ListAgentSessionsResponse,
@@ -23,6 +24,7 @@ import type {
   ListMessageMarksResponse,
   MoveQueuedAgentInputResponse,
   OpenAgentResponse,
+  PreemptQueuedAgentInputResponse,
   RenameAgentResponse,
   RetryQueuedAgentInputResponse,
   SendAgentRawMessageResponse,
@@ -86,6 +88,7 @@ import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
+import { WORKER_RPC_METHOD } from '~/generated/contracts/worker-vocab'
 import {
   BeginQueuedAgentInputEditRequestSchema,
   BeginQueuedAgentInputEditResponseSchema,
@@ -99,6 +102,8 @@ import {
   EnqueueAgentInputResponseSchema,
   GetAgentMessageRequestSchema,
   GetAgentMessageResponseSchema,
+  GetAgentSpanMessagesRequestSchema,
+  GetAgentSpanMessagesResponseSchema,
   InterruptAgentRequestSchema,
   InterruptAgentResponseSchema,
   ListAgentMessagesRequestSchema,
@@ -115,6 +120,8 @@ import {
   MoveQueuedAgentInputResponseSchema,
   OpenAgentRequestSchema,
   OpenAgentResponseSchema,
+  PreemptQueuedAgentInputRequestSchema,
+  PreemptQueuedAgentInputResponseSchema,
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
   RetryQueuedAgentInputRequestSchema,
@@ -454,6 +461,10 @@ export function steerQueuedAgentInput(workerId: string, req: MessageInitShape<ty
   return callWorker(workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, req)
 }
 
+export function preemptQueuedAgentInput(workerId: string, req: MessageInitShape<typeof PreemptQueuedAgentInputRequestSchema>): Promise<PreemptQueuedAgentInputResponse> {
+  return callWorker(workerId, 'PreemptQueuedAgentInput', PreemptQueuedAgentInputRequestSchema, PreemptQueuedAgentInputResponseSchema, req)
+}
+
 export function retryQueuedAgentInput(workerId: string, req: MessageInitShape<typeof RetryQueuedAgentInputRequestSchema>): Promise<RetryQueuedAgentInputResponse> {
   return callWorker(workerId, 'RetryQueuedAgentInput', RetryQueuedAgentInputRequestSchema, RetryQueuedAgentInputResponseSchema, req)
 }
@@ -474,8 +485,12 @@ export function listMessageMarks(workerId: string, req: MessageInitShape<typeof 
   return callWorker(workerId, 'ListMessageMarks', ListMessageMarksRequestSchema, ListMessageMarksResponseSchema, req, opts)
 }
 
-export function getAgentMessage(workerId: string, req: MessageInitShape<typeof GetAgentMessageRequestSchema>): Promise<GetAgentMessageResponse> {
-  return callWorker(workerId, 'GetAgentMessage', GetAgentMessageRequestSchema, GetAgentMessageResponseSchema, req)
+export function getAgentMessage(workerId: string, req: MessageInitShape<typeof GetAgentMessageRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentMessageResponse> {
+  return callWorker(workerId, 'GetAgentMessage', GetAgentMessageRequestSchema, GetAgentMessageResponseSchema, req, opts)
+}
+
+export function getAgentSpanMessages(workerId: string, req: MessageInitShape<typeof GetAgentSpanMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentSpanMessagesResponse> {
+  return callWorker(workerId, WORKER_RPC_METHOD.GetAgentSpanMessages, GetAgentSpanMessagesRequestSchema, GetAgentSpanMessagesResponseSchema, req, opts)
 }
 
 export function renameAgent(workerId: string, req: MessageInitShape<typeof RenameAgentRequestSchema>): Promise<RenameAgentResponse> {
@@ -600,8 +615,8 @@ export function listFilesystemRoots(workerId: string): Promise<ListFilesystemRoo
   return callWorker(workerId, 'ListFilesystemRoots', ListFilesystemRootsRequestSchema, ListFilesystemRootsResponseSchema, {})
 }
 
-export function readFile(workerId: string, req: MessageInitShape<typeof ReadFileRequestSchema>): Promise<ReadFileResponse> {
-  return callWorker(workerId, 'ReadFile', ReadFileRequestSchema, ReadFileResponseSchema, req)
+export function readFile(workerId: string, req: MessageInitShape<typeof ReadFileRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ReadFileResponse> {
+  return callWorker(workerId, 'ReadFile', ReadFileRequestSchema, ReadFileResponseSchema, req, opts)
 }
 
 export function statFile(workerId: string, req: MessageInitShape<typeof StatFileRequestSchema>): Promise<StatFileResponse> {

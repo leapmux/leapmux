@@ -64,22 +64,24 @@ export function realAgentOpenOptions(settings: RealAgentSettings) {
  * The `LEAPMUX_*_DEFAULT_*` pairs a spawned hub or worker needs, so the catalog
  * states the mapping once instead of at each `spawn` call.
  *
- * Claude Code and Codex own a static model catalog, so they read both a model
- * and an effort. Copilot reads a model alone: its reasoning axis is the
- * daemon's `reasoning_effort` config option, and it registers no env effort key
- * (see `copilot.go`). The other ACP providers register neither, so their
- * fixtures pin the settings through the open request (`realAgentOpenOptions`).
+ * Claude Code, Codex and Copilot each read a model and an effort: Copilot's
+ * native protocol drives its reasoning axis through the well-known effort id
+ * (`session.model.setReasoningEffort`). The other Agent Client Protocol providers
+ * register neither key, so their fixtures pin the settings through the open
+ * request (`realAgentOpenOptions`).
  *
  * `LEAPMUX_WORKER_NAME` stays at each call site, because it differs by site.
  */
 export function realAgentEnv(): Record<string, string> {
   const claude = REAL_AGENT_E2E_SETTINGS[AgentProvider.CLAUDE_CODE]
   const codex = REAL_AGENT_E2E_SETTINGS[AgentProvider.CODEX]
+  const copilot = REAL_AGENT_E2E_SETTINGS[AgentProvider.GITHUB_COPILOT]
   return {
     LEAPMUX_CLAUDE_DEFAULT_MODEL: claude.model,
     LEAPMUX_CLAUDE_DEFAULT_EFFORT: claude.effort,
     LEAPMUX_CODEX_DEFAULT_MODEL: codex.model,
     LEAPMUX_CODEX_DEFAULT_EFFORT: codex.effort,
-    LEAPMUX_COPILOT_DEFAULT_MODEL: REAL_AGENT_E2E_SETTINGS[AgentProvider.GITHUB_COPILOT].model,
+    LEAPMUX_COPILOT_DEFAULT_MODEL: copilot.model,
+    LEAPMUX_COPILOT_DEFAULT_EFFORT: copilot.effort,
   }
 }

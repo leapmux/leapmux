@@ -164,7 +164,7 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 	svc, d, childID, _ := setupChildAgentTest(t)
 
 	// Seed a message into the child transcript so we can confirm it survives.
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "cm-1",
 		AgentID:       childID,
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -410,7 +410,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	require.GreaterOrEqual(t, len(rowsBefore), 2, "spawn row + seeded shell row")
 	hasActiveBefore := false
 	for _, r := range rowsBefore {
-		if !bgtask.StatusFromWire(r.Status).IsFinished() {
+		if !bgtask.Status(r.Status).IsFinished() {
 			hasActiveBefore = true
 		}
 	}
@@ -451,9 +451,9 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	require.Len(t, rowsAfter, len(rowsBefore),
 		"rows are retained (not deleted) -- only given a final status")
 	for _, r := range rowsAfter {
-		status := bgtask.StatusFromWire(r.Status)
+		status := bgtask.Status(r.Status)
 		assert.True(t, status.IsFinished(),
-			"row %s must be final after root close, got %s", r.RowKey, r.Status)
+			"row %s must be final after root close, got %s", r.RowKey, bgtask.Status(r.Status))
 		if r.RowKey == "bg-shell-1" {
 			assert.Equal(t, bgtask.StatusStopped, status,
 				"the active shell row must be given a final status as 'stopped' (explicit close)")

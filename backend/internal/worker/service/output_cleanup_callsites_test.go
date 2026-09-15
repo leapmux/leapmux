@@ -35,11 +35,11 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, 
 	}))
 
 	requestID := "req-" + agentID
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID:   agentID,
 		RequestID: requestID,
 		Payload:   []byte(`{"jsonrpc":"2.0","id":1,"method":"tool/permission"}`),
-	}))
+	})
 
 	registerAgentWatch(svc, w.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 	return requestID

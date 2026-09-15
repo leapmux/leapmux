@@ -159,6 +159,7 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
+		BuiltinSource:    store.OAuthClientSourceBuiltin,
 		ClientID:         p.ClientID,
 		ClientName:       p.ClientName,
 		ClientUri:        p.ClientURI,
@@ -204,6 +205,7 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.SetOAuthClientIcon(ctx, gendb.SetOAuthClientIconParams{
+		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
 		IconBlob:      p.IconBlob,
 		IconMediaType: p.IconMediaType,
@@ -232,6 +234,7 @@ func (s *oauthClientStore) Revoke(ctx context.Context, p store.OAuthClientOwners
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.RevokeOAuthClient(ctx, gendb.RevokeOAuthClientParams{
+		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
 		CallerIsAdmin: p.CallerIsAdmin,
 		CallerUserID:  sql.NullString{String: owner, Valid: true},
@@ -271,6 +274,7 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 			return err
 		}
 		n, err := rowsAffected(q.DeleteOAuthClient(ctx, gendb.DeleteOAuthClientParams{
+			BuiltinSource: store.OAuthClientSourceBuiltin,
 			ClientID:      p.ClientID,
 			CallerIsAdmin: p.CallerIsAdmin,
 			CallerUserID:  sql.NullString{String: owner, Valid: true},

@@ -13,6 +13,7 @@ import SquarePen from 'lucide-solid/icons/square-pen'
 import Trash2 from 'lucide-solid/icons/trash-2'
 import TriangleAlert from 'lucide-solid/icons/triangle-alert'
 import UserPen from 'lucide-solid/icons/user-pen'
+import Zap from 'lucide-solid/icons/zap'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { DragHandle } from '~/components/common/DragHandle'
@@ -31,12 +32,15 @@ export interface AgentInputQueueProps {
   clientId: string
   activeEditInputId?: string
   supportsSteering: boolean
+  /** Preemption is offered only where steering is not: the provider can interrupt, not inject. */
+  supportsPreemption: boolean
   onEdit: (item: QueuedAgentInput, takeover: boolean) => void
   onCancelEdit: (item: QueuedAgentInput) => void
   onDelete: (item: QueuedAgentInput) => void
   onMove: (item: QueuedAgentInput, beforeInputId: string) => void
   onRetry: (item: QueuedAgentInput, confirmUncertain: boolean) => void
   onSteer: (item: QueuedAgentInput) => void
+  onPreempt: (item: QueuedAgentInput) => void
 }
 
 /**
@@ -118,6 +122,33 @@ const RowAction: Component<{
       onClick={() => props.onClick()}
     >
       <Icon icon={props.icon} size="xs" />
+    </button>
+  </Tooltip>
+)
+
+/**
+ * One LABELLED action in a queue row: an icon beside a word.
+ *
+ * The sibling of {@link RowAction}, and it exists for the same reason
+ * `ROW_ACTION_CLASS` does -- Steer and Preempt must render the same control, and
+ * a second spelling of the wrapper is what lets one of them drift. Exactly one of
+ * the two is ever offered, so a reader who compares them compares the styling
+ * and the structure, which now live here once.
+ *
+ * `tooltip` and `label` are separate: the tooltip may state a whole sentence
+ * (Preempt does), while the label is the word the button shows and, through
+ * `ariaLabel`, the name every by-name lookup reads.
+ */
+const LabelledRowAction: Component<{
+  icon: LucideIcon
+  label: string
+  tooltip: string
+  onClick: () => void
+}> = props => (
+  <Tooltip text={props.tooltip} ariaLabel={props.label}>
+    <button class={styles.steerAction} type="button" onClick={() => props.onClick()}>
+      <Icon icon={props.icon} size="xs" />
+      <span>{props.label}</span>
     </button>
   </Tooltip>
 )
@@ -347,21 +378,27 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             />
           </Show>
           {/*
-            Steer stays last, so the one button that still shows a word sits at
-            the end of the row and the squares before it keep an even rhythm.
+            Steer and Preempt stay last, so the one button that still shows a
+            word sits at the end of the row and the squares before it keep an
+            even rhythm. Exactly one of the two is ever offered: a provider
+            either injects into the running turn (Steer) or can only cancel it
+            (Preempt).
 
-            `canSteer` comes from the Worker, which computes it with the same
-            expression that the store's steering guard applies. The browser must
-            never re-implement that precondition: a new input kind would then
-            offer a Steer button that the Worker refuses.
+            `canSteer` and `canPreempt` come from the Worker, which computes
+            them with the same expression that the store's guards apply. The
+            browser must never re-implement that precondition: a new input kind
+            would then offer a button that the Worker refuses.
           */}
           <Show when={isHead() && props.supportsSteering && item().canSteer}>
-            <Tooltip text="Steer" ariaLabel>
-              <button class={styles.steerAction} type="button" onClick={() => props.onSteer(item())}>
-                <Icon icon={SendHorizontal} size="xs" />
-                <span>Steer</span>
-              </button>
-            </Tooltip>
+            <LabelledRowAction icon={SendHorizontal} label="Steer" tooltip="Steer" onClick={() => props.onSteer(item())} />
+          </Show>
+          <Show when={isHead() && !props.supportsSteering && props.supportsPreemption && item().canPreempt}>
+            <LabelledRowAction
+              icon={Zap}
+              label="Preempt"
+              tooltip="Cancel the running turn and send this message next"
+              onClick={() => props.onPreempt(item())}
+            />
           </Show>
         </div>
       </div>

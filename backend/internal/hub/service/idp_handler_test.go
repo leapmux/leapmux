@@ -116,7 +116,7 @@ func createTestProviderWithTrustEmail(t *testing.T, st store.Store, ks *keystore
 
 	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
-		ProviderType: "github",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB,
 		Name:         "Test GitHub",
 		ClientID:     "test-client-id",
 		ClientSecret: encSecret,
@@ -319,7 +319,7 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 	encSecret, _ := ks.Encrypt([]byte("secret"), aad)
 	_ = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           disabledID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Disabled OIDC",
 		ClientID:     "disabled-client",
 		ClientSecret: encSecret,
@@ -1103,7 +1103,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	require.NoError(t, err)
 	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           googleProviderID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test Google",
 		ClientID:     "google-client-id",
 		ClientSecret: encSecret,
@@ -1206,7 +1206,7 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	require.NoError(t, err)
 	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerBID,
-		ProviderType: "oidc",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test OIDC",
 		ClientID:     "client-b",
 		ClientSecret: encSecret,
@@ -1319,10 +1319,11 @@ func TestOAuthReauth_ReadsTheProviderRowOnce(t *testing.T) {
 // purposeRewritingStore gives the handler a state row whose purpose is a
 // value the schema refuses to store, which is the only way to drive the
 // unknown-purpose branch. oauth_states.purpose carries
-// CHECK (purpose IN ('login','reauth')) in all three dialects.
+// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so no such row is
+// STORABLE -- this store fabricates one on the read path instead.
 type purposeRewritingStore struct {
 	store.Store
-	purpose string
+	purpose leapmuxv1.OAuthStatePurpose
 }
 
 func (s purposeRewritingStore) OAuthStates() store.OAuthStateStore {
@@ -1331,7 +1332,7 @@ func (s purposeRewritingStore) OAuthStates() store.OAuthStateStore {
 
 type purposeRewritingStates struct {
 	store.OAuthStateStore
-	purpose string
+	purpose leapmuxv1.OAuthStatePurpose
 }
 
 func (s purposeRewritingStates) Get(ctx context.Context, state string) (*store.OAuthState, error) {
@@ -1354,8 +1355,12 @@ func (s purposeRewritingStates) Get(ctx context.Context, state string) (*store.O
 func TestOAuthCallback_RefusesAnUnknownPurpose(t *testing.T) {
 	t.Parallel()
 
-	for _, purpose := range []string{"", "elevate", "LOGIN"} {
-		t.Run("purpose "+strconv.Quote(purpose), func(t *testing.T) {
+	// The unset zero, an ordinal above the range, and a negative one: the three
+	// shapes a value that is not LOGIN or REAUTH can take.
+	for _, purpose := range []leapmuxv1.OAuthStatePurpose{
+		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 3, -1,
+	} {
+		t.Run("purpose "+strconv.Itoa(int(purpose)), func(t *testing.T) {
 			t.Parallel()
 
 			server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {

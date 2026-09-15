@@ -1,6 +1,13 @@
 package webauthn
 
-// Ceremony session kinds stored in webauthn_sessions.kind.
+import (
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+// Ceremony session kinds. webauthn_sessions.kind stores these ordinals, and its
+// CHECK refuses the UNSPECIFIED zero -- so a ceremony that never stated its
+// kind fails the insert rather than becoming a row that the wrong Finish call
+// can consume.
 //
 // KindElevation is the step-up assertion: proving a passkey to elevate an
 // already signed-in session. It mints no artefact of its own -- the session
@@ -14,9 +21,9 @@ package webauthn
 // the options carry no credential exclusions -- their descriptors would be
 // handed to whoever holds the link.
 const (
-	KindSignup    = "signup"
-	KindLogin     = "login"
-	KindRegister  = "register"
-	KindElevation = "elevation"
-	KindRecovery  = "recovery"
+	KindSignup    = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_SIGNUP
+	KindLogin     = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN
+	KindRegister  = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER
+	KindElevation = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_ELEVATION
+	KindRecovery  = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_RECOVERY
 )

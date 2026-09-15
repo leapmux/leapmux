@@ -1,17 +1,21 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../../controls/types'
-import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { createMemo, Match, Show, Switch, untrack } from 'solid-js'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import * as styles from '../../ControlRequestBanner.css'
-import { actionButtonClass, ControlActionRow } from '../../controls/ControlActionRow'
+import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
+import { invokeControlAction } from '../../controls/controlResponseError'
+import { PlanApprovalContent } from '../../controls/PlanApprovalContent'
+import { createControlChoice } from '../../controls/types'
 import {
   piCancelResponse,
   piConfirmResponse,
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
+import { PiPlanApprovalActions } from './planApproval'
+import { isPiPlanApproval, piPlanApprovalDetails } from './planRequest'
 
 function timeoutHint(payload: Record<string, unknown>): string | null {
   const t = pickNumber(payload, 'timeout')
@@ -22,20 +26,28 @@ function timeoutHint(payload: Record<string, unknown>): string | null {
 
 interface PiButtonShape {
   denyLabel: string
-  denyClick: () => void
+  denyClick: () => Promise<void>
   primaryLabel: string
-  primaryClick: () => void
+  primaryClick: () => Promise<void>
 }
 
-/** Pi-specific control request content (title + body per dialog method). */
-export const PiControlContent: Component<ContentProps> = (props) => {
+function createPiDialogText(props: Pick<ContentProps, 'request' | 'answerState'>) {
+  return createControlChoice(() => props.answerState, 'pi-dialog-text', untrack(() => pickString(props.request.payload, 'prefill')))
+}
+
+/**
+ * Render dialogs that Pi exports through RPC.
+ * Goal task approval needs an upstream fallback for its custom terminal UI:
+ * https://github.com/tmonk/pi-goal-x/issues/52
+ */
+const PiDialogContent: Component<ContentProps> = (props) => {
   const payload = () => props.request.payload
   const method = createMemo(() => pickString(payload(), 'method', undefined))
   const title = createMemo(() => pickString(payload(), 'title') || 'Approval Required')
   const message = createMemo(() => pickString(payload(), 'message'))
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
-  const prefill = createMemo(() => pickString(payload(), 'prefill'))
   const hint = createMemo(() => timeoutHint(payload()))
+  const text = createPiDialogText(props)
   return (
     <>
       <div class={styles.controlBannerTitle}>{title()}</div>
@@ -52,12 +64,19 @@ export const PiControlContent: Component<ContentProps> = (props) => {
             </div>
           </Show>
         </Match>
-        <Match when={method() === PI_DIALOG_METHOD.Editor}>
-          <Show when={prefill()}>
-            <pre class={styles.bannerCodeBlock}>{prefill()}</pre>
-          </Show>
-        </Match>
       </Switch>
+      <Show when={method() === PI_DIALOG_METHOD.Editor}>
+        <textarea
+          aria-label={title()}
+          value={text.choice() ?? ''}
+          disabled={props.optionsDisabled}
+          onInput={event => text.setChoice(event.currentTarget.value)}
+          data-testid="pi-editor"
+          rows={6}
+          wrap="off"
+          style={{ 'width': '100%', 'min-width': '0', 'max-width': '100%', 'max-height': '24rem', 'resize': 'vertical', 'font-family': 'var(--font-mono)' }}
+        />
+      </Show>
       <Show when={hint()}>
         <div class={styles.bannerHint}>{hint()}</div>
       </Show>
@@ -66,33 +85,28 @@ export const PiControlContent: Component<ContentProps> = (props) => {
 }
 
 /** Pi-specific control request action buttons (per dialog method). */
-export const PiControlActions: Component<ActionsProps> = (props) => {
+const PiDialogActions: Component<ActionsProps> = (props) => {
   const payload = () => props.request.payload
   const method = createMemo(() => pickString(payload(), 'method', undefined))
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
   const requestId = () => props.request.requestId
 
   const handleConfirm = (confirmed: boolean) => {
-    sendPiExtensionResponse(props.onRespond, piConfirmResponse(requestId(), confirmed))
+    return sendPiExtensionResponse(props.onRespond, piConfirmResponse(requestId(), confirmed))
   }
   const handleCancel = () => {
-    sendPiExtensionResponse(props.onRespond, piCancelResponse(requestId()))
+    return sendPiExtensionResponse(props.onRespond, piCancelResponse(requestId()))
   }
   const sendValue = (value: string) => {
-    sendPiExtensionResponse(props.onRespond, piValueResponse(requestId(), value))
+    return sendPiExtensionResponse(props.onRespond, piValueResponse(requestId(), value))
   }
 
-  // Local input state for `input` and `editor` dialogs. The initial value is
-  // snapshotted from the request's prefill once at mount; subsequent payload
-  // identity changes do not reset the user's in-progress text.
-  const [localText, setLocalText] = createSignal(
-    untrack(() => pickString(props.request.payload, 'prefill')),
-  )
+  // Shared answer state retains edits across remounts, including an empty value.
+  const text = createPiDialogText(props)
+  const localText = () => text.choice() ?? ''
+  const setLocalText = text.setChoice
 
-  // The dialog method drives both the deny/primary button labels and the
-  // primary handler. Computing the four pieces as one memo keeps a single
-  // ButtonGroup at the bottom of the footer and avoids three near-identical
-  // `<ButtonGroup>` blocks across the per-method Match branches.
+  // The dialog method supplies labels and handlers for the shared decision footer.
   const buttons = createMemo<PiButtonShape>(() => {
     switch (method()) {
       case PI_DIALOG_METHOD.Confirm:
@@ -121,7 +135,11 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
   })
 
   return (
-    <ControlActionRow
+    <ControlDecisionFooter
+      hasEditorContent={false}
+      onSendFeedback={props.onTriggerSend}
+      negativeAction={{ label: buttons().denyLabel, testId: 'control-deny-btn', onSelect: buttons().denyClick }}
+      positiveAction={{ label: buttons().primaryLabel, testId: 'control-allow-btn', onSelect: buttons().primaryClick }}
       leading={(
         <Switch>
           <Match when={method() === PI_DIALOG_METHOD.Input}>
@@ -133,30 +151,27 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault()
-                  sendValue(localText())
+                  invokeControlAction(() => sendValue(localText()))
                 }
               }}
               data-testid="pi-input"
-              style={{ 'flex': '1 1 auto', 'min-width': '200px' }}
-            />
-          </Match>
-          <Match when={method() === PI_DIALOG_METHOD.Editor}>
-            <textarea
-              value={localText()}
-              onInput={e => setLocalText((e.currentTarget as HTMLTextAreaElement).value)}
-              data-testid="pi-editor"
-              rows={4}
-              style={{ 'flex': '1 1 auto', 'min-width': '300px', 'resize': 'vertical' }}
+              style={{ 'flex': '1 1 200px', 'min-width': '0', 'max-width': '100%' }}
             />
           </Match>
         </Switch>
       )}
-      primary={(
-        <ButtonGroup>
-          <button class={actionButtonClass(true)} onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
-          <button class={actionButtonClass()} onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
-        </ButtonGroup>
-      )}
     />
   )
 }
+
+export const PiControlContent: Component<ContentProps> = props => (
+  <Show when={isPiPlanApproval(props.request.payload)} fallback={<PiDialogContent {...props} />}>
+    <PlanApprovalContent request={props.request} details={piPlanApprovalDetails(props.request.payload)} />
+  </Show>
+)
+
+export const PiControlActions: Component<ActionsProps> = props => (
+  <Show when={isPiPlanApproval(props.request.payload)} fallback={<PiDialogActions {...props} />}>
+    <PiPlanApprovalActions {...props} />
+  </Show>
+)

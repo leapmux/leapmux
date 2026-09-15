@@ -21,11 +21,14 @@ import (
 
 type stubProvider struct {
 	groups         []*leapmuxv1.AvailableOptionGroup
-	clearContextFn func() (string, bool)
+	clearContextFn func() (string, error)
 }
 
 func (s *stubProvider) AgentID() string                                 { return "stub" }
 func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
+	return ErrInputSessionChanged
+}
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
 // Manager.SendInput calls it only after a refusal this stub never returns.
@@ -36,11 +39,11 @@ func (s *stubProvider) SendRawInput([]byte) error { return nil }
 func (s *stubProvider) Stop()                     {}
 func (s *stubProvider) IsStopped() bool           { return false }
 func (s *stubProvider) DiscardOutput()            {}
-func (s *stubProvider) ClearContext() (string, bool) {
+func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()
 	}
-	return "", false
+	return "", ErrContextClearUnsupported
 }
 func (s *stubProvider) Wait() error                                     { return nil }
 func (s *stubProvider) Stderr() string                                  { return "" }
@@ -122,16 +125,17 @@ func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
 
 	m := NewManager(nil)
 	entered := make(chan struct{}, 1)
-	m.agents["locked"] = &stubProvider{clearContextFn: func() (string, bool) {
+	m.agents["locked"] = &stubProvider{clearContextFn: func() (string, error) {
 		entered <- struct{}{}
-		return "thread-new", true
+		return "thread-new", nil
 	}}
 
 	unlock := m.LockAgent("locked")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.ClearContext("locked")
+		_, err := m.ClearContext("locked")
+		assert.NoError(t, err)
 	}()
 
 	premature := false
@@ -931,25 +935,28 @@ func TestManager_CachedCatalogServedByModelStamp(t *testing.T) {
 // keeps serving its cached catalog across a since-changed model, instead of falling
 // through to a degenerate static fallback that would drop the option groups. The Claude
 // model-stamp fall-through (above) must NOT apply here.
+//
+// Goose stands for that camp. Native Copilot does NOT belong to it any more: each of its
+// models states its own effort tiers, so a model change there must rebuild them.
 func TestManager_CachedGenericGroupsSurviveModelChangeForACPProvider(t *testing.T) {
 	m := NewManager(nil)
-	const copilot = leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
-	require.False(t, providerHasModelDependentGroups(copilot),
-		"precondition: Copilot has no model-dependent groups")
+	const goose = leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	require.False(t, providerHasModelDependentGroups(goose),
+		"precondition: Goose has no model-dependent groups")
 
 	// The running agent reported a model group (stamps the cache at "gpt-5") plus a
-	// server-driven reasoning_effort config option that the Copilot static fallback never
-	// reproduces (its static groups are only the permission-mode "Mode" group).
+	// server-driven thinking_effort config option that the Goose static fallback never
+	// reproduces (its static groups are only the permission-mode group).
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		{Id: OptionIDModel, Label: "Model", CurrentValue: "gpt-5", Options: []*leapmuxv1.AvailableOption{{Id: "gpt-5"}, {Id: "gpt-4"}}},
-		{Id: "reasoning_effort", Label: "Reasoning Effort", Mutable: true, Options: []*leapmuxv1.AvailableOption{{Id: "high"}, {Id: "low"}}},
+		{Id: GooseConfigThinkingEffort, Label: "Thinking Effort", Mutable: true, Options: []*leapmuxv1.AvailableOption{{Id: "high"}, {Id: "low"}}},
 	}
 	m.PreloadCache("a1", groups)
 
 	// An offline model edit changes the requested model away from the stamp. The cache
-	// (with reasoning_effort) must still be served -- the model-independent option
+	// (with thinking_effort) must still be served -- the model-independent option
 	// can't be rebuilt from the static fallback.
-	assert.NotNil(t, optionids.GroupByID(m.OptionGroups("a1", copilot, "gpt-4"), "reasoning_effort"),
+	assert.NotNil(t, optionids.GroupByID(m.OptionGroups("a1", goose, "gpt-4"), GooseConfigThinkingEffort),
 		"a since-changed model still serves the cached option group for a provider with no model-dependent groups")
 }
 

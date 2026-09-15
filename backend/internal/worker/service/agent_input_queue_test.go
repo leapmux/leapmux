@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,6 +111,179 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	assert.True(t, svc.agentToProto(&dbAgent, true, nil).GetSupportsSteering())
 	assert.True(t, svc.buildAgentActiveStatus(&dbAgent, nil).GetSupportsSteering())
 	assert.False(t, svc.agentToProto(&dbAgent, false, nil).GetSupportsSteering())
+}
+
+// TestAgentInfoPublishesEffectivePreemptionCapability mirrors the steering
+// capability test for the interrupt-only providers: a running process that
+// cannot steer gets Preempt, a steerable one keeps Steer, and an agent with no
+// process gets neither.
+func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	for _, agentID := range []string{"steerable", "interrupt-only", "cold"} {
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		}))
+	}
+	for _, agentID := range []string{"steerable", "interrupt-only"} {
+		var err error
+		if agentID == "steerable" {
+			_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+				AgentID: agentID, WorkingDir: workingDir,
+			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+		} else {
+			_, err = svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+				AgentID: agentID, WorkingDir: workingDir,
+			}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+		}
+		require.NoError(t, err)
+		t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	}
+
+	steerable, err := svc.Queries.GetAgentByID(ctx, "steerable")
+	require.NoError(t, err)
+	assert.False(t, svc.agentToProto(&steerable, true, nil).GetSupportsPreemption(),
+		"a provider that steers must not also offer Preempt")
+	assert.True(t, svc.agentToProto(&steerable, true, nil).GetSupportsSteering())
+
+	interruptOnly, err := svc.Queries.GetAgentByID(ctx, "interrupt-only")
+	require.NoError(t, err)
+	assert.True(t, svc.agentToProto(&interruptOnly, true, nil).GetSupportsPreemption())
+	assert.True(t, svc.buildAgentActiveStatus(&interruptOnly, nil).GetSupportsPreemption())
+	assert.False(t, svc.agentToProto(&interruptOnly, true, nil).GetSupportsSteering())
+
+	cold, err := svc.Queries.GetAgentByID(ctx, "cold")
+	require.NoError(t, err)
+	assert.False(t, svc.agentToProto(&cold, true, nil).GetSupportsPreemption(),
+		"an agent that owns no process has nothing to interrupt with")
+	assert.False(t, svc.buildAgentActiveStatus(&cold, nil).GetSupportsPreemption())
+}
+
+// TestLiveStatusChangePublishesPreemptionCapability covers the LIVE pushes for
+// the same reason the steering one does: the frontend applies
+// supports_preemption from every status change, so a status built without the
+// field turns the Preempt action off mid-session for an agent that has it.
+func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	const preemptAgentID = "preempt-agent"
+	const coldAgentID = "cold-agent"
+	for _, agentID := range []string{preemptAgentID, coldAgentID} {
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		}))
+	}
+	preemptSink := svc.Output.NewSink(preemptAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+		AgentID: preemptAgentID, WorkingDir: workingDir,
+	}, preemptSink)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(preemptAgentID) })
+	coldSink := svc.Output.NewSink(coldAgentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+
+	preemptWatcher := newTestWriter()
+	coldWatcher := newTestWriter()
+	registerAgentWatch(svc, "browser-1", preemptAgentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, preemptWatcher)
+	registerAgentWatch(svc, "browser-2", coldAgentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, coldWatcher)
+
+	preemptSink.BroadcastStatusActive("session-preempt")
+	coldSink.BroadcastStatusActive("session-cold")
+
+	preempt := requireOneStatusChange(t, preemptWatcher, preemptAgentID)
+	assert.True(t, preempt.GetSupportsPreemption(),
+		"a live status turned the Preempt action off for an interrupt-only agent")
+	assert.False(t, preempt.GetSupportsSteering())
+	cold := requireOneStatusChange(t, coldWatcher, coldAgentID)
+	assert.False(t, cold.GetSupportsPreemption(),
+		"a live status offered Preempt for an agent that owns no process")
+}
+
+func TestPreemptQueuedAgentInputRPC(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}))
+	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	// The mock provider reports no turn end of its own, so the head stays in place
+	// after the interrupt and the RPC's answer is deterministic. The queue must NOT be
+	// paused for that: a pause is precisely the state preemption has to refuse, and
+	// using one here pinned the defect instead of the behaviour.
+	_, err = svc.InputQueue.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
+	response := decodeQueueResponse(t, writer, &leapmuxv1.PreemptQueuedAgentInputResponse{})
+	require.NotNil(t, response.GetSnapshot())
+	require.Len(t, response.GetSnapshot().GetItems(), 1)
+	assert.Equal(t, "one", response.GetSnapshot().GetItems()[0].GetId())
+	// The item stays queued: the cancelled turn's end is what dispatches it.
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, response.GetSnapshot().GetItems()[0].GetState())
+}
+
+// Preemption cancels the running turn and then waits for the ORDINARY turn-end drain
+// to deliver. A paused queue refuses that drain, so the cancel destroys the turn and
+// delivers nothing: the reader loses the turn AND the message, and sees no error.
+func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}))
+	_, err := svc.Agents.MockStartNonSteerableAgent(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	_, err = svc.InputQueue.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	// SetPaused leaves active_turn set, so this is a manual pause during a running
+	// turn -- the state the offer used to answer true for.
+	_, err = svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.False(t, snapshot.Items[0].CanPreempt, "a paused queue offers no Preempt")
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
+	require.Len(t, writer.errors, 1, "the RPC refuses what the snapshot did not offer")
+	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
 }
 
 // TestLiveStatusChangePublishesSteeringCapability covers the LIVE pushes. The
@@ -673,7 +849,7 @@ func TestPlanExecutionProducerPreservesItsQueueSemantics(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
-	svc.initiatePlanExecution("agent-1", "acceptEdits")
+	require.NoError(t, svc.enqueuePlanExecution("agent-1", "acceptEdits", "plan-execution"))
 
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
@@ -754,13 +930,94 @@ func TestClassifyQueueDeliveryErrorKeepsTheQueueOpenForABusyAgent(t *testing.T) 
 // what the process received.
 func startEchoAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
+	startMockAgent(t, svc, agentID, svc.Agents.MockStartAgent)
+}
+
+// startRecordingEchoAgent is startEchoAgent whose echo is observed through a
+// recorder on the sink rather than through the control_requests table.
+//
+// The raw stop path withdraws the stopped turn's pending control requests the
+// moment its interrupt is delivered, and the withdrawal is a DELETE by agent id.
+// An echo landing in the window between that delivery and the withdrawal is
+// deleted with the rest, so a test that reads the table races the very stop it
+// sent and loses on the wrong scheduling. The recorder sees the request the
+// reader goroutine published BEFORE any withdrawal can reach it, which is the
+// same fact -- the process echoed the frame -- stated without the race.
+func startRecordingEchoAgent(t *testing.T, svc *Service, agentID string) *controlRequestRecorder {
+	t.Helper()
+	recorder := &controlRequestRecorder{}
+	startMockAgentWrappingSink(t, svc, agentID, svc.Agents.MockStartAgent, func(sink agent.ProviderServices) agent.ProviderServices {
+		recorder.ProviderServices = sink
+		return recorder
+	})
+	return recorder
+}
+
+// controlRequestRecorder wraps an agent's sink and records every control request
+// its process published. Embedding the interface keeps every other facet
+// forwarding to the wrapped sink.
+type controlRequestRecorder struct {
+	agent.ProviderServices
+
+	mu        sync.Mutex
+	published []agent.ControlRequest
+}
+
+// PublishControlRequest records the request, then forwards it. Recording first
+// is the point: the underlying store write is what a stop's withdrawal deletes,
+// and the recorder must not depend on it having survived.
+func (r *controlRequestRecorder) PublishControlRequest(request agent.ControlRequest) error {
+	r.mu.Lock()
+	r.published = append(r.published, request)
+	r.mu.Unlock()
+	return r.ProviderServices.PublishControlRequest(request)
+}
+
+// requests returns the control requests published so far.
+func (r *controlRequestRecorder) requests() []agent.ControlRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.published)
+}
+
+// startSilentAgent is startEchoAgent with a mock that writes nothing back. A
+// case that reads the derived activity state needs it; see MockStartSilentAgent
+// for the artifact the echo leaves behind.
+func startSilentAgent(t *testing.T, svc *Service, agentID string) {
+	t.Helper()
+	startMockAgent(t, svc, agentID, svc.Agents.MockStartSilentAgent)
+}
+
+func startMockAgent(
+	t *testing.T,
+	svc *Service,
+	agentID string,
+	start func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error),
+) {
+	t.Helper()
+	startMockAgentWrappingSink(t, svc, agentID, start, nil)
+}
+
+// startMockAgentWrappingSink is startMockAgent with the sink passed through
+// wrap first, so a test can interpose an observer on one facet.
+func startMockAgentWrappingSink(
+	t *testing.T,
+	svc *Service,
+	agentID string,
+	start func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error),
+	wrap func(agent.ProviderServices) agent.ProviderServices,
+) {
+	t.Helper()
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.Agents.MockStartAgent(context.Background(), agent.Options{
+	if wrap != nil {
+		sink = wrap(sink)
+	}
+	_, err := start(context.Background(), agent.Options{
 		AgentID: agentID, WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
 	}, sink)
 	require.NoError(t, err)
@@ -830,16 +1087,166 @@ func TestInterruptAgentRunsWhenTheQueuePauseFails(t *testing.T) {
 	}
 }
 
+// TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored pins the
+// second-press escalation.
+//
+// The branch is reached through the Manager's capability probe alone -- the
+// running provider states that an earlier stop was accepted and changed
+// nothing -- so the handler carries no provider enum. What the press then does
+// is replace the process (the only stop a provider in that state answers to)
+// while resuming the SAME session, and set no stop-pause of its own: the
+// planned-restart guard owns the swap's window, and the queue must stand open
+// behind it for the input that follows.
+func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	const agentID = "agent-escalate"
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, Resumed: 1,
+	}))
+	// A stored session the row was RESUMED from is what the replacement must
+	// resume in turn -- the fact that keeps the conversation across a forced
+	// stop instead of resetting it.
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		ID: agentID, AgentSessionID: "sess-stored",
+	}))
+	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	_, err := svc.Agents.MockStartIgnoredStopAgent(ctx, agent.Options{
+		AgentID: agentID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
+	}, sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+
+	var restartOpts []agent.Options
+	svc.startAgentFn = mockAgentStarter(t, svc, func(opts agent.Options) { restartOpts = append(restartOpts, opts) })
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID}, writer)
+
+	require.Empty(t, writer.rejections(), "the escalated press is a successful stop")
+	require.Len(t, restartOpts, 1, "the press replaced the process once")
+	assert.Equal(t, "sess-stored", restartOpts[0].ResumeSessionID,
+		"the replacement resumes the session the row holds")
+	assert.True(t, svc.Agents.HasAgent(agentID), "a completed escalation leaves a running agent")
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.False(t, snapshot.Paused,
+		"the escalation sets no stop-pause of its own; the queue stands open for the input that follows")
+}
+
+// TestRawInterruptFramePublishesTheStop pins the half of a stop the reader
+// actually sees.
+//
+// Every provider answers a stop with a round trip, and its turn flag reads
+// WORKING until that answer lands. So the press itself has to drop the
+// indicator; waiting for the provider left the spinner and the Interrupt button
+// on screen for the whole round trip, which invites a second press.
+//
+// The raw frame is the stop path that waits for no answer, so the delivery here
+// SUCCEEDS and the published stop stands. The InterruptAgent RPC reaches the
+// same two calls in the same order; what it adds is the wait, and the case below
+// covers the refusal that wait can end in.
+func TestRawInterruptFramePublishesTheStop(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startSilentAgent(t, svc, "agent-1")
+	svc.Output.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
+	}, writer)
+
+	require.Empty(t, writer.rejections())
+	// The provider reported no turn end -- the mock reports nothing at all -- so
+	// the turn flag still says WORKING. The stop is what the tab reads.
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the press, not the provider's answer, is what drops the indicator")
+}
+
+// The other half. A stop the worker could not deliver leaves the agent running
+// whatever it was running, so the indicator and the Interrupt button belong back
+// on screen -- hiding the button on a runaway agent is the one failure it exists
+// to prevent.
+//
+// The mock answers no interrupt, so this call ends on the control timeout, which
+// is the refusal the caller reads as "not running".
+func TestInterruptAgentPutsTheIndicatorBackWhenTheStopIsRefused(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startSilentAgent(t, svc, "agent-1")
+	svc.Output.setTurnActive("agent-1", "agent-1", true)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
+
+	require.NotEmpty(t, writer.rejections(), "the control timeout is a refused stop")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the turn never stopped, so the tab must not read idle")
+}
+
+// TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn pins what a stop does to a
+// question nobody answered.
+//
+// A permission request is part of the turn that asked it. Four providers were measured
+// blocked on one, and an interrupt there stopped the turn and left the card asking: the
+// reader kept a live-looking question about a turn that had already ended, and the
+// answer had nowhere to go.
+func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	startEchoAgent(t, svc, "agent-1")
+	_, err := svc.Queries.StoreControlRequest(context.Background(), db.StoreControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "request-1",
+		Payload:   []byte(`{"type":"control_request","request_id":"request-1","request":{"subtype":"can_use_tool"}}`),
+	})
+	require.NoError(t, err)
+
+	// The raw frame is the stop path that waits for no answer, so the stop it sends is
+	// DELIVERED rather than merely attempted. That is the bar the cancel runs behind.
+	writer := newTestWriter()
+	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
+	}, writer)
+	assert.Empty(t, writer.rejections())
+
+	_, err = svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
+		AgentID: "agent-1", RequestID: "request-1",
+	})
+	assert.Error(t, err, "the question belonged to the turn the stop ended")
+}
+
 // TestRawInterruptFrameRunsWhenTheQueuePauseFails is the same rule on the
 // second stop path. SendAgentRawMessage forwards a provider-shaped frame, and
 // it runs the same pause when that frame is an interrupt, so it must survive
 // the refused pause too. Here the caller reads a plain success, because the
 // forward waits for no answer of its own.
+//
+// The echo is read through the recorder rather than the control_requests table
+// (see startRecordingEchoAgent): this stop path delivers and then withdraws the
+// turn's pending requests, and a table read races that withdrawal -- the same
+// scheduling lottery on every run, lost often enough to fail CI.
 func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 	t.Parallel()
 
 	svc, dispatcher, _ := setupTestService(t)
-	startEchoAgent(t, svc, "agent-1")
+	recorder := startRecordingEchoAgent(t, svc, "agent-1")
 	stopInputQueue(t, svc, "agent-1")
 
 	writer := newTestWriter()
@@ -850,12 +1257,15 @@ func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 
 	assert.Empty(t, writer.rejections(), "a refused pause must not refuse the stop")
 	assert.Len(t, writer.responses, 1)
-	requireInterruptReachedAgent(t, svc, "agent-1")
-	stored, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
-		AgentID: "agent-1", RequestID: "raw-interrupt-1",
-	})
-	require.NoError(t, err, "the agent received a frame with a different request id")
-	assert.Contains(t, string(stored.Payload), `"subtype":"interrupt"`)
+	var echoed []agent.ControlRequest
+	require.Eventually(t, func() bool {
+		echoed = recorder.requests()
+		return len(echoed) > 0
+	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	require.Len(t, echoed, 1)
+	assert.Equal(t, "raw-interrupt-1", echoed[0].RequestID,
+		"the agent received a frame with a different request id")
+	assert.Contains(t, string(echoed[0].Payload), `"subtype":"interrupt"`)
 }
 
 // TestDispatchRefusesAnAgentThatFailedToStartInMemory pins the FIRST of the two
@@ -933,4 +1343,202 @@ func TestUpdateAgentGoalRefusesAnObjectiveThatClears(t *testing.T) {
 	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Empty(t, snapshot.Items, "a refused objective queues nothing")
+}
+
+// Only Claude Code and Codex write a plan file. ZCode and native Copilot raise
+// the same plan-exit control with none, and the approval already moved the
+// permission mode before this runs -- so a hard failure here would leave the
+// mode moved with no turn to use it, and every retry would repeat that move.
+func TestPlanExecutionWithoutASavedPlanQueuesTheNeutralTurn(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.enqueuePlanExecution("agent-1", "acceptEdits", "plan-execution"))
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	item := snapshot.Items[0]
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, item.Kind)
+	assert.Equal(t, "acceptEdits", item.TargetMode)
+	assert.True(t, item.PrepareContext, "the approved plan still runs in a fresh context")
+	assert.Equal(t, planExecutionPromptText, item.Text)
+}
+
+// A path that EXISTS and cannot be read is the opposite case: the plan text is
+// there, the read is the fault, and a retry can still succeed. Queueing the
+// neutral turn there would drop a plan the user can still see on screen.
+func TestPlanExecutionFailsWhenTheSavedPlanCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
+		ID: "agent-1", PlanFilePath: filepath.Join(t.TempDir(), "absent", "plan.md"), PlanTitle: "Plan",
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	require.ErrorContains(t, svc.enqueuePlanExecution("agent-1", "acceptEdits", "plan-execution"), "read the saved plan")
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+}
+
+// An approval's answer row reaches COMPLETED only after processControlResponse
+// records the delivery, and enqueuePlanExecution inserts the input BEFORE that.
+// So the queue can drain the input while its answer is still PENDING. Marking it
+// FAILED there makes the user retry by hand what the NotifyDependencyReady of
+// finalizeControlResponse resumes on its own moments later.
+func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	startEchoAgent(t, svc, "agent-1")
+	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
+		(agent_id, request_id, claim_token, state, agent_session_id, input_id, feedback, agent_provider)
+		VALUES ('agent-1', 'request', 'claim', ?, 'session-1', 'feedback-input', 'feedback', ?)`,
+		int64(storedStatePending), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	require.NoError(t, err)
+	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",
+	}}
+	adapter := &agentInputQueueAdapter{svc: svc}
+	for _, tc := range []struct {
+		name     string
+		dispatch func(inputqueue.DispatchItem) (inputqueue.DispatchResult, error)
+	}{
+		{"Dispatch", adapter.Dispatch},
+		{"Steer", adapter.Steer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.dispatch(item)
+			var refusal *inputqueue.DeliveryError
+			require.ErrorAs(t, err, &refusal)
+			assert.Equal(t, inputqueue.DispatchNotReady, refusal.Outcome,
+				"the queue must requeue and pause rather than fail the item")
+			assert.ErrorContains(t, err, "approval is not recorded yet")
+		})
+	}
+}
+
+// classifyQueueDeliveryError must not re-wrap a refusal that already carries its
+// outcome: queueDispatchOutcome reads the CAUSE, and answers DispatchFailed for
+// every cause it does not recognize.
+func TestClassifyQueueDeliveryErrorKeepsAStatedOutcome(t *testing.T) {
+	t.Parallel()
+	stated := &inputqueue.DeliveryError{Err: errors.New("still starting"), Outcome: inputqueue.DispatchNotReady}
+	for _, err := range []error{stated, fmt.Errorf("dispatch: %w", stated)} {
+		classified := classifyQueueDeliveryError(err)
+		var refusal *inputqueue.DeliveryError
+		require.ErrorAs(t, classified, &refusal)
+		assert.Equal(t, inputqueue.DispatchNotReady, refusal.Outcome)
+	}
+	var fresh *inputqueue.DeliveryError
+	require.ErrorAs(t, classifyQueueDeliveryError(agent.ErrAgentBusy), &fresh)
+	assert.Equal(t, inputqueue.DispatchBusy, fresh.Outcome)
+}
+
+// A read of the worker's OWN store that fails never reached the provider, so the
+// input is as undelivered as it was before. Failing it permanently makes the
+// reader retype what a retry would have sent.
+func TestQueueReadErrorClassifiesAStoreFaultAsNotReady(t *testing.T) {
+	t.Parallel()
+
+	err := queueReadError(errors.New("database is closed"))
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT, delivery.PauseReason,
+		"AGENT_STOPPED would tell the reader the agent stopped, which a database error did not")
+}
+
+// A MISSING row is permanent. The agents row cascades its queue items and its
+// queue state, so this says the item's own agent is gone and no later read brings
+// it back -- treating it as transient would pause the queue forever.
+func TestQueueReadErrorLeavesAMissingRowPermanent(t *testing.T) {
+	t.Parallel()
+
+	err := queueReadError(sql.ErrNoRows)
+	var delivery *inputqueue.DeliveryError
+	assert.NotErrorIs(t, err, nil)
+	assert.False(t, errors.As(err, &delivery), "a missing row must not become a transient delivery error")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// The classification must reach every store read on the dispatch path, not just
+// the one helper that carries it.
+//
+// queueReadError's own doc claims "ONE rule at the boundary, so a read added to
+// either path inherits it". It was applied BY HAND at four sites and missed five
+// more, and three of those failed the reader's typed message PERMANENTLY for a
+// database error that never reached the provider. These pin the two reads the
+// helper now owns: the agent row, and the control responses that claim an input.
+func TestDispatchClassifiesAStoreFaultRatherThanFailingTheInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	// The store itself fails, which is what tells a transient fault apart from a
+	// missing row: a missing row is permanent, a closed database is not.
+	require.NoError(t, svc.DB.Close())
+
+	_, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
+	})
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome,
+		"a read that never reached the provider leaves the input as undelivered as it was")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
+		delivery.PauseReason,
+		"AGENT_STOPPED is the default an unset reason falls back to, and it is false for a database error")
+}
+
+// resolveControlInput reads the control responses that claim this input. Its own
+// comment states that every error there is a store fault -- the query is `:many`,
+// so a missing row gives an empty slice and cannot produce sql.ErrNoRows -- yet it
+// wrapped them with notReadyInput, which leaves the pause reason unset and lands on
+// the AGENT_STOPPED fallback.
+func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NoError(t, svc.DB.Close())
+
+	_, err = svc.resolveControlInput(inputqueue.DispatchItem{
+		StoredItem: inputqueue.StoredItem{ID: "one", AgentID: "agent-1", Text: "one",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION},
+	}, dbAgent)
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
+		delivery.PauseReason)
 }

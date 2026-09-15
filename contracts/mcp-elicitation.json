@@ -1,0 +1,24 @@
+{
+  "_readme": "MCP elicitation requests and responses use these native protocol values.",
+  "methods": {
+    "ACP": "elicitation/create",
+    "Reasonix": "_reasonix.io/mcp/request_interaction",
+    "Codex": "mcpServer/elicitation/request"
+  },
+  "subtypes": {
+    "Claude": "elicitation"
+  },
+  "actions": {
+    "Accept": "accept",
+    "Decline": "decline",
+    "Cancel": "cancel"
+  },
+  "approvalKinds": {
+    "ToolCall": "mcp_tool_call",
+    "ToolSuggestion": "tool_suggestion"
+  },
+  "approvalScopes": {
+    "Session": "session",
+    "Always": "always"
+  }
+}

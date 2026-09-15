@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +16,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
+	t.Parallel()
+	output := &syncBuffer{}
+	sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
+	a := newCodexAgentWithSink(sink)
+	a.stdin = nopWriteCloser{output}
+	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","id":37,"method":"item/tool/requestUserInput","params":{"threadId":"main-thread","questions":[]}}`)))
+	// handleCodexOutput runs on the goroutine that drains Codex's stdout, so the
+	// failure reply is QUEUED rather than written before it returns.
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = output.String()
+		return answer != ""
+	}, 2*time.Second, 5*time.Millisecond, "the publication failure is answered")
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":37,"error":{"code":-32603,"message":"LeapMux could not store this control request."}}`, answer)
+	assert.Empty(t, sink.PublishedControls())
+}
 
 type startupStatusGuardSink struct {
 	testSink
@@ -80,8 +100,8 @@ func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey
 	return s.testSink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
 }
 
-func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
-	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content))
+func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
+	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
 	return nil
 }
 
@@ -152,18 +172,10 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "42", rec.RequestID)
-
-	// The claim token PersistControlRequest returns is threaded straight into the paired
-	// BroadcastControlRequest (no readback), so the live broadcast carries the SAME token that was
-	// persisted -- the token the frontend echoes in its idempotency claim.
-	bcast := sink.LastBroadcastControl()
-	assert.NotEmpty(t, rec.ClaimToken, "persist mints a claim token")
-	assert.Equal(t, rec.ClaimToken, bcast.ClaimToken, "the broadcast carries the token persist returned")
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:42", rec.RequestID)
 
 	// Verify payload is the original content.
 	var parsed struct {
@@ -188,10 +200,10 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "7", rec.RequestID)
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:7", rec.RequestID)
 }
 
 func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
@@ -204,10 +216,10 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "8", rec.RequestID)
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:8", rec.RequestID)
 }
 
 func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
@@ -220,10 +232,10 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "9", rec.RequestID)
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:9", rec.RequestID)
 }
 
 func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T) {
@@ -334,6 +346,30 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	last := sink.LastNotification()
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	assert.JSONEq(t, input, string(last.Content))
+}
+
+// Codex reports the account rate limits after EVERY model call, so one ordinary turn
+// with a tool call wrote the same sentence to the transcript twice. The snapshot is a
+// state, not an event: an unchanged one states nothing the previous row did not.
+func TestHandleCodexOutput_UnchangedRateLimitsReachTheTranscriptOnce(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":92,"windowDurationMins":10080,"resetsAt":1893456000}}},"emittedAtMs":1}`
+	repeat := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":92,"windowDurationMins":10080,"resetsAt":1893456000}}},"emittedAtMs":2}`
+	changed := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":93,"windowDurationMins":10080,"resetsAt":1893456000}}},"emittedAtMs":3}`
+
+	handleCodexOutput(agent, parseLine([]byte(input)))
+	handleCodexOutput(agent, parseLine([]byte(repeat)))
+	handleCodexOutput(agent, parseLine([]byte(changed)))
+
+	require.Equal(t, 2, sink.NotificationCount(), "the repeat writes no row; the changed snapshot does")
+	assert.JSONEq(t, changed, string(sink.LastNotification().Content))
+	// The live surfaces still see every report: a late subscriber reads the
+	// broadcast, and the resume decision runs on each one.
+	assert.Equal(t, 3, sink.SessionInfoCount(), "every report refreshes the popover")
 }
 
 // TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire locks in the
@@ -1419,8 +1455,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	assert.Equal(t, 0, sink.PersistedControlCount())
-	assert.Equal(t, 0, sink.BroadcastControlCount())
+	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
@@ -1613,12 +1648,46 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
+	// The row is the agent's own item/started frame, byte for byte. The output is a
+	// run of delta events that LeapMux joined, so the joined text is recovered
+	// provider data and rides in the supplement.
 	assert.JSONEq(t, `{
 		"threadId":"main-thread",
 		"turnId":"turn-1",
-		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"},
-		"_leapmux":{"completion":"interrupted"}
+		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}
 	}`, string(result.Content))
+	assert.JSONEq(t, `{
+		"itemId":"command-1",
+		"itemType":"commandExecution",
+		"aggregatedOutput":"partial output"
+	}`, string(result.SupplementalContent))
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
+
+	// Both halves read back as one item, so every extractor sees the output.
+	assert.JSONEq(t, `{
+		"threadId":"main-thread",
+		"turnId":"turn-1",
+		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"}
+	}`, string(ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).ResolveProviderData(MessageContent{
+		Original: result.Content, Supplemental: result.SupplementalContent,
+	})))
+}
+
+// A supplement that names another item cannot reach this row's output.
+func TestCodexResolveProviderData_RefusesASupplementForAnotherItem(t *testing.T) {
+	t.Parallel()
+
+	original := []byte(`{"item":{"type":"commandExecution","id":"command-1","command":"ls"}}`)
+	for _, supplement := range []string{
+		`{"itemId":"command-2","itemType":"commandExecution","aggregatedOutput":"other"}`,
+		`{"itemId":"command-1","itemType":"fileChange","aggregatedOutput":"other"}`,
+		`{"itemId":"command-1","itemType":"commandExecution"}`,
+	} {
+		assert.JSONEq(t, string(original),
+			string(ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).ResolveProviderData(MessageContent{
+				Original: original, Supplemental: []byte(supplement),
+			})), supplement)
+	}
 }
 
 func TestHandleCodexOutput_InterruptedReasoningPreservesSummaryParts(t *testing.T) {
@@ -1707,8 +1776,23 @@ func TestHandleCodexOutput_InterruptedMCPItemGetsAClosingRowAndToolCount(t *test
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	assert.True(t, sink.Messages()[1].Closing)
-	assert.Contains(t, string(sink.Messages()[1].Content), `"completion":"interrupted"`)
-	assert.Contains(t, string(sink.Messages()[2].Content), `"num_tool_uses":1`)
+	assert.Equal(t, MessageCompletionInterrupted, sink.Messages()[1].Completion)
+	assert.Contains(t, string(sink.Messages()[2].Metadata), `"num_tool_uses":1`)
+}
+
+func TestCodexTurnCounterPreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newCodexAgentWithSink(sink)
+	a.threadID = "main-thread"
+	a.turnToolUses = 2
+	raw := json.RawMessage(`{"threadId":"main-thread", "turn":{"id":"turn-1","status":"completed","items":[]}, "future":9007199254740993}`)
+	a.handleTurnCompleted(raw)
+	messages := sink.Messages()
+	require.NotEmpty(t, messages)
+	last := messages[len(messages)-1]
+	assert.Equal(t, []byte(raw), last.Content)
+	assert.Contains(t, string(last.Metadata), `"num_tool_uses":2`)
 }
 
 func TestHandleCodexOutput_LateChildRegistrationMovesBufferedText(t *testing.T) {
@@ -1776,8 +1860,30 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	require.NoError(t, err)
 	require.Equal(t, "# Design Doc: Rendering fixes\n\n- first\n", string(decoded))
 	require.Equal(t, "Rendering fixes", plan.Title)
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
+}
+
+// Two plan turns share ONE stored plan, because UpdatePlan replaces it. The card
+// is keyed by TURN, so a second plan turn leaves two cards open -- and the composer
+// renders the OLDEST, so the newer one is invisible. Approving the card the reader
+// can see would then execute the plan it never showed.
+func TestHandleCodexOutput_ASecondPlanPromptRetiresTheFirst(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	for _, turn := range []string{"turn-1", "turn-2"} {
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"`+turn+`","item":{"type":"plan","id":"plan-`+turn+`"}}}`)))
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"`+turn+`","item":{"type":"plan","id":"plan-`+turn+`","text":"# Plan `+turn+`\n\n- step\n"}}}`)))
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"`+turn+`","status":"completed","items":[],"error":null}}}`)))
+	}
+
+	require.Equal(t, 2, sink.PublishedControlCount())
+	assert.Equal(t, []string{"codex-plan-prompt-turn-1"}, sink.CanceledControls(),
+		"the superseded card would have approved the second turn's plan")
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
@@ -1795,8 +1901,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
@@ -1811,8 +1916,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
@@ -1830,8 +1934,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
 	require.Equal(t, 0, sink.PlanUpdateCount())
-	require.Equal(t, 0, sink.PersistedControlCount())
-	require.Equal(t, 0, sink.BroadcastControlCount())
+	require.Equal(t, 0, sink.PublishedControlCount())
 }
 
 // lastSessionInfoValue returns the most recent value for a session-info key.
@@ -2340,3 +2443,163 @@ func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's turn still ends, so its input queue is released")
 }
+
+func TestCodexResolveProviderData_PreservesUnknownFieldsAndLargeNumbers(t *testing.T) {
+	t.Parallel()
+	resolved := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).ResolveProviderData(MessageContent{
+		Original:     []byte(`{"item":{"id":"call","type":"commandExecution","counter":9007199254740993,"_leapmux":"provider"}}`),
+		Supplemental: []byte(`{"itemId":"call","itemType":"commandExecution","aggregatedOutput":"partial"}`),
+	})
+	assert.Contains(t, string(resolved), `"counter":9007199254740993`)
+	assert.Contains(t, string(resolved), `"_leapmux":"provider"`)
+	assert.Contains(t, string(resolved), `"aggregatedOutput":"partial"`)
+}
+
+func TestCodexResolveProviderData_KeepsAFrameItCannotRead(t *testing.T) {
+	t.Parallel()
+	for _, original := range []string{`null`, `{}`, `{"item":null}`, `{"item":[]}`, `not json`} {
+		assert.Equal(t, original,
+			string(ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).ResolveProviderData(MessageContent{
+				Original:     []byte(original),
+				Supplemental: []byte(`{"itemId":"call","itemType":"commandExecution","aggregatedOutput":"partial"}`),
+			})), original)
+	}
+}
+
+// A call that produced nothing still closes its span, and its row is the frame
+// alone. An earlier build dropped the row when it could not build one, which left
+// the tool card open for good.
+func TestHandleCodexOutput_InterruptedToolWithNoOutputStoresTheFrameAlone(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`)))
+
+	require.GreaterOrEqual(t, sink.MessageCount(), 2)
+	result := sink.Messages()[1]
+	assert.True(t, result.Closing)
+	assert.Equal(t, "command-1", result.SpanID)
+	assert.Empty(t, result.SupplementalContent, "no output means no recovered data")
+	assert.JSONEq(t, `{
+		"threadId":"main-thread",
+		"turnId":"turn-1",
+		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}
+	}`, string(result.Content))
+}
+
+// An inbound REQUEST the dispatcher does not recognize needs an answer. Codex
+// sends its approval requests as JSON-RPC requests with an "id", so one whose
+// method is unknown arrives here carrying a runtime that WAITS -- and a transcript
+// row alone left it waiting for its own timeout.
+//
+// Codex was the fourth JSON-RPC dispatcher, and the only one that answered nothing
+// at all until the refusal moved onto jsonrpcBase.
+func TestHandleCodexOutput_AnswersAnUnsupportedRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	stdin := &syncBuffer{}
+	agent := newCodexAgentWithSink(sink)
+	agent.stdin = nopWriteCloser{stdin}
+
+	raw := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"item/somethingNew","params":{}}`)
+	handleCodexOutput(agent, parseLine(raw))
+
+	// The answer is written on its OWN goroutine, so that a reply to a runtime that
+	// is not draining its stdin cannot stall the loop that must keep draining its
+	// stdout.
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = stdin.String()
+		return strings.Contains(answer, `"code":-32601`)
+	}, 2*time.Second, 5*time.Millisecond, "an unsupported Codex request must be answered")
+	assert.Contains(t, answer, "Method not supported: item/somethingNew")
+	assert.Contains(t, answer, `"id":9007199254740993`,
+		"the identifier returns exactly as it arrived, above the range a float keeps")
+	require.Len(t, sink.Messages(), 1, "the frame still reaches the transcript")
+}
+
+// A NOTIFICATION carries no id and needs no answer. Writing one would put a
+// response with a null identifier on the wire, which the runtime cannot route.
+func TestHandleCodexOutput_AnswersNoUnsupportedNotification(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	stdin := &syncBuffer{}
+	agent := newCodexAgentWithSink(sink)
+	agent.stdin = nopWriteCloser{stdin}
+
+	handleCodexOutput(agent, parseLine([]byte(`{"jsonrpc":"2.0","method":"item/somethingNew","params":{}}`)))
+
+	require.Len(t, sink.Messages(), 1)
+	assert.Empty(t, stdin.String(), "a notification needs no answer")
+}
+
+// An interrupt that FAILS must leave the reader a control that can still answer.
+//
+// Codex's four approval methods register a nil cancel answer, because Codex retires
+// its own approval requests. Withdrawing one therefore sends the CLI nothing and only
+// deletes the reader's card -- so retiring them BEFORE turn/interrupt left a refused
+// or timed-out interrupt with the CLI still blocked on an approval and the card
+// already gone. Nothing could answer it and the thinking indicator never stopped.
+func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
+	sink := &controlIdentityCancelSink{}
+	a := newCodexAgentWithSink(sink)
+	// A closed pipe: the turn/interrupt request cannot be written, so Interrupt fails
+	// exactly as it does when the app-server refuses it or the request times out.
+	a.ctx = context.Background()
+	a.stdin = nopWriteCloser{refusingWriter{}}
+	a.mu.Lock()
+	a.threadID, a.turnID = "thread", "turn"
+	a.mu.Unlock()
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`))
+	request := sink.LastPublishedControl()
+	require.NotEmpty(t, request.RequestID, "the approval card is published")
+
+	require.Error(t, a.Interrupt(), "the interrupt cannot be written")
+
+	assert.NotContains(t, sink.cancelled, request.RequestID,
+		"an interrupt that failed must not delete the only control that can answer")
+	a.outstandingMu.Lock()
+	defer a.outstandingMu.Unlock()
+	assert.Contains(t, a.outstandingControls, request.RequestID,
+		"and the record stays, so a later answer still routes")
+}
+
+// The elicitation is the opposite case, and it must be released FIRST.
+//
+// It registers a real cancel answer, because Codex defines no outcome for an
+// elicitation the client withdraws. Nothing else delivers that answer, so the
+// elicitation stays blocked inside the CLI for the rest of the session.
+func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
+	sink := &controlIdentityCancelSink{}
+	a := newCodexAgentWithSink(sink)
+	a.ctx = context.Background()
+	a.stdin = nopWriteCloser{refusingWriter{}}
+	a.mu.Lock()
+	a.threadID, a.turnID = "thread", "turn"
+	a.mu.Unlock()
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"` + contracts.MCPElicitationMethodCodex + `","params":{}}`))
+	request := sink.LastPublishedControl()
+	require.NotEmpty(t, request.RequestID)
+
+	require.Error(t, a.Interrupt())
+
+	assert.Contains(t, sink.cancelled, request.RequestID,
+		"an elicitation is released even when the interrupt then fails")
+	a.outstandingMu.Lock()
+	defer a.outstandingMu.Unlock()
+	assert.NotContains(t, a.outstandingControls, request.RequestID)
+}
+
+// refusingWriter is a stdin that refuses every write, which is what a closed pipe
+// gives a request the runtime can no longer receive.
+type refusingWriter struct{}
+
+func (refusingWriter) Write([]byte) (int, error) { return 0, errors.New("stdin is closed") }

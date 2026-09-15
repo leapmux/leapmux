@@ -62,13 +62,57 @@ func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attac
 	return result
 }
 
+// queueReadError classifies a read of the worker's own store that a dispatch or a
+// steer made before it reached the provider.
+//
+// A store fault requeues and pauses; a missing row stays a permanent failure, because
+// the agent it identifies is gone.
+//
+// Prefer queueAgentRow to calling this by hand. The rule belongs at the READ, not at
+// each call site: applied by hand it covered four of the nine store reads on these two
+// paths, and three of the five it missed failed the reader's typed message PERMANENTLY
+// for a database error that never reached the provider.
+func queueReadError(err error) error {
+	if storeFault(err) {
+		return notReadyStoreFault(err)
+	}
+	return err
+}
+
+// queueAgentRow reads the agent row for a dispatch or a steer, already classified.
+//
+// Every read on those two paths goes through here, so a read added later inherits the
+// classification instead of having to remember it.
+func (svc *Service) queueAgentRow(agentID string) (db.Agent, error) {
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		return db.Agent{}, queueReadError(err)
+	}
+	return dbAgent, nil
+}
+
+// queueChildRouteRow reads a subagent's background-task row for a dispatch or a steer,
+// already classified. It is queueAgentRow for the other row these two paths read.
+func (svc *Service) queueChildRouteRow(childAgentID string) (db.AgentBackgroundTask, error) {
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), childAgentID)
+	if err != nil {
+		return db.AgentBackgroundTask{}, queueReadError(err)
+	}
+	return row, nil
+}
+
 func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	svc := a.svc
 	spanLines := svc.Output.snapshotPassthroughSpanLines(item.AgentID)
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	dbAgent, err := svc.queueAgentRow(item.AgentID)
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	resolvedInput, err := svc.resolveControlInput(item, dbAgent)
+	if err != nil {
+		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
+	}
+	text := resolvedInput.text
 	// Two checks, because either one alone can miss. The registry holds the
 	// live outcome, and persistAgentStartupError only logs when its write
 	// fails, so a failed write leaves the column empty while the registry says
@@ -90,14 +134,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 			return inputqueue.DispatchResult{}, fmt.Errorf("subagent accepts only messages")
 		}
-		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
+		row, err := svc.queueChildRouteRow(item.AgentID)
 		if err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments); err != nil {
+		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, text, attachments); err != nil {
 			if errors.Is(err, agent.ErrChildOperationUnsupported) {
 				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
 			}
@@ -145,7 +189,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		}
 		err := svc.Agents.CompactContext(item.AgentID)
 		if errors.Is(err, agent.ErrCompactionUnsupported) {
-			err = svc.Agents.SendInput(item.AgentID, item.Text, attachments)
+			err = svc.Agents.SendInput(item.AgentID, text, attachments)
 		}
 		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
@@ -153,13 +197,19 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION:
 		if item.PrepareContext {
-			if err := svc.preparePlanExecutionContext(item.AgentID, item.TargetMode, dbAgent); err != nil {
-				return inputqueue.DispatchResult{}, err
+			if err := svc.prepareApprovedPlanContext(item, &resolvedInput); err != nil {
+				return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 			}
-		} else if err := ensureRunning(); err != nil {
+		}
+		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
+		if item.PrepareContext {
+			if err := svc.confirmPreparedPlanSettings(item, resolvedInput); err != nil {
+				return inputqueue.DispatchResult{}, err
+			}
+		}
+		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
@@ -167,7 +217,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if err := svc.Agents.SendInput(item.AgentID, item.Text, attachments); err != nil {
+		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
@@ -196,6 +246,13 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 //     that has no problem, and hold it stopped until the user resumed it by
 //     hand.
 func classifyQueueDeliveryError(err error) error {
+	var stated *inputqueue.DeliveryError
+	if errors.As(err, &stated) {
+		// The refusal already carries its outcome. A second wrap would discard
+		// it, because queueDispatchOutcome reads the CAUSE and answers
+		// DispatchFailed for every cause it does not know.
+		return err
+	}
 	deliveryErr := &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
 	var busyErr *agent.AgentBusyError
 	if errors.As(err, &busyErr) {
@@ -231,22 +288,27 @@ func classifyQueueSteerError(err error) error {
 }
 
 func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
-	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
+	dbAgent, err := a.svc.queueAgentRow(item.AgentID)
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	resolvedInput, err := a.svc.resolveControlInput(item, dbAgent)
+	if err != nil {
+		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
+	}
+	text := resolvedInput.text
 	attachments, err := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
 	if dbAgent.ParentAgentID.Valid {
-		row, rowErr := a.svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
+		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
-		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments)
+		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else {
-		err = a.svc.Agents.SteerInput(item.AgentID, item.Text, attachments)
+		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}
 	return inputqueue.DispatchResult{
 		StartsTurn: true,
@@ -281,6 +343,29 @@ func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 	return a.svc.agentSupportsSteering(&dbAgent)
 }
 
+// Interrupt cancels the agent's active turn for Preempt. It is the provider
+// call alone: the queue pause, stop notices and control withdrawal that the
+// InterruptAgent RPC applies belong to a user STOP, and a stop-pause would hold
+// the very dispatch Preempt exists to unblock.
+func (a *agentInputQueueAdapter) Interrupt(agentID string) error {
+	err := a.svc.Agents.Interrupt(agentID)
+	if errors.Is(err, agent.ErrAgentNotFound) {
+		return fmt.Errorf("agent is not running: %w", err)
+	}
+	return err
+}
+
+// SupportsPreemption answers whether Preempt may be offered. It fetches the row
+// and delegates, exactly as SupportsSteering above does, so the rule itself
+// lives in one place: see agentSupportsPreemption.
+func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
+	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		return false
+	}
+	return a.svc.agentSupportsPreemption(&dbAgent)
+}
+
 // agentSupportsSteering answers the capability from a row the caller already
 // holds. agentToProto and buildAgentActiveStatus each hold one, and ListAgents
 // runs agentToProto for every requested tab, so an ID-based call would repeat
@@ -294,6 +379,26 @@ func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 		return err == nil && svc.Agents.SupportsSteering(row.OwnerAgentID)
 	}
 	return svc.Agents.SupportsSteering(dbAgent.ID)
+}
+
+// agentSupportsPreemption answers preemption's capability from a row the
+// caller already holds: a running ROOT provider that cannot steer. Steering
+// keeps its own control for the providers that have it; preemption is what
+// the rest (Cursor, Kilo) get. Children are excluded until a provider pairing
+// is verified against the child-interrupt route. The HasAgent term keeps a
+// not-running provider from answering true through the negated steering
+// capability alone.
+//
+// This is the ONE statement of the rule. The queue adapter's SupportsPreemption
+// fetches the row and calls it, rather than re-spelling the three terms.
+//
+// It tests the STEERING half alone, and the interrupt half needs no test: Interrupt
+// is a required method of the Agent interface, so a provider with no interrupt path
+// does not compile. processBase carried a no-op default until this was written, and
+// a provider that inherited it would have answered the RPC with success, cancelled
+// nothing, and left the reader a Preempt button that did nothing.
+func (svc *Service) agentSupportsPreemption(dbAgent *db.Agent) bool {
+	return !dbAgent.ParentAgentID.Valid && svc.Agents.HasAgent(dbAgent.ID) && !svc.agentSupportsSteering(dbAgent)
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
@@ -345,7 +450,8 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
 			Attachments: attachments, Order: item.Order, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
-			CanSteer: item.CanSteer, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
+			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
 	}
 	return result
@@ -439,6 +545,15 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
+	registerAgentGuardedByID(d, "PreemptQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.PreemptQueuedAgentInputRequest, sender channel.ResponseWriter) {
+			snapshot, err := svc.InputQueue.Preempt(bgCtx(), r.GetAgentId(), r.GetInputId())
+			if sendQueueError(sender, err) {
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+		})
+
 	registerAgentGuardedByID(d, "RetryQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Retry(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetConfirmDeliveryUncertain())
@@ -461,6 +576,7 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
+		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
 		errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),

@@ -29,14 +29,13 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-
 	// Two pending requests so we can verify both get cancelled.
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", Payload: []byte(`{"a":1}`),
-	}))
-	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+	})
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-2", Payload: []byte(`{"b":2}`),
-	}))
+	})
 
 	// Register a watcher so broadcasts have somewhere to go.
 	registerAgentWatch(svc, "test-ch", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)

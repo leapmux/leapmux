@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { ALL_PROVIDERS, PROVIDER_SUPPORTS_SESSION_GOAL } from '~/generated/contracts/providers'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { pluginFor, providerFor } from './registry'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { pluginFor, providerFor, retainedOutcome, retainedRowIsFinal } from './registry'
 // Side-effect import: register every provider plugin so the registry is populated.
 import '.'
 
@@ -26,45 +26,36 @@ describe('pluginFor', () => {
   })
 })
 
-describe('session-goal support', () => {
-  const supported = [
-    AgentProvider.CLAUDE_CODE,
-    AgentProvider.CODEX,
-    AgentProvider.GOOSE,
-    AgentProvider.REASONIX,
-    AgentProvider.ZCODE,
-    AgentProvider.GITHUB_COPILOT,
-  ]
-  const unsupported = [
-    AgentProvider.CURSOR,
-    AgentProvider.KILO,
-    AgentProvider.OPENCODE,
-    AgentProvider.PI,
-  ]
+describe('provider registration', () => {
+  it.each(ALL_PROVIDERS)('registers the provider %s', (provider) => {
+    expect(pluginFor(provider)).toBeDefined()
+  })
+})
 
-  /**
-   * The answer is a CONTRACT, not a plugin field, so this reads the generated
-   * table. The Go twin asserts the same table against the agents that implement
-   * GoalWriter (`TestProviderSessionGoalContractMatchesGoalWriters`), so the
-   * two languages cannot classify a provider differently.
-   */
-  it('classifies every provider', () => {
-    for (const provider of supported)
-      expect(PROVIDER_SUPPORTS_SESSION_GOAL[provider], AgentProvider[provider]).toBe(true)
-    for (const provider of unsupported)
-      expect(PROVIDER_SUPPORTS_SESSION_GOAL[provider], AgentProvider[provider]).toBe(false)
-
-    const classified = [...supported, ...unsupported].toSorted((a, b) => a - b)
-    const allProviders = Object.values(AgentProvider)
-      .filter((value): value is AgentProvider => typeof value === 'number' && value !== AgentProvider.UNSPECIFIED)
-      .toSorted((a, b) => a - b)
-    expect(classified).toEqual(allProviders)
+// A turn that ends while a tool call runs leaves no final frame, so the worker keeps the
+// agent's last frame and records the outcome in its completion column. The rule is
+// LeapMux's, and four renderers used to spell it separately with three different answers.
+describe('retainedOutcome', () => {
+  it.each([
+    [MessageCompletion.COMPLETE, 'succeeded'],
+    [MessageCompletion.INTERRUPTED, 'interrupted'],
+    [MessageCompletion.ERROR, 'failed'],
+  ])('reads %s as the shared outcome word %s', (completion, outcome) => {
+    expect(retainedOutcome(completion)).toBe(outcome)
   })
 
-  // The contract's own schema requires the field, so a provider with no entry
-  // fails `task generate-contracts`. This is the runtime half of that guard.
-  it('states an answer for every provider, with none missing', () => {
-    for (const provider of ALL_PROVIDERS)
-      expect(PROVIDER_SUPPORTS_SESSION_GOAL[provider], AgentProvider[provider]).toBeTypeOf('boolean')
+  // Null says that LeapMux recorded nothing, so the provider's own bytes state the
+  // outcome and a caller keeps whatever they say.
+  it('reports no outcome for an unset or unrecognized completion', () => {
+    expect(retainedOutcome(undefined)).toBeNull()
+    expect(retainedOutcome(MessageCompletion.UNSPECIFIED)).toBeNull()
+    expect(retainedOutcome(99 as MessageCompletion)).toBeNull()
+  })
+
+  // The two answer one question each, off ONE reading of the completion column.
+  it('agrees with retainedRowIsFinal on every completion', () => {
+    for (const completion of [undefined, MessageCompletion.UNSPECIFIED, MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR]) {
+      expect(retainedRowIsFinal(completion)).toBe(retainedOutcome(completion) !== null)
+    }
   })
 })

@@ -1,43 +1,43 @@
 import { describe, expect, it } from 'vitest'
-import { acpTerminalFromToolCallContent } from './terminal'
+import { acpTerminalIds } from './terminal'
 
-describe('acpTerminalFromToolCallContent', () => {
-  it('returns null for null/undefined/non-array', () => {
-    expect(acpTerminalFromToolCallContent(null)).toBeNull()
-    expect(acpTerminalFromToolCallContent(undefined)).toBeNull()
-    expect(acpTerminalFromToolCallContent('nope')).toBeNull()
-    expect(acpTerminalFromToolCallContent({})).toBeNull()
+describe('acpTerminalIds', () => {
+  it('returns an empty list for null/undefined/non-array', () => {
+    expect(acpTerminalIds(null)).toEqual([])
+    expect(acpTerminalIds(undefined)).toEqual([])
+    expect(acpTerminalIds('nope')).toEqual([])
+    expect(acpTerminalIds({})).toEqual([])
   })
 
-  it('extracts the first terminal entry', () => {
-    expect(acpTerminalFromToolCallContent([
+  it('extracts every terminal entry', () => {
+    expect(acpTerminalIds([
       { type: 'content', content: { text: 'noise' } },
       { type: 'terminal', terminalId: 'term_abc' },
       { type: 'terminal', terminalId: 'term_later' },
-    ])).toEqual({ terminalId: 'term_abc' })
+    ])).toEqual(['term_abc', 'term_later'])
   })
 
   it('skips terminal entries without a terminalId', () => {
-    expect(acpTerminalFromToolCallContent([
+    expect(acpTerminalIds([
       { type: 'terminal' },
       { type: 'terminal', terminalId: '' },
       { type: 'terminal', terminalId: 'term_ok' },
-    ])).toEqual({ terminalId: 'term_ok' })
+    ])).toEqual(['term_ok'])
   })
 
-  it('returns null when no terminal entry is present', () => {
-    expect(acpTerminalFromToolCallContent([
+  it('returns an empty list when no terminal entry is present', () => {
+    expect(acpTerminalIds([
       { type: 'diff', path: 'a.ts', oldText: '', newText: 'x' },
       { type: 'content', content: { text: 'hi' } },
-    ])).toBeNull()
+    ])).toEqual([])
   })
 
   it('skips non-object entries in the content array', () => {
-    expect(acpTerminalFromToolCallContent([
+    expect(acpTerminalIds([
       null,
       'terminal',
       42,
       { type: 'terminal', terminalId: 'term_after_noise' },
-    ])).toEqual({ terminalId: 'term_after_noise' })
+    ])).toEqual(['term_after_noise'])
   })
 })

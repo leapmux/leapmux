@@ -90,6 +90,8 @@ type Service struct {
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
+	sendControlResponseFn  func(string, []byte) error
+	updateAgentSettingsFn  func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -140,6 +142,12 @@ type Service struct {
 	// Add(1) at entry and defer Done() so Wait() in Shutdown observes
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
+
+	// forceStops holds the agent ids with an interrupt-escalation restart in
+	// flight. A stop press that lands while the replacement is still starting
+	// finds nothing running to interrupt, and the honest answer is the benign
+	// one -- the press that began the restart already carried this one's intent.
+	forceStops sync.Map
 
 	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
 	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
@@ -593,6 +601,7 @@ func New(cfg Config) *Service {
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
 	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
+	svc.Output.SetSupportsPreemptionFunc(queueAdapter.SupportsPreemption)
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
@@ -615,6 +624,8 @@ func New(cfg Config) *Service {
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
+	svc.sendControlResponseFn = svc.Agents.SendRawInput
+	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 
 	// Wire auto-continue so OutputHandler can send synthetic user messages.
@@ -779,8 +790,10 @@ func (svc *Service) RestoreState() {
 	// indicator that never resolves. When the sweep fails nothing moved, so
 	// nothing is owed a divider and a later boot finds the rows still active.
 	endedChildIDs, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
-		EndedAt:   sqltime.SQLiteNullTimeOf(bootNow),
-		UpdatedAt: sqltime.NewSQLiteTime(bootNow),
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
+		UpdatedAt:      sqltime.NewSQLiteTime(bootNow),
 	})
 	if err != nil {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)

@@ -92,3 +92,7 @@ coverage/
 
 # Local scratch files
 /.tmp/
+
+# Python bytecode from the standalone protocol reproducers
+__pycache__/
+*.pyc

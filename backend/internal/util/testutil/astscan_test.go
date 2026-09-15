@@ -4,6 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,4 +93,44 @@ func keys(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The two package scanners must PARTITION a directory: every top-level .go file
+// belongs to exactly one of them.
+//
+// A filter that leaked would be invisible at the caller. `worker/agent` scans its
+// test files for a type that its non-test files DECLARE, so a test-file scan that
+// also read source would report the declaration itself as an offender; and a
+// source-file scan that also read tests would report every helper. Both halves
+// must stay disjoint, and neither may be empty.
+func TestPackageScannersPartitionTheDirectory(t *testing.T) {
+	t.Parallel()
+
+	source := map[string]bool{}
+	ForEachPackageSourceFile(t, ".", func(fset *token.FileSet, file *ast.File) {
+		source[filepath.Base(fset.Position(file.Pos()).Filename)] = true
+	})
+	tests := map[string]bool{}
+	ForEachPackageTestFile(t, ".", func(fset *token.FileSet, file *ast.File) {
+		tests[filepath.Base(fset.Position(file.Pos()).Filename)] = true
+	})
+
+	assert.Contains(t, source, "astscan.go")
+	assert.Contains(t, tests, "astscan_test.go")
+	for name := range tests {
+		assert.True(t, strings.HasSuffix(name, "_test.go"), "%s is not a test file", name)
+		assert.NotContains(t, source, name, "%s reached both scanners", name)
+	}
+
+	// Together they must cover the whole directory. A third filter state -- a file
+	// neither scanner reads -- would hide that file from every rule built on these.
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		assert.True(t, source[name] || tests[name], "%s reached neither scanner", name)
+	}
 }

@@ -1,6 +1,7 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlStore, requestInstanceId } from '~/stores/control.store'
 
 // claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
@@ -10,6 +11,48 @@ function makeRequest(requestId: string, agentId: string, payload: Record<string,
 }
 
 describe('createControlStore', () => {
+  it('retains confirmed delivery when an older request update arrives', () => {
+    const store = createControlStore()
+    const request = makeRequest('request', 'agent')
+    store.addRequest('agent', { ...request, responseState: ControlResponseState.DELIVERED })
+    for (const responseState of [ControlResponseState.READY, ControlResponseState.PENDING, ControlResponseState.UNCERTAIN]) {
+      store.addRequest('agent', { ...request, responseState })
+      expect(store.getRequests('agent')[0].responseState).toBe(ControlResponseState.DELIVERED)
+    }
+    store.addRequest('agent', { ...request, claimToken: 'new', responseState: ControlResponseState.READY })
+    expect(store.getRequests('agent')[1].responseState).toBe(ControlResponseState.READY)
+  })
+  it('retains an owned copy of the original request bytes', () => {
+    const store = createControlStore()
+    const originalPayload = new TextEncoder().encode('{"n":9007199254740993}')
+    store.addRequest('agent', { ...makeRequest('request', 'agent'), originalPayload })
+    originalPayload.fill(0)
+    expect(new TextDecoder().decode(store.getRequests('agent')[0].originalPayload)).toBe('{"n":9007199254740993}')
+  })
+
+  it('keeps the current request when an older cancellation arrives', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', makeRequest('request', 'agent-1', {}, 'new-claim'))
+    store.removeRequest('agent-1', 'request', 'old-claim')
+    expect(store.getRequests('agent-1').map(request => request.claimToken)).toEqual(['new-claim'])
+    store.removeRequest('agent-1', 'request', 'new-claim')
+    expect(store.getRequests('agent-1')).toHaveLength(0)
+  })
+
+  it('keeps a new instance when an identical earlier request still awaits cancellation', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      const payload = { request: { tool_name: 'Read', input: { path: 'sample.txt' } } }
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'first'))
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
+      store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
+      expect(store.getRequests('agent-1').map(request => request.claimToken)).toEqual(['first', 'second'])
+      store.removeRequest('agent-1', '1', 'first')
+      expect(store.getRequests('agent-1').map(request => request.claimToken)).toEqual(['second'])
+      dispose()
+    })
+  })
+
   it('should initialize with empty state', () => {
     createRoot((dispose) => {
       const store = createControlStore()
@@ -46,7 +89,7 @@ describe('createControlStore', () => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       store.addRequest('agent-1', makeRequest('r2', 'agent-1'))
-      store.removeRequest('agent-1', 'r1')
+      store.removeRequest('agent-1', 'r1', 'tok-r1')
       expect(store.getRequests('agent-1')).toHaveLength(1)
       expect(store.getRequests('agent-1')[0].requestId).toBe('r2')
       dispose()
@@ -129,7 +172,7 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-A', makeRequest('1', 'agent-A'))
-      store.removeRequest('agent-A', '1')
+      store.removeRequest('agent-A', '1', 'tok-1')
 
       store.addRequest('agent-B', makeRequest('1', 'agent-B'))
       expect(store.getRequests('agent-B')).toHaveLength(1)
@@ -145,7 +188,7 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      store.removeRequest('agent-1', 'r1')
+      store.removeRequest('agent-1', 'r1', 'tok-r1')
 
       // Simulate a replayed controlRequest landing during a reconnect.
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
@@ -163,7 +206,7 @@ describe('createControlStore', () => {
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
         request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
       }, 'tok-r1-first'))
-      store.removeRequest('agent-1', 'r1')
+      store.removeRequest('agent-1', 'r1', 'tok-r1-first')
 
       // The reissued prompt carries a fresh claimToken (a new PersistControlRequest instance).
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
@@ -187,7 +230,7 @@ describe('createControlStore', () => {
       const store = createControlStore()
       const payload = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instA'))
-      store.removeRequest('agent-1', '1')
+      store.removeRequest('agent-1', '1', 'instA')
 
       // A reconnect replay of the SAME instance (same token) stays suppressed.
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instA'))
@@ -209,7 +252,7 @@ describe('createControlStore', () => {
       const p1 = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
       const p2 = { request: { tool_name: 'Bash', input: { command: 'rm -rf /' } } }
       store.addRequest('agent-1', makeRequest('1', 'agent-1', p1, ''))
-      store.removeRequest('agent-1', '1')
+      store.removeRequest('agent-1', '1', '')
 
       store.addRequest('agent-1', makeRequest('1', 'agent-1', p1, '')) // identical -> suppressed
       expect(store.getRequests('agent-1')).toHaveLength(0)
@@ -228,10 +271,10 @@ describe('createControlStore', () => {
       const revisedPayload = {
         request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
       }
-      store.addRequest('agent-1', makeRequest('r1', 'agent-1', firstPayload))
-      store.addRequest('agent-1', makeRequest('r1', 'agent-1', revisedPayload))
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', firstPayload, 'old-claim'))
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', revisedPayload, 'new-claim'))
 
-      store.removeRequest('agent-1', 'r1')
+      store.removeRequest('agent-1', 'r1', 'old-claim')
       expect(store.getRequests('agent-1')).toHaveLength(1)
       expect(store.getRequests('agent-1')[0].payload).toEqual(revisedPayload)
       dispose()
@@ -246,13 +289,13 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('keep', 'agent-1'))
-      store.removeRequest('agent-1', 'keep')
+      store.removeRequest('agent-1', 'keep', 'tok-keep')
 
       // Answer 200 unrelated requests across other agents to force eviction.
       for (let i = 0; i < 200; i++) {
         const id = `noise-${i}`
         store.addRequest(`agent-noise-${i}`, makeRequest(id, `agent-noise-${i}`))
-        store.removeRequest(`agent-noise-${i}`, id)
+        store.removeRequest(`agent-noise-${i}`, id, `tok-${id}`)
       }
 
       // The most-recent suppressed key from the noise burst must still block.

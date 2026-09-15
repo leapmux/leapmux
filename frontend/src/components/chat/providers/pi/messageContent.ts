@@ -1,5 +1,5 @@
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
-import { isObject } from '~/lib/jsonPick'
+import { isObject, pickObject } from '~/lib/jsonPick'
 
 type Kind = 'text' | 'thinking'
 
@@ -14,6 +14,9 @@ type Kind = 'text' | 'thinking'
  * renderer feeds this string to MarkdownText, so they render inline.
  */
 export function piContentText(parent: Record<string, unknown>, kind: Kind): string {
+  const message = pickObject(parent, 'message')
+  if (kind === 'text' && message?.role === 'custom' && typeof message.content === 'string')
+    return message.content
   return joinContentParagraphs(getMessageContent(parent), { [kind]: kind })
 }
 

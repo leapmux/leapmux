@@ -51,14 +51,18 @@ func TestValidateLaunchOptions_DoesNotValidateModelOrEffort(t *testing.T) {
 func TestValidateLaunchOptions_ACPProviderSkipsPermissionMode(t *testing.T) {
 	t.Parallel()
 
-	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
-	require.NoError(t, ValidateLaunchOptions(copilot, optionmap.Map{OptionIDPermissionMode: "a-dynamic-daemon-mode"}),
+	goose := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	require.NoError(t, ValidateLaunchOptions(goose, optionmap.Map{OptionIDPermissionMode: "a-dynamic-daemon-mode"}),
 		"an ACP provider's daemon-discovered permission mode is not rejected against the static seed")
 }
 
-// TestProviderManagesEffort distinguishes providers that own a model-dependent effort
-// catalog (Claude/Codex/Pi -- effort default stamped by resolveProviderDefaults) from
-// every other provider, whose effort, if any, is server-driven.
+// TestProviderManagesEffort distinguishes providers whose effort tiers belong to the
+// MODEL (effort default stamped by resolveProviderDefaults) from every other provider,
+// whose effort, if any, is server-driven and model-independent.
+//
+// Claude, Codex and Pi state their tiers in a static catalog. Native Copilot has no
+// static catalog -- the account decides which models exist -- so it raises managesEffort
+// in its init() instead; a model switch must still rebuild its tiers.
 //
 // The two sets are a PARTITION of the generated provider table, so the "false" side is
 // derived rather than retyped: a provider added later lands in it automatically, and a
@@ -70,13 +74,14 @@ func TestProviderManagesEffort(t *testing.T) {
 	t.Parallel()
 
 	managed := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:          true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {
-			assert.Truef(t, ProviderManagesEffort(p), "%v owns a model-dependent effort catalog", p)
+			assert.Truef(t, ProviderManagesEffort(p), "%v owns model-dependent effort tiers", p)
 			continue
 		}
 		assert.Falsef(t, ProviderManagesEffort(p), "%v has no leapmux-managed effort default", p)
@@ -507,8 +512,8 @@ func TestIsEffortConfigOption(t *testing.T) {
 
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "x", Category: "thought_level"}), "category match")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: OptionIDEffort}), "OpenCode/Kilo effort id (no category)")
-	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "reasoning_effort"}), "Copilot effort id (no category)")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "thinking_effort"}), "Goose effort id (no category)")
+	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "reasoning_effort"}), "an id no ACP provider claims is not matched")
 	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "allow_all"}), "a non-effort config option is not matched")
 	assert.False(t, isEffortConfigOption(acpConfigOption{ID: "model", Category: "model"}), "the model channel is not effort")
 }
@@ -520,7 +525,7 @@ func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
 	t.Parallel()
 
 	grp := buildOptionGroup(acpConfigOption{
-		ID: "reasoning_effort", Name: "Reasoning Effort", // no Category
+		ID: GooseConfigThinkingEffort, Name: "Thinking Effort", // no Category
 		Options: []acpConfigOptionValue{{Value: "low"}, {Value: "medium"}, {Value: "high"}},
 	}, "high")
 	var order []string
@@ -770,4 +775,46 @@ func TestReadOnlyModelAndEffortGroups(t *testing.T) {
 	require.NotNil(t, optionids.GroupByID(effortOnly, OptionIDEffort), "the concrete effort still surfaces alone")
 	assert.Len(t, effortOnly, 1, "only the effort group is present")
 	assert.Empty(t, readOnlyModelAndEffortGroups("", "", ""), "absent model and effort yield no groups")
+}
+
+// Permission-mode validation asks its OWN question, not the effort predicate's.
+//
+// The two agreed only by coincidence, and the moment native Copilot declared a
+// model-dependent effort catalog it silently gained the authority to REJECT a
+// permission mode. Pi is where the difference shows: it manages effort and
+// declares no permission modes at all, so the shared predicate admitted it and
+// then accepted anything, because an empty group accepts every value.
+func TestValidateLaunchOptionsAsksTheProviderItsOwnPermissionQuestion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		provider         leapmuxv1.AgentProvider
+		fixedModes       bool
+		managesEffort    bool
+		rejectsAnUnknown bool
+	}{
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, true, true, true},
+		// Manages effort, states no permission enum of its own.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, false, true, false},
+		// An ACP provider discovers its modes from the daemon.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, false, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, false, false, false},
+	} {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			assert.Equal(t, tc.fixedModes, ProviderHasFixedPermissionModes(tc.provider),
+				"permission-mode authority")
+			assert.Equal(t, tc.managesEffort, ProviderManagesEffort(tc.provider),
+				"effort-catalog question, which must stay separate")
+
+			err := ValidateLaunchOptions(tc.provider, optionmap.Map{OptionIDPermissionMode: "not-a-mode"})
+			if tc.rejectsAnUnknown {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not valid for this provider")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

@@ -32,6 +32,40 @@ import (
 func ForEachPackageSourceFile(t *testing.T, dir string, fn func(fset *token.FileSet, file *ast.File)) {
 	t.Helper()
 
+	parsed := forEachPackageFile(t, dir, func(name string) bool {
+		return !strings.HasSuffix(name, "_test.go")
+	}, fn)
+	// A silently empty scan is the one way a completeness test can pass while
+	// checking nothing at all -- e.g. after a move that leaves the test behind
+	// in a directory with no source.
+	require.NotZero(t, parsed, "no non-test Go source found in %s; the scan would vacuously pass", dir)
+}
+
+// ForEachPackageTestFile parses every _test.go file directly in dir and invokes
+// fn once per file with a shared FileSet. It is the counterpart of
+// ForEachPackageSourceFile.
+//
+// A rule that only a TEST can break has nowhere else to look. A fixture that
+// must come from one constructor, or a cleanup that a test must register, lives
+// in test source alone. `worker/agent` needs exactly that. A test there can open
+// a provider database handle and never close it. Unix unlinks an open file, so no
+// assertion fails, and Windows refuses, so the temporary directory's own cleanup
+// fails instead.
+func ForEachPackageTestFile(t *testing.T, dir string, fn func(fset *token.FileSet, file *ast.File)) {
+	t.Helper()
+
+	parsed := forEachPackageFile(t, dir, func(name string) bool {
+		return strings.HasSuffix(name, "_test.go")
+	}, fn)
+	require.NotZero(t, parsed, "no Go test source found in %s; the scan would vacuously pass", dir)
+}
+
+// forEachPackageFile parses every top-level .go file in dir that accept admits,
+// and reports how many it parsed. Each caller states its own vacuity message,
+// because "the scan found nothing" reads differently for each half of a package.
+func forEachPackageFile(t *testing.T, dir string, accept func(name string) bool, fn func(fset *token.FileSet, file *ast.File)) int {
+	t.Helper()
+
 	fset := token.NewFileSet()
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err, "read package dir %s", dir)
@@ -39,7 +73,7 @@ func ForEachPackageSourceFile(t *testing.T, dir string, fn func(fset *token.File
 	parsed := 0
 	for _, ent := range entries {
 		name := ent.Name()
-		if ent.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if ent.IsDir() || !strings.HasSuffix(name, ".go") || !accept(name) {
 			continue
 		}
 		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
@@ -47,10 +81,7 @@ func ForEachPackageSourceFile(t *testing.T, dir string, fn func(fset *token.File
 		fn(fset, file)
 		parsed++
 	}
-	// A silently empty scan is the one way a completeness test can pass while
-	// checking nothing at all -- e.g. after a move that leaves the test behind
-	// in a directory with no source.
-	require.NotZero(t, parsed, "no non-test Go source found in %s; the scan would vacuously pass", dir)
+	return parsed
 }
 
 // EnclosingFuncFinder maps a position back to the function declaration that

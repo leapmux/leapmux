@@ -44,6 +44,7 @@ import {
 import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+import { unescapeAutolinkDots } from './autolinkDotEscape'
 
 // One Oniguruma-backed highlighter shared across all editor mounts. Created
 // lazily (cheap closure here; the WASM engine + grammars load only when the
@@ -270,9 +271,10 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
         catch { /* ignore */ }
         saveDraft(pendingDraftKey, pendingMd.trim(), cursor)
       }, 500)
-      ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
-        if (typeof md !== 'string')
+      ctx.get(listenerCtx).markdownUpdated((_ctx, raw) => {
+        if (typeof raw !== 'string')
           return
+        const md = unescapeAutolinkDots(raw)
         opts.onDocument(md)
         const draftKey = opts.getDraftKey()
         if (draftKey) {

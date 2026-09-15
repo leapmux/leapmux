@@ -715,10 +715,10 @@ func (s *AppService) snapshot(ctx context.Context) *settings.Snapshot {
 // can mean.
 func (s *AppService) resolveOwnership(
 	visibility leapmuxv1.AppVisibility, user *auth.UserInfo,
-) (owner, source string, err error) {
+) (owner string, source leapmuxv1.AppRegistrationSource, err error) {
 	if visibility == leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE {
 		if !user.IsAdmin {
-			return "", "", connect.NewError(connect.CodePermissionDenied,
+			return "", 0, connect.NewError(connect.CodePermissionDenied,
 				errors.New("only an administrator can register a hub-wide app"))
 		}
 		// An empty owner IS hub-wide. One column carries the whole visibility
@@ -736,7 +736,7 @@ func (s *AppService) resolveOwnership(
 // states directly. Every validation rule is the core's, so a redirect-URI
 // rule or a ceiling closure holds on all surfaces or neither.
 func (s *AppService) buildAppParams(
-	msg *leapmuxv1.RegisterAppRequest, owner, createdBy, source string, scopes authscope.ScopeSet,
+	msg *leapmuxv1.RegisterAppRequest, owner, createdBy string, source leapmuxv1.AppRegistrationSource, scopes authscope.ScopeSet,
 ) (store.CreateOAuthClientParams, string, error) {
 	params, secret, err := buildOAuthClientRegistration(s.validator, appRegistrationSpec{
 		name:         msg.GetClientName(),
@@ -928,7 +928,7 @@ func appToProto(app *store.OAuthClient, liveCount int64, verifiedBy string) *lea
 		Scopes:             authscope.ScopesToWire(scopes),
 		GrantTypes:         strings.Fields(app.GrantTypes),
 		ElevationAllowed:   app.ElevationAllowed,
-		RegistrationSource: app.RegistrationSource,
+		RegistrationSource: store.AppRegistrationSourceWire(app.RegistrationSource),
 		HasIcon:            app.HasIcon,
 		// The one verified rule, stated through the same predicate the consent
 		// page and icon endpoint read: a vouch or a built-in of this build.

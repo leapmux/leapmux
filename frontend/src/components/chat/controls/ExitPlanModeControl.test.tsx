@@ -79,9 +79,10 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const [bytes, options] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
-    expect(decoded.clearContext).toBe(true)
+    expect(decoded).not.toHaveProperty('clearContext')
+    expect(options.planApproval.clearContext).toBe(true)
     expect(decoded.response.response.behavior).toBe('allow')
   })
 
@@ -106,13 +107,13 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const [bytes, options] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-99')
     expect(decoded.response.response.behavior).toBe('allow')
-    expect(decoded.permissionMode).toBe('bypassPermissions')
-    // The mode travels INSIDE the response; a second settings change would race
-    // the restart a context-clearing approval triggers, so the handler never fires.
+    expect(decoded).not.toHaveProperty('permissionMode')
+    expect(options.planApproval.permissionMode).toBe('bypassPermissions')
+    // One RPC carries the response and plan settings. A separate settings call could race the restart.
     expect(apply).not.toHaveBeenCalled()
   })
 
@@ -138,8 +139,9 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBe('auto')
+    const [bytes, options] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
+    expect(options.planApproval.permissionMode).toBe('auto')
     expect(apply).not.toHaveBeenCalled()
   })
 
@@ -165,8 +167,9 @@ describe('exitPlanModeActions', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBe('auto')
+    const [bytes, options] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
+    expect(options.planApproval.permissionMode).toBe('auto')
   })
 
   it('carries no mode when the catalog offers no smart preset', () => {
@@ -187,8 +190,9 @@ describe('exitPlanModeActions', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBeUndefined()
+    const [bytes, options] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
+    expect(options.planApproval).toEqual({ permissionMode: '', clearContext: false })
   })
 
   // A preset that switches some axis OTHER than the permission mode cannot act
@@ -230,11 +234,12 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const [bytes, options] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')
-    expect(decoded.permissionMode).toBeUndefined()
+    expect(decoded).not.toHaveProperty('permissionMode')
+    expect(options.planApproval).toEqual({ permissionMode: '', clearContext: false })
   })
 
   it('does not show the permission pills when presets are absent', () => {

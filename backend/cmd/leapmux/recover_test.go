@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
@@ -99,7 +100,7 @@ func seedEncryptedOAuthProvider(t *testing.T, dir, secret string) {
 	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID:           provID,
-		ProviderType: "github",
+		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB,
 		Name:         "github",
 		ClientID:     "c1",
 		ClientSecret: enc,

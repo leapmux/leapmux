@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -15,7 +16,7 @@ import (
 
 func createAutoContinueTestAgent(t *testing.T, queries *db.Queries, agentID string) {
 	t.Helper()
-	require.NoError(t, queries.CreateAgent(bgCtx(), db.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(bgCtx(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",

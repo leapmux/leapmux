@@ -33,12 +33,8 @@ var piMessageEndBenchPayload = []byte(`{
   }
 }`)
 
-// BenchmarkAugmentPiMessageEnd records the per-message_end cost of the
-// single-decode path. The previous implementation did two full
-// json.Unmarshals of the same envelope; the new path does one decode,
-// extracts the typed usage from the decoded map, mutates fields in
-// place, and marshals once. Run with -benchmem to see allocs/op.
-func BenchmarkAugmentPiMessageEnd(b *testing.B) {
+// BenchmarkPiMessageEndContent measures usage extraction and metadata encoding.
+func BenchmarkPiMessageEndContent(b *testing.B) {
 	a := newPiAgentWithSink(&recordingControlSink{})
 	a.model = "gpt-5"
 	a.availableModels = []*ModelInfo{{Id: "gpt-5", ContextWindow: 200000}}
@@ -46,7 +42,7 @@ func BenchmarkAugmentPiMessageEnd(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = a.augmentPiMessageEnd(piMessageEndBenchPayload)
+		_ = a.piMessageEndContent(piMessageEndBenchPayload)
 	}
 }
 
@@ -59,12 +55,8 @@ var piAgentEndBenchPayload = []byte(`{
   "elapsed":1234
 }`)
 
-// BenchmarkPersistPiAgentEnd benchmarks the agent_end augment path
-// (single Unmarshal + Marshal, identical between old and new code).
-// Useful as a baseline alongside BenchmarkAugmentPiMessageEnd to
-// confirm the gain on message_end is a real reduction, not measurement
-// noise.
-func BenchmarkPersistPiAgentEnd(b *testing.B) {
+// BenchmarkPiAgentEndContent measures encoding of a turn's usage and duration.
+func BenchmarkPiAgentEndContent(b *testing.B) {
 	snap := piUsageSnapshot{
 		HasTotalCost: true,
 		TotalCostUsd: 0.42,
@@ -80,7 +72,7 @@ func BenchmarkPersistPiAgentEnd(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = piAugmentAgentEnd(piAgentEndBenchPayload, snap, &durationMs)
+		_ = piAgentEndContent(piAgentEndBenchPayload, snap, &durationMs)
 	}
 }
 

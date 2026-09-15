@@ -2,8 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,22 +36,23 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 
 	// A single thought chunk is buffered, not persisted immediately. Only
 	// once an interrupting event (here: end-of-turn) arrives does it flush.
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
 	require.Equal(t, 0, sink.MessageCount(), "thought chunk should buffer, not persist immediately")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn"}`)
 	agent.handleACPPromptResponse(resp)
 
-	// End-of-turn flushes thought buffer, then persists the (empty) assistant
-	// text — `persistTextMessage` skips empty — then the result divider.
+	// End-of-turn flushes the thought buffer, then persists the (empty) assistant
+	// text -- an empty segment writes no row -- then the result divider.
 	require.Equal(t, 2, sink.MessageCount())
 	thoughtMsg := sink.Messages()[0]
 	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, thoughtMsg.Source)
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(thoughtMsg.Content, &parsed))
-	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
-	require.Equal(t, "thinking...", parsed["content"].(map[string]interface{})["text"])
+	require.Equal(t, contracts.AssembledMessageType, parsed["type"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, parsed["kind"])
+	require.Equal(t, "thinking...", parsed["text"])
 	require.True(t, sink.Messages()[1].TurnEnd)
 }
 
@@ -68,7 +71,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_TokenCoalescing(t *testing.T) {
 			"jsonrpc": "2.0",
 			"method":  "session/update",
 			"params": map[string]interface{}{
-				"sessionId": "s1",
+				"sessionId": "test-session",
 				"update": map[string]interface{}{
 					"sessionUpdate": "agent_thought_chunk",
 					"content":       map[string]interface{}{"type": "text", "text": tok},
@@ -81,14 +84,14 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_TokenCoalescing(t *testing.T) {
 	require.Equal(t, 0, sink.MessageCount(), "tokens buffer until interrupted")
 
 	// Tool call interrupts and flushes the thought buffer.
-	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`
+	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`
 	agent.HandleOutput([]byte(toolCall))
 
 	require.Equal(t, 2, sink.MessageCount())
 	var thoughtParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &thoughtParsed))
-	require.Equal(t, "agent_thought_chunk", thoughtParsed["sessionUpdate"])
-	require.Equal(t, "paths while using multi_tool_use", thoughtParsed["content"].(map[string]interface{})["text"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, thoughtParsed["kind"])
+	require.Equal(t, "paths while using multi_tool_use", thoughtParsed["text"])
 	require.Equal(t, "tc-1", sink.Messages()[1].SpanID)
 }
 
@@ -100,8 +103,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_ReplayUsesDeltaJoining(t *testin
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Analyzing tiles**\n\nbody one"}}}}`
-	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Refining grid**\n\nbody two"}}}}`
+	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Analyzing tiles**\n\nbody one"}}}}`
+	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Refining grid**\n\nbody two"}}}}`
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
 
@@ -111,10 +114,10 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_ReplayUsesDeltaJoining(t *testin
 	require.Equal(t, 2, sink.MessageCount())
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &parsed))
-	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, parsed["kind"])
 	require.Equal(t,
 		"**Analyzing tiles**\n\nbody one**Refining grid**\n\nbody two",
-		parsed["content"].(map[string]interface{})["text"],
+		parsed["text"],
 	)
 	require.True(t, sink.Messages()[1].TurnEnd)
 }
@@ -125,8 +128,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_DoesNotInferAParagraph(t *testin
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"I'll validate before giving feedback."}}}}`
-	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"The proposed hook point exists."}}}}`
+	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"I'll validate before giving feedback."}}}}`
+	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"The proposed hook point exists."}}}}`
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
 
@@ -135,9 +138,10 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_DoesNotInferAParagraph(t *testin
 	require.GreaterOrEqual(t, sink.MessageCount(), 1)
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &parsed))
+	require.Equal(t, contracts.AssembledMessageKindReasoning, parsed["kind"])
 	require.Equal(t,
 		"I'll validate before giving feedback.The proposed hook point exists.",
-		parsed["content"].(map[string]interface{})["text"],
+		parsed["text"],
 	)
 }
 
@@ -151,8 +155,8 @@ func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
 	// because thinking sat in a builder until end-of-turn. The buffer now
 	// flushes whenever a non-thought event arrives, so chronological order
 	// is thought → tool_call.
-	thought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"about to read a file"}}}}`
-	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`
+	thought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"about to read a file"}}}}`
+	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`
 	agent.HandleOutput([]byte(thought))
 	agent.HandleOutput([]byte(toolCall))
 
@@ -160,7 +164,7 @@ func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
 
 	var thoughtParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &thoughtParsed))
-	require.Equal(t, "agent_thought_chunk", thoughtParsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, thoughtParsed["kind"])
 
 	require.Equal(t, "tc-1", sink.Messages()[1].SpanID)
 	require.Equal(t, "read", sink.Messages()[1].SpanType)
@@ -172,13 +176,13 @@ func TestHandleOpenCodeOutput_AssistantTextThenToolCallPreservesOrder(t *testing
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.HandleOutput(acpMessageChunk("I will inspect the file."))
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
 
 	require.Len(t, sink.Messages(), 2)
 	var assistant map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &assistant))
-	assert.Equal(t, "agent_message_chunk", assistant["sessionUpdate"])
-	assert.Equal(t, "I will inspect the file.", assistant["content"].(map[string]interface{})["text"])
+	assert.Equal(t, contracts.AssembledMessageKindText, assistant["kind"])
+	assert.Equal(t, "I will inspect the file.", assistant["text"])
 	assert.Equal(t, "tc-1", sink.Messages()[1].SpanID)
 }
 
@@ -191,7 +195,7 @@ func TestHandleOpenCodeOutput_TrailingThoughtFlushedBeforeReply(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	thought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"final thought"}}}}`
+	thought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"final thought"}}}}`
 	agent.HandleOutput([]byte(thought))
 
 	agent.turnAssistantText.WriteString("Here is the answer.")
@@ -201,11 +205,11 @@ func TestHandleOpenCodeOutput_TrailingThoughtFlushedBeforeReply(t *testing.T) {
 
 	var thoughtParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &thoughtParsed))
-	require.Equal(t, "agent_thought_chunk", thoughtParsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindReasoning, thoughtParsed["kind"])
 
 	var assistantParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(sink.Messages()[1].Content, &assistantParsed))
-	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindText, assistantParsed["kind"])
 
 	require.True(t, sink.Messages()[2].TurnEnd)
 }
@@ -230,7 +234,8 @@ func TestHandleOpenCodePromptResponse_PersistsAssistantText(t *testing.T) {
 	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, assistantMsg.Source)
 	var assistantParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(assistantMsg.Content, &assistantParsed))
-	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
+	require.Equal(t, contracts.AssembledMessageKindText, assistantParsed["kind"])
+	require.Equal(t, contracts.AssembledMessageCompletionComplete, assistantParsed["completion"])
 
 	resultMsg := sink.Messages()[1]
 	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
@@ -246,7 +251,7 @@ func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"bash","kind":"execute","status":"pending","locations":[],"rawInput":{}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"bash","kind":"execute","status":"pending","locations":[],"rawInput":{}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -270,14 +275,14 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	// Status-only in_progress (no content) — must not broadcast a stream
 	// chunk, since shipping the raw envelope would let the frontend
 	// concatenate it into the command-stream buffer.
-	statusOnly := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
+	statusOnly := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
 	agent.HandleOutput([]byte(statusOnly))
 	require.Equal(t, 0, sink.MessageCount())
 
 	// in_progress with cumulative text content — broadcast just the new
 	// delta, not the raw envelope.
-	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\n"}}]}}}`
-	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\nline2\n"}}]}}}`
+	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\n"}}]}}}`
+	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\nline2\n"}}]}}}`
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
 	updates := sink.ProgressUpdates()
@@ -292,7 +297,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"output"}}],"rawOutput":{"output":"output"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"output"}}],"rawOutput":{"output":"output"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -313,7 +318,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateFailed(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"error"}}],"rawOutput":{"error":"error"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"error"}}],"rawOutput":{"error":"error"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -332,7 +337,7 @@ func TestHandleOpenCodeOutput_UsageUpdate(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":1000,"size":128000,"cost":{"amount":0.05,"currency":"USD"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"usage_update","used":1000,"size":128000,"cost":{"amount":0.05,"currency":"USD"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -351,7 +356,7 @@ func TestHandleOpenCodeOutput_UsageUpdateNoCost(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":500,"size":64000,"cost":{"amount":0,"currency":"USD"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"usage_update","used":500,"size":64000,"cost":{"amount":0,"currency":"USD"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -366,7 +371,7 @@ func TestHandleOpenCodeOutput_Plan(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[{"priority":"medium","status":"pending","content":"Step 1"},{"priority":"medium","status":"completed","content":"Step 2"}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"plan","entries":[{"priority":"medium","status":"pending","content":"Step 1"},{"priority":"medium","status":"completed","content":"Step 2"}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 1, sink.MessageCount())
@@ -391,14 +396,13 @@ func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
 	sink := &recordingControlSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
+	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"test-session","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.PersistedControlCount())
-	require.Equal(t, 1, sink.BroadcastControlCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
 
-	rec := sink.LastPersistedControl()
-	assert.Equal(t, "5", rec.RequestID)
+	rec := sink.LastPublishedControl()
+	assert.Equal(t, "jsonrpc:5", rec.RequestID)
 
 	// Verify payload is the original content.
 	var parsed struct {
@@ -420,11 +424,10 @@ func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	// Missing "id" field — should be ignored (logged as warning).
-	input := `{"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1"}}}`
+	input := `{"method":"session/request_permission","params":{"sessionId":"test-session","toolCall":{"toolCallId":"tc-1"}}}`
 	agent.HandleOutput([]byte(input))
 
-	assert.Equal(t, 0, sink.PersistedControlCount())
-	assert.Equal(t, 0, sink.BroadcastControlCount())
+	assert.Equal(t, 0, sink.PublishedControlCount())
 }
 
 func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
@@ -433,7 +436,7 @@ func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"replayed input"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"replayed input"}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 0, sink.MessageCount())
@@ -445,7 +448,7 @@ func TestHandleOpenCodeOutput_AvailableCommandsUpdateIgnored(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"compact the session"}]}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"compact the session"}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 0, sink.MessageCount())
@@ -470,11 +473,11 @@ func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	// tool_call opens a span.
-	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending","locations":[{"path":"file.txt"}],"rawInput":{"filePath":"file.txt"}}}}`
+	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending","locations":[{"path":"file.txt"}],"rawInput":{"filePath":"file.txt"}}}}`
 	agent.HandleOutput([]byte(toolCall))
 
 	// tool_call_update completes it.
-	toolUpdate := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"read","title":"read","content":[{"type":"content","content":{"type":"text","text":"file contents"}}],"rawOutput":{"output":"file contents"}}}}`
+	toolUpdate := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"read","title":"read","content":[{"type":"content","content":{"type":"text","text":"file contents"}}],"rawOutput":{"output":"file contents"}}}}`
 	agent.HandleOutput([]byte(toolUpdate))
 
 	require.Equal(t, 2, sink.MessageCount())
@@ -493,34 +496,6 @@ func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
 	require.True(t, completedMsg.Closing)
 }
 
-func TestUnwrapACPResult(t *testing.T) {
-	t.Parallel()
-
-	t.Run("unwraps role=result with content", func(t *testing.T) {
-		input := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
-		got := unwrapACPResult(input)
-
-		var parsed map[string]interface{}
-		require.NoError(t, json.Unmarshal(got, &parsed))
-		require.Equal(t, "end_turn", parsed["stopReason"])
-		// Should NOT have the wrapper fields.
-		_, ok := parsed["role"]
-		require.False(t, ok)
-	})
-
-	t.Run("returns original when role is not result", func(t *testing.T) {
-		input := json.RawMessage(`{"role":"assistant","content":{"text":"hello"}}`)
-		got := unwrapACPResult(input)
-		require.Equal(t, string(input), string(got))
-	})
-
-	t.Run("returns original when no role field", func(t *testing.T) {
-		input := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
-		got := unwrapACPResult(input)
-		require.Equal(t, string(input), string(got))
-	})
-}
-
 func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 	t.Parallel()
 
@@ -536,13 +511,27 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 	msg := sink.Messages()[0]
 	require.True(t, msg.TurnEnd, "wrapped prompt response must route through PersistTurnEnd")
 
-	// The persisted content should have stopReason at the top level.
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
-	require.Equal(t, "end_turn", parsed["stopReason"])
-	// num_tool_uses must carry the completed turn's count.
-	require.Equal(t, float64(2), parsed["num_tool_uses"])
+	// The renderer resolves the wrapper. Persistence keeps all native fields and bytes.
+	require.Equal(t, []byte(resp), msg.Content)
+	// The worker count stays outside the native result.
+	assert.NotContains(t, string(msg.Content), "num_tool_uses")
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(msg.Metadata, &metadata))
+	require.Equal(t, float64(2), metadata["num_tool_uses"])
 	assert.Equal(t, 0, agent.turnToolUses)
+}
+
+func TestACPTurnCounterPreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := newOpenCodeAgentWithSink(sink)
+	a.turnToolUses = 2
+	raw := json.RawMessage(`{"stopReason":"end_turn", "future":9007199254740993}`)
+	a.handleACPPromptResponse(raw)
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, []byte(raw), messages[0].Content)
+	assert.Contains(t, string(messages[0].Metadata), `"num_tool_uses":2`)
 }
 
 func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
@@ -552,7 +541,7 @@ func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	// A session/update with role "result" should be ignored (handled by handlePromptResponse).
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"role":"result","id":"msg-1","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"role":"result","id":"msg-1","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, 0, sink.MessageCount())
@@ -565,7 +554,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompletedIncrementsToolUses(t *testi
 	agent := newOpenCodeAgentWithSink(sink)
 
 	for i := 0; i < 3; i++ {
-		input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-` + string(rune('1'+i)) + `","status":"completed","kind":"execute","title":"bash"}}}`
+		input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-` + string(rune('1'+i)) + `","status":"completed","kind":"execute","title":"bash"}}}`
 		agent.HandleOutput([]byte(input))
 	}
 
@@ -576,15 +565,31 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompletedIncrementsToolUses(t *testi
 	require.Equal(t, 3, count)
 }
 
-// acpChunk builds a session/update envelope carrying one streamed chunk of the
-// given sessionUpdate kind and text. acpMessageChunk / acpThoughtChunk are the
-// two kinds the thinking-token tests drive.
-func acpChunk(sessionUpdate, text string) []byte {
-	return []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"` + sessionUpdate + `","content":{"type":"text","text":"` + text + `"}}}}`)
+// acpChunk builds a streamed chunk for the specified provider session.
+func acpChunk(sessionID, sessionUpdate, text string) []byte {
+	content, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": "session/update",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate": sessionUpdate,
+				"content":       map[string]string{"type": "text", "text": text},
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return content
 }
 
-func acpMessageChunk(text string) []byte { return acpChunk("agent_message_chunk", text) }
-func acpThoughtChunk(text string) []byte { return acpChunk("agent_thought_chunk", text) }
+func acpMessageChunk(text string) []byte {
+	return acpChunk("test-session", "agent_message_chunk", text)
+}
+
+func acpThoughtChunk(text string) []byte {
+	return acpChunk("test-session", "agent_thought_chunk", text)
+}
 
 func TestHandleACPOutput_MessageChunkAccumulatesThinkingTokens(t *testing.T) {
 	t.Parallel()
@@ -663,7 +668,7 @@ func TestHandleACPOutput_ToolCallResetsThinkingTokens(t *testing.T) {
 			require.Equal(t, int64(4), lastThinkingTokens(sink))
 
 			// A tool call commits an AGENT message the frontend clears on.
-			agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
+			agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
 
 			agent.HandleOutput(src.chunk("abcdefgh"))
 			assert.Equal(t, int64(2), lastThinkingTokens(sink), "the next phase restarts at 8/4")
@@ -747,10 +752,42 @@ func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
 	agent.HandleOutput(acpMessageChunk("turn-2-text"))
 	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
+	// The aborted turn keeps its own partial text, marked interrupted.
+	assert.Equal(t, "STALE-TURN-1", persistedACPAssistantText(t, sink, MessageCompletionInterrupted),
+		"the aborted turn stores the text it did stream")
+
 	// The persisted assistant message for turn 2 must carry only turn 2's text --
 	// the aborted turn's buffer was dropped, not prepended.
-	assert.Equal(t, "turn-2-text", persistedACPAssistantText(t, sink),
+	assert.Equal(t, "turn-2-text", persistedACPAssistantText(t, sink, MessageCompletionComplete),
 		"the aborted turn's buffered assistant text does not leak into the next reply")
+}
+
+func TestHandleACPPrompt_FailedRequestMarksTheBufferedTextFailed(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// A prompt whose REQUEST fails ends the turn with an error rather than an
+	// interruption, so the reader can tell a failed model call from a stop the
+	// reader asked for. The partial text the agent did stream is kept.
+	agent.HandleOutput(acpThoughtChunk("weighing the two call sites"))
+	agent.HandleOutput(acpMessageChunk("The change is safe because"))
+	agent.finishPromptRequest("test-session", nil, errors.New("transport closed"))
+
+	assert.Equal(t, "The change is safe because", persistedACPAssistantText(t, sink, MessageCompletionError),
+		"the failed turn keeps the assistant text it did stream")
+	// The reasoning segment ended when the assistant text began, so it is complete.
+	// Only the segment the failure cut short carries the error.
+	assert.Equal(t, "weighing the two call sites",
+		persistedACPText(t, sink, contracts.AssembledMessageKindReasoning, MessageCompletionComplete),
+		"a reasoning segment the assistant text already closed stays complete")
+
+	assert.Equal(t, []map[string]interface{}{{
+		"type":  contracts.NotificationTypeAgentError,
+		"error": "prompt failed: transport closed",
+	}}, sink.LeapMuxNotifications(),
+		"the failure also reaches the transcript as one agent-error notification")
 }
 
 func TestHandleACPOutput_NilResultPersistsInterruptedToolOutput(t *testing.T) {
@@ -759,23 +796,30 @@ func TestHandleACPOutput_NilResultPersistsInterruptedToolOutput(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"partial output"}}]}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"partial output"}}]}}}`))
 	agent.handleACPPromptResponse(nil)
 
 	require.Len(t, sink.Messages(), 2)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
 	assert.Equal(t, "tc-1", result.SpanID)
+	// The stored row is the LAST frame the agent sent, byte for byte. The title and
+	// the kind arrived on the opening frame, so they ride the supplement instead of
+	// joining a merged object LeapMux would have to invent.
 	assert.JSONEq(t, `{
 		"sessionUpdate":"tool_call_update",
 		"toolCallId":"tc-1",
-		"title":"command",
-		"kind":"execute",
 		"status":"in_progress",
-		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}],
-		"_leapmux":{"completion":"interrupted"}
+		"content":[{"type":"content","content":{"type":"text","text":"partial output"}}]
 	}`, string(result.Content))
+	assert.JSONEq(t, `{
+		"sessionUpdate":"tool_call_update",
+		"toolCallId":"tc-1",
+		"status":"in_progress",
+		"protocol":{"title":"command","kind":"execute"}
+	}`, string(result.SupplementalContent))
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
 }
 
 func TestHandleACPOutput_NilResultClosesAToolWithoutAnUpdate(t *testing.T) {
@@ -784,22 +828,26 @@ func TestHandleACPOutput_NilResultClosesAToolWithoutAnUpdate(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending","rawInput":{"command":"printf partial"}}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending","rawInput":{"command":"printf partial"}}}}`))
 	agent.handleACPPromptResponse(nil)
 
 	require.Len(t, sink.Messages(), 2)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
 	assert.Equal(t, "tc-1", result.SpanID)
+	// The opening frame is the only frame the agent sent, so the row is that frame
+	// and it keeps the agent's own pending status. The interruption lives in the
+	// LeapMux completion column, never in the provider object.
 	assert.JSONEq(t, `{
-		"sessionUpdate":"tool_call_update",
+		"sessionUpdate":"tool_call",
 		"toolCallId":"tc-1",
 		"title":"command",
 		"kind":"execute",
-		"status":"in_progress",
-		"rawInput":{"command":"printf partial"},
-		"_leapmux":{"completion":"interrupted"}
+		"status":"pending",
+		"rawInput":{"command":"printf partial"}
 	}`, string(result.Content))
+	assert.Empty(t, result.SupplementalContent, "one frame needs no recovered field")
+	assert.Equal(t, MessageCompletionInterrupted, result.Completion)
 }
 
 func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testing.T) {
@@ -808,13 +856,13 @@ func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testin
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
 	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	require.Len(t, sink.Messages(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
-	assert.Contains(t, string(result.Content), `"completion":"error"`)
+	assert.Equal(t, MessageCompletionError, result.Completion)
 	assert.True(t, sink.Messages()[2].TurnEnd)
 }
 
@@ -823,8 +871,8 @@ func TestHandleACPOutput_FinalToolCallClosesItsEarlierSpan(t *testing.T) {
 
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
-	pending := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`)
-	completed := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"completed"}}}`)
+	pending := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`)
+	completed := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"completed"}}}`)
 	agent.HandleOutput(pending)
 	agent.HandleOutput(completed)
 
@@ -834,10 +882,19 @@ func TestHandleACPOutput_FinalToolCallClosesItsEarlierSpan(t *testing.T) {
 	require.Len(t, sink.Messages(), 2, "the final tool call must remove incomplete state")
 }
 
-// persistedACPAssistantText returns the text of the single persisted
-// agent_message_chunk (the turn-end assistant reply), failing the test if none or
-// more than one is present.
-func persistedACPAssistantText(t *testing.T, sink *testSink) string {
+// persistedACPAssistantText returns the text of the single assembled ASSISTANT
+// message that carries the given completion. See {@link persistedACPText}.
+func persistedACPAssistantText(t *testing.T, sink *testSink, completion MessageCompletion) string {
+	t.Helper()
+	return persistedACPText(t, sink, contracts.AssembledMessageKindText, completion)
+}
+
+// persistedACPText returns the text of the single assembled message of one kind
+// that carries the given completion, and fails the test when the sink holds none
+// or more than one. An interrupted or failed turn stores its partial text under the
+// SAME envelope as a completed one, so the kind and the completion together are what
+// separate the rows.
+func persistedACPText(t *testing.T, sink *testSink, kind string, completion MessageCompletion) string {
 	t.Helper()
 	var found []string
 	for _, m := range sink.Messages() {
@@ -845,19 +902,22 @@ func persistedACPAssistantText(t *testing.T, sink *testSink) string {
 			continue
 		}
 		var parsed struct {
-			SessionUpdate string `json:"sessionUpdate"`
-			Content       struct {
-				Text string `json:"text"`
-			} `json:"content"`
+			Type       string `json:"type"`
+			Kind       string `json:"kind"`
+			Text       string `json:"text"`
+			Completion string `json:"completion"`
 		}
 		if json.Unmarshal(m.Content, &parsed) != nil {
 			continue
 		}
-		if parsed.SessionUpdate == "agent_message_chunk" {
-			found = append(found, parsed.Content.Text)
+		if parsed.Type != contracts.AssembledMessageType || parsed.Kind != kind {
+			continue
+		}
+		if MessageCompletion(parsed.Completion) == completion {
+			found = append(found, parsed.Text)
 		}
 	}
-	require.Len(t, found, 1, "expected exactly one persisted assistant message")
+	require.Len(t, found, 1, "expected exactly one %s %s message", completion, kind)
 	return found[0]
 }
 
@@ -872,7 +932,7 @@ func TestHandleACPOutput_PermissionRequestResetsThinkingTokens(t *testing.T) {
 
 	// The agent paused for permission -- the frontend clears its counter on the
 	// control request, so the backend resets to mirror it.
-	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}}`))
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"test-session","toolCall":{"toolCallId":"tc-1","title":"Run","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}}`))
 
 	agent.HandleOutput(acpMessageChunk("abcdefgh"))
 	assert.Equal(t, int64(2), lastThinkingTokens(sink), "a permission prompt restarts the estimate")
@@ -892,4 +952,32 @@ func TestHandleACPOutput_UnknownMethodResetsThinkingTokens(t *testing.T) {
 
 	agent.HandleOutput(acpMessageChunk("abcdefgh"))
 	assert.Equal(t, int64(2), lastThinkingTokens(sink), "an unknown AGENT-message method restarts the estimate")
+}
+
+// The runtime's own session metadata -- its title and its modified time -- is not
+// conversation, and one update arrives for every turn. Persisting it put a raw-JSON
+// row in the transcript of every Agent Client Protocol provider that sends one.
+func TestHandleACPOutput_SessionInfoUpdateReachesNoTranscriptRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"session_info_update","title":"Math Question","updatedAt":"2026-09-14T02:00:00Z"}}}`))
+
+	assert.Empty(t, sink.Messages(), "session metadata belongs in no transcript row")
+}
+
+// An update this build does not recognize still reaches the transcript: a frame that
+// carries conversation is worse lost than shown as raw JSON.
+func TestHandleACPOutput_AnUnknownUpdateStillReachesTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"an_update_a_later_build_adds","detail":"keep me"}}}`))
+
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, `{"sessionUpdate":"an_update_a_later_build_adds","detail":"keep me"}`, string(sink.Messages()[0].Content))
 }

@@ -107,6 +107,13 @@ type CodexAgent struct {
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
 
+	// lastRateLimits is the rateLimits object of the newest account snapshot that
+	// reached the transcript. Codex reports the snapshot after every model call, and
+	// the value is a STATE: a report that repeats it states nothing new, so the row
+	// is written only when the state moves. outputMu guards it, as it guards every
+	// other field the output dispatch touches.
+	lastRateLimits json.RawMessage
+
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")
@@ -115,6 +122,13 @@ type CodexAgent struct {
 	turnSawPlan       bool   // whether the current turn produced a plan item
 	turnPlanText      string // final text of the current turn's plan item
 	turnAssistantText string // final assistant message text for the current turn
+	// planPromptRequestID is the plan-approval card that is still open.
+	//
+	// ONE plan is stored for each agent, and UpdatePlan REPLACES it, so a card from
+	// an earlier turn approves a plan it never showed. The card is keyed by turn, so
+	// two of them can coexist -- and the composer renders the OLDEST, which makes the
+	// newer one invisible. Guarded by a.mu.
+	planPromptRequestID string
 	// reasoningStreamKind records, per reasoning itemId, which reasoning sub-stream
 	// ("summary" or "raw") was seen first, so the token counter counts
 	// only one of them. Codex can emit both summaryTextDelta and textDelta for the
@@ -541,13 +555,34 @@ func (a *CodexAgent) Interrupt() error {
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
+	// The answers go FIRST, as acpBase.Interrupt sends them: a request the runtime
+	// still waits on outlives the turn that raised it. Codex is the one publisher
+	// that registers a real cancel answer -- the MCP elicitation at
+	// codex_output.go's MCPElicitationMethodCodex case -- because Codex retires its
+	// own approval requests but defines no outcome for an elicitation the client
+	// withdraws. Without this drain that answer can never be delivered: the
+	// elicitation stays blocked inside the CLI for the rest of the session, well
+	// past the point the user believes the turn ended.
+	a.answerOutstandingControlRequests(a.sink)
 	if threadID == "" || turnID == "" {
 		// No active turn — nothing to interrupt. Treat as benign so
 		// scripts can call Interrupt unconditionally without first
 		// probing turn state.
 		return nil
 	}
-	return a.interruptCodexTurn(threadID, turnID)
+	if err := a.interruptCodexTurn(threadID, turnID); err != nil {
+		return err
+	}
+	// The ANSWERLESS requests go last, and only once the interrupt is accepted.
+	// Codex's four approval methods register a nil cancel answer, because Codex
+	// retires its own approval requests -- so withdrawing one sends the CLI nothing
+	// and only deletes the reader's card. Retiring them before `turn/interrupt` meant
+	// that a turn/interrupt which timed out or was refused left the CLI still blocked
+	// on an approval with the card already gone: the reader had no control that could
+	// answer it, no later SendRawInput could route one, and the thinking indicator
+	// never stopped.
+	a.withdrawAllControlRequests(a.sink)
+	return nil
 }
 
 // Stop retains unfinished model output before it stops the process.
@@ -621,7 +656,7 @@ func (a *CodexAgent) clearInterruptCallsForThread(threadID string) {
 
 // ClearContext sends a new thread/start on the running Codex process,
 // replacing the current thread with a fresh one.
-func (a *CodexAgent) ClearContext() (string, bool) {
+func (a *CodexAgent) ClearContext() (string, error) {
 	a.mu.Lock()
 	oldThreadID := a.threadID
 	approvalPolicy := a.approvalPolicy
@@ -637,9 +672,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	threadParams["sessionStartSource"] = "clear"
 
 	thread, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil || thread.ID == "" {
-		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
-		return "", false
+	if err != nil {
+		return "", err
+	}
+	if thread.ID == "" {
+		return "", fmt.Errorf("the new Codex thread has no ID")
 	}
 	a.outputMu.Lock()
 	a.flushAllCodexGeneration(MessageCompletionInterrupted)
@@ -685,7 +722,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.sink.ClearGoal(false)
 
 	a.sink.UpdateSessionID(thread.ID)
-	return thread.ID, true
+	return thread.ID, nil
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from turnID, the
@@ -721,8 +758,16 @@ func (a *CodexAgent) PublishTurnActive() TurnState {
 // text is "/compact" keeps its kind, reaches this method, and a check here
 // starts a compaction in place of the answer that the agent waits for.
 func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInputForSession(nil, content, attachments)
+}
+
+func (a *CodexAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
+	if err := checkInputSession(expected, a.threadID); err != nil {
+		a.mu.Unlock()
+		return err
+	}
 	if a.stopped {
 		a.mu.Unlock()
 		return fmt.Errorf("agent is stopped")
@@ -1585,6 +1630,7 @@ func init() {
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
 		codexBinaryCandidates...,
 	)
+	setFixedPermissionModes(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	// model + the provider options above (static groups) + effort. The sandbox/network/
 	// collaboration/service-tier axes are already static optionGroups, so only effort
 	// (built from the model catalog) needs declaring here.

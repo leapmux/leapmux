@@ -351,7 +351,11 @@ CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_
 CREATE TABLE lifecycle_outbox (
     id          BIGSERIAL PRIMARY KEY,
     user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    op_type     TEXT NOT NULL,
+    -- A WorkspaceLifecycleOp ordinal. The drain switches on it, and its default
+    -- branch logs and CONSUMES the row, so a value nobody writes is a lifecycle
+    -- event that vanishes rather than one that fails. The CHECK is what keeps
+    -- that branch unreachable.
+    op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     BYTEA NOT NULL,
     enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     consumed_at TIMESTAMPTZ
@@ -360,7 +364,11 @@ CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id) WHERE
 
 CREATE TABLE revocation_events (
     id         TEXT COLLATE "C" PRIMARY KEY,
-    kind       TEXT NOT NULL CHECK (kind IN ('session', 'session_revoked', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    -- A RevocationEventKind ordinal. idx_revocation_events_session_revoked
+    -- spells SESSION_REVOKED as the literal 2; TestRevocationEventKindNumbering
+    -- pins it, because a partial index is frozen history a query parameter
+    -- cannot reach.
+    kind       SMALLINT NOT NULL CHECK (kind BETWEEN 1 AND 7),
     subject_id TEXT COLLATE "C" NOT NULL,
     user_id    TEXT COLLATE "C" NOT NULL,
     revoked_at TIMESTAMPTZ NOT NULL,
@@ -372,7 +380,7 @@ CREATE TABLE revocation_events (
 );
 CREATE INDEX idx_revocation_events_pending ON revocation_events(created_at, id) WHERE seq IS NULL;
 CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq) WHERE seq IS NOT NULL;
-CREATE INDEX idx_revocation_events_session_revoked ON revocation_events(subject_id) WHERE kind = 'session_revoked';
+CREATE INDEX idx_revocation_events_session_revoked ON revocation_events(subject_id) WHERE kind = 2;
 
 CREATE TABLE revocation_event_sequence (
     id       INTEGER PRIMARY KEY CHECK (id = 1),
@@ -409,8 +417,8 @@ CREATE TABLE oauth_clients (
     scopes                TEXT NOT NULL DEFAULT '',
     grant_types           TEXT NOT NULL DEFAULT 'authorization_code refresh_token',
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
-    registration_source   TEXT COLLATE "C" NOT NULL
-        CHECK (registration_source IN ('builtin', 'admin', 'user', 'dynamic')),
+    -- An AppRegistrationSource ordinal: who put this registration in the table.
+    registration_source   SMALLINT NOT NULL CHECK (registration_source BETWEEN 1 AND 4),
     -- WHO vouched, and WHEN. The two move together, which the CHECK below
     -- enforces: a row with one and not the other describes a vouch nobody can
     -- read.
@@ -581,7 +589,10 @@ CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_cod
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
     id              TEXT COLLATE "C" PRIMARY KEY,
-    provider_type   TEXT NOT NULL,
+    -- An IdentityProviderType ordinal: the PROTOCOL this provider speaks, not
+    -- the preset an administrator picked. The four presets (github, google,
+    -- apple, oidc) map onto these two protocols.
+    provider_type   SMALLINT NOT NULL CHECK (provider_type BETWEEN 1 AND 2),
     name            TEXT NOT NULL,
     issuer_url      TEXT NOT NULL DEFAULT '',
     client_id       TEXT COLLATE "C" NOT NULL,
@@ -625,15 +636,18 @@ CREATE TABLE oauth_states (
     pkce_verifier   TEXT NOT NULL,
     nonce_hash      TEXT COLLATE "C" NOT NULL DEFAULT '',
     redirect_uri    TEXT NOT NULL DEFAULT '',
-    -- 'login' starts a sign-in; 'reauth' proves the identity again for an
-    -- ALREADY signed-in session, to elevate it. The callback branches on
-    -- this: a reauth state must never create a session or link an identity.
-    -- The CHECK is the enforcement, not the DEFAULT. Go's zero value for the
-    -- column is "", never 'login', so an explicit insert never reaches the
-    -- DEFAULT, and the callback treats every value that is not 'reauth' as a
-    -- login -- which may create a session or link an identity.
-    purpose         TEXT COLLATE "C" NOT NULL DEFAULT 'login' CHECK (purpose IN ('login', 'reauth')),
-    -- The session the reauth leg elevates on success. Empty for 'login'.
+    -- LOGIN starts a sign-in. REAUTH proves the identity again for an ALREADY
+    -- signed-in session, to elevate it. The callback branches on this: a
+    -- reauth state must never create a session or link an identity.
+    --
+    -- An OAuthStatePurpose ordinal. The CHECK is the enforcement, not the
+    -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
+    -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
+    -- reaching the DEFAULT. That matters because the callback treats every
+    -- value that is not REAUTH as a LOGIN -- the branch that may create a
+    -- session and link an identity.
+    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 2),
+    -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
     session_id      TEXT COLLATE "C" NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -680,9 +694,8 @@ CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_vers
 -- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
 CREATE TABLE webauthn_sessions (
     id           TEXT COLLATE "C" PRIMARY KEY,
-    kind         TEXT NOT NULL CHECK (kind IN (
-        'signup', 'login', 'register', 'elevation', 'recovery'
-    )),
+    -- A WebAuthnSessionKind ordinal.
+    kind         SMALLINT NOT NULL CHECK (kind BETWEEN 1 AND 5),
     user_id      TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
     payload_json TEXT NOT NULL DEFAULT '{}',  -- '{}' or keystore-encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
     session_data BYTEA NOT NULL,             -- keystore-encrypted ceremony state, AAD: 'webauthn_session:' || id

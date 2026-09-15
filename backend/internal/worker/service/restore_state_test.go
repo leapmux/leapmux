@@ -42,15 +42,15 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	// sweep is scoped to active rows only.
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-pending", Seq: 1,
-		Kind: "subagent", Title: "pending row", Status: "pending",
+		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "pending row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending),
 	}))
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-running", Seq: 2,
-		Kind: "shell", Title: "running row", Status: "running",
+		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindShell), Title: "running row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	}))
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-done", Seq: 3,
-		Kind: "subagent", Title: "already done", Status: "completed",
+		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "already done", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
 	}))
 
 	// The boot-time sweep. RestoreState logs but does not return the
@@ -67,15 +67,15 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	}
 
 	require.Contains(t, byKey, "task-pending")
-	assert.Equal(t, "interrupted", byKey["task-pending"].Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), byKey["task-pending"].Status,
 		"a pending row left by a crashed worker must be relabeled 'interrupted' at boot")
 	require.Contains(t, byKey, "task-running")
-	assert.Equal(t, "interrupted", byKey["task-running"].Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), byKey["task-running"].Status,
 		"a running row left by a crashed worker must be relabeled 'interrupted' at boot")
 
 	// The already-finished row is untouched -- the sweep scopes to active rows.
 	require.Contains(t, byKey, "task-done")
-	assert.Equal(t, "completed", byKey["task-done"].Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), byKey["task-done"].Status,
 		"an already-final row must not be relabeled by the boot sweep")
 }
 

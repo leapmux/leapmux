@@ -314,7 +314,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 	}
 	a.mu.Unlock()
 
-	content := event.withPayload(zcodeCompleteToolInput(event.Payload, input)).persistBytes()
+	content := event.persistBytes()
 	if content == nil {
 		return
 	}
@@ -329,7 +329,11 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 		}
 		a.children.rememberTitle(payload.ToolCallID, zcodeSpawnTitle(input, payload))
 	}
-	if err := openToolSpan(sink, content, payload.ToolCallID, toolName, spawns); err != nil {
+	supplemental, err := zcodeToolInputSupplement(payload, input)
+	if err != nil {
+		slog.Warn("Encode supplemental ZCode tool input", "agent_id", a.agentID, "error", err)
+	}
+	if err := openToolSpan(sink, MessageContent{Original: content, Supplemental: supplemental}, payload.ToolCallID, toolName, spawns); err != nil {
 		slog.Error("zcode persist tool scheduled", "agent_id", a.agentID, "error", err)
 	}
 }
@@ -341,7 +345,7 @@ func (a *zcodeAgent) openZCodeToolCallInto(sink ToolSpanServices, event zcodeEve
 // the AGENT's rather than the transcript's, so they are updated here whichever sink
 // the row went to. A subagent's calls count toward the turn deliberately: they are
 // part of the work that turn did.
-func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated) {
+func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zcodeEventEnvelope, payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
 	if payload.ToolCallID == "" {
 		return
 	}
@@ -364,13 +368,21 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zc
 	tc.final = true
 	tc.name = ""
 	tc.input = nil
+	lastFrame := tc.lastFrame
+	tc.lastFrame = nil
 	a.mu.Unlock()
 	a.clearCumulativeOutput(payload.ToolCallID)
 	sink.ReportProgress(CompleteOutputProgress(payload.ToolCallID))
 
-	content := event.persistBytes()
+	// A recovered close stores the call's OWN last frame. The event that triggered it
+	// says nothing about this one call -- a batch summary is addressed to a list --
+	// so what LeapMux read out of it travels in the outcome note instead.
+	content, metadata := event.persistBytes(), []byte(nil)
+	if recovered != nil {
+		content, metadata = lastFrame, recovered.outcome
+	}
 	if content != nil {
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: content, Metadata: metadata}, SpanInfo{
 			SpanID:   payload.ToolCallID,
 			SpanType: toolName,
 			Closing:  true,
@@ -380,7 +392,7 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink toolLifecycleServices, event zc
 	}
 	sink.CloseSpan(payload.ToolCallID)
 
-	a.applyZCodeSubagentEnd(payload)
+	a.applyZCodeSubagentEnd(payload, recovered)
 	a.closeZCodeSubagentChild(payload)
 	a.children.forgetTool(payload.ToolCallID)
 	// Unconditionally, and here rather than inside closeZCodeSubagentChild: a spawn whose
@@ -461,7 +473,7 @@ func zcodeSubagentRowKey(toolCallID, childSessionID, taskID string) string {
 // opens nothing -- the subagent's result is persisted in this transcript by
 // closeZCodeToolCall either way. So an Agent tool call that the app-server never
 // reported as a background task correctly leaves the registry alone.
-func (a *zcodeAgent) applyZCodeSubagentEnd(payload zcodeToolUpdated) {
+func (a *zcodeAgent) applyZCodeSubagentEnd(payload zcodeToolUpdated, recovered *zcodeRecoveredClose) {
 	// The only caller, closeZCodeToolCallInto, already returned for an empty tool-call
 	// id, so this is the key both subagent creators use.
 	rowKey := payload.ToolCallID
@@ -484,8 +496,14 @@ func (a *zcodeAgent) applyZCodeSubagentEnd(payload zcodeToolUpdated) {
 	if childID == "" && !zcodeToolSpawnsSubagent(payload) {
 		return
 	}
+	// A recovered close states the status itself: the agent reported no result, so
+	// the payload cannot say whether the subagent finished, and reading Completed out
+	// of its absence would claim work that never ended.
 	status := bgtask.StatusCompleted
-	if payload.Kind == contracts.ZCodeToolKindError || payload.ErrorCount > 0 {
+	switch {
+	case recovered != nil:
+		status = recovered.status
+	case payload.Kind == contracts.ZCodeToolKindError || payload.ErrorCount > 0:
 		status = bgtask.StatusFailed
 	}
 	logRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(rowKey, status))

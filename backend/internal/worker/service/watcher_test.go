@@ -1242,11 +1242,12 @@ func TestBroadcast_LazyMarshalSkipsWhenAllNotify(t *testing.T) {
 	assert.Equal(t, int64(0), mock.payloadBytes.Load(), "content broadcast must not marshal when no FULL watcher exists")
 }
 
-func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
+func TestEventClassCoversEveryAgentOneofCase(t *testing.T) {
 	t.Parallel()
 
 	wantNotify := map[string]bool{
 		"status_change":            true,
+		"control_response_changed": true,
 		"control_request":          true,
 		"control_cancel":           true,
 		"turn_end":                 true,
@@ -1354,7 +1355,7 @@ func TestHasFullWatcher(t *testing.T) {
 	assert.True(t, r.hasFullWatcher("term-1"))
 }
 
-func TestEventClassCoversEveryTerminalOneofArm(t *testing.T) {
+func TestEventClassCoversEveryTerminalOneofCase(t *testing.T) {
 	t.Parallel()
 
 	msg := &leapmuxv1.TerminalEvent{}

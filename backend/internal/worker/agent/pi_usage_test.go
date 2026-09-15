@@ -8,6 +8,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPiMessageUsagePreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	raw := []byte(" {\"type\":\"message_end\",\"future\":9007199254740993,\"message\":{\"role\":\"assistant\",\"content\":[],\"usage\":{\"input\":2,\"output\":1,\"cost\":{\"total\":0}}}} \n")
+	a.handlePiMessageEnd(raw)
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, raw, messages[0].Content)
+	assert.NotEmpty(t, messages[0].Metadata)
+}
+
+func TestPiTurnUsagePreservesOriginalBytes(t *testing.T) {
+	t.Parallel()
+	for _, retry := range []bool{false, true} {
+		sink := &recordingControlSink{}
+		a := newPiAgentWithSink(sink)
+		raw := []byte(" {\"type\":\"agent_end\",\"duration_ms\":\"provider value\",\"future\":9007199254740993,\"messages\":[]} \n")
+		duration := int64(12)
+		a.persistPiAgentEnd(piAgentEndContent(raw, piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 0}, &duration), retry)
+		messages := sink.Messages()
+		require.Len(t, messages, 1)
+		assert.Equal(t, raw, messages[0].Content)
+		assert.NotEmpty(t, messages[0].Metadata)
+		assert.Equal(t, !retry, messages[0].TurnEnd)
+	}
+}
+
 // TestAugmentPiMessageEnd_NoUsageReturnsRawUnchanged covers a
 // message_end whose `message.usage` field is missing — the helper must
 // pass the bytes through unchanged so downstream consumers see Pi's
@@ -17,8 +45,8 @@ func TestAugmentPiMessageEnd_NoUsageReturnsRawUnchanged(t *testing.T) {
 
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
-	out := a.augmentPiMessageEnd(raw)
-	assert.Equal(t, string(raw), string(out))
+	out := a.piMessageEndContent(raw)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // TestAugmentPiMessageEnd_NonAssistantRoleReturnsRawUnchanged verifies
@@ -30,8 +58,8 @@ func TestAugmentPiMessageEnd_NonAssistantRoleReturnsRawUnchanged(t *testing.T) {
 
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":{"role":"user","content":[]}}`)
-	out := a.augmentPiMessageEnd(raw)
-	assert.Equal(t, string(raw), string(out))
+	out := a.piMessageEndContent(raw)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // TestAugmentPiMessageEnd_NonObjectMessageReturnsRawUnchanged is a
@@ -42,8 +70,8 @@ func TestAugmentPiMessageEnd_NonObjectMessageReturnsRawUnchanged(t *testing.T) {
 
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":"not an object"}`)
-	out := a.augmentPiMessageEnd(raw)
-	assert.Equal(t, string(raw), string(out))
+	out := a.piMessageEndContent(raw)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // TestAugmentPiMessageEnd_MalformedJSONReturnsRawUnchanged covers the
@@ -55,8 +83,8 @@ func TestAugmentPiMessageEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":`)
-	out := a.augmentPiMessageEnd(raw)
-	assert.Equal(t, string(raw), string(out))
+	out := a.piMessageEndContent(raw)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // TestAugmentPiMessageEnd_TotalsAreCumulative documents that two
@@ -69,12 +97,12 @@ func TestAugmentPiMessageEnd_TotalsAreCumulative(t *testing.T) {
 	a := newPiAgentWithSink(&recordingControlSink{})
 	a.model = "m1"
 	a.availableModels = []*ModelInfo{{Id: "m1", ContextWindow: 1000}}
-	first := a.augmentPiMessageEnd([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cost":{"total":0.5}}}}`))
-	second := a.augmentPiMessageEnd([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":50,"output":5,"cost":{"total":0.25}}}}`))
+	first := a.piMessageEndContent([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cost":{"total":0.5}}}}`))
+	second := a.piMessageEndContent([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":50,"output":5,"cost":{"total":0.25}}}}`))
 
 	var p1, p2 map[string]any
-	require.NoError(t, json.Unmarshal(first, &p1))
-	require.NoError(t, json.Unmarshal(second, &p2))
+	require.NoError(t, json.Unmarshal(first.Metadata, &p1))
+	require.NoError(t, json.Unmarshal(second.Metadata, &p2))
 	assert.InDelta(t, 0.5, p1["total_cost_usd"], 1e-9)
 	assert.InDelta(t, 0.75, p2["total_cost_usd"], 1e-9, "total_cost_usd must be cumulative across message_ends")
 }
@@ -86,8 +114,8 @@ func TestPiAugmentAgentEnd_NoOpWhenNothingToInject(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
-	out := piAugmentAgentEnd(raw, piUsageSnapshot{}, nil)
-	assert.Equal(t, string(raw), string(out))
+	out := piAgentEndContent(raw, piUsageSnapshot{}, nil)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // A measured duration alone is enough to enter the injection path, even
@@ -97,10 +125,10 @@ func TestPiAugmentAgentEnd_InjectsDurationWithEmptySnapshot(t *testing.T) {
 
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
 	durationMs := int64(0)
-	out := piAugmentAgentEnd(raw, piUsageSnapshot{}, &durationMs)
+	out := piAgentEndContent(raw, piUsageSnapshot{}, &durationMs)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(out, &got))
+	require.NoError(t, json.Unmarshal(out.Metadata, &got))
 	assert.Equal(t, float64(0), got["duration_ms"], "a real zero must survive as a zero")
 	assert.NotContains(t, got, "total_cost_usd")
 }
@@ -118,11 +146,11 @@ func TestPiAugmentAgentEnd_InjectsEveryField(t *testing.T) {
 		ContextUsage: map[string]any{"input_tokens": int64(100)},
 	}
 	durationMs := int64(2500)
-	out := piAugmentAgentEnd(raw, snap, &durationMs)
+	out := piAgentEndContent(raw, snap, &durationMs)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(out, &got))
-	assert.Equal(t, "agent_end", got["type"])
+	require.NoError(t, json.Unmarshal(out.Metadata, &got))
+	assert.Equal(t, raw, out.Original)
 	assert.InDelta(t, 0.42, got["total_cost_usd"], 1e-9)
 	assert.Equal(t, float64(2500), got["duration_ms"])
 	usage, ok := got["context_usage"].(map[string]any)
@@ -138,8 +166,8 @@ func TestPiAugmentAgentEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 	raw := []byte(`not json`)
 	snap := piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 1}
 	durationMs := int64(10)
-	out := piAugmentAgentEnd(raw, snap, &durationMs)
-	assert.Equal(t, string(raw), string(out))
+	out := piAgentEndContent(raw, snap, &durationMs)
+	assert.Equal(t, string(raw), string(out.Original))
 }
 
 // TestSessionInfo_PreservesIndependence asserts the contract documented

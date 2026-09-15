@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -47,7 +48,7 @@ WHERE event.id = pending.id
 func insertRevocationEvent(
 	ctx context.Context,
 	conn *sqliteConn,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
 	revokedAt time.Time,
@@ -78,7 +79,7 @@ func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.Cred
 func revokedCredentialEvent(
 	subjectID, userID string,
 	revokedAt sqltime.SQLiteNullTime,
-	kind string,
+	kind leapmuxv1.RevocationEventKind,
 	err error,
 ) (*store.CredentialEvent, error) {
 	if errors.Is(err, sql.ErrNoRows) {

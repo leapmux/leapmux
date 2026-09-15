@@ -4,93 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
-
-func TestCopilotResolveOptionConflicts(t *testing.T) {
-	t.Parallel()
-
-	provider := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
-	cases := []struct {
-		name      string
-		current   optionmap.Map
-		requested optionmap.Map
-		want      optionmap.Map
-	}{
-		{
-			name:      "assisted approval disables allow all",
-			current:   map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
-			requested: optionmap.Map{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
-			want: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-			},
-		},
-		{
-			// The reverse of the rule above does NOT hold. Clearing Assisted Approval takes
-			// a process restart, because that axis rides the launch flags, and a bypass
-			// click that restarts the CLI mid-turn is a worse answer than letting the
-			// broader permission win -- Allow All already supersedes it while both are on.
-			name:      "allow all leaves assisted approval alone",
-			current:   map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
-			requested: optionmap.Map{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
-			want: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
-			},
-		},
-		{
-			name:    "assisted approval wins one conflicting request",
-			current: optionmap.Map{},
-			requested: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
-			},
-			want: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-			},
-		},
-		{
-			// The resolver runs on EVERY settings edit. A both-on state it never produced
-			// (a settings refresh folds the server's own Allow All in without passing
-			// through here) must survive an edit to an unrelated axis: turning a
-			// permission off during a model change is a change the user never asked for.
-			name: "an unrelated edit leaves a stored conflict alone",
-			current: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
-			},
-			requested: optionmap.Map{OptionIDModel: "gpt-5"},
-			want: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
-				OptionIDModel:                                    "gpt-5",
-			},
-		},
-		{
-			name:      "a non-conflicting request passes through",
-			current:   map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
-			requested: optionmap.Map{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOff},
-			want: optionmap.Map{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := provider.ResolveOptionConflicts(tc.current, tc.requested)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
 
 // Two handlers answer for the same tab, and they must agree about which CLI a
 // request means. OpenAgent spawns Claude Code for a request that omits the
@@ -411,28 +330,27 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 
 func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 	t.Parallel()
-
-	// Codex owns its plan-approval option settlement behind the Provider interface: Base
-	// resets the collaboration axis, Bypass (mode-switch only) grants full network + no sandbox.
-	codex := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).PlanApprovalOptions()
-	assert.Equal(t, map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}, codex.Base)
-	assert.Equal(t, map[string]string{
-		CodexOptionNetworkAccess: CodexNetworkEnabled,
-		CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
-	}, codex.Bypass)
-
-	// Every OTHER provider settles no plan-approval options (no plan-mode-prompt flow).
-	// The list is derived, so "every other" is literally true and a provider added later
-	// cannot quietly start settling options unnoticed. UNSPECIFIED is appended because
-	// it resolves to the noop plugin, which is the default a new provider inherits.
-	others := append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
-	for _, provider := range others {
-		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-			continue
+	provider := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	for _, mode := range []string{"", "on-request", "untrusted", "never"} {
+		expected := map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}
+		if mode != "" {
+			expected[OptionIDPermissionMode] = mode
 		}
-		opts := ProviderFor(provider).PlanApprovalOptions()
-		assert.Empty(t, opts.Base, "provider %v must settle no base plan-approval options", provider)
-		assert.Empty(t, opts.Bypass, "provider %v must settle no bypass plan-approval options", provider)
+		if mode == "never" {
+			expected[CodexOptionNetworkAccess] = CodexNetworkEnabled
+			expected[CodexOptionSandboxPolicy] = CodexSandboxDangerFullAccess
+		}
+		assert.Equal(t, expected, provider.PlanApprovalOptions(mode), "permission mode %q", mode)
+	}
+	changed := provider.PlanApprovalOptions("never")
+	changed[OptionIDPermissionMode] = "changed"
+	assert.Equal(t, "never", provider.PlanApprovalOptions("never")[OptionIDPermissionMode])
+
+	others := append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+	for _, kind := range others {
+		if kind != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+			assert.Empty(t, ProviderFor(kind).PlanApprovalOptions(""), "provider %v has no local plan approval settings", kind)
+		}
 	}
 }
 

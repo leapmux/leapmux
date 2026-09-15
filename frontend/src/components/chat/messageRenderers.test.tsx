@@ -5,6 +5,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { assembledMessageRow } from '~/test-support/assembledMessages'
+import { testMessageSources } from '~/test-support/messageRenderSources'
 import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import './providers'
@@ -140,7 +142,7 @@ describe('write/edit tool_use messages never render the diff body', () => {
         structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
       },
     }))
-    const context: RenderContext = { toolResultParsed }
+    const context: RenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
@@ -225,9 +227,11 @@ describe('renderMessageContent provider resolution', () => {
     const parsed = { type: 'result', subtype: 'success', duration_ms: 1095 }
     const result = renderMessageContent(parsed, undefined, { kind: 'result_divider' }, 999 as AgentProvider)
     const { container } = render(() => result)
-    // The Claude renderer would have produced "Took 1.1s"; instead we get raw JSON.
-    expect(container.textContent).toContain('"duration_ms"')
-    expect(container.textContent).not.toContain('Took 1.1s')
+    // The Claude renderer would have produced "Turn ended (1.1s)"; instead the row
+    // reaches the last-resort card, which claims nothing about what it holds.
+    expect(container.textContent).toContain('LeapMux has no display for this row')
+    expect(container.textContent).not.toContain('Turn ended')
+    expect(container.textContent).not.toContain('Turn ended (1.1s)')
   })
 
   it('renders the durable interruption marker after retained provider output', () => {
@@ -252,6 +256,36 @@ describe('renderMessageContent provider resolution', () => {
   })
 })
 
+// The last-resort path used to print the whole frame as a paragraph of text. A live
+// census found one on GitHub Copilot: `session.task_complete` reached the transcript as
+// `{"jsonrpc":"2.0","method":"session.event",...}`, which is the raw-JSON row the shared
+// standard forbids.
+describe('the row no renderer claimed', () => {
+  const frame = { jsonrpc: '2.0', method: 'session.event', params: { event: { type: 'not.a.known.event' } } }
+
+  it('states that LeapMux has no display for it, and does not print the frame', () => {
+    const { container } = render(() => renderMessageContent(frame, undefined, { kind: 'unknown' } as MessageCategory, AgentProvider.GITHUB_COPILOT))
+    expect(container.textContent).toContain('LeapMux has no display for this row')
+    expect(container.textContent).not.toContain('jsonrpc')
+  })
+
+  // The frame is the only content the row has, so it is one click away rather than gone.
+  it('keeps the frame in the body the expand control opens', () => {
+    const context: RenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
+    const { container } = render(() => renderMessageContent(frame, context, { kind: 'unknown' } as MessageCategory, AgentProvider.GITHUB_COPILOT))
+    expect(container.textContent).toContain('not.a.known.event')
+  })
+
+  // A row that THREW is a different statement from one nobody claimed, and the card
+  // separates them. It stays neutral about the cause, because both a defect in LeapMux
+  // and content no parser accepts land here.
+  it('separates a row that could not be rendered from one nobody claimed', () => {
+    const { container } = render(() => renderMessageContent('{ this is not json', undefined, { kind: 'unknown' } as MessageCategory))
+    expect(container.textContent).toContain('LeapMux could not render this row')
+    expect(container.textContent).not.toContain('has no display')
+  })
+})
+
 describe('thinking renderer honors context.expandUiKey', () => {
   it('reads expand-state under the context-supplied key, not its own THINKING literal', () => {
     const parsed = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'a long private thought' }] } }
@@ -267,6 +301,25 @@ describe('thinking renderer honors context.expandUiKey', () => {
       setMessageUiState,
     }
     render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
+    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
+  })
+
+  it('reads an assembled reasoning row under the context-supplied key too', () => {
+    // Codex, ZCode, Pi and every Agent Client Protocol provider store reasoning as
+    // one assembled row, which renderMessageContent draws before any plugin runs.
+    // ChatView premeasures that row under expandedUiKeyFor(kind, provider), so the
+    // bubble must read the same key. Under a different key the stored expansion and
+    // the measured height disagree as soon as the reader collapses the row.
+    const parsed = assembledMessageRow('reasoning', 'a long private thought')
+    const getMessageUiState = vi.fn().mockReturnValue(false)
+    const setMessageUiState = vi.fn()
+    const context: RenderContext = {
+      expandUiKey: MESSAGE_UI_KEY.CODEX_REASONING,
+      getMessageUiState,
+      setMessageUiState,
+    }
+    render(() => renderMessageContent(parsed, context, { kind: 'assistant_thinking' }, AgentProvider.CODEX))
     expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_REASONING)
     expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
   })
@@ -312,13 +365,22 @@ describe('a user row whose provider has no plugin', () => {
     expect(container.textContent).not.toContain('mime_type')
   })
 
-  it('still drops an AGENT-shaped row to the raw-JSON span', () => {
+  it('still drops an AGENT-shaped row to the last-resort card', () => {
     // The neutral branch is keyed on the category, and only a USER row reaches
     // `user_content` without a plugin (see classifyMessage). A provider's own
-    // unreadable bytes must still surface as raw JSON rather than as a user card.
+    // unreadable bytes must still reach the last-resort card rather than a user card.
     const parsed = { type: 'result', subtype: 'success', duration_ms: 1095 }
     const { container } = render(() =>
       renderMessageContent(parsed, undefined, { kind: 'unsupported_provider' } as MessageCategory, AgentProvider.UNSPECIFIED))
-    expect(container.textContent).toContain('"duration_ms"')
+    expect(container.textContent).toContain('LeapMux has no display for this row')
+  })
+})
+
+describe('provider completion fields', () => {
+  it('does not interpret a provider field as LeapMux completion', () => {
+    const message = { ...makeToolUseMessage('Read', { file_path: '/a.ts' }), _leapmux: { completion: 'error' } }
+    const { container } = render(() => renderMessageContent(message, undefined, makeToolUseCategory('Read', { file_path: '/a.ts' }), AgentProvider.CLAUDE_CODE))
+    expect(container.querySelector('[role="note"]')).toBeNull()
+    expect(container.textContent).toContain('/a.ts')
   })
 })

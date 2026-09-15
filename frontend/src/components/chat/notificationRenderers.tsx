@@ -32,6 +32,10 @@ import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 // MICROCOMPACT_LABEL for the compaction rows below.
 const CONTEXT_CLEARED_LABEL = 'Context cleared'
 const INTERRUPTED_LABEL = 'Interrupted'
+// The instruction matters as much as the fact: the second Stop press is the
+// one the worker escalates into a forced stop, and the row is where the reader
+// learns that.
+const STOP_IGNORED_LABEL = 'Stop ignored — press Stop again to force it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 
 // ---------------------------------------------------------------------------
@@ -406,6 +410,8 @@ function threadEntriesFor(
     return textEntry(pickString(m, 'error', UNKNOWN_ERROR_LABEL))
   if (t === NOTIFICATION_TYPE.Interrupted)
     return textEntry(INTERRUPTED_LABEL)
+  if (t === NOTIFICATION_TYPE.StopIgnored)
+    return textEntry(STOP_IGNORED_LABEL)
   if (t === NOTIFICATION_TYPE.SubagentEnded)
     return subagentEndedEntry(m)
   if (t === NOTIFICATION_TYPE.PlanUpdated) {

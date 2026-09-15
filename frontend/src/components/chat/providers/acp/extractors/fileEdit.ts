@@ -1,7 +1,7 @@
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
+import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS } from '~/components/chat/results/toolInputs'
 import { isObject, pickFirstString, pickString } from '~/lib/jsonPick'
 import { ACP_TOOL_KIND } from '~/types/toolMessages'
-import { ACP_FILE_PATH_KEYS, ACP_NEW_TEXT_KEYS, ACP_OLD_TEXT_KEYS } from '../rendering'
 
 /**
  * Build a FileEditDiffSource from an ACP `tool_call`/`tool_call_update`
@@ -53,12 +53,12 @@ export function acpFileEditFromToolCallRawInput(
   if (!rawInput)
     return null
 
-  const filePath = pickFirstString(rawInput, ACP_FILE_PATH_KEYS) ?? ''
+  const filePath = pickFirstString(rawInput, TOOL_FILE_PATH_KEYS) ?? ''
   if (!filePath)
     return null
 
-  const oldStr = pickFirstString(rawInput, ACP_OLD_TEXT_KEYS)
-  const newStr = pickFirstString(rawInput, ACP_NEW_TEXT_KEYS)
+  const oldStr = pickFirstString(rawInput, TOOL_OLD_TEXT_KEYS)
+  const newStr = pickFirstString(rawInput, TOOL_NEW_TEXT_KEYS)
   if (oldStr !== undefined || newStr !== undefined) {
     return {
       filePath,

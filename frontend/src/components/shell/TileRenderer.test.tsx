@@ -2,6 +2,8 @@ import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { DragDropProvider } from '@thisbeyond/solid-dnd'
+import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -18,7 +20,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
-import { installTestBridge } from '~/test-support/crdtBridge'
+import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 import { createMobileOverlayState } from './MobileLayout'
@@ -28,6 +30,7 @@ import { createTileRenderer } from './TileRenderer'
 // The composer loads its DRAFT from the unmirrored storage tier, so these cases
 // need a database for the write to land in and be read back from.
 useTestStorage()
+const setupCleanups: Array<() => void> = []
 
 vi.mock('~/context/PreferencesContext', () => ({
   usePreferences: () => ({
@@ -90,6 +93,7 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
 }
 
 interface RenderRendererOptions {
+  chatStore?: ReturnType<typeof createChatStore>
   getMruAgentContext?: () => { workingDir: string, homeDir: string }
   /** The shell's "scroll the transcript to the tail" ref, so a test can spy on it. */
   forceScrollToBottomRef?: ImperativeRef<() => void>
@@ -119,7 +123,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         view: s.view,
         metadata: s.metadata,
         selection: s.selection,
-        chatStore: createChatStore(),
+        chatStore: options.chatStore ?? createChatStore(),
         agentInputQueueStore: createAgentInputQueueStore(),
         controlStore: createControlStore(),
         agentActivityStore: createAgentActivityStore(),
@@ -157,7 +161,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       workspace: {
         isActiveWorkspaceMutatable: () => true,
         isActiveWorkspaceArchived: () => false,
-        activeWorkspace: () => ({ id: 'workspace-1' }),
+        activeWorkspace: () => ({ id: s.workspaceId }),
         getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/repo', homeDir: '/home/me', gitToplevel: '/repo' }),
         getMruAgentContext,
       },
@@ -197,10 +201,11 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         {r.CloseDialogs()}
       </>
     )
-  })
+  }, { wrapper: props => <DragDropProvider>{props.children}</DragDropProvider> })
 }
 
 afterEach(() => {
+  setupCleanups.splice(0).forEach(dispose => dispose())
   setCRDTBridge(null)
   // The composer test seeds this draft, and a draft outlives the render.
   clearDraft('a1')
@@ -208,41 +213,63 @@ afterEach(() => {
 
 let nextPosition = 0
 
-function createSetup(): RendererSetup {
-  const harness = installTestBridge()
-  const stores = createTestTabStores(harness.workspaceId)
-  return {
-    ...stores,
-    workspaceId: harness.workspaceId,
-    floatingWindowStore: createTestFloatingWindowStore(),
-    handleTabClose: vi.fn(async (_tab: Tab) => true),
-    addTerminal(id, tileId, title = 'Terminal') {
-      nextPosition += 1
-      emitAddTab({ type: TabType.TERMINAL, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
-      stores.metadata.patch(id, {
-        title,
-        workingDir: '/repo',
-        terminalStatus: TerminalStatus.READY,
-      })
-      stores.selection.setActiveById(TabType.TERMINAL, id)
-      return stores.view.getById(TabType.TERMINAL, id)!
-    },
-    addAgent(id, tileId, title = 'Agent') {
-      nextPosition += 1
-      emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
-      stores.metadata.patch(id, { title, workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
-      stores.selection.setActiveById(TabType.AGENT, id)
-      return stores.view.getById(TabType.AGENT, id)!
-    },
-    addFile(id, tileId) {
-      nextPosition += 1
-      emitAddTab({ type: TabType.FILE, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
-      stores.metadata.patch(id, { title: id, filePath: `/repo/${id}.ts`, workingDir: '/repo' })
-      stores.selection.setActiveById(TabType.FILE, id)
-      return stores.view.getById(TabType.FILE, id)!
-    },
-  }
+function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): RendererSetup {
+  return createRoot((dispose) => {
+    setupCleanups.push(dispose)
+    const harness = existingHarness ?? installTestBridge()
+    const stores = createTestTabStores(harness.workspaceId)
+    return {
+      ...stores,
+      workspaceId: harness.workspaceId,
+      floatingWindowStore: createTestFloatingWindowStore(),
+      handleTabClose: vi.fn(async (_tab: Tab) => true),
+      addTerminal(id, tileId, title = 'Terminal') {
+        nextPosition += 1
+        emitAddTab({ type: TabType.TERMINAL, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        stores.metadata.patch(id, {
+          title,
+          workingDir: '/repo',
+          terminalStatus: TerminalStatus.READY,
+        })
+        stores.selection.setActiveById(TabType.TERMINAL, id)
+        return stores.view.getById(TabType.TERMINAL, id)!
+      },
+      addAgent(id, tileId, title = 'Agent') {
+        nextPosition += 1
+        emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        stores.metadata.patch(id, { title, workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
+        stores.selection.setActiveById(TabType.AGENT, id)
+        return stores.view.getById(TabType.AGENT, id)!
+      },
+      addFile(id, tileId) {
+        nextPosition += 1
+        emitAddTab({ type: TabType.FILE, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        stores.metadata.patch(id, { title: id, filePath: `/repo/${id}.ts`, workingDir: '/repo' })
+        stores.selection.setActiveById(TabType.FILE, id)
+        return stores.view.getById(TabType.FILE, id)!
+      },
+    }
+  })
 }
+
+describe('message contexts in tiles', () => {
+  it('creates message subscriptions only for the active workspace', () => {
+    createRoot((dispose) => {
+      setupCleanups.push(dispose)
+      const harness = installTestBridge()
+      seedWorkspace(harness, 'other-workspace', 'other-root')
+      const s = createSetup(harness)
+      s.addAgent('inactive-agent', 'other-root')
+      s.addAgent('active-agent', harness.rootTileId)
+      const chatStore = createChatStore()
+      const subscribe = vi.spyOn(chatStore, 'subscribeMessages')
+      renderRenderer(s, harness.rootTileId, { chatStore })
+      expect(subscribe.mock.calls.map(([agentId]) => agentId)).toEqual(['active-agent'])
+      s.addAgent('another-inactive-agent', 'other-root')
+      expect(subscribe.mock.calls.map(([agentId]) => agentId)).toEqual(['active-agent'])
+    })
+  })
+})
 
 /**
  * A pane's identity is its TAB ID, not the joined `Tab` object.

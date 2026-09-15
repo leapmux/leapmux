@@ -10,14 +10,19 @@ INSERT INTO revocation_events (
 -- Pending and published rows both count: the insert IS the fact.
 --
 -- Served by idx_revocation_events_session_revoked, which is PARTIAL on
--- kind = 'session_revoked'. An insert of any OTHER kind writes no index entry
+-- kind = 2 (SESSION_REVOKED). An insert of any OTHER kind writes no index entry
 -- at all -- which is every kind but the rarest -- so the write cost this was
 -- once left unindexed to avoid is close to zero. Without it this is a full
 -- scan of the retention window's events, and it runs while the caller holds
 -- the user-auth row lock.
+--
+-- `kind = 2` is REVOCATION_EVENT_KIND_SESSION_REVOKED, spelled as a literal
+-- rather than bound. The planner uses a partial index only where the query's
+-- own constants prove the index predicate, and a parameter supplies no constant
+-- to prove it with. TestRevocationEventKindNumbering pins the number.
 SELECT EXISTS(
     SELECT 1 FROM revocation_events
-    WHERE subject_id = $1 AND kind = 'session_revoked'
+    WHERE subject_id = $1 AND kind = 2
 );
 
 -- name: LockRevocationEventSequence :one

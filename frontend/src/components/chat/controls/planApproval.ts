@@ -26,8 +26,8 @@ export function presetPermissionMode(
 /**
  * Returns the presets that a plan-approval response can apply.
  *
- * A plan approval carries the permission mode in its response. The worker then
- * expands a provider mode, such as Codex Bypass, into its complete settings.
+ * A plan approval carries the permission mode in separate LeapMux settings.
+ * The worker resolves the selected mode into the provider's complete settings.
  */
 export function planApprovalPresets(
   presets: PermissionPresetController | undefined,
@@ -65,9 +65,7 @@ export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage'
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)
     return pct !== null ? Math.round(pct) : null
   })
-  // A plan approval carries only the preset's permission MODE (see
-  // `planApprovalPresets`), so both the pill it draws and the mode it embeds
-  // read from that filtered view of the controller.
+  // The permission pill and selected mode use the same available presets.
   const presets = () => planApprovalPresets(props.presets)
   const permissionMode = () => presetPermissionMode(presets(), permissionChoice.choice())
   const permissionPill = () => buildPermissionPill(presets(), permissionChoice)

@@ -24,11 +24,11 @@ func TestSpawnRowsCarryNoSpanLinesWhenNothingElseIsOpen(t *testing.T) {
 
 	// The tool_use of a spawn: it carries a span id but opens no span.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent"}))
 	// Its tool_result closes a span that was never opened.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"type":"user"}`),
+		agent.MessageContent{Original: []byte(`{"type":"user"}`)},
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent", Closing: true}))
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
@@ -58,22 +58,22 @@ func TestSpawnInsideAnOpenSpanDrawsExactlyOneColumn(t *testing.T) {
 	// Read's tool_use persists first, then opens its span (the provider order).
 	readColor := sink.ReserveSpanColor("tu-read", "")
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", SpanColor: readColor}))
 	sink.SetSpanType("tu-read", "Read")
 	sink.OpenSpan("tu-read", "")
 
 	// The spawn's two rows land inside that open span.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent"}))
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"type":"user"}`),
+		agent.MessageContent{Original: []byte(`{"type":"user"}`)},
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent", Closing: true}))
 
 	// Read's result closes its own span.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"type":"user"}`),
+		agent.MessageContent{Original: []byte(`{"type":"user"}`)},
 		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", Closing: true}))
 	sink.CloseSpan("tu-read")
 
@@ -119,19 +119,19 @@ func TestSpawnRowUnderAnOpenParentKeepsTheNeutralColor(t *testing.T) {
 	readColor := sink.ReserveSpanColor("tu-read", "")
 	require.NotZero(t, readColor)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", SpanColor: readColor}))
 	sink.OpenSpan("tu-read", "")
 
 	// The spawn row names the open Read as its parent and owns no span.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		[]byte(`{"type":"assistant"}`),
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent", ParentSpanID: "tu-read", NoSpan: true}))
 
 	// An ordinary row with no span of its own still inherits, which is what the
 	// fallback exists for (a tool_result inside its own open span).
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		[]byte(`{"type":"user"}`),
+		agent.MessageContent{Original: []byte(`{"type":"user"}`)},
 		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", Closing: true}))
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{

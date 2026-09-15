@@ -80,7 +80,7 @@ func TestEveryTimestampColumnDeclaresDatetime(t *testing.T) {
 
 	atColumns := 0
 	for _, f := range files {
-		storetest.WalkCreateTableColumns(f.SQL, func(name, typeTok string) {
+		storetest.WalkCreateTableColumns(f.SQL, func(_, name, typeTok string) {
 			if strings.HasSuffix(name, "_at") {
 				atColumns++
 				assert.Regexp(t, `^DATETIME\([3-6]\)$`, typeTok,

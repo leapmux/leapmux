@@ -7,12 +7,9 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { CachedToken } from '~/lib/tokenCache'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
-import ListTodo from 'lucide-solid/icons/list-todo'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
-import { Icon } from '~/components/common/Icon'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
-import { inlineFlex } from '~/styles/shared.css'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from './messageRenderers'
 import { canHighlightBySize, COLLAPSED_RESULT_ROWS } from './results/collapse'
 import { CollapsibleContent } from './results/CollapsibleContent'
@@ -20,25 +17,18 @@ import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
 import { ImageResultList } from './results/imageResult'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
+import { ToolOutcomeHeader } from './results/ToolStatusHeader'
 import { useCollapsedLines } from './results/useCollapsedLines'
+import { toolOutcomeLabel } from './toolOutcomeLabel'
 import {
-  toolInputText,
   toolMessage,
   toolResultCollapsed,
   toolResultContentPre,
   toolResultError,
-  toolUseHeader,
-  toolUseIcon,
 } from './toolStyles.css'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
-import { ToolUseLayout } from './widgets/ToolUseLayout'
 
 export { ToolUseLayout } from './widgets/ToolUseLayout'
-
-/** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
-export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {
-  return <ToolUseLayout icon={ListTodo} toolName={props.toolName} title="To-do list cleared" context={props.context} />
-}
 
 /** Map a chat RenderContext to the shared token hook's premeasure/hold gate. */
 function tokenGateFromContext(context: RenderContext | undefined): TokenGate {
@@ -127,8 +117,9 @@ function AsyncHighlightedCode(props: {
   )
 }
 
-export function BashHighlightHtml(props: {
+export function CommandHighlightHtml(props: {
   code: string
+  language?: 'bash' | 'powershell'
   context?: RenderContext
   class?: string
   maxHighlightChars?: number
@@ -139,7 +130,7 @@ export function BashHighlightHtml(props: {
 }): JSX.Element {
   return (
     <AsyncHighlightedCode
-      lang="bash"
+      lang={props.language ?? 'bash'}
       code={props.code}
       context={props.context}
       class={props.class}
@@ -289,19 +280,17 @@ export function ToolResultMessage(props: {
         fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
       >
         <div class={toolMessage} data-tool-message>
-          <Show when={showStatusHeader()}>
-            <div class={toolUseHeader}>
-              <span class={`${inlineFlex} ${toolUseIcon}`}>
-                <Icon icon={statusIcon()} size="md" />
-              </span>
-              <span class={toolInputText}>
-                {props.isError ? 'Error' : 'Success'}
-                <Show when={props.statusDetail}>
-                  {detail => ` (${detail()})`}
-                </Show>
-              </span>
-            </div>
-          </Show>
+          <ToolOutcomeHeader
+            when={showStatusHeader()}
+            icon={statusIcon()}
+            title={(
+              <>
+                {toolOutcomeLabel(props.isError ? 'failed' : 'succeeded')}
+                <Show when={props.statusDetail}>{detail => ` (${detail()})`}</Show>
+              </>
+            )}
+            context={props.context}
+          />
           <Show
             when={!errorText() && props.isError !== true}
             fallback={<div class={toolResultError}>{errorText() ?? props.resultContent}</div>}

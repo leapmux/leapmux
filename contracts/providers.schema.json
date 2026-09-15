@@ -5,32 +5,51 @@
   "description": "Keys are proto enum value names; the generator cross-checks them against the AgentProvider enum from `buf build` (every non-UNSPECIFIED value exactly once). The reverse parse map is displayName + cliAlias + parseAliases per provider, so the CLI alias always round-trips.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "providers"],
+  "required": [
+    "_readme",
+    "providers"
+  ],
   "properties": {
-    "_readme": { "type": "string", "minLength": 1 },
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
     "providers": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "pattern": "^AGENT_PROVIDER_[A-Z0-9_]+$" },
-      "additionalProperties": { "$ref": "#/$defs/provider" }
+      "propertyNames": {
+        "pattern": "^AGENT_PROVIDER_[A-Z0-9_]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/provider"
+      }
     }
   },
   "$defs": {
     "provider": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["displayName", "cliAlias", "parseAliases", "supportsSessionGoal"],
+      "required": [
+        "displayName",
+        "cliAlias",
+        "parseAliases"
+      ],
       "properties": {
-        "displayName": { "type": "string", "minLength": 1 },
-        "cliAlias": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cliAlias": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
         "parseAliases": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "uniqueItems": true
-        },
-        "supportsSessionGoal": {
-          "type": "boolean",
-          "description": "Whether this provider's CLI has a session goal at all. It decides only whether the Goals & To-dos section offers a goal card; the live supported_actions list the worker broadcasts still governs every control."
         }
       }
     }

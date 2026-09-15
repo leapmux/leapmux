@@ -3,6 +3,8 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { piNativeMcpContent } from './mcp'
+import { piPairedRequest } from './toolCommon'
 
 /**
  * Every image a Pi tool result carries, in wire order.
@@ -23,10 +25,12 @@ export function piToolResultImages(
 ): ImageResultSource[] {
   if (!isObject(parsed))
     return []
-  const blocks = asContentArray(pickObject(parsed, 'result')?.content)
+  const result = pickObject(parsed, 'result')
+  const blocks = piNativeMcpContent(pickString(parsed, 'toolName'), result) ?? asContentArray(result?.content)
   if (!blocks)
     return []
   const images = splitToolResultContent(blocks, { text: 'text' }).images
-  const filePath = pickString(pickObject(toolUseParsed?.parentObject, 'args'), 'filePath', undefined)
+  const args = pickObject(piPairedRequest(parsed, toolUseParsed)?.parentObject, 'args') ?? pickObject(parsed, 'args')
+  const filePath = pickString(args, 'path', undefined) ?? pickString(args, 'filePath', undefined)
   return images.map(source => withFallbackFilePath(source, filePath))
 }

@@ -2,7 +2,7 @@ import type { RenderContext } from './messageRenderers'
 import { render, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetTokenCache, setCachedTokens, toCachedTokens } from '~/lib/tokenCache'
-import { BashHighlightHtml, JsonHighlightHtml } from './toolRenderers'
+import { CommandHighlightHtml, JsonHighlightHtml } from './toolRenderers'
 
 // The Bash/JSON tool bodies tokenize off-thread via the token worker; mock the client
 // so these tests drive the shared useAsyncCodeTokens machinery deterministically.
@@ -38,7 +38,7 @@ describe('json/bash async token highlighting', () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
     vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: 'echo', className: 'sk-bash-test' }]])
 
-    render(() => <BashHighlightHtml code="echo hi" />)
+    render(() => <CommandHighlightHtml code="echo hi" />)
 
     await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
   })
@@ -91,7 +91,7 @@ describe('json/bash async token highlighting', () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
     vi.mocked(tokenizeAsync).mockResolvedValue(null)
 
-    const { container } = render(() => <BashHighlightHtml code="echo hi" />)
+    const { container } = render(() => <CommandHighlightHtml code="echo hi" />)
 
     await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
     await Promise.resolve()

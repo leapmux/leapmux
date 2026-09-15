@@ -35,7 +35,7 @@ const (
 // seedAgent and seedTerminal create minimal DB rows.
 func seedAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -90,6 +90,9 @@ var agentHandlerCases = []agentHandlerCase{
 	{"SteerQueuedAgentInput", func(id string) proto.Message {
 		return &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},
+	{"PreemptQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: id, InputId: "input"}
+	}},
 	{"RetryQueuedAgentInput", func(id string) proto.Message {
 		return &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},
@@ -120,6 +123,9 @@ var agentHandlerCases = []agentHandlerCase{
 	}},
 	{"GetAgentMessage", func(id string) proto.Message {
 		return &leapmuxv1.GetAgentMessageRequest{AgentId: id, Seq: 1}
+	}},
+	{"GetAgentSpanMessages", func(id string) proto.Message {
+		return &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: id, SpanId: "call"}
 	}},
 	{"ListMessageMarks", func(id string) proto.Message {
 		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}

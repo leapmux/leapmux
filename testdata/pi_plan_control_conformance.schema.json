@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cases"
+  ],
+  "properties": {
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "payload",
+          "expected"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "expected": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

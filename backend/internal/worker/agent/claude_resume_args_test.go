@@ -4,29 +4,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// claudeResumeArgs is the only place in the repository where a session ID
+// claudeSessionArgs is the only place in the repository where a session ID
 // becomes an argv element, so it is where the token rule is enforced. The
 // value it reads is NOT the one OpenAgent validated: agentOutputSink.
 // UpdateSessionID writes whatever the agent process reports into the
 // `agent_session_id` column, and resolveResumeSessionID hands that column back
 // here on every restart.
-func TestClaudeResumeArgs(t *testing.T) {
+func TestClaudeSessionArgs(t *testing.T) {
 	t.Parallel()
 
 	t.Run("passes an ordinary session ID", func(t *testing.T) {
-		args, err := claudeResumeArgs("3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f")
+		args, err := claudeSessionArgs("3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"--resume", "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"}, args)
 	})
 
-	t.Run("passes nothing when there is nothing to resume", func(t *testing.T) {
-		args, err := claudeResumeArgs("")
+	t.Run("assigns a valid identity before a fresh session starts", func(t *testing.T) {
+		args, err := claudeSessionArgs("")
 		require.NoError(t, err)
-		assert.Nil(t, args)
+		require.Len(t, args, 2)
+		assert.Equal(t, "--session-id", args[0])
+		_, err = uuid.Parse(args[1])
+		require.NoError(t, err)
 	})
 
 	// The case the guard exists for. `--resume` takes an optional value, so a
@@ -41,7 +45,7 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"-",
 			"--",
 		} {
-			args, err := claudeResumeArgs(id)
+			args, err := claudeSessionArgs(id)
 			require.Errorf(t, err, "%q must not reach argv: it parses as a flag, not as the value of --resume", id)
 			assert.Nil(t, args)
 		}
@@ -61,7 +65,7 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"has\xffinvalid-utf8",
 			strings.Repeat("a", 129),
 		} {
-			args, err := claudeResumeArgs(id)
+			args, err := claudeSessionArgs(id)
 			require.Errorf(t, err, "%q must not reach argv", id)
 			assert.Nil(t, args)
 		}
@@ -72,7 +76,7 @@ func TestClaudeResumeArgs(t *testing.T) {
 	// the conversation with no report of why. The message states the handle and
 	// the command that replaces it.
 	t.Run("reports the refused handle and how to recover the tab", func(t *testing.T) {
-		_, err := claudeResumeArgs("--dangerously-skip-permissions")
+		_, err := claudeSessionArgs("--dangerously-skip-permissions")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "--dangerously-skip-permissions")
 		assert.Contains(t, err.Error(), "/clear")
@@ -89,7 +93,7 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"a--b",
 			"abc-123-",
 		} {
-			got, err := claudeResumeArgs(id)
+			got, err := claudeSessionArgs(id)
 			require.NoErrorf(t, err, "%q is a legitimate identifier and must still resume", id)
 			assert.Equal(t, []string{"--resume", id}, got)
 		}

@@ -5,7 +5,6 @@ import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { PROVIDER_SUPPORTS_SESSION_GOAL } from '~/generated/contracts/providers'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -214,6 +213,7 @@ export function protoToAgentTabFields(
     parentAgentId: agent.parentAgentId || undefined,
     acceptsMessages: agent.acceptsMessages,
     supportsSteering: agent.supportsSteering,
+    supportsPreemption: agent.supportsPreemption,
     rootAgentId: agent.rootAgentId || undefined,
     ...(agent.gitStatus?.toplevel ? { gitToplevel: agent.gitStatus.toplevel } : {}),
   }
@@ -353,23 +353,6 @@ export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: 
   if (!tab.parentAgentId)
     return true
   return pluginFor(tab.agentProvider)?.supportsSubagentInterrupt ?? false
-}
-
-/**
- * Whether the tab's provider has a session-goal feature.
- *
- * The answer comes from `contracts/providers.json`, which the Go side reads
- * too: `TestProviderSessionGoalContractMatchesGoalWriters` asserts the same
- * table against the agents that implement `GoalWriter`, so a provider cannot
- * be goal-capable on one side only.
- *
- * It decides only whether a goal CARD exists. Every control on that card is
- * armed by the live action list the worker broadcasts for the running process.
- */
-export function agentTabSupportsSessionGoal(tab: Pick<Tab, 'type'> & { agentProvider?: AgentProvider } | null | undefined): boolean {
-  if (tab?.type !== TabType.AGENT || tab.agentProvider === undefined)
-    return false
-  return PROVIDER_SUPPORTS_SESSION_GOAL[tab.agentProvider] ?? false
 }
 
 /**
@@ -513,6 +496,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
     supportsSteering: tab.supportsSteering ?? false,
+    supportsPreemption: tab.supportsPreemption ?? false,
     rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
 }

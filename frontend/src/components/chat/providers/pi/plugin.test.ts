@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { toolMessageInput } from '~/components/chat/providers/testUtils'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
@@ -39,6 +40,10 @@ describe('pi plugin metadata', () => {
 describe('pi classify', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
+  it('hides internal custom state entries', () => {
+    expect(plugin.classify(input({ type: 'entry_appended', entry: { type: 'custom', customType: 'plan-mode-state', data: { enabled: true } } }))).toEqual({ kind: 'hidden' })
+  })
+
   it('declares no trigger mode segment (Pi has no mode axis)', () => {
     expect(plugin.triggerModeGroupKey).toBeUndefined()
   })
@@ -60,14 +65,43 @@ describe('pi classify', () => {
       .toEqual({ label: 'Turn ended' })
   })
 
-  it('maps an aborted stopReason to a danger "Turn aborted" model', () => {
+  // An aborted turn is not an error: the reader asked for it, and every provider
+  // states an interruption in the same words.
+  it('maps an aborted stopReason to the shared interruption label', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] }))
-      .toEqual({ label: 'Turn aborted', isError: true })
+      .toEqual({ label: 'Turn interrupted' })
   })
 
   it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] }))
       .toEqual({ label: 'Turn failed — rate limit', isError: true })
+  })
+
+  // A turn the USER stopped, reported as an ERROR. Pi spells one stop two ways: a
+  // turn it aborts cleanly carries `stopReason: 'aborted'`, and a turn whose tool
+  // was still running carries `stopReason: 'error'` with `This operation was
+  // aborted`. The second read as "Turn failed" in the danger color for a stop the
+  // reader asked for -- the defect CC-001 records for Claude Code, on a second
+  // provider. LeapMux knows which it is, because it sent the abort, and that
+  // knowledge reaches the divider in the completion column.
+  it('reads an interrupted completion before the frame own error stopReason', () => {
+    expect(plugin.resultDivider!(
+      {
+        type: 'agent_end',
+        duration_ms: 15_000,
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'This operation was aborted' }],
+      },
+      MessageCompletion.INTERRUPTED,
+    )).toEqual({ label: 'Turn interrupted (15s)' })
+  })
+
+  // The correction is limited to a stop LeapMux asked for. A real failure keeps its
+  // own words and its danger color.
+  it('keeps a genuine failure when no interruption was recorded', () => {
+    expect(plugin.resultDivider!(
+      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] },
+      MessageCompletion.ERROR,
+    )).toEqual({ label: 'Turn failed — rate limit', isError: true })
   })
 
   it('returns null when the message is not agent_end', () => {
@@ -101,15 +135,15 @@ describe('pi classify', () => {
     })
 
     it('appends the duration to the length-limit label', () => {
-      expect(ended({ duration_ms: 3200 }, 'length')).toBe('Turn ended (length limit) (3.2s)')
+      expect(ended({ duration_ms: 3200 }, 'length')).toBe('Turn ended (3.2s, length limit)')
     })
 
     it('appends the duration to an aborted turn', () => {
-      expect(ended({ duration_ms: 45_000 }, 'aborted')).toBe('Turn aborted (45s)')
+      expect(ended({ duration_ms: 45_000 }, 'aborted')).toBe('Turn interrupted (45s)')
     })
 
     it('appends the duration after the error message', () => {
-      expect(ended({ duration_ms: 1500 }, 'error')).toBe('Turn failed — WebSocket error (1.5s)')
+      expect(ended({ duration_ms: 1500 }, 'error')).toBe('Turn failed (1.5s) — WebSocket error')
     })
   })
 
@@ -122,7 +156,7 @@ describe('pi classify', () => {
     })!
 
     it('marks the divider auto-retry after the duration', () => {
-      expect(retrying.label).toBe('Turn failed — overloaded (2.1s) · auto-retry')
+      expect(retrying.label).toBe('Turn failed (2.1s, auto-retry) — overloaded')
     })
 
     it('adds no meta part when Pi does not retry', () => {
@@ -131,19 +165,24 @@ describe('pi classify', () => {
         duration_ms: 2100,
         messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
       })!
-      expect(model.label).toBe('Turn failed — overloaded (2.1s)')
+      expect(model.label).toBe('Turn failed (2.1s) — overloaded')
     })
   })
 
   it('renders a danger divider through the shared renderer end-to-end', () => {
     // MessageBubble routes result_divider through renderResultDivider, which draws
-    // the shared ResultDivider with the inline danger color for a failed turn.
+    // the shared ResultDivider. A FAILED turn takes the inline danger color; an
+    // interrupted one does not, because the reader asked for it.
     const { text, isError } = renderDivider(
-      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] },
+      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] },
       AgentProvider.PI,
     )
-    expect(text).toBe('Turn aborted')
+    expect(text).toBe('Turn failed — rate limit')
     expect(isError).toBe(true)
+    expect(renderDivider(
+      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] },
+      AgentProvider.PI,
+    )).toEqual({ text: 'Turn interrupted', isError: false })
   })
 
   it('classifies message_end with text content as assistant_text', () => {
@@ -353,7 +392,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'bash',
       result: { content: [{ type: 'text', text: resultText }] },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'bash', undefined)
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'bash', undefined))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -372,7 +411,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'read',
       args: { path: '/tmp/a.ts', offset: 10 },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'read', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'read', input(start)))
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -390,7 +429,7 @@ describe('pi toolResultMeta', () => {
       toolName: 'write',
       args: { path: '/tmp/new.ts', content: 'piMetaWriteBody\n' },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'write', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'write', input(start)))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('piMetaWriteBody')
   })
@@ -409,9 +448,52 @@ describe('pi toolResultMeta', () => {
       toolName: 'edit',
       args: { path: '/tmp/a.ts', edits: [{ oldText: 'oldMetaMarker', newText: 'newMetaMarker' }] },
     }
-    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, end, 'edit', input(start))
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'edit', input(start)))
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('Found 2 occurrences.')
+  })
+
+  // `PI_TOOL.PlanComplete` had a renderer entry and no branch in the metadata chain, so the
+  // generic MCP reading answered here and copied the JSON envelope that holds the plan.
+  // The entry that draws the body now answers for it.
+  it('copies the plan a plan-complete result shows, not the envelope around it', () => {
+    const planText = '# Plan\n\n1. Read the code.\n2. Write the test.'
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      result: { content: [{ type: 'text', text: 'Plan ready.' }], details: { plan: planText } },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
+    expect(meta?.copyableContent()).toBe(planText)
+  })
+
+  // `MarkdownPlanLayout` draws the whole plan, so nothing on the row collapses.
+  it('falls back to the result text when a plan-complete result carries no plan', () => {
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      result: { content: [{ type: 'text', text: 'Plan ready for review.' }] },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta?.copyableContent()).toBe('Plan ready for review.')
+    expect(meta?.collapsible).toBe(false)
+  })
+
+  // The entry hands a failed plan-complete row to the SHARED error renderer, which draws the
+  // result text and nothing of the tool's own body -- so the toolbar describes that text.
+  it('describes the result text of a failed plan-complete row, as its renderer draws it', () => {
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      isError: true,
+      result: { content: [{ type: 'text', text: 'The plan tool refused.' }], details: { plan: '# Ignored' } },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta?.copyableContent()).toBe('The plan tool refused.')
   })
 })
 
@@ -709,5 +791,16 @@ describe('pi is the only provider with a resume rule of its own', () => {
     AgentProvider.CURSOR,
   ])('%s takes the shared token rule by saying nothing', (id) => {
     expect(providerFor(id)?.validateResumeHandle).toBeUndefined()
+  })
+})
+
+// Each half of a Pi tool call wants the other: the start row carries the name and the
+// arguments, the end row carries the result.
+describe('pi relatedMessages', () => {
+  const plugin = providerFor(AgentProvider.PI)!
+
+  it('each half of a tool call wants the other', () => {
+    expect(plugin.relatedMessages!(input({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command: 'ls' } }))).toEqual(['result'])
+    expect(plugin.relatedMessages!(input({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', result: { content: [] }, isError: false }))).toEqual(['request'])
   })
 })

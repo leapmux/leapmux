@@ -13,26 +13,39 @@ export function getToolInput(payload: Record<string, unknown>): Record<string, u
 }
 
 /**
+ * The control_response envelope, around one provider's own answer.
+ *
+ * Every answer LeapMux sends travels in this envelope, and only the innermost
+ * `response` object differs: Claude's SDK defines an allow with an updated input and a
+ * deny with a message, Copilot adds an approval SCOPE and a question ANSWER, and an MCP
+ * elicitation carries its action and content. The envelope is stated ONCE here, so no
+ * site can spell `subtype` or `request_id` a second way.
+ */
+export function buildControlResponseEnvelope(
+  requestId: string,
+  response: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: requestId,
+      response,
+    },
+  }
+}
+
+/**
  * Builds a control_response JSON object that allows a tool use.
  */
 export function buildAllowResponse(
   requestId: string,
   updatedInput: Record<string, unknown>,
-  opts?: { permissionMode?: PermissionMode, clearContext?: boolean },
 ): Record<string, unknown> {
-  return {
-    type: 'control_response',
-    permissionMode: opts?.permissionMode,
-    ...(opts?.clearContext ? { clearContext: true } : {}),
-    response: {
-      subtype: 'success',
-      request_id: requestId,
-      response: {
-        behavior: 'allow',
-        updatedInput,
-      },
-    },
-  }
+  return buildControlResponseEnvelope(requestId, {
+    behavior: 'allow',
+    updatedInput,
+  })
 }
 
 /**
@@ -53,20 +66,13 @@ export function buildDenyResponse(
   requestId: string,
   message?: string,
 ): Record<string, unknown> {
-  return {
-    type: 'control_response',
-    response: {
-      subtype: 'success',
-      request_id: requestId,
-      response: {
-        behavior: 'deny',
-        // Ensure the message is never empty — Claude Code SDK converts deny
-        // responses into tool_result with is_error=true, and the Anthropic API
-        // rejects empty content when is_error is set.
-        message: message || CONTROL_REJECTED_BY_USER_MESSAGE,
-      },
-    },
-  }
+  return buildControlResponseEnvelope(requestId, {
+    behavior: 'deny',
+    // Ensure the message is never empty — Claude Code SDK converts deny
+    // responses into tool_result with is_error=true, and the Anthropic API
+    // rejects empty content when is_error is set.
+    message: message || CONTROL_REJECTED_BY_USER_MESSAGE,
+  })
 }
 
 /**

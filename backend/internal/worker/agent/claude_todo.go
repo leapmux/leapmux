@@ -162,7 +162,7 @@ func claudeTodoWriteEvent(content []byte) (todoevents.Event, bool) {
 		for _, t := range input.Todos {
 			items = append(items, todoevents.Item{
 				Content:    t.Content,
-				Status:     todoevents.StatusFromWire(t.Status),
+				Status:     todoevents.StatusFromProviderWord(t.Status),
 				ActiveForm: t.ActiveForm,
 			})
 		}
@@ -219,7 +219,7 @@ func claudeTaskUpdateEvent(content []byte, pairedToolUse func() []byte) (todoeve
 	}
 	patch := todoevents.Patch{}
 	if result.StatusChange != nil {
-		status := todoevents.StatusFromWire(result.StatusChange.To)
+		status := todoevents.StatusFromProviderWord(result.StatusChange.To)
 		patch.Status = &status
 	}
 	// The result states the status change; the input states the text fields.
@@ -251,7 +251,7 @@ func claudeTaskListEvent(content []byte) (todoevents.Event, bool) {
 		items = append(items, todoevents.Item{
 			ID:      t.ID,
 			Content: t.Subject,
-			Status:  todoevents.StatusFromWire(t.Status),
+			Status:  todoevents.StatusFromProviderWord(t.Status),
 		})
 	}
 	return todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: items}, true
@@ -271,7 +271,7 @@ func claudeTaskGetEvent(content []byte) (todoevents.Event, bool) {
 		Item: todoevents.Item{
 			ID:          result.Task.ID,
 			Content:     result.Task.Subject,
-			Status:      todoevents.StatusFromWire(result.Task.Status),
+			Status:      todoevents.StatusFromProviderWord(result.Task.Status),
 			Description: result.Task.Description,
 		},
 	}, true

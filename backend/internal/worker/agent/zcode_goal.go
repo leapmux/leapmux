@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // ZCode's session goal, which its own code calls a "target" -- goal is the
@@ -74,6 +75,21 @@ func zcodeGoalStatus(wire string) GoalStatus {
 	}
 }
 
+// zcodeGoalStatusDetail keeps the provider's own word only when the neutral status
+// loses it.
+//
+// The detail exists for `verifying`, which maps to ACTIVE, and for `notSatisfied`
+// and `failed`, which both map to BLOCKED: there the word tells the reader
+// something the status cannot. A word that maps to its own name tells them
+// nothing, and the card renders it beside the status -- "active (active)", and
+// "Session goal active, active:" in the live region a screen reader hears.
+func zcodeGoalStatusDetail(wire string, status GoalStatus) string {
+	if strings.EqualFold(wire, GoalStatusWire(status)) {
+		return ""
+	}
+	return wire
+}
+
 // reportZCodeGoal folds the `goal` key of a snapshot or a patch into the sink.
 //
 // The three cases are distinct and all three matter:
@@ -104,17 +120,12 @@ func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 	if state.Objective == "" && state.Status == "" {
 		return
 	}
+	status := zcodeGoalStatus(state.Status)
 	a.sink.UpsertGoal(GoalUpdate{
-		Objective:    state.Objective,
-		Status:       zcodeGoalStatus(state.Status),
-		StatusDetail: state.Status,
-		// ZCode gives the goal a real id, and it is the only identity available:
-		// the state carries no creation time. Feeding the id through CreatedAt
-		// would be a lie about what the field means, so the identity falls back
-		// to the applier's own stamp and a REPLACED goal is recognized by its
-		// changed objective. Two goals with the same objective text in one
-		// session read as one, which is the same trade Codex's createdAt avoids
-		// and ZCode gives no way to avoid.
+		NativeID:        state.TargetID,
+		Objective:       state.Objective,
+		Status:          status,
+		StatusDetail:    zcodeGoalStatusDetail(state.Status, status),
 		TimeUsedSeconds: state.TimeUsedSeconds,
 		Iterations:      state.Iteration,
 		TokenBudget:     state.TokenBudget,
@@ -211,17 +222,27 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 			return err
 		}
 	}
-	// The reply's GOAL is deliberately not applied: the app-server also emits a
-	// state.updated patch for the same change, and reading both would give the
-	// stored goal two writers with no ordering between them.
+	// Its REVISION matters, and skipping it broke the second action in a row.
+	// This call bumps the app-server's counter, and nothing else refreshes ours
+	// until a turn ends -- so Pause followed by Resume sent the same pre-pause
+	// expectedRevision twice and the app-server refused the second for a
+	// conflict that did not exist.
 	//
-	// Its REVISION is another matter, and skipping it broke the second action
-	// in a row. This call bumps the app-server's counter, and nothing else
-	// refreshes ours until a turn ends -- so Pause followed by Resume sent the
-	// same pre-pause expectedRevision twice and the app-server refused the
-	// second for a conflict that did not exist.
+	// The reply's GOAL is applied too, as a RESTATEMENT. It was once dropped
+	// here on the grounds that "the app-server also emits a state.updated patch
+	// for the same change", and that is not true of the shipped build: a live
+	// run set a goal, ZCode accepted it and started a turn whose input source
+	// was `goal-continuation`, and the worker's whole debug log for that run
+	// held no `state.updated` at all. The reply was the only statement of the
+	// goal, so dropping it left the card empty for a goal the agent was already
+	// pursuing.
+	//
+	// Applying it as a restatement is what keeps the two writers ordered. A
+	// build that DOES send the patch still announces the transition exactly
+	// once, from the patch, because a snapshot only restates.
 	if snap, ok := a.parseStateSnapshot(raw); ok {
 		a.noteZCodeStateRevision(snap.Runtime.StateRevision)
+		a.reportZCodeGoal(snap.goalState(), true)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ZCode's control requests: a permission prompt, a plan approval, a question.
@@ -65,6 +66,8 @@ type zcodePermissionOption struct {
 // ResolveControlResponse, and the app-server waits for it -- which is the whole
 // point of a permission prompt.
 func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	var req zcodePermissionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode permission request unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -79,6 +82,9 @@ func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
 		slog.Warn("zcode permission request carried no request id", "agent_id", a.agentID, "tool", req.ToolName)
 		a.replyZCodePermission(id, req.Options, ControlBehaviorDeny, "leapmux could not route this permission request")
 		return
+	}
+	if _, err := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, req.Input); err != nil {
+		slog.Warn("recover permission tool input", "agent_id", a.agentID, "tool_call_id", req.ToolCallID, "error", err)
 	}
 
 	// Check for a repeat BEFORE the marshal below. The app-server re-announces an
@@ -97,7 +103,7 @@ func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
 		Type:      "control_request",
 		RequestID: requestID,
 		WireID:    id,
-		Method:    ZCodeMethodRequestPermission,
+		Method:    contracts.ZCodeMethodRequestPermission,
 		Request: zcodeControlRequestHeader{
 			ToolName:  req.ToolName,
 			ToolUseID: req.ToolCallID,
@@ -117,11 +123,12 @@ func (a *zcodeAgent) handlePermissionRequest(id, params json.RawMessage) {
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
 type zcodeUserInputRequest struct {
-	RequestID  string `json:"requestId"`
-	SessionID  string `json:"sessionId"`
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
-	Prompt     string `json:"prompt"`
+	RequestID  string          `json:"requestId"`
+	SessionID  string          `json:"sessionId"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Prompt     string          `json:"prompt"`
+	Input      json.RawMessage `json:"input"`
 	Schema     struct {
 		Interaction string               `json:"interaction"`
 		Questions   []zcodeInputQuestion `json:"questions"`
@@ -156,33 +163,49 @@ func (r zcodeUserInputRequest) questions() []zcodeInputQuestion {
 // isPlanApproval reports whether this request is the plan-approval prompt rather
 // than a question.
 func (r zcodeUserInputRequest) isPlanApproval() bool {
-	return r.Schema.Interaction == ZCodeInteractionPlanApproval
+	return r.Schema.Interaction == contracts.ZCodeInteractionPlanApproval
 }
 
-// planText returns the plan a plan approval asks about.
-//
-// The app-server puts the plan under `context.plan` and leaves `prompt` holding its own
-// boilerplate ("Review this implementation plan."). The plan must therefore travel as its
-// own field: the frontend reads the first question text, and the question a plan approval
-// gets is synthesized here, so a plan left in `context` never reaches the banner.
-//
-// Falls back to `prompt` for a build that states the plan there and sends no context.
+// planText reads the native tool input first, then context, then the prompt fallback.
 func (r zcodeUserInputRequest) planText() string {
-	var ctx struct {
-		Plan string `json:"plan"`
-	}
-	if len(r.Context) > 0 {
-		// A context that does not decode is not an error here: the plan simply is not in it.
-		_ = json.Unmarshal(r.Context, &ctx)
-	}
-	if strings.TrimSpace(ctx.Plan) != "" {
-		return ctx.Plan
+	for _, data := range []json.RawMessage{r.Input, r.Context} {
+		var content struct {
+			Plan string `json:"plan"`
+		}
+		if json.Unmarshal(data, &content) == nil && strings.TrimSpace(content.Plan) != "" {
+			return content.Plan
+		}
 	}
 	return r.Prompt
 }
 
+// toolInput adds a missing plan field from the native context or prompt.
+func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
+	if !r.isPlanApproval() || strings.TrimSpace(r.planText()) == "" {
+		return r.Input, nil
+	}
+	var fields map[string]json.RawMessage
+	if !zcodeInputIsAbsent(r.Input) && json.Unmarshal(r.Input, &fields) != nil {
+		return r.Input, nil
+	}
+	if _, exists := fields["plan"]; exists {
+		return r.Input, nil
+	}
+	if fields == nil {
+		fields = make(map[string]json.RawMessage)
+	}
+	plan, err := json.Marshal(r.planText())
+	if err != nil {
+		return nil, err
+	}
+	fields["plan"] = plan
+	return json.Marshal(fields)
+}
+
 // handleUserInputRequest persists a plan approval or a question.
-func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
+func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	var req zcodeUserInputRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode user input request unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -190,10 +213,21 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 		return
 	}
 	if req.RequestID == "" {
-		slog.Warn("zcode user input request carried no request id", "agent_id", a.agentID)
-		a.replyZCodeUserInput(id, ControlBehaviorDeny, "leapmux could not route this request",
-			zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
+		// Without an id the answer cannot be routed back, and an unanswerable prompt
+		// would stall the turn. LeapMux denies it, so the turn continues.
+		slog.Warn("leapmux denied a zcode user-input request with no request id", "agent_id", a.agentID)
+		a.replyZCodeUserInput(id, ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		return
+	}
+	nativeInput, err := req.toolInput()
+	if err != nil {
+		slog.Warn("encode interaction tool input", "agent_id", a.agentID, "error", err)
+		a.replyZCodeControlFailure(id, "LeapMux could not read the tool input.")
+		return
+	}
+	carriesInput, sourceErr := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, nativeInput)
+	if sourceErr != nil {
+		slog.Warn("recover interaction tool input", "agent_id", a.agentID, "tool_call_id", req.ToolCallID, "error", sourceErr)
 	}
 
 	// Check for a repeat BEFORE the two marshals below. The app-server re-announces an
@@ -206,6 +240,24 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 		slog.Debug("zcode re-announced user-input request republished", "agent_id", a.agentID, "request_id", req.RequestID)
 		a.publishZCodeControlRequest(req.RequestID, stored)
 		return
+	}
+	// The transcript confirms no row that carries this plan, so this call writes one.
+	// A read that FAILED confirms nothing either, and it is treated as "the row is
+	// there": a second plan row over one already in the transcript draws it twice.
+	if req.isPlanApproval() && !carriesInput && sourceErr == nil {
+		if len(original) == 0 {
+			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
+			return
+		}
+		spanID := req.ToolCallID
+		if spanID == "" {
+			spanID = req.RequestID
+		}
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: spanID, SpanType: zcodeControlPlanApproval, NoSpan: true}); err != nil {
+			slog.Error("persist plan control source", "agent_id", a.agentID, "request_id", req.RequestID, "error", err)
+			a.replyZCodeControlFailure(id, "LeapMux could not store the plan.")
+			return
+		}
 	}
 
 	toolName := zcodeControlAskUserQuestion
@@ -233,7 +285,7 @@ func (a *zcodeAgent) handleUserInputRequest(id, params json.RawMessage) {
 		Type:      "control_request",
 		RequestID: req.RequestID,
 		WireID:    id,
-		Method:    ZCodeMethodRequestUserInput,
+		Method:    contracts.ZCodeMethodRequestUserInput,
 		Request: zcodeControlRequestHeader{
 			ToolName:  toolName,
 			ToolUseID: req.ToolCallID,
@@ -260,11 +312,11 @@ func zcodeSharedQuestions(req zcodeUserInputRequest) []map[string]any {
 	questions := req.questions()
 	if len(questions) == 0 && req.isPlanApproval() {
 		return []map[string]any{{
-			"question":    ZCodePlanApprovalQuestion,
+			"question":    contracts.ZCodePlanControlQuestion,
 			"header":      "Plan",
 			"multiSelect": false,
 			"options": []map[string]any{
-				{"value": ZCodePlanApproveSentinel, "label": ZCodePlanApproveSentinel},
+				{"value": contracts.ZCodePlanControlApprove, "label": contracts.ZCodePlanControlApprove},
 			},
 		}}
 	}
@@ -345,8 +397,12 @@ func (a *zcodeAgent) replyZCodePermission(id json.RawMessage, options []zcodePer
 }
 
 // replyZCodeUserInput answers a user-input request directly.
-func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior, message string, reply zcodeUserInputReply) {
-	if err := a.sendZCodeReply(id, zcodeUserInputResult(behavior, message, reply)); err != nil {
+//
+// The reply carries a behavior and nothing else. ZCode's user-input result has no
+// field for a reason, unlike the permission result, so the caller logs its reason
+// rather than passing one here.
+func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior string, reply zcodeUserInputReply) {
+	if err := a.sendZCodeReply(id, zcodeUserInputResult(behavior, reply)); err != nil {
 		slog.Warn("zcode user input reply failed", "agent_id", a.agentID, "error", err)
 	}
 }
@@ -524,43 +580,26 @@ type zcodeUserInputReply struct {
 // map is exact when the question text survived the round trip, and the positional
 // form is what answers a plan approval or a question whose text was empty.
 //
-// A REJECTION is asymmetric for the same reason. A question reads `reason` off a
-// `decline`, so a decline carries it. The plan path does NOT -- its reply mapper
-// drops every field but `action`, so a decline there loses the text. A rejection
-// with feedback is therefore sent as an ACCEPT whose answer is the feedback, which
-// the plan path resolves to a denial that carries the feedback to the model. A
-// rejection with nothing typed has no text to preserve and declines outright.
-func zcodeUserInputResult(behavior, message string, reply zcodeUserInputReply) map[string]any {
+// Rejection always uses decline. The native mapper discards rejection reasons.
+// Plan answer text cannot carry rejection safely because the approval sentinel would approve the plan.
+func zcodeUserInputResult(behavior string, reply zcodeUserInputReply) map[string]any {
 	if behavior != ControlBehaviorAllow {
-		feedback := strings.TrimSpace(message)
-		if reply.PlanApproval && feedback != "" {
-			return map[string]any{
-				ZCodeReplyActionField: ZCodeActionAccept,
-				ZCodeReplyContentField: map[string]any{
-					ZCodeAnswerField: feedback,
-				},
-			}
-		}
-		out := map[string]any{ZCodeReplyActionField: ZCodeActionDecline}
-		if feedback != "" {
-			out["reason"] = feedback
-		}
-		return out
+		return map[string]any{contracts.ZCodeReplyFieldAction: contracts.ZCodeActionDecline}
 	}
 
 	if reply.PlanApproval {
 		// The sentinel is the ONLY value the plan reader accepts as approval; any other
 		// non-empty answer is read back as reviewer feedback, which is a denial.
 		return map[string]any{
-			ZCodeReplyActionField: ZCodeActionAccept,
-			ZCodeReplyContentField: map[string]any{
-				ZCodeAnswerField: ZCodePlanApproveSentinel,
+			contracts.ZCodeReplyFieldAction: contracts.ZCodeActionAccept,
+			contracts.ZCodeReplyFieldContent: map[string]any{
+				contracts.ZCodeAnswerFieldSingle: contracts.ZCodePlanControlApprove,
 			},
 		}
 	}
 	return map[string]any{
-		ZCodeReplyActionField:  ZCodeActionAccept,
-		ZCodeReplyContentField: zcodeAnswerContent(reply),
+		contracts.ZCodeReplyFieldAction:  contracts.ZCodeActionAccept,
+		contracts.ZCodeReplyFieldContent: zcodeAnswerContent(reply),
 	}
 }
 
@@ -587,7 +626,7 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 		if trimmed := strings.TrimSpace(question); trimmed != "" {
 			keyed[trimmed] = answer
 		}
-		content[fmt.Sprintf("%s%d", ZCodeAnswerIndexedPrefix, i)] = answer
+		content[fmt.Sprintf("%s%d", contracts.ZCodeAnswerFieldIndexedPrefix, i)] = answer
 	}
 	// An answer whose question the request never declared cannot be placed
 	// positionally, but its key can still match. Adding it is strictly better than
@@ -602,7 +641,7 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 		}
 	}
 	if len(keyed) > 0 {
-		content[ZCodeAnswerMapField] = keyed
+		content[contracts.ZCodeAnswerFieldMap] = keyed
 	}
 	return content
 }
@@ -647,8 +686,13 @@ func (a *zcodeAgent) rememberZCodeControlRequest(requestID string, payload json.
 // Shared by the first announcement and by each republished repeat, so the two can never
 // store one payload and show another.
 func (a *zcodeAgent) publishZCodeControlRequest(requestID string, payload json.RawMessage) {
-	claimToken := a.sink.PersistControlRequest(requestID, payload)
-	a.sink.BroadcastControlRequest(requestID, payload, claimToken)
+	if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
+		slog.Error("publish zcode control request", "agent_id", a.agentID, "request_id", requestID, "error", err)
+		a.forgetZCodeControlRequest(requestID)
+		if wireID, _, ok := ExtractJSONRPCID(payload); ok {
+			a.replyZCodeControlFailure(wireID, controlPublicationFailure)
+		}
+	}
 }
 
 // forgetZCodeControlRequest reports whether requestID was a prompt LeapMux
@@ -670,7 +714,7 @@ func (a *zcodeAgent) forgetZCodeControlRequest(requestID string) bool {
 // zcodeReplyForAnswer builds the `result` of the reply for one answered request.
 func zcodeReplyForAnswer(stored zcodeControlRequestPayload, behavior, message string, responseContent []byte) (any, error) {
 	switch stored.Method {
-	case ZCodeMethodRequestPermission:
+	case contracts.ZCodeMethodRequestPermission:
 		var req zcodePermissionRequest
 		if len(stored.Params) > 0 {
 			if err := json.Unmarshal(stored.Params, &req); err != nil {
@@ -682,8 +726,8 @@ func zcodeReplyForAnswer(stored zcodeControlRequestPayload, behavior, message st
 			return nil, err
 		}
 		return result, nil
-	case ZCodeMethodRequestUserInput:
-		return zcodeUserInputResult(behavior, message, zcodeUserInputReply{
+	case contracts.ZCodeMethodRequestUserInput:
+		return zcodeUserInputResult(behavior, zcodeUserInputReply{
 			PlanApproval: stored.Request.ToolName == zcodeControlPlanApproval,
 			Questions:    zcodeStoredQuestionTexts(stored.Request.Input),
 			Answers:      zcodeAnswersFromResponse(responseContent),
@@ -735,45 +779,4 @@ func zcodeAnswersFromResponse(content []byte) map[string]string {
 		return nil
 	}
 	return env.Response.Response.UpdatedInput.Answers
-}
-
-// zcodeControlRequestContext prunes a stored ZCode control request to what the
-// frontend needs to render the ANSWER after the pending request is deleted: the
-// tool name, and the option or question labels the answer refers to.
-func zcodeControlRequestContext(stored zcodeControlRequestPayload) json.RawMessage {
-	type option struct {
-		OptionID string `json:"optionId,omitempty"`
-		Name     string `json:"name,omitempty"`
-	}
-	type question struct {
-		Question string `json:"question,omitempty"`
-		Header   string `json:"header,omitempty"`
-	}
-	ctx := struct {
-		Method  string `json:"method,omitempty"`
-		Request struct {
-			ToolName string `json:"tool_name,omitempty"`
-		} `json:"request"`
-		Options   []option   `json:"options,omitempty"`
-		Questions []question `json:"questions,omitempty"`
-	}{Method: stored.Method}
-	ctx.Request.ToolName = stored.Request.ToolName
-
-	switch stored.Method {
-	case ZCodeMethodRequestPermission:
-		var req zcodePermissionRequest
-		if len(stored.Params) > 0 && json.Unmarshal(stored.Params, &req) == nil {
-			for _, o := range req.Options {
-				ctx.Options = append(ctx.Options, option{OptionID: o.OptionID, Name: o.Name})
-			}
-		}
-	case ZCodeMethodRequestUserInput:
-		var input struct {
-			Questions []question `json:"questions"`
-		}
-		if len(stored.Request.Input) > 0 && json.Unmarshal(stored.Request.Input, &input) == nil {
-			ctx.Questions = input.Questions
-		}
-	}
-	return marshalControlRequestContext(ctx)
 }

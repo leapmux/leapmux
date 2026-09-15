@@ -47,9 +47,10 @@ func resolveProviderDefaults(options OptionMap, provider leapmuxv1.AgentProvider
 		out[agent.OptionIDModel] = agent.DefaultModel(provider)
 	}
 	// An explicit operator effort override (LEAPMUX_*_DEFAULT_EFFORT) is honored for
-	// any provider that registers one: a catalog-effort provider (Claude/Codex/Pi)
-	// pins it as the launch effort, while an ACP provider (Kilo/OpenCode) has it
-	// re-pushed to the server's "effort" config option by applyStartupOptions.
+	// any provider that registers one: a catalog-effort provider (Claude/Codex/Pi and
+	// native Copilot -- see ProviderManagesEffort) pins it as the launch effort, while
+	// an ACP provider (Kilo/OpenCode) has it re-pushed to the server's "effort" config
+	// option by applyStartupOptions.
 	// Only the blanket EffortAuto fallback is gated to catalog-effort providers -- an
 	// unset override must NOT stamp a default that would shadow a server-driven axis
 	// or leave an inert "effort" key on a provider with no effort axis at all.

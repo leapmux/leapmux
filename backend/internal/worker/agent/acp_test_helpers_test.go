@@ -16,6 +16,9 @@ import (
 type recordedRequest struct {
 	Method string
 	Params map[string]interface{}
+	// Raw is the whole frame. A RESPONSE carries no method and no params, so a test
+	// that asserts one reads it here.
+	Raw string
 }
 
 // newACPAgentForRPC constructs an ACP agent of type T for tests and starts a
@@ -28,8 +31,8 @@ func newACPAgentForRPC[T any](
 	construct func() *T,
 	accessBase func(*T) *acpBase,
 ) (*T, func() []recordedRequest) {
-	return newACPAgentForRPCWithResponder(t, construct, accessBase, func(string) json.RawMessage {
-		return json.RawMessage(`{}`)
+	return newACPAgentForRPCWithResponder(t, construct, accessBase, func(string) jsonrpcResponsePayload {
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 	})
 }
 
@@ -39,9 +42,9 @@ func newACPAgentForRPCWithResponder[T any](
 	t *testing.T,
 	construct func() *T,
 	accessBase func(*T) *acpBase,
-	respond func(method string) json.RawMessage,
+	respond func(method string) jsonrpcResponsePayload,
 ) (*T, func() []recordedRequest) {
-	return newACPAgentForRPCWithRequestResponder(t, construct, accessBase, func(req recordedRequest) json.RawMessage {
+	return newACPAgentForRPCWithRequestResponder(t, construct, accessBase, func(req recordedRequest) jsonrpcResponsePayload {
 		return respond(req.Method)
 	})
 }
@@ -54,7 +57,7 @@ func newACPAgentForRPCWithRequestResponder[T any](
 	t *testing.T,
 	construct func() *T,
 	accessBase func(*T) *acpBase,
-	respond func(req recordedRequest) json.RawMessage,
+	respond func(req recordedRequest) jsonrpcResponsePayload,
 ) (*T, func() []recordedRequest) {
 	t.Helper()
 
@@ -88,15 +91,15 @@ func newACPAgentForRPCWithRequestResponder[T any](
 			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 				continue
 			}
-			recorded := recordedRequest{Method: req.Method, Params: req.Params}
+			recorded := recordedRequest{Method: req.Method, Params: req.Params, Raw: scanner.Text()}
 			mu.Lock()
 			requests = append(requests, recorded)
 			mu.Unlock()
-			body := json.RawMessage(`{}`)
+			body := jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
 			if respond != nil {
 				body = respond(recorded)
 			}
-			ab.deliver(req.ID, body)
+			ab.deliver(req.ID, jsonrpcTestResponse(req.ID, body))
 		}
 	}()
 

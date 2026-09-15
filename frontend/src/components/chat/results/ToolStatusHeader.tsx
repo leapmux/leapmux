@@ -1,8 +1,43 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
+import type { RenderContext } from '../messageRenderers'
+import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { inlineFlex } from '~/styles/shared.css'
 import { toolInputText, toolMessage, toolUseHeader, toolUseIcon } from '../toolStyles.css'
+
+/**
+ * Whether this row must state its own outcome.
+ *
+ * `RenderContext.completionHeader` says that the row ABOVE already draws the retained
+ * completion, so a header here would state the same outcome a second time. Prefer
+ * {@link ToolOutcomeHeader}, which applies this itself; read the predicate only where
+ * the answer picks between two layouts rather than drawing one header.
+ */
+export function drawsOwnOutcome(context: RenderContext | undefined): boolean {
+  return !context?.completionHeader
+}
+
+/**
+ * A row's own outcome header, which draws NOTHING when the enclosing renderer states
+ * the outcome already.
+ *
+ * Five renderers across four providers spelled that test beside their own condition. A
+ * renderer that forgot it drew a SECOND failure header, and nothing caught that.
+ */
+export function ToolOutcomeHeader(props: {
+  /** This renderer's own reason to draw a header, such as "the call failed". */
+  when: boolean
+  icon: LucideIcon
+  title: JSX.Element | string
+  context?: RenderContext
+}): JSX.Element {
+  return (
+    <Show when={props.when && drawsOwnOutcome(props.context)}>
+      <ToolHeaderRow icon={props.icon} title={props.title} />
+    </Show>
+  )
+}
 
 /**
  * Single-row icon + title header. Standalone — no outer `toolMessage` wrapper.

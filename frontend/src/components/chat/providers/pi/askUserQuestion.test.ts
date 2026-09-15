@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { input } from '../testUtils'
 import { piQuestionsFromPayload, piSelectOptions } from './askUserQuestion'
 
 describe('piSelectOptions', () => {
@@ -22,6 +23,16 @@ describe('piSelectOptions', () => {
 })
 
 describe('piQuestionsFromPayload', () => {
+  it('separates display text from the native response and omits the extra custom-answer option', () => {
+    const questions = [{ question: 'Choose', options: [{ label: 'A', description: 'First', preview: 'A preview' }, { label: 'B', description: 'Second' }] }]
+    const source = input({ type: 'tool_execution_start', toolName: 'ask_user_question', args: { questions } })
+    const result = piQuestionsFromPayload({ method: 'select', id: 'dialog', title: 'Choose', options: ['1. A — First', '2. B — Second', '3. Other'] }, source)
+    expect(result[0].options).toEqual([
+      { label: 'A', description: 'First', preview: 'A preview', value: '1. A — First' },
+      { label: 'B', description: 'Second', preview: undefined, value: '2. B — Second' },
+    ])
+  })
+
   it('builds a select-method question from id/title/options', () => {
     expect(piQuestionsFromPayload({
       method: 'select',
@@ -42,12 +53,12 @@ describe('piQuestionsFromPayload', () => {
 
   it('builds an input-method question with no options and a default prompt', () => {
     expect(piQuestionsFromPayload({ method: 'input', id: 'qi' }))
-      .toEqual([{ id: 'qi', question: 'Enter a value', options: [] }])
+      .toEqual([{ id: 'qi', question: 'Enter a value', options: [], allowEmpty: true }])
   })
 
   it('preserves the title for input-method requests when provided', () => {
     expect(piQuestionsFromPayload({ method: 'input', id: 'qi', title: 'Custom prompt' }))
-      .toEqual([{ id: 'qi', question: 'Custom prompt', options: [] }])
+      .toEqual([{ id: 'qi', question: 'Custom prompt', options: [], allowEmpty: true }])
   })
 
   it('routes unknown methods through the input-shape default (single fallback)', () => {

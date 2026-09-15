@@ -89,7 +89,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.ElementsMatch(t, []string{apiToken, delegationToken}, store.MapSlice(events, func(e store.PublishedRevocationEvent) string {
 			return e.Event.SubjectID
 		}))
-		assert.ElementsMatch(t, []string{store.RevocationEventKindAPIToken, store.RevocationEventKindDelegationToken}, store.MapSlice(events, func(e store.PublishedRevocationEvent) string {
+		assert.ElementsMatch(t, []leapmuxv1.RevocationEventKind{store.RevocationEventKindAPIToken, store.RevocationEventKindDelegationToken}, store.MapSlice(events, func(e store.PublishedRevocationEvent) leapmuxv1.RevocationEventKind {
 			return e.Event.Kind
 		}))
 	})

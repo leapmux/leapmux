@@ -1,0 +1,36 @@
+{
+  "_readme": "Reasonix owns this tool and capability vocabulary, and the field names of the tool record in its own transcript. LeapMux owns the envelope key it wraps that record in. The worker and frontend use the same identifiers.",
+  "toolNames": {
+    "Task": "task",
+    "ReadOnlyTask": "read_only_task",
+    "UseCapability": "use_capability"
+  },
+  "capabilityActions": {
+    "Call": "call"
+  },
+  "capabilityPrefixes": {
+    "Tool": "tool:"
+  },
+  "modes": {
+    "Normal": "normal",
+    "Plan": "plan",
+    "Goal": "goal"
+  },
+  "configIds": {
+    "ToolApproval": "tool_approval"
+  },
+  "approvalValues": {
+    "Ask": "ask",
+    "Auto": "auto",
+    "Yolo": "yolo"
+  },
+  "toolRecord": {
+    "Envelope": "reasonix",
+    "ToolRole": "tool",
+    "RoleField": "role",
+    "ToolCallIDField": "tool_call_id",
+    "NameField": "name",
+    "ContentField": "content",
+    "RawContentField": "raw_content"
+  }
+}

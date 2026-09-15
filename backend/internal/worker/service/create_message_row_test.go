@@ -33,7 +33,7 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 	}))
 
 	params := func(id string, provider leapmuxv1.AgentProvider) db.CreateMessageParams {
-		return db.CreateMessageParams{
+		return db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            id,
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
@@ -77,7 +77,7 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-bad-mark",
 		AgentID:       "agent-1",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,

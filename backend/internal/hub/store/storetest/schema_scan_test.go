@@ -135,7 +135,7 @@ CREATE TABLE bravo (
 `
 	type col struct{ name, typeTok string }
 	var got []col
-	WalkCreateTableColumns(schema, func(name, typeTok string) {
+	WalkCreateTableColumns(schema, func(_, name, typeTok string) {
 		got = append(got, col{name, typeTok})
 	})
 	// Every body line with >= 2 tokens is yielded (constraint lines included --
@@ -160,7 +160,7 @@ func TestWalkCreateTableColumnsToleratesWhitespace(t *testing.T) {
 	for _, gap := range []string{"  ", "\t"} {
 		schema := "CREATE" + gap + "TABLE charlie (\n  touched_at DATETIME(3)\n);\n"
 		var got [][2]string
-		WalkCreateTableColumns(schema, func(name, typeTok string) {
+		WalkCreateTableColumns(schema, func(_, name, typeTok string) {
 			got = append(got, [2]string{name, typeTok})
 		})
 		assert.Equal(t, [][2]string{{"touched_at", "DATETIME(3)"}}, got, "gap=%q", gap)
@@ -172,7 +172,7 @@ func TestWalkCreateTableColumnsNoTables(t *testing.T) {
 	// the dialect scans' atColumns sanity guard is what turns "walked nothing"
 	// into a failure, so the walker itself stays silent.
 	for _, schema := range []string{"", "CREATE INDEX idx ON alpha (id);\n-- comment only\n"} {
-		WalkCreateTableColumns(schema, func(name, typeTok string) {
+		WalkCreateTableColumns(schema, func(_, name, typeTok string) {
 			t.Errorf("unexpected column yielded from %q: %s %s", schema, name, typeTok)
 		})
 	}

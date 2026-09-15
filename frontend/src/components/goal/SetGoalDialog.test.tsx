@@ -7,8 +7,8 @@ import { SetGoalDialog } from './SetGoalDialog'
 
 useTestStorage()
 
-function mount(props: { initialObjective?: string, onSubmit?: () => void, onClose?: () => void } = {}) {
-  const onSubmit = vi.fn(props.onSubmit)
+function mount(props: { initialObjective?: string, onSubmit?: () => Promise<void>, onClose?: () => void } = {}) {
+  const onSubmit = vi.fn(props.onSubmit ?? (async () => {}))
   const onClose = vi.fn(props.onClose)
   const result = render(() => (
     <PreferencesProvider>
@@ -22,14 +22,7 @@ function mount(props: { initialObjective?: string, onSubmit?: () => void, onClos
   return { ...result, onSubmit, onClose }
 }
 
-/**
- * The editor is built asynchronously, so every case waits for its document.
- *
- * `seeded` waits for the SEED to land as well. `onReady` fires after the build
- * and replaces the document then, so a case that clicks the moment `.ProseMirror`
- * exists can act on an empty editor and prove nothing about the text it meant to
- * submit.
- */
+/** Wait for the editor's send function and, when supplied, its initial document. */
 async function editorReady(seeded?: string): Promise<HTMLElement> {
   let el: HTMLElement | null = null
   await waitFor(() => {
@@ -48,9 +41,81 @@ async function editorReady(seeded?: string): Promise<HTMLElement> {
 }
 
 describe('setGoalDialog', () => {
-  // Replacing prefills the current objective, so the reader EDITS what is there
-  // instead of retyping it. It is also what makes Clear safe without a
-  // confirmation: the editor reopens holding the objective that was cleared.
+  it('blocks every close path while the goal request is pending', async () => {
+    let refuse!: (reason: Error) => void
+    const pending = new Promise<void>((_, reject) => refuse = reject)
+    const { getByTestId, getByRole, onClose } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
+    await editorReady('Keep this objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    const dialog = getByRole('dialog')
+    const openClass = dialog.className
+    const cancel = new Event('cancel', { cancelable: true })
+    dialog.dispatchEvent(cancel)
+    expect(cancel.defaultPrevented).toBe(true)
+    expect(dialog.className).toBe(openClass)
+    expect(getByRole('button', { name: 'Close' })).toBeDisabled()
+    expect(getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(onClose).not.toHaveBeenCalled()
+    refuse(new Error('The provider refused'))
+    await waitFor(() => expect(getByRole('button', { name: 'Close' })).toBeEnabled())
+  })
+
+  it('keeps the objective until asynchronous delivery succeeds', async () => {
+    let refuse!: (reason: Error) => void
+    const pending = new Promise<void>((_, reject) => refuse = reject)
+    const { getByTestId, onClose, onSubmit } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
+    const editor = await editorReady('Keep this objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(getByTestId('set-goal-submit')).toBeDisabled()
+    expect(editor.textContent).toBe('Keep this objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    refuse(new Error('The provider refused'))
+    await waitFor(() => expect(getByTestId('set-goal-submit')).toBeEnabled())
+    expect(onClose).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe('Keep this objective')
+  })
+
+  it('closes after asynchronous delivery succeeds', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => finish = resolve)
+    const { getByTestId, onClose } = mount({ initialObjective: 'Deliver this objective', onSubmit: () => pending })
+    await editorReady('Deliver this objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    expect(onClose).not.toHaveBeenCalled()
+    finish()
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps the objective and reports a rejected submission', async () => {
+    const { getByTestId, onClose } = mount({
+      initialObjective: 'Keep the failed objective',
+      onSubmit: async () => {
+        throw new Error('The provider is unavailable')
+      },
+    })
+    const editor = await editorReady('Keep the failed objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    await waitFor(() => expect(getByTestId('set-goal-refusal')).toHaveTextContent('The provider is unavailable'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe('Keep the failed objective')
+    expect(getByTestId('set-goal-submit')).toBeEnabled()
+  })
+
+  it('does not close a new dialog when an old submission finishes after disposal', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => finish = resolve)
+    const { getByTestId, onClose, unmount } = mount({ initialObjective: 'Old objective', onSubmit: () => pending })
+    await editorReady('Old objective')
+    fireEvent.click(getByTestId('set-goal-submit'))
+    unmount()
+    finish()
+    await pending
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  // Replace edits the current objective. A cleared goal no longer supplies an objective.
   it('starts from the objective it was given', async () => {
     mount({ initialObjective: 'every test passes' })
     const editor = await editorReady()
@@ -92,7 +157,7 @@ describe('setGoalDialog', () => {
 
     fireEvent.click(getByTestId('set-goal-submit'))
 
-    await waitFor(() => expect(getByTestId('set-goal-too-long').textContent)
+    await waitFor(() => expect(getByTestId('set-goal-refusal').textContent)
       .toContain('Write the condition the agent works toward.'))
     expect(onSubmit).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
@@ -110,7 +175,7 @@ describe('setGoalDialog', () => {
 
     fireEvent.click(getByTestId('set-goal-submit'))
 
-    await waitFor(() => expect(getByTestId('set-goal-too-long').textContent)
+    await waitFor(() => expect(getByTestId('set-goal-refusal').textContent)
       .toContain('Write the condition the agent works toward.'))
     expect(onSubmit).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
@@ -127,7 +192,7 @@ describe('setGoalDialog', () => {
     const { getByTestId, onSubmit } = mount({ initialObjective: over })
     await editorReady()
 
-    await waitFor(() => expect(getByTestId('set-goal-too-long').textContent).toContain('Too long by 12 bytes'))
+    await waitFor(() => expect(getByTestId('set-goal-refusal').textContent).toContain('Too long by 12 bytes'))
 
     fireEvent.click(getByTestId('set-goal-submit'))
 
@@ -140,7 +205,7 @@ describe('setGoalDialog', () => {
     const { queryByTestId } = mount({ initialObjective: 'a short goal' })
     await editorReady()
     expect(queryByTestId('set-goal-budget')).toBeNull()
-    expect(queryByTestId('set-goal-too-long')).toBeNull()
+    expect(queryByTestId('set-goal-refusal')).toBeNull()
   })
 
   it('states the remaining budget once the objective approaches the cap', async () => {
@@ -157,15 +222,7 @@ describe('setGoalDialog', () => {
     })
   })
 
-  /**
-   * No `<form>`, and the two children Dialog's stylesheet expects.
-   *
-   * A form with no `onSubmit` NAVIGATES the page on implicit submission, so the
-   * first `<input>` a later change adds to this dialog would reload the app.
-   * The shape assertion goes with it: `Dialog.css.ts` gives the scroller to
-   * `> .body > section` and the spacing to `> .body > footer`, so a wrapper
-   * reappearing would take both away silently.
-   */
+  /** Keep direct section and footer children without a form around the editor's LinkPopover form. */
   it('renders no form, and puts the section and footer where Dialog styles them', async () => {
     const { getByTestId } = mount({ initialObjective: 'ship it' })
     await editorReady('ship it')

@@ -156,21 +156,26 @@ func effortListed(eg *leapmuxv1.AvailableOptionGroup, effort string) bool {
 // session to validate (and were already passable, unvalidated, before this refactor -- so not
 // validating them is no regression).
 //
-// Permission mode, by contrast, is a FIXED CLI capability for the leapmux-managed providers
-// (Claude/Codex) -- not discovered -- so an invalid one IS authoritatively rejectable here. The check
-// is gated to those providers via ProviderManagesEffort (true for the CLI-backed camp Claude/Codex/Pi,
-// false for ACP): an ACP provider DISCOVERS its modes from the daemon (its static group is a seed), so
-// validating against that seed would false-reject a valid dynamic mode; Pi has no permission modes, so
-// its empty group accepts anything. Empty requested values (an axis the user did not supply) are
-// skipped. requested holds the user's raw, pre-default option values.
+// Permission mode, by contrast, is a FIXED capability of the providers whose permission enum
+// LeapMux states itself (Claude, Codex, and native Copilot) -- not discovered -- so an invalid
+// one IS authoritatively rejectable here. ProviderHasFixedPermissionModes selects those
+// providers. An ACP provider DISCOVERS its modes from the daemon (its static group is a seed),
+// so validating against that seed would false-reject a valid dynamic mode. Empty requested
+// values (an axis the user did not supply) are skipped. requested holds the user's raw,
+// pre-default option values.
 func ValidateLaunchOptions(provider leapmuxv1.AgentProvider, requested optionmap.Map) error {
 	pm := requested.Get(OptionIDPermissionMode)
 	if pm == "" {
 		return nil
 	}
-	// Only a CLI-managed provider (Claude/Codex/Pi) has a fixed, complete permission-mode enum to
-	// check against; an ACP provider's modes are daemon-discovered, so leave them to the session.
-	if !ProviderManagesEffort(provider) {
+	// Only a provider with a fixed, complete permission-mode enum can be checked here; an ACP
+	// provider's modes are daemon-discovered, so leave them to the session.
+	//
+	// This asks its OWN question. It read ProviderManagesEffort, which answers a different one
+	// -- whether the effort tiers depend on the model -- and the two agreed only by coincidence.
+	// A provider that gains a model-dependent effort catalog must not thereby gain the
+	// authority to reject a permission mode.
+	if !ProviderHasFixedPermissionModes(provider) {
 		return nil
 	}
 	if !valueListedInGroup(AvailableOptionGroupsForProvider(provider), OptionIDPermissionMode, pm) {

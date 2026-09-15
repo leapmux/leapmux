@@ -1,43 +1,7 @@
+import type { WirePermissionOption } from './permissionOptionLabels'
 import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
-
-export interface WirePermissionOption {
-  optionId: string
-  kind: string
-  /** Absent on wire payloads that omit it; every reader must tolerate `undefined`. */
-  name?: string
-}
-
-const KIND_ALLOW_ONCE = 'allow_once'
-const KIND_ALLOW_ALWAYS = 'allow_always'
-const KIND_REJECT_ONCE = 'reject_once'
-const KIND_REJECT_ALWAYS = 'reject_always'
-
-const CANONICAL_KINDS = [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
-
-export function isRejectPermissionKind(kind: string): boolean {
-  return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
-}
-
-/** The option family the request's positive action sends: only these apply a permission preset. */
-export function isAllowPermissionKind(kind: string): boolean {
-  return kind === KIND_ALLOW_ONCE || kind === KIND_ALLOW_ALWAYS
-}
-
-/** Goose sets every option's name to its kind (`name === optionId === kind`), which is no label at all. */
-const KIND_FALLBACK_LABELS: Record<string, string> = {
-  [KIND_ALLOW_ONCE]: 'Allow once',
-  [KIND_ALLOW_ALWAYS]: 'Allow always',
-  [KIND_REJECT_ONCE]: 'Reject',
-  [KIND_REJECT_ALWAYS]: 'Reject always',
-}
-
-/** The label an extra option's button shows: the agent's own name, unless the name is just the id. */
-export function permissionOptionLabel(option: WirePermissionOption): string {
-  if (option.name !== undefined && option.name !== option.optionId)
-    return option.name
-  return KIND_FALLBACK_LABELS[option.kind] ?? option.name ?? option.optionId
-}
+import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE, permissionOptionLabel } from './permissionOptionLabels'
 
 /**
  * How a permission request's options lay out as one decision row.

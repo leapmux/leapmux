@@ -61,7 +61,44 @@ sql:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "Sidebar"
           # Workspace tab enum
-          - column: "workspace_tabs.tab_type"
+          # sqlc SILENTLY ignores an override whose table does not exist, so this
+          # pair must specify the columns the schema actually declares. One entry
+          # here specified `workspace_tabs`, a table the store removed, and it did
+          # nothing at all: both real columns stayed int64, and workspace_tab_index.go
+          # went on hand-casting them in both directions.
+          - column: "workspace_tab_owned.tab_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "TabType"
+          - column: "workspace_tab_rendered.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"
+          # The enum columns that store a proto ordinal. Retyping them here
+          # deletes the int64() cast every call site wrote in both directions,
+          # and it makes a mixed-up pair a COMPILE error rather than a wrong
+          # ordinal a CHECK still admits.
+          - column: "revocation_events.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "RevocationEventKind"
+          - column: "oauth_clients.registration_source"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AppRegistrationSource"
+          - column: "oauth_states.purpose"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "OAuthStatePurpose"
+          - column: "webauthn_sessions.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "WebAuthnSessionKind"
+          - column: "oauth_providers.provider_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "IdentityProviderType"
+          - column: "lifecycle_outbox.op_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "WorkspaceLifecycleOp"

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -203,7 +204,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 	cutoff := sqltime.SQLiteNullTimeOf(cutoffTime)
 
 	seedAgent := func(id string, closedAt time.Time) {
-		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			ID: id, WorkingDir: "/tmp", HomeDir: "/home", Title: id, Options: "{}",
 		}))
 		_, err := sqlDB.ExecContext(ctx, "UPDATE agents SET closed_at = ? WHERE id = ?", timefmt.Format(closedAt), id)
@@ -281,7 +282,7 @@ func TestCloseAgentAndCloseTerminalAreIdempotent(t *testing.T) {
 	ctx := context.Background()
 	old := timefmt.Format(time.Now().Add(-30 * 24 * time.Hour))
 
-	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{ID: "agent-1", WorkingDir: "/tmp"}))
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "agent-1", WorkingDir: "/tmp"}))
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
 		ID: "term-1", Cols: 80, Rows: 24, Screen: []byte("screen"),
 	}))
@@ -451,10 +452,10 @@ func TestCleanup_DeleteClosedAgentsReclaimsChildAlongsideRoot(t *testing.T) {
 	ctx := context.Background()
 
 	// Root + child, linked via parent_agent_id.
-	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "root-closed", WorkingDir: "/tmp", HomeDir: "/home",
 	}))
-	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{
+	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:            "child-closed",
 		ParentAgentID: sql.NullString{String: "root-closed", Valid: true},
 		SpawnSpanID:   "span-1",
@@ -494,10 +495,10 @@ func TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained(t *testing.T) {
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 
-	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "root-recent", WorkingDir: "/tmp", HomeDir: "/home",
 	}))
-	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{
+	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:            "child-recent",
 		ParentAgentID: sql.NullString{String: "root-recent", Valid: true},
 		SpawnSpanID:   "span-2",

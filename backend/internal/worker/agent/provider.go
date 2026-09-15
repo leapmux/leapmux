@@ -43,19 +43,6 @@ const (
 	PlanModeControlPrompt
 )
 
-// PlanApprovalOptions is the provider-specific option settlement the service applies when a
-// plan-mode-prompt control request is APPROVED. Keeping the option ids/values here (rather than
-// hardcoded in the shared service layer) means a provider owns its own plan-approval wire values.
-//   - Base is applied unconditionally on approval (e.g. Codex settling its collaboration axis).
-//   - Bypass is applied only when the approval also switches permission mode (e.g. Codex granting
-//     full network access + no sandbox for the approved mode).
-//
-// Both maps are nil for a provider with no plan-approval options.
-type PlanApprovalOptions struct {
-	Base   map[string]string
-	Bypass map[string]string
-}
-
 // Provider bundles the per-provider wire-format hooks the service
 // layer invokes without holding a running-agent reference. Plugins are
 // stateless and shared across goroutines — a single instance per provider.
@@ -64,6 +51,8 @@ type PlanApprovalOptions struct {
 // provider has its own JSONL/JSON-RPC frame shape, and the service layer
 // dispatches via this interface instead of OR-ing all formats together.
 type Provider interface {
+	// ResolveProviderData combines native supplemental fields without changing either source.
+	ResolveProviderData(MessageContent) []byte
 	// Classify categorizes a persisted notification frame for consolidation
 	// in consolidateNotificationThread. Frames the plugin doesn't recognize
 	// return NotificationClassification{} (Consolidatable() == false).
@@ -124,10 +113,9 @@ type Provider interface {
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string
-	// PlanApprovalOptions declares the option changes to settle when a plan-mode-prompt
-	// control request is approved (see PlanApprovalOptions). The service applies them; the
-	// provider owns the ids/values. Empty for providers with no plan-approval options.
-	PlanApprovalOptions() PlanApprovalOptions
+	// PlanApprovalOptions resolves the complete settings for an approved plan prompt.
+	// An empty permission mode keeps the current mode. Bypass requires the preset's exact mode.
+	PlanApprovalOptions(permissionMode string) map[string]string
 	// SyntheticInterruptNotice returns the display text of the synthetic user row the service
 	// persists when the frontend forwards this provider's interrupt frame as a raw message
 	// (SendAgentRawMessage). Non-empty only for providers that consume the interrupt SILENTLY:
@@ -259,6 +247,10 @@ type Provider interface {
 
 type noopProvider struct{}
 
+func (noopProvider) ResolveProviderData(content MessageContent) []byte {
+	return content.Original
+}
+
 func (noopProvider) Classify(json.RawMessage) NotificationClassification {
 	return NotificationClassification{}
 }
@@ -314,7 +306,7 @@ func (noopProvider) PlanModePermissionMode(PlanModeControlKind) string { return 
 
 // PlanApprovalOptions defaults to none: a provider with no plan-mode-prompt flow settles no
 // options on approval. The ACP-based providers inherit this via their noopProvider embedding.
-func (noopProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+func (noopProvider) PlanApprovalOptions(string) map[string]string { return nil }
 
 // SyntheticInterruptNotice defaults to "": a provider whose interrupt surfaces in its own
 // transcript (or that is interrupted via the InterruptAgent RPC rather than a raw frame) needs no
@@ -541,14 +533,21 @@ func (codexProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 	return ""
 }
 
-// PlanApprovalOptions settles Codex on plan approval: Base resets the collaboration axis to its
-// default mode; Bypass (applied only on a permission-mode switch) grants full network access and
-// removes the sandbox for the approved mode.
-func (codexProvider) PlanApprovalOptions() PlanApprovalOptions {
-	return PlanApprovalOptions{
-		Base:   map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault},
-		Bypass: contracts.CodexPlanBypassOptions(),
+// PlanApprovalOptions exits plan mode and applies the requested permission choice.
+// Only the bypass preset's permission mode enables its network and sandbox settings.
+func (codexProvider) PlanApprovalOptions(permissionMode string) map[string]string {
+	options := map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault}
+	if permissionMode == "" {
+		return options
 	}
+	options[OptionIDPermissionMode] = permissionMode
+	bypass := contracts.CodexBypassOptions()
+	if permissionMode == bypass[OptionIDPermissionMode] {
+		for key, value := range bypass {
+			options[key] = value
+		}
+	}
+	return options
 }
 
 // SyntheticInterruptNotice: Codex resolves turn/interrupt internally and emits only a
@@ -666,7 +665,7 @@ func (claudeProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 
 // Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
 // plan-approval option settlement runs for it.
-func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+func (claudeProvider) PlanApprovalOptions(string) map[string]string { return nil }
 
 // EndsSubagentTranscript recognizes Claude's final `{"type":"result",...}`.
 // With --forward-subagent-text a subagent's own result is forwarded into the
@@ -847,7 +846,7 @@ func (piProvider) IsSelfDisplayingControlTool(string) bool { return false }
 func (piProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
 
 // Pi has no plan-mode-prompt flow, so it settles no options on approval.
-func (piProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+func (piProvider) PlanApprovalOptions(string) map[string]string { return nil }
 
 // SyntheticInterruptNotice: Pi's abort surfaces in its own transcript, so no synthetic notice is
 // persisted for a forwarded interrupt frame.
@@ -858,37 +857,22 @@ func (piProvider) PermissionModeFromRawInput(string) (string, bool) { return "",
 
 // acpProvider recognizes ACP's `session/cancel` notification (and
 // the bare `cancel` form retained for legacy producers). Shared across all
-// ACP-based providers (Cursor, Copilot, Kilo, OpenCode, Goose).
+// ACP-based providers (Cursor, Kilo, OpenCode, Goose, Reasonix).
 // ACP doesn't consolidate notifications today, so Classify/Merge inherit
 // the no-op embedding.
 type acpProvider struct {
 	noopProvider
-	provider leapmuxv1.AgentProvider
-	// questionRequestContext prunes an OpenCode-protocol `question.asked` request to the minimal
-	// context persisted alongside the native answer (the question headers the frontend labels its
-	// values with). Non-nil ONLY for the ACP providers that speak that question protocol (OpenCode,
-	// Kilo); nil for the rest, whose control answers fall through to the ACP permission context.
-	// Set at registration (init) so the "who uses the OpenCode question shape" membership lives at
-	// one site (mirroring the frontend's registerOpenCodeProtocolProvider) rather than a
-	// provider-enum switch in ResolveControlResponse that would drift.
-	questionRequestContext func(requestPayload []byte) json.RawMessage
 	// validateAttachment enforces a restrictive attachment policy for the ACP providers that need
 	// one (Reasonix is text-only). Non-nil ONLY for those providers; nil accepts everything (the
-	// default for Cursor, Copilot, Kilo, OpenCode, Goose). Set at registration (init) so the
+	// default for Cursor, Kilo, OpenCode, Goose). Set at registration (init) so the
 	// per-provider policy lives at one site rather than a provider-enum switch.
 	validateAttachment func(classifiedAttachment) error
 	// listStoredSessions reads this provider's own session store. Non-nil for
-	// every ACP provider, because each of the six keeps a store this worker can
+	// every ACP provider, because each of the five keeps a store this worker can
 	// read -- but each keeps it in a different place and shape, so the function
 	// lives in that provider's own file and is wired here at registration, the
 	// way validateAttachment already is. Nil lists nothing.
 	listStoredSessions func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
-	// resolveOptionConflicts settles this provider's own mutually exclusive option
-	// values. Non-nil ONLY for Copilot, whose Assisted Approval and Allow All axes
-	// exclude each other; nil merges with no conflict rule. The rule reads that
-	// provider's own vocabulary, so the function lives in that provider's file and is
-	// wired here at registration, the way listStoredSessions above already is.
-	resolveOptionConflicts func(current, requested optionmap.Map) optionmap.Map
 }
 
 // ListStoredSessions dispatches to the reader the registration supplied. The
@@ -911,22 +895,15 @@ func (acpProvider) IsInterrupt(content string) bool {
 	return msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
-func (p acpProvider) ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map {
-	if p.resolveOptionConflicts != nil {
-		return p.resolveOptionConflicts(current, requested)
-	}
-	return p.noopProvider.ResolveOptionConflicts(current, requested)
-}
-
 func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, listStoredSessions: cursorStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, listStoredSessions: copilotStoredSessions, resolveOptionConflicts: resolveCopilotOptionConflicts})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, listStoredSessions: gooseStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, cursorProvider{acpProvider{listStoredSessions: cursorStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, copilotProvider{})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, openCodeFamilyProvider{acpProvider{listStoredSessions: kiloStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, openCodeFamilyProvider{acpProvider{listStoredSessions: opencodeStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{listStoredSessions: gooseStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

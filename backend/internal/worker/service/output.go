@@ -206,7 +206,14 @@ type OutputHandler struct {
 	// spawns, so Shutdown joins them. Each one reads the registry and
 	// broadcasts, and neither may run against a closed database or a stream
 	// that already flushed. The zero value works, so nothing constructs it.
-	activityRefreshes sync.WaitGroup
+	// refreshLifecycleMu serializes the shuttingDown latch against every Add on
+	// activityRefreshes. sync.WaitGroup states that an Add which starts while the
+	// counter is zero must happen BEFORE a Wait, and a bare latch test cannot
+	// promise that: a caller that read the latch false could be descheduled past
+	// Shutdown's whole drain and land its Add inside WaitActivityRefreshes's Wait,
+	// which is a WaitGroup misuse and panics. See beginActivityRefresh.
+	refreshLifecycleMu sync.Mutex
+	activityRefreshes  sync.WaitGroup
 
 	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
 	// time.AfterFunc; a test replaces it to fire the window on demand, because a
@@ -265,6 +272,12 @@ type OutputHandler struct {
 	// field on EVERY status it receives -- a status built without it turns the
 	// tab's Steer action off for a provider that does support steering.
 	supportsSteering func(agentID string) bool
+
+	// supportsPreemption is steering's counterpart for the interrupt-only
+	// providers: whether the queue head may be sent by cancelling the active
+	// turn first. Same wiring rule and same every-status contract as
+	// supportsSteering above.
+	supportsPreemption func(agentID string) bool
 
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
@@ -359,6 +372,12 @@ func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 // status change carries. Call before any agent output is processed.
 func (h *OutputHandler) SetSupportsSteeringFunc(fn func(agentID string) bool) {
 	h.supportsSteering = fn
+}
+
+// SetSupportsPreemptionFunc wires the preemption-capability answer that every
+// status change carries. Call before any agent output is processed.
+func (h *OutputHandler) SetSupportsPreemptionFunc(fn func(agentID string) bool) {
+	h.supportsPreemption = fn
 }
 
 // SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
@@ -475,43 +494,14 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	}
 }
 
-// claimControlResponseAnswer atomically records that this call starts to persist
-// (agentID, requestID, claimToken)'s answer, and reports whether THIS call is the first to
-// claim it. A later duplicate answer for the
-// same request INSTANCE -- an RPC retry, or a second window answering before it received the cancel
-// broadcast, BOTH echoing the same claim_token -- gets false, so the caller skips persisting a second
-// answer row and its scroll-rail dot. Handlers run concurrently (DispatchAsync, no per-agent lock), so
-// the claim -- a single INSERT serialized by the (agent_id, request_id, claim_token) primary key -- is
-// also what decides who deletes the pending request and applies the once-only plan-mode effects.
-//
-// claimToken (minted per PersistControlRequest, echoed by the frontend from the AgentControlRequest it
-// answers) is what makes the dedup INSTANCE-scoped: a REUSED request_id -- a Codex/ACP JSON-RPC counter
-// that reset across a plan-exec restart, or a Claude follow-up -- carries a FRESH token per instance, so
-// the new instance's genuine answer claims a distinct key while a stale duplicate of the PRIOR instance
-// (old token) still loses. No release-on-reissue is needed. An empty claimToken (a pre-token answer, or a
-// frontend lookup miss) degrades to request_id-only dedup for that answer.
-//
-// The claim is a DURABLE row (control_response_answers) cleaned up in bulk with its agent via ON DELETE
-// CASCADE. Because nothing else clears it, it survives BOTH a subprocess restart AND a worker-PROCESS
-// restart, so a duplicate straddling either is still deduped instead of re-persisting (#258) -- no
-// in-memory tracker to lose. On a query error it fails OPEN (returns true): dropping the user's answer
-// on a transient DB error is the worse outcome. The fail-open cost is NOT merely a duplicate row -- a
-// fail-open winner runs the FULL winner path (persist AND re-forward / re-restart). It bites when a
-// genuine DUPLICATE's claim query errors (the first answer already claimed cleanly, so only the
-// duplicate's INSERT need fail): fail-open then treats that duplicate as a fresh winner. That is rare by
-// construction -- SQLite writes are serialized under a 60s busy_timeout (see sqlitedb.Open), so a claim
-// error means a genuine DB failure, not routine write contention -- and the lesser evil accepts it.
-func (h *OutputHandler) claimControlResponseAnswer(agentID, requestID, claimToken string) bool {
-	rows, err := h.queries.ClaimControlResponseAnswer(bgCtx(), db.ClaimControlResponseAnswerParams{
-		AgentID:    agentID,
-		RequestID:  requestID,
-		ClaimToken: claimToken,
-	})
+// claimControlResponseAnswer reserves one request instance before delivery.
+// A database failure must prevent delivery because the worker cannot establish ownership.
+func (h *OutputHandler) claimControlResponseAnswer(params db.ClaimControlResponseAnswerParams) (bool, error) {
+	rows, err := h.queries.ClaimControlResponseAnswer(bgCtx(), params)
 	if err != nil {
-		slog.Warn("claim control response answer", "agent_id", agentID, "request_id", requestID, "error", err)
-		return true
+		return false, err
 	}
-	return rows > 0
+	return rows > 0, nil
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
@@ -560,14 +550,20 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 // broadcastControlCancel fans out a single AgentControlCancelRequest to
 // any registered watchers. Shared by ClearAgentRuntimeState and the
 // per-agent sink so the envelope shape lives in one place.
-func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
-	h.noteControlRequestsRemoved(agentID, "", requestID)
+func (h *OutputHandler) broadcastControlCancel(agentID, requestID, claimToken string) {
+	h.noteControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
+	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+	if err != nil {
+		slog.Error("could not read response state after control cancellation", "agent_id", agentID, "request_id", requestID, "error", err)
+	}
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
 			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
-				AgentId:   agentID,
-				RequestId: requestID,
+				AgentId:       agentID,
+				RequestId:     requestID,
+				ClaimToken:    claimToken,
+				ResponseState: state,
 			},
 		},
 	})
@@ -589,12 +585,12 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
 // restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
-	deletedIDs, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
+	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
 	}
-	for _, requestID := range deletedIDs {
-		h.broadcastControlCancel(agentID, requestID)
+	for _, request := range deleted {
+		h.broadcastControlCancel(agentID, request.RequestID, request.ClaimToken)
 	}
 	// Clears every prompt, not only the deleted ids: this runs when the
 	// subprocess owning them went away, so nothing it was blocked on survives.
@@ -666,6 +662,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		plugin:        agent.ProviderFor(agentProvider),
 		tracker:       h.rootTracker(agentID),
 	}
+	s.restoreMessageSession()
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	})
@@ -782,13 +779,15 @@ type agentOutputSink struct {
 	// catalog, and blind-write, last-writer-wins persisting an OLDER catalog over a newer one.
 	// Holding catalogMu across the row read + status build (which captures the freshest live
 	// catalog) + write makes the last writer always persist the most recent live state.
-	catalogMu sync.Mutex
+	catalogMu        sync.Mutex
+	messageSessionMu sync.RWMutex
+	messageSessionID string
 }
 
 // --- Provider-service facets ---
 
-func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
+func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker)
 }
 
 // PersistTurnEnd persists the universal turn-end divider envelope and
@@ -798,7 +797,8 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 // at the call site. Runs BroadcastGitStatus on a goroutine so the
 // agent's stdout-read loop is not blocked by the git subprocesses plus
 // the DB lookup.
-func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) error {
+func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	content = s.scopeMessage(content)
 	// Exactly ONE divider closes a subagent transcript, in EITHER arrival order.
 	//
 	// The two events are independent -- Claude's task_notification can reach the
@@ -823,14 +823,15 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	// Returning here would drop both, nondeterministically, on whichever arrival
 	// order won.
 	endsSubagent := s.agentID != s.rootAgentID &&
-		agent.ProviderFor(s.agentProvider).EndsSubagentTranscript(content)
+		agent.ProviderFor(s.agentProvider).EndsSubagentTranscript(content.Original)
 	duplicateDivider := endsSubagent && !s.h.claimSubagentTranscriptClose(s.h.bgTaskCtx(), s.agentID)
 	if !duplicateDivider {
 		if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
 			return err
 		}
 	}
-	count, ok := agent.ProviderFor(s.agentProvider).TurnEndToolUses(content)
+	provider := agent.ProviderFor(s.agentProvider)
+	count, ok := provider.TurnEndToolUses(agent.ResolveMessageContent(provider, content))
 	// Hand the count to the activity latch first. The latch spends it on the
 	// busy->idle EDGE, not here, because this turn can end and still leave a
 	// subagent running -- only the edge knows which turn end actually settled
@@ -929,57 +930,58 @@ func (s *agentOutputSink) ReportProgress(update agent.ProgressUpdate) {
 	s.progress.report(update)
 }
 
-func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte) string {
-	// Mint a fresh per-INSTANCE claim token. A reused request_id (a Codex/ACP counter that reset
-	// across a plan-exec restart, or a Claude follow-up) gets a distinct token here, so the answer's
-	// idempotency claim is scoped to THIS instance -- the genuine answer to the new instance claims a
-	// fresh key while a stale duplicate of the prior instance (old token) still loses. The token is
-	// stored on the row so the replay to a reconnecting window (ListControlRequestsByAgentID) carries
-	// it, AND returned to the caller so the paired live BroadcastControlRequest carries the SAME token
-	// the frontend echoes back -- without a second GetControlRequest to read back what we just wrote
-	// (and without the readback-failure window that would broadcast an empty token).
-	claimToken := id.Generate()
-	if err := s.h.queries.CreateControlRequest(bgCtx(), db.CreateControlRequestParams{
-		AgentID:    s.agentID,
-		RequestID:  requestID,
-		Payload:    payload,
-		ClaimToken: claimToken,
-	}); err != nil {
-		slog.Error("persist control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
+func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) error {
+	if request.AgentSessionID == "" {
+		request.AgentSessionID = s.currentMessageSessionID()
 	}
-	s.h.noteControlRequestAdded(s.agentID, s.rootAgentID, requestID)
-	return claimToken
-}
-
-func (s *agentOutputSink) DeleteControlRequest(requestID string) {
-	s.h.deleteControlRequest(s.agentID, s.rootAgentID, requestID)
-}
-
-func (h *OutputHandler) deleteControlRequest(agentID, rootAgentID, requestID string) {
-	_ = h.queries.DeleteControlRequest(bgCtx(), db.DeleteControlRequestParams{
-		AgentID:   agentID,
-		RequestID: requestID,
+	requestID, payload := request.RequestID, request.Payload
+	if requestID == "" {
+		return fmt.Errorf("control request ID is empty")
+	}
+	if request.SourceSeq < 0 {
+		return fmt.Errorf("control source sequence is negative")
+	}
+	// The database keeps the current token for an identical pending request.
+	// RETURNING supplies that token without a separate read that could race another write.
+	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
+		AgentID:        s.agentID,
+		AgentSessionID: request.AgentSessionID,
+		RequestID:      requestID,
+		Payload:        payload,
+		ClaimToken:     id.Generate(),
+		SourceSeq:      request.SourceSeq,
 	})
-	h.noteControlRequestsRemoved(agentID, rootAgentID, requestID)
-}
-
-func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {
-	// claimToken is the per-instance token PersistControlRequest just minted and returned, threaded
-	// straight through by the paired caller so the frontend can echo it in its answer (see
-	// AgentControlRequest.claim_token) -- no readback of the row we just wrote.
+	if err != nil {
+		return fmt.Errorf("store control request: %w", err)
+	}
+	s.h.noteControlRequestAdded(s.agentID, s.rootAgentID, requestID, stored.ClaimToken)
+	request.SourceSeq = stored.SourceSeq
+	request.AgentSessionID = stored.AgentSessionID
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
-			ControlRequest: buildAgentControlRequest(s.agentID, s.agentProvider, requestID, payload, claimToken),
+			ControlRequest: buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken),
 		},
 	})
+	return nil
 }
 
-func (s *agentOutputSink) BroadcastControlCancel(requestID string) {
-	s.h.broadcastControlCancel(s.agentID, requestID)
+func (s *agentOutputSink) CancelControlRequest(requestID string) {
+	request, err := s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	if err != nil {
+		slog.Error("cancel control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
+		return
+	}
+	s.h.broadcastControlCancel(s.agentID, request.RequestID, request.ClaimToken)
 }
 
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {
+	s.messageSessionMu.Lock()
+	s.messageSessionID = sessionID
+	s.messageSessionMu.Unlock()
 	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		slog.Error("failed to fetch agent for session ID comparison",
@@ -1016,15 +1018,20 @@ func (s *agentOutputSink) buildStatusChange(
 	if s.h.supportsSteering != nil {
 		supportsSteering = s.h.supportsSteering(s.agentID)
 	}
+	supportsPreemption := false
+	if s.h.supportsPreemption != nil {
+		supportsPreemption = s.h.supportsPreemption(s.agentID)
+	}
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:          s.agentID,
-		Status:           status,
-		AgentSessionId:   sessionID,
-		WorkerOnline:     true,
-		GitStatus:        gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:    s.agentProvider,
-		OptionGroups:     optionGroupsView(s.h.agents, &dbAgent, nil),
-		SupportsSteering: supportsSteering,
+		AgentId:            s.agentID,
+		Status:             status,
+		AgentSessionId:     sessionID,
+		WorkerOnline:       true,
+		GitStatus:          gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentProvider:      s.agentProvider,
+		OptionGroups:       optionGroupsView(s.h.agents, &dbAgent, nil),
+		SupportsSteering:   supportsSteering,
+		SupportsPreemption: supportsPreemption,
 	}
 }
 
@@ -1705,6 +1712,15 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
 	}
+	// An EMPTY supplement carries no compression, and NONE is what an empty
+	// blob is. The column says the same thing with DEFAULT 1, but the generated
+	// INSERT binds every column, so no caller ever reaches that default. A
+	// non-empty supplement keeps whatever it states, and the column's CHECK
+	// refuses an UNSPECIFIED one -- a supplement no reader can decompress.
+	if params.SupplementalContentCompression == leapmuxv1.ContentCompression_CONTENT_COMPRESSION_UNSPECIFIED &&
+		len(params.SupplementalContent) == 0 {
+		params.SupplementalContentCompression = leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+	}
 	switch params.MarkType {
 	case leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED,
 		leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
@@ -1723,9 +1739,20 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	return q.CreateMessage(ctx, params)
 }
 
-// persistAndBroadcast persists a message and broadcasts it to watchers.
-// tracker may be nil, in which case it is resolved from the agentID.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte, span agent.SpanInfo, tracker *SpanTracker) error {
+// messageWrite retains prepared database and event fields until the write commits.
+type messageWrite struct {
+	params  db.CreateMessageParams
+	message *leapmuxv1.AgentChatMessage
+	content agent.MessageContent
+	span    agent.SpanInfo
+}
+
+// prepareMessage keeps one field mapping for ordinary writes and transactional writes.
+func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) messageWrite {
+	if content.AgentSessionID == "" {
+		content.AgentSessionID = h.messageSessionID(agentID)
+	}
+	contentJSON := content.Original
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
@@ -1752,62 +1779,82 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	}
 
 	msgID := id.Generate()
-	assembledKind, completion := agent.MessageMetadata(contentJSON)
+	assembledKind, completion := agent.MessageMetadata(content)
 	compressed, compressionType := msgcodec.Compress(contentJSON)
+	supplementalJSON, supplementalErr := agent.EncodeMessageSupplement(content)
+	if supplementalErr != nil {
+		// Invalid supplemental JSON must not prevent persistence of the original output.
+		slog.Warn("encode message supplement", "agent_id", agentID, "error", supplementalErr)
+	}
+	supplemental, supplementalCompression := msgcodec.Compress(supplementalJSON)
 	now := nowMillis()
 
-	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
-		ID:                 msgID,
-		AgentID:            agentID,
-		Source:             source,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Depth:              int64(depth),
-		SpanID:             span.SpanID,
-		ParentSpanID:       span.ParentSpanID,
-		SpanType:           span.SpanType,
-		SpanColor:          int64(spanColor),
-		SpanLines:          spanLines,
-		AgentProvider:      agentProvider,
-		MarkType:           span.MarkType,
-		AssembledKind:      int64(assembledKind),
-		Completion:         int64(completion),
-		CreatedAt:          sqltime.NewSQLiteTime(now),
-	})
+	params := db.CreateMessageParams{
+		ID:                             msgID,
+		AgentID:                        agentID,
+		AgentSessionID:                 content.AgentSessionID,
+		Source:                         source,
+		Content:                        compressed,
+		ContentCompression:             compressionType,
+		SupplementalContent:            supplemental,
+		SupplementalContentCompression: supplementalCompression,
+		Depth:                          int64(depth),
+		SpanID:                         span.SpanID,
+		ParentSpanID:                   span.ParentSpanID,
+		SpanType:                       span.SpanType,
+		SpanColor:                      int64(spanColor),
+		SpanLines:                      spanLines,
+		AgentProvider:                  agentProvider,
+		MarkType:                       span.MarkType,
+		AssembledKind:                  int64(assembledKind),
+		Completion:                     int64(completion),
+		CreatedAt:                      sqltime.NewSQLiteTime(now),
+	}
+	message := &leapmuxv1.AgentChatMessage{
+		Id:                             msgID,
+		Source:                         source,
+		Content:                        compressed,
+		ContentCompression:             compressionType,
+		SupplementalContent:            supplemental,
+		SupplementalContentCompression: supplementalCompression,
+		AgentProvider:                  agentProvider,
+		CreatedAt:                      timefmt.Format(now),
+		AgentSessionId:                 content.AgentSessionID,
+		Depth:                          depth,
+		SpanId:                         span.SpanID,
+		ParentSpanId:                   span.ParentSpanID,
+		SpanType:                       span.SpanType,
+		SpanColor:                      spanColor,
+		SpanLines:                      spanLines,
+		MarkType:                       span.MarkType,
+		AssembledKind:                  assembledKind,
+		Completion:                     completion,
+	}
+	return messageWrite{params: params, message: message, content: content, span: span}
+}
+
+// persistAndBroadcast stores the message before it broadcasts the event.
+// A nil tracker uses the agent's current span snapshot.
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
+	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
+	seq, err := createMessageRow(bgCtx(), h.queries, write.params)
 	if err != nil {
 		return err
 	}
-
-	// Any persisted non-notification message breaks notification adjacency.
-	h.clearNotifThread(agentID)
-
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 msgID,
-		Source:             source,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Seq:                seq,
-		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(now),
-		Depth:              depth,
-		SpanId:             span.SpanID,
-		ParentSpanId:       span.ParentSpanID,
-		SpanType:           span.SpanType,
-		SpanColor:          spanColor,
-		SpanLines:          spanLines,
-		MarkType:           span.MarkType,
-		AssembledKind:      assembledKind,
-		Completion:         completion,
-	})
-
-	// Update the provider-neutral to-do list off the just-persisted
-	// message. Failures are logged but do not propagate — the chat
-	// transcript is the source of truth, and the next event can
-	// reconcile any transient inconsistency.
-	if err := h.applyTodoEventForMessage(agentID, agentProvider, span, contentJSON); err != nil {
-		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", err)
-	}
+	h.publishMessageWrite(write, seq)
 	return nil
+}
+
+// publishMessageWrite runs only after the database commits the message.
+func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
+	agentID, provider := write.params.AgentID, write.params.AgentProvider
+	h.clearNotifThread(agentID)
+	write.message.Seq = seq
+	h.broadcastMessage(agentID, write.message)
+	// The committed transcript permits later reconciliation if the to-do update fails.
+	if err := h.applyTodoEventForMessage(agentID, provider, write.span, agent.ResolveMessageContent(agent.ProviderFor(provider), write.content)); err != nil {
+		slog.Warn("apply todo event", "agent_id", agentID, "span_type", write.span.SpanType, "error", err)
+	}
 }
 
 // applyTodoEventForMessage extracts a to-do event from the just-persisted
@@ -1863,29 +1910,17 @@ func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmu
 // the less detailed row instead of none at all. The nil is memoized too, so a miss
 // costs one query rather than one per parser.
 func (h *OutputHandler) pairedToolUseLookup(agentID string, span agent.SpanInfo) func() []byte {
+	sessionID := h.messageSessionID(agentID)
 	return sync.OnceValue(func() []byte {
-		if span.SpanID == "" {
-			return nil
-		}
-		row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
-			AgentID: agentID,
-			SpanID:  span.SpanID,
-			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		})
+		message, err := h.readToolRequest(agentID, sessionID, span.SpanID)
 		if err != nil {
-			// A rolled-up tool_use, or one this result raced, is the common case and
-			// says nothing worth logging. A real read failure does.
-			if !errors.Is(err, sql.ErrNoRows) {
-				slog.Warn("lookup paired tool_use", "agent_id", agentID, "span_id", span.SpanID, "error", err)
-			}
+			slog.Warn("read paired tool request", "agent_id", agentID, "span_id", span.SpanID, "error", err)
 			return nil
 		}
-		decompressed, err := msgcodec.Decompress(row.Content, row.ContentCompression)
-		if err != nil {
-			slog.Warn("decompress paired tool_use", "agent_id", agentID, "span_id", span.SpanID, "error", err)
+		if message == nil {
 			return nil
 		}
-		return decompressed
+		return agent.ResolveMessageContent(agent.ProviderFor(message.Provider), message.Content)
 	})
 }
 
@@ -1950,7 +1985,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			Content:     merged.Content,
 			ActiveForm:  merged.ActiveForm,
 			Description: merged.Description,
-			Status:      todoevents.StatusWire(merged.Status),
+			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
 		}); err != nil {
 			return nil, false, err
 		}
@@ -1980,7 +2015,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			Content:     merged.Content,
 			ActiveForm:  merged.ActiveForm,
 			Description: merged.Description,
-			Status:      todoevents.StatusWire(merged.Status),
+			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
 			AgentID:     agentID,
 			RowKey:      cache.Rows[idx].rowKey,
 		}); err != nil {
@@ -2005,7 +2040,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			return nil, false, nil
 		}
 		if err := h.queries.UpdateAgentTodoStatus(ctx, db.UpdateAgentTodoStatusParams{
-			Status:  todoevents.StatusWire(todoevents.StatusDeleted),
+			Status:  leapmuxv1.TodoStatus(todoevents.StatusDeleted),
 			AgentID: agentID,
 			RowKey:  cache.Rows[idx].rowKey,
 		}); err != nil {
@@ -2028,13 +2063,13 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
 	// The generic returns the row it deleted, so the log reports that row rather
 	// than one a second scan here picked out.
-	evicted, evictedHappened, err := cache.evictOldestFinishedInBucketLocked(ctx, agentID, "")
+	evicted, evictedHappened, err := cache.evictOldestFinishedInBucketLocked(ctx, agentID, 0)
 	if err != nil {
 		return false, err
 	}
 	if evictedHappened {
 		slog.Info("agent_todos cap reached; evicted oldest completed/deleted task",
-			"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", todoevents.StatusWire(evicted.item.Status), "cap", todoevents.MaxTodos)
+			"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", evicted.item.Status, "cap", todoevents.MaxTodos)
 	}
 	return evictedHappened, nil
 }
@@ -2097,7 +2132,7 @@ func (h *OutputHandler) snapshotWriteNonTx(ctx context.Context, q *db.Queries, a
 			Content:     it.Content,
 			ActiveForm:  it.ActiveForm,
 			Description: it.Description,
-			Status:      todoevents.StatusWire(it.Status),
+			Status:      leapmuxv1.TodoStatus(it.Status.OrPending()),
 		}); err != nil {
 			return fmt.Errorf("insert agent_todo: %w", err)
 		}
@@ -2122,7 +2157,7 @@ func itemFromRow(r db.AgentTodo) todoevents.Item {
 	return todoevents.Item{
 		ID:          r.TaskID,
 		Content:     r.Content,
-		Status:      todoevents.StatusFromWire(r.Status),
+		Status:      todoevents.Status(r.Status),
 		ActiveForm:  r.ActiveForm,
 		Description: r.Description,
 	}
@@ -2145,8 +2180,8 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 // every cache instance shares the same type-specific behaviour. Mirrors bgTaskOps.
 func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 	return registryOps[cachedTodo]{
-		// agent_todos is a SINGLE-pool registry, so `bucket` is always "".
-		listRows: func(ctx context.Context, ownerID, _ string, limit int32) ([]seedEntry[cachedTodo], error) {
+		// agent_todos is a SINGLE-pool registry, so `bucket` is always 0.
+		listRows: func(ctx context.Context, ownerID string, _ int64, limit int32) ([]seedEntry[cachedTodo], error) {
 			rows, err := h.queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
 				AgentID: ownerID,
 				Limit:   int64(limit),
@@ -2697,6 +2732,10 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 	settings := indexedRaw{idx: -1}
 	contextCleared := indexedRaw{idx: -1}
 	interrupted := indexedRaw{idx: -1}
+	// stop_ignored folds like interrupted: keep the latest. Every occurrence
+	// says the same thing -- the accepted stop changed nothing, press again --
+	// and the newest one is the one whose turn is still running.
+	stopIgnored := indexedRaw{idx: -1}
 	planExec := indexedRaw{idx: -1}
 	planUpdated := indexedRaw{idx: -1}
 	status := indexedRaw{idx: -1}
@@ -2766,6 +2805,9 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		case contracts.NotificationTypeInterrupted:
 			interrupted = indexedRaw{idx: i, raw: raw}
 
+		case contracts.NotificationTypeStopIgnored:
+			stopIgnored = indexedRaw{idx: i, raw: raw}
+
 		case contracts.NotificationTypeRateLimit:
 			key := "unknown"
 			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
@@ -2829,7 +2871,7 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		}
 	}
 
-	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, status, apiRetry} {
+	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, stopIgnored, status, apiRetry} {
 		if slot.idx >= 0 {
 			entries = append(entries, slot)
 		}

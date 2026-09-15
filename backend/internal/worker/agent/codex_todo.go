@@ -53,7 +53,7 @@ func (codexProvider) ExtractTodoEvent(_ string, content []byte, _ func() []byte)
 		}
 		items = append(items, todoevents.Item{
 			Content: step.Step,
-			Status:  todoevents.StatusFromWire(step.Status),
+			Status:  todoevents.StatusFromProviderWord(step.Status),
 			// Codex states no separate active form, and the step reads as one.
 			ActiveForm: step.Step,
 		})

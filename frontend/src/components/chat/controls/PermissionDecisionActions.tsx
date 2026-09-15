@@ -1,19 +1,14 @@
 import type { Component } from 'solid-js'
-import type { WirePermissionOption } from './permissionOptions'
-import type { ActionsProps } from './types'
+import type { WirePermissionOption } from './permissionOptionLabels'
+import type { ActionsProps, ControlResponseSender } from './types'
 
-import { createMemo, For, Show } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
-import * as styles from '../ControlRequestBanner.css'
-import { actionButtonClass, ControlActionRow } from './ControlActionRow'
-import { ControlAllowChoicePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
+import { createMemo } from 'solid-js'
+import { ControlDecisionFooter } from './ControlDecisionFooter'
+import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
 import {
   allowScopePillOptions,
   decisionLabel,
-  isAllowPermissionKind,
-  isRejectPermissionKind,
   layoutPermissionOptions,
-  permissionOptionLabel,
   resolvePermissionOption,
 } from './permissionOptions'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
@@ -21,7 +16,7 @@ import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from './types'
 
 /** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
 export type SendPermissionOption = (
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ) => Promise<void>
@@ -86,69 +81,32 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   const handleDecision = (polarity: 'allow' | 'reject') =>
     handleOption(resolvePermissionOption(layout(), polarity, selectedScope()))
 
-  // The pill cluster is drawn only when a positive action exists to apply it:
-  // with no allow-kind option, no selection the group offers can ever act, and
-  // a drawn control that silently does nothing is the trap this row avoids.
-  const pillCluster = () => layout().positive && (scopeOptions() || permissionPill())
-
   return (
-    <ControlActionRow
-      leading={(
-        <Show when={pillCluster()}>
-          <div class={styles.controlRequestSwitches}>
-            <Show when={scopeOptions()}>
-              {options => (
-                <ControlAllowChoicePillGroup
-                  pill={{
-                    label: 'Allow scope',
-                    options: options(),
-                    selected: selectedScope() ?? options()[0].key,
-                    onSelect: scopeChoice.setChoice,
-                  }}
-                />
-              )}
-            </Show>
-            <Show when={permissionPill()}>
-              {pill => <ControlPermissionPillGroup pill={pill()} />}
-            </Show>
-          </div>
-        </Show>
-      )}
-      primary={(
-        <>
-          <ButtonGroup>
-            <Show when={layout().negative}>
-              <button
-                class={actionButtonClass(true)}
-                onClick={() => handleDecision('reject')}
-                data-testid="control-deny-btn"
-              >
-                {decisionLabel(layout(), 'reject')}
-              </button>
-            </Show>
-            <Show when={layout().positive}>
-              <button
-                class={actionButtonClass()}
-                onClick={() => handleDecision('allow')}
-                data-testid="control-allow-btn"
-              >
-                {decisionLabel(layout(), 'allow')}
-              </button>
-            </Show>
-            <For each={layout().additional}>
-              {option => (
-                <button
-                  class={actionButtonClass(isRejectPermissionKind(option.kind))}
-                  onClick={() => handleOption(option)}
-                  data-testid={`control-decision-${option.optionId}`}
-                >
-                  {permissionOptionLabel(option)}
-                </button>
-              )}
-            </For>
-          </ButtonGroup>
-        </>
-      )}
+    <ControlDecisionFooter
+      hasEditorContent={props.hasEditorContent}
+      onSendFeedback={props.onTriggerSend}
+      allowChoicePill={() => {
+        const options = scopeOptions()
+        return layout().positive && options
+          ? { label: 'Allow scope', options, selected: selectedScope() ?? options[0].key, onSelect: scopeChoice.setChoice }
+          : undefined
+      }}
+      permissionPill={() => layout().positive ? permissionPill() : undefined}
+      negativeAction={layout().negative
+        ? { label: decisionLabel(layout(), 'reject'), testId: 'control-deny-btn', onSelect: () => handleDecision('reject') }
+        : undefined}
+      positiveAction={layout().positive
+        ? { label: decisionLabel(layout(), 'allow'), testId: 'control-allow-btn', onSelect: () => handleDecision('allow') }
+        : undefined}
+      additionalActions={() => layout().additional.map(option => ({
+        label: permissionOptionLabel(option),
+        testId: `control-decision-${option.optionId}`,
+        // A refusal reads as a refusal wherever it lands. "Reject always" and
+        // "Allow for this workspace" are both extras, and an undifferentiated
+        // menu made them look like the same kind of answer.
+        destructive: isRejectPermissionKind(option.kind),
+        onSelect: () => handleOption(option),
+      }))}
     />
   )
 }

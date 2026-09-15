@@ -1,13 +1,15 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { ACP_UPDATE } from '~/generated/contracts/acp-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
+import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { parseProviderMessageCompletion } from '../../assembledMessage'
+import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
-import { extractAgentText } from './renderers/helpers'
+import { unwrapACPResult } from './resultWrapper'
 
 /**
  * Build the wire-format control-response for an ACP-style control request.
@@ -78,17 +80,17 @@ export interface ACPClassifyConfig {
 
 /**
  * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
- * Kilo, Goose, Copilot, Reasonix). Reads `parent.content.text` for
- * agent_message_chunk / agent_thought_chunk shapes (via `extractAgentText`)
- * and falls back to plain string `parent.content` for user_content /
- * plan_execution.
+ * Kilo, Goose, Reasonix). Reads the plain string `parent.content` of a
+ * user_content / plan_execution row.
+ *
+ * Assistant text and reasoning are absent on purpose. Those rows carry the shared
+ * assembled-message envelope, and MessageBubble quotes that envelope before it
+ * consults any plugin.
  */
 export function acpExtractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
   const obj = parsed.parentObject
   if (!obj)
     return null
-  if (category.kind === 'assistant_text' || category.kind === 'assistant_thinking')
-    return extractAgentText(obj).trim() || null
   if (category.kind === 'user_content' || category.kind === 'plan_execution') {
     if (typeof obj.content === 'string')
       return (obj.content as string).trim() || null
@@ -98,6 +100,7 @@ export function acpExtractQuotableText(category: MessageCategory, parsed: Parsed
 
 export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: ClassificationInput, context?: ClassificationContext) => MessageCategory {
   const baseHidden = new Set<string>([
+    ACP_UPDATE.CurrentMode,
     ACP_SESSION_UPDATE.USAGE_UPDATE,
     ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE,
     ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK,
@@ -132,16 +135,15 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
     // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape covering
-    // every ACP-based provider -- OpenCode/Kilo/Goose/Copilot/Reasonix/Cursor -- at one site.)
+    // every ACP-based provider -- OpenCode/Kilo/Goose/Reasonix/Cursor -- at one site.)
 
     const sessionUpdate = parent.sessionUpdate as string | undefined
     const type = parent.type as string | undefined
 
-    if (sessionUpdate === ACP_SESSION_UPDATE.AGENT_MESSAGE_CHUNK)
-      return { kind: 'assistant_text' }
-
-    if (sessionUpdate === ACP_SESSION_UPDATE.AGENT_THOUGHT_CHUNK)
-      return { kind: 'assistant_thinking' }
+    // agent_message_chunk and agent_thought_chunk have no case here. The worker
+    // assembles a run of those chunks into ONE row that carries the shared
+    // assembled-message envelope, so classifyMessage answers assistant_text or
+    // assistant_thinking before this plugin runs.
 
     if (sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
       return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL, toolUse: parent, content: [] }
@@ -156,7 +158,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
           return providerCategory
       }
       const status = parent.status as string | undefined
-      if (status === 'completed' || status === 'failed' || status === 'cancelled' || parseProviderMessageCompletion(parent))
+      if (status === 'completed' || status === 'failed' || status === 'cancelled' || messageCompletionFromProto(input.completion))
         return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL_UPDATE, toolUse: parent, content: [] }
       return { kind: 'hidden' }
     }
@@ -167,10 +169,13 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (hiddenSessionUpdates.has(sessionUpdate!))
       return { kind: 'hidden' }
 
-    // Require a *string* stopReason so the gate matches acpResultDivider's
-    // pickString read (mirroring the Codex turn.status gate): a non-string
-    // stopReason is a malformed turn-end, not a divider this provider can label.
-    if (typeof parent.stopReason === 'string')
+    // Read stopReason through the shared unwrap, because a server may wrap the
+    // turn fields in a native result envelope and the worker persists the answer
+    // byte for byte. Require a *string* stopReason so the gate matches
+    // acpResultDivider's pickString read (mirroring the Codex turn.status gate):
+    // a non-string stopReason is a malformed turn-end, not a divider this
+    // provider can label.
+    if (typeof unwrapACPResult(parent)?.stopReason === 'string')
       return { kind: 'result_divider' }
 
     if (type === 'system') {
@@ -179,10 +184,8 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'notification', messages: [parent] }
     }
 
-    if (type === NOTIFICATION_TYPE.SettingsChanged || type === NOTIFICATION_TYPE.ContextCleared
-      || type === NOTIFICATION_TYPE.Interrupted || type === NOTIFICATION_TYPE.AgentError || type === NOTIFICATION_TYPE.PlanUpdated || type === NOTIFICATION_TYPE.Compacting) {
+    if (isPlainNotificationType(type))
       return { kind: 'notification', messages: [parent] }
-    }
 
     if (!sessionUpdate && typeof parent.content === 'string') {
       if (parent.hidden === true)

@@ -114,7 +114,7 @@ describe('codexMcpFromItem', () => {
       ])
     })
 
-    it('falls back to "Tool call failed" when failed with no content', () => {
+    it('keeps the failed status without synthetic error text', () => {
       const source = codexMcpFromItem({
         type: 'dynamicToolCall',
         namespace: '',
@@ -122,7 +122,9 @@ describe('codexMcpFromItem', () => {
         status: 'failed',
         contentItems: [],
       })
-      expect(source?.error).toBe('Tool call failed')
+      expect(source?.error).toBeUndefined()
+      expect(source?.status).toBe('failed')
+      expect(source?.content).toEqual([])
     })
 
     it('does not synthesize an error when failed with content items', () => {

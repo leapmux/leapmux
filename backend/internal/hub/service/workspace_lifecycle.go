@@ -73,7 +73,7 @@ func emitLifecycleOutbox(
 	}
 	if err := tx.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
 		UserID:  owner,
-		OpType:  string(opType),
+		OpType:  leapmuxv1.WorkspaceLifecycleOp(opType),
 		Payload: encoded,
 	}); err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("insert lifecycle outbox: %w", err))

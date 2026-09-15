@@ -1,10 +1,11 @@
-import type { RenderContext } from '../../../messageRenderers'
-import type { TodoListSource } from '../../../todoListMessage'
+import type { SpanRole } from '../../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import type { TodoItem } from '~/stores/chatTodos'
+import { ZCODE_EVENT, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
 import { rawTodosToItems } from '~/stores/chatTodos'
+import { parseToolOutcome } from '../../../toolOutcome'
+import { retainedRowIsFinal } from '../../registry'
 
 /**
  * The `payload` of a `tool.updated` event, normalized across its six kinds.
@@ -42,13 +43,8 @@ export interface ZCodeToolUpdate {
  * rendering hint, and it is the ONLY place a structured diff arrives. `perf.detail`
  * carries the per-kind telemetry a command's exit code lives in.
  *
- * `content` is a STRING, never a content-block array, so ZCode is the one
- * provider with no tool-result images to render. Its Read tool does build an
- * image part (`{type:'image', mediaType, dataUrl}`) for the model, but the
- * app-server text-ifies every media part into a `[Attached image/png]`
- * placeholder before the event reaches LeapMux. If a later app-server forwards
- * the part instead, `~/lib/imageBlocks` already parses that shape and only the
- * wiring here would be missing.
+ * `content` is a string. The app-server converts inline media parts to text placeholders.
+ * Computer-use and Node results can also supply images through their display hints.
  */
 export interface ZCodeToolResult {
   success: boolean
@@ -61,8 +57,7 @@ export interface ZCodeToolResult {
 }
 
 /**
- * The event envelope LeapMux persists. Every conversation row is one of these, so
- * the extractors unwrap it once rather than each reading `payload` by hand.
+ * The native session-event envelope. Extractors use one reader for its payload.
  */
 export interface ZCodeEnvelope {
   type: string
@@ -94,9 +89,49 @@ function zcodeToolResult(result: Record<string, unknown>): ZCodeToolResult {
   }
 }
 
-// Memoized by payload identity: `zcodeToolResultMeta`, the result-body renderer and
-// the per-tool extractors each unwrap the same row once per render, and the content
-// walk is not free. WeakMap-keyed so an entry is collected with its payload.
+/**
+ * Join the two output tails of a `progress` payload into one block of text.
+ *
+ * The app-server cuts each tail at a byte count, not at a line end, so a stdout tail
+ * often stops in the middle of a line. A plain concatenation then glues the first
+ * stderr line onto that partial line and shows one line that neither stream wrote.
+ * A line break separates them, and only when the stdout tail does not already end in
+ * one -- a second break would print a blank line the command never wrote.
+ *
+ * An absent or empty tail contributes nothing, so a call with output on one stream
+ * alone keeps exactly the text of that stream.
+ */
+function joinOutputTails(stdout: string, stderr: string): string {
+  if (!stdout || !stderr)
+    return stdout || stderr
+  return stdout.endsWith('\n') ? stdout + stderr : `${stdout}\n${stderr}`
+}
+
+/**
+ * The partial output of a call that reported no result of its own.
+ *
+ * A `progress` payload carries the output tails, and the worker stores that frame as
+ * the transcript row for a call a turn end cut short. The outcome is unknown, so this
+ * claims no failure: the row's LeapMux completion states that the call did not
+ * finish, and the shared renderer draws the Interrupted or Failed header from it.
+ */
+function zcodeProgressResult(payload: Record<string, unknown>): ZCodeToolResult | null {
+  const content = joinOutputTails(pickString(payload, 'stdoutTail'), pickString(payload, 'stderrTail'))
+  if (!content)
+    return null
+  return {
+    success: true,
+    content,
+    display: null,
+    perfDetail: null,
+    truncated: false,
+    originalBytes: null,
+    returnedBytes: null,
+  }
+}
+
+// Cache by envelope identity because the body and toolbar read the same event.
+// The WeakMap releases an entry with its envelope.
 const updateCache = new WeakMap<Record<string, unknown>, ZCodeToolUpdate | null>()
 
 /**
@@ -124,7 +159,7 @@ function buildZCodeToolUpdate(parsed: Record<string, unknown>): ZCodeToolUpdate 
     return null
   const rawResult = pickObject(payload, 'result')
   const rawError = pickObject(payload, 'error')
-  const result = rawResult ? zcodeToolResult(rawResult) : null
+  const result = rawResult ? zcodeToolResult(rawResult) : zcodeProgressResult(payload)
   return {
     kind: pickString(payload, 'kind'),
     toolCallId,
@@ -155,31 +190,26 @@ function buildZCodeToolUpdate(parsed: Record<string, unknown>): ZCodeToolUpdate 
 export interface ZCodeRow {
   /** The row's own parsed content. */
   parsed: unknown
+  /** Supplemental native records remain separate from the provider event. */
+  supplemental: unknown
+  /** The matching result can supply arguments that the scheduled event omitted. */
+  result?: ParsedMessageContent
   /** The worker's record of the tool name, set on every span row. */
   spanType: string | undefined
-  /** The paired `scheduled` row, pre-parsed by the store. */
+  /** The paired scheduled request from the shared message resolver. */
   toolUseParsed: ParsedMessageContent | undefined
   /** The resolved tool name, or "" when no source states one. */
   toolName: string
 }
 
-/**
- * Build a ZCodeRow from a renderer's props.
- *
- * Call it inside the memo that already tracks `props`, so Solid's reactivity is
- * unchanged: the row is derived state, not a value read outside a tracking scope.
- */
-export function zcodeRowFrom(props: { parsed: unknown, context?: RenderContext }): ZCodeRow {
-  return zcodeRow(props.parsed, props.context?.spanType, props.context?.toolUseParsed)
-}
-
-/** Build a ZCodeRow from the three sources directly, for a caller that holds no props. */
+/** Build a ZCodeRow from the three sources directly. */
 export function zcodeRow(
   parsed: unknown,
   spanType: string | undefined,
   toolUseParsed: ParsedMessageContent | undefined,
+  supplemental?: unknown,
 ): ZCodeRow {
-  return { parsed, spanType, toolUseParsed, toolName: resolveZCodeToolName(parsed, spanType, toolUseParsed) }
+  return { parsed, supplemental, spanType, toolUseParsed, toolName: resolveZCodeToolName(parsed, spanType, toolUseParsed) }
 }
 
 /**
@@ -203,7 +233,14 @@ function resolveZCodeToolName(
     return own
   if (spanType)
     return spanType
-  return zcodeExtractTool(toolUseParsed?.parentObject)?.toolName ?? ''
+  return zcodePairedRequest(parsed, toolUseParsed)?.toolName ?? ''
+}
+
+/** Accept only the scheduled request that belongs to the current tool call. */
+export function zcodePairedRequest(parsed: unknown, request: ParsedMessageContent | undefined): ZCodeToolUpdate | null {
+  const current = zcodeExtractTool(parsed)
+  const paired = zcodeExtractTool(request?.parentObject)
+  return current && paired?.kind === ZCODE_TOOL_KIND.Scheduled && paired.toolCallId === current.toolCallId ? paired : null
 }
 
 /**
@@ -211,14 +248,27 @@ function resolveZCodeToolName(
  * row itself carries none.
  *
  * A result row never carries the input, and the input is what a title needs (the
- * command that ran, the file that was read). The worker backfills the scheduled
- * row's input from the model stream, so the sibling is the reliable copy.
+ * command that ran, the file that was read). The shared resolver combines the
+ * original request with its supplemental stream arguments before this lookup.
  */
 export function zcodeToolInput(row: ZCodeRow): Record<string, unknown> {
   const own = zcodeExtractTool(row.parsed)?.input
   if (own && Object.keys(own).length > 0)
     return own
-  return zcodeExtractTool(row.toolUseParsed?.parentObject)?.input ?? {}
+  const request = zcodePairedRequest(row.parsed, row.toolUseParsed)?.input
+  if (request && Object.keys(request).length > 0)
+    return request
+  const stored = pickObject(zcodeNativeTool(row)?.state, 'input')
+  if (stored)
+    return stored
+  const current = zcodeExtractTool(row.parsed)
+  const result = zcodeExtractTool(row.result?.parentObject)
+  if (current?.kind === ZCODE_TOOL_KIND.Scheduled && current.toolCallId
+    && current.toolCallId === result?.toolCallId) {
+    const completed = zcodeRow(row.result?.parentObject, row.spanType, row.toolUseParsed, row.result?.supplementalContent)
+    return pickObject(zcodeNativeTool(completed)?.state, 'input') ?? {}
+  }
+  return {}
 }
 
 /**
@@ -238,21 +288,87 @@ export function zcodeErrorText(update: ZCodeToolUpdate): string {
 }
 
 /**
- * The to-do list a `TodoWrite` input carries, in the shared checklist shape.
+ * The to-do items a `TodoWrite` input carries.
  *
  * ZCode's input matches Claude Code's -- `{todos:[{content,status,activeForm}]}` --
  * and this reads ZCode's own copy of it rather than borrowing that provider's
  * extractor, so a divergence in either one stays local to the provider that made
  * it. Returns null when the input holds no `todos` array, which is what makes the
  * renderer fall back to the generic tool row instead of drawing an empty list.
+ *
+ * The ITEMS alone. The header above them belongs to `todoToolBody`, which every
+ * provider's checklist shares, so the size and the cleared state read the same way
+ * across providers.
  */
-export function zcodeTodoListFromInput(input: Record<string, unknown> | null | undefined): TodoListSource | null {
-  if (!input || !Array.isArray(input.todos))
-    return null
-  const todos = rawTodosToItems(input.todos)
-  return {
-    toolName: ZCODE_TOOL.TodoWrite,
-    title: pluralize(todos.length, 'task'),
-    todos,
+export function zcodeTodoItemsFromInput(input: Record<string, unknown> | null | undefined): TodoItem[] | null {
+  return input && Array.isArray(input.todos) ? rawTodosToItems(input.todos) : null
+}
+
+/** Validate the native record against this event before resolving any of its fields. */
+export function zcodeNativeTool(row: ZCodeRow): {
+  sessionId: string
+  messageId: string
+  state: Record<string, unknown>
+  artifacts: Record<string, unknown> | null
+} | null {
+  const original = zcodeExtractTool(row.parsed)
+  const extra = zcodeEnvelope(row.supplemental)
+  const supplement = isObject(row.supplemental) ? row.supplemental : undefined
+  const native = pickObject(supplement, 'nativeTool')
+  const data = pickObject(native, 'data')
+  const state = pickObject(data, 'state')
+  const sessionId = pickString(native, 'sessionId')
+  const messageId = pickString(native, 'messageId')
+  const ownPayload = zcodeEnvelope(row.parsed)?.payload
+  const requestPayload = zcodePairedRequest(row.parsed, row.toolUseParsed)
+    ? zcodeEnvelope(row.toolUseParsed?.parentObject)?.payload
+    : undefined
+  const agentId = pickString(ownPayload, 'agentId') || pickString(requestPayload, 'agentId')
+  const childSessionId = pickString(ownPayload, 'childSessionId') || pickString(requestPayload, 'childSessionId')
+  let nativeCallId = original?.toolCallId
+  if (agentId) {
+    const prefix = `${ZCODE_TOOL_PREFIX.Subagent}${agentId}_`
+    if (!nativeCallId?.startsWith(prefix) || !childSessionId || childSessionId !== sessionId)
+      return null
+    nativeCallId = nativeCallId.slice(prefix.length)
   }
+  if (!nativeCallId)
+    return null
+  if (!original || !original.toolCallId || extra?.type !== ZCODE_EVENT.ToolUpdated
+    || extra.payload.kind !== original.kind || extra.payload.toolCallId !== original.toolCallId
+    || data?.type !== 'tool' || data.callID !== nativeCallId
+    || !pickString(data, 'tool') || (row.toolName && data.tool !== row.toolName)
+    || !sessionId || !messageId || !state
+    || state.status !== (original.isError ? 'error' : 'completed')) {
+    return null
+  }
+  return { sessionId, messageId, state, artifacts: pickObject(supplement, 'artifacts') }
+}
+
+/**
+ * The tool.updated kinds that OPEN a span rather than close it.
+ *
+ * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * The Worker consumes `started` and `progress` for live counters.
+ *
+ * A RETAINED row is final whatever its kind. A turn that ends while the call runs
+ * stores the agent's own last frame, which is a scheduled, started or progress kind,
+ * and LeapMux's completion column is what states that the call did not finish. Every
+ * Agent Client Protocol provider reads its retained rows the same way.
+ *
+ * A row that carries a tool-outcome note is final for the same reason: the agent sent
+ * no result of its own, and the note is what LeapMux concluded instead.
+ *
+ * `parsed` is absent where a caller holds the row's bytes alone -- an isolated render
+ * with no message store. The kind then decides, which is what the agent's own frames
+ * say.
+ */
+export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): SpanRole {
+  if (retainedRowIsFinal(parsed?.completion) || parseToolOutcome(parsed?.messageMetadata) !== null)
+    return 'result'
+  if (kind === ZCODE_TOOL_KIND.Scheduled)
+    return 'opener'
+  if (kind === ZCODE_TOOL_KIND.Result || kind === ZCODE_TOOL_KIND.Error || kind === ZCODE_TOOL_KIND.Batch)
+    return 'result'
+  return 'other'
 }

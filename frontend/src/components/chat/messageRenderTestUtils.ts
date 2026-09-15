@@ -1,5 +1,5 @@
 import type { JSXElement } from 'solid-js'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { renderNotificationThread } from './notificationRenderers'
 import { renderResultDivider } from './resultDividerRenderers'
@@ -38,8 +38,8 @@ export function renderThreadHasIcon(messages: unknown[], provider?: AgentProvide
  * same way instead of re-deriving `querySelector('div').style.color`. `isError`
  * is false when the divider hook returns null (nothing rendered).
  */
-export function renderDivider(parsed: unknown, provider: AgentProvider): { text: string, isError: boolean } {
-  const el = renderResultDivider(parsed, provider)
+export function renderDivider(parsed: unknown, provider: AgentProvider, completion?: MessageCompletion): { text: string, isError: boolean } {
+  const el = renderResultDivider(parsed, provider, completion)
   if (el === null)
     return { text: '', isError: false }
   const { container } = render(() => el)

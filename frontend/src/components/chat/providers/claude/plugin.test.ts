@@ -116,10 +116,10 @@ describe('claude preview text (scroll-rail mark preview)', () => {
     // Control-response rows resolve through controlResponseDisplay, not previewText -- Claude's
     // derivation IS the neutral behavior envelope: allow -> Approved, deny+message -> feedback.
     const allow = { type: 'control_response', response: { request_id: 'r', response: { behavior: 'allow' } } }
-    expect(plugin.controlResponseDisplay!({ provider: 'CLAUDE_CODE', requestId: 'r', request: undefined, response: allow }))
-      .toEqual({ kind: 'label', text: 'Approved' })
+    expect(plugin.controlResponseDisplay!({ claimToken: 'claim-1', requestId: 'r', request: undefined, response: allow }))
+      .toEqual({ kind: 'label', text: 'Allow' })
     const deny = { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'use ripgrep' } } }
-    expect(plugin.controlResponseDisplay!({ provider: 'CLAUDE_CODE', requestId: 'r', request: undefined, response: deny }))
+    expect(plugin.controlResponseDisplay!({ claimToken: 'claim-1', requestId: 'r', request: undefined, response: deny }))
       .toEqual({ kind: 'feedback', message: 'use ripgrep' })
   })
 })
@@ -469,5 +469,24 @@ describe('claude contextUsageFromMessage', () => {
 
   it('returns null when the message carries no message.usage', () => {
     expect(plugin.contextUsageFromMessage!(parsed({ type: 'assistant', message: {} }))).toBeNull()
+  })
+})
+
+// The typed resolver supplies a row's related half by span identity, and the plugin
+// says which half a row needs. A RESULT always wants its request, because Claude's
+// tool name lives on the `tool_use` row. A REQUEST wants its result only when the
+// body comes from there: a subagent, a task, a to-do write.
+describe('claude relatedMessages', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+  const toolUse = (name: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name, input: {} }] } })
+
+  it('a result wants its request, because the name lives there', () => {
+    expect(plugin.relatedMessages!(input({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] } }))).toEqual(['request'])
+  })
+
+  it('a request wants its result only when the body comes from there', () => {
+    for (const name of ['Agent', 'Task', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet'])
+      expect(plugin.relatedMessages!(input(toolUse(name)))).toEqual(['result'])
+    expect(plugin.relatedMessages!(input(toolUse('Read')))).toEqual([])
   })
 })

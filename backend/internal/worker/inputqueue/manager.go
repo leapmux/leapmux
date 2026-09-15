@@ -2,6 +2,7 @@ package inputqueue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -106,14 +107,16 @@ func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, 
 	return snapshot, nil
 }
 
-// drainIfReleased schedules a drain when the snapshot shows a queue that can
-// move: no turn in flight, no pause, and at least one item that waits. A drain
-// for a queue that cannot move costs a transaction and delivers nothing.
+// drainIfReleased schedules an unpaused queue with a waiting item.
+// An active turn permits only a plan context replacement candidate. The store then verifies its recorded approval.
 //
 // The caller must NOT hold the coordinator lock, because scheduleDrain takes
 // that same non-reentrant mutex.
 func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
-	if snapshot.ActiveTurn || snapshot.Paused || len(snapshot.Items) == 0 {
+	if snapshot.Paused || len(snapshot.Items) == 0 {
+		return
+	}
+	if snapshot.ActiveTurn && !snapshot.Items[0].requiresContextReplacement() {
 		return
 	}
 	m.scheduleDrain(agentID)
@@ -232,13 +235,19 @@ func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, er
 }
 
 func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	return m.EnqueueWithMutation(ctx, input, nil)
+}
+
+// EnqueueWithMutation commits the queued input and related database changes together.
+// The callback must not commit the transaction or perform provider I/O.
+func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, error) {
 	// The classifier rewrites a slash command into its own kind, so the test
 	// must see the kind the store will store, not the one the client sent.
 	if err := m.refuseUnacceptedKind(input.AgentID, m.store.Classify(input.Kind, input.Text)); err != nil {
 		return Snapshot{}, err
 	}
 	return m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.Enqueue(ctx, input)
+		return m.store.enqueue(ctx, input, apply)
 	}))
 }
 
@@ -514,6 +523,66 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	return snapshot, nil
 }
 
+// Preempt cancels the agent's active turn so the specified queued item is sent as
+// the next ordinary dispatch.
+//
+// Preempt is the steer of a provider that cannot inject into a running turn
+// (Cursor, Kilo): it INTERRUPTS the turn instead, and the message follows the
+// moment the cancelled turn reports its end. Nothing is delivered here -- the
+// item stays queued, and the drain that the provider's turn-end publish
+// triggers is what sends it. That drain is also why the item is only
+// validated, never reserved: a reserved head is invisible to PrepareDispatch,
+// and a cancel whose turn-end lands before a requeue would strand it.
+func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	if m.dispatcher == nil || !m.dispatcher.SupportsPreemption(agentID) {
+		return Snapshot{}, ErrPreemptionUnsupported
+	}
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Snapshot(ctx, agentID)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	// CanPreempt already answers everything the state guard needs -- head, queued,
+	// unedited, and the active turn to cancel. The id is a
+	// separate question, so it gets its own sentinel: a caller that addressed an
+	// item which is no longer the head asked for something different from a caller
+	// whose head cannot be pre-empted, and one message cannot be true for both.
+	switch {
+	case len(snapshot.Items) == 0:
+		c.mu.Unlock()
+		return snapshot, ErrPreemptionState
+	case snapshot.Items[0].ID != inputID:
+		c.mu.Unlock()
+		return snapshot, ErrNotHead
+	case !snapshot.Items[0].CanPreempt:
+		c.mu.Unlock()
+		return snapshot, ErrPreemptionState
+	}
+	c.mu.Unlock()
+
+	interruptErr := m.dispatcher.Interrupt(agentID)
+
+	// Whatever the cancel did, the queue's own drain owns the delivery: a
+	// cancel that already ended the turn is caught by the drain below, and one
+	// still settling is reported by the provider's turn-end publish. The
+	// answer must reflect the world AFTER the interrupt, not before it.
+	c.mu.Lock()
+	current, snapshotErr := m.store.Snapshot(ctx, agentID)
+	c.mu.Unlock()
+	if snapshotErr != nil {
+		return snapshot, interruptErr
+	}
+	snapshot = current
+	m.drainIfReleased(agentID, snapshot)
+	return snapshot, interruptErr
+}
+
 // BeginPlannedRestart pauses automatic dispatch before a provider replacement.
 // The pause carries pauseOwnerPlannedRestart, so Retry and Steer refuse to
 // write into the stopping process and Finish resumes only its own pause.
@@ -637,6 +706,12 @@ func (m *Manager) DrainRecovered(ctx context.Context) error {
 		}
 	}
 	return drainErr
+}
+
+// NotifyDependencyReady checks queued input after an external dependency becomes ready.
+// Normal pause and delivery checks still apply.
+func (m *Manager) NotifyDependencyReady(agentID string) {
+	m.scheduleDrain(agentID)
 }
 
 func (m *Manager) scheduleDrain(agentID string) {
@@ -773,8 +848,16 @@ func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDi
 			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnSteerable)
 		}
 	case DispatchNotReady:
+		// The pause carries the caller's own reason, because the reader reads it.
+		// A provider that is not ready yet means AGENT_STOPPED; a failed read of
+		// the worker's own store does not.
+		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED
+		var notReady *DeliveryError
+		if errors.As(dispatchErr, &notReady) && notReady.PauseReason != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
+			reason = notReady.PauseReason
+		}
 		record = func() (Snapshot, error) {
-			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr)
+			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr, reason)
 		}
 	case DispatchUncertain:
 		record = func() (Snapshot, error) {

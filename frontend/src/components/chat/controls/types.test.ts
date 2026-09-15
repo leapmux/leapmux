@@ -1,25 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch, toRpcId } from './types'
+import { buildJsonRpcResult, CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch } from './types'
 
-describe('toRpcId', () => {
-  it('converts numeric string to number', () => {
-    expect(toRpcId('42')).toBe(42)
-  })
-
-  it('preserves non-numeric string', () => {
-    expect(toRpcId('abc')).toBe('abc')
-  })
-
-  it('converts zero', () => {
-    expect(toRpcId('0')).toBe(0)
-  })
-
-  it('converts a negative integer string to a number', () => {
-    expect(toRpcId('-5')).toBe(-5)
-  })
-
-  it('preserves a UUID-style id (non-numeric), the Claude/ACP request-id case', () => {
-    expect(toRpcId('abc-123')).toBe('abc-123')
+describe('control response identity', () => {
+  it.each(['42', '0', '-5', '001', '1e3', '9007199254740993', 'abc-123'])('preserves the worker request ID %s', (requestId) => {
+    expect(buildJsonRpcResult(requestId, { count: 0, enabled: false, text: '' })).toEqual({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { count: 0, enabled: false, text: '' },
+    })
   })
 })
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -65,7 +66,7 @@ func (s *webAuthnSessionStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteWebAuthnSession(ctx, id))
 }
 
-func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id, kind string, now time.Time) (int64, error) {
+func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id string, kind leapmuxv1.WebAuthnSessionKind, now time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.ConsumeWebAuthnCeremonySession(ctx, gendb.ConsumeWebAuthnCeremonySessionParams{
 		ID:   id,
 		Kind: kind,
@@ -84,7 +85,7 @@ func (s *webAuthnSessionStore) DeleteAllByUser(ctx context.Context, userID strin
 	}))
 }
 
-func (s *webAuthnSessionStore) DeleteByUserAndKind(ctx context.Context, userID, kind string) error {
+func (s *webAuthnSessionStore) DeleteByUserAndKind(ctx context.Context, userID string, kind leapmuxv1.WebAuthnSessionKind) error {
 	owner, ok := userid.New(userID)
 	if !ok {
 		return store.ErrInvalidArgument

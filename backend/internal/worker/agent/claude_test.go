@@ -338,7 +338,7 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	require.NoError(t, agent.SendRawInput([]byte(assistantText)))
 	time.Sleep(50 * time.Millisecond)
 
-	// 5. Result message — should be enriched with num_tool_uses: 1.
+	// 5. The result keeps its original bytes and stores the tool count separately.
 	resultMsg := `{"type":"result","subtype":"turn_end"}` + "\n"
 	require.NoError(t, agent.SendRawInput([]byte(resultMsg)))
 
@@ -352,20 +352,23 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 		return false
 	}, "expected result message to be persisted")
 
-	// Find the result message (recorded by PersistTurnEnd) and verify num_tool_uses.
+	// Find the result and verify its separate tool count.
 	msgs := sink.Messages()
 	var resultContent []byte
+	var resultMetadata []byte
 	for _, m := range msgs {
 		if m.TurnEnd {
 			resultContent = m.Content
+			resultMetadata = m.Metadata
 		}
 	}
 	require.NotNil(t, resultContent, "result message should exist")
+	assert.Equal(t, strings.TrimSuffix(resultMsg, "\n"), string(resultContent))
 
 	var enriched map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(resultContent, &enriched))
+	require.NoError(t, json.Unmarshal(resultMetadata, &enriched))
 	numToolUsesRaw, ok := enriched["num_tool_uses"]
-	require.True(t, ok, "result should contain num_tool_uses field")
+	require.True(t, ok, "metadata must contain the tool count")
 
 	var numToolUses int
 	require.NoError(t, json.Unmarshal(numToolUsesRaw, &numToolUses))
@@ -1125,4 +1128,44 @@ func TestAgent_LeapMuxWorkerEnvAlwaysSet(t *testing.T) {
 	}
 	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in shell-wrapped env")
 	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
+}
+
+// The startup auto probe and the requested mode are two separate
+// set_permission_mode requests. A probe that times out records its OWN request id
+// as the deferred permission-mode ack, and the requested mode that follows it must
+// drop that id.
+//
+// The id decides two things. SettingsSnapshot reports the permission-mode axis
+// UNRESOLVED while an id is set, so applyPlanOptionsLocked refuses every plan that
+// specifies the permission mode. And claudeCodeHandleControlResponse folds the mode of
+// the matching ack back into the confirmed state, so a late probe ack would replace
+// the mode this session runs with the mode the probe asked for.
+func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	// "skip" answers nothing, so the auto probe times out. The requested mode
+	// that follows it is acknowledged.
+	a, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-probe-timeout", WorkingDir: t.TempDir()},
+		noopSink{}, "skip|success", logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { a.Stop(); _ = a.Wait() }()
+
+	resp, err := a.applyStartupPermissionMode(ctx, contracts.ClaudeModePlan, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, contracts.ClaudeModePlan, resp.Mode)
+	assert.Equal(t, []string{contracts.ClaudeModeAuto, contracts.ClaudeModePlan}, readHandshakeModes(t, logPath))
+
+	a.mu.Lock()
+	deferred, confirmed := a.deferredPermissionModeReqID, a.confirmedPermissionMode
+	a.mu.Unlock()
+	assert.Empty(t, deferred,
+		"the acknowledged mode supersedes the timed-out probe, so no ack stays deferred")
+	assert.Equal(t, contracts.ClaudeModePlan, confirmed,
+		"the acknowledged mode is the confirmed one, not the probed one")
+	assert.NotEqual(t, OptionSettlementUnresolved,
+		a.SettingsSnapshot().Settlements[OptionIDPermissionMode].State,
+		"a session whose mode the CLI acknowledged must report the axis as settled")
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -190,7 +191,7 @@ func authorizationCodeNeedsRedirect(grantTypes []string, redirectURIs []string) 
 // ceiling before it gets here, because an anonymous registrant cannot state
 // one (see buildRegistration).
 func buildOAuthClientRegistration(
-	v *auth.TokenValidator, spec appRegistrationSpec, source, owner, createdBy string,
+	v *auth.TokenValidator, spec appRegistrationSpec, source leapmuxv1.AppRegistrationSource, owner, createdBy string,
 ) (store.CreateOAuthClientParams, string, error) {
 	name := validate.CleanNameTo(spec.name, clientNameByteLimit)
 	if name == "" {
@@ -278,7 +279,7 @@ func registrationErr(code string, err error) error {
 // registrant asked for, which is what RFC 7591 section 3.2.1 requires the
 // server to echo.
 func (h *OAuthServerHandler) buildRegistration(
-	req registrationRequest, source, owner, createdBy string,
+	req registrationRequest, source leapmuxv1.AppRegistrationSource, owner, createdBy string,
 ) (store.CreateOAuthClientParams, string, string, *oauthErrorResponse) {
 	method := "none"
 	confidential := false

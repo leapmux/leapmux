@@ -14,32 +14,97 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-func TestStatusWireRoundTrip(t *testing.T) {
-	cases := []Status{
-		StatusPending,
-		StatusRunning,
-		StatusCompleted,
-		StatusFailed,
-		StatusStopped,
-		StatusInterrupted,
-	}
-	for _, s := range cases {
-		assert.Equal(t, s, StatusFromWire(StatusWire(s)), "round trip for %d", s)
+// The domain types are defined over the proto enums, so agent_background_tasks
+// stores these ordinals verbatim and the browser reads the same ones. A cast
+// that silently renumbered would put a row in the wrong state with no error
+// anywhere, so both directions are pinned value by value.
+func TestStatusOrdinalsMatchTheProtoEnum(t *testing.T) {
+	t.Parallel()
+
+	for status, want := range map[Status]leapmuxv1.BackgroundTaskStatus{
+		StatusUnspecified: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED,
+		StatusPending:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING,
+		StatusRunning:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
+		StatusCompleted:   leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED,
+		StatusFailed:      leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED,
+		StatusStopped:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED,
+		StatusInterrupted: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED,
+	} {
+		assert.Equal(t, want, leapmuxv1.BackgroundTaskStatus(status), "status %s", status)
+		assert.Equal(t, status, Status(want), "status %s, back again", status)
 	}
 }
 
-func TestStatusFromWireUnknown(t *testing.T) {
-	assert.Equal(t, StatusPending, StatusFromWire("nonsense"))
-	assert.Equal(t, StatusPending, StatusFromWire(""))
+func TestKindOrdinalsMatchTheProtoEnum(t *testing.T) {
+	t.Parallel()
+
+	for kind, want := range map[Kind]leapmuxv1.BackgroundTaskKind{
+		KindUnspecified: leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_UNSPECIFIED,
+		KindSubagent:    leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT,
+		KindShell:       leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL,
+	} {
+		assert.Equal(t, want, leapmuxv1.BackgroundTaskKind(kind), "kind %s", kind)
+		assert.Equal(t, kind, Kind(want), "kind %s, back again", kind)
+	}
 }
 
-func TestKindWireRoundTrip(t *testing.T) {
-	assert.Equal(t, "subagent", KindWire(KindSubagent))
-	assert.Equal(t, "shell", KindWire(KindShell))
-	assert.Equal(t, KindSubagent, KindFromWire("subagent"))
-	assert.Equal(t, KindShell, KindFromWire("shell"))
-	// Unknown falls through to Subagent.
-	assert.Equal(t, KindSubagent, KindFromWire("nope"))
+// The queries split active from final with `status >= min_final_status` rather
+// than by listing the four final words, which holds only while the final
+// statuses occupy the TOP of the ordinal range. Nothing in proto enforces that,
+// so this is the check that does -- over every value the enum declares, not
+// only the ones this package names.
+//
+// A new status added below the boundary but meant to be final (or above it and
+// meant to be active) fails here. The schema comment on
+// agent_background_tasks.status points at this test by name.
+func TestBackgroundTaskFinalStatusesAreTheTopOfTheRange(t *testing.T) {
+	t.Parallel()
+
+	for ordinal := range leapmuxv1.BackgroundTaskStatus_name {
+		status := Status(ordinal)
+		assert.Equalf(t, status.IsFinished(), status >= MinFinalStatus,
+			"%s: IsFinished and the `>= MinFinalStatus` predicate the SQL binds must agree", status)
+	}
+	// The boundary itself is final, and the value below it is not, so the two
+	// pools are non-empty and the comparison is the right strictness.
+	assert.True(t, MinFinalStatus.IsFinished(), "the boundary value must itself be final")
+	assert.False(t, (MinFinalStatus - 1).IsFinished(), "the value below the boundary must be active")
+}
+
+// The registry seeds and caps one pool per kind, and the seed query filters
+// `kind` by the very same value, so the pool key must BE the ordinal.
+func TestKindBucketsAreTheKindOrdinals(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []int64{int64(KindSubagent), int64(KindShell)}, KindBuckets())
+	// 0 is the registry cache's single-pool sentinel, so no real pool may take it.
+	assert.NotContains(t, KindBuckets(), int64(0))
+}
+
+// StatusWire is the subagent_ended payload vocabulary, which the browser's
+// notificationRenderers narrows. These five words are a cross-language
+// agreement, so they are pinned literally rather than derived.
+func TestStatusWireNamesTheTokensTheBrowserReads(t *testing.T) {
+	t.Parallel()
+
+	for status, want := range map[Status]string{
+		StatusPending:     "pending",
+		StatusRunning:     "running",
+		StatusCompleted:   "completed",
+		StatusFailed:      "failed",
+		StatusStopped:     "stopped",
+		StatusInterrupted: "interrupted",
+	} {
+		assert.Equal(t, want, StatusWire(status), "status %s", status)
+	}
+}
+
+// An unset status words no divider at all. "pending" would claim the row that
+// just closed is still running.
+func TestStatusWireLeavesUnspecifiedBlank(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, StatusWire(StatusUnspecified))
 }
 
 func TestStatusIsFinished(t *testing.T) {

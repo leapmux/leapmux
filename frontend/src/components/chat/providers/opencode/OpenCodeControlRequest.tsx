@@ -1,21 +1,14 @@
 import type { Component } from 'solid-js'
-import type { WirePermissionOption } from '../../controls/permissionOptions'
-import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
+import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
+import type { ActionsProps, ContentProps, ControlAnswerState, ControlResponseSender, Question } from '../../controls/types'
 
-import { Show } from 'solid-js'
-import * as styles from '../../ControlRequestBanner.css'
 import { PermissionDecisionActions } from '../../controls/PermissionDecisionActions'
-import { sendResponse, sendSelectedOptionResponse, toRpcId } from '../../controls/types'
+import { sendResponse, sendSelectedOptionResponse } from '../../controls/types'
+import { ACPControlContent } from '../acp/ACPControlRequest'
 
 /** Extract OpenCode requestPermission params from the control request payload. */
 function getOpenCodeParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined
-}
-
-/** Extract the tool call info from a requestPermission payload. */
-function getToolCall(payload: Record<string, unknown>): Record<string, unknown> | undefined {
-  const params = getOpenCodeParams(payload)
-  return params?.toolCall as Record<string, unknown> | undefined
 }
 
 /**
@@ -62,7 +55,7 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Ques
  * Sends an OpenCode permission response as a JSON-RPC response.
  */
 export function sendOpenCodePermissionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {
@@ -70,7 +63,7 @@ export function sendOpenCodePermissionResponse(
 }
 
 export function sendOpenCodeQuestionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   questions: Question[],
   answerState: ControlAnswerState,
@@ -86,37 +79,24 @@ export function sendOpenCodeQuestionResponse(
   })
   return sendResponse(onRespond, {
     jsonrpc: '2.0',
-    id: toRpcId(requestId),
+    id: requestId,
     result: { answers },
   })
 }
 
 export function sendOpenCodeQuestionRejectResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
 ): Promise<void> {
   return sendResponse(onRespond, {
     jsonrpc: '2.0',
-    id: toRpcId(requestId),
+    id: requestId,
     result: { rejected: true },
   })
 }
 
 /** OpenCode-specific control request content. */
-export const OpenCodeControlContent: Component<ContentProps> = (props) => {
-  const toolCall = () => getToolCall(props.request.payload)
-  const title = () => (toolCall()?.title as string) || 'Permission Request'
-  const kind = () => toolCall()?.kind as string | undefined
-
-  return (
-    <>
-      <div class={styles.controlBannerTitle}>{title()}</div>
-      <Show when={kind()}>
-        <div class={styles.bannerHint}>{kind()}</div>
-      </Show>
-    </>
-  )
-}
+export const OpenCodeControlContent: Component<ContentProps> = props => <ACPControlContent {...props} />
 
 /** OpenCode-specific control request action buttons. */
 export const OpenCodeControlActions: Component<ActionsProps> = props => (

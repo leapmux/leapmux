@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { codexControlResponseDisplay, codexDecisionKey, codexDecisionLabel } from './controlResponse'
 
 function cr(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { provider: 'CODEX', requestId: '7', request, response }
+  return { claimToken: 'claim-1', requestId: '7', request, response }
 }
 
 const APPROVAL_REQUEST = { method: 'item/commandExecution/requestApproval' }
@@ -17,7 +17,7 @@ describe('codexdecisionlabel', () => {
   it('maps the known string decisions', () => {
     expect(codexDecisionLabel('accept')).toBe('Allow')
     expect(codexDecisionLabel('acceptForSession')).toBe('Allow for Session')
-    expect(codexDecisionLabel('decline')).toBe('Reject')
+    expect(codexDecisionLabel('decline')).toBe('Deny')
     expect(codexDecisionLabel('cancel')).toBe('Cancel')
   })
 
@@ -106,10 +106,9 @@ describe('codexcontrolresponsedisplay', () => {
     })
 
     it('falls through to the decision label when a requestUserInput is declined', () => {
-      // A denied/stopped requestUserInput arrives as a JSON-RPC decision ({result:{decision:'decline'}})
-      // while the request method is still requestUserInput. It must read "Reject", NOT degrade to the
-      // generic "Responded" label -- the answers branch returning null falls through to the decision path.
-      expect(codexControlResponseDisplay(cr(request, decision('decline')))).toEqual({ kind: 'label', text: 'Reject' })
+      // A retained decline decision uses the shared denial label.
+      // The answer parser falls through when the response has no answers.
+      expect(codexControlResponseDisplay(cr(request, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
       expect(codexControlResponseDisplay(cr(request, decision('cancel')))).toEqual({ kind: 'label', text: 'Cancel' })
     })
 

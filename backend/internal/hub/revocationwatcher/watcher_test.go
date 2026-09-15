@@ -654,7 +654,7 @@ func (s *unknownKindRevocationEvents) ListPublishedAfter(
 	return []store.PublishedRevocationEvent{{
 		Seq: 1,
 		Event: store.RevocationEvent{
-			ID: "future-event", Kind: "future_kind",
+			ID: "future-event", Kind: 999, // an ordinal no RevocationEventKind declares
 		},
 	}}, nil
 }
