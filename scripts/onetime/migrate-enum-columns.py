@@ -323,18 +323,49 @@ def convert(db: Path, columns: dict, migration: Path, apply: bool) -> int:
     return changed
 
 
+def identify(db: Path) -> tuple[dict, Path]:
+    """Decide whether this is the hub database or the worker database.
+
+    It asks the DATABASE, by comparing the tables it holds against each
+    reference schema. The file NAME cannot answer: the hub path is whatever
+    `storage.sqlite.path` says, so a legitimately configured `/data/leapmux.db`
+    was refused outright, and a hub database whose name happened to start with
+    "worker" took the worker reference. That second case was the dangerous one.
+    The two schemas share no table, so every worker table was simply absent,
+    `rebuild_table` created all fifteen of them from scratch, `verify` compared
+    only reference objects and passed, and `--apply` committed a hub database
+    carrying a full set of empty worker tables with its own enum words still
+    unconverted.
+    """
+    live = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        present = {row[0] for row in live.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        live.close()
+    matches = [
+        (label, columns, migration)
+        for label, columns, migration in (
+            ("hub", HUB_COLUMNS, HUB_MIGRATION),
+            ("worker", WORKER_COLUMNS, WORKER_MIGRATION),
+        )
+        if present & set(reference_schema(migration).tables)
+    ]
+    if len(matches) != 1:
+        found = ", ".join(label for label, _, _ in matches) or "neither"
+        raise SystemExit(
+            f"cannot tell whether {db} is the hub or the worker database: it matches {found}")
+    label, columns, migration = matches[0]
+    print(f"schema: {label}")
+    return columns, migration
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("database", type=Path)
     ap.add_argument("--apply", action="store_true", help="commit; otherwise roll back")
     args = ap.parse_args()
-    name = args.database.name
-    if name.startswith("hub"):
-        columns, migration = HUB_COLUMNS, HUB_MIGRATION
-    elif name.startswith("worker"):
-        columns, migration = WORKER_COLUMNS, WORKER_MIGRATION
-    else:
-        raise SystemExit(f"cannot tell whether {name} is the hub or the worker database")
+    columns, migration = identify(args.database)
     print(f"{args.database}:")
     convert(args.database, columns, migration, args.apply)
     return 0

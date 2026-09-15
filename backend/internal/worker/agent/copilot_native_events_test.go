@@ -661,9 +661,7 @@ func TestNativeCopilotSettingsChangeEventsShareOneRead(t *testing.T) {
 		a.HandleOutput(nativeCopilotEvent(t, "", eventType, map[string]any{}))
 	}
 
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	assert.Equal(t, map[string]bool{copilotReadSettings: true}, a.backgroundReads,
+	assert.Equal(t, map[string]bool{copilotReadSettings: true}, a.backgroundReads.inFlight(),
 		"three change events start one read, with one more queued behind it")
 }
 
@@ -680,7 +678,5 @@ func TestNativeCopilotObjectiveChangeEventsShareOneRead(t *testing.T) {
 			contracts.CopilotEventSessionAutopilotObjectiveChanged, map[string]any{}))
 	}
 
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundReads)
+	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundReads.inFlight())
 }

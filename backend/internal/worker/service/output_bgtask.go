@@ -159,6 +159,11 @@ func (h *OutputHandler) bgTaskCache(rootAgentID string) *bgTaskCache {
 // StopAll leaves background-task rows active (the next boot labels them
 // 'interrupted'). Called at the top of Service.Shutdown.
 func (h *OutputHandler) SetShuttingDown() {
+	// Under refreshLifecycleMu, so that every beginActivityRefresh which saw the
+	// latch false has already taken its count by the time this returns. Shutdown
+	// then calls WaitActivityRefreshes with no Add left that could race the Wait.
+	h.refreshLifecycleMu.Lock()
+	defer h.refreshLifecycleMu.Unlock()
 	h.shuttingDown.Store(true)
 }
 

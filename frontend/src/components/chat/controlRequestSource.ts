@@ -65,7 +65,7 @@ export function useControlRequestSource(
     }
   }, { key: '', seq: undefined, context: undefined, provider: undefined, loaded: undefined, agentSessionId: '' }, { equals: sameQuery })
 
-  // A failed load retries a bounded number of times. Without the retry, one
+  // A failed load retries a limited number of times. Without the retry, one
   // transport failure leaves the card without its details for as long as the card
   // stays open: the query is a VALUE identity, so a reconnect that re-delivers the
   // same request reproduces the same key, and nothing re-runs this effect.

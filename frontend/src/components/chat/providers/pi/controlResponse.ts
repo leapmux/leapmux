@@ -16,6 +16,7 @@
 
 import type { ControlAnswerState, Question } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
@@ -76,7 +77,7 @@ export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Qu
  * calls workerRpc.sendControlResponse.
  */
 export function sendPiExtensionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   response: PiExtensionResponse,
 ): Promise<void> {
   return sendResponse(onRespond, response)

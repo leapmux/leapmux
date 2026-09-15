@@ -24,6 +24,7 @@ const PAUSE_SENTENCES = {
   [AgentInputQueuePauseReason.AGENT_STOPPED]: 'Queue paused because the agent stopped.',
   [AgentInputQueuePauseReason.DELIVERY_FAILED]: 'Queue paused because an input did not reach the agent.',
   [AgentInputQueuePauseReason.DELIVERY_UNCERTAIN]: 'Queue paused because an input may not have reached the agent.',
+  [AgentInputQueuePauseReason.STORE_FAULT]: 'Queue paused because the worker could not read its own data. Resume to try again.',
 } satisfies Record<AgentInputQueuePauseReason, string>
 
 /**

@@ -428,11 +428,11 @@ func TestReasonixToolStorePathResolvesAgainstTheQueryHome(t *testing.T) {
 
 	assert.Equal(t, transcript, reasonixToolStorePath(query, "session-1", filepath.Join(home, "work")))
 	assert.Empty(t, reasonixToolStorePath(query, "../escape", filepath.Join(home, "work")))
-	// The default path names the same file and reads nothing to do it, which is
+	// The default path points at the same file and reads nothing to do it, which is
 	// what lets the transcript ask for a location on every agent message.
 	assert.Equal(t, transcript, reasonixDefaultToolStorePath(query, "session-1", filepath.Join(home, "work")))
 	assert.Empty(t, reasonixDefaultToolStorePath(query, "..", filepath.Join(home, "work")))
 	assert.Equal(t, filepath.Join(root, "absent.jsonl"),
 		reasonixDefaultToolStorePath(query, "absent", filepath.Join(home, "work")),
-		"a session with no file on disk still names one, because this reads none")
+		"a session with no file on disk still states one, because this reads none")
 }

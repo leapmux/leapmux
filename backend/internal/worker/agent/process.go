@@ -219,17 +219,6 @@ func (p *processBase) recordProcessExit(err error) {
 	p.mu.Unlock()
 }
 
-// Interrupt is a default no-op implementation. Providers that have a
-// well-defined "abort current turn" signal (Codex turn/interrupt,
-// Claude Code interrupt control payload, ACP session/cancel, Pi
-// abort) override this with their own logic. The base implementation
-// is reached only by providers with no native interrupt path; rather
-// than fail the RPC we treat it as a no-op so the worker's
-// InterruptAgent handler stays uniform.
-func (p *processBase) Interrupt() error {
-	return nil
-}
-
 // APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
 func (p *processBase) APITimeout() time.Duration {
 	if p.apiTimeout > 0 {

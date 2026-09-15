@@ -194,3 +194,21 @@ describe('zcodeToolMessageSource', () => {
     expect(source.presentation.label).toBeUndefined()
   })
 })
+
+// `TaskOutput` reads a background task from the runtime, and no shared kind states
+// that -- so the kind table maps it nowhere and the row falls to `other`, whose
+// icon is the wrench every unrecognized tool draws. Its own icon is what lets a
+// reader pick the background-task rows out of a transcript.
+describe('the icon of a tool no shared kind fits', () => {
+  it('keeps its own icon for TaskOutput', () => {
+    const presentation = presentationOf(ZCODE_TOOL.TaskOutput, {}, { success: true, content: 'done' })
+    expect(presentation.kind).toBe('other')
+    expect(presentation.icon).toBeDefined()
+  })
+
+  it('leaves every kind the table maps to the shared icon', () => {
+    const presentation = presentationOf(ZCODE_TOOL.Bash, { command: 'ls' }, { success: true, content: '' })
+    expect(presentation.kind).toBe('execute')
+    expect(presentation.icon).toBeUndefined()
+  })
+})

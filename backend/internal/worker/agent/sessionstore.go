@@ -155,6 +155,19 @@ func (q StoredSessionQuery) xdgDataHome() string {
 // The os.Stat comes first so an absent store is reported as
 // errSessionStoreAbsent rather than as a driver error: `mode=ro` refuses to
 // create the file, but its message describes a failure and this is not one.
+// sessionStoreMoved reports whether a cached session store is no longer the file
+// at `path`, so its handle and everything read through it must be dropped.
+//
+// A path comparison alone is NOT enough, and that is the whole reason this exists.
+// A runtime that deletes and recreates its store at the SAME path leaves the cached
+// handle open on the unlinked inode -- sqlitedb.OpenReadOnly holds one connection
+// with no lifetime -- and every later read answers from the deleted file for the
+// life of the agent. os.SameFile is what catches that; `cached == nil` catches a
+// store that was never stated.
+func sessionStoreMoved(cachedPath string, cached os.FileInfo, path string, current os.FileInfo) bool {
+	return cachedPath != path || cached == nil || !os.SameFile(cached, current)
+}
+
 func openSessionStoreDB(ctx context.Context, path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, errSessionStoreAbsent

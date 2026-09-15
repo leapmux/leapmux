@@ -2553,64 +2553,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 // unchanged request when the restart fails.
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
-	if err != nil {
-		slog.Error("failed to pause input before agent settings restart", "agent_id", agentID, "error", err)
-		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
-		})
-		return newOptions, unresolvedSettingsResult(newOptions)
-	}
-	queueRestartFinished := false
-	defer func() {
-		if !queueRestartFinished {
-			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
-				slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
-			}
-		}
-	}()
-
-	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
-	agentOpts.ResumeSessionID = resumeSessionID
-	agentOpts.Options = newOptions
-	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(newOptions, provider)
-
-	sink := svc.Output.NewSink(agentID, provider)
-
-	// Hold the per-agent lifecycle lock across the mint AND the restart, which
-	// is why this calls restartAgentLocked. The closure exists so the release is
-	// deferred: a panic inside the mint or the start would otherwise hold this
-	// agent's lifecycle lock for the life of the process, and the dispatcher
-	// recovers a handler panic, so the worker would survive to deadlock every
-	// later restart, close and cold start of that tab.
-	//
-	// The mint retires the previous spawn's cleanup and registers a new one
-	// under the same tab id, and cleanupRegistry.register overwrites. Two
-	// relaunches for one tab that interleave their mints would therefore drop
-	// one of the two cleanups, and a close that lands between a mint's retire
-	// and its register would leave the fresh socket registered for a tab that
-	// is already gone. The other three relaunch paths already mint inside this
-	// lock; this one is the odd path out.
-	_, launched, err := func() (map[string]string, bool, error) {
-		unlock := svc.Agents.LockAgent(agentID)
-		defer unlock()
-		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
-	}()
-	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
-		slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
-	}
-	queueRestartFinished = true
-	if err != nil {
-		slog.Error("failed to restart agent with new settings", "agent_id", agentID, "error", err)
-		// Clear stale session ID so ensureAgentRunning won't try to resume a
-		// non-existent session on the next message.
-		svc.clearAgentSessionID(agentID)
-		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart agent with new settings: " + err.Error(),
-		})
+	if err := svc.restartAgentPreservingSession(dbAgent, newOptions, "an agent settings restart"); err != nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
 	// Read the typed snapshot from the relaunched provider. A startup readback
@@ -2655,19 +2598,44 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 // press's intent was carried by the one that began it, and the restart is not
 // something a second concurrent copy would improve.
 func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
-	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	agentID := dbAgent.ID
 	if _, inFlight := svc.forceStops.LoadOrStore(agentID, struct{}{}); inFlight {
 		return nil
 	}
 	defer svc.forceStops.Delete(agentID)
 
+	// The agent keeps the settings its row already holds; only the process is
+	// replaced.
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	if err := svc.restartAgentPreservingSession(dbAgent, parseOptions(dbAgent.Options), "a forced stop"); err != nil {
+		return err
+	}
+	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
+	return nil
+}
+
+// restartAgentPreservingSession replaces the agent's PROCESS while it keeps its
+// session: it pauses the durable input queue, mints and launches a replacement
+// under the per-agent lifecycle lock, resumes the queue, and on failure clears the
+// stale session id and tells the reader.
+//
+// ONE policy, written once. Two callers reach it -- a settings change that needs a
+// relaunch, and a forced stop that replaces a turn the provider would not end --
+// and the lock discipline, the pause/resume pairing and the stale-session clear are
+// the same for both. They were the same when spelled twice too, which is the
+// problem: the next correction to any of the three would have landed in one copy.
+//
+// `reason` is the only axis that varies. It composes the five sentences each caller
+// needs, so the two differ in the words the reader sees and in nothing else.
+func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options OptionMap, reason string) error {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
 	if err != nil {
-		slog.Error("failed to pause input before a forced stop", "agent_id", agentID, "error", err)
+		slog.Error("failed to pause input before "+reason, "agent_id", agentID, "error", err)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
 			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to force-stop the agent because the input queue could not pause: " + err.Error(),
+			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
 		})
 		return err
 	}
@@ -2675,41 +2643,52 @@ func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
 	defer func() {
 		if !queueRestartFinished {
 			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
-				slog.Error("failed to finish input queue forced stop", "agent_id", agentID, "error", finishErr)
+				slog.Error("failed to finish input queue "+reason, "agent_id", agentID, "error", finishErr)
 			}
 		}
 	}()
 
-	// The agent keeps the settings its row already holds; only the process is
-	// replaced. RestartAgent holds the lifecycle lock across the stop and the
-	// start, so the queue's cold-start dispatch cannot race the replacement.
 	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
 	agentOpts.ResumeSessionID = resumeSessionID
-	agentOpts.Options = parseOptions(dbAgent.Options)
-	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(agentOpts.Options, provider)
+	agentOpts.Options = options
+	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(options, provider)
 
 	sink := svc.Output.NewSink(agentID, provider)
+
+	// Hold the per-agent lifecycle lock across the mint AND the restart, which
+	// is why this calls restartAgentLocked. The closure exists so the release is
+	// deferred: a panic inside the mint or the start would otherwise hold this
+	// agent's lifecycle lock for the life of the process, and the dispatcher
+	// recovers a handler panic, so the worker would survive to deadlock every
+	// later restart, close and cold start of that tab.
+	//
+	// The mint retires the previous spawn's cleanup and registers a new one
+	// under the same tab id, and cleanupRegistry.register overwrites. Two
+	// relaunches for one tab that interleave their mints would therefore drop
+	// one of the two cleanups, and a close that lands between a mint's retire
+	// and its register would leave the fresh socket registered for a tab that
+	// is already gone. The other three relaunch paths already mint inside this
+	// lock; this one is the odd path out.
 	_, launched, err := func() (map[string]string, bool, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
 		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
 	}()
 	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
-		slog.Error("failed to finish input queue forced stop", "agent_id", agentID, "error", finishErr)
+		slog.Error("failed to finish input queue "+reason, "agent_id", agentID, "error", finishErr)
 	}
 	queueRestartFinished = true
 	if err != nil {
-		slog.Error("failed to restart agent after a forced stop", "agent_id", agentID, "error", err)
+		slog.Error("failed to restart agent after "+reason, "agent_id", agentID, "error", err)
 		// Clear stale session ID so ensureAgentRunning won't try to resume a
 		// non-existent session on the next message.
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
 			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart the agent after a forced stop: " + err.Error(),
+			"error": "Failed to restart the agent after " + reason + ": " + err.Error(),
 		})
 		return err
 	}
-	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
 	return nil
 }
 
@@ -3434,7 +3413,7 @@ func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leap
 // planExecutionPromptText is the turn that an approved plan starts when the
 // Worker holds no plan text of its own. The provider wrote the plan into its own
 // transcript, and the fresh context keeps that transcript, so the agent still
-// knows which plan this names.
+// knows which plan this refers to.
 const planExecutionPromptText = "Implement the plan."
 
 // enqueuePlanExecution queues the approved plan as the next turn, in a fresh

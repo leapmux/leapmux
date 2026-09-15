@@ -1,4 +1,5 @@
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 import { COPILOT_APPROVAL_SCOPE, COPILOT_DECISION, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
@@ -120,7 +121,7 @@ export function copilotPermissionOptions(payload: Record<string, unknown>): Wire
 
 /** Send one permission decision as the neutral envelope, with its approval scope. */
 export function sendCopilotPermissionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {

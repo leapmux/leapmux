@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -11,10 +12,40 @@ import (
 )
 
 // notReadyInput refuses a dispatch that nothing delivered and that a later state
-// change can still deliver. The queue requeues the item and pauses, so the user
-// never retries by hand what the Worker can resume on its own.
+// change can still deliver. The queue requeues the item and pauses, so the item
+// keeps its place and its content instead of failing.
+//
+// The pause it produces only the reader's own resume lifts -- no path resumes it
+// automatically. So this trades a per-item Retry for a whole-queue Resume; it does
+// not remove the click.
 func notReadyInput(err error) error {
 	return &inputqueue.DeliveryError{Err: err, Outcome: inputqueue.DispatchNotReady}
+}
+
+// storeFault reports a read of the WORKER'S OWN store that failed for a reason
+// which says nothing about this input. Such a read never reached the provider, so
+// the input is as undelivered as it was before, and failing it permanently makes
+// the reader retype what a retry would have sent.
+//
+// A missing row is NOT one. The agents row cascades its queue items and its queue
+// state, so sql.ErrNoRows from an agent read means the item's own agent is gone,
+// and no later read brings it back; treating that as transient would pause the
+// queue forever. The background-task row is the case that makes the exclusion
+// load-bearing: it can go while the child agents row survives.
+func storeFault(err error) bool {
+	return err != nil && !errors.Is(err, sql.ErrNoRows)
+}
+
+// notReadyStoreFault is notReadyInput for a store fault, with the pause sentence
+// that states what actually happened. AGENT_STOPPED would tell the reader the
+// agent stopped, which is false for a database error and is the sentence the
+// pause banner prints.
+func notReadyStoreFault(err error) error {
+	return &inputqueue.DeliveryError{
+		Err:         err,
+		Outcome:     inputqueue.DispatchNotReady,
+		PauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
+	}
 }
 
 type controlInput struct {

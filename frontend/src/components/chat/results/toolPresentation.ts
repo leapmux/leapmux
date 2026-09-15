@@ -1,3 +1,4 @@
+import type { LucideIcon } from 'lucide-solid'
 import type { AgentRequestSource } from './AgentRequestMessage'
 import type { AgentResultSource } from './agentResult'
 import type { CommandResultEntry, CommandResultSource } from './commandResult'
@@ -9,6 +10,7 @@ import type { SearchResultSource } from './searchResult'
 import type { StatusResultSource } from './statusResult'
 import type { ToolKind } from './toolKind'
 import type { ToolMetadataItem } from './ToolMetadata'
+import type { ToolRowStatus } from './toolRowStatus'
 import type { WebFetchResultSource } from './webFetchResult'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { TodoItem } from '~/stores/chatTodos'
@@ -41,11 +43,29 @@ export interface ToolPresentation {
   kind: ToolKind
   title: string
   label?: string
+  /**
+   * The row's icon, for a tool whose kind states less than the provider knows.
+   *
+   * The sibling of `label`, and the same rule governs it: the kind's own icon is
+   * the answer unless the provider has a better one. Reach for this ONLY where
+   * no {@link ToolKind} fits — ZCode's `TaskOutput` reads a background task, and
+   * no shared kind says that, so the kind table maps it nowhere and it would
+   * otherwise draw the wrench every unrecognized tool draws. A tool that DOES
+   * fit a kind belongs in its provider's kind table, not here, because the kind
+   * also drives the label, the title and the input summary.
+   */
+  icon?: LucideIcon
   agentRequest?: AgentRequestSource
   input: Record<string, unknown>
   inputText?: string
   /** File operations from a patch request. They do not establish that the changes occurred. */
   requestedChanges?: FileEditDiffSource[]
+  /**
+   * The edit replaced EVERY occurrence, not the first one. The title says so,
+   * because that is the difference which makes the call worth reading before it
+   * is approved. A provider whose edit tool has no such option omits this.
+   */
+  replaceAll?: boolean
   output: string
   body: ToolBodySource
   /**
@@ -69,7 +89,7 @@ export interface ToolPresentation {
 export interface ToolMessageSource {
   id: string
   role: 'request' | 'update' | 'result'
-  status: string
+  status: ToolRowStatus
   presentation: ToolPresentation
   images: ImageResultSource[]
 }

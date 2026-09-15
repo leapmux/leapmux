@@ -1137,7 +1137,7 @@ func TestAgent_LeapMuxWorkerEnvAlwaysSet(t *testing.T) {
 //
 // The id decides two things. SettingsSnapshot reports the permission-mode axis
 // UNRESOLVED while an id is set, so applyPlanOptionsLocked refuses every plan that
-// names the permission mode. And claudeCodeHandleControlResponse folds the mode of
+// specifies the permission mode. And claudeCodeHandleControlResponse folds the mode of
 // the matching ack back into the confirmed state, so a late probe ack would replace
 // the mode this session runs with the mode the probe asked for.
 func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.T) {

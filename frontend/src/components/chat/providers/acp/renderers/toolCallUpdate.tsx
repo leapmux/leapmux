@@ -4,9 +4,9 @@ import type { ToolMessageSource } from '../../../results/toolPresentation'
 import type { SpanRole } from '../../registry'
 import type { ACPToolAdapter } from '../toolPresentation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { createMemo } from 'solid-js'
+import { toolRowStatus } from '~/components/chat/results/toolRowStatus'
 import { pickString } from '~/lib/jsonPick'
-import { ToolMessage } from '../../../results/ToolMessage'
+import { ToolMessageSpan } from '../../../results/ToolMessageSpan'
 import { acpImagesFromToolCall } from '../extractors/image'
 import { acpToolFinished, acpToolPresentation, parsedACPToolCall, resolveACPToolCall } from '../toolPresentation'
 
@@ -26,23 +26,26 @@ export function ToolCallUpdateMessage(props: {
     return {
       id: pickString(resolved, 'toolCallId'),
       role: acpToolFinished(resolved, parsed?.completion) ? 'result' : tool.sessionUpdate === 'tool_call' ? 'request' : 'update',
-      status: pickString(resolved, 'status'),
+      status: toolRowStatus(pickString(resolved, 'status')),
       presentation,
       images: acpImagesFromToolCall({ ...resolved, rawInput: presentation.input }),
     }
   }
-  const request = createMemo(() => {
-    const parsed = props.context?.sources?.request()
-    const tool = parsedACPToolCall(parsed?.parentObject)
-    return tool ? resolve(tool, parsed, undefined, 'opener') : undefined
-  })
-  const source = createMemo(() => resolve(props.toolUse, props.context?.sources?.current(), props.context?.sources?.request()?.parentObject, props.context?.sources?.role()))
-  const result = createMemo(() => {
-    const parsed = props.context?.sources?.result()
-    const tool = parsedACPToolCall(parsed?.parentObject)
-    return tool ? resolve(tool, parsed, props.toolUse, 'result') : undefined
-  })
-  return <ToolMessage source={source()} request={request()} result={result()} context={props.context} />
+  return (
+    <ToolMessageSpan
+      context={props.context}
+      // ACP always resolves a row, so the helper's guard is always true here.
+      source={parsed => resolve(props.toolUse, parsed, props.context?.sources?.request()?.parentObject, props.context?.sources?.role())}
+      request={(parsed) => {
+        const tool = parsedACPToolCall(parsed.parentObject)
+        return tool ? resolve(tool, parsed, undefined, 'opener') : undefined
+      }}
+      result={(parsed) => {
+        const tool = parsedACPToolCall(parsed.parentObject)
+        return tool ? resolve(tool, parsed, props.toolUse, 'result') : undefined
+      }}
+    />
+  )
 }
 
 export function acpToolCallUpdateRenderer(toolUse: Record<string, unknown>, context?: RenderContext, adapter?: ACPToolAdapter): JSX.Element {

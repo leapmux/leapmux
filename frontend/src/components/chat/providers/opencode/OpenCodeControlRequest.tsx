@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 
 import { PermissionDecisionActions } from '../../controls/PermissionDecisionActions'
 import { sendResponse, sendSelectedOptionResponse } from '../../controls/types'
@@ -55,7 +56,7 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Ques
  * Sends an OpenCode permission response as a JSON-RPC response.
  */
 export function sendOpenCodePermissionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {
@@ -63,7 +64,7 @@ export function sendOpenCodePermissionResponse(
 }
 
 export function sendOpenCodeQuestionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   questions: Question[],
   answerState: ControlAnswerState,
@@ -85,7 +86,7 @@ export function sendOpenCodeQuestionResponse(
 }
 
 export function sendOpenCodeQuestionRejectResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
 ): Promise<void> {
   return sendResponse(onRespond, {

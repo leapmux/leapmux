@@ -7,7 +7,7 @@ import { rawTodosToItems } from '~/stores/chatTodos'
 import { parseUnifiedDiffCached } from '../../diff'
 import { agentToolPresentation } from '../../results/AgentRequestMessage'
 import { fileEditDiffFromHunks, fileEditHasDiff } from '../../results/fileEditDiff'
-import { mcpStatusFromToolStatus, mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../../results/mcpToolCall'
+import { mcpStatusFromToolStatus, mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName, splitPrefixedPair } from '../../results/mcpToolCall'
 import { todoToolBody } from '../../results/toolPresentation'
 import { collectAcpToolText, flattenAcpContent } from '../acp/content'
 import { acpToolFinished, acpToolPresentation } from '../acp/toolPresentation'
@@ -23,28 +23,6 @@ import { reasonixEditReceipt } from './editReceipt'
  * that does.
  */
 const REASONIX_MCP_CAPABILITY_PREFIX = 'mcp-tool:'
-
-/**
- * Split `<prefix><server><separator><tool>` into its two halves.
- *
- * This serves Reasonix's own capability id. The `mcp__server__tool` spelling is a
- * Model Context Protocol convention that several agents share, so `parseMcpToolName`
- * in `~/components/chat/results/mcpToolCall` states that one.
- *
- * Returns null when the prefix is absent, when the separator is absent, or when
- * EITHER half is empty. An empty tool half labels the row with nothing, which states
- * less than the raw identifier does.
- */
-function splitPrefixedPair(id: string, prefix: string, separator: string): { server: string, tool: string } | null {
-  if (!id.startsWith(prefix))
-    return null
-  const index = id.indexOf(separator, prefix.length)
-  if (index < 0)
-    return null
-  const server = id.slice(prefix.length, index)
-  const tool = id.slice(index + separator.length)
-  return server && tool ? { server, tool } : null
-}
 
 const toolKinds: Record<string, string> = {
   read_file: 'read',

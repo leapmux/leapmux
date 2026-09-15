@@ -53,7 +53,7 @@ func TestCopilotOffReaderKeepsOneRunOfAKeyInFlight(t *testing.T) {
 	require.Eventually(t, func() bool { return runs.Load() == 2 }, time.Second, time.Millisecond)
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	assert.Empty(t, a.backgroundReads, "a finished read leaves no entry behind")
+	assert.True(t, a.backgroundReads.idle(), "a finished read leaves no entry behind")
 }
 
 // A read that nobody interrupted runs exactly once.
@@ -64,7 +64,7 @@ func TestCopilotOffReaderRunsOnceForOneRequest(t *testing.T) {
 	require.Eventually(t, func() bool { return runs.Load() == 1 }, time.Second, time.Millisecond)
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	assert.Empty(t, a.backgroundReads)
+	assert.True(t, a.backgroundReads.idle())
 }
 
 // The keys stand apart: an objective read and a settings read never wait for each other.
@@ -96,11 +96,7 @@ func TestCopilotOffReaderRefusesAStoppedProcess(t *testing.T) {
 	a.mu.Unlock()
 	var runs atomic.Int64
 	a.offReader(copilotReadGoal, func() { runs.Add(1) })
-	require.Eventually(t, func() bool {
-		a.stateMu.Lock()
-		defer a.stateMu.Unlock()
-		return len(a.backgroundReads) == 0
-	}, time.Second, time.Millisecond)
+	require.Eventually(t, a.backgroundReads.idle, time.Second, time.Millisecond)
 	assert.Zero(t, runs.Load())
 }
 
@@ -121,7 +117,15 @@ func TestCopilotAnswersAnUnsupportedRequest(t *testing.T) {
 	raw := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"session/requestSomethingNew","params":{}}`)
 	a.HandleOutput(raw)
 
-	answer := written.String()
+	// The refusal is written on its OWN goroutine, so that a reply to a runtime
+	// which is not draining its stdin cannot stall the read loop that must keep
+	// draining the runtime's stdout -- and, here, cannot hold outputMu across the
+	// write and leave Stop unable to close stdin and end the stall.
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = written.String()
+		return strings.Contains(answer, `"code":-32601`)
+	}, 2*time.Second, 5*time.Millisecond, "the unsupported request is answered")
 	require.Contains(t, answer, `"code":-32601`)
 	require.Contains(t, answer, "Method not supported: session/requestSomethingNew")
 	assert.Contains(t, answer, `"id":9007199254740993`,

@@ -179,7 +179,19 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	if !plan.requestMeta.Exists {
 		return errors.New("the control request is no longer pending")
 	}
-	if plan.requestMeta.ClaimToken != claimToken {
+	// A SILENT refusal, and the only one here: every other gate below returns an
+	// error. The claim token identifies the request INSTANCE, so a mismatch means
+	// the card the reader answered from belongs to an instance the worker already
+	// retired and reissued. There is no error to report, because nothing went
+	// wrong: controlResponseState reports that instance as CANCELED, and the
+	// browser retires its stale card on that state and keeps the live one. Do not
+	// "fix" this into an error -- that would put a failure toast on a card the
+	// reader cannot see any more.
+	//
+	// It must stay BELOW the Exists gate. A missing row leaves ClaimToken empty,
+	// which would take this silent path instead of the error that says the request
+	// is gone.
+	if plan.answersARetiredInstance(claimToken) {
 		return nil
 	}
 	if plan.isPlanPrompt() && (!plan.requestMeta.Loaded || !plan.hasDecision) {

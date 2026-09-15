@@ -46,12 +46,16 @@ type toolSupplementSource interface {
 	// itself.
 	readSupplements(ctx context.Context, path string, pending map[string]MessageContent, final bool) (map[string][]byte, error)
 
-	// readsInitialSupplement reports whether initialSupplement can produce anything.
-	// A source that reports false costs an agent message no deadline at all.
-	readsInitialSupplement() bool
-
 	// initialSupplement builds what the provider can supply for a message that the
-	// transcript is about to persist, before the row exists.
+	// transcript is about to persist, before the row exists. A source with nothing
+	// to add returns (nil, nil), which the noop below already does.
+	//
+	// There is deliberately NO companion predicate. One existed, and it defaulted to
+	// false on the noop, so a source that implemented this method and forgot the
+	// predicate was skipped in silence -- a mistake no compiler and no test could
+	// catch, because neither asked for the pair to agree. What it bought was one
+	// context.WithTimeout per agent message for a source with no supplement, in a
+	// function that already runs a store write.
 	initialSupplement(ctx context.Context, path string, original []byte, span SpanInfo) ([]byte, error)
 
 	// resetRecords drops what the source cached for a session that ended.
@@ -77,8 +81,6 @@ type toolSupplementSource interface {
 // check. Eight function fields held this before, five of which the transcript tested
 // for nil at each call.
 type noopToolSupplementSource struct{}
-
-func (noopToolSupplementSource) readsInitialSupplement() bool { return false }
 
 func (noopToolSupplementSource) initialSupplement(context.Context, string, []byte, SpanInfo) ([]byte, error) {
 	return nil, nil
@@ -334,7 +336,7 @@ func (s *toolTranscript) PersistMessage(source leapmuxv1.MessageSource, content 
 	// The initial supplement stays on THIS goroutine, because it enriches the message
 	// that this call is about to persist. The worker cannot supply it, because the row
 	// does not exist yet.
-	if ready && s.source.readsInitialSupplement() {
+	if ready {
 		ctx, cancel := s.supplementContext(false)
 		extra, err := s.source.initialSupplement(ctx, path, content.Original, span)
 		cancel()
@@ -398,18 +400,29 @@ func (s *toolTranscript) finishPending() {
 	}
 }
 
-// CleanupChildAgent drops the child transcript together with the child.
+// CleanupChildAgent drains the child transcript, then drops it with the child.
 //
 // This wrapper is the only holder of that transcript, and nothing else prunes the map
 // within a session. Without the override the cleanup reached the wrapped sink alone, so
 // every later finishPending still walked the dead child and re-ran its whole turn-end
 // pass.
+//
+// It DRAINS before it drops, and that order is the point. Dropping alone loses every
+// supplement the child still holds: nothing calls PersistChildTurnEnd anywhere, so
+// this is the only end a child transcript ever reaches, and the row the child was
+// enriching keeps the bare content its provider first forwarded. A subagent's LAST
+// tool call is always the one at risk, because PersistMessage asks for its pass
+// before it adds the entry -- so the entry is never covered by a pass already
+// running, and closeSupplementWorker also clears one that is merely queued. The
+// final pass runs on this goroutine, which the doc on toolSupplementSource states is
+// allowed for a closed transcript.
 func (s *toolTranscript) CleanupChildAgent(childAgentID string) {
 	s.mu.Lock()
 	child := s.children[childAgentID]
 	delete(s.children, childAgentID)
 	s.mu.Unlock()
 	if child != nil {
+		child.finishPending()
 		child.closeSupplementWorker()
 	}
 	s.ProviderServices.CleanupChildAgent(childAgentID)
@@ -444,6 +457,9 @@ func (s *toolTranscript) ChildSink(childAgentID string) ProviderServices {
 	return child
 }
 
+// Only the AGENT-source child writes are overridden. See the ChildServices doc on
+// PersistChildMessage for why PersistChildPrompt and PersistChildUserMessage are
+// not, and what a future USER-source interception would have to change.
 func (s *toolTranscript) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	child := s.ChildSink(childAgentID)
 	if child == nil {

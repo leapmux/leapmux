@@ -174,10 +174,7 @@ func (a *copilotAgent) clearNativeGoal() error {
 	if _, err := a.sendRequest("sessions.close", params, a.APITimeout()); err != nil {
 		return fmt.Errorf("close the Copilot session before opening it again: %w", err)
 	}
-	opts := a.opts
-	a.stateMu.Lock()
-	opts.Options = a.options.Clone()
-	a.stateMu.Unlock()
+	opts := a.sessionLaunchOptions()
 	// The disposed session runs no turn, answers no pending control, owns no child
 	// transcript, and its subscriptions die with it. The identity does NOT move: the
 	// session opens again under its own, so the transcript keeps it.
@@ -219,10 +216,7 @@ func (a *copilotAgent) clearNativeGoal() error {
 // leaves the outcome unknown, and a create there could replace a session whose
 // events the store still holds.
 func (a *copilotAgent) reopenNativeSessionAfterClear(opts Options, sessionID string) error {
-	config := newCopilotSessionConfig(opts, sessionID, true)
-	continueWork := false
-	config.ContinuePendingWork = &continueWork
-	_, err := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
+	err := a.resumeNativeSessionWithoutPendingWork(opts, sessionID)
 	if err == nil {
 		return nil
 	}
@@ -326,4 +320,36 @@ func (a *copilotAgent) refreshNativeGoal(snapshot bool) {
 // run on the goroutine that handles the event.
 func (a *copilotAgent) refreshNativeGoalInBackground() {
 	a.offReader(copilotReadGoal, func() { a.refreshNativeGoal(false) })
+}
+
+// sessionLaunchOptions snapshots the launch options with the CONFIRMED option set
+// the running session reported.
+//
+// It takes stateMu itself, and no caller holds it here. Both session-replacement
+// paths need the same four lines, and they must agree exactly: the reopened session
+// is configured from this snapshot, so a divergence would open it with settings
+// nobody chose.
+func (a *copilotAgent) sessionLaunchOptions() Options {
+	opts := a.opts
+	a.stateMu.Lock()
+	opts.Options = a.options.Clone()
+	a.stateMu.Unlock()
+	return opts
+}
+
+// resumeNativeSessionWithoutPendingWork restores a session's conversation and tells
+// the runtime NOT to continue the work the session had in flight.
+//
+// The pending work belongs to the turn that the clear or the context reset ended, so
+// continuing it would resume work the reader already discarded.
+//
+// It returns the transport error UNWRAPPED, because reopenNativeSessionAfterClear
+// tests it with errors.As for a jsonRPCResponseError: only the runtime's own refusal
+// permits the create that follows, and a wrapped error would hide that distinction.
+func (a *copilotAgent) resumeNativeSessionWithoutPendingWork(opts Options, sessionID string) error {
+	config := newCopilotSessionConfig(opts, sessionID, true)
+	continueWork := false
+	config.ContinuePendingWork = &continueWork
+	_, err := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
+	return err
 }

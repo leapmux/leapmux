@@ -1,12 +1,12 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ToolMessageSource } from '../../../results/toolPresentation'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMemo, For, Show } from 'solid-js'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { AgentResultBody } from '../../../results/agentResult'
-import { ToolMessage } from '../../../results/ToolMessage'
+import { ToolMessageSpan } from '../../../results/ToolMessageSpan'
 import { piSubagentNotificationSources } from '../extractors/customMessage'
 import { piToolMessageSource, piToolRow } from '../toolPresentation'
 import { PiPlanRequest, PiPlanResult } from './plan'
@@ -25,21 +25,17 @@ interface RendererProps {
 function PiToolMessage(props: RendererProps): JSX.Element {
   const request = () => props.context?.sources?.request()
   const result = () => props.context?.sources?.result()
-  const sideSource = (parsed: ParsedMessageContent | undefined): ToolMessageSource | undefined => {
-    const row = parsed ? piToolRow(parsed.parentObject, request(), result(), parsed.completion) : null
-    return row ? piToolMessageSource(row, parsed?.completion) : undefined
-  }
-  const source = createMemo(() => {
-    const completion = props.context?.sources?.current()?.completion
-    const row = piToolRow(props.parsed, request(), result(), completion)
+  const build = (payload: unknown, completion: MessageCompletion | undefined): ToolMessageSource | undefined => {
+    const row = piToolRow(payload, request(), result(), completion)
     return row ? piToolMessageSource(row, completion) : undefined
-  })
-  const requestSource = createMemo(() => sideSource(request()))
-  const resultSource = createMemo(() => sideSource(result()))
+  }
   return (
-    <Show when={source()}>
-      {resolved => <ToolMessage source={resolved()} request={requestSource()} result={resultSource()} context={props.context} />}
-    </Show>
+    <ToolMessageSpan
+      context={props.context}
+      source={parsed => build(props.parsed, parsed?.completion)}
+      request={parsed => build(parsed.parentObject, parsed.completion)}
+      result={parsed => build(parsed.parentObject, parsed.completion)}
+    />
   )
 }
 

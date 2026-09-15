@@ -29,10 +29,7 @@ func (a *copilotAgent) ClearContext() (string, error) {
 	if _, err := a.requestNativeSession("suspend", nil); err != nil {
 		return "", err
 	}
-	opts := a.opts
-	a.stateMu.Lock()
-	opts.Options = a.options.Clone()
-	a.stateMu.Unlock()
+	opts := a.sessionLaunchOptions()
 	a.forgetNativeSessionState(id.String())
 	_, err = a.openSession(opts, id.String(), false, a.APITimeout())
 	if err == nil {
@@ -50,10 +47,7 @@ func (a *copilotAgent) ClearContext() (string, error) {
 		a.releaseNativeControlEvents()
 		_, suspendErr := a.requestNativeSession("suspend", nil)
 		a.forgetNativeSessionState(oldID)
-		config := newCopilotSessionConfig(opts, oldID, true)
-		continueWork := false
-		config.ContinuePendingWork = &continueWork
-		_, restoreErr := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
+		restoreErr := a.resumeNativeSessionWithoutPendingWork(opts, oldID)
 		if restoreErr == nil {
 			restoreErr = a.prepareNativeSession(opts.Options)
 		}

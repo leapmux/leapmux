@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -196,6 +197,42 @@ func (b *jsonrpcBase) sendErrorResponse(id json.RawMessage, code int, message st
 			"message": message,
 		},
 	})
+}
+
+// jsonrpcErrMethodNotFound is the JSON-RPC code for a method the receiver
+// implements no handler for.
+const jsonrpcErrMethodNotFound = -32601
+
+// refuseUnsupportedRequest answers an inbound REQUEST this worker implements no
+// handler for, with -32601.
+//
+// A notification carries no id and needs no answer, so this returns for one. A
+// request does: the runtime waits for a response, and without one it waits for its
+// own timeout while the turn appears to hang. Every JSON-RPC dispatcher's default
+// branch owes that answer, and each one spelled it again -- with two constants for
+// the same code and two message strings -- until Codex, the fourth, never spelled
+// it at all.
+//
+// It answers on its OWN goroutine, and that is the load-bearing part. Every caller
+// runs inside the read loop, so the reply's stdin write happens while nothing
+// drains the child's stdout. A child that is not reading its stdin then blocks the
+// write, the unread stdout backs up against it, and neither side moves again. One
+// caller made it worse still by holding its own output mutex across the write,
+// which left Stop unable to take the lock it needs to close stdin and end the
+// stall. `zcodeReplyFrame` states the same rule for the same reason.
+//
+// The raw identifier travels back unchanged, so an id above 2^53 keeps its exact
+// value rather than rounding through a float.
+func (b *jsonrpcBase) refuseUnsupportedRequest(line *parsedLine) {
+	if line.Method == "" || !line.HasID() {
+		return
+	}
+	id, method := line.ID, line.Method
+	go func() {
+		if err := b.sendErrorResponse(id, jsonrpcErrMethodNotFound, "Method not supported: "+method); err != nil {
+			slog.Warn("Answer an unsupported request", "agent_id", b.agentID, "method", method, "error", err)
+		}
+	}()
 }
 
 func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {

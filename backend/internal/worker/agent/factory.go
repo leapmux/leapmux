@@ -212,9 +212,21 @@ type agentFactoryEntry struct {
 	// ProviderManagesEffort answers from defaultModels alone, and a nil catalog reads
 	// as "this provider has no per-model effort". See setManagesEffort.
 	managesEffort bool
-	envModelKey   string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey  string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
-	binaryNames   []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
+	// fixedPermissionModes marks a provider whose permission-mode enum LeapMux
+	// states itself, completely, so ValidateLaunchOptions may reject a value the
+	// static group omits. An ACP provider DISCOVERS its modes from the daemon, and
+	// its static group is only a seed, so validating against that seed would refuse
+	// a mode the daemon really offers.
+	//
+	// It is a SEPARATE flag from managesEffort on purpose. The two answered one
+	// question for as long as the same providers happened to give the same answer,
+	// and the moment native Copilot set managesEffort -- for its model-dependent
+	// effort catalog alone -- it silently gained permission-mode validation
+	// authority as well. See setFixedPermissionModes.
+	fixedPermissionModes bool
+	envModelKey          string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey         string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryNames          []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
 	// launchResolver replaces the binaryNames probe for a provider whose program is
 	// not a bare name the login shell can resolve (see launchResolverFunc). When set,
 	// binaryNames is unused for both availability and launch.
@@ -329,6 +341,20 @@ func setModelSubGroups(provider leapmuxv1.AgentProvider, fn modelSubGroupsFunc) 
 // the other entry mutators.
 func setManagesEffort(provider leapmuxv1.AgentProvider) {
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.managesEffort = true })
+}
+
+// setFixedPermissionModes declares that this provider's permission-mode enum is
+// LeapMux's own and complete, so a launch option outside it is rejectable before
+// the session opens. Call it from the provider's init() after registerAgentFactory.
+func setFixedPermissionModes(provider leapmuxv1.AgentProvider) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.fixedPermissionModes = true })
+}
+
+// ProviderHasFixedPermissionModes reports whether ValidateLaunchOptions may reject a
+// permission mode for this provider. See agentFactoryEntry.fixedPermissionModes.
+func ProviderHasFixedPermissionModes(provider leapmuxv1.AgentProvider) bool {
+	entry, ok := agentFactoryRegistry[provider]
+	return ok && entry.fixedPermissionModes
 }
 
 // setAdditionalOptionIDs declares runtime option IDs that the static option groups omit.

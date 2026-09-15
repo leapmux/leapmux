@@ -25,11 +25,17 @@ type cursorProvider struct {
 }
 
 // ResolveControlResponse rewrites a create-plan answer and forwards every other one.
-func (cursorProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
-	if result, ok := resolveMCPElicitationResponse(ctx); ok {
-		return result
-	}
-	res := defaultControlResponseResolution(ctx)
+//
+// It DELEGATES to the embedded acpProvider rather than repeating its body. The two
+// branches cannot collide -- resolveMCPElicitationResponse answers only an MCP
+// elicitation method, and the transform below refuses anything that is not
+// contracts.CursorMethodCreatePlan -- so a third branch added to the shared ACP
+// resolution reaches Cursor too, instead of serving Kilo, OpenCode, Goose and
+// Reasonix while Cursor silently keeps a stale copy.
+func (p cursorProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+	res := p.acpProvider.ResolveControlResponse(ctx)
+	// An empty payload reaches warnUnmarshal below and logs a failure for a request
+	// that carried nothing to parse.
 	if len(ctx.RequestPayload) == 0 {
 		return res
 	}

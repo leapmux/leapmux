@@ -70,7 +70,7 @@ func TestControlRegistryWithdrawalWithoutAnAnswerOnlyDropsTheCard(t *testing.T) 
 	base, stdin := newRegistryBase()
 	sink := &registryCancelSink{}
 	base.publishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), acpPermissionCancelAnswer())
-	base.withdrawControlRequest(sink, "jsonrpc:7", false)
+	base.withdrawControlRequest(sink, "jsonrpc:7")
 	assert.Empty(t, stdin.String())
 	assert.Equal(t, []string{"jsonrpc:7"}, sink.cancelled)
 	// The record is gone, so a later stop cannot answer it a second time.
@@ -198,4 +198,60 @@ func TestACPCancelNotificationMatchesEveryNumericSpelling(t *testing.T) {
 			assert.Equal(t, []string{"jsonrpc:12"}, sink.cancelled)
 		})
 	}
+}
+
+// Codex is the one publisher that registers a REAL cancel answer: it retires its
+// own approval requests, but it defines no outcome for an MCP elicitation the
+// client withdraws, so the elicitation blocks inside the CLI until somebody
+// answers it. Without a drain on Interrupt that answer could never be delivered
+// and the state was dead.
+func TestCodexInterruptAnswersAnOutstandingElicitation(t *testing.T) {
+	t.Parallel()
+
+	sink := &registryCancelSink{}
+	stdin := &syncBuffer{}
+	a := &CodexAgent{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{agentID: "agent", stdin: nopWriteCloser{stdin}}},
+		sink:        sink,
+	}
+	a.publishControlRequest(a.sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"`+contracts.MCPElicitationMethodCodex+`"}`), mcpElicitationCancelAnswer())
+
+	// No thread or turn, so Interrupt has nothing to cancel and returns early --
+	// the drain must still run, because a request the runtime waits on outlives
+	// the turn that raised it.
+	require.NoError(t, a.Interrupt())
+
+	assert.Contains(t, stdin.String(), `{"action":"cancel"}`,
+		"the elicitation's own cancel answer releases the blocked MCP call")
+	assert.Equal(t, []string{"jsonrpc:7"}, sink.cancelled, "and the browser card goes with it")
+}
+
+// A withdrawal that lands between the registration and the publish cancelled a
+// card that did not exist yet: CancelControlRequest found no row and returned in
+// silence, and the publish then created the card it meant to retire. The result
+// was a live card with no record behind it, which no later withdrawal could reach
+// and the reader could never dismiss.
+func TestControlRegistryRetiresACardAStopStoleDuringThePublish(t *testing.T) {
+	t.Parallel()
+
+	base, _ := newRegistryBase()
+	sink := &stealingPublishSink{base: base}
+	base.publishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), acpPermissionCancelAnswer())
+
+	assert.Equal(t, []string{"jsonrpc:7"}, sink.cancelled,
+		"the publish must retire a card whose record a stop already took")
+}
+
+// stealingPublishSink drains the registry from INSIDE PublishControlRequest, which
+// is the window a stop lands in: the record is registered, and the card does not
+// exist yet.
+type stealingPublishSink struct {
+	registryCancelSink
+	base *jsonrpcBase
+}
+
+func (s *stealingPublishSink) PublishControlRequest(request ControlRequest) error {
+	s.base.withdrawAllControlRequests(&s.registryCancelSink)
+	s.cancelled = nil // The stop's own cancel found no row; only the publish's counts.
+	return nil
 }

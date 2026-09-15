@@ -158,3 +158,32 @@ describe('acpToolNeedsResult', () => {
     expect(acpToolNeedsResult({ ...withTerminal, rawInput: {} })).toBe(true)
   })
 })
+
+// Cursor sends `switch_mode` for its mode-change tool -- the one kind the Agent
+// Client Protocol defines that the shared table omits. The row must keep the
+// provider's own word as its name, and it must get the uncategorized treatment a
+// literal `other` gets, because a kind LeapMux does not know IS uncategorized.
+describe('a wire kind the shared tables do not know', () => {
+  const call = (extra: Record<string, unknown> = {}) => acpToolPresentation({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'switch',
+    kind: 'switch_mode',
+    status: 'completed',
+    title: 'Switch Mode: agent',
+    rawInput: { targetModeId: 'agent' },
+    ...extra,
+  })
+
+  it('narrows the kind but keeps the provider word as the label', () => {
+    expect(call().kind).toBe('other')
+    expect(call().label).toBe('Switch_mode')
+  })
+
+  it('reads a raw result object, as a literal other does', () => {
+    expect(call({ rawOutput: { targetModeId: 'agent' } }).output).toContain('targetModeId')
+  })
+
+  it('draws the arguments through the uncategorized body, as a literal other does', () => {
+    expect(call().body.type).toBe('mcp')
+  })
+})

@@ -347,6 +347,9 @@ func (s modelProgressResetChildren) ChildSink(childAgentID string) ProviderServi
 	return newModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
 }
 
+// Only the AGENT-source child writes are overridden. See the ChildServices doc on
+// PersistChildMessage for why PersistChildPrompt and PersistChildUserMessage are
+// not, and what a future USER-source interception would have to change.
 func (s modelProgressResetChildren) PersistChildMessage(
 	childAgentID string,
 	source leapmuxv1.MessageSource,

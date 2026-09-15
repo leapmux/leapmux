@@ -97,7 +97,7 @@ func (s *cursorToolStore) read(ctx context.Context, path string, toolIDs []strin
 	if err != nil {
 		return nil, err
 	}
-	if s.path != path || s.file == nil || !os.SameFile(s.file, file) {
+	if sessionStoreMoved(s.path, s.file, path, file) {
 		s.resetLocked()
 		s.path, s.file = path, file
 		s.requests = make(map[string]cursorBlobReference)

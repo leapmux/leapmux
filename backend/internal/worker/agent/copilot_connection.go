@@ -26,7 +26,7 @@ type copilotConnection struct {
 //
 // The reader reaches its agent through the connection the caller holds, so the caller
 // adopts the connection first and calls startReading afterwards. A single function
-// that did both would hand the reader a field its caller has not assigned yet, and the
+// that did both would hand the reader a field the caller does not assign until later, and the
 // first frame would then read a nil pointer.
 //
 // verifyNativeProtocol completes the startup. Keep the three calls in that order.

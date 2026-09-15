@@ -116,10 +116,16 @@ func (z *zcodeToolSource) resetRecords() { z.clearRequests() }
 
 func (z *zcodeToolSource) finishTurn() { z.clearRequests() }
 
+// clearRequests drops what this source holds for a turn or a session that ended,
+// AND the artifact bodies the store read for it. Only a pass of the same turn can
+// read one of those, because the turn end clears the pending set a later pass asks
+// about -- so keeping them past this point retains every artifact of the session
+// for nothing. A child source shares the one store, and so shares this reset.
 func (z *zcodeToolSource) clearRequests() {
 	z.mu.Lock()
 	clear(z.requests)
 	z.mu.Unlock()
+	z.store.dropArtifacts()
 }
 
 // newChild builds a source on the SAME store, which is how each child transcript

@@ -194,7 +194,7 @@ message ListAgentsResponse {
   repeated AgentInfo agents = 1;
   // One entry per REQUESTED tab_id, so the caller can tell an omission
   // that is transient from one that is permanent. Empty when the request
-  // named no tab_ids (the list-everything form).
+  // listed no tab_ids (the list-everything form).
   repeated TabHydrationVerdict verdicts = 2;
 }
 
@@ -336,7 +336,7 @@ message AvailableOption {
   repeated OptionSideEffect clears = 6;
 }
 
-// OptionSideEffect names one option value that another option's selection settles.
+// OptionSideEffect identifies one option value that another option's selection settles.
 message OptionSideEffect {
   string group_id = 1;  // The group whose value changes (e.g. "allow_all")
   string value = 2;     // The value that group takes (e.g. "off")
@@ -392,6 +392,11 @@ enum AgentInputQueuePauseReason {
   AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED = 3;
   AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED = 4;
   AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN = 5;
+  // A read of the worker's own store failed, so the dispatch never reached the
+  // provider. It says nothing about the agent, which is why it is not
+  // AGENT_STOPPED: that sentence is false for a database fault, and it is what
+  // the reader sees.
+  AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT = 6;
 }
 
 message QueuedAgentInputAttachment {
@@ -510,7 +515,7 @@ message SteerQueuedAgentInputRequest {
 }
 message SteerQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 
-// PreemptQueuedAgentInput cancels the agent's active turn and leaves the named
+// PreemptQueuedAgentInput cancels the agent's active turn and leaves the specified
 // queued item to dispatch through the ordinary turn-end drain, so the message
 // is sent as soon as the cancelled turn reports its end. Offered for providers
 // that cannot steer (no mid-turn injection) but can interrupt.

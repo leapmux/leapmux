@@ -193,9 +193,54 @@ func TestToolTranscriptCleanupDropsTheChildTranscript(t *testing.T) {
 	remaining := len(transcript.children)
 	transcript.mu.Unlock()
 	assert.Zero(t, remaining)
+	// The cleanup drains the child before it drops it, which is one pass. What must
+	// not happen is a SECOND pass, at the turn end, for a child that is already gone.
+	childPasses.Store(0)
 
 	require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
-	assert.Zero(t, childPasses.Load(), "a turn end must not reach a child the caller cleaned up")
+	assert.Zero(t, childPasses.Load(), "a turn end must not re-run a pass for a drained child")
+}
+
+// Nothing calls PersistChildTurnEnd anywhere in the worker, so CleanupChildAgent is
+// the ONLY end a child transcript ever reaches. A cleanup that dropped the child
+// without draining it lost every supplement the child still held -- and a subagent's
+// LAST tool call is always among them, because PersistMessage asks for its pass
+// before it adds the entry, so no running pass covers it.
+func TestToolTranscriptCleanupFlushesWhatTheChildStillHolds(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	transcript, source := newTestToolTranscript(t, sink, func(map[string]MessageContent, bool) map[string][]byte { return nil })
+	source.childHook = func() toolSupplementSource {
+		child := &testToolSource{}
+		child.locateHook = source.locateHook
+		child.readHook = func(_ context.Context, pending map[string]MessageContent, _ bool) map[string][]byte {
+			out := make(map[string][]byte, len(pending))
+			for id := range pending {
+				out[id] = []byte(`{"nativeTool":{"recovered":true}}`)
+			}
+			return out
+		}
+		return child
+	}
+	childSink := transcript.ChildSink("child-1")
+	require.NotNil(t, childSink)
+
+	// The subagent's last tool result: a closing span, which is what enters pending.
+	require.NoError(t, childSink.PersistMessage(
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		MessageContent{Original: []byte(`{"toolCallId":"call","result":"done"}`)},
+		SpanInfo{SpanID: "call", Closing: true},
+	))
+
+	transcript.CleanupChildAgent("child-1")
+
+	// The child's own recording sink holds the row the drain enriched.
+	childRecorder, ok := sink.ChildSink("child-1").(*testSink)
+	require.True(t, ok)
+	rows := childRecorder.Messages()
+	require.Len(t, rows, 1)
+	assert.Contains(t, string(rows[0].SupplementalContent), "recovered",
+		"the cleanup must flush the supplement the child still held")
 }
 
 // A source with no child hook has no child transcript, so the wrapped sink serves the
@@ -401,4 +446,48 @@ func TestToolTranscriptStopsTheSupplementWorkerWithTheAgentContext(t *testing.T)
 	// A closed transcript still enriches at the turn end, because the final pass runs
 	// on the caller's goroutine.
 	require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
+}
+
+// PersistChildPrompt and PersistChildUserMessage BYPASS this decorator: the raw
+// sink's implementation resolves ChildSink on its own receiver, which Go's
+// embedding cannot redirect. That is harmless only while both writes carry
+// MESSAGE_SOURCE_USER, which this transcript passes straight through.
+//
+// A DIFFERENTIAL test, not an output assertion: it writes through the decorator and
+// through the bare sink and requires the two rows to agree. It passes today and
+// fails the moment either write starts carrying agent content, or this transcript
+// starts acting on a user-source child write -- which is the exact change that
+// would make the bypass a defect.
+func TestToolTranscriptChildUserWritesAreUnaffectedByTheDecorator(t *testing.T) {
+	t.Parallel()
+
+	decorated := &testSink{}
+	transcript, source := newTestToolTranscript(t, decorated, func(map[string]MessageContent, bool) map[string][]byte { return nil })
+	source.childHook = func() toolSupplementSource { return &testToolSource{locateHook: source.locateHook} }
+	require.NotNil(t, transcript.ChildSink("child-1"))
+
+	bare := &testSink{}
+	require.NotNil(t, bare.ChildSink("child-1"))
+
+	for _, write := range []struct {
+		name string
+		run  func(services ChildServices) error
+	}{
+		{"prompt", func(services ChildServices) error { return services.PersistChildPrompt("child-1", "do the thing") }},
+		{"user message", func(services ChildServices) error { return services.PersistChildUserMessage("child-1", "and this too") }},
+	} {
+		require.NoError(t, write.run(transcript), write.name)
+		require.NoError(t, write.run(bare), write.name)
+	}
+
+	decoratedChild, ok := decorated.ChildSink("child-1").(*testSink)
+	require.True(t, ok)
+	bareChild, ok := bare.ChildSink("child-1").(*testSink)
+	require.True(t, ok)
+	require.Equal(t, bareChild.Messages(), decoratedChild.Messages(),
+		"a decorated child user write must match the bare one; if it stops matching, the two writes need an override")
+	for _, message := range decoratedChild.Messages() {
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, message.Source,
+			"the bypass is only safe while these writes carry the USER source")
+	}
 }

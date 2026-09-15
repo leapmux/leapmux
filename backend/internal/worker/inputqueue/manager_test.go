@@ -378,7 +378,7 @@ func TestManagerPreemptRefusesWithoutAnActiveTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	snapshot, err := manager.Preempt(ctx, "agent-1", "one")
-	assert.ErrorIs(t, err, ErrTurnEnded)
+	assert.ErrorIs(t, err, ErrPreemptionState)
 	require.Len(t, snapshot.Items, 1)
 	assert.Empty(t, dispatcher.interrupts())
 }
@@ -400,9 +400,45 @@ func TestManagerPreemptRefusesANonHeadItem(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	// A caller that addressed an item which is no longer the head asked for
+	// something different from one whose head cannot be pre-empted. ErrTurnEnded
+	// answered both, and its own text ("active turn ended before steering") is
+	// wrong for each: nothing steered, and no turn ended.
 	snapshot, err := manager.Preempt(ctx, "agent-1", "two")
-	assert.ErrorIs(t, err, ErrTurnEnded)
+	assert.ErrorIs(t, err, ErrNotHead)
+	assert.NotErrorIs(t, err, ErrTurnEnded)
 	require.Len(t, snapshot.Items, 2)
+	assert.Empty(t, dispatcher.interrupts())
+}
+
+// The head is refused because ANOTHER tab holds its edit, not because a turn
+// ended. The message the user reads must not claim one for the other.
+func TestManagerPreemptRefusesAnEditedHead(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{preemption: true}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	// The setup runs through the STORE, not the manager: manager.Enqueue drains, and
+	// this fixture needs the item to stay queued behind a turn the drain must not
+	// end. The sibling tests pause the queue for that, which this one cannot -- it
+	// needs an ACTIVE turn, and that is exactly what a pause ends.
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	// An unsteerable active turn is exactly the turn Preempt cancels, so the only
+	// term left refusing the head is the edit another tab holds.
+	_, _, err = store.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "other-tab", false)
+	require.NoError(t, err)
+
+	_, err = manager.Preempt(ctx, "agent-1", "one")
+	assert.ErrorIs(t, err, ErrPreemptionState)
+	assert.NotErrorIs(t, err, ErrTurnEnded)
 	assert.Empty(t, dispatcher.interrupts())
 }
 

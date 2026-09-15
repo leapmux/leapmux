@@ -562,6 +562,17 @@ type ChildServices interface {
 
 	// PersistChildMessage / PersistChildTurnEnd are shorthands for
 	// ChildSink(id).PersistMessage / PersistTurnEnd.
+	//
+	// A DECORATOR of this interface must override these two, because they are the
+	// AGENT-source writes its ChildSink override exists to intercept. It need not
+	// override PersistChildPrompt or PersistChildUserMessage, and CANNOT usefully:
+	// the implementation resolves ChildSink on its own receiver, so those two reach
+	// the raw sink whatever a decorator declares. Both write MESSAGE_SOURCE_USER and
+	// nothing else, so no decorator acts on them today, and a differential test in
+	// tool_transcript_test.go fails the suite the moment that stops being true.
+	//
+	// A write that must be intercepted therefore has to be an AGENT-source write, or
+	// go through ChildSink(id) at the call site rather than through these shorthands.
 	PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
 	PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error
 

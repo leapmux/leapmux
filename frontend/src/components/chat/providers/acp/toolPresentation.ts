@@ -7,6 +7,7 @@ import { TOOL_FILE_PATH_KEYS } from '~/components/chat/results/toolInputs'
 import { toolKind } from '~/components/chat/results/toolKind'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { isObject, pickFirstString, pickObject, pickString } from '~/lib/jsonPick'
+import { capitalize } from '../../rendererUtils'
 import { fileEditHasDiff } from '../../results/fileEditDiff'
 import { mcpStatusFromToolStatus, parseMcpContentItem } from '../../results/mcpToolCall'
 import { retainedOutcome, retainedRowIsFinal } from '../registry'
@@ -119,20 +120,31 @@ function acpToolBase(rawTool: Record<string, unknown>, adapter?: ACPToolAdapter,
   const outcome = retainedOutcome(completion)
   const overriddenStatus = outcome ? ACP_STATUS_FOR_OUTCOME[outcome] : undefined
   let tool = overriddenStatus ? { ...rawTool, status: overriddenStatus } : rawTool
-  const kind = pickString(tool, 'kind')
+  const rawKind = pickString(tool, 'kind')
+  // `rawKind` is a wire value, and `ToolPresentation.kind` is a closed set. The
+  // narrowing happens HERE, at the one place a raw kind enters the shared display
+  // model, so every table that reads it stays exhaustive.
+  //
+  // Every test BELOW reads the narrowed kind. A kind LeapMux does not know IS
+  // uncategorized, so it must get the raw output and the Model Context Protocol
+  // body that a literal `other` gets; comparing the raw word gave it neither.
+  // Cursor's `switch_mode` is the live case -- the one kind the protocol defines
+  // that the shared table omits.
+  const kind = toolKind(rawKind)
+  const uncategorized = kind === 'other' || kind === ''
   const input = acpToolInput(tool, kind)
   if (typeof tool.rawInput !== 'string' && tool.rawInput !== input)
     tool = { ...tool, rawInput: input }
   const body = acpToolBody(tool, kind)
   const presentation: ToolPresentation = {
-    // `kind` is a wire value, and `ToolPresentation.kind` is a closed set. The
-    // narrowing happens HERE, at the one place a raw kind enters the shared
-    // display model, so every table that reads it stays exhaustive.
-    kind: toolKind(kind),
-    title: pickString(input, 'description') || pickString(tool, 'title') || kind || 'Tool',
+    kind,
+    // The provider's own word for a kind the shared table does not know. Without
+    // it the name chip reads "Other" where the wire said `switch_mode`.
+    label: kind === 'other' && rawKind !== 'other' ? capitalize(rawKind) : undefined,
+    title: pickString(input, 'description') || pickString(tool, 'title') || rawKind || 'Tool',
     input,
     inputText: typeof tool.rawInput === 'string' ? tool.rawInput : undefined,
-    output: collectAcpToolText(tool, { rawObjects: kind === 'other' || !kind }),
+    output: collectAcpToolText(tool, { rawObjects: uncategorized }),
     body,
     unresolvedTerminals: acpTerminalIds(tool.content),
   }
@@ -141,7 +153,7 @@ function acpToolBase(rawTool: Record<string, unknown>, adapter?: ACPToolAdapter,
     if (fileEditHasDiff(requested))
       presentation.requestedChanges = [{ ...requested, showLineNumbers: false }]
   }
-  if (body.type === 'text' && (kind === 'other' || !kind)) {
+  if (body.type === 'text' && uncategorized) {
     const blocks = flattenAcpContent(tool.content)
     presentation.body = {
       type: 'mcp',

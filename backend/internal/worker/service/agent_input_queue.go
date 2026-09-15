@@ -62,12 +62,25 @@ func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attac
 	return result
 }
 
+// queueReadError classifies a read of the worker's own store that a dispatch or a
+// steer made before it reached the provider.
+//
+// ONE rule at the boundary, so a read added to either path inherits it instead of
+// having to remember it. A store fault requeues and pauses; a missing row stays a
+// permanent failure, because the agent it names is gone.
+func queueReadError(err error) error {
+	if storeFault(err) {
+		return notReadyStoreFault(err)
+	}
+	return err
+}
+
 func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	svc := a.svc
 	spanLines := svc.Output.snapshotPassthroughSpanLines(item.AgentID)
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
 	if err != nil {
-		return inputqueue.DispatchResult{}, err
+		return inputqueue.DispatchResult{}, queueReadError(err)
 	}
 	resolvedInput, err := svc.resolveControlInput(item, dbAgent)
 	if err != nil {
@@ -97,7 +110,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		}
 		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
 		if err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, queueReadError(err)
 		}
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
@@ -251,7 +264,7 @@ func classifyQueueSteerError(err error) error {
 func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
 	if err != nil {
-		return inputqueue.DispatchResult{}, err
+		return inputqueue.DispatchResult{}, queueReadError(err)
 	}
 	resolvedInput, err := a.svc.resolveControlInput(item, dbAgent)
 	if err != nil {
@@ -265,7 +278,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	if dbAgent.ParentAgentID.Valid {
 		row, rowErr := a.svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), item.AgentID)
 		if rowErr != nil {
-			return inputqueue.DispatchResult{}, rowErr
+			return inputqueue.DispatchResult{}, queueReadError(rowErr)
 		}
 		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else {
@@ -316,18 +329,15 @@ func (a *agentInputQueueAdapter) Interrupt(agentID string) error {
 	return err
 }
 
-// SupportsPreemption answers whether Preempt may be offered: a running ROOT
-// provider that cannot steer. Steerable providers keep their Steer control,
-// and subagent tabs keep their read-only posture for now -- the child-interrupt
-// capability exists, but no provider pairing has been verified against it.
-// The HasAgent term keeps a not-running provider from answering true through
-// the negated steering capability alone.
+// SupportsPreemption answers whether Preempt may be offered. It fetches the row
+// and delegates, exactly as SupportsSteering above does, so the rule itself
+// lives in one place: see agentSupportsPreemption.
 func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		return false
 	}
-	return !dbAgent.ParentAgentID.Valid && a.svc.Agents.HasAgent(agentID) && !a.svc.agentSupportsSteering(&dbAgent)
+	return a.svc.agentSupportsPreemption(&dbAgent)
 }
 
 // agentSupportsSteering answers the capability from a row the caller already
@@ -349,7 +359,18 @@ func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 // caller already holds: a running ROOT provider that cannot steer. Steering
 // keeps its own control for the providers that have it; preemption is what
 // the rest (Cursor, Kilo) get. Children are excluded until a provider pairing
-// is verified against the child-interrupt route.
+// is verified against the child-interrupt route. The HasAgent term keeps a
+// not-running provider from answering true through the negated steering
+// capability alone.
+//
+// This is the ONE statement of the rule. The queue adapter's SupportsPreemption
+// fetches the row and calls it, rather than re-spelling the three terms.
+//
+// It tests the STEERING half alone, and the interrupt half needs no test: Interrupt
+// is a required method of the Agent interface, so a provider with no interrupt path
+// does not compile. processBase carried a no-op default until this was written, and
+// a provider that inherited it would have answered the RPC with success, cancelled
+// nothing, and left the reader a Preempt button that did nothing.
 func (svc *Service) agentSupportsPreemption(dbAgent *db.Agent) bool {
 	return !dbAgent.ParentAgentID.Valid && svc.Agents.HasAgent(dbAgent.ID) && !svc.agentSupportsSteering(dbAgent)
 }
@@ -529,7 +550,8 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
-		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrManagerStopped):
+		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
+		errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

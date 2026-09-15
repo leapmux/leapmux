@@ -2,10 +2,9 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../messageRenderers'
 import type { ToolMessageSource } from '../../results/toolPresentation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { createMemo } from 'solid-js'
 import { pickString } from '~/lib/jsonPick'
 import { MarkdownText, ThinkingMessage } from '../../messageRenderers'
-import { ToolMessage } from '../../results/ToolMessage'
+import { ToolMessageSpan } from '../../results/ToolMessageSpan'
 import { copilotEvent } from './protocol'
 import { copilotToolPresentation, copilotToolRow } from './toolPresentation'
 
@@ -55,23 +54,15 @@ function copilotToolSource(
 }
 
 /** Resolve the native events before the shared component renders the tool. */
-export function CopilotToolMessage(props: { parsed: unknown, context?: RenderContext }): JSX.Element | null {
-  const request = createMemo(() => {
-    const parsed = props.context?.sources?.request()
-    return parsed ? copilotToolSource(parsed.parentObject, props.context?.spanType, parsed, parsed.completion) : undefined
-  })
-  const source = createMemo(() => {
-    const current = props.context?.sources?.current()
-    return copilotToolSource(props.parsed, props.context?.spanType, props.context?.sources?.request(), current?.completion)
-  })
-  const result = createMemo(() => {
-    const parsed = props.context?.sources?.result()
-    return parsed ? copilotToolSource(parsed.parentObject, props.context?.spanType, props.context?.sources?.request(), parsed.completion) : undefined
-  })
+export function CopilotToolMessage(props: { parsed: unknown, context?: RenderContext }): JSX.Element {
   return (
-    <>
-      {source() ? <ToolMessage source={source()!} request={request()} result={result()} context={props.context} /> : null}
-    </>
+    <ToolMessageSpan
+      context={props.context}
+      source={parsed => copilotToolSource(props.parsed, props.context?.spanType, props.context?.sources?.request(), parsed?.completion)}
+      // The opener resolves against ITSELF, which is what an opener's own row needs.
+      request={parsed => copilotToolSource(parsed.parentObject, props.context?.spanType, parsed, parsed.completion)}
+      result={parsed => copilotToolSource(parsed.parentObject, props.context?.spanType, props.context?.sources?.request(), parsed.completion)}
+    />
   )
 }
 

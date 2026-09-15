@@ -2,6 +2,11 @@
 export const TOOL_FILE_PATH_KEYS = ['filePath', 'path', 'file_path'] as const
 export const TOOL_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string'] as const
 export const TOOL_NEW_TEXT_KEYS = ['newText', 'newString', 'new_string'] as const
+// A move states two paths and neither is a `filePath`. Reasonix's `move_file`
+// sends `source_path`/`destination_path`; the camelCase and old/new spellings
+// are here for the same reason the lists above carry three spellings each.
+export const TOOL_SOURCE_PATH_KEYS = ['sourcePath', 'source_path', 'oldPath', 'old_path'] as const
+export const TOOL_DESTINATION_PATH_KEYS = ['destinationPath', 'destination_path', 'newPath', 'new_path'] as const
 
 /** Search targets can be one path or a native array of paths. */
 export function toolInputPaths(input: Record<string, unknown>): string[] {

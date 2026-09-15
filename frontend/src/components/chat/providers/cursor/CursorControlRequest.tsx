@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 
 import { Match, Show, Switch } from 'solid-js'
 import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
@@ -42,7 +43,7 @@ export function getCursorQuestions(payload: Record<string, unknown>): Question[]
 }
 
 export function sendCursorQuestionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   questions: Question[],
   answerState: ControlAnswerState,
@@ -74,7 +75,7 @@ export function sendCursorQuestionResponse(
 }
 
 export function sendCursorQuestionRejectResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   reason?: string,
 ): Promise<void> {

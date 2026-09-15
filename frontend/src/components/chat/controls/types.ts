@@ -293,7 +293,7 @@ export function buildJsonRpcResult(requestId: string, result: unknown): Record<s
 
 /** Send the result with the unchanged worker request ID. */
 export function sendJsonRpcResult(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   result: unknown,
 ): Promise<void> {
@@ -306,7 +306,7 @@ export function sendJsonRpcResult(
  * senders delegate here instead of building it twice.
  */
 export function sendSelectedOptionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {

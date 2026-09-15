@@ -523,7 +523,7 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	return snapshot, nil
 }
 
-// Preempt cancels the agent's active turn so the named queued item is sent as
+// Preempt cancels the agent's active turn so the specified queued item is sent as
 // the next ordinary dispatch.
 //
 // Preempt is the steer of a provider that cannot inject into a running turn
@@ -548,11 +548,21 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 		c.mu.Unlock()
 		return Snapshot{}, err
 	}
-	// CanPreempt already answers everything the guard needs -- head, queued,
-	// unedited, a kind the model takes, and the active turn to cancel.
-	if len(snapshot.Items) == 0 || !snapshot.Items[0].CanPreempt || snapshot.Items[0].ID != inputID {
+	// CanPreempt already answers everything the state guard needs -- head, queued,
+	// unedited, and the active turn to cancel. The id is a
+	// separate question, so it gets its own sentinel: a caller that addressed an
+	// item which is no longer the head asked for something different from a caller
+	// whose head cannot be pre-empted, and one message cannot be true for both.
+	switch {
+	case len(snapshot.Items) == 0:
 		c.mu.Unlock()
-		return snapshot, ErrTurnEnded
+		return snapshot, ErrPreemptionState
+	case snapshot.Items[0].ID != inputID:
+		c.mu.Unlock()
+		return snapshot, ErrNotHead
+	case !snapshot.Items[0].CanPreempt:
+		c.mu.Unlock()
+		return snapshot, ErrPreemptionState
 	}
 	c.mu.Unlock()
 
@@ -838,8 +848,16 @@ func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDi
 			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnSteerable)
 		}
 	case DispatchNotReady:
+		// The pause carries the caller's own reason, because the reader reads it.
+		// A provider that is not ready yet means AGENT_STOPPED; a failed read of
+		// the worker's own store does not.
+		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED
+		var notReady *DeliveryError
+		if errors.As(dispatchErr, &notReady) && notReady.PauseReason != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
+			reason = notReady.PauseReason
+		}
 		record = func() (Snapshot, error) {
-			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr)
+			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr, reason)
 		}
 	case DispatchUncertain:
 		record = func() (Snapshot, error) {

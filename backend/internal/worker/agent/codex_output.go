@@ -124,6 +124,11 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleErrorNotification(line.Params)
 
 	default:
+		// An inbound REQUEST needs an answer. The comment above states that Codex
+		// sends its approval requests with an "id", so one whose method this
+		// dispatcher does not recognize reaches here carrying a runtime that waits.
+		// A transcript row alone leaves it waiting for its own timeout.
+		a.refuseUnsupportedRequest(line)
 		// Persist unknown notifications so the frontend can decide how to render them.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
@@ -834,6 +839,23 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			if err == nil {
 				if err := a.sink.PublishControlRequest(ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
 					slog.Error("publish plan approval", "agent_id", a.agentID, "request_id", requestID, "error", err)
+				} else {
+					// One plan is stored for each agent, and the UpdatePlan above just
+					// REPLACED it. A card from an earlier turn names the plan the reader
+					// saw and would execute THIS one, so the new card retires it.
+					//
+					// The retirement runs only after the replacement is live, and
+					// CancelControlRequest returns in silence for a row that is already
+					// gone, so an answered card costs nothing. Nothing else can retire
+					// this request: it is LeapMux's own, it carries no JSON-RPC id, and
+					// so the outstanding-control registrar never held it.
+					a.mu.Lock()
+					superseded := a.planPromptRequestID
+					a.planPromptRequestID = requestID
+					a.mu.Unlock()
+					if superseded != "" && superseded != requestID {
+						a.sink.CancelControlRequest(superseded)
+					}
 				}
 			}
 		}
@@ -1225,7 +1247,7 @@ func (a *CodexAgent) handleServerRequestResolved(params json.RawMessage) {
 		return
 	}
 	// Codex withdrew the request itself, so it waits for no answer.
-	a.withdrawControlRequest(a.sink, identity.key, false)
+	a.withdrawControlRequest(a.sink, identity.key)
 }
 
 // handleErrorNotification processes error notifications.

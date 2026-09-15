@@ -370,3 +370,40 @@ func TestZCodeStop_WritesTheStopRowWhenAStopWasPending(t *testing.T) {
 	require.Len(t, notifications, 1)
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
 }
+
+// The window's own callback can fire while Stop runs. time.Timer.Stop cannot stop a
+// callback that already began, and Stop never clears turnActive -- so the callback's
+// turnActive guard did not refuse it, and the reader got TWO interrupted rows for one
+// Stop press. They do not even fold into one notification thread, because the persists
+// Stop makes between them break it.
+//
+// The generation the cancel raises is what refuses the late callback now.
+func TestZCodeStop_WritesOneStopRowWhenTheWindowFiresDuringTheStop(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	require.Equal(t, 1, timer.armed, "the stop arms the silence window")
+	fire := timer.fire
+	require.NotNil(t, fire)
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	close(a.processDone)
+	a.Stop()
+	// The callback the cancel could not stop, arriving after Stop already recorded
+	// the row the window earned.
+	fire()
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1, "one Stop press earns one interrupted row")
+	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+}

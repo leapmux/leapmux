@@ -29,6 +29,32 @@ describe('copilot patch requests', () => {
     expect(diffStatsFromHunks(fileEditDiffHunks(files![0]))).toEqual({ added: 1, deleted: 0 })
   })
 
+  // A blank line that SEPARATES two sections is not a context line. Consuming it
+  // folds a row the agent never proposed into the preview and raises both counts.
+  it('stops a hunk at a blank line before the next file header', () => {
+    const files = copilotPatchRequest('*** Begin Patch\n*** Update File: a.ts\n@@\n+one\n\n*** Update File: b.ts\n@@\n+two\n*** End Patch')
+    expect(files).toHaveLength(2)
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual(['+one'])
+    expect(fileEditDiffHunks(files![0])[0]).toMatchObject({ oldLines: 0, newLines: 1 })
+    expect(fileEditDiffHunks(files![1])[0].lines).toEqual(['+two'])
+  })
+
+  it('stops a hunk at a trailing blank line before the end of the patch', () => {
+    const files = copilotPatchRequest('*** Begin Patch\n*** Update File: a.ts\n@@\n+one\n\n*** End Patch')
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual(['+one'])
+    expect(fileEditDiffHunks(files![0])[0]).toMatchObject({ oldLines: 0, newLines: 1 })
+  })
+
+  it('stops a hunk at a blank line before the end-of-file marker', () => {
+    const files = copilotPatchRequest('*** Begin Patch\n*** Update File: a.ts\n@@\n+one\n\n*** End of File\n*** End Patch')
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual(['+one'])
+  })
+
+  it('keeps a blank context line that another hunk line follows', () => {
+    const files = copilotPatchRequest('*** Begin Patch\n*** Update File: a.ts\n@@\n+one\n\n\n context\n*** End Patch')
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual(['+one', ' ', ' ', ' context'])
+  })
+
   it('preserves a move with changed content', () => {
     const files = copilotPatchRequest('*** Begin Patch\n*** Update File: old.ts\n*** Move to: new.ts\n@@\n-old\n+new\n*** End Patch')
     expect(files?.[0]).toMatchObject({ filePath: 'new.ts', previousPath: 'old.ts', operation: 'move' })

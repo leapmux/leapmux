@@ -203,3 +203,80 @@ func newZCodeToolStoreForTest(t *testing.T) *zcodeToolStore {
 	t.Cleanup(store.close)
 	return store
 }
+
+// The artifact cache belongs to the TURN, not to the agent.
+//
+// Each entry is a fully decoded data URI as large as liveStdoutMaxTokenSize
+// (16 MiB), and only a pass of the same turn can read one -- the turn end clears
+// the pending set a later pass would ask about. Held for the life of the agent
+// instead, a session of computer-use screenshots retained every screenshot.
+func TestZCodeToolStoreDropsItsArtifactsAtTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	location := zcodeToolStoreLocation{databasePath: filepath.Join(directory, "store.db"), artifactRoot: filepath.Join(directory, "artifacts"), sessionID: "session"}
+	db := newFixtureDB(t, location.databasePath, zcodeToolStoreDDL)
+	_, err := db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
+	require.NoError(t, err)
+	artifactDirectory := filepath.Join(location.artifactRoot, "session")
+	require.NoError(t, os.MkdirAll(artifactDirectory, 0o700))
+	artifact := filepath.Join(artifactDirectory, "call-media-1-"+zcodeArtifactFixtureID+".txt")
+	require.NoError(t, os.WriteFile(artifact, []byte(zcodeArtifactFixtureData), 0o600))
+
+	store := newZCodeToolStoreForTest(t)
+	source := newZCodeToolSource(store, func() zcodeToolStoreLocation { return location })
+	request := map[string]zcodeToolLookup{"call": {messageID: "message", toolName: "mcp__docs__read"}}
+	_, err = readZCodeToolRecords(t.Context(), store, location, request)
+	require.NoError(t, err)
+	store.mu.Lock()
+	cached := len(store.artifacts)
+	store.mu.Unlock()
+	require.Equal(t, 1, cached, "the read caches the artifact it decoded")
+
+	source.finishTurn()
+
+	store.mu.Lock()
+	remaining := len(store.artifacts)
+	handle := store.db
+	store.mu.Unlock()
+	assert.Zero(t, remaining, "the turn end drops the artifact bodies it cached")
+	assert.NotNil(t, handle, "the database handle is per agent and must survive the turn")
+}
+
+// A store deleted and recreated at the SAME path must reopen.
+//
+// The cached handle holds one connection with no lifetime, so it stays open on the
+// unlinked inode and answers every later read from the deleted file. A path
+// comparison cannot see that, because ZCode's database path never changes within
+// one agent. Cursor and Reasonix already compared by inode; see sessionStoreMoved.
+func TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "store.db")
+	location := zcodeToolStoreLocation{databasePath: path, artifactRoot: filepath.Join(directory, "artifacts"), sessionID: "session"}
+	db := newFixtureDB(t, path, zcodeToolStoreDDL)
+	_, err := db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
+	require.NoError(t, err)
+
+	store := newZCodeToolStoreForTest(t)
+	request := map[string]zcodeToolLookup{"call": {messageID: "message", toolName: "Bash"}}
+	_, err = readZCodeToolRecords(t.Context(), store, location, request)
+	require.NoError(t, err)
+	store.mu.Lock()
+	first := store.db
+	store.mu.Unlock()
+	require.NotNil(t, first)
+
+	// The runtime replaces its store: the old inode is unlinked and a new file
+	// takes the same name.
+	require.NoError(t, os.Remove(path))
+	replacement := newFixtureDB(t, path, zcodeToolStoreDDL)
+	_, err = replacement.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
+	require.NoError(t, err)
+
+	_, err = readZCodeToolRecords(t.Context(), store, location, request)
+	require.NoError(t, err)
+	store.mu.Lock()
+	second := store.db
+	store.mu.Unlock()
+	assert.NotSame(t, first, second, "a store replaced at the same path must reopen, not answer from the unlinked file")
+}

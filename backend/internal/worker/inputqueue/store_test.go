@@ -916,6 +916,49 @@ func TestStoreSnapshotAnswersThePreemptPrecondition(t *testing.T) {
 	assert.False(t, ended.Items[0].CanPreempt)
 }
 
+// Preemption's kind term is its OWN, not steering's. Steering injects into the
+// running turn, so it admits only a kind the model can take mid-turn; preemption
+// injects nothing -- it cancels the turn and lets the ordinary drain deliver, and
+// that drain dispatches every kind. A queued clear behind a running turn therefore
+// has a turn worth cancelling, and the reader's only other route is Stop, which
+// pauses the queue under an owner they must lift by hand.
+func TestStoreSnapshotPreemptsAKindSteeringRefuses(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "clear", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, Text: "/clear"})
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, snapshot.Items[0].CanPreempt, "a cancel can carry a clear that the drain then dispatches")
+	assert.False(t, snapshot.Items[0].CanSteer, "steering still refuses it: the model cannot take a clear mid-turn")
+}
+
+// The plan approval that REPLACES the turn is the one exclusion. The store already
+// dispatches that head THROUGH the running turn, so cancelling destroys work for
+// nothing.
+func TestStoreSnapshotRefusesToPreemptAHeadThatReplacesTheTurn(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "plan", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+		Text: "execute", PrepareContext: true,
+	})
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, snapshot.Items[0].CanPreempt)
+}
+
 func TestStoreClassifiedProviderTurnOffersASteer(t *testing.T) {
 	t.Parallel()
 

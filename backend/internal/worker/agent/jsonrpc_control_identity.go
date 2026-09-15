@@ -3,7 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
-	"strconv"
+	"math/big"
 )
 
 // controlRequestIdentity is one JSON-RPC request id in the two spellings LeapMux needs.
@@ -56,22 +56,33 @@ func newControlRequestIdentity(nativeID json.RawMessage) (controlRequestIdentity
 
 // canonicalJSONNumber gives one spelling to every JSON number of the same value.
 //
-// An integer keeps its exact digits, because a 64-bit integer id is larger than a
-// float64 can hold without loss. Every other number goes through float64, which is
-// what the JSON specification allows a reader to do. Zero takes its own branch,
-// because FormatFloat spells a negative zero "-0", and -0.0 is the same request as 0.
+// It reads the digits EXACTLY, as an arbitrary-precision rational, so 12, 12.0 and
+// 1.2e1 all give "12" whatever their magnitude, and two ids that differ give two
+// keys whatever their magnitude.
+//
+// float64 cannot do this job, and the failure is not at the edges. A parse that
+// routed anything but an int64 through float64 split one value into two keys from
+// 1e6 upward, because FormatFloat's shortest form turns to exponent notation at an
+// exponent of 6: 1000000 spelled "1000000" and 1000000.0 spelled "1e+06". A
+// timestamp-shaped id, which is what several runtimes use, sits far above that.
+// Past 2^53 the same parse also COLLIDED two distinct integer ids onto one key,
+// because float64 has no digits left to tell them apart. Either way a cancel that
+// spelled its id differently from the request matched no record, so the request's
+// browser card stayed on screen with nothing able to retire it.
+//
+// A fractional id keeps the reduced fraction that big.Rat produces. No runtime
+// sends one; what matters is that the spelling is deterministic and that two equal
+// values cannot reach two keys. A negative zero needs no special case, because
+// big.Rat holds no sign for zero.
 func canonicalJSONNumber(number json.Number) (string, bool) {
-	if integer, err := number.Int64(); err == nil {
-		return strconv.FormatInt(integer, 10), true
-	}
-	value, err := number.Float64()
-	if err != nil {
+	rational, ok := new(big.Rat).SetString(number.String())
+	if !ok {
 		return "", false
 	}
-	if value == 0 {
-		return "0", true
+	if rational.IsInt() {
+		return rational.Num().String(), true
 	}
-	return strconv.FormatFloat(value, 'g', -1, 64), true
+	return rational.RatString(), true
 }
 
 // JSONRPCControlRequestID is the canonical LeapMux id of one JSON-RPC control request.

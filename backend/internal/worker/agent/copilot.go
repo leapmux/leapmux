@@ -74,6 +74,7 @@ func init() {
 	// them. Without this declaration a model switch would keep the PREVIOUS model's
 	// tiers, and an effort the new model refuses would survive the switch.
 	setManagesEffort(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
+	setFixedPermissionModes(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
 	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, PermissionDefaults{
 		// A new session asks for Assisted: it approves what a safety check finds
 		// safe and asks about everything else, which is the narrowest mode that

@@ -8,6 +8,7 @@ import { PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
 import { readFileBodyText } from '../../results/readFileResult'
+import { toolStatusFor } from '../../results/toolRowStatus'
 import { retainedOutcome, retainedRowIsFinal } from '../registry'
 import { piAgentRequest, piAgentResult } from './extractors/agent'
 import { extractPiCommand, piCommandSource } from './extractors/command'
@@ -281,14 +282,10 @@ export function piToolPresentation(row: PiToolRow): ToolPresentation {
 
 /** One row, as the shared tool component reads it. */
 export function piToolMessageSource(row: PiToolRow, completion?: MessageCompletion): ToolMessageSource {
-  const outcome = retainedOutcome(completion)
-  const status = outcome === 'interrupted'
-    ? 'cancelled'
-    : row.isError || outcome === 'failed' ? 'failed' : row.finished ? 'completed' : 'in_progress'
   return {
     id: row.tool.toolCallId,
     role: row.finished ? 'result' : 'request',
-    status,
+    status: toolStatusFor(retainedOutcome(completion), row.isError, row.finished),
     presentation: piToolPresentation(row),
     images: piToolResultImages(row.payload, undefined, row.request),
   }

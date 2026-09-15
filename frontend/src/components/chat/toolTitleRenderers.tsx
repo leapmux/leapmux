@@ -10,7 +10,7 @@ import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { FileEditDiffTitle } from './results/fileEditDiff'
-import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS } from './results/toolInputs'
+import { TOOL_DESTINATION_PATH_KEYS, TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS, TOOL_SOURCE_PATH_KEYS } from './results/toolInputs'
 import {
   toolInputCode,
   toolInputPath,
@@ -123,6 +123,30 @@ export function renderEditTitle(path?: string, oldStr?: string, newStr?: string,
   )
 }
 
+/**
+ * A move's title: the source, an arrow, and the destination.
+ *
+ * A move states TWO paths and neither is a `filePath`, so `renderEditTitle`
+ * (which asks for one) returned null for every unfinished move and left the row
+ * showing the bare tool name. A COMPLETED move does not reach here, because the
+ * provider rewrites it to a `diff` body and `FileEditDiffTitle` draws the rename
+ * arrow. This serves the running row, the failed one and the cancelled one.
+ */
+export function renderMoveTitle(source?: string, destination?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+  if (!source && !destination)
+    return null
+  const show = (path: string) => relativizePath(path, cwd, homeDir)
+  if (!source || !destination)
+    return <span class={toolInputPath}>{show(source || destination!)}</span>
+  return (
+    <>
+      <span class={toolInputPath}>{show(source)}</span>
+      <span class={toolInputText}>{' → '}</span>
+      <span class={toolInputPath}>{show(destination)}</span>
+    </>
+  )
+}
+
 export function renderSearchTitle(pattern?: string, path?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!pattern)
     return null
@@ -184,49 +208,102 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
   return <span class={toolInputText}>{title}</span>
 }
 
-/**
- * The kinds {@link toolMessageTitle} writes a title for.
- *
- * `ToolMessage` repeats a tool's input as JSON only for the kinds OUTSIDE this
- * set, so the row never states the same input twice. A kind here whose input
- * carries no path or pattern the renderer recognizes keeps the tool's own
- * title, and that is the same answer `edit`, `read` and `list` already give.
- */
-export const TITLED_TOOL_KINDS: ReadonlySet<ToolKind> = new Set<ToolKind>([
-  'agent',
-  'delete',
-  'edit',
-  'execute',
-  'fetch',
-  'glob',
-  'grep',
-  'list',
-  'move',
-  'read',
-  'search',
-  'write',
-])
+function titlePath(model: ToolPresentation): string | undefined {
+  return pickFirstString(model.input, TOOL_FILE_PATH_KEYS)
+}
+
+function renderEditKindTitle(model: ToolPresentation, context?: RenderContext): JSX.Element {
+  return renderEditTitle(
+    titlePath(model),
+    pickFirstString(model.input, TOOL_OLD_TEXT_KEYS),
+    pickFirstString(model.input, TOOL_NEW_TEXT_KEYS),
+    model.replaceAll,
+    context?.workingDir,
+    context?.homeDir,
+  ) || model.title
+}
 
 /**
- * The header title of one tool row.
+ * The title renderer of each tool kind, or null for a kind that keeps the tool's
+ * own title.
  *
- * It lives here, beside the renderers it dispatches to, rather than inside
- * `ToolMessage`: it reads no signal of that component and answers from the
- * presentation model alone. The switch is exhaustive over {@link ToolKind}, so
- * a new kind cannot reach the reader as a bare tool name by accident.
+ * ONE table, not a table beside a set. `TITLED_TOOL_KINDS` stated the same fact
+ * a second time, as a `ReadonlySet<ToolKind>` that TypeScript never checks for
+ * coverage, and a probe test existed only to hold the two in step. A
+ * `Record<ToolKind, …>` is coverage-checked by the compiler, which is what the
+ * doc on {@link ToolKind} already claims of every table beside it.
+ *
+ * Each entry returns the FINAL title, including its own fallback to
+ * `model.title`, so {@link toolMessageTitle} holds one dispatch and no second
+ * layer of `||`.
  */
-export function toolMessageTitle(model: ToolPresentation, context?: RenderContext): JSX.Element {
-  const args = model.input
-  const path = pickFirstString(args, TOOL_FILE_PATH_KEYS)
+const TOOL_TITLE_RENDERERS: Record<ToolKind, ((model: ToolPresentation, context?: RenderContext) => JSX.Element) | null> = {
+  'agent': model => renderAgentTitle(model.title, model.agentRequest?.agentType),
+  'execute': model => renderBashTitle(
+    pickString(model.input, 'description') || (model.title !== pickString(model.input, 'command') && model.title !== model.kind ? model.title : ''),
+    pickString(model.input, 'command'),
+  ) || model.title || 'Run command',
   // A read whose only path is the WORKING DIRECTORY has no file to name, and a
   // row titled with it reads as a bare ".". Cursor's `ReadLints` reaches here:
   // it declares ACP kind `read`, sends `title: "Read Lints"`, and gives the
   // working directory as its only location -- so the title it sent lost to a
   // path that says nothing. `list` keeps that path on purpose, because listing
   // the working directory IS what "." means there.
-  const readPath = () => path && relativizePath(path, context?.workingDir, context?.homeDir) === '.' ? '' : path
+  'read': (model, context) => {
+    const path = titlePath(model)
+    const readPath = path && relativizePath(path, context?.workingDir, context?.homeDir) === '.' ? '' : path
+    return renderReadTitle(readPath, pickNumber(model.input, 'offset', undefined), pickNumber(model.input, 'limit', undefined), context?.workingDir, context?.homeDir) || model.title
+  },
+  'list': (model, context) => renderReadTitle(titlePath(model) || '.', undefined, undefined, context?.workingDir, context?.homeDir) || model.title,
+  'glob': (model, context) => renderGlobTitle(pickString(model.input, 'pattern'), titlePath(model), context?.workingDir, context?.homeDir) || model.title,
+  'grep': (model, context) => renderSearchTitle(pickString(model.input, 'pattern'), undefined, context?.workingDir, context?.homeDir) || model.title,
+  'search': (model, context) => renderSearchTitle(pickString(model.input, 'pattern') || pickString(model.input, 'query'), titlePath(model), context?.workingDir, context?.homeDir) || model.title,
+  'edit': renderEditKindTitle,
+  'write': renderEditKindTitle,
+  'delete': renderEditKindTitle,
+  // A move names its source and its destination, and neither arrives under a
+  // `filePath` key. `FileEditDiffTitle` in {@link toolMessageTitle} draws the
+  // rename arrow once the provider resolves both paths into a diff, so this
+  // entry serves the row that it has not: the running move, the failed one and
+  // the cancelled one.
+  'move': (model, context) => renderMoveTitle(
+    pickFirstString(model.input, TOOL_SOURCE_PATH_KEYS) || titlePath(model),
+    pickFirstString(model.input, TOOL_DESTINATION_PATH_KEYS),
+    context?.workingDir,
+    context?.homeDir,
+  ) || model.title,
+  'fetch': model => renderUrlTitle(pickString(model.input, 'url')) || model.title,
+  '': null,
+  'other': null,
+  'think': null,
+  'todo': null,
+}
+
+/**
+ * Whether {@link toolMessageTitle} writes a title for this kind.
+ *
+ * `ToolMessage` repeats a tool's input as JSON only for a kind that answers
+ * false, so the row never states the same input twice. A kind that answers true
+ * and whose input carries no path or pattern its renderer reads keeps the tool's
+ * own title, and that is the same answer `edit`, `read` and `list` already give.
+ */
+export function kindHasTitleRenderer(kind: ToolKind): boolean {
+  return TOOL_TITLE_RENDERERS[kind] !== null
+}
+
+/**
+ * The header title of one tool row.
+ *
+ * It lives here, beside the renderers it dispatches to, rather than inside
+ * `ToolMessage`: it reads no signal of that component and answers from the
+ * presentation model alone. {@link TOOL_TITLE_RENDERERS} is total over
+ * {@link ToolKind}, so a new kind cannot reach the reader as a bare tool name by
+ * accident.
+ */
+export function toolMessageTitle(model: ToolPresentation, context?: RenderContext): JSX.Element {
+  const args = model.input
   if (model.kind === 'write' && typeof args.content === 'string')
-    return renderWriteTitle(path, args.content, context?.workingDir, context?.homeDir) || model.title
+    return renderWriteTitle(titlePath(model), args.content, context?.workingDir, context?.homeDir) || model.title
   const changes = model.body.type === 'diff' ? model.body.sources : model.requestedChanges
   if (changes?.length) {
     if (changes.length === 1)
@@ -236,31 +313,6 @@ export function toolMessageTitle(model: ToolPresentation, context?: RenderContex
       ? `${changes.length} changes in ${relativizePath(changes[0].filePath, context?.workingDir, context?.homeDir)}`
       : `${paths.size} files${model.body.type === 'diff' ? ' changed' : ''}`
   }
-  switch (model.kind) {
-    case 'agent': return renderAgentTitle(model.title, model.agentRequest?.agentType)
-    case 'execute': return renderBashTitle(pickString(args, 'description') || (model.title !== pickString(args, 'command') && model.title !== model.kind ? model.title : ''), pickString(args, 'command')) || model.title || 'Run command'
-    case 'read': return renderReadTitle(readPath(), pickNumber(args, 'offset', undefined), pickNumber(args, 'limit', undefined), context?.workingDir, context?.homeDir) || model.title
-    case 'list': return renderReadTitle(path || '.', undefined, undefined, context?.workingDir, context?.homeDir) || model.title
-    case 'glob': return renderGlobTitle(pickString(args, 'pattern'), path, context?.workingDir, context?.homeDir) || model.title
-    case 'grep': return renderSearchTitle(pickString(args, 'pattern'), undefined, context?.workingDir, context?.homeDir) || model.title
-    case 'search': return renderSearchTitle(pickString(args, 'pattern') || pickString(args, 'query'), path, context?.workingDir, context?.homeDir) || model.title
-    // A move states its destination the same way as an edit, and
-    // `FileEditDiffTitle` above already drew the rename arrow whenever the
-    // provider resolved both paths.
-    case 'edit':
-    case 'write':
-    case 'delete':
-    case 'move': return renderEditTitle(path, pickFirstString(args, TOOL_OLD_TEXT_KEYS), pickFirstString(args, TOOL_NEW_TEXT_KEYS), undefined, context?.workingDir, context?.homeDir) || model.title
-    case 'fetch': return renderUrlTitle(pickString(args, 'url')) || model.title
-    case '':
-    case 'other':
-    case 'think':
-    case 'todo':
-      return model.title
-    default: {
-      const exhaustive: never = model.kind
-      void exhaustive
-      return model.title
-    }
-  }
+  const render = TOOL_TITLE_RENDERERS[model.kind]
+  return render ? render(model, context) : model.title
 }

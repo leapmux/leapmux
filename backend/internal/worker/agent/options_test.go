@@ -776,3 +776,45 @@ func TestReadOnlyModelAndEffortGroups(t *testing.T) {
 	assert.Len(t, effortOnly, 1, "only the effort group is present")
 	assert.Empty(t, readOnlyModelAndEffortGroups("", "", ""), "absent model and effort yield no groups")
 }
+
+// Permission-mode validation asks its OWN question, not the effort predicate's.
+//
+// The two agreed only by coincidence, and the moment native Copilot declared a
+// model-dependent effort catalog it silently gained the authority to REJECT a
+// permission mode. Pi is where the difference shows: it manages effort and
+// declares no permission modes at all, so the shared predicate admitted it and
+// then accepted anything, because an empty group accepts every value.
+func TestValidateLaunchOptionsAsksTheProviderItsOwnPermissionQuestion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		provider         leapmuxv1.AgentProvider
+		fixedModes       bool
+		managesEffort    bool
+		rejectsAnUnknown bool
+	}{
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, true, true, true},
+		// Manages effort, states no permission enum of its own.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, false, true, false},
+		// An ACP provider discovers its modes from the daemon.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, false, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, false, false, false},
+	} {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			assert.Equal(t, tc.fixedModes, ProviderHasFixedPermissionModes(tc.provider),
+				"permission-mode authority")
+			assert.Equal(t, tc.managesEffort, ProviderManagesEffort(tc.provider),
+				"effort-catalog question, which must stay separate")
+
+			err := ValidateLaunchOptions(tc.provider, optionmap.Map{OptionIDPermissionMode: "not-a-mode"})
+			if tc.rejectsAnUnknown {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not valid for this provider")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

@@ -87,13 +87,29 @@ const MCP_TOOL_NAME_PREFIX = 'mcp__'
  * states less than the raw identifier does.
  */
 export function parseMcpToolName(name: string): { server: string, tool: string } | null {
-  if (!name.startsWith(MCP_TOOL_NAME_PREFIX))
+  return splitPrefixedPair(name, MCP_TOOL_NAME_PREFIX, '__')
+}
+
+/**
+ * Split `<prefix><server><separator><tool>` into its two halves.
+ *
+ * The mechanism behind {@link parseMcpToolName}, and Reasonix calls it directly
+ * with its own capability prefix and a `/` separator. Both identifiers name a
+ * server and a tool inside one string, and the only difference between them is
+ * the two strings that delimit the halves.
+ *
+ * The TOOL half keeps every further separator, so `mcp__github__search__repos`
+ * gives the server `github` and the tool `search__repos`. Returns null when the
+ * prefix is absent, when the separator is absent, or when EITHER half is empty.
+ */
+export function splitPrefixedPair(id: string, prefix: string, separator: string): { server: string, tool: string } | null {
+  if (!id.startsWith(prefix))
     return null
-  const index = name.indexOf('__', MCP_TOOL_NAME_PREFIX.length)
+  const index = id.indexOf(separator, prefix.length)
   if (index < 0)
     return null
-  const server = name.slice(MCP_TOOL_NAME_PREFIX.length, index)
-  const tool = name.slice(index + '__'.length)
+  const server = id.slice(prefix.length, index)
+  const tool = id.slice(index + separator.length)
   return server && tool ? { server, tool } : null
 }
 

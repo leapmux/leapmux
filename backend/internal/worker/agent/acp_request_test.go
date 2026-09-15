@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,18 @@ func TestACPUnsupportedRequest(t *testing.T) {
 				base, recorder := newTerminalTestBase(t, sink)
 				raw := []byte(`{"jsonrpc":"2.0","id":` + id + `,"method":"_vendor/request","params":{"value":1}}`)
 				base.handleACPOutput(parseLine(raw), nil, nil)
+				// The refusal is written on its OWN goroutine, so that a reply to a
+				// runtime which is not draining its stdin cannot stall the read loop
+				// that must keep draining the runtime's stdout.
 				recorder.mu.Lock()
+				for len(recorder.bufs) == 0 {
+					recorder.mu.Unlock()
+					select {
+					case <-recorder.ch:
+					case <-time.After(20 * time.Millisecond):
+					}
+					recorder.mu.Lock()
+				}
 				responses := append([][]byte(nil), recorder.bufs...)
 				recorder.mu.Unlock()
 				require.Len(t, responses, 1)

@@ -47,8 +47,11 @@ func (svc *Service) applyPlanOptionsLocked(current db.Agent, wanted OptionMap) (
 			return current, fmt.Errorf("the provider did not confirm the plan settings")
 		}
 		// Every requested axis needs an EXACT confirmation, and a key with no
-		// settlement at all fails here too: OptionSettlementConfirmed is the zero
-		// value, so an absent entry carries a nil Value. An axis the provider did
+		// settlement at all fails here too: an absent entry carries a nil Value,
+		// and it also carries the ZERO OptionSettlementState, which is neither
+		// Confirmed nor Unresolved -- OptionSettlementConfirmed is iota + 1. Both
+		// terms below are load-bearing; neither rejects the absent key alone. An
+		// axis the provider did
 		// not confirm is an axis the running process may still hold at its old
 		// value, and the plan would then execute under settings nobody chose --
 		// Codex's collaboration_mode is the plan-mode axis itself, so an

@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { WirePermissionOption } from './permissionOptionLabels'
-import type { ActionsProps } from './types'
+import type { ActionsProps, ControlResponseSender } from './types'
 
 import { createMemo } from 'solid-js'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
@@ -16,7 +16,7 @@ import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from './types'
 
 /** Sends one selected option as the provider's permission reply (ACP- and OpenCode-family envelopes are the same). */
 export type SendPermissionOption = (
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ) => Promise<void>

@@ -56,7 +56,7 @@ func TestJSONRPCResponseReadsAnErrorBesideANullResult(t *testing.T) {
 			require.Equal(t, -32600, responseError.Code)
 			require.True(t, hasJSONRPCErrorCode(err, -32600, -32602))
 			require.False(t, errors.Is(classifyJSONRPCDeliveryError("steer", err), ErrDeliveryUncertain),
-				"an error the provider named is a refusal, not an unconfirmed delivery")
+				"an error the provider reported is a refusal, not an unconfirmed delivery")
 		})
 	}
 }

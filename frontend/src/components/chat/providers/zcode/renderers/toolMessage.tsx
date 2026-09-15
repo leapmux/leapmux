@@ -6,7 +6,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createMemo, Show } from 'solid-js'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { ToolMessage } from '../../../results/ToolMessage'
+import { ToolMessageSpan } from '../../../results/ToolMessageSpan'
 import { MarkdownPlanLayout } from '../../../widgets/MarkdownPlanLayout'
 import { zcodeExtractTool, zcodeRow, zcodeToolInput } from '../extractors/toolCommon'
 import { zcodeToolMessageSource } from '../toolPresentation'
@@ -35,19 +35,15 @@ function ZCodeToolMessage(props: ToolProps): JSX.Element {
   // separate one for it.
   const request = () => props.context?.sources?.request()
     ?? (zcodeExtractTool(props.parsed)?.kind === ZCODE_TOOL_KIND.Scheduled ? props.context?.sources?.current() : undefined)
-  const sideSource = (parsed: ParsedMessageContent | undefined): ToolMessageSource | undefined => parsed
-    ? zcodeToolMessageSource(zcodeSideRow(parsed.parentObject, parsed, props.context, request()), parsed) ?? undefined
-    : undefined
-  const source = createMemo(() => {
-    const current = props.context?.sources?.current()
-    return zcodeToolMessageSource(zcodeSideRow(props.parsed, current, props.context, request()), current) ?? undefined
-  })
-  const requestSource = createMemo(() => sideSource(props.context?.sources?.request()))
-  const resultSource = createMemo(() => sideSource(props.context?.sources?.result()))
+  const build = (payload: unknown, parsed: ParsedMessageContent | undefined): ToolMessageSource | undefined =>
+    zcodeToolMessageSource(zcodeSideRow(payload, parsed, props.context, request()), parsed) ?? undefined
   return (
-    <Show when={source()}>
-      {resolved => <ToolMessage source={resolved()} request={requestSource()} result={resultSource()} context={props.context} />}
-    </Show>
+    <ToolMessageSpan
+      context={props.context}
+      source={parsed => build(props.parsed, parsed)}
+      request={parsed => build(parsed.parentObject, parsed)}
+      result={parsed => build(parsed.parentObject, parsed)}
+    />
   )
 }
 

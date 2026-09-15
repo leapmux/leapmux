@@ -70,7 +70,13 @@ var (
 	// ErrPreemptionUnsupported is steering's counterpart for the interrupt-only
 	// route: the running provider cannot steer and Preempt refuses outright.
 	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
-	ErrManagerStopped        = errors.New("agent input queue is stopped")
+	// ErrPreemptionState is ErrSteeringState's counterpart. It must not reuse
+	// ErrTurnEnded, whose text names STEERING and asserts that a turn ended: the
+	// head can also be refused because another tab holds its edit, and the reader
+	// saw "active turn ended before steering" for a request that neither steered
+	// nor followed a turn that ended.
+	ErrPreemptionState = errors.New("queue state does not permit preemption")
+	ErrManagerStopped  = errors.New("agent input queue is stopped")
 	// ErrPlannedRestart refuses an explicit dispatch while the Worker replaces
 	// the agent process. The durable pause_owner records the restart, so the
 	// refusal survives a Worker restart that leaves the marker behind.
@@ -167,9 +173,13 @@ type SnapshotItem struct {
 	// CanSteer uses the same predicate as the store's steering guard.
 	CanSteer bool
 	// CanPreempt uses the same predicate the manager's preemption guard applies:
-	// head, queued, unedited, a kind the model can take, and an active turn to
-	// cancel. Unlike CanSteer it does NOT require a steerable turn -- the whole
-	// point is the turn the provider can only cancel, not inject into.
+	// head, queued, unedited, and an active turn to cancel. Unlike CanSteer it does
+	// NOT require a steerable turn, nor a kind the model can take mid-turn -- the
+	// whole point is the turn the provider can only cancel, not inject into, and
+	// the ordinary turn-end drain is what delivers the item afterwards.
+	//
+	// It excludes the one head that REPLACES the turn, because the store already
+	// dispatches that one through the running turn.
 	CanPreempt bool
 }
 
@@ -228,6 +238,11 @@ type DeliveryError struct {
 	Err                 error
 	Outcome             DispatchOutcome
 	ActiveTurnSteerable bool
+	// PauseReason is the sentence the reader sees when a NotReady outcome pauses
+	// the queue. The zero value keeps AGENT_STOPPED, which is what the provider
+	// paths mean; a store fault sets STORE_FAULT, because "the agent stopped" is
+	// a false statement about a database error.
+	PauseReason leapmuxv1.AgentInputQueuePauseReason
 }
 
 func (e *DeliveryError) Error() string {

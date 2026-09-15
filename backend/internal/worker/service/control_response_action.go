@@ -85,3 +85,13 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 	})
 	return err
 }
+
+// answersARetiredInstance reports that this answer names a request instance the
+// worker no longer holds, because the stored claim token differs from the one the
+// browser sent.
+//
+// Its caller refuses the answer in SILENCE. See the gate in processControlResponse
+// for why that is the correct outcome rather than an error.
+func (plan controlResponsePlan) answersARetiredInstance(claimToken string) bool {
+	return plan.requestMeta.ClaimToken != claimToken
+}

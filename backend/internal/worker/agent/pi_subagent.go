@@ -30,7 +30,7 @@ func (a *PiAgent) toolCallTitle(toolCallID string) string {
 //
 // A thin name over the shared `logRegistryRefusal`, kept because these seven
 // call sites read better without the two constant arguments repeated at each
-// one. The RULE is the shared helper's; this only names the provider once.
+// one. The RULE is the shared helper's; this only states the provider once.
 func logUpsertRefusal(err error) {
 	logRegistryRefusal("pi", "upsert", err)
 }
@@ -48,7 +48,7 @@ func piExtractDescription(input json.RawMessage, toolName string) string {
 	}
 	if json.Unmarshal(input, &in) == nil {
 		// Both branches take the same cap. The description arrives as a
-		// label the model wrote, so it is no more bounded than the prompt is,
+		// label the model wrote, so it is no more capped than the prompt is,
 		// and a caller that reads one branch must not have to know which.
 		//
 		// CLEAN FIRST, THEN TEST. A field that holds only characters a reader

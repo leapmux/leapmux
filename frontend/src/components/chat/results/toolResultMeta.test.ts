@@ -1,6 +1,6 @@
 import type { ToolBodySource, ToolPresentation } from './toolPresentation'
 import { describe, expect, it } from 'vitest'
-import { toolOutputCollapsible, toolPresentationMeta } from './toolResultMeta'
+import { toolBodyRepeatsInput, toolBodyStatesOwnOutcome, toolOutputCollapsible, toolPresentationMeta } from './toolResultMeta'
 
 function presentation(body: ToolBodySource, overrides: Partial<ToolPresentation> = {}): ToolPresentation {
   return {
@@ -121,5 +121,74 @@ describe('toolPresentationMeta todo body', () => {
   // The whole list fits the row, so an expand button would have nothing to expand.
   it('never collapses a checklist', () => {
     expect(toolOutputCollapsible(presentation({ type: 'todo', items }))).toBe(false)
+  })
+})
+
+// Two EXHAUSTIVE predicates over the body union, not two arrays of literals.
+// Array membership let a new body type join in silence, and these two decide
+// whether the row repeats its input as raw JSON and whether it draws the shared
+// outcome header -- which is the "generic wrench plus raw JSON" symptom the
+// unification exists to remove.
+describe('toolBodyRepeatsInput', () => {
+  it('suppresses the JSON summary for a body that already draws the input', () => {
+    for (const body of [
+      { type: 'mcp', source: { server: 's', tool: 't', argsJson: '{}', content: [], status: 'success' } },
+      { type: 'todo', items: [] },
+      { type: 'markdown', text: '# plan' },
+    ] as ToolBodySource[])
+      expect(toolBodyRepeatsInput(body)).toBe(false)
+  })
+
+  it('keeps the JSON summary for every body that states nothing about the input', () => {
+    for (const body of [
+      { type: 'text' },
+      { type: 'diff', sources: [] },
+      { type: 'status', source: { title: 'Task output', outcome: 'succeeded', output: '' } },
+    ] as ToolBodySource[])
+      expect(toolBodyRepeatsInput(body)).toBe(true)
+  })
+})
+
+describe('toolBodyStatesOwnOutcome', () => {
+  it('suppresses the shared header for a body that draws its own failure notice', () => {
+    for (const body of [
+      { type: 'agent', source: { body: '' } },
+      { type: 'command', source: { command: 'ls', output: '' } },
+      { type: 'commands', entries: [] },
+      { type: 'status', source: { title: 'Task output', outcome: 'failed', output: '' } },
+    ] as ToolBodySource[])
+      expect(toolBodyStatesOwnOutcome(body)).toBe(true)
+  })
+
+  it('draws the shared header above every body that states no outcome', () => {
+    for (const body of [
+      { type: 'text' },
+      { type: 'diff', sources: [] },
+      { type: 'mcp', source: { server: 's', tool: 't', argsJson: '{}', content: [], status: 'error' } },
+      { type: 'todo', items: [] },
+    ] as ToolBodySource[])
+      expect(toolBodyStatesOwnOutcome(body)).toBe(false)
+  })
+})
+
+// `hasCopyable` has to ANSWER truthfully, which means building the text -- and
+// `copyableContent` is the same closure. Built twice, a diff row ran `diffLines`
+// over every changed file once per streamed recompute and again on the click.
+describe('toolPresentationMeta copyable cost', () => {
+  it('builds the copyable text at most once', () => {
+    let builds = 0
+    const meta = toolPresentationMeta(presentation({ type: 'command', source: {
+      command: 'ls',
+      get output() {
+        builds++
+        return 'one\ntwo\n'
+      },
+    } } as unknown as ToolBodySource))
+
+    expect(meta.hasCopyable).toBe(true)
+    const first = builds
+    expect(meta.copyableContent()).toContain('one')
+    expect(meta.copyableContent()).toContain('one')
+    expect(builds).toBe(first)
   })
 })

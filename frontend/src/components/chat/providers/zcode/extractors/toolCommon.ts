@@ -1,4 +1,3 @@
-import type { RenderContext } from '../../../messageRenderers'
 import type { SpanRole } from '../../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { TodoItem } from '~/stores/chatTodos'
@@ -203,23 +202,7 @@ export interface ZCodeRow {
   toolName: string
 }
 
-/**
- * Build a ZCodeRow from a renderer's props.
- *
- * Call it inside the memo that already tracks `props`, so Solid's reactivity is
- * unchanged: the row is derived state, not a value read outside a tracking scope.
- */
-export function zcodeRowFrom(props: { parsed: unknown, context?: RenderContext }): ZCodeRow {
-  const current = props.context?.sources?.current()
-  const request = props.context?.sources?.request()
-    ?? (zcodeExtractTool(props.parsed)?.kind === ZCODE_TOOL_KIND.Scheduled ? current : undefined)
-  return {
-    ...zcodeRow(props.parsed, props.context?.spanType, request, current?.supplementalContent),
-    result: props.context?.sources?.result(),
-  }
-}
-
-/** Build a ZCodeRow from the three sources directly, for a caller that holds no props. */
+/** Build a ZCodeRow from the three sources directly. */
 export function zcodeRow(
   parsed: unknown,
   spanType: string | undefined,

@@ -167,11 +167,15 @@ describe('a move that reaches the shared row', () => {
     },
   })
 
-  it('states the tool name rather than dumping its input as JSON', () => {
+  // `move` states its paths under keys no other kind uses, so the shared title
+  // reads them by name. A row that only suppressed the JSON summary stated
+  // NEITHER file, which is less than the raw JSON said.
+  it('states both paths rather than dumping its input as JSON', () => {
     const { container } = render(() => (
       <ToolMessage source={moveRow({ source_path: '/project/a.ts', destination_path: '/project/b.ts' })} context={{ workingDir: '/project' }} />
     ))
-    expect(container.textContent).toContain('move_file')
+    expect(container.textContent).toContain('a.ts')
+    expect(container.textContent).toContain('b.ts')
     expect(container.textContent).not.toContain('destination_path')
   })
 

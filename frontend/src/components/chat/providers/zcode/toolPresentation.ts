@@ -2,12 +2,14 @@ import type { ToolKind } from '../../results/toolKind'
 import type { ToolBodySource, ToolMessageSource, ToolPresentation } from '../../results/toolPresentation'
 import type { ZCodeRow, ZCodeToolUpdate } from './extractors/toolCommon'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import ListChecks from 'lucide-solid/icons/list-checks'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { pickFirstString, pickString } from '~/lib/jsonPick'
 import { readFileBodyText } from '../../results/readFileResult'
 import { TOOL_FILE_PATH_KEYS } from '../../results/toolInputs'
 import { todoToolBody } from '../../results/toolPresentation'
+import { toolStatusFor } from '../../results/toolRowStatus'
 import { retainedOutcome } from '../registry'
 import { zcodeAgentResult } from './extractors/agent'
 import { extractZCodeBash, zcodeBashToCommandSource } from './extractors/bash'
@@ -58,21 +60,6 @@ export function zcodeToolKind(toolName: string): ToolKind {
 /** True when this row is the last one of its tool call. */
 function zcodeToolFinished(update: ZCodeToolUpdate, parsed: ParsedMessageContent | undefined): boolean {
   return zcodeToolSpanRole(update.kind, parsed) === 'result'
-}
-
-/**
- * How the call ended, in the shared vocabulary the row's header reads.
- *
- * LeapMux's own completion wins over the frame, for the reason `retainedOutcome`
- * gives: a retained frame still reads as a call in progress.
- */
-function zcodeToolStatus(update: ZCodeToolUpdate, finished: boolean, parsed: ParsedMessageContent | undefined): string {
-  const outcome = retainedOutcome(parsed?.completion)
-  if (outcome === 'interrupted')
-    return 'cancelled'
-  if (update.isError || outcome === 'failed')
-    return 'failed'
-  return finished ? 'completed' : 'in_progress'
 }
 
 /**
@@ -219,6 +206,17 @@ export function zcodeToolPresentation(row: ZCodeRow, parsed?: ParsedMessageConte
     truncated: resolved.truncated || undefined,
     unresolvedTerminals: [],
   }
+  // Every occurrence, not the first one. ZCode's `Edit` states it, the shared
+  // title draws " (replace all)", and a reader who approves the call needs that
+  // difference before the edit runs.
+  if (kind === 'edit' && input.replace_all === true)
+    presentation.replaceAll = true
+  // `TaskOutput` reads a background task from the runtime, which no shared kind
+  // states, so it stays uncategorized and would draw the wrench that every
+  // unrecognized tool draws. Its own icon is what lets a reader pick the
+  // background-task rows out of a transcript.
+  if (row.toolName === ZCODE_TOOL.TaskOutput)
+    presentation.icon = ListChecks
   if (resolved.body.type === 'todo')
     Object.assign(presentation, todoToolBody(resolved.body.items))
   if (kind === 'agent') {
@@ -242,7 +240,7 @@ export function zcodeToolMessageSource(row: ZCodeRow, parsed?: ParsedMessageCont
   return {
     id: update.toolCallId,
     role: finished ? 'result' : update.kind === ZCODE_TOOL_KIND.Scheduled ? 'request' : 'update',
-    status: zcodeToolStatus(update, finished, parsed),
+    status: toolStatusFor(retainedOutcome(parsed?.completion), update.isError, finished),
     presentation,
     images: zcodeToolResultImages(row),
   }

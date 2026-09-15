@@ -2731,6 +2731,7 @@ func init() {
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
 		"claude",
 	)
+	setFixedPermissionModes(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	// Each Claude model carries its effort AND extended-thinking groups, so the
 	// frontend rebuilds both on a model switch (the static fallback needs this
 	// too, hence the registry override rather than only Claude.OptionGroups).

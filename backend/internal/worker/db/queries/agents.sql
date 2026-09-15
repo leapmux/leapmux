@@ -246,8 +246,15 @@ INSERT INTO agents (id, parent_agent_id, spawn_span_id, working_dir, home_dir, t
 -- EnsureChildAgent: re-attach a child row when the registry upsert did not
 -- land before the restart. The (parent_agent_id, spawn_span_id) pair is unique
 -- among children (idx_agents_spawn_span), so this is at most one row.
+--
+-- The spawn_span_id <> '' term repeats the index predicate, which is what makes
+-- the query eligible for that index. SQLite proves parent_agent_id = ? implies
+-- IS NOT NULL, but it cannot prove a bound parameter differs from '', so without
+-- the term the plan falls back to idx_agents_parent and reads EVERY child of the
+-- parent plus a table row for each -- the opposite of the single unique seek the
+-- comment above promises. See partial_index_test.go.
 -- name: GetChildAgentBySpawnSpan :one
-SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ?;
+SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ? AND spawn_span_id <> '';
 
 -- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan. It reads
 -- the only DURABLE copy of a spawn span. A provider's own index of them is

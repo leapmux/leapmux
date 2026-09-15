@@ -89,5 +89,20 @@ export async function readWorkerFile(options: {
   finally {
     signal?.removeEventListener('abort', forwardAbort)
   }
+  // An abort must never RESOLVE. Each worker's loop condition tests the signal,
+  // so a worker parked at that test when the abort lands returns rather than
+  // throws; with every worker parked there at once, `Promise.all` resolves and
+  // this function would answer with the half-filled buffer it was assembling --
+  // a successful read whose unread ranges are still NUL bytes. The serial loop
+  // this replaced could not reach that state, because it tested the signal at
+  // the top of every page.
+  //
+  // No test covers the window, and the reason is a property of the scheduler
+  // rather than an omission: a worker re-enters `readRange` in a MICROTASK after
+  // its page resolves, so an abort raised from a DOM event cannot land between
+  // the two, and every worker is inside `await readFile`, which rejects. This
+  // line makes the guarantee hold whatever the scheduling, which is cheaper than
+  // proving that no future caller creates the window.
+  signal?.throwIfAborted()
   return { ...response, content: complete }
 }

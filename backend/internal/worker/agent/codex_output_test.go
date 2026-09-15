@@ -1856,6 +1856,29 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	require.Equal(t, 1, sink.PublishedControlCount())
 }
 
+// Two plan turns share ONE stored plan, because UpdatePlan replaces it. The card
+// is keyed by TURN, so a second plan turn leaves two cards open -- and the composer
+// renders the OLDEST, so the newer one is invisible. Approving the card the reader
+// can see would then execute the plan it never showed.
+func TestHandleCodexOutput_ASecondPlanPromptRetiresTheFirst(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	for _, turn := range []string{"turn-1", "turn-2"} {
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"`+turn+`","item":{"type":"plan","id":"plan-`+turn+`"}}}`)))
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"`+turn+`","item":{"type":"plan","id":"plan-`+turn+`","text":"# Plan `+turn+`\n\n- step\n"}}}`)))
+		handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"`+turn+`","status":"completed","items":[],"error":null}}}`)))
+	}
+
+	require.Equal(t, 2, sink.PublishedControlCount())
+	assert.Equal(t, []string{"codex-plan-prompt-turn-1"}, sink.CanceledControls(),
+		"the superseded card would have approved the second turn's plan")
+}
+
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
 	t.Parallel()
 
@@ -2459,4 +2482,52 @@ func TestHandleCodexOutput_InterruptedToolWithNoOutputStoresTheFrameAlone(t *tes
 		"turnId":"turn-1",
 		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}
 	}`, string(result.Content))
+}
+
+// An inbound REQUEST the dispatcher does not recognize needs an answer. Codex
+// sends its approval requests as JSON-RPC requests with an "id", so one whose
+// method is unknown arrives here carrying a runtime that WAITS -- and a transcript
+// row alone left it waiting for its own timeout.
+//
+// Codex was the fourth JSON-RPC dispatcher, and the only one that answered nothing
+// at all until the refusal moved onto jsonrpcBase.
+func TestHandleCodexOutput_AnswersAnUnsupportedRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	stdin := &syncBuffer{}
+	agent := newCodexAgentWithSink(sink)
+	agent.stdin = nopWriteCloser{stdin}
+
+	raw := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"item/somethingNew","params":{}}`)
+	handleCodexOutput(agent, parseLine(raw))
+
+	// The answer is written on its OWN goroutine, so that a reply to a runtime that
+	// is not draining its stdin cannot stall the loop that must keep draining its
+	// stdout.
+	var answer string
+	require.Eventually(t, func() bool {
+		answer = stdin.String()
+		return strings.Contains(answer, `"code":-32601`)
+	}, 2*time.Second, 5*time.Millisecond, "an unsupported Codex request must be answered")
+	assert.Contains(t, answer, "Method not supported: item/somethingNew")
+	assert.Contains(t, answer, `"id":9007199254740993`,
+		"the identifier returns exactly as it arrived, above the range a float keeps")
+	require.Len(t, sink.Messages(), 1, "the frame still reaches the transcript")
+}
+
+// A NOTIFICATION carries no id and needs no answer. Writing one would put a
+// response with a null identifier on the wire, which the runtime cannot route.
+func TestHandleCodexOutput_AnswersNoUnsupportedNotification(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	stdin := &syncBuffer{}
+	agent := newCodexAgentWithSink(sink)
+	agent.stdin = nopWriteCloser{stdin}
+
+	handleCodexOutput(agent, parseLine([]byte(`{"jsonrpc":"2.0","method":"item/somethingNew","params":{}}`)))
+
+	require.Len(t, sink.Messages(), 1)
+	assert.Empty(t, stdin.String(), "a notification needs no answer")
 }

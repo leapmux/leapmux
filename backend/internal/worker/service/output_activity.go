@@ -272,13 +272,12 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 	if st.settlePending {
 		return true
 	}
-	if h.shuttingDown.Load() {
+	if !h.beginActivityRefresh() {
 		return false
 	}
 	st.settleGen++
 	gen := st.settleGen
 	st.settlePending = true
-	h.activityRefreshes.Add(1)
 	st.settleTimer = h.afterSettleDelay(func() {
 		h.deliverHeldSettle(agentID, rootAgentID, gen)
 	})
@@ -435,15 +434,13 @@ func (h *OutputHandler) NoteAgentStopFailed(agentID, rootAgentID string) {
 // because the withdrawal that follows a refusal must void a window rather than
 // land behind one.
 func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
-	if h.shuttingDown.Load() {
-		// WaitActivityRefreshes may already run, and an Add that lands inside a
-		// Wait is a WaitGroup misuse, not only a lost broadcast. The goroutine
-		// would also read the registry after the caller closed the database.
-		// holdSettleLocked tests the same latch before it takes its own count.
+	// The count this takes is the GOROUTINE's, which Shutdown joins. Without it the
+	// goroutine reads the registry and broadcasts after the caller closed the
+	// database. holdSettleLocked takes its count the same way.
+	if !h.beginActivityRefresh() {
 		return
 	}
 	seq := h.activitySeq.Add(1)
-	h.activityRefreshes.Add(1)
 	go func() {
 		defer h.activityRefreshes.Done()
 		root := h.resolveRoot(agentID, rootAgentID)
@@ -1433,14 +1430,29 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	// The field writes above run whatever the latch says, because
 	// AgentActivitySnapshot reads them and a process boundary must leave the
 	// entry truthful. Only the deferred refresh is refused: see publishStopMark.
-	if h.shuttingDown.Load() {
+	if !h.beginActivityRefresh() {
 		return
 	}
-	h.activityRefreshes.Add(1)
 	go func() {
 		defer h.activityRefreshes.Done()
 		h.refreshActivityTree(rootAgentID, settleImmediate)
 	}()
+}
+
+// beginActivityRefresh takes one count of the refresh group, and reports false
+// once shutdown began.
+//
+// The latch test and the Add share refreshLifecycleMu with SetShuttingDown, which
+// is what makes the Add happen-before the Wait that Shutdown runs afterwards. The
+// caller must pair a true answer with exactly one activityRefreshes.Done.
+func (h *OutputHandler) beginActivityRefresh() bool {
+	h.refreshLifecycleMu.Lock()
+	defer h.refreshLifecycleMu.Unlock()
+	if h.shuttingDown.Load() {
+		return false
+	}
+	h.activityRefreshes.Add(1)
+	return true
 }
 
 // WaitActivityRefreshes joins the deferred tree refreshes resetAgentActivity

@@ -164,7 +164,7 @@ func NormalizeRowKey(s string) string {
 //
 // The same class as a row key, because the two are the same KIND of value: an
 // identity the registry joins on, chosen by the provider, with nothing else on
-// the path bounding it. `LabelByteLimit`'s own doc names them together and says
+// the path that limits it. `LabelByteLimit`'s own doc names them together and says
 // why neither may be cut; the refusal was then built for one of the two.
 //
 // What a caller DOES with the refusal differs, and that difference is the whole
@@ -254,12 +254,12 @@ const (
 	KindShell       = Kind(leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL)
 )
 
-// String names the kind with the proto enum's own generated name
+// String gives the kind's name as the proto enum's own generated name
 // ("BACKGROUND_TASK_KIND_SHELL"). It is what a log line prints. The registry's
 // cap-pool key is the ORDINAL rather than this name -- see KindBuckets.
 func (k Kind) String() string { return leapmuxv1.BackgroundTaskKind(k).String() }
 
-// String names the status with the proto enum's own generated name, for logs.
+// String gives the status's name as the proto enum's own generated name, for logs.
 // The payload vocabulary the browser reads is StatusWire, not this.
 func (s Status) String() string { return leapmuxv1.BackgroundTaskStatus(s).String() }
 
@@ -382,7 +382,7 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 		// second update onward, and `Upsert.Clean` reaches the same state by
 		// cleaning a label of nothing but invisible characters to "".
 		//
-		// GUARDED BY THE KEY, because the label names THAT group. Restoring it
+		// GUARDED BY THE KEY, because the label states THAT group. Restoring it
 		// under a different key would put the previous group's heading over a
 		// row that just moved to a new group, and a wrong heading is worse than
 		// a missing one -- the reader cannot tell it is wrong.
@@ -474,7 +474,7 @@ type Upsert struct {
 // `GroupKey` is never CUT, for the reason ValidateRowKey never cuts a row key:
 // it is an identity, and a cut is non-injective, so two distinct groups would
 // collapse into one heading. An unusable one is DROPPED instead, together with
-// the label that names it -- the row then stands ungrouped, which is a state
+// the label that states it -- the row then stands ungrouped, which is a state
 // the registry already has (`GroupKey == ""` means "no grouping", and
 // PreservingBlanksFrom reads it that way).
 //
@@ -567,7 +567,7 @@ func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
 	// that never met it would otherwise empty the sidebar.
 	//
 	// The LABEL goes with the key, for the reason `Upsert.Clean` pairs them:
-	// a heading that names no group has nothing left to name.
+	// a heading that states no group has nothing left to state.
 	groupKey, groupLabel := i.GroupKey, i.GroupLabel
 	if ValidateGroupKey(groupKey) != nil {
 		groupKey, groupLabel = "", ""

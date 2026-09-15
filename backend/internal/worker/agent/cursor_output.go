@@ -41,9 +41,7 @@ func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 		}
 		return true
 	default:
-		if err := a.sendErrorResponse(idRaw, -32601, "Method not supported: "+line.Method); err != nil {
-			slog.Warn("cursor extension method-not-found failed", "agent_id", a.agentID, "method", line.Method, "error", err)
-		}
+		a.refuseUnsupportedRequest(line)
 		return true
 	}
 }

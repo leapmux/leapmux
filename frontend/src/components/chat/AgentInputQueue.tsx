@@ -126,6 +126,33 @@ const RowAction: Component<{
   </Tooltip>
 )
 
+/**
+ * One LABELLED action in a queue row: an icon beside a word.
+ *
+ * The sibling of {@link RowAction}, and it exists for the same reason
+ * `ROW_ACTION_CLASS` does -- Steer and Preempt must render the same control, and
+ * a second spelling of the wrapper is what lets one of them drift. Exactly one of
+ * the two is ever offered, so a reader who compares them is comparing the styling
+ * and the structure, which now live here once.
+ *
+ * `tooltip` and `label` are separate: the tooltip may state a whole sentence
+ * (Preempt does), while the label is the word the button shows and, through
+ * `ariaLabel`, the name every by-name lookup reads.
+ */
+const LabelledRowAction: Component<{
+  icon: LucideIcon
+  label: string
+  tooltip: string
+  onClick: () => void
+}> = props => (
+  <Tooltip text={props.tooltip} ariaLabel={props.label}>
+    <button class={styles.steerAction} type="button" onClick={() => props.onClick()}>
+      <Icon icon={props.icon} size="xs" />
+      <span>{props.label}</span>
+    </button>
+  </Tooltip>
+)
+
 export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   const items = () => props.snapshot?.items ?? []
   /**
@@ -363,20 +390,15 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             would then offer a button that the Worker refuses.
           */}
           <Show when={isHead() && props.supportsSteering && item().canSteer}>
-            <Tooltip text="Steer" ariaLabel>
-              <button class={styles.steerAction} type="button" onClick={() => props.onSteer(item())}>
-                <Icon icon={SendHorizontal} size="xs" />
-                <span>Steer</span>
-              </button>
-            </Tooltip>
+            <LabelledRowAction icon={SendHorizontal} label="Steer" tooltip="Steer" onClick={() => props.onSteer(item())} />
           </Show>
           <Show when={isHead() && !props.supportsSteering && props.supportsPreemption && item().canPreempt}>
-            <Tooltip text="Cancel the running turn and send this message next" ariaLabel="Preempt">
-              <button class={styles.steerAction} type="button" onClick={() => props.onPreempt(item())}>
-                <Icon icon={Zap} size="xs" />
-                <span>Preempt</span>
-              </button>
-            </Tooltip>
+            <LabelledRowAction
+              icon={Zap}
+              label="Preempt"
+              tooltip="Cancel the running turn and send this message next"
+              onClick={() => props.onPreempt(item())}
+            />
           </Show>
         </div>
       </div>

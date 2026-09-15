@@ -642,12 +642,12 @@ func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ou
 		outgoing = b.replaceSession(func() {
 			b.mu.Lock()
 			b.sessionID = session.SessionID
-			b.promptActive = false
-			b.steerRunID = ""
-			// The note belongs to the turn this swap ends. Left behind, it stamped
-			// Interrupted on every completed tool row of the NEXT turn, because
-			// ClearContext reaches here without passing clearActivePrompt.
-			b.interruptRequested = false
+			// The swap ends the turn the previous session carried, so every field
+			// that belongs to that turn goes with it. The interrupt note is one of
+			// them: left behind, it stamped Interrupted on every completed tool row
+			// of the NEXT turn, because ClearContext reaches here without passing
+			// clearActivePrompt.
+			b.resetTurnStateLocked()
 			b.mu.Unlock()
 		})
 	})
@@ -1413,11 +1413,29 @@ func (b *acpBase) acpInterruptRequested() bool {
 // clearActivePrompt resets the provider-local active-turn state.
 func (b *acpBase) clearActivePrompt() {
 	b.mu.Lock()
+	b.resetTurnStateLocked()
+	b.mu.Unlock()
+	b.notePromptActive()
+}
+
+// resetTurnStateLocked drops every field that belongs to ONE turn. The caller must
+// hold b.mu. It is the single spelling of that set, so a session swap and a turn
+// end cannot clear different halves of it -- which is the bug it exists to make
+// impossible: the session swap cleared two of the three and left the interrupt
+// note behind.
+//
+// It does NOT publish. clearActivePrompt calls notePromptActive after it releases
+// b.mu, and the session swap publishes once it releases the session locks, because
+// notePromptActive broadcasts and a broadcast must not run under either lock.
+//
+// The note must die with its turn rather than be cleared at the next turn's START:
+// handleToolCallUpdate reads it with no promptActive gate, and the prompt response
+// runs on its own goroutine, so a tool update that trails the turn's end would
+// otherwise be stamped interrupted for as long as the tab stays idle.
+func (b *acpBase) resetTurnStateLocked() {
 	b.promptActive = false
 	b.steerRunID = ""
 	b.interruptRequested = false
-	b.mu.Unlock()
-	b.notePromptActive()
 }
 
 // extractACPChunkText pulls the `text` field from an ACP content envelope.
@@ -3506,7 +3524,7 @@ func (b *acpBase) handleACPCancelRequest(params json.RawMessage) {
 	if !valid {
 		return
 	}
-	b.withdrawControlRequest(b.sink, identity.key, false)
+	b.withdrawControlRequest(b.sink, identity.key)
 }
 
 func (b *acpBase) handlePlan(update json.RawMessage) {
@@ -3550,12 +3568,7 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 			return
 		}
 		// A request needs a response even if the transcript write fails.
-		// Keep the raw identifier so numeric IDs retain their exact value.
-		if id, _, ok := ExtractJSONRPCID(line.Raw); line.Method != "" && ok {
-			if err := b.sendErrorResponse(id, -32601, "Method not supported: "+line.Method); err != nil {
-				slog.Warn("acp unsupported request response failed", "agent_id", b.agentID, "method", line.Method, "error", err)
-			}
-		}
+		b.refuseUnsupportedRequest(line)
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: line.Raw}, SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
 		}

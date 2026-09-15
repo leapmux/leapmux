@@ -17,6 +17,7 @@ import type { MessageUiKey } from '../messageUiKeys'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
 import type { ToolRowOutcome } from '../toolOutcomeLabel'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -47,13 +48,13 @@ export interface ProviderAskUserQuestion {
    */
   sendAnswer: (
     request: ControlRequest,
-    sendControlResponse: (bytes: Uint8Array) => Promise<void>,
+    sendControlResponse: ControlResponseSender,
     questions: Question[],
     answerState: ControlAnswerState,
   ) => Promise<void>
   sendReject: (
     request: ControlRequest,
-    sendControlResponse: (bytes: Uint8Array) => Promise<void>,
+    sendControlResponse: ControlResponseSender,
     message: string,
   ) => Promise<void>
 }

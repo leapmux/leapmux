@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
 import type { ActionsProps, ContentProps } from '../../controls/types'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 
 import { createEffect, createMemo, onCleanup, untrack } from 'solid-js'
 import { pickObject, pickString } from '~/lib/jsonPick'
@@ -22,7 +23,7 @@ function getOptions(payload: Record<string, unknown>): WirePermissionOption[] {
 }
 
 export function sendACPPermissionResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   optionId: string,
 ): Promise<void> {

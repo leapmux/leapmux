@@ -15,7 +15,7 @@ import { useSharedExpandedState } from '../messageRenderers'
 import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { toolOutcomeLabel } from '../toolOutcomeLabel'
 import { toolInputSummary } from '../toolStyles.css'
-import { TITLED_TOOL_KINDS, toolMessageTitle } from '../toolTitleRenderers'
+import { kindHasTitleRenderer, toolMessageTitle } from '../toolTitleRenderers'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessageLayout } from '../widgets/ToolMessageLayout'
 import { AgentRequestMessage } from './AgentRequestMessage'
@@ -29,7 +29,7 @@ import { RequestedFileChanges } from './requestedFileChanges'
 import { renderToolBody } from './toolBody'
 import { toolKindIcon, toolKindLabel } from './toolKind'
 import { ToolMetadata } from './ToolMetadata'
-import { toolOutputCollapsible } from './toolResultMeta'
+import { toolBodyRepeatsInput, toolBodyStatesOwnOutcome, toolOutputCollapsible } from './toolResultMeta'
 
 import { ToolHeaderRow, ToolOutcomeHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
@@ -94,7 +94,7 @@ export function ToolMessage(props: {
   const genericInput = createMemo(() => {
     if (presentation().inputText)
       return presentation().inputText!
-    if (['mcp', 'todo', 'markdown'].includes(body().type) || TITLED_TOOL_KINDS.has(kind()))
+    if (!toolBodyRepeatsInput(body()) || kindHasTitleRenderer(kind()))
       return ''
     return Object.keys(input()).length > 0 ? prettifyJson(input()) : ''
   })
@@ -138,7 +138,7 @@ export function ToolMessage(props: {
         <ImageResultList sources={images()} indexOffset={additionalImageCount()} title={presentation().title} context={props.context} />
       </Show>
       <ToolOutcomeHeader
-        when={(status() === 'failed' || status() === 'cancelled') && !['agent', 'command', 'commands', 'status'].includes(body().type)}
+        when={(status() === 'failed' || status() === 'cancelled') && !toolBodyStatesOwnOutcome(body())}
         icon={CircleAlert}
         title={toolOutcomeLabel(status() === 'cancelled' ? 'interrupted' : 'failed')}
         context={props.context}
@@ -158,7 +158,7 @@ export function ToolMessage(props: {
             <ToolMessageLayout
               role={finished() ? 'result' : 'request'}
               hasRequest={pairedResult()}
-              icon={toolKindIcon(kind())}
+              icon={headerPresentation().icon ?? toolKindIcon(kind())}
               toolName={headerPresentation().label || toolKindLabel(kind())}
               title={toolMessageTitle(headerPresentation(), props.context)}
               summary={(

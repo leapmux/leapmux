@@ -1,5 +1,6 @@
 import type { ControlAnswerState, Question } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import type { ControlResponseSender } from '~/components/chat/controls/types'
 import type { PillOptions } from '~/components/common/PillGroup'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -79,7 +80,7 @@ export function getCodexParams(payload: Record<string, unknown>): Record<string,
  * Sends a Codex-native approval decision as a JSON-RPC response directly.
  */
 export function sendCodexDecision(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   decision: CodexDecision,
 ): Promise<void> {
@@ -115,7 +116,7 @@ function codexAnswerValues(question: Question, index: number, answerState: Contr
  * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
  */
 export function sendCodexUserInputResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   questions: Question[],
   answerState: ControlAnswerState,
@@ -130,14 +131,14 @@ export function sendCodexUserInputResponse(
 }
 
 export function sendCodexUserInputRejectResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
 ): Promise<void> {
   return sendJsonRpcResult(onRespond, requestId, { answers: {} })
 }
 
 export function sendCodexPermissionsResponse(
-  onRespond: (content: Uint8Array) => Promise<void>,
+  onRespond: ControlResponseSender,
   requestId: string,
   permissions: Record<string, unknown>,
   scope: 'turn' | 'session',

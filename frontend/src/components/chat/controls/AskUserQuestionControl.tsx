@@ -372,6 +372,15 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const { loading: submitting, start: startSubmitting, stop: stopSubmitting } = createLoadingSignal(apiLoadingTimeoutMs())
   const { loading: stopping, start: startStopping, stop: stopStopping } = createLoadingSignal(apiLoadingTimeoutMs())
 
+  // The reset goes in `finally`, not in `catch`. A send that RESOLVES can still
+  // leave the request open: the worker records a response it cannot confirm, the
+  // store keeps the request, and this component stays mounted. With the reset in
+  // the catch alone, the button then read "Submitting..." and refused every further
+  // answer until the loading timeout fired, on a card that still needs one. A
+  // COMPLETED answer unmounts this component, where the reset costs nothing.
+  //
+  // The `catch` stays. A bare `finally` would let the rejection escape, and
+  // handleYolo calls this with `void`, which makes it an unhandled rejection.
   const handleSubmit = async () => {
     startSubmitting()
     saveEditorToCurrentPage()
@@ -379,6 +388,9 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       await props.onSubmitAnswers()
     }
     catch {
+      // submitResponse already reported the failure on answerState.
+    }
+    finally {
       stopSubmitting()
     }
   }
@@ -389,6 +401,9 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       await props.onReject('User stopped')
     }
     catch {
+      // As above: the failure already reached answerState.
+    }
+    finally {
       stopStopping()
     }
   }

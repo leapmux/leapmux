@@ -26,6 +26,10 @@ describe('agentInputQueuePauseBanner', () => {
       [AgentInputQueuePauseReason.AGENT_STOPPED, 'the agent stopped'],
       [AgentInputQueuePauseReason.DELIVERY_FAILED, 'did not reach the agent'],
       [AgentInputQueuePauseReason.DELIVERY_UNCERTAIN, 'may not have reached the agent'],
+      // A read of the worker's own store failed. AGENT_STOPPED would have told the
+      // reader the agent stopped, which is false for a database error -- and this
+      // sentence is exactly what the banner prints.
+      [AgentInputQueuePauseReason.STORE_FAULT, 'could not read its own data'],
     ]
     for (const [reason, fragment] of cases)
       expect(pauseSentence(reason)).toContain(fragment)

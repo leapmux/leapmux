@@ -1335,3 +1335,30 @@ func TestClassifyQueueDeliveryErrorKeepsAStatedOutcome(t *testing.T) {
 	require.ErrorAs(t, classifyQueueDeliveryError(agent.ErrAgentBusy), &fresh)
 	assert.Equal(t, inputqueue.DispatchBusy, fresh.Outcome)
 }
+
+// A read of the worker's OWN store that fails never reached the provider, so the
+// input is as undelivered as it was before. Failing it permanently makes the
+// reader retype what a retry would have sent.
+func TestQueueReadErrorClassifiesAStoreFaultAsNotReady(t *testing.T) {
+	t.Parallel()
+
+	err := queueReadError(errors.New("database is closed"))
+	var delivery *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &delivery)
+	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT, delivery.PauseReason,
+		"AGENT_STOPPED would tell the reader the agent stopped, which a database error did not")
+}
+
+// A MISSING row is permanent. The agents row cascades its queue items and its
+// queue state, so this says the item's own agent is gone and no later read brings
+// it back -- treating it as transient would pause the queue forever.
+func TestQueueReadErrorLeavesAMissingRowPermanent(t *testing.T) {
+	t.Parallel()
+
+	err := queueReadError(sql.ErrNoRows)
+	var delivery *inputqueue.DeliveryError
+	assert.NotErrorIs(t, err, nil)
+	assert.False(t, errors.As(err, &delivery), "a missing row must not become a transient delivery error")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}

@@ -25,8 +25,6 @@ func (piToolSource) locate(sessionID string) toolTranscriptLocation {
 	return toolTranscriptLocation{sessionKey: sessionID, ready: true}
 }
 
-func (piToolSource) readsInitialSupplement() bool { return true }
-
 func (piToolSource) initialSupplement(ctx context.Context, _ string, original []byte, span SpanInfo) ([]byte, error) {
 	if !span.Closing {
 		return nil, nil

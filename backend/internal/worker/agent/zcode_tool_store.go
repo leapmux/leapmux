@@ -72,17 +72,44 @@ type zcodeArtifactReference struct {
 type zcodeToolStore struct {
 	mu   sync.Mutex
 	path string
+	// file identifies the open database by INODE, not by name. ZCode's database
+	// path never changes within one agent, so a path comparison alone could never
+	// notice a store the runtime deleted and recreated at that same path -- and the
+	// handle would then answer every later read from the unlinked file. Cursor and
+	// Reasonix already compared this way; see sessionStoreMoved.
+	file os.FileInfo
 	db   *sql.DB
 	// artifacts maps an artifact URI to the data URI this store already built
 	// for it. ZCode writes an artifact file once and never rewrites it, so a
 	// record that still waits for a SECOND artifact no longer re-reads the first
 	// one, and a session whose artifacts are all cached reads no directory.
+	//
+	// The TURN owns it. dropArtifacts empties it at the turn end and at a session
+	// reset, because each entry is a fully decoded data URI as large as
+	// liveStdoutMaxTokenSize (16 MiB) and only a pass of the SAME turn can read one
+	// -- the turn end clears the pending set that a later pass would ask about.
+	// Held for the life of the agent instead, a session of computer-use screenshots
+	// retained every screenshot it ever took, which is the growth Reasonix's own
+	// event graph refuses for the same reason.
 	artifacts map[string]string
 }
 
-// handle returns the open database for `path`, opening one when the path moved.
+// dropArtifacts empties the artifact cache without closing the database handle.
+// The handle is per AGENT and costs one file descriptor; the cache is per TURN and
+// costs the bytes of every artifact that turn read.
+func (s *zcodeToolStore) dropArtifacts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.artifacts)
+}
+
+// handle returns the open database for `path`, opening one when the file moved.
 func (s *zcodeToolStore) handle(ctx context.Context, path string) (*sql.DB, error) {
-	if s.db != nil && s.path == path {
+	// A stat failure is not answered here: openSessionStoreDB below states the
+	// canonical errSessionStoreAbsent for a store that is not there, and every
+	// caller tests for that.
+	current, statErr := os.Stat(path)
+	if statErr == nil && s.db != nil && !sessionStoreMoved(s.path, s.file, path, current) {
 		return s.db, nil
 	}
 	s.closeLocked()
@@ -90,7 +117,7 @@ func (s *zcodeToolStore) handle(ctx context.Context, path string) (*sql.DB, erro
 	if err != nil {
 		return nil, err
 	}
-	s.path, s.db = path, db
+	s.path, s.file, s.db = path, current, db
 	return db, nil
 }
 
@@ -108,7 +135,7 @@ func (s *zcodeToolStore) closeLocked() {
 		}
 		s.db = nil
 	}
-	s.path = ""
+	s.path, s.file = "", nil
 	clear(s.artifacts)
 }
 

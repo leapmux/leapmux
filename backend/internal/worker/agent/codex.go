@@ -122,6 +122,13 @@ type CodexAgent struct {
 	turnSawPlan       bool   // whether the current turn produced a plan item
 	turnPlanText      string // final text of the current turn's plan item
 	turnAssistantText string // final assistant message text for the current turn
+	// planPromptRequestID is the plan-approval card that is still open.
+	//
+	// ONE plan is stored for each agent, and UpdatePlan REPLACES it, so a card from
+	// an earlier turn approves a plan it never showed. The card is keyed by turn, so
+	// two of them can coexist -- and the composer renders the OLDEST, which makes the
+	// newer one invisible. Guarded by a.mu.
+	planPromptRequestID string
 	// reasoningStreamKind records, per reasoning itemId, which reasoning sub-stream
 	// ("summary" or "raw") was seen first, so the token counter counts
 	// only one of them. Codex can emit both summaryTextDelta and textDelta for the
@@ -548,6 +555,15 @@ func (a *CodexAgent) Interrupt() error {
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
+	// The answers go FIRST, as acpBase.Interrupt sends them: a request the runtime
+	// still waits on outlives the turn that raised it. Codex is the one publisher
+	// that registers a real cancel answer -- the MCP elicitation at
+	// codex_output.go's MCPElicitationMethodCodex case -- because Codex retires its
+	// own approval requests but defines no outcome for an elicitation the client
+	// withdraws. Without this drain that answer can never be delivered: the
+	// elicitation stays blocked inside the CLI for the rest of the session, well
+	// past the point the user believes the turn ended.
+	a.withdrawAllControlRequests(a.sink)
 	if threadID == "" || turnID == "" {
 		// No active turn — nothing to interrupt. Treat as benign so
 		// scripts can call Interrupt unconditionally without first
@@ -1602,6 +1618,7 @@ func init() {
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
 		codexBinaryCandidates...,
 	)
+	setFixedPermissionModes(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	// model + the provider options above (static groups) + effort. The sandbox/network/
 	// collaboration/service-tier axes are already static optionGroups, so only effort
 	// (built from the model catalog) needs declaring here.

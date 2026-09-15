@@ -666,7 +666,12 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		{"MoveQueuedAgentInput", &leapmuxv1.MoveQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{"SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: agentID, Paused: true}},
 		{"SteerQueuedAgentInput", &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{"RetryQueuedAgentInput", &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{AgentId: agentID, Content: "{}"}},
+		{"SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: agentID, RequestId: "req-1", Content: []byte("{}")}},
+		{"UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{AgentId: agentID, Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET, Objective: "after"}},
+		{"UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{AgentId: agentID}},
 		{"UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: "after"}},
 		{"CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: terminalID}},
 		{"SendInput", &leapmuxv1.SendInputRequest{TerminalId: terminalID, Data: []byte("x")}},
@@ -681,6 +686,43 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 			assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code,
 				"%s must name the archive as the reason, not fail for some other cause", tc.method)
 		})
+	}
+
+	// The table above is hand-written, so it covers the methods somebody already
+	// listed rather than the RULE. This derives the write surface from the
+	// registrar itself and refuses a write method the table omits.
+	//
+	// Exactly that drift already happened once: PreemptQueuedAgentInput, the first
+	// RPC added after this test was written, reached its sibling table in
+	// access_control_test.go and not this one. `Dispatcher.Methods` exists for this
+	// -- its own doc says it is there "so a test can assert a property of EVERY
+	// handler a registrar installed without hand-maintaining a list of them".
+	listed := make(map[string]struct{}, len(refused))
+	for _, tc := range refused {
+		listed[tc.method] = struct{}{}
+	}
+	// A method that OPENS a tab, or that addresses the workspace rather than one
+	// tab, carries no existing tab id -- so no archive state reaches its handler and
+	// there is nothing here to assert. These three register through
+	// registerOwnerGuarded for that reason, not through the agent/terminal guards.
+	unguarded := map[string]string{
+		"OpenAgent":     "creates a tab, so it addresses no archived one",
+		"OpenTerminal":  "creates a tab, so it addresses no archived one",
+		"SetQuakePanel": "addresses the workspace, not one tab",
+	}
+	_, _, scopes := registerAllClassified(channel.NewDispatcher(), svc)
+	for method, scope := range scopes {
+		if scope != leapmuxv1.Scope_SCOPE_AGENT_WRITE && scope != leapmuxv1.Scope_SCOPE_TERMINAL_WRITE {
+			continue
+		}
+		if _, ok := listed[method]; ok {
+			continue
+		}
+		if _, ok := unguarded[method]; ok {
+			continue
+		}
+		t.Errorf("%s is an agent or terminal WRITE method with no case above: "+
+			"an archived workspace must refuse it, and nothing here proves it does", method)
 	}
 
 	// Nothing above stored anything.

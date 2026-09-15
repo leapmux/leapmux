@@ -48,23 +48,39 @@ func (b *jsonrpcBase) publishControlRequest(sink ControlServices, content []byte
 		if err := b.sendErrorResponse(identity.native, -32603, controlPublicationFailure); err != nil {
 			slog.Warn("send control request failure", "agent_id", b.agentID, "request_id", identity.key, "error", err)
 		}
+		return
+	}
+	// A withdrawal that ran between the registration above and this publish took the
+	// record and cancelled a card that did not exist yet. CancelControlRequest finds
+	// no row and returns in silence, and the publish then creates the card it meant
+	// to retire -- a live card with no record behind it, which no later withdrawal
+	// can reach and which the reader can never dismiss. The provider already has its
+	// cancel answer, so retiring the card here is all that is left.
+	//
+	// The registration and the publish cannot share one critical section: the publish
+	// is a store write and a broadcast, and holding outstandingMu across it would
+	// stall every other publisher behind it.
+	b.outstandingMu.Lock()
+	_, stillRegistered := b.outstandingControls[identity.key]
+	b.outstandingMu.Unlock()
+	if !stillRegistered {
+		sink.CancelControlRequest(identity.key)
 	}
 }
 
 // withdrawControlRequest retires one control request on both sides, in order.
 //
 // It drops the record first, so an answer that arrives afterwards forwards nothing.
-// answerAgent then sends the record's own cancel answer, which releases a provider
-// that blocks on the response. Pass false when the provider itself withdrew the
-// request, because it waits for nothing. The browser card goes last.
-func (b *jsonrpcBase) withdrawControlRequest(sink ControlServices, requestID string, answerAgent bool) {
+// The browser card goes last.
+//
+// It sends the provider NOTHING, because every caller is a provider that withdrew
+// its own request and therefore waits for no answer. withdrawAllControlRequests is
+// the path that answers, and it exists for the opposite case: LeapMux retires a
+// request the provider still blocks on.
+func (b *jsonrpcBase) withdrawControlRequest(sink ControlServices, requestID string) {
 	b.outstandingMu.Lock()
-	record, found := b.outstandingControls[requestID]
 	delete(b.outstandingControls, requestID)
 	b.outstandingMu.Unlock()
-	if answerAgent && found {
-		b.answerWithdrawnControl(requestID, record)
-	}
 	sink.CancelControlRequest(requestID)
 }
 
@@ -72,8 +88,8 @@ func (b *jsonrpcBase) withdrawControlRequest(sink ControlServices, requestID str
 //
 // It answers rather than drops: the provider blocks on the answer, so a request
 // withdrawn in silence leaves the turn running with nothing left that could end it.
-// Goose was measured running for the rest of the session after one, with the thinking
-// indicator never stopping.
+// A census of Goose recorded one such request, after which the agent ran for the
+// rest of the session and the thinking indicator never stopped.
 func (b *jsonrpcBase) withdrawAllControlRequests(sink ControlServices) {
 	b.outstandingMu.Lock()
 	outstanding := b.outstandingControls

@@ -29,6 +29,7 @@ type recordingControlSink struct {
 
 	crMu              sync.Mutex
 	publishedControls []controlRequestRecord
+	canceledControls  []string
 	publicationError  error
 	planUpdates       []planUpdateRecord
 	notifications     []map[string]interface{}
@@ -46,6 +47,20 @@ func (s *recordingControlSink) PublishControlRequest(request ControlRequest) err
 		SourceSeq: request.SourceSeq,
 	})
 	return nil
+}
+
+// CancelControlRequest records the retirement. testSink's own implementation is a
+// no-op, so without this a superseded card would look retired either way.
+func (s *recordingControlSink) CancelControlRequest(requestID string) {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	s.canceledControls = append(s.canceledControls, requestID)
+}
+
+func (s *recordingControlSink) CanceledControls() []string {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	return append([]string(nil), s.canceledControls...)
 }
 
 func (s *recordingControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {

@@ -326,7 +326,7 @@ func (c *reasonixEventCache) read(ctx context.Context, path string, file *os.Fil
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("the Reasonix transcript is not a regular file")
 	}
-	if c.graph == nil || c.path != path || c.file == nil || !os.SameFile(c.file, info) || info.Size() < c.offset {
+	if c.graph == nil || sessionStoreMoved(c.path, c.file, path, info) || info.Size() < c.offset {
 		c.resetTo(path, info)
 	}
 	c.file = info

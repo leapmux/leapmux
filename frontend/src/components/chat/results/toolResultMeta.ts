@@ -102,20 +102,90 @@ function toolBodyCopyableText(presentation: ToolPresentation): string {
 export function toolPresentationMeta(presentation: ToolPresentation): ToolResultMeta {
   const body = presentation.body
   const additional = presentation.additionalContent ? mcpToolCallCopyable(presentation.additionalContent) : ''
-  // ONE getter behind both fields. `hasCopyable` promised that `copyableContent()`
-  // returns a string, and a diff answered it unconditionally -- yet a no-op edit
-  // and a streaming diff row both copy to nothing, so the button flashed no
-  // "Copied" and wrote no clipboard entry.
-  const copyable = (): string | null => [
+  const build = (): string | null => [
     body.type === 'diff'
       ? body.sources.map(fileEditCopyableText).filter(Boolean).join('\n\n') || null
       : [toolBodyCopyableText(presentation), requestedFileChangesCopyable(presentation.requestedChanges ?? [])].filter(Boolean).join('\n\n'),
     additional,
   ].filter(Boolean).join('\n\n') || null
+  // ONE getter behind both fields, and it runs AT MOST ONCE. `hasCopyable`
+  // promised that `copyableContent()` returns a string, and a diff answered it
+  // unconditionally -- yet a no-op edit and a streaming diff row both copy to
+  // nothing, so the button flashed no "Copied" and wrote no clipboard entry.
+  // Answering that promise truthfully means building the text, and the cache is
+  // what keeps the price at one build: `fileEditCopyableText` runs `diffLines`
+  // over every changed file, this function runs inside a memo that recomputes on
+  // every streamed token, and the Copy button calls the getter again.
+  let built: string | null | undefined
+  const copyable = (): string | null => (built === undefined ? (built = build()) : built)
   return {
     collapsible: toolOutputCollapsible(presentation),
     hasDiff: (body.type === 'diff' ? body.sources : presentation.requestedChanges ?? []).some(fileEditHasDiff),
     hasCopyable: copyable() !== null,
     copyableContent: copyable,
+  }
+}
+
+/**
+ * Whether the row repeats its own input as a raw JSON summary, because nothing
+ * else states what the call asked for.
+ *
+ * EXHAUSTIVE, for the reason {@link toolOutputCollapsible} gives. The three
+ * bodies that answer false draw the input themselves: an MCP body prints its
+ * arguments, a todo body prints the list, and a markdown body IS the input.
+ */
+export function toolBodyRepeatsInput(body: ToolPresentation['body']): boolean {
+  switch (body.type) {
+    case 'mcp':
+    case 'todo':
+    case 'markdown':
+      return false
+    case 'agent':
+    case 'command':
+    case 'commands':
+    case 'diff':
+    case 'directory':
+    case 'fetch':
+    case 'read':
+    case 'search':
+    case 'status':
+    case 'text':
+      return true
+    default: {
+      const exhaustive: never = body
+      void exhaustive
+      return true
+    }
+  }
+}
+
+/**
+ * Whether the body draws its own failure or cancellation notice, so the row must
+ * not draw the shared outcome header above it as well.
+ *
+ * EXHAUSTIVE, for the reason {@link toolOutputCollapsible} gives.
+ */
+export function toolBodyStatesOwnOutcome(body: ToolPresentation['body']): boolean {
+  switch (body.type) {
+    case 'agent':
+    case 'command':
+    case 'commands':
+    case 'status':
+      return true
+    case 'diff':
+    case 'directory':
+    case 'fetch':
+    case 'markdown':
+    case 'mcp':
+    case 'read':
+    case 'search':
+    case 'text':
+    case 'todo':
+      return false
+    default: {
+      const exhaustive: never = body
+      void exhaustive
+      return false
+    }
   }
 }

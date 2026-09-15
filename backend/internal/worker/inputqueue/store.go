@@ -793,7 +793,7 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, re
 // RequeueAndPause returns a prepared item to the queue and pauses the queue.
 // It records the reason on the item without a failed state, so the queue
 // resumes the same input when the agent can take it again.
-func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, dispatchErr error) (Snapshot, error) {
+func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, dispatchErr error, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {
 	errText := "agent cannot accept input yet"
 	if dispatchErr != nil {
 		errText = dispatchErr.Error()
@@ -810,8 +810,7 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, errText, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := pauseAndEndTurn(ctx, tx, agentID,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped); err != nil {
+	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -1410,18 +1409,29 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	}
 	for i := range snapshot.Items {
 		snapshot.Items[i].Metadata = metadata[snapshot.Items[i].ID]
-		// Answer the steering precondition where the store already knows it,
-		// from the same predicate that prepare applies. A browser that derives
-		// this from the kind alone offers a Steer the Worker then refuses.
+		// Answer both preconditions where the store already knows them, from the
+		// same predicates that prepare applies. A browser that derives either from
+		// the kind alone offers an action the Worker then refuses.
 		headReady := i == 0 &&
 			snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
 			snapshot.Items[i].EditOwner == "" &&
-			snapshot.ActiveTurn &&
-			steerableInputKind(snapshot.Items[i].Kind)
-		snapshot.Items[i].CanSteer = headReady && snapshot.ActiveTurnSteerable
-		// Preemption's precondition drops only the steerable-turn term: the
-		// turn is the thing being cancelled, not injected into.
-		snapshot.Items[i].CanPreempt = headReady
+			snapshot.ActiveTurn
+		snapshot.Items[i].CanSteer = headReady &&
+			steerableInputKind(snapshot.Items[i].Kind) &&
+			snapshot.ActiveTurnSteerable
+		// Preemption's own kind term, NOT steering's. Steering injects into the
+		// running turn, so it admits only a kind the model can take mid-turn.
+		// Preemption injects nothing: it cancels the turn and lets the ordinary
+		// turn-end drain deliver, and that drain dispatches EVERY kind once the
+		// turn is over. A queued clear or compact therefore has a turn worth
+		// cancelling, and borrowing steering's list hid the button from it.
+		//
+		// The one exclusion is the plan approval that REPLACES the turn: prepare
+		// already dispatches that head THROUGH the active turn (canReplaceTurn),
+		// so cancelling would destroy work for nothing. Deriving the term from
+		// requiresContextReplacement -- the predicate prepare itself uses -- is
+		// what keeps preemption and dispatch from disagreeing again.
+		snapshot.Items[i].CanPreempt = headReady && !snapshot.Items[i].requiresContextReplacement()
 	}
 	return snapshot, nil
 }
