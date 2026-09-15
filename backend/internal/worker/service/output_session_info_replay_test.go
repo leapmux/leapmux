@@ -192,7 +192,7 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 

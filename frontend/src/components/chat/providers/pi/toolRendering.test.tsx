@@ -375,6 +375,34 @@ describe('pi tool rendering', () => {
   })
 })
 
+describe('pi rows on the shared tool path', () => {
+  // The open request draws the list the call is about to save. The row used to draw
+  // its header alone, so the reader waited for the result to see what changed.
+  it('draws the checklist of an open to-do request', () => {
+    const { container } = renderTool('todo', { action: 'list' })
+    expect(container.textContent).toContain('To-do list')
+  })
+
+  it('uses the shared grep icon and states the path below the pattern', () => {
+    const { container } = renderTool('grep', { pattern: 'answer', path: '/project/src' })
+    expect(container.querySelector('.lucide-text-search')).not.toBeNull()
+    expect(container.textContent).toContain('"answer"')
+    expect(container.textContent).toContain('src')
+  })
+
+  // A result with no request beside it states WHICH tool it belongs to.
+  it('draws its own header when no request row sits beside the result', () => {
+    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'read', result: { content: content('first line') } }
+    const category = providerFor(AgentProvider.PI)!.classify(input(payload))
+    const { container } = render(() => renderMessageContent(payload, {
+      premeasureMode: true,
+      sources: testMessageSources({ current: () => input(payload) }),
+    }, category, AgentProvider.PI))
+    expect(container.textContent).toContain('Read')
+    expect(container.querySelector('.lucide-eye')).not.toBeNull()
+  })
+})
+
 describe('a pi tool row the turn ended before the call did', () => {
   // The worker stores the agent's own tool_execution_start frame and keeps the last
   // partial result beside it. Nothing in the row's bytes claims a failure.

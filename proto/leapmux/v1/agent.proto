@@ -273,6 +273,13 @@ message AgentInfo {
   // regular turn. The Worker computes this from the live provider capability.
   bool supports_steering = 20;
 
+  // True when the running provider cannot steer but CAN interrupt: the queue
+  // head can still be sent promptly by cancelling the active turn first and
+  // letting the normal dispatch take over. The Worker computes this from the
+  // live provider capability (running, root, and not steerable). The client
+  // offers a Preempt control in place of Steer for such an agent.
+  bool supports_preemption = 24;
+
   // What the agent is doing, derived by the Worker from the provider's turn
   // bookkeeping, the background-task registry, the pending control requests and
   // the process state. This is the hydration path for the same state
@@ -413,6 +420,11 @@ message QueuedAgentInput {
   // client never offers a Steer that the Worker then refuses. A client that
   // derives this from the kind alone drifts the moment AgentInputKind grows.
   bool can_steer = 13;
+  // Preemption's counterpart of can_steer: true when PreemptQueuedAgentInput
+  // accepts this item right now (head, queued, editable, an active turn to
+  // cancel). The Worker computes it from the same predicate its preemption
+  // guard applies, for the same reason can_steer exists.
+  bool can_preempt = 14;
 }
 
 message AgentInputQueueSnapshot {
@@ -497,6 +509,16 @@ message SteerQueuedAgentInputRequest {
   string input_id = 2;
 }
 message SteerQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+// PreemptQueuedAgentInput cancels the agent's active turn and leaves the named
+// queued item to dispatch through the ordinary turn-end drain, so the message
+// is sent as soon as the cancelled turn reports its end. Offered for providers
+// that cannot steer (no mid-turn injection) but can interrupt.
+message PreemptQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+}
+message PreemptQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 
 message RetryQueuedAgentInputRequest {
   string agent_id = 1;
@@ -586,6 +608,9 @@ message AgentStatusChange {
   // Git.
   GitRepoStatus git_status = 9; // Git status for the agent's working directory
   bool supports_steering = 10;
+  // Steering's counterpart for providers that can only interrupt: true when the
+  // running provider cannot steer but a queued head may pre-empt the active turn.
+  bool supports_preemption = 11;
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.

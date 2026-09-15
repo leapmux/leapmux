@@ -32,6 +32,50 @@ func (m *Manager) MockStartSilentAgent(ctx context.Context, opts Options, sink P
 	return m.startAgentWith(ctx, opts, sink, silentMockStartForTest, false)
 }
 
+// MockStartNonSteerableAgent registers a silent mock the Manager reports cannot
+// steer, and whose interrupt succeeds at once.
+//
+// The METHOD SET is the point: the wrapper delegates through the Agent
+// INTERFACE, never the concrete Claude type, so SteerInput and
+// SupportsSteering are not promoted and the Manager's InputSteerer assertion
+// answers false -- the running posture of Cursor and Kilo, which preemption
+// exists for. The stubbed Interrupt exists because the underlying mock speaks
+// the Claude control protocol to a process that never answers it.
+func (m *Manager) MockStartNonSteerableAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
+	return m.startAgentWith(ctx, opts, sink, func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
+		inner, err := silentMockStartForTest(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		return nonSteerableMockAgent{inner}, nil
+	}, false)
+}
+
+type nonSteerableMockAgent struct{ Agent }
+
+func (nonSteerableMockAgent) Interrupt() error { return nil }
+
+// MockStartIgnoredStopAgent registers a silent mock whose running provider
+// states that an earlier stop was accepted and then ignored -- the answer that
+// makes the InterruptAgent handler escalate the next press into a process
+// replacement. The wrapper delegates through the Agent INTERFACE for the same
+// reason nonSteerableMockAgent does: the escalation probe is discovered by
+// method set, and the underlying mock's own methods must not be promoted.
+func (m *Manager) MockStartIgnoredStopAgent(ctx context.Context, opts Options, sink ProviderServices) (map[string]string, error) {
+	return m.startAgentWith(ctx, opts, sink, func(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
+		inner, err := silentMockStartForTest(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		return ignoredStopMockAgent{inner}, nil
+	}, false)
+}
+
+type ignoredStopMockAgent struct{ Agent }
+
+func (ignoredStopMockAgent) Interrupt() error               { return nil }
+func (ignoredStopMockAgent) InterruptEscalationReady() bool { return true }
+
 // mockStartForTest spawns a plain "cat" process and wires it up as a
 // ClaudeCodeAgent. Unlike the in-package spawnMockClaudeAgent (which runs
 // TestHelperProcess to simulate the Claude Code protocol), this helper is

@@ -41,19 +41,17 @@ describe('expandeduikeyfor', () => {
     }
   })
 
-  it('routes thinking to CODEX_REASONING for Codex and THINKING otherwise', () => {
-    // Codex reasoning renders under its OWN key (reasoning.tsx), not the shared
-    // THINKING key Claude/Pi/ACP thinking uses -- so the estimator and the renderer
-    // must agree via this single mapper.
-    expect(expandedUiKeyFor('assistant_thinking', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
+  // No plugin is registered in this project, so every kind below takes the shared key.
+  // Codex's own key is asserted where its hook lives: providers/codex/plugin.test.ts.
+  it('takes the shared THINKING key when no plugin claims the kind', () => {
     expect(expandedUiKeyFor('assistant_thinking', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
     expect(expandedUiKeyFor('assistant_thinking', undefined)).toBe(MESSAGE_UI_KEY.THINKING)
   })
 
   it('returns a harmless THINKING default for non-expand kinds (the value is unused for them)', () => {
     // tool_result/assistant_text rows never read the expand key, but the mapper is
-    // total -- it must not throw, and Codex still routes to its reasoning key.
+    // total -- it must not throw.
     expect(expandedUiKeyFor('tool_result', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
-    expect(expandedUiKeyFor('assistant_text', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(expandedUiKeyFor('assistant_text', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
   })
 })

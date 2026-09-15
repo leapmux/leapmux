@@ -87,7 +87,7 @@ const COPILOT_HIDDEN_TYPES = new Set<string>([
 ])
 
 /**
- * Reports whether an event type names a family that describes the RUNTIME.
+ * Reports whether an event type belongs to a family that describes the RUNTIME.
  *
  * The `model.` family is the runtime's own model-call trace, and the `hook.` family
  * states that the runtime ran one of its own hooks. The worker drops both, so a live

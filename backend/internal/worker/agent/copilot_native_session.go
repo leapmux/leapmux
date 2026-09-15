@@ -29,56 +29,36 @@ func (a *copilotAgent) ClearContext() (string, error) {
 	if _, err := a.requestNativeSession("suspend", nil); err != nil {
 		return "", err
 	}
-	a.setNativeTurnActive(false)
-	a.outputMu.Lock()
-	a.stateMu.Lock()
 	opts := a.opts
+	a.stateMu.Lock()
 	opts.Options = a.options.Clone()
-	a.sessionID = id.String()
 	a.stateMu.Unlock()
-	a.clearNativeChildren()
-	a.clearNativeControls()
-	a.outputMu.Unlock()
+	a.forgetNativeSessionState(id.String())
 	_, err = a.openSession(opts, id.String(), false, a.APITimeout())
 	if err == nil {
-		err = a.registerNativeControlEvents()
-	}
-	if err == nil {
+		// A new identity starts with no confirmed setting. The restore below is what
+		// fills the snapshot again, so a value the replacement refuses cannot survive
+		// as the previous session's answer.
 		a.stateMu.Lock()
 		a.options = make(optionmap.Map)
 		a.stateMu.Unlock()
-		err = a.restoreNativeSettings(opts.Options)
+		err = a.prepareNativeSession(opts.Options)
 	}
 	if err != nil {
 		// Stop the replacement before restoring the previous session.
 		// The failed operation can leave a native session even when its reply is lost.
 		a.releaseNativeControlEvents()
 		_, suspendErr := a.requestNativeSession("suspend", nil)
-		a.outputMu.Lock()
-		a.clearNativeChildren()
-		a.clearNativeControls()
-		a.stateMu.Lock()
-		a.sessionID = oldID
-		a.stateMu.Unlock()
-		a.outputMu.Unlock()
+		a.forgetNativeSessionState(oldID)
 		config := newCopilotSessionConfig(opts, oldID, true)
 		continueWork := false
 		config.ContinuePendingWork = &continueWork
 		_, restoreErr := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
 		if restoreErr == nil {
-			restoreErr = a.registerNativeControlEvents()
-		}
-		if restoreErr == nil {
-			restoreErr = a.restoreNativeSettings(opts.Options)
+			restoreErr = a.prepareNativeSession(opts.Options)
 		}
 		if restoreErr != nil {
-			a.outputMu.Lock()
-			a.closing = true
-			a.clearNativeChildren()
-			a.clearNativeControls()
-			a.outputMu.Unlock()
-			a.forgetNativeControlEvents()
-			a.copilotConnection.Stop()
+			a.stopNativeConnection()
 		}
 		return "", errors.Join(err, suspendErr, restoreErr)
 	}

@@ -7,7 +7,7 @@ import { pickString } from '~/lib/jsonPick'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { AgentRequestMessage } from '../../../results/AgentRequestMessage'
 import { AgentResultBody } from '../../../results/agentResult'
-import { ToolHeaderRow } from '../../../results/ToolStatusHeader'
+import { ToolHeaderRow, ToolOutcomeHeader } from '../../../results/ToolStatusHeader'
 import { toolOutcomeLabel } from '../../../toolOutcomeLabel'
 import { ToolMessageLayout } from '../../../widgets/ToolMessageLayout'
 import { defineCodexRenderer } from '../defineRenderer'
@@ -40,7 +40,7 @@ defineCodexRenderer({
         )}
       >
         <ToolMessageLayout role="result" hasRequest={!!request()} icon={Bot} toolName={source().toolName} title={source().description} context={props.context} alwaysVisible>
-          <Show when={!props.context?.completionHeader && failed()}><ToolHeaderRow icon={props.item.status === 'interrupted' ? OctagonX : CircleAlert} title={toolOutcomeLabel(props.item.status === 'interrupted' ? 'interrupted' : 'failed')} /></Show>
+          <ToolOutcomeHeader when={failed()} icon={props.item.status === 'interrupted' ? OctagonX : CircleAlert} title={toolOutcomeLabel(props.item.status === 'interrupted' ? 'interrupted' : 'failed')} context={props.context} />
           <For each={results()}>{result => <AgentResultBody source={result} context={props.context} />}</For>
           <Show when={results().length === 0 && !failed()}><ToolHeaderRow icon={Check} title={pickString(props.item, 'status') || 'Result unavailable'} /></Show>
         </ToolMessageLayout>

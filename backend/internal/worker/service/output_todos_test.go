@@ -83,10 +83,10 @@ func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 2)
 	assert.Equal(t, "A", rows[0].Content)
-	assert.Equal(t, int64(todoevents.StatusPending), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[0].Status)
 	assert.Equal(t, "Doing A", rows[0].ActiveForm)
 	assert.Equal(t, "B", rows[1].Content)
-	assert.Equal(t, int64(todoevents.StatusInProgress), rows[1].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[1].Status)
 }
 
 func TestOutputTodos_OpenCodeFamilyNativeResults(t *testing.T) {
@@ -110,8 +110,8 @@ func TestOutputTodos_OpenCodeFamilyNativeResults(t *testing.T) {
 			rows := listRows()
 			require.Len(t, rows, 2)
 			assert.Equal(t, "Inspect sample", rows[0].Content)
-			assert.Equal(t, int64(todoevents.StatusInProgress), rows[0].Status)
-			assert.Equal(t, int64(todoevents.StatusDeleted), rows[1].Status)
+			assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
+			assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusDeleted), rows[1].Status)
 			persist("failed", []any{})
 			assert.Len(t, listRows(), 2)
 			persist("completed", []any{})
@@ -168,10 +168,10 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 	slices.Reverse(rows)
 	require.Len(t, rows, 2)
 	assert.Equal(t, "A", rows[0].Content)
-	assert.Equal(t, int64(todoevents.StatusInProgress), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
 	assert.Equal(t, "Doing A", rows[0].ActiveForm)
 	assert.Equal(t, "B", rows[1].Content)
-	assert.Equal(t, int64(todoevents.StatusPending), rows[1].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[1].Status)
 
 	// The result half repeats the tool name with no input. Reading it as an empty
 	// snapshot would clear the list the opener just set.
@@ -284,7 +284,7 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 	assert.Equal(t, "Add proto messages", rows[0].Content)
 	assert.Equal(t, "Adding proto", rows[0].ActiveForm)
 	assert.Equal(t, "Edit proto", rows[0].Description)
-	assert.Equal(t, int64(todoevents.StatusPending), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[0].Status)
 }
 
 // TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric drives 12 sequential
@@ -408,7 +408,7 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, int64(todoevents.StatusInProgress), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
 	assert.Equal(t, "Running tests", rows[0].ActiveForm, "activeForm must survive a status-only patch")
 }
 
@@ -455,7 +455,7 @@ func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 	}))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, int64(todoevents.StatusDeleted), rows[0].Status, "delete should mark the row as deleted, not remove it")
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusDeleted), rows[0].Status, "delete should mark the row as deleted, not remove it")
 	assert.Equal(t, "tmp", rows[0].Content, "content survives the soft-delete so the UI can still render the row")
 }
 
@@ -530,7 +530,7 @@ func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 2)
 	assert.Equal(t, "Investigate", rows[0].Content)
-	assert.Equal(t, int64(todoevents.StatusInProgress), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusInProgress), rows[0].Status)
 	assert.Equal(t, "Fix", rows[1].Content)
 }
 
@@ -550,7 +550,7 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 	require.Len(t, rows, 2)
 	assert.Equal(t, "one", rows[0].Content)
 	assert.Equal(t, "two", rows[1].Content)
-	assert.Equal(t, int64(todoevents.StatusCompleted), rows[1].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusCompleted), rows[1].Status)
 }
 
 // Note: AgentTodosChanged broadcast is a one-line call adjacent to the
@@ -890,7 +890,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 	}))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, int64(todoevents.StatusDeleted), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusDeleted), rows[0].Status)
 	updatedAfterFirst := rows[0].UpdatedAt
 
 	// Second delete on the same task — should leave the row untouched
@@ -900,7 +900,7 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 	}))
 	rows = listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, int64(todoevents.StatusDeleted), rows[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusDeleted), rows[0].Status)
 	assert.Equal(t, updatedAfterFirst, rows[0].UpdatedAt,
 		"second delete must not rewrite the DB row (updated_at would change)")
 }

@@ -18,6 +18,10 @@ import (
 
 const copilotOptionSessionMode = contracts.CopilotOptionSessionMode
 
+// copilotErrMethodNotFound is the JSON-RPC code for a method the receiver implements
+// no handler for.
+const copilotErrMethodNotFound = -32601
+
 // copilotAgent owns one native connection and its current session.
 type copilotAgent struct {
 	*copilotConnection
@@ -49,7 +53,7 @@ type copilotAgent struct {
 	// once that message is complete, so a turn cut short stored nothing and the answer
 	// the reader watched vanished. See closeStreamedNativeText and CP-015.
 	nativeText GenerationBuffer
-	// nativeTextSegments names the transcript each accumulating segment belongs to, in
+	// nativeTextSegments identifies the transcript each accumulating segment belongs to, in
 	// the order the runtime opened them, so a turn end writes its rows the way the
 	// agent produced them.
 	nativeTextSegments []copilotStreamedText
@@ -67,11 +71,71 @@ type copilotAgent struct {
 
 	goalMu sync.Mutex
 	goal   copilotGoalSnapshot
-	// goalRefreshing keeps one background objective read in flight. The runtime
-	// reports a change without its new state, and a burst of changes would
-	// otherwise start a request for each one -- all reading the same answer, and
-	// finishing in an order the last write cannot be trusted to respect.
-	goalRefreshing bool
+
+	// backgroundReads holds one entry for each key offReader currently runs, and
+	// stateMu guards it. The value states that another request arrived while that
+	// run was in flight, so one more run must follow it.
+	backgroundReads map[string]bool
+}
+
+// The keys of the background reads that offReader keeps apart.
+const (
+	copilotReadGoal     = "goal"
+	copilotReadSettings = "settings"
+)
+
+// offReader runs work on its own goroutine, and keeps ONE run of each key in flight.
+//
+// A dispatch branch that needs a round trip cannot make it inline: the response
+// arrives on the reader goroutine that runs the branch, so a direct call would wait
+// for itself. The runtime also states that an axis MOVED without stating what it
+// became, so a burst of changes would otherwise start a request for each one -- all
+// reading the same answer, and finishing in an order the last write cannot be trusted
+// to respect.
+//
+// A request that arrives while a run is in flight therefore does not start a second
+// run. It marks the key instead, and one more run follows the current one. That last
+// run reads a state no earlier request can precede, so a change the in-flight run
+// already passed is never lost.
+//
+// Each run holds sessionMu for reading, so a session replacement cannot start under
+// it, and it does nothing once the process is stopped.
+func (a *copilotAgent) offReader(key string, work func()) {
+	a.stateMu.Lock()
+	if _, running := a.backgroundReads[key]; running {
+		a.backgroundReads[key] = true
+		a.stateMu.Unlock()
+		return
+	}
+	if a.backgroundReads == nil {
+		a.backgroundReads = make(map[string]bool)
+	}
+	a.backgroundReads[key] = false
+	a.stateMu.Unlock()
+	go func() {
+		for {
+			a.runUnderNativeSession(work)
+			a.stateMu.Lock()
+			if !a.backgroundReads[key] {
+				delete(a.backgroundReads, key)
+				a.stateMu.Unlock()
+				return
+			}
+			a.backgroundReads[key] = false
+			a.stateMu.Unlock()
+		}
+	}()
+}
+
+// runUnderNativeSession runs work while the session stays in place. A stopped process
+// answers nothing, so the work does not start.
+func (a *copilotAgent) runUnderNativeSession(work func()) {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return
+	}
+	work()
 }
 
 func startNativeCopilot(ctx context.Context, opts Options, sink ProviderServices) (Agent, error) {
@@ -79,11 +143,17 @@ func startNativeCopilot(ctx context.Context, opts Options, sink ProviderServices
 		sink: newModelProgressResetSink(sink), opts: opts,
 		options: make(optionmap.Map),
 	}
-	connection, err := startCopilotConnection(ctx, opts, a.handleNativeOutput)
+	connection, err := startCopilotConnection(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
+	// Adopt the connection BEFORE the reader starts. The reader reaches this agent
+	// through the embedded pointer, so a frame that arrived first would read a nil one.
 	a.copilotConnection = connection
+	connection.startReading(a.handleNativeOutput)
+	if err := connection.verifyNativeProtocol(opts); err != nil {
+		return nil, err
+	}
 	cleanup := func(err error) (Agent, error) {
 		a.outputMu.Lock()
 		a.closing = true
@@ -112,6 +182,10 @@ func startNativeCopilot(ctx context.Context, opts Options, sink ProviderServices
 		return cleanup(connection.formatStartupError("native session initialization", err))
 	}
 	a.sink.UpdateSessionID(id)
+	// Startup subscribes and then READS the runtime's own settings, because a new
+	// process states what it starts with. A session that opens AGAIN takes the same
+	// two steps through prepareNativeSession, which RESTORES the stored values
+	// instead: the session it replaces already settled them.
 	if err := a.registerNativeControlEvents(); err != nil {
 		return cleanup(err)
 	}
@@ -150,6 +224,62 @@ func startNativeCopilot(ctx context.Context, opts Options, sink ProviderServices
 	return a, nil
 }
 
+// forgetNativeSessionState drops everything the outgoing session owns, and gives the
+// agent nextSessionID. An empty nextSessionID keeps the current identity, which is
+// what the goal clear needs: it opens the SAME session again.
+//
+// A turn the replacement inherits would latch the agent busy for good, because no idle
+// event can reach a session that no longer exists. A child transcript, an open tool
+// call and a pending control request belong to that session too, and its event
+// subscriptions die with it.
+//
+// The caller holds sessionMu for writing, so no input and no setting change can reach
+// the session while this runs.
+func (a *copilotAgent) forgetNativeSessionState(nextSessionID string) {
+	a.setNativeTurnActive(false)
+	a.outputMu.Lock()
+	// Store and drop what the OUTGOING session produced before the identity moves, so
+	// every row this sweep writes carries the session that produced it.
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	if nextSessionID != "" {
+		a.stateMu.Lock()
+		a.sessionID = nextSessionID
+		a.stateMu.Unlock()
+	}
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+}
+
+// prepareNativeSession subscribes an open session to the control events and restores
+// the settings the previous session carried.
+//
+// Every path that opens a session again needs both, in this order: the context clear,
+// its own rollback, and the goal clear. The subscription comes first because a setting
+// change can raise a control request, and a request that arrives before the
+// subscription exists reaches no reader.
+func (a *copilotAgent) prepareNativeSession(options optionmap.Map) error {
+	if err := a.registerNativeControlEvents(); err != nil {
+		return err
+	}
+	return a.restoreNativeSettings(options)
+}
+
+// stopNativeConnection ends the process and drops the state of the session it served.
+//
+// A path that disposed of its session and could not open another one has nothing to
+// roll back to. An agent that kept its process alive there would accept input that can
+// never arrive anywhere.
+func (a *copilotAgent) stopNativeConnection() {
+	a.outputMu.Lock()
+	a.closing = true
+	a.clearNativeChildren()
+	a.clearNativeControls()
+	a.outputMu.Unlock()
+	a.forgetNativeControlEvents()
+	a.copilotConnection.Stop()
+}
+
 func (a *copilotAgent) currentNativeSessionID() string {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
@@ -161,12 +291,17 @@ func (a *copilotAgent) requestNativeSession(method string, values map[string]any
 	return a.requestSession(a.currentNativeSessionID(), method, values, a.APITimeout())
 }
 
+// PublishTurnActive republishes the Worker-visible turn state from a.active.
+//
+// Every active turn is STEERABLE: Copilot's session.send accepts
+// mode:"immediate" while a turn runs (see SteerInput), so the input queue may
+// offer Steer for any active turn.
 func (a *copilotAgent) PublishTurnActive() TurnState {
 	a.stateMu.Lock()
 	active := a.active
 	sequence := a.turnOrder.nextTurnSeq()
 	a.stateMu.Unlock()
-	return publishTurnStateTo(a.sink, TurnState{Active: active}, sequence)
+	return publishTurnStateTo(a.sink, TurnState{Active: active, Steerable: active}, sequence)
 }
 
 func (a *copilotAgent) setNativeTurnActive(active bool) bool {
@@ -176,7 +311,7 @@ func (a *copilotAgent) setNativeTurnActive(active bool) bool {
 	a.activityRevision++
 	sequence := a.turnOrder.nextTurnSeq()
 	a.stateMu.Unlock()
-	publishTurnStateTo(a.sink, TurnState{Active: active}, sequence)
+	publishTurnStateTo(a.sink, TurnState{Active: active, Steerable: active}, sequence)
 	return previous
 }
 
@@ -237,6 +372,58 @@ func (a *copilotAgent) sendInputForSession(expected *string, content string, att
 		if errors.As(err, &rejection) {
 			a.rejectNativeInput(revision)
 		}
+		return classifyJSONRPCDeliveryError("session.send", err)
+	}
+	var response struct {
+		MessageID string `json:"messageId"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
+		return fmt.Errorf("%w: Copilot omitted the delivered message ID", ErrDeliveryUncertain)
+	}
+	return nil
+}
+
+// SupportsSteering always reports true. Copilot's session.send takes a SendMode,
+// and mode:"immediate" interjects the message during an in-progress turn, so the
+// capability needs no handshake discovery.
+func (a *copilotAgent) SupportsSteering() bool { return true }
+
+// SteerInput injects a user message into the RUNNING turn with Copilot's
+// SendMode "immediate".
+//
+// The turn's activity bookkeeping is NOT touched: the turn this steers is the
+// one already recorded active, and a rejected steer must not read as the turn
+// ending. Contrast sendInputForSession, which owns the idle->active transition
+// and therefore owns the revision it can roll back.
+func (a *copilotAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
+	a.stateMu.Lock()
+	if a.sessionID == "" {
+		a.stateMu.Unlock()
+		return fmt.Errorf("the Copilot session is unavailable")
+	}
+	active := a.active
+	a.stateMu.Unlock()
+	if !active {
+		return ErrNoActiveTurn
+	}
+	values := map[string]any{"prompt": content, "mode": "immediate"}
+	if len(attachments) > 0 {
+		blobs := make([]map[string]string, 0, len(attachments))
+		for _, attachment := range classifyAttachments(attachments) {
+			blobs = append(blobs, map[string]string{
+				"type": "blob", "displayName": attachment.filename, "mimeType": attachment.mimeType,
+				"data": base64.StdEncoding.EncodeToString(attachment.data),
+			})
+		}
+		values["attachments"] = blobs
+	}
+	raw, err := a.requestNativeSession("send", values)
+	if err != nil {
 		return classifyJSONRPCDeliveryError("session.send", err)
 	}
 	var response struct {
@@ -317,6 +504,7 @@ func (a *copilotAgent) handleNativeOutput(line *parsedLine) {
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	if line.Method != copilotMethodSessionEvent {
+		a.refuseUnsupportedNativeRequest(line)
 		// An unrecognized method still reaches the transcript: a frame that carries
 		// conversation is worse lost than shown as raw JSON.
 		if !copilotMethodIsTelemetry(line.Method) {
@@ -330,6 +518,25 @@ func (a *copilotAgent) handleNativeOutput(line *parsedLine) {
 		return
 	}
 	a.handleNativeEvent(line.Raw, event)
+}
+
+// refuseUnsupportedNativeRequest answers an inbound request that this provider
+// implements no handler for.
+//
+// A notification carries no id and needs no answer. A REQUEST does: the runtime waits
+// for a response, and the session configuration opts into two of them
+// (requestPermission and requestElicitation), so the runtime can ask. Without an
+// answer the runtime waits for its own timeout. The raw identifier travels back
+// unchanged, so a large numeric id keeps its exact value.
+func (a *copilotAgent) refuseUnsupportedNativeRequest(line *parsedLine) {
+	if line.Method == "" || !line.HasID() {
+		return
+	}
+	// line.ID holds the identifier's own bytes, so an id above 2^53 returns exactly as
+	// it arrived. A decimal round trip through a float would round it.
+	if err := a.sendErrorResponse(line.ID, copilotErrMethodNotFound, "Method not supported: "+line.Method); err != nil {
+		slog.Warn("Answer an unsupported Copilot request", "agent_id", a.agentID, "method", line.Method, "error", err)
+	}
 }
 
 func (a *copilotAgent) persistNativeFrame(raw []byte, span SpanInfo) {

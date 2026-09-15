@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 type piGoalSync struct {
@@ -19,8 +21,10 @@ type piGoalSync struct {
 	pending  bool
 	snapshot bool
 	stopping bool
-	// Only the refresh goroutine reads or changes the native session index.
+	// Only the refresh goroutine reads or changes the native session index and
+	// the goal-file cache.
 	reader piGoalSessionReader
+	files  piGoalFileReader
 }
 
 var piGoalCommands = map[GoalAction]string{
@@ -62,8 +66,22 @@ func (a *PiAgent) PerformGoalAction(action GoalAction, objective string) (GoalOu
 		}
 		message += " " + objective
 	}
-	// A clear can await Pi's confirmation dialog. The read loop must remain free to route its answer.
-	if _, err := a.sendPiCommand(PiCommandPrompt, map[string]any{"message": message}, 0); err != nil {
+	// A clear can await Pi's confirmation dialog, and that dialog has no deadline of
+	// its own. The stdin write is the delivery acceptance, so the response wait runs
+	// on its own goroutine: the read loop stays free to route the answer, and the
+	// caller does not hold an RPC open for as long as the user takes to decide.
+	if err := a.sendPiCommandDetached(PiCommandPrompt, map[string]any{"message": message}, func(err error) {
+		if err != nil && !a.IsStopped() {
+			slog.Error("pi goal command failed", "agent_id", a.agentID, "command", command, "error", err)
+			a.sink.PersistLeapMuxNotification(map[string]any{
+				"type":  contracts.NotificationTypeAgentError,
+				"error": err.Error(),
+			})
+		}
+		// Pi applies the command before it answers, so the response is the first
+		// moment a read sees the new state.
+		a.schedulePiGoalRefresh(false)
+	}); err != nil {
 		return GoalOutcome{}, err
 	}
 	a.schedulePiGoalRefresh(false)
@@ -87,11 +105,12 @@ func (a *PiAgent) schedulePiGoalRefresh(snapshot bool) {
 		return
 	}
 	a.goal.revision++
-	if !a.goal.pending {
-		a.goal.snapshot = snapshot
-	} else {
-		a.goal.snapshot = a.goal.snapshot && snapshot
-	}
+	// A snapshot intent survives every later hint until a publication delivers it.
+	// Snapshot suppresses the transcript notification, so a lost flag prints
+	// "Goal set" for a goal that the user set in an earlier process. The cost is the
+	// opposite case: a real change that arrives while a snapshot is still pending
+	// publishes as a snapshot, so it updates the goal panel and writes no note.
+	a.goal.snapshot = a.goal.snapshot || snapshot
 	a.goal.pending = true
 	if a.goal.running {
 		a.mu.Unlock()
@@ -110,12 +129,20 @@ func (a *PiAgent) runPiGoalRefresh() {
 		a.goal.pending = false
 		a.mu.Unlock()
 		record, err := a.readPiGoalSnapshot(path, directory, sessionID)
+		published := false
 		if err == nil {
-			a.publishPiGoal(record, snapshot, &revision)
+			published = a.publishPiGoal(record, snapshot, &revision)
 		} else if a.ctx.Err() == nil && !a.IsStopped() {
 			slog.Warn("recover Pi goal state", "agent_id", a.agentID, "error", err)
 		}
 		a.mu.Lock()
+		// Release the snapshot intent only after a publication really carried it. A
+		// failed read, or a newer hint that the revision check refused, leaves the flag
+		// set, so the next pass still suppresses the transcript notification. An
+		// unchanged revision proves that no hint arrived while the read ran.
+		if published && revision == a.goal.revision {
+			a.goal.snapshot = false
+		}
 		if a.goal.stopping || a.stopped || a.ctx.Err() != nil || !a.goal.pending {
 			a.goal.running = false
 			a.mu.Unlock()
@@ -184,7 +211,7 @@ func (a *PiAgent) readPiGoalSnapshot(path, directory, sessionID string) (*piGoal
 	if goalID == "" {
 		return nil, nil
 	}
-	record, err := readPiGoalFile(a.ctx, directory, goalID)
+	record, err := a.goal.files.read(a.ctx, directory, goalID)
 	if err == nil && record == nil {
 		err = fmt.Errorf("the focused Pi goal file is unavailable")
 	}

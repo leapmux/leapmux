@@ -9,11 +9,16 @@ import (
 )
 
 // refreshPiCommands supplies both command dispatch and optional extension capabilities.
-func (a *PiAgent) refreshPiCommands(timeout time.Duration) {
+//
+// It reports whether the agent holds a catalog now. Goal control and the
+// extension-command dispatch both read that catalog, so a read that failed leaves
+// both switched off until a later read succeeds. The caller decides when to ask
+// again, and refreshPiGoalControl is the path that does.
+func (a *PiAgent) refreshPiCommands(timeout time.Duration) bool {
 	raw, err := a.sendPiCommand(PiCommandGetCommands, nil, timeout)
 	if err != nil {
 		slog.Warn("read Pi extension commands", "agent_id", a.agentID, "error", err)
-		return
+		return false
 	}
 	var catalog struct {
 		Commands *[]struct {
@@ -23,11 +28,11 @@ func (a *PiAgent) refreshPiCommands(timeout time.Duration) {
 	}
 	if err := json.Unmarshal(raw, &catalog); err != nil {
 		slog.Warn("read Pi command catalog", "agent_id", a.agentID, "error", err)
-		return
+		return false
 	}
 	if catalog.Commands == nil {
 		slog.Warn("Pi command catalog has no command list", "agent_id", a.agentID)
-		return
+		return false
 	}
 	commands := make(map[string]bool)
 	for _, command := range *catalog.Commands {
@@ -42,6 +47,19 @@ func (a *PiAgent) refreshPiCommands(timeout time.Duration) {
 	if changed {
 		a.sink.PublishGoalCapabilities()
 	}
+	return true
+}
+
+// refreshPiGoalControl re-reads the extension catalog, then asks for a goal
+// snapshot. A replacement session can load a different extension set, and the
+// catalog is what decides whether goal control exists at all -- so the two belong
+// together at every point where the session identity changes.
+//
+// It sends an RPC, so every caller runs it on its own goroutine: the Pi read loop
+// must stay free to deliver the response.
+func (a *PiAgent) refreshPiGoalControl() {
+	a.refreshPiCommands(a.APITimeout())
+	a.schedulePiGoalRefresh(true)
 }
 
 func (a *PiAgent) isPiExtensionCommand(message string) bool {

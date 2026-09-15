@@ -1,5 +1,4 @@
 export { ZCodeAssistantMessage } from './assistantMessage'
 export { describeZCodeNotification, zcodeNotificationThreadEntry } from './notification'
 export { zcodeResultDivider } from './resultDivider'
-export { ZCodeToolExecutionRenderer } from './toolExecution'
-export { ZCodeToolResultRenderer } from './toolResult'
+export { ZCodeToolExecutionRenderer, ZCodeToolResultRenderer } from './toolMessage'

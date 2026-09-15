@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "_readme",
+    "methods",
     "events",
     "eventPrefixes",
     "tools",
@@ -33,6 +34,9 @@
     "_readme": {
       "type": "string",
       "minLength": 1
+    },
+    "methods": {
+      "$ref": "#/$defs/table"
     },
     "events": {
       "$ref": "#/$defs/table"

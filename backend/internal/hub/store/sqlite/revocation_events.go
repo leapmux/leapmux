@@ -56,7 +56,7 @@ func insertRevocationEvent(
 ) error {
 	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
 		ID:                 id.Generate(),
-		Kind:               int64(kind),
+		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
 		RevokedAt:          sqltime.NewSQLiteTime(revokedAt),
@@ -167,7 +167,7 @@ func (s *revocationEventStore) ListPublishedAfter(
 			Seq: seq,
 			Event: store.RevocationEvent{
 				ID:                 row.ID,
-				Kind:               leapmuxv1.RevocationEventKind(row.Kind),
+				Kind:               row.Kind,
 				SubjectID:          row.SubjectID,
 				UserID:             row.UserID,
 				RevokedAt:          row.RevokedAt.UTC(),

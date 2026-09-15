@@ -114,7 +114,8 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID: "message-1", AgentID: agentID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: []byte("preserved transcript"), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		SpanLines: "[]", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		SpanLines:                      "[]", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)

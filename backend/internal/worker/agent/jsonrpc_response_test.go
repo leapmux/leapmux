@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,33 @@ func TestJSONRPCResponseRejectsInvalidEnvelopes(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// A provider that reports an error can spell the unused result member as an explicit
+// null. The response states no result, so the caller must still read the error CODE --
+// classifyJSONRPCDeliveryError reads it to tell a refusal from an unconfirmed delivery.
+func TestJSONRPCResponseReadsAnErrorBesideANullResult(t *testing.T) {
+	for _, raw := range []string{
+		`{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32600,"message":"No active turn"}}`,
+		`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"No active turn"},"result":null}`,
+		`{"jsonrpc":"2.0","id":1,"result": null ,"error":{"code":-32600,"message":"No active turn"}}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := decodeJSONRPCResponse(json.RawMessage(raw))
+			var responseError *jsonRPCResponseError
+			require.ErrorAs(t, err, &responseError)
+			require.Equal(t, -32600, responseError.Code)
+			require.True(t, hasJSONRPCErrorCode(err, -32600, -32602))
+			require.False(t, errors.Is(classifyJSONRPCDeliveryError("steer", err), ErrDeliveryUncertain),
+				"an error the provider named is a refusal, not an unconfirmed delivery")
+		})
+	}
+}
+
+// A result that is genuinely present beside an error is still a broken envelope.
+func TestJSONRPCResponseRejectsARealResultBesideAnError(t *testing.T) {
+	_, err := decodeJSONRPCResponse(json.RawMessage(`{"result":0,"error":{"code":-32603,"message":"Both"}}`))
+	require.ErrorContains(t, err, "both a result and an error")
 }
 
 func TestJSONRPCResponseRetainsAnErrorWithAnEmptyMessage(t *testing.T) {

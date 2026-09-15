@@ -28,7 +28,10 @@ type piGoalSessionEntry struct {
 	Focus    *piGoalFocus
 }
 
-// piGoalSession keeps only the parent links and focus records needed for the current branch.
+// piGoalSession indexes every entry of a native session by its ID, with the parent
+// link and the focus record of each one. focus walks the parent chain from a leaf
+// that the caller supplies, and the provider can switch to a branch that the
+// current one does not reach, so no entry is safe to discard.
 type piGoalSession struct {
 	Entries map[string]piGoalSessionEntry
 	LastID  string
@@ -105,12 +108,9 @@ func (session piGoalSession) focus(leafID string, updates map[string]piGoalSessi
 	return "", true
 }
 
-// readPiGoalSession reads native parent links without a large get_entries response over stdout.
-func readPiGoalSession(ctx context.Context, path, workingDir, sessionID string) (session piGoalSession, err error) {
-	var reader piGoalSessionReader
-	return reader.read(ctx, path, workingDir, sessionID)
-}
-
+// read reads native parent links without a large get_entries response over stdout.
+// It resumes at the offset that the previous call reached when the file is the same
+// one and only grew, and re-reads from the header otherwise.
 func (reader *piGoalSessionReader) read(ctx context.Context, path, workingDir, sessionID string) (session piGoalSession, err error) {
 	defer func() {
 		if err != nil {
@@ -173,13 +173,44 @@ func (reader *piGoalSessionReader) read(ctx context.Context, path, workingDir, s
 	return reader.session, errors.Join(scanner.Err(), ctx.Err())
 }
 
-// readPiGoalFile reads the focused goal's canonical file. The pool snapshot is a disposable cache.
-func readPiGoalFile(ctx context.Context, workingDir, goalID string) (record *piGoalRecord, err error) {
+// piGoalFileReader finds the focused goal's canonical file. The pool snapshot is a
+// disposable cache. Only the refresh goroutine reads or changes the reader.
+//
+// A refresh runs for every goal hint, so an uncached reader re-reads and re-parses
+// each goal file every time. The reader keeps the parsed record of each file and
+// reuses it while the file's identity, size and modification time are unchanged,
+// exactly as piGoalSessionReader reuses its index.
+type piGoalFileReader struct {
+	directory string
+	files     map[string]piGoalFileEntry
+}
+
+// piGoalFileEntry is one cached goal file. A record of nil marks a file that does
+// not parse as a goal, so a re-read cannot help until the file itself changes.
+type piGoalFileEntry struct {
+	info   os.FileInfo
+	record *piGoalRecord
+}
+
+// read returns the record of the focused goal, or nil when no file carries it. It
+// walks every goal file, because two files that state the same goal ID are a
+// conflict that the caller must see.
+func (reader *piGoalFileReader) read(ctx context.Context, workingDir, goalID string) (record *piGoalRecord, err error) {
+	defer func() {
+		if err != nil {
+			*reader = piGoalFileReader{}
+		}
+	}()
 	directory := filepath.Join(workingDir, ".pi", "goals")
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return nil, err
 	}
+	if reader.directory != directory {
+		*reader = piGoalFileReader{directory: directory}
+	}
+	// A deleted file must leave the cache, so each read builds the map again.
+	files := make(map[string]piGoalFileEntry, len(entries))
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -187,27 +218,59 @@ func readPiGoalFile(ctx context.Context, workingDir, goalID string) (record *piG
 		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		file, err := os.Open(filepath.Join(directory, entry.Name()))
+		cached, err := reader.load(directory, entry.Name())
 		if err != nil {
 			return nil, err
 		}
-		content, readErr := io.ReadAll(io.LimitReader(file, piGoalFileByteLimit+1))
-		if err := errors.Join(readErr, file.Close()); err != nil {
-			return nil, err
-		}
-		if len(content) > piGoalFileByteLimit {
-			return nil, fmt.Errorf("a Pi goal file exceeds the size limit")
-		}
-		parsed, err := parsePiGoalFile(content)
-		if err != nil || parsed.ID != goalID {
+		files[entry.Name()] = cached
+		if cached.record == nil || cached.record.ID != goalID {
 			continue
 		}
 		if record != nil {
 			return nil, fmt.Errorf("multiple Pi goal files contain the focused goal")
 		}
-		record = parsed
+		// Hand the caller its own copy. The cache keeps the parsed record for the next
+		// read, and a caller that changed one field would corrupt every read after it.
+		copied := *cached.record
+		record = &copied
 	}
+	reader.files = files
 	return record, nil
+}
+
+// load returns the cached entry for one goal file, and re-reads and re-parses the
+// file when the cache does not match what is on disk now.
+func (reader *piGoalFileReader) load(directory, name string) (entry piGoalFileEntry, err error) {
+	file, err := os.Open(filepath.Join(directory, name))
+	if err != nil {
+		return piGoalFileEntry{}, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	info, err := file.Stat()
+	if err != nil {
+		return piGoalFileEntry{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return piGoalFileEntry{}, fmt.Errorf("a Pi goal file is not a regular file")
+	}
+	if cached, found := reader.files[name]; found && cached.info != nil && os.SameFile(cached.info, info) &&
+		cached.info.Size() == info.Size() && cached.info.ModTime().Equal(info.ModTime()) {
+		return cached, nil
+	}
+	content, err := io.ReadAll(io.LimitReader(file, piGoalFileByteLimit+1))
+	if err != nil {
+		return piGoalFileEntry{}, err
+	}
+	if len(content) > piGoalFileByteLimit {
+		return piGoalFileEntry{}, fmt.Errorf("a Pi goal file exceeds the size limit")
+	}
+	// The directory holds files that are not goals. One that does not parse is
+	// cached as an absent record rather than as a failure of the whole read.
+	record, parseErr := parsePiGoalFile(content)
+	if parseErr != nil {
+		record = nil
+	}
+	return piGoalFileEntry{info: info, record: record}, nil
 }
 
 func parsePiGoalFile(content []byte) (*piGoalRecord, error) {
@@ -224,18 +287,19 @@ func parsePiGoalFile(content []byte) (*piGoalRecord, error) {
 	}
 	body := strings.TrimSpace(string(content[decoder.InputOffset():]))
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	// The progress log is a record of the work, not a part of the objective. Cut it
+	// first, so a file that carries no "# Goal Prompt" heading also drops it.
+	for end, line := range lines {
+		if strings.TrimSpace(line) == "## Progress" {
+			lines = lines[:end]
+			break
+		}
+	}
 	for index, line := range lines {
-		if strings.TrimSpace(line) != "# Goal Prompt" {
-			continue
+		if strings.TrimSpace(line) == "# Goal Prompt" {
+			lines = lines[index+1:]
+			break
 		}
-		lines = lines[index+1:]
-		for end, line := range lines {
-			if strings.TrimSpace(line) == "## Progress" {
-				lines = lines[:end]
-				break
-			}
-		}
-		break
 	}
 	if objective := strings.TrimSpace(strings.Join(lines, "\n")); objective != "" {
 		file.Objective = objective

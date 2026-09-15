@@ -1563,8 +1563,11 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 // TestNeedsStructuredRow pins the single "does this answer get a synthetic structured row" rule.
 // A resolvable request id is required. A genuinely self-displayed answer draws no row except when a
 // context-clearing plan exit wipes its echoed tool_result. Otherwise the answer gets the row -- for
-// EVERY provider, and even when the stored request is gone (#258, a genuine orphan): there is no
-// provider-capability guard here. The "answered twice" duplicate (whose first answer's tool_result
+// EVERY provider, and even when the stored request is gone (#258): there is no provider-capability
+// guard here. #258 survives for an answer CLAIMED while its request existed --
+// ListControlResponsesAwaitingRecording recovers that delivered answer after a restart deleted the
+// request row. An answer that ARRIVES with no request row never reaches this decision, because
+// SendControlResponse refuses it. The "answered twice" duplicate (whose first answer's tool_result
 // already carries the mark) is deduped one layer up by SendControlResponse's idempotency claim, so it
 // never reaches this decision a second time -- the withhold guard the old SelfDisplaysControlAnswers
 // capability provided is subsumed by that claim and intentionally gone.
@@ -1593,7 +1596,8 @@ func TestNeedsStructuredRow(t *testing.T) {
 		"no request id -> the answer is unattributable and draws no row")
 
 	// Not self-displayed: the answer gets the row for EVERY provider -- Claude permission answers
-	// included, and even when the stored request is gone (#258, a genuine orphan). No
+	// included, and even when the stored request is gone (#258: an answer claimed while its request
+	// existed, which the replay sweep recovers after the request row disappeared). No
 	// provider-capability guard here: a request-gone duplicate whose first answer already carries
 	// the mark is stopped earlier by the idempotency claim, so it never reaches this decision twice.
 	assert.True(t, mk("req-1", false).needsTranscriptRow(),
@@ -1859,7 +1863,7 @@ func TestProcessControlResponse(t *testing.T) {
 	})
 
 	// A provider that cannot build a frame its agent can parse sets resolution.Withhold.
-	// An empty Content cannot carry that meaning: buildControlResponsePlan backfills the
+	// An empty Content cannot carry that meaning: resolveControlResponsePlan backfills the
 	// raw frontend bytes over it, so clearing Content forwards the exact envelope the
 	// provider refused to send -- a frame the app-server cannot parse, on its stdin.
 	t.Run("a provider's withheld resolution is not forwarded", func(t *testing.T) {

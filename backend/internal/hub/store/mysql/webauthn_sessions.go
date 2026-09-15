@@ -21,7 +21,7 @@ var _ store.WebAuthnSessionStore = (*webAuthnSessionStore)(nil)
 func fromDBWebAuthnSession(s gendb.WebauthnSession) store.WebAuthnSession {
 	out := store.WebAuthnSession{
 		ID:          s.ID,
-		Kind:        leapmuxv1.WebAuthnSessionKind(s.Kind),
+		Kind:        s.Kind,
 		PayloadJSON: s.PayloadJson,
 		SessionData: s.SessionData,
 		ExpiresAt:   s.ExpiresAt.Time,
@@ -44,7 +44,7 @@ func (s *webAuthnSessionStore) Create(ctx context.Context, p store.CreateWebAuth
 	}
 	return mapErr(s.conn.q.CreateWebAuthnSession(ctx, gendb.CreateWebAuthnSessionParams{
 		ID:          p.ID,
-		Kind:        int16(p.Kind),
+		Kind:        p.Kind,
 		UserID:      userID,
 		PayloadJson: p.PayloadJSON,
 		SessionData: p.SessionData,
@@ -69,7 +69,7 @@ func (s *webAuthnSessionStore) Delete(ctx context.Context, id string) error {
 func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id string, kind leapmuxv1.WebAuthnSessionKind, now time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.ConsumeWebAuthnCeremonySession(ctx, gendb.ConsumeWebAuthnCeremonySessionParams{
 		ID:   id,
-		Kind: int16(kind),
+		Kind: kind,
 		Now:  sqltime.NewMySQLTime(now),
 	}))
 }
@@ -92,6 +92,6 @@ func (s *webAuthnSessionStore) DeleteByUserAndKind(ctx context.Context, userID s
 	}
 	return mapErr(s.conn.q.DeleteWebAuthnSessionsByUserAndKind(ctx, gendb.DeleteWebAuthnSessionsByUserAndKindParams{
 		UserID: sql.NullString{String: owner.String(), Valid: true},
-		Kind:   int16(kind),
+		Kind:   kind,
 	}))
 }

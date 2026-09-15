@@ -51,14 +51,18 @@ func TestValidateLaunchOptions_DoesNotValidateModelOrEffort(t *testing.T) {
 func TestValidateLaunchOptions_ACPProviderSkipsPermissionMode(t *testing.T) {
 	t.Parallel()
 
-	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
-	require.NoError(t, ValidateLaunchOptions(copilot, optionmap.Map{OptionIDPermissionMode: "a-dynamic-daemon-mode"}),
+	goose := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	require.NoError(t, ValidateLaunchOptions(goose, optionmap.Map{OptionIDPermissionMode: "a-dynamic-daemon-mode"}),
 		"an ACP provider's daemon-discovered permission mode is not rejected against the static seed")
 }
 
-// TestProviderManagesEffort distinguishes providers that own a model-dependent effort
-// catalog (Claude/Codex/Pi -- effort default stamped by resolveProviderDefaults) from
-// every other provider, whose effort, if any, is server-driven.
+// TestProviderManagesEffort distinguishes providers whose effort tiers belong to the
+// MODEL (effort default stamped by resolveProviderDefaults) from every other provider,
+// whose effort, if any, is server-driven and model-independent.
+//
+// Claude, Codex and Pi state their tiers in a static catalog. Native Copilot has no
+// static catalog -- the account decides which models exist -- so it raises managesEffort
+// in its init() instead; a model switch must still rebuild its tiers.
 //
 // The two sets are a PARTITION of the generated provider table, so the "false" side is
 // derived rather than retyped: a provider added later lands in it automatically, and a
@@ -70,13 +74,14 @@ func TestProviderManagesEffort(t *testing.T) {
 	t.Parallel()
 
 	managed := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:          true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {
-			assert.Truef(t, ProviderManagesEffort(p), "%v owns a model-dependent effort catalog", p)
+			assert.Truef(t, ProviderManagesEffort(p), "%v owns model-dependent effort tiers", p)
 			continue
 		}
 		assert.Falsef(t, ProviderManagesEffort(p), "%v has no leapmux-managed effort default", p)

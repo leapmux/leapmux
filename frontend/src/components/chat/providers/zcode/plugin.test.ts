@@ -333,10 +333,13 @@ describe('zcode classify of a retained tool row', () => {
     },
   )
 
-  it('presents the progress output tails as the partial result', () => {
+  // The two tails are SEPARATE streams, and the app-server cuts each at a byte count
+  // rather than at a line end. Concatenating them glues a mid-line stdout tail to the
+  // first stderr line and shows one line that neither stream wrote.
+  it('presents the progress output tails as the partial result, one stream per line', () => {
     const parent = toolEvent(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial ', stderrTail: 'output' })
     const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(parent, ZCODE_TOOL.Bash))
-    expect(meta?.copyableContent?.()).toContain('partial output')
+    expect(meta?.copyableContent?.()).toBe('partial \noutput')
   })
 })
 

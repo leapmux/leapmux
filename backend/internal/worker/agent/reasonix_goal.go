@@ -218,10 +218,11 @@ func reasonixGoalStatus(wire string) GoalStatus {
 		return GoalStatusActive
 	case reasonixGoalStatusComplete:
 		return GoalStatusDone
-	// Blocked, cancelled and failed are all "not progressing, needs the user".
-	// They are listed rather than left to the default so the vocabulary this
-	// build knows is visible, and an unrecognized word still reads as blocked --
-	// a state LeapMux cannot understand is one it must not offer Pause for.
+	// None, blocked, cancelled and failed are all "not progressing, needs the
+	// user". All four are listed rather than left to the default so the
+	// vocabulary this build knows is visible, and an unrecognized word still
+	// reads as blocked -- a state LeapMux cannot understand is one it must not
+	// offer Pause for.
 	case reasonixGoalStatusNone, reasonixGoalStatusBlocked, reasonixGoalStatusCancelled, reasonixGoalStatusFailed:
 		return GoalStatusBlocked
 	default:
@@ -256,6 +257,11 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 }
 
 func (a *ReasonixAgent) applyReasonixGoal(goal *reasonixGoal) {
+	// An absent goal, and a goal object with no status word, are both an
+	// INCOMPLETE snapshot rather than a removal. Reasonix states a change by
+	// restating the whole status, so a restatement that omits the word says
+	// nothing about the goal the card already shows. This keeps that card, and
+	// the objective check below is the one path that removes it.
 	if goal == nil || goal.Status == "" {
 		return
 	}

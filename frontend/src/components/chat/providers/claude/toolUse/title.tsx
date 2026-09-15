@@ -4,7 +4,7 @@ import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTrigg
 import { pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { joinMetaParts } from '../../../rendererUtils'
-import { mcpToolCallDisplayName } from '../../../results/mcpToolCall'
+import { mcpToolCallDisplayName, parseMcpToolName } from '../../../results/mcpToolCall'
 import { toolInputCode, toolInputText } from '../../../toolStyles.css'
 import {
   renderAgentTitle,
@@ -19,7 +19,6 @@ import {
   renderWriteTitle,
   toolInputHint,
 } from '../../../toolTitleRenderers'
-import { parseClaudeMcpToolName } from '../extractors/mcp'
 import { renderSendMessageTitle } from './sendMessage'
 
 export function renderClaudeToolTitle(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
@@ -106,11 +105,9 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
     }
     default: {
       const hint = toolInputHint(input)
-      const mcpInfo = parseClaudeMcpToolName(toolName)
-      if (mcpInfo) {
-        const displayName = mcpToolCallDisplayName({ server: mcpInfo.serverName, tool: mcpInfo.toolName })
-        return renderMcpTitle(displayName, input)
-      }
+      const mcpInfo = parseMcpToolName(toolName)
+      if (mcpInfo)
+        return renderMcpTitle(mcpToolCallDisplayName(mcpInfo), input)
       // Unknown non-MCP tool — show tool name with hint if available.
       return hint
         ? <span class={toolInputText}>{`${toolName}: ${hint}`}</span>

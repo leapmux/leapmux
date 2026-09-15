@@ -73,6 +73,10 @@ vi.mock('~/components/common/Toast', async () => {
  */
 const WS = 'ws-test'
 
+/** The two tool_use rows the tool-progress cases below address, both of one provider session. */
+const TOOL_A = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
+const TOOL_B = { spanId: 'toolu_B', agentSessionId: 'sess-1' }
+
 let nextPosition = 0
 
 /**
@@ -1440,10 +1444,10 @@ describe('agentMessage sub-handlers', () => {
       const stores = sessionInfoStores()
       const msg = agentMessage({
         type: 'agent_session_info',
-        info: { running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } },
+        info: { running_tool: { span_id: 'toolu_A', agent_session_id: 'sess-1', tool_name: 'Bash', elapsed_seconds: 30 } },
       })
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
-      expect(stores.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
+      expect(stores.chatStore.getToolProgress('a1', TOOL_A)).toEqual({ elapsedSeconds: 30 })
       // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
       // persisted minus its ephemeral keys).
       expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
@@ -2421,8 +2425,8 @@ describe('clearOfflineAgentState', () => {
     const chatStore = createChatStore()
     const agentSessionStore = createAgentSessionStore()
     const agentActivityStore = createAgentActivityStore()
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
+    chatStore.applyToolProgress('a1', { ...TOOL_A, elapsedSeconds: 30 })
+    chatStore.applyToolProgress('a1', { ...TOOL_B, elapsedSeconds: 90 })
     agentSessionStore.applyProgress('a1', { revision: 1, thinkingTokens: 500, output: { bytes: 4096, minimum: true } })
     agentActivityStore.apply('a1', AgentActivityState.WORKING)
     return { chatStore, agentSessionStore, agentActivityStore }
@@ -2435,8 +2439,8 @@ describe('clearOfflineAgentState', () => {
 
       // The two the sweep used to miss. Each badge would otherwise read "30s" /
       // "1m 30s" for as long as the worker stayed away.
-      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toBeUndefined()
-      expect(s.chatStore.getToolProgress('a1', 'toolu_B')).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', TOOL_B)).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
       // The worker that was going to report the settle is gone, so a retained
@@ -2450,13 +2454,13 @@ describe('clearOfflineAgentState', () => {
   it('leaves another agent on a healthy worker untouched', () => {
     createRoot((dispose) => {
       const s = seededStores()
-      s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 60 })
+      s.chatStore.applyToolProgress('a2', { ...TOOL_A, elapsedSeconds: 60 })
       s.agentSessionStore.applyProgress('a2', { revision: 1, thinkingTokens: 700 })
       s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
 
       clearOfflineAgentState('a1', s)
 
-      expect(s.chatStore.getToolProgress('a2', 'toolu_A')?.elapsedSeconds).toBe(60)
+      expect(s.chatStore.getToolProgress('a2', TOOL_A)?.elapsedSeconds).toBe(60)
       expect(s.agentSessionStore.getProgress('a2').thinkingTokens).toBe(700)
       expect(s.agentActivityStore.isBusy('a2')).toBe(true)
       dispose()

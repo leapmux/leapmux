@@ -526,6 +526,8 @@ func TestZCodeResolveControlResponse_PlanRejectionWithFeedbackKeepsTheText(t *te
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
 	assert.NotContains(t, result, contracts.ZCodeReplyFieldContent)
+	// The feedback is the reader's own typed text, and it reaches the agent as the next
+	// user input, so it keeps every byte the reader typed.
 	assert.Equal(t, "  split step 2  ", resolution.Feedback)
 }
 
@@ -930,7 +932,7 @@ func TestZCodeResolveControlResponse_WithholdsAnUnusableForward(t *testing.T) {
 				RequestPayload:  tc.payload,
 				ResponseContent: tc.answer,
 			})
-			// Withhold, not an empty Content: buildControlResponsePlan backfills the raw
+			// Withhold, not an empty Content: resolveControlResponsePlan backfills the raw
 			// frontend envelope over an empty one, so clearing Content would forward the
 			// exact frame these paths refuse to send.
 			assert.True(t, res.Withhold, "no frame may reach the app-server's stdin")

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,9 +16,21 @@ const copilotNativeProtocolVersion = 3
 // copilotConnection owns native RPC framing and the Copilot process.
 type copilotConnection struct {
 	jsonrpcBase
+	// pendingScanner reads the process stdout. It waits here between the launch and
+	// startReading, which is the window the caller uses to adopt the connection.
+	pendingScanner *bufio.Scanner
 }
 
-func startCopilotConnection(parent context.Context, opts Options, handle outputHandler) (*copilotConnection, error) {
+// startCopilotConnection launches the CLI and returns BEFORE the reader goroutine
+// starts.
+//
+// The reader reaches its agent through the connection the caller holds, so the caller
+// adopts the connection first and calls startReading afterwards. A single function
+// that did both would hand the reader a field its caller has not assigned yet, and the
+// first frame would then read a nil pointer.
+//
+// verifyNativeProtocol completes the startup. Keep the three calls in that order.
+func startCopilotConnection(parent context.Context, opts Options) (*copilotConnection, error) {
 	ctx, cancel := context.WithCancel(parent)
 	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
 	if err != nil {
@@ -47,9 +60,21 @@ func startCopilotConnection(parent context.Context, opts Options, handle outputH
 	stdoutMu.Lock()
 	maximum := stdoutConfiguredMax
 	stdoutMu.Unlock()
-	go connection.readOutputLoop(newCopilotScanner(stdout, delimiter, maximum), handle)
+	connection.pendingScanner = newCopilotScanner(stdout, delimiter, maximum)
+	return connection, nil
+}
 
-	status, err := connection.sendRequest("status.get", json.RawMessage(`{}`), opts.startupTimeout())
+// startReading starts the goroutine that reads the runtime's frames. The caller
+// adopted the connection before this call, so the handler finds every field it reads.
+func (c *copilotConnection) startReading(handle outputHandler) {
+	go c.readOutputLoop(c.pendingScanner, handle)
+}
+
+// verifyNativeProtocol confirms that the runtime speaks the protocol this provider
+// implements. It stops the process when it does not, because no later request of
+// LeapMux's can succeed.
+func (c *copilotConnection) verifyNativeProtocol(opts Options) error {
+	status, err := c.sendRequest("status.get", json.RawMessage(`{}`), opts.startupTimeout())
 	if err == nil {
 		var version struct {
 			ProtocolVersion int `json:"protocolVersion"`
@@ -61,11 +86,11 @@ func startCopilotConnection(parent context.Context, opts Options, handle outputH
 		}
 	}
 	if err != nil {
-		connection.Stop()
-		_ = connection.Wait()
-		return nil, connection.formatStartupError("native protocol initialization", err)
+		c.Stop()
+		_ = c.Wait()
+		return c.formatStartupError("native protocol initialization", err)
 	}
-	return connection, nil
+	return nil
 }
 
 // requestSession adds the target session without changing the caller's parameters.

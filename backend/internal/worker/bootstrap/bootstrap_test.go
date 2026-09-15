@@ -78,13 +78,13 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert agents directly into the DB (simulating persisted state).
-	err := queries.CreateAgent(ctx, db.CreateAgentParams{
+	err := queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 	})
 	require.NoError(t, err)
 
-	err = queries.CreateAgent(ctx, db.CreateAgentParams{
+	err = queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-2",
 		WorkingDir: "/tmp",
 	})
@@ -143,7 +143,7 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 	ctx := context.Background()
 
 	// Add an agent and a terminal.
-	err := queries.CreateAgent(ctx, db.CreateAgentParams{
+	err := queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 	})
@@ -239,7 +239,7 @@ func TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport(t *testing.T) {
 	queries, sqlDB := setupTestDBWithHandle(t)
 	ctx := context.Background()
 
-	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 	}))
@@ -473,7 +473,7 @@ func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
 	ctx := context.Background()
 
 	// Root must exist before the child (foreign key on parent_agent_id).
-	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "root-1",
 		WorkingDir: "/tmp",
 	}))

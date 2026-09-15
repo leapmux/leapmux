@@ -685,7 +685,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	}
 	pendingApproval := len(sources) > 1
 	for _, source := range sources {
-		pendingApproval = pendingApproval || leapmuxv1.ControlResponseState(source.State) != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
+		pendingApproval = pendingApproval || source.State != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
 	}
 	// A recorded approval permits the context replacement that the old turn waits for.
 	// Ordinary input and unconfirmed approvals still wait for that turn to end.
@@ -1413,12 +1413,15 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 		// Answer the steering precondition where the store already knows it,
 		// from the same predicate that prepare applies. A browser that derives
 		// this from the kind alone offers a Steer the Worker then refuses.
-		snapshot.Items[i].CanSteer = i == 0 &&
+		headReady := i == 0 &&
 			snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
 			snapshot.Items[i].EditOwner == "" &&
 			snapshot.ActiveTurn &&
-			steerableInputKind(snapshot.Items[i].Kind) &&
-			snapshot.ActiveTurnSteerable
+			steerableInputKind(snapshot.Items[i].Kind)
+		snapshot.Items[i].CanSteer = headReady && snapshot.ActiveTurnSteerable
+		// Preemption's precondition drops only the steerable-turn term: the
+		// turn is the thing being cancelled, not injected into.
+		snapshot.Items[i].CanPreempt = headReady
 	}
 	return snapshot, nil
 }

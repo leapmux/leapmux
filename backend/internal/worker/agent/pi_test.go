@@ -978,3 +978,50 @@ func TestPiLaunchDefaults(t *testing.T) {
 		assert.Equal(t, PiDefaultProvider, warm.providerForModel("absent-model"))
 	})
 }
+
+func TestPiSessionIdentityReplacesTheFileWhenTheIDChanges(t *testing.T) {
+	t.Parallel()
+	a := &PiAgent{sessionID: "old", sessionFile: "/project/old.jsonl"}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// A reply that states a NEW id and no file must not retain the old path: the
+	// worker would persist a resume handle for the session Pi replaced.
+	assert.True(t, a.applyPiSessionIdentityLocked("new", ""))
+	assert.Equal(t, "new", a.sessionID)
+	assert.Empty(t, a.sessionFile)
+	assert.Equal(t, "new", a.sessionHandleLocked())
+	// A reply for the SAME session that adds a path adopts it.
+	assert.True(t, a.applyPiSessionIdentityLocked("new", "/project/new.jsonl"))
+	assert.Equal(t, "/project/new.jsonl", a.sessionFile)
+	// A reply that states a path alone adopts it and keeps the id.
+	assert.True(t, a.applyPiSessionIdentityLocked("", "/project/newer.jsonl"))
+	assert.Equal(t, "new", a.sessionID)
+	assert.Equal(t, "/project/newer.jsonl", a.sessionFile)
+	// A reply that repeats what the agent holds changes nothing.
+	assert.False(t, a.applyPiSessionIdentityLocked("new", "/project/newer.jsonl"))
+	assert.Equal(t, "/project/newer.jsonl", a.sessionFile)
+}
+
+func TestPiClearContextRereadsTheExtensionCatalog(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, &testSink{})
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		switch req.Type {
+		case PiCommandNewSession:
+			return json.RawMessage(`{"cancelled":false}`), true, ""
+		case PiCommandGetState:
+			return json.RawMessage(`{"sessionId":"new-sess","sessionFile":"/tmp/pi-new.jsonl"}`), true, ""
+		case PiCommandGetCommands:
+			return json.RawMessage(`{"commands":[{"name":"goal-pause","source":"extension"}]}`), true, ""
+		}
+		return nil, true, ""
+	})
+	_, err := rig.agent.ClearContext()
+	require.NoError(t, err)
+	// The replacement session can load a different extension set, so goal control
+	// follows the session rather than the process.
+	require.Eventually(t, func() bool {
+		return len(rig.agent.SupportedGoalActions()) == 1
+	}, time.Second, time.Millisecond)
+	assert.Equal(t, []GoalAction{GoalActionPause}, rig.agent.SupportedGoalActions())
+}

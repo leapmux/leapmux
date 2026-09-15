@@ -84,11 +84,24 @@ export function ImageResultView(props: {
   const [loadError, setLoadError] = createSignal('')
   const [decodeError, setDecodeError] = createSignal(false)
   const filePath = () => !props.source.data && !props.source.url ? props.source.filePath : undefined
+  /**
+   * Whether a read of the file can start at all.
+   *
+   * `loadFile` and the display model below read the SAME accessor, so they
+   * cannot disagree. They did: a premeasure pass and an offscreen row both
+   * refuse the read, while the display still reported `loading`. The row then
+   * said "Loading image..." for a read nobody started, and Retry stays hidden
+   * for as long as `loading` holds -- so the row offered no way out.
+   */
+  const canLoad = (): boolean => Boolean(filePath())
+    && !!props.context?.sources?.fileImage
+    && !props.context?.premeasureMode
+    && !props.context?.rowOffscreen?.()
   let generation = 0
   const loadFile = (refresh = false): void => {
     const path = filePath()
     const read = props.context?.sources?.fileImage
-    if (!path || !read || props.context?.premeasureMode || props.context?.rowOffscreen?.())
+    if (!canLoad() || !path || !read)
       return
     const current = ++generation
     if (refresh) {
@@ -132,7 +145,7 @@ export function ImageResultView(props: {
     return {
       path,
       source: resolved ? { ...props.source, ...resolved, description: props.source.description ?? resolved.description } : props.source,
-      loading: loading() || !!(path && props.context?.sources?.fileImage && !resolved && !error),
+      loading: loading() || (canLoad() && !resolved && !error),
       error,
       decodeError: decodeError(),
     }

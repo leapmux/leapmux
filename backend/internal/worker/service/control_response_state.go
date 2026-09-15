@@ -11,16 +11,15 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// The four ControlResponseState ordinals control_response_answers.state stores,
-// in the int64 shape the generated params take. READY and CANCELED are absent
-// on purpose: both describe a request with NO answer row, which
-// controlResponseState below derives from control_requests instead, and the
-// column's CHECK refuses them.
-var (
-	storedStatePending   = int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING)
-	storedStateUncertain = int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN)
-	storedStateDelivered = int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED)
-	storedStateCompleted = int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED)
+// The four ControlResponseState ordinals control_response_answers.state stores.
+// READY and CANCELED are absent on purpose: both describe a request with NO
+// answer row, which controlResponseState below derives from control_requests
+// instead, and the column's CHECK refuses them.
+const (
+	storedStatePending   = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING
+	storedStateUncertain = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN
+	storedStateDelivered = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED
+	storedStateCompleted = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
 )
 
 func controlResponseState(queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
@@ -34,7 +33,7 @@ func controlResponseState(queries *db.Queries, agentID, requestID, claimToken st
 		// contradicts, and this is the read that must refuse it.
 		switch answer.State {
 		case storedStatePending, storedStateUncertain, storedStateDelivered, storedStateCompleted:
-			return leapmuxv1.ControlResponseState(answer.State), nil
+			return answer.State, nil
 		default:
 			return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, fmt.Errorf("unknown control response state %d", answer.State)
 		}
@@ -111,7 +110,7 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 			return
 		}
 		request = db.ControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq}
-		provider = leapmuxv1.AgentProvider(answer.AgentProvider)
+		provider = answer.AgentProvider
 	}
 	event := buildAgentControlRequest(svc.Queries, currentAgent.ID, provider, agent.ControlRequest{
 		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID,

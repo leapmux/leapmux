@@ -523,6 +523,56 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	return snapshot, nil
 }
 
+// Preempt cancels the agent's active turn so the named queued item is sent as
+// the next ordinary dispatch.
+//
+// Preempt is the steer of a provider that cannot inject into a running turn
+// (Cursor, Kilo): it INTERRUPTS the turn instead, and the message follows the
+// moment the cancelled turn reports its end. Nothing is delivered here -- the
+// item stays queued, and the drain that the provider's turn-end publish
+// triggers is what sends it. That drain is also why the item is only
+// validated, never reserved: a reserved head is invisible to PrepareDispatch,
+// and a cancel whose turn-end lands before a requeue would strand it.
+func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	if m.dispatcher == nil || !m.dispatcher.SupportsPreemption(agentID) {
+		return Snapshot{}, ErrPreemptionUnsupported
+	}
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Snapshot(ctx, agentID)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	// CanPreempt already answers everything the guard needs -- head, queued,
+	// unedited, a kind the model takes, and the active turn to cancel.
+	if len(snapshot.Items) == 0 || !snapshot.Items[0].CanPreempt || snapshot.Items[0].ID != inputID {
+		c.mu.Unlock()
+		return snapshot, ErrTurnEnded
+	}
+	c.mu.Unlock()
+
+	interruptErr := m.dispatcher.Interrupt(agentID)
+
+	// Whatever the cancel did, the queue's own drain owns the delivery: a
+	// cancel that already ended the turn is caught by the drain below, and one
+	// still settling is reported by the provider's turn-end publish. The
+	// answer must reflect the world AFTER the interrupt, not before it.
+	c.mu.Lock()
+	current, snapshotErr := m.store.Snapshot(ctx, agentID)
+	c.mu.Unlock()
+	if snapshotErr != nil {
+		return snapshot, interruptErr
+	}
+	snapshot = current
+	m.drainIfReleased(agentID, snapshot)
+	return snapshot, interruptErr
+}
+
 // BeginPlannedRestart pauses automatic dispatch before a provider replacement.
 // The pause carries pauseOwnerPlannedRestart, so Retry and Steer refuse to
 // write into the stopping process and Finish resumes only its own pause.

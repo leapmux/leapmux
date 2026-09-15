@@ -1,8 +1,10 @@
 import type { ACPToolAdapter } from '../acp/toolPresentation'
+import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
 import { isObject, pickBoolean, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
 import { rawTodosToItems } from '~/stores/chatTodos'
 import { parseUnifiedDiffCached } from '../../diff'
+import { agentToolPresentation } from '../../results/AgentRequestMessage'
 import { fileEditDiffFromHunks, fileEditHasDiff } from '../../results/fileEditDiff'
 import { readFileSourceFromContent } from '../../results/readFileResult'
 import { openCodeSearchLines } from './searchOutput'
@@ -12,18 +14,14 @@ import { openCodeTaskResult } from './taskResult'
 export const openCodeToolAdapter: ACPToolAdapter = (tool, initial) => {
   const write = initial.kind === 'edit' && typeof initial.input.content === 'string' && typeof initial.input.filePath === 'string'
   const search = initial.kind === 'search' && (tool.title === 'glob' || tool.title === 'grep') ? tool.title : undefined
-  let model = write || search ? { ...initial, kind: write ? 'write' : search! } : initial
+  let model: ToolPresentation = write || search ? { ...initial, kind: write ? 'write' : search! } : initial
   const metadata = pickObject(pickObject(tool, 'rawOutput'), 'metadata')
   const task = openCodeTaskResult(model.output, metadata, model.input)
   if (tool.title === 'task' || (model.kind === 'think' && pickString(model.input, 'subagent_type')) || (task && pickString(metadata, 'sessionId'))) {
-    return {
-      ...model,
-      kind: 'agent',
-      label: 'Task',
-      title: pickString(model.input, 'description') || 'Agent',
-      agentRequest: { toolName: 'Task', description: pickString(model.input, 'description'), agentType: pickString(model.input, 'subagent_type'), prompt: pickString(model.input, 'prompt') },
-      body: task ? { type: 'agent', source: task } : { type: 'text' },
-    }
+    const request = { toolName: 'Task', description: pickString(model.input, 'description'), agentType: pickString(model.input, 'subagent_type'), prompt: pickString(model.input, 'prompt') }
+    // The tool label stays `Task`, which is the tool OpenCode ran. The shared title
+    // states the instruction instead.
+    return { ...agentToolPresentation(model, request, task ?? undefined), label: 'Task' }
   }
   const rawTodos = Array.isArray(metadata?.todos) ? metadata.todos : model.input.todos
   if (tool.title === 'todowrite' || Array.isArray(metadata?.todos)) {

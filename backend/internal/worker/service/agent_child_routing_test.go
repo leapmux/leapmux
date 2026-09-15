@@ -164,7 +164,7 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 	svc, d, childID, _ := setupChildAgentTest(t)
 
 	// Seed a message into the child transcript so we can confirm it survives.
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "cm-1",
 		AgentID:       childID,
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

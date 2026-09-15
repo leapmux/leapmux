@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,8 @@ func TestPiGoalSessionFollowsActiveBranch(t *testing.T) {
 		`{"type":"custom","id":"clear","parentId":"focus-b","customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":null}}` + "\n" +
 		`{"type":"message","id":"unfinished"`
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-	session, err := readPiGoalSession(t.Context(), path, directory, "session")
+	var reader piGoalSessionReader
+	session, err := reader.read(t.Context(), path, directory, "session")
 	require.NoError(t, err)
 	assert.Equal(t, "clear", session.LastID)
 	for leaf, expected := range map[string]string{"branch-a": "goal-a", "focus-b": "goal-b", "clear": ""} {
@@ -33,7 +35,8 @@ func TestPiGoalSessionFollowsActiveBranch(t *testing.T) {
 	}
 	_, known := session.focus("unfinished", nil)
 	assert.False(t, known)
-	_, err = readPiGoalSession(t.Context(), path, directory, "other-session")
+	var other piGoalSessionReader
+	_, err = other.read(t.Context(), path, directory, "other-session")
 	require.Error(t, err)
 }
 
@@ -101,6 +104,8 @@ func TestParsePiGoalFileUsesNativeObjectiveRules(t *testing.T) {
 		{"plain body", "\nPlain body.\n", "Plain body."},
 		{"empty body", "\n", "Metadata objective"},
 		{"empty prompt", "\n# Goal Prompt\n\n## Progress\nStatus", "Metadata objective"},
+		{"progress without a heading", "\n## Progress\n- Status: active", "Metadata objective"},
+		{"plain body before progress", "\nPlain body.\n\n## Progress\n- Status: active", "Plain body."},
 		{"windows body", "\r\n# Goal Prompt\r\nFirst\r\nSecond\r\n## Progress", "First\nSecond"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,17 +126,73 @@ func TestReadPiGoalFileFindsOnlyTheFocusedCanonicalRecord(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(goals, "current.md"), content, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(goals, "unrelated.md"), []byte(`{"version":3,"id":"other","objective":"Other"}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(goals, "broken.md"), []byte(`{invalid`), 0o600))
-	record, err := readPiGoalFile(t.Context(), directory, "focused")
+	var reader piGoalFileReader
+	record, err := reader.read(t.Context(), directory, "focused")
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	assert.Equal(t, "Current objective", record.Objective)
 	assert.Equal(t, "paused", record.Status)
-	missing, err := readPiGoalFile(t.Context(), directory, "missing")
+	missing, err := reader.read(t.Context(), directory, "missing")
 	require.NoError(t, err)
 	assert.Nil(t, missing)
 	require.NoError(t, os.WriteFile(filepath.Join(goals, "duplicate.md"), content, 0o600))
-	_, err = readPiGoalFile(t.Context(), directory, "focused")
+	_, err = reader.read(t.Context(), directory, "focused")
 	require.ErrorContains(t, err, "multiple")
+}
+
+func TestPiGoalFileReaderReusesUnchangedFilesAndSeesEveryEdit(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	goals := filepath.Join(directory, ".pi", "goals")
+	require.NoError(t, os.MkdirAll(goals, 0o700))
+	path := filepath.Join(goals, "current.md")
+	header := `{"version":3,"id":"focused","objective":"Metadata","status":"active"}`
+	require.NoError(t, os.WriteFile(path, []byte(header+"\n# Goal Prompt\nFirst objective"), 0o600))
+	stat, err := os.Stat(path)
+	require.NoError(t, err)
+	var reader piGoalFileReader
+	first, err := reader.read(t.Context(), directory, "focused")
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Equal(t, "First objective", first.Objective)
+
+	// A file whose size AND modification time are unchanged keeps its parsed record.
+	// A rewrite that preserves both is what proves the reader did not read again.
+	require.NoError(t, os.WriteFile(path, []byte(header+"\n# Goal Prompt\nFIRST objective"), 0o600))
+	require.NoError(t, os.Chtimes(path, stat.ModTime(), stat.ModTime()))
+	again, err := reader.read(t.Context(), directory, "focused")
+	require.NoError(t, err)
+	require.NotNil(t, again)
+	assert.Equal(t, "First objective", again.Objective)
+	assert.NotSame(t, first, again, "each caller gets its own copy of the cached record")
+
+	// A file whose size grew must be read again, although the cache holds it.
+	require.NoError(t, os.WriteFile(path, []byte(header+"\n# Goal Prompt\nSecond objective, longer"), 0o600))
+	grown, err := reader.read(t.Context(), directory, "focused")
+	require.NoError(t, err)
+	require.NotNil(t, grown)
+	assert.Equal(t, "Second objective, longer", grown.Objective)
+
+	// A file of the SAME size with a later modification time must be read again too.
+	same := []byte(header + "\n# Goal Prompt\nSecond objective, LONGER")
+	require.NoError(t, os.WriteFile(path, same, 0o600))
+	stamp := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(path, stamp, stamp))
+	edited, err := reader.read(t.Context(), directory, "focused")
+	require.NoError(t, err)
+	require.NotNil(t, edited)
+	assert.Equal(t, "Second objective, LONGER", edited.Objective)
+
+	// A deleted file leaves the cache, so its record cannot return as a duplicate.
+	copyPath := filepath.Join(goals, "copy.md")
+	require.NoError(t, os.WriteFile(copyPath, same, 0o600))
+	_, err = reader.read(t.Context(), directory, "focused")
+	require.ErrorContains(t, err, "multiple")
+	require.NoError(t, os.Remove(copyPath))
+	recovered, err := reader.read(t.Context(), directory, "focused")
+	require.NoError(t, err)
+	require.NotNil(t, recovered)
+	assert.Equal(t, "Second objective, LONGER", recovered.Objective)
 }
 
 func BenchmarkReadPiGoalSession(b *testing.B) {

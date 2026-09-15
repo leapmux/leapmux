@@ -19,7 +19,7 @@ import (
 // seedMark persists one message with the given mark type and returns its seq.
 func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.MarkType) int64 {
 	t.Helper()
-	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{
+	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            id,
 		AgentID:       agentID,
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -50,7 +50,7 @@ func TestListMessageMarks_ReturnsMarkedSeqsAndRange(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
@@ -93,7 +93,7 @@ func TestListMessageMarks_MinSeqAfterLeadingDelete(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	seedMark(t, svc, "agent-1", "m1", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
@@ -115,7 +115,7 @@ func TestListMessageMarks_EmptyAgent(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
@@ -138,7 +138,7 @@ func TestListMessageMarks_ClosedAgent_ReturnsEmptyWithPresentRange(t *testing.T)
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	seedMark(t, svc, "agent-1", "m1", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
@@ -231,7 +231,8 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 
 	ctx := context.Background()
 
-	mk := func(selfDisplayed, clear bool) controlResponsePlan {
+	mk := func(t *testing.T, selfDisplayed, clear bool) controlResponsePlan {
+		t.Helper()
 		var plan controlResponsePlan
 		plan.requestMeta.RequestID = "req-1"
 		plan.requestMeta.Loaded = true
@@ -241,6 +242,9 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 		plan.resolution.PlanModeControl = agent.PlanModeControlExit
 		plan.resolution.SelfDisplayed = selfDisplayed
 		plan.resolution.Content = []byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`)
+		// processControlResponse encodes the settings before any consumer reads
+		// them, and the transcript row refuses a plan that skipped that step.
+		require.NoError(t, plan.encodePlanApprovalSettings())
 		return plan
 	}
 
@@ -250,7 +254,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(false, false))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, false, false))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
@@ -263,7 +267,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, true))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, true, true))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1, "the wiped tool_result's mark moves to the single structured row, never a second echo")
@@ -276,7 +280,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
-		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(true, false))
+		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, true, false))
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Empty(t, rows, "the ingested tool_result owns the mark; no synthetic row")

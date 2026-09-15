@@ -1,6 +1,9 @@
 {
-  "_readme": "The Agent Client Protocol defines these session updates. The worker and frontend share their identifiers.",
+  "_readme": "The Agent Client Protocol defines these session updates and message roles. The worker and frontend share their identifiers.",
   "updates": {
     "CurrentMode": "current_mode_update"
+  },
+  "roles": {
+    "Result": "result"
   }
 }

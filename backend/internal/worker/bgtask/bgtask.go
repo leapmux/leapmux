@@ -255,10 +255,8 @@ const (
 )
 
 // String names the kind with the proto enum's own generated name
-// ("BACKGROUND_TASK_KIND_SHELL"). It is what a log line prints, and it is the
-// registry's cap-pool key -- generated, so a renamed enumerator carries the
-// pool key with it, and never "", which the registry cache reserves for a
-// single-pool registry.
+// ("BACKGROUND_TASK_KIND_SHELL"). It is what a log line prints. The registry's
+// cap-pool key is the ORDINAL rather than this name -- see KindBuckets.
 func (k Kind) String() string { return leapmuxv1.BackgroundTaskKind(k).String() }
 
 // String names the status with the proto enum's own generated name, for logs.

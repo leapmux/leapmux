@@ -184,7 +184,7 @@ type agentFactoryEntry struct {
 	// permission-mode/primary-agent axis): the well-known "effort" axis where the
 	// provider has one, Codex's sandbox/network/collaboration/service-tier options,
 	// Pi's pi_provider, and the server-driven ACP config options each family exposes
-	// (Copilot's reasoning_effort/allow_all, Goose's thinking_effort/provider).
+	// (Goose's thinking_effort/provider, Reasonix's tool_approval).
 	// Together with "model" and optionGroups they form KnownOptionIDs -- the static
 	// allowlist UpdateAgentSettings validates an incoming options map against, so a
 	// foreign axis the provider can't apply is dropped instead of persisting a
@@ -205,9 +205,16 @@ type agentFactoryEntry struct {
 	// permissionDefaults holds this provider's two permission-policy answers in one
 	// place, so a reader sees both at once and neither can be changed alone.
 	permissionDefaults PermissionDefaults
-	envModelKey        string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey       string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
-	binaryNames        []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
+	// managesEffort marks a provider whose effort tiers depend on the MODEL although
+	// defaultModels carries none to read them from. Native Copilot is the one: its
+	// account decides which models exist, so it reads the catalog -- and each model's
+	// reasoning-effort list -- from the open session. Without this flag
+	// ProviderManagesEffort answers from defaultModels alone, and a nil catalog reads
+	// as "this provider has no per-model effort". See setManagesEffort.
+	managesEffort bool
+	envModelKey   string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey  string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryNames   []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
 	// launchResolver replaces the binaryNames probe for a provider whose program is
 	// not a bare name the login shell can resolve (see launchResolverFunc). When set,
 	// binaryNames is unused for both availability and launch.
@@ -316,6 +323,14 @@ func setModelSubGroups(provider leapmuxv1.AgentProvider, fn modelSubGroupsFunc) 
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.modelSubGroups = fn })
 }
 
+// setManagesEffort declares that this provider's effort tiers depend on the model
+// although its registration carries no static model catalog to state them. Call it
+// from the provider's init() after registerAgentFactory, beside setModelSubGroups and
+// the other entry mutators.
+func setManagesEffort(provider leapmuxv1.AgentProvider) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.managesEffort = true })
+}
+
 // setAdditionalOptionIDs declares runtime option IDs that the static option groups omit.
 // Call it after registerAgentFactory when a provider advertises additional options.
 func setAdditionalOptionIDs(provider leapmuxv1.AgentProvider, ids ...string) {
@@ -323,14 +338,18 @@ func setAdditionalOptionIDs(provider leapmuxv1.AgentProvider, ids ...string) {
 }
 
 // registerPermissionModeConfigProvider registers a permission-mode ACP provider whose reasoning
-// axis is a server-driven config option rather than the well-known "effort" id (Copilot's
-// "reasoning_effort", Goose's "thinking_effort"). The two run different daemons but share the SAME
-// registration shape: a permissionMode secondary channel with a per-daemon fallback mode list,
-// dynamically-discovered models, NO env effort override (their reasoning axis is a config option,
-// not the well-known effort id), and a set of server-driven config-option ids. Only the provider
-// enum, Start function, fallback modes, env model key, binary name, and config-option ids vary --
-// so each init() reduces to one call here, mirroring registerOpenCodeFamilyProvider, instead of
-// two near-identical registration blocks that can drift.
+// axis is a server-driven config option rather than the well-known "effort" id -- Goose's
+// "thinking_effort". The registration shape is: a permissionMode secondary channel with a
+// per-daemon fallback mode list, dynamically-discovered models, NO env effort override (the
+// reasoning axis is a config option, not the well-known effort id), and a set of server-driven
+// config-option ids. Only the provider enum, Start function, fallback modes, env model key,
+// binary name, and config-option ids vary, so the provider's init() reduces to one call here,
+// mirroring registerOpenCodeFamilyProvider.
+//
+// Goose is the ONLY caller today. Copilot was the second one until this provider moved to its
+// native protocol and left the ACP layer; the shape stays a named function because these six
+// coupled choices are the whole registration, and a reader sees why each one is what it is
+// here rather than inside one provider's init().
 func registerPermissionModeConfigProvider(
 	provider leapmuxv1.AgentProvider,
 	start startFunc,
@@ -388,7 +407,8 @@ func setProviderOptionDefaults(provider leapmuxv1.AgentProvider, defaults map[st
 // but falls back to Default, since a CLI that cannot enter Auto must still start.
 type PermissionDefaults struct {
 	// NewSession is the option id->value set stamped only into a session opened WITHOUT a
-	// resume handle. A provider may name several ids: Copilot sets both of its axes.
+	// resume handle. It is a map because a provider may stamp more than one axis; every
+	// provider that declares one today states its permission mode alone.
 	NewSession map[string]string
 	// Fallback is the permission mode for a session that carries no stored one -- a
 	// resume, a relaunch, or a row written before the axis existed. "" means the provider
@@ -531,17 +551,25 @@ func EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 }
 
 // ProviderManagesEffort reports whether leapmux owns a model-dependent effort
-// default for this provider -- i.e. its static catalog carries per-model effort
-// tiers (Claude, Codex, Pi). For those, resolveProviderDefaults stamps an effort
-// default into the launch options. ACP providers' effort, when they have one (e.g.
-// OpenCode/Kilo/Copilot reasoning effort), is a server-driven config option
-// surfaced as a option group; leapmux must NOT stamp a default for them, or
-// it would shadow/collide with the server's own value (the "effort" config option's
-// id is OptionIDEffort) and pollute the persisted options with an inert key.
+// default for this provider -- i.e. its effort tiers belong to the model. A provider
+// with a STATIC catalog states them in defaultModels (Claude, Codex, Pi). Native
+// Copilot reads its catalog from the open session, so it has no static entry to state
+// them in and raises managesEffort in its init() instead. For all of them,
+// resolveProviderDefaults stamps an effort default into the launch options, and
+// providerHasModelDependentGroups rebuilds the effort tiers on a model change.
+//
+// An ACP provider's reasoning axis, where it has one (OpenCode's and Kilo's reasoning
+// effort, Goose's thinking effort), is a server-driven config option that does NOT
+// depend on the model; leapmux must not stamp a default for one, or it would collide
+// with the server's own value (that config option's id is OptionIDEffort) and store an
+// inert key.
 func ProviderManagesEffort(provider leapmuxv1.AgentProvider) bool {
 	reg, ok := agentFactoryRegistry[provider]
 	if !ok {
 		return false
+	}
+	if reg.managesEffort {
+		return true
 	}
 	for _, m := range reg.defaultModels {
 		if m != nil && len(m.SupportedEfforts) > 0 {

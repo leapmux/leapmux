@@ -23,7 +23,7 @@ func TestJSONRPCControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing
 				receive = newOpenCodeAgentWithSink(sink).HandleOutput
 			case "cursor":
 				receive = newCursorAgentWithSink(sink).HandleOutput
-				method = CursorMethodAskQuestion
+				method = contracts.CursorMethodAskQuestion
 			case "reasonix":
 				a := &ReasonixAgent{}
 				a.sink = sink

@@ -69,13 +69,16 @@ func (a *PiAgent) reportPiGoalResult(toolName string, result json.RawMessage) {
 
 // publishPiGoal serializes state publication with session changes and shutdown.
 // A native read cannot replace a newer event that arrived during its I/O.
-func (a *PiAgent) publishPiGoal(record *piGoalRecord, snapshot bool, expectedRevision *uint64) {
+//
+// It reports whether the update reached the sink. The refresh loop reads that
+// answer to decide whether its pending snapshot intent is spent.
+func (a *PiAgent) publishPiGoal(record *piGoalRecord, snapshot bool, expectedRevision *uint64) bool {
 	a.goal.publishMu.Lock()
 	defer a.goal.publishMu.Unlock()
 	a.mu.Lock()
 	if a.goal.stopping || a.stopped || a.isDiscardingOutput() || (expectedRevision != nil && *expectedRevision != a.goal.revision) {
 		a.mu.Unlock()
-		return
+		return false
 	}
 	if expectedRevision == nil {
 		a.goal.revision++
@@ -83,7 +86,7 @@ func (a *PiAgent) publishPiGoal(record *piGoalRecord, snapshot bool, expectedRev
 	a.mu.Unlock()
 	if record == nil {
 		a.sink.ClearGoal(snapshot)
-		return
+		return true
 	}
 	createdAt, err := time.Parse(time.RFC3339Nano, record.CreatedAt)
 	if err != nil {
@@ -95,4 +98,5 @@ func (a *PiAgent) publishPiGoal(record *piGoalRecord, snapshot bool, expectedRev
 		TokensUsed: record.Usage.TokensUsed, TimeUsedSeconds: record.Usage.ActiveSeconds, TokenBudget: record.TokenBudget,
 		Snapshot: snapshot,
 	})
+	return true
 }

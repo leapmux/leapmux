@@ -140,7 +140,7 @@ export const controlBannerActions = style({
  * The opacity sits on each BUTTON rather than on the row, because a row at opacity 0
  * hides every child whatever the child's own opacity says -- and one of them must stay
  * visible. Copying the raw frame is a power-user affordance and keeps the hover; the
- * stop does not, because a reader looking for a way out of a turn that is waiting on
+ * stop does not, because a reader looking for a way out of a turn that waits for
  * them cannot be asked to discover it by hovering.
  */
 export const controlBannerHoverAction = style({
@@ -161,12 +161,17 @@ export const controlBannerTitle = style({
 
 // All action groups wrap and align to the right edge of the composer footer.
 // The editor measures the resulting height and reserves space above the footer.
+//
+// The side padding is the row's own gutter. The footer SLOT insets the whole
+// row, so without this the first and the last control of a decision row sat
+// var(--space-2) closer to the composer edge than every other control there.
 export const controlFooter = style({
   display: 'flex',
   flexWrap: 'wrap',
   alignItems: 'center',
   justifyContent: 'flex-end',
   gap: 'var(--space-1)',
+  padding: '0 var(--space-2)',
   backgroundColor: 'var(--background)',
   flexGrow: 1,
   minWidth: 0,

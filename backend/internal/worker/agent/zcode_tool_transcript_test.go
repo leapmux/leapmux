@@ -61,9 +61,13 @@ func (f *zcodeTranscriptFixture) persistPair(t *testing.T) {
 	require.NoError(t, f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: []byte(zcodeStoredImageResult)}, SpanInfo{SpanID: "call", Closing: true}))
 }
 
+// boundary persists one non-tool agent message, which is what asks the supplement
+// worker for an interim pass. It joins that pass, because the worker performs the read
+// and the caller reads the row that the pass enriched.
 func (f *zcodeTranscriptFixture) boundary(t *testing.T) {
 	t.Helper()
 	require.NoError(t, f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: []byte(`{"type":"assembled_message","kind":"text","text":"boundary","completion":"complete"}`)}, SpanInfo{}))
+	f.transcript.waitForSupplements()
 }
 
 func (f *zcodeTranscriptFixture) writeArtifact(t *testing.T, sessionID string) {
@@ -91,7 +95,7 @@ func TestZCodeToolTranscriptRetriesLateRecordsAndArtifacts(t *testing.T) {
 	assert.Equal(t, zcodeStoredImageResult, string(result.Content))
 	assert.Contains(t, string(result.SupplementalContent), zcodeArtifactFixtureData)
 	assert.Contains(t, string(result.SupplementalContent), `"futureCounter":9007199254740993`)
-	assert.Empty(t, f.transcript.pending)
+	assert.Empty(t, pendingSpanIDs(f.transcript))
 }
 
 func TestZCodeToolTranscriptKeepsUnavailableImageMetadataAtTurnEnd(t *testing.T) {

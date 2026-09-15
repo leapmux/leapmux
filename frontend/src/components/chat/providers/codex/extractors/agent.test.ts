@@ -16,15 +16,32 @@ describe('codex agent counterpart validation', () => {
     expect(codexAgentCounterpart(item, input({ item: { ...item, status: 'inProgress', ...fields } }), 'request')).toBeNull()
   })
 
+  // Codex serializes an unset String as `""`, so an empty field is an ABSENT one and the
+  // counterpart supplies it. A nullish test alone kept the empty string, and the result
+  // row lost the prompt its own request carried.
   it('keeps the current status and report when request fields are recovered', () => {
     const request = { ...item, status: 'inProgress', prompt: 'Requested prompt', model: 'requested-model', agentsStates: { child: { status: 'running' } } }
     const current = { ...item, prompt: '', model: null, agentsStates: { child: { status: 'completed', message: 'Actual report' } } }
     const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
-    expect(resolved.prompt).toBe('')
+    expect(resolved.prompt).toBe('Requested prompt')
     expect(resolved.model).toBe('requested-model')
     expect(resolved.status).toBe('completed')
     expect(codexAgentResults(resolved)[0]).toMatchObject({ outcome: 'completed', body: 'Actual report' })
     expect(current.model).toBeNull()
+  })
+
+  it.each(['tool', 'prompt', 'model', 'reasoningEffort'])('recovers %s from the counterpart when the current item carries an empty string', (field) => {
+    const request = { ...item, status: 'inProgress', tool: 'spawnAgent', prompt: 'p', model: 'm', reasoningEffort: 'high' }
+    const current = { ...item, [field]: '' }
+    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
+    expect(resolved[field]).toBe(request[field as keyof typeof request])
+  })
+
+  it('keeps a non-empty field of the current item, which is the authoritative one', () => {
+    const request = { ...item, status: 'inProgress', prompt: 'Requested prompt' }
+    const current = { ...item, prompt: 'Current prompt' }
+    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
+    expect(resolved.prompt).toBe('Current prompt')
   })
 
   it.each([

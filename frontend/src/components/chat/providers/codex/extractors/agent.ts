@@ -28,8 +28,13 @@ export function resolveCodexAgentItem(item: Record<string, unknown>, counterpart
   if (!counterpart)
     return item
   const resolved = { ...item }
+  // An EMPTY string counts as absent, exactly as a missing key does. Codex serializes an
+  // unset String as `""`, so a nullish test alone kept the empty field and the row lost
+  // the prompt, the model or the tool name that its counterpart carried. The
+  // `receiverThreadIds` test below already reads emptiness this way.
   for (const field of ['tool', 'prompt', 'model', 'reasoningEffort']) {
-    resolved[field] ??= counterpart[field]
+    if (resolved[field] == null || resolved[field] === '')
+      resolved[field] = counterpart[field]
   }
   if (!stringArray(resolved.receiverThreadIds).some(id => id.trim() !== ''))
     resolved.receiverThreadIds = counterpart.receiverThreadIds

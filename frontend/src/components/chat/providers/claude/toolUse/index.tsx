@@ -7,9 +7,9 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { formatToolInput } from '../../../rendererUtils'
 import { AgentRequestMessage } from '../../../results/AgentRequestMessage'
+import { parseMcpToolName } from '../../../results/mcpToolCall'
 import { McpToolMessage } from '../../../results/McpToolMessage'
 import { getMessageContentArray } from '../extractors/assistantContent'
-import { parseClaudeMcpToolName } from '../extractors/mcp'
 import { renderAskUserQuestion } from './askUserQuestion'
 import { renderExitPlanMode } from './exitPlanMode'
 import { ToolUseMessage } from './genericToolUse'
@@ -49,9 +49,9 @@ export function renderClaudeToolUse(
       isObject(block) && block.type === 'tool_result' && !!toolUse.id && block.tool_use_id === toolUse.id) ?? false
     return <AgentRequestMessage source={{ toolName, description: pickString(input, 'description'), agentType: pickString(input, 'subagent_type'), prompt: pickString(input, 'prompt') }} hasResult={hasResult()} context={context} />
   }
-  const mcp = parseClaudeMcpToolName(toolName)
+  const mcp = parseMcpToolName(toolName)
   if (mcp) {
-    return <McpToolMessage source={{ server: mcp.serverName, tool: mcp.toolName, argsJson: prettifyArgsJson(input), content: [], status: 'inProgress' }} role="request" context={context} />
+    return <McpToolMessage source={{ ...mcp, argsJson: prettifyArgsJson(input), content: [], status: 'inProgress' }} role="request" context={context} />
   }
   const title = renderClaudeToolTitle(toolName, input, context)
   const summary = toolName === CLAUDE_TOOL.BASH ? undefined : deriveToolSummary(toolName, input, context)

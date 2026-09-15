@@ -197,6 +197,33 @@ describe('zcode tool rendering', () => {
   })
 })
 
+describe('zcode rows on the shared tool path', () => {
+  // A result with no request beside it states WHICH tool it belongs to. The row used
+  // to draw a bare body, so a reader who scrolled past the opener saw output with no
+  // name on it.
+  it('draws its own header when no request row sits beside the result', () => {
+    const end = event('result', { result: { success: true, content: 'a.ts' } })
+    const category = provider().classify(input(end))
+    const { container } = render(() => renderMessageContent(end, {
+      spanType: ZCODE_TOOL.Glob,
+      premeasureMode: true,
+      sources: testMessageSources({ current: () => input(end) }),
+    }, category, AgentProvider.ZCODE))
+    expect(container.textContent).toContain(ZCODE_TOOL.Glob)
+    expect(container.querySelector('.lucide-folder-search')).not.toBeNull()
+  })
+
+  it('draws a task-stop display through the shared status body', () => {
+    const { container } = renderResult(ZCODE_TOOL.TaskOutput, {}, {
+      success: true,
+      display: { kind: 'task_stop', taskId: 'task-42', command: 'npm run dev', message: 'Stopped the task' },
+    })
+    expect(container.textContent).toContain('Stopped task task-42')
+    expect(container.textContent).toContain('npm run dev')
+    expect(container.querySelector('.lucide-octagon-x')).not.toBeNull()
+  })
+})
+
 describe('zcode rows the agent never finished', () => {
   // The worker stores the call's OWN last frame and states what it concluded in its
   // metadata column. Nothing in the row's bytes claims a result the agent never sent.

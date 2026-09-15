@@ -13,8 +13,10 @@ import type { ElicitationRequest } from '../controls/elicitationForm'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
+import type { MessageUiKey } from '../messageUiKeys'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
+import type { ToolRowOutcome } from '../toolOutcomeLabel'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -161,19 +163,44 @@ export interface ResultDividerModel {
 export type SpanRole = 'opener' | 'result' | 'other'
 
 /**
+ * How LeapMux itself says a retained tool row ended, or null when it says nothing.
+ *
+ * A turn that ends while a tool call runs leaves no final frame, so the worker stores
+ * the agent's own LAST frame and states the outcome in its completion column instead.
+ * That frame still reads as pending, running or started, so a renderer that draws a
+ * status from the provider bytes alone shows a finished call as a running one.
+ *
+ * The rule is LeapMux's, not any provider's, so it lives HERE and each caller maps the
+ * one word into its own vocabulary: an ACP `cancelled`/`failed` tool status, the MCP
+ * card's `failed`, the command card's `interrupted` and `isError` booleans. Four sites
+ * spelled the test separately and gave three different answers for the same row.
+ *
+ * Null means that the worker recorded no completion. The provider's own bytes then
+ * state the outcome, and a caller keeps whatever they say.
+ */
+export function retainedOutcome(completion: MessageCompletion | undefined): ToolRowOutcome | null {
+  switch (messageCompletionFromProto(completion)) {
+    case 'complete':
+      return 'succeeded'
+    case 'interrupted':
+      return 'interrupted'
+    case 'error':
+      return 'failed'
+    default:
+      return null
+  }
+}
+
+/**
  * True when this row is the final row of its tool span whatever its provider bytes
  * say.
  *
- * A turn that ends while a tool call runs leaves no final frame, so the worker
- * stores the agent's own LAST frame and states the outcome in its completion column
- * instead. That frame still reads as pending, running or started, so a span role
- * read from the provider status alone would call the closing row an opener.
- *
- * The rule is LeapMux's, not any provider's, so every `spanRole` hook reads it from
+ * A span role read from the provider status alone calls the closing row an opener, for
+ * the reason {@link retainedOutcome} gives. Every `spanRole` hook reads the rule from
  * here rather than spelling the completion test again.
  */
 export function retainedRowIsFinal(completion: MessageCompletion | undefined): boolean {
-  return messageCompletionFromProto(completion) !== null
+  return retainedOutcome(completion) !== null
 }
 
 export interface Provider {
@@ -227,6 +254,21 @@ export interface Provider {
    */
   preservesSelectionNotes?: boolean
 
+  /**
+   * The per-message UI key this provider's EXPAND toggle writes for a row of `kind`,
+   * or undefined to take the shared key.
+   *
+   * A provider that draws a bubble of its own reads and writes its own key: Codex
+   * reasoning renders through `reasoning.tsx` under CODEX_REASONING, not the shared
+   * THINKING key that Claude, Pi and the ACP family use. `expandedUiKeyFor` is the one
+   * caller, so the hidden premeasure render and the visible render cannot assume
+   * different keys.
+   *
+   * The kind-owned keys (plan_execution, agent_prompt) are decided before this runs, so
+   * an implementation never sees those kinds.
+   */
+  expandUiKey?: (kind: MessageCategory['kind']) => MessageUiKey | undefined
+
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
 
@@ -234,7 +276,10 @@ export interface Provider {
    * Classify a message's role within a tool span (opener / result / other) from this provider's
    * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
    * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
-   * Omit for providers whose spans have no distinct opener/result marker (such as Codex) -- the caller defaults to `'other'` and files them first-seen-is-opener.
+   *
+   * Omit it for a provider whose spans carry no opener/result marker at all. The caller then
+   * defaults to `'other'` and files the rows first-seen-is-opener. Every registered plugin
+   * supplies the hook today, so no provider takes that default.
    */
   spanRole?: (parsed: ParsedMessageContent) => SpanRole
 
@@ -443,10 +488,15 @@ export interface Provider {
   /**
    * The option-group id whose current value labels the settings-trigger's third
    * (mode) segment, after model and effort. Each provider identifies its single
-   * mode-like axis -- permissionMode for Claude/Cursor/Copilot/Goose, the
-   * collaboration_mode "Workflow" group for Codex, primaryAgent for OpenCode/Kilo
-   * -- so the trigger renders ONE group's value rather than fusing several. Omit
-   * for providers with no mode axis (Pi, Reasonix), which render no third segment.
+   * mode-like axis, so the trigger renders ONE group's value rather than fusing
+   * several:
+   *
+   *   - `permissionMode` -- Claude, ZCode, Cursor, Goose, Reasonix.
+   *   - `session_mode` -- Copilot.
+   *   - `collaboration_mode` -- Codex.
+   *   - `primaryAgent` -- OpenCode, Kilo.
+   *
+   * Pi alone omits it, and renders no third segment.
    *
    * Distinct from `planMode` (the plan toggle): a provider can have a mode axis
    * without a plan toggle (Goose), so the trigger must not derive its segment from

@@ -200,3 +200,173 @@ func TestZCodeStoppedTurn_WritesNoRowWhenTheTurnReportsItsOwnEnd(t *testing.T) {
 	assert.Nil(t, armed, "the turn reported its own end, so the window is spent")
 	assert.Empty(t, sink.PersistedNotifications(), "the app-server's own frame is the row")
 }
+
+// The window belongs to a LIVE turn. Once the agent goes down, a frame the read
+// loop still delivers must not arm one: the callback would end a turn the
+// tear-down already ended and write its stop row after it.
+func TestZCodeStoppedTurn_ArmingRefusesWhileTheAgentGoesDown(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgentWithStdin(t, &testSink{}, &zcodeRecordedStdin{})
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	a.armStoppedZCodeTurn()
+	require.Equal(t, 1, timer.armed)
+
+	// The order Stop uses: mark the graceful stop, then drop the window.
+	a.noteIntentionalStop()
+	a.cancelStoppedZCodeTurn()
+	a.armStoppedZCodeTurn()
+
+	assert.Equal(t, 1, timer.armed, "an agent that goes down arms no window")
+	a.mu.Lock()
+	armed := a.stoppedTurnTimer
+	a.mu.Unlock()
+	assert.Nil(t, armed)
+}
+
+// time.Timer.Stop cannot stop a callback that already started, so a cancel loses
+// that race whenever the window fires first. The callback then finds the turn
+// over and states nothing: the app-server's own frame already drew the divider,
+// and a second row would tell the reader the stop ended a turn it did not.
+func TestZCodeStoppedTurn_WritesNoRowAfterTheTurnAlreadyEnded(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	require.Equal(t, 1, timer.armed)
+
+	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"turn.completed","payload":{"resultType":"cancelled","duration":900}}}}`)))
+	timer.fire()
+
+	assert.Empty(t, sink.PersistedNotifications(), "the turn ended before the window did")
+}
+
+// A frame that arrives within the grace window is a turn that may yet fall
+// silent -- no ignored-stop row may exist yet.
+func TestZCodeStoppedTurn_WritesNoIgnoredRowInsideTheGrace(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+
+	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"winding down"}}}}`)))
+
+	assert.Empty(t, sink.PersistedNotifications(),
+		"a turn still inside its grace owes the reader no verdict on the stop")
+}
+
+// The shipped app-server clears the turn's abort controller at admission, so a
+// stop that lands after those first moments aborts nothing and the turn keeps
+// SPEAKING. Events past the grace are that no-op: the first one writes the
+// stop-ignored row, and only the first -- the reader is told once, not once per
+// frame the ignored turn goes on producing.
+func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	// The accepted stop is now older than the grace, exactly as a live run is
+	// by the time the ignored turn's next frame arrives.
+	a.mu.Lock()
+	a.stopArmedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
+	a.mu.Unlock()
+
+	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"still going"}}}}`)))
+	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"tool.updated","payload":{"toolName":"bash"}}}}`)))
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1, "one row per accepted stop, however many frames follow")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notifications[0].Source)
+	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeStopIgnored+`"}`, string(notifications[0].Content))
+}
+
+// Escalation is the SECOND press. It may not fire while the first stop is still
+// inside its grace -- a double-click must retry the plain stop, not restart the
+// agent -- and it may not fire once the turn has ended, because then the stop
+// worked and there is nothing left to force.
+func TestZCodeInterruptEscalationReady(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, &testSink{}, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	assert.False(t, a.InterruptEscalationReady(), "no stop has been accepted yet")
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+	assert.False(t, a.InterruptEscalationReady(), "a stop inside its grace has not been judged yet")
+
+	a.mu.Lock()
+	a.stopArmedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
+	a.mu.Unlock()
+	assert.True(t, a.InterruptEscalationReady(), "an accepted stop the turn outlived may be escalated")
+
+	handleZCodeOutput(a, parseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"turn.completed","payload":{"resultType":"success","duration":1000}}}}`)))
+	assert.False(t, a.InterruptEscalationReady(), "a stop the turn answered leaves nothing to escalate")
+}
+
+// The forced stop ends the turn by replacing the process, and Stop is where the
+// replacement passes through. A stop that was still pending there is one the
+// app-server already ignored, so the teardown owes the reader the stop row the
+// app-server never drew.
+func TestZCodeStop_WritesTheStopRowWhenAStopWasPending(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, stdin)
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.mu.Lock()
+	a.turnActive = true
+	a.mu.Unlock()
+
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt())
+
+	// Stop's own final session/stop, and its wait for the process it tears down.
+	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionStop, `{}`)
+	close(a.processDone)
+	a.Stop()
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1)
+	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+}

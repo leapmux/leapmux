@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type zcodeToolStoreLocation struct {
@@ -56,20 +58,75 @@ type zcodeArtifactReference struct {
 	mime string
 }
 
+// zcodeToolStore holds the reader's handle on ZCode's session database, and the
+// artifacts it already read from beside it.
+//
+// The transcript reads that database once for each agent message while a tool
+// result waits for its record. A handle opened and closed for each of those
+// reads paid an open, a ping and a close every time, and the read has 100 ms for
+// all of it -- so the reads that ran out of time enriched nothing at all.
+//
+// One store serves the agent's own transcript and each child transcript it
+// opens. They read different sessions out of the SAME database file, and the
+// mutex below is what lets them share the one handle.
+type zcodeToolStore struct {
+	mu   sync.Mutex
+	path string
+	db   *sql.DB
+	// artifacts maps an artifact URI to the data URI this store already built
+	// for it. ZCode writes an artifact file once and never rewrites it, so a
+	// record that still waits for a SECOND artifact no longer re-reads the first
+	// one, and a session whose artifacts are all cached reads no directory.
+	artifacts map[string]string
+}
+
+// handle returns the open database for `path`, opening one when the path moved.
+func (s *zcodeToolStore) handle(ctx context.Context, path string) (*sql.DB, error) {
+	if s.db != nil && s.path == path {
+		return s.db, nil
+	}
+	s.closeLocked()
+	db, err := openSessionStoreDB(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	s.path, s.db = path, db
+	return db, nil
+}
+
+// close releases the handle. The agent's context ending is what calls it.
+func (s *zcodeToolStore) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeLocked()
+}
+
+func (s *zcodeToolStore) closeLocked() {
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			slog.Debug("Close the ZCode session store", "error", err)
+		}
+		s.db = nil
+	}
+	s.path = ""
+	clear(s.artifacts)
+}
+
 // The scheduled request supplies messageID, which selects an existing index in ZCode's database.
 // A missing request uses the session index and still requires an unambiguous tool-call ID.
-func readZCodeToolRecords(ctx context.Context, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
+func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, location zcodeToolStoreLocation, requests map[string]zcodeToolLookup) (out map[string]zcodeToolRecord, resultErr error) {
 	if location.sessionID == "" || len(requests) == 0 {
 		return nil, nil
 	}
-	db, err := openSessionStoreDB(ctx, location.databasePath)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	db, err := store.handle(ctx, location.databasePath)
 	if errors.Is(err, errSessionStoreAbsent) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
 	maximum := liveStdoutMaxTokenSize()
 	out = make(map[string]zcodeToolRecord)
 	references := make(map[string][]zcodeArtifactReference)
@@ -172,7 +229,7 @@ func readZCodeToolRecords(ctx context.Context, location zcodeToolStoreLocation, 
 	for sessionID, refs := range groups {
 		childLocation := location
 		childLocation.sessionID = sessionID
-		if err := readZCodeArtifacts(ctx, childLocation, refs, out, maximum); err != nil {
+		if err := readZCodeArtifacts(ctx, store, childLocation, refs, out, maximum); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -233,7 +290,16 @@ func zcodeArtifactSegment(value string) string {
 	return out.String()
 }
 
-func readZCodeArtifacts(ctx context.Context, location zcodeToolStoreLocation, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
+// readZCodeArtifacts fills each record with the artifact bodies its tool produced.
+//
+// It answers from the store's cache first. A record that still waits for one
+// artifact is re-read on every agent message until that artifact appears, and
+// without the cache each of those reads swept the whole session directory and
+// read every artifact the record already held.
+func readZCodeArtifacts(ctx context.Context, store *zcodeToolStore, location zcodeToolStoreLocation, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord, maximum int) (resultErr error) {
+	if adoptCachedZCodeArtifacts(store, references, records) {
+		return nil
+	}
 	root, err := os.OpenRoot(location.artifactRoot)
 	if err != nil {
 		return err
@@ -249,10 +315,13 @@ func readZCodeArtifacts(ctx context.Context, location zcodeToolStoreLocation, re
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, directory.Close()) }()
+	// Only the artifacts no record holds yet. A cached one needs no directory entry.
 	wanted := make(map[string][]string)
-	for _, refs := range references {
+	for id, refs := range references {
 		for _, ref := range refs {
-			wanted[ref.id] = nil
+			if records[id].artifacts[ref.uri] == "" {
+				wanted[ref.id] = nil
+			}
 		}
 	}
 	for {
@@ -280,6 +349,10 @@ func readZCodeArtifacts(ctx context.Context, location zcodeToolStoreLocation, re
 	for id, refs := range references {
 		record := records[id]
 		remaining := maximum - len(record.native.Data) - 1024
+		// The artifacts the cache already supplied count against the same budget.
+		for _, data := range record.artifacts {
+			remaining -= len(data)
+		}
 		for _, ref := range refs {
 			if err := ctx.Err(); err != nil {
 				return errors.Join(append(failures, err)...)
@@ -294,6 +367,10 @@ func readZCodeArtifacts(ctx context.Context, location zcodeToolStoreLocation, re
 				continue
 			}
 			record.artifacts[ref.uri] = data
+			if store.artifacts == nil {
+				store.artifacts = make(map[string]string)
+			}
+			store.artifacts[ref.uri] = data
 			remaining -= len(data)
 		}
 		record.ready = true
@@ -306,6 +383,29 @@ func readZCodeArtifacts(ctx context.Context, location zcodeToolStoreLocation, re
 		records[id] = record
 	}
 	return errors.Join(failures...)
+}
+
+// adoptCachedZCodeArtifacts copies what the store already read into each record,
+// and reports whether every reference is now answered.
+func adoptCachedZCodeArtifacts(store *zcodeToolStore, references map[string][]zcodeArtifactReference, records map[string]zcodeToolRecord) bool {
+	complete := true
+	for id, refs := range references {
+		record := records[id]
+		record.ready = true
+		for _, ref := range refs {
+			if record.artifacts[ref.uri] != "" {
+				continue
+			}
+			if cached := store.artifacts[ref.uri]; cached != "" {
+				record.artifacts[ref.uri] = cached
+				continue
+			}
+			record.ready = false
+			complete = false
+		}
+		records[id] = record
+	}
+	return complete
 }
 
 func readZCodeArtifact(root *os.Root, name, mime string, maximum int) (value string, resultErr error) {

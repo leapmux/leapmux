@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -17,6 +18,14 @@ type jsonrpcBase struct {
 	nextReqID atomic.Int64
 	// A nil encoder selects newline framing. Native Copilot selects Content-Length framing.
 	frameMessage func([]byte) []byte
+
+	// outstandingMu guards outstandingControls.
+	outstandingMu sync.Mutex
+	// outstandingControls holds every control request the provider still waits on,
+	// keyed by the LeapMux request id. publishControlRequest is the one writer that
+	// adds an entry, and withdrawControlRequest the one that removes it, so the
+	// provider-side record and the browser-side card cannot move apart.
+	outstandingControls map[string]outstandingControlRequest
 }
 
 func (b *jsonrpcBase) writeJSONRPCMessage(data []byte) error {
@@ -29,8 +38,22 @@ func (b *jsonrpcBase) writeJSONRPCMessage(data []byte) error {
 	return b.writeStdin(data)
 }
 
-// SendRawInput keeps provider JSON unchanged inside the selected transport frame.
+// SendRawInput keeps provider JSON unchanged inside the selected transport frame, then
+// drops the control request that the frame answers.
+//
+// The drop follows the write. A write that fails leaves the request waiting, so the
+// reader can answer it again. ErrDeliveryUncertain drops it: the bytes may have reached
+// the provider, and a second answer to a request the provider already retired is the
+// worse outcome.
 func (b *jsonrpcBase) SendRawInput(data []byte) error {
+	err := b.writeRawFrame(data)
+	if err == nil || errors.Is(err, ErrDeliveryUncertain) {
+		b.forgetOutstandingControl(data)
+	}
+	return err
+}
+
+func (b *jsonrpcBase) writeRawFrame(data []byte) error {
 	if b.frameMessage == nil {
 		return b.processBase.SendRawInput(data)
 	}
@@ -69,8 +92,12 @@ func decodeJSONRPCResponse(raw json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("decode json-rpc response: %w", err)
 	}
-	if len(response.Error) > 0 && string(response.Error) != "null" {
-		if len(response.Result) > 0 {
+	if !isJSONNull(response.Error) {
+		// A provider that reports an error can still spell the unused result member as
+		// an explicit null. That states no result, so the response does not carry both.
+		// Rejecting it hid the error code from every caller that classifies one, and the
+		// caller reported an unconfirmed delivery in place of the provider's own reason.
+		if !isJSONNull(response.Result) {
 			return nil, errors.New("json-rpc response contains both a result and an error")
 		}
 		code, message, ok := parseJSONRPCError(response.Error)
@@ -201,10 +228,16 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
+// isJSONNull reports an explicit JSON null, which states the same thing as an absent
+// member. An absent member reports true also.
+func isJSONNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
+}
+
 // parseJSONRPCError extracts the code and message from a JSON-RPC error
 // response. Returns ok=false if resp is empty, null, or not an error object.
 func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool) {
-	if len(resp) == 0 || string(resp) == "null" {
+	if isJSONNull(resp) {
 		return 0, "", false
 	}
 	var rpcErr struct {

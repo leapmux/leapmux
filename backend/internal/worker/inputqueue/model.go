@@ -67,6 +67,9 @@ var (
 	ErrTurnEnded             = errors.New("active turn ended before steering")
 	ErrSteeringState         = errors.New("queue state does not permit steering")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
+	// ErrPreemptionUnsupported is steering's counterpart for the interrupt-only
+	// route: the running provider cannot steer and Preempt refuses outright.
+	ErrPreemptionUnsupported = errors.New("agent provider does not support preemption")
 	ErrManagerStopped        = errors.New("agent input queue is stopped")
 	// ErrPlannedRestart refuses an explicit dispatch while the Worker replaces
 	// the agent process. The durable pause_owner records the restart, so the
@@ -163,6 +166,11 @@ type SnapshotItem struct {
 	Metadata []AttachmentMetadata
 	// CanSteer uses the same predicate as the store's steering guard.
 	CanSteer bool
+	// CanPreempt uses the same predicate the manager's preemption guard applies:
+	// head, queued, unedited, a kind the model can take, and an active turn to
+	// cancel. Unlike CanSteer it does NOT require a steerable turn -- the whole
+	// point is the turn the provider can only cancel, not inject into.
+	CanPreempt bool
 }
 
 type Snapshot struct {
@@ -256,6 +264,15 @@ type Dispatcher interface {
 	Dispatch(item DispatchItem) (DispatchResult, error)
 	Steer(item DispatchItem) (DispatchResult, error)
 	SupportsSteering(agentID string) bool
+	// Interrupt cancels the agent's active turn without any of the stop-side
+	// bookkeeping the InterruptAgent RPC applies (queue pause, control
+	// withdrawal). Preempt is its only caller: the queued item it unblocks
+	// dispatches through the ordinary turn-end drain, and that drain must not
+	// find a stop-pause holding it.
+	Interrupt(agentID string) error
+	// SupportsPreemption answers whether Preempt may be offered for this agent:
+	// a running provider that cannot steer but can interrupt.
+	SupportsPreemption(agentID string) bool
 	// AcceptsKind answers whether this agent accepts the kind at all. Enqueue
 	// and Update ask before they store the item, so an input that dispatch can
 	// never deliver is refused at the RPC instead of failing the whole queue.

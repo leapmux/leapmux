@@ -4,6 +4,7 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { SHOW_DELAY_MS } from '~/components/common/Tooltip'
+import { dangerMenuItem } from '~/styles/shared.css'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 
 describe('controlDecisionFooter', () => {
@@ -201,5 +202,27 @@ describe('controlDecisionFooter', () => {
     const permissionGroup = screen.getByTestId('control-permissions-pill-group')
     expect(switchEl.compareDocumentPosition(allowGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(allowGroup.compareDocumentPosition(permissionGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+// "Reject always" and "Allow for this workspace" both land in the overflow menu,
+// and an undifferentiated menu made them read as the same kind of answer. See
+// REMOVALS-FE-1.
+describe('controlDecisionFooter destructive extras', () => {
+  it('marks a refusal in the overflow menu and leaves the others plain', () => {
+    render(() => (
+      <ControlDecisionFooter
+        hasEditorContent={false}
+        onSendFeedback={vi.fn()}
+        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        additionalActions={() => [
+          { label: 'Reject always', testId: 'reject-always', onSelect: vi.fn(), destructive: true },
+          { label: 'Allow for this workspace', testId: 'allow-workspace', onSelect: vi.fn() },
+        ]}
+      />
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+    expect(screen.getByTestId('reject-always')).toHaveClass(dangerMenuItem)
+    expect(screen.getByTestId('allow-workspace')).not.toHaveClass(dangerMenuItem)
   })
 })

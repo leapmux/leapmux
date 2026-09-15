@@ -9,6 +9,7 @@ import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
+import { unwrapACPResult } from './resultWrapper'
 
 /**
  * Build the wire-format control-response for an ACP-style control request.
@@ -79,7 +80,7 @@ export interface ACPClassifyConfig {
 
 /**
  * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
- * Kilo, Goose, Copilot, Reasonix). Reads the plain string `parent.content` of a
+ * Kilo, Goose, Reasonix). Reads the plain string `parent.content` of a
  * user_content / plan_execution row.
  *
  * Assistant text and reasoning are absent on purpose. Those rows carry the shared
@@ -134,7 +135,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
     // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape covering
-    // every ACP-based provider -- OpenCode/Kilo/Goose/Copilot/Reasonix/Cursor -- at one site.)
+    // every ACP-based provider -- OpenCode/Kilo/Goose/Reasonix/Cursor -- at one site.)
 
     const sessionUpdate = parent.sessionUpdate as string | undefined
     const type = parent.type as string | undefined
@@ -168,10 +169,13 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (hiddenSessionUpdates.has(sessionUpdate!))
       return { kind: 'hidden' }
 
-    // Require a *string* stopReason so the gate matches acpResultDivider's
-    // pickString read (mirroring the Codex turn.status gate): a non-string
-    // stopReason is a malformed turn-end, not a divider this provider can label.
-    if (typeof parent.stopReason === 'string')
+    // Read stopReason through the shared unwrap, because a server may wrap the
+    // turn fields in a native result envelope and the worker persists the answer
+    // byte for byte. Require a *string* stopReason so the gate matches
+    // acpResultDivider's pickString read (mirroring the Codex turn.status gate):
+    // a non-string stopReason is a malformed turn-end, not a divider this
+    // provider can label.
+    if (typeof unwrapACPResult(parent)?.stopReason === 'string')
       return { kind: 'result_divider' }
 
     if (type === 'system') {

@@ -4,13 +4,14 @@ import { describe, expect, it } from 'vitest'
 import { ACP_TOOL_KIND, CLAUDE_TOOL } from '~/types/toolMessages'
 import { toolKindIcon } from '../results/toolKind'
 import { toolIconFor } from './claude/toolUse/icons'
-import { PiToolExecutionRenderer } from './pi/renderers/toolExecution'
+import { PiToolExecutionRenderer } from './pi/renderers/toolMessage'
 
 describe('read tool icons', () => {
   it('uses the Eye icon for Pi read tool uses', () => {
     const { container } = render(() => PiToolExecutionRenderer({
       parsed: {
         type: 'tool_execution_start',
+        toolCallId: 'call-read',
         toolName: 'read',
         args: { path: '/tmp/a.ts' },
       },

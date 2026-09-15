@@ -213,6 +213,7 @@ export function protoToAgentTabFields(
     parentAgentId: agent.parentAgentId || undefined,
     acceptsMessages: agent.acceptsMessages,
     supportsSteering: agent.supportsSteering,
+    supportsPreemption: agent.supportsPreemption,
     rootAgentId: agent.rootAgentId || undefined,
     ...(agent.gitStatus?.toplevel ? { gitToplevel: agent.gitStatus.toplevel } : {}),
   }
@@ -495,6 +496,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
     supportsSteering: tab.supportsSteering ?? false,
+    supportsPreemption: tab.supportsPreemption ?? false,
     rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
 }

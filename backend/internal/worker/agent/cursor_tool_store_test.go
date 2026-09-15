@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -174,19 +173,19 @@ func TestCursorToolTranscriptEnrichesAfterProviderWrites(t *testing.T) {
 	assert.NotEmpty(t, enriched.RawOutput.ProviderOptions)
 	assert.True(t, messages[0].Closing)
 	assert.True(t, messages[1].TurnEnd)
-	assert.Empty(t, transcript.pending)
+	assert.Empty(t, pendingSpanIDs(transcript))
 }
 
 func TestCursorToolTranscriptPreservesResultsWithoutStoreData(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"", filepath.Join(t.TempDir(), "absent.db")} {
 		sink := &testSink{}
-		transcript := newCursorToolTranscript(context.Background(), sink, func() string { return path })
+		transcript := newCursorToolTranscript(t.Context(), sink, func() string { return path })
 		original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"failed","rawOutput":{"error":"permission denied"}}`)
 		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "search", Closing: true}))
 		require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, SpanInfo{}))
 		assert.JSONEq(t, string(original), string(sink.Messages()[0].Content))
-		assert.Empty(t, transcript.pending)
+		assert.Empty(t, pendingSpanIDs(transcript))
 	}
 }
 
@@ -205,10 +204,13 @@ func TestCursorToolTranscriptEnrichesSessionReplay(t *testing.T) {
 	// Cursor replays messages before the session/load response supplies the session ID.
 	activePath = path
 	transcript.UpdateSessionID("resumed-session")
+	// The session ID asks the supplement worker for a pass. The worker performs the
+	// read, so this test joins it before it reads the row that the pass enriched.
+	transcript.waitForSupplements()
 	assert.Equal(t, 1, sink.SessionIDCount())
 	assert.Equal(t, original, sink.Messages()[0].Content)
 	assert.NotEmpty(t, sink.Messages()[0].SupplementalContent)
-	assert.Empty(t, transcript.pending)
+	assert.Empty(t, pendingSpanIDs(transcript))
 }
 
 func TestCursorToolTranscriptDiscardsPendingFromPreviousSession(t *testing.T) {
@@ -227,5 +229,19 @@ func TestCursorToolTranscriptDiscardsPendingFromPreviousSession(t *testing.T) {
 	transcript.UpdateSessionID("different-session")
 	assert.Equal(t, original, sink.Messages()[0].Content)
 	assert.Empty(t, sink.Messages()[0].SupplementalContent)
-	assert.Empty(t, transcript.pending)
+	assert.Empty(t, pendingSpanIDs(transcript))
+}
+
+// The home directory comes from the query, not from the process environment. A
+// resumed agent carries the home directory of the row it resumed, and the two
+// differ whenever the worker runs for a different user than the session did.
+func TestCursorACPStorePathResolvesAgainstTheQueryHome(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	query := StoredSessionQuery{HomeDir: home}
+	assert.Equal(t, filepath.Join(home, ".cursor", "acp-sessions", "session-1", cursorStoreFileName),
+		cursorACPStorePath(query, "session-1"))
+	for _, sessionID := range []string{"", ".", "..", "../escape", "nested/id"} {
+		assert.Empty(t, cursorACPStorePath(query, sessionID), "a session id that escapes the store resolves to no path")
+	}
 }

@@ -27,9 +27,9 @@ const (
 	copilotDecisionReject             = contracts.CopilotDecisionReject
 )
 
-// copilotLocationKeyField is the native field that names the project an approval
-// applies to. Only the running agent can fill it, because only the runtime can
-// resolve a working directory into its own key. See copilotCompleteLocationKey.
+// copilotLocationKeyField is the native field that identifies the project an
+// approval applies to. Only the running agent can fill it, because only the runtime
+// can resolve a working directory into its own key. See completeNativeControlAnswer.
 const copilotLocationKeyField = "locationKey"
 
 // copilotPermissionRequest is the part of a permission request that decides which

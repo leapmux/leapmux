@@ -331,10 +331,13 @@ func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
 func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
-	// The turn reported its own end, so the stop's window has nothing left to watch.
-	a.cancelStoppedZCodeTurn()
 	a.mu.Lock()
 	background := a.backgroundTurn
+	// The turn reported its own end, so the stop's window has nothing left to watch.
+	// It is dropped in the SAME critical section that clears turnActive: a frame the
+	// read loop delivered between the two re-armed the window, and it then ended a
+	// turn that had already ended and wrote a second stop row for it.
+	a.cancelStoppedZCodeTurnLocked()
 	// A turn ends whichever kind it was, so the flag clears either way. Leaving it set
 	// for a background turn made Interrupt and Stop fire a session/stop RPC at an idle
 	// session for the rest of the agent's life. What a background turn does NOT do is

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,4 +53,46 @@ func TestMessageSupplementCodecErrorsKeepTheOriginal(t *testing.T) {
 	encoded, err := EncodeMessageSupplement(MessageContent{})
 	require.NoError(t, err)
 	assert.Empty(t, encoded)
+}
+
+func TestMessageMetadataSkipsTheEnvelopeParseWithNoMetadata(t *testing.T) {
+	// The stdout reader resolves EVERY persisted message, and almost none carries
+	// worker metadata. A row with none must reach its answer without a parse of the
+	// provider envelope, which is the large half. Allocation count is what proves
+	// it: a parse into a map allocates, and returning the original slice does not.
+	original := []byte(`{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"text","text":"` + strings.Repeat("filler ", 2000) + `"}]}}`)
+	content := MessageContent{Original: original}
+	var provider Provider = noopProvider{}
+	allocs := testing.AllocsPerRun(50, func() {
+		if got := ResolveMessageContent(provider, content); len(got) != len(original) {
+			t.Fatalf("resolved length %d, want %d", len(got), len(original))
+		}
+	})
+	assert.Zero(t, allocs, "resolving a message with no metadata must not parse the envelope")
+}
+
+func TestMessageMetadataMergesWhenMetadataIsPresent(t *testing.T) {
+	t.Parallel()
+	// The early return above must not swallow a real merge: a row that DOES carry
+	// metadata still folds every validated field onto the provider envelope.
+	content := MessageContent{
+		Original: []byte(`{"type":"result","duration_ms":0}`),
+		Metadata: []byte(`{"duration_ms":42,"num_tool_uses":3,"total_cost_usd":0.5,"context_usage":{"used":7}}`),
+	}
+	resolved := string(ResolveMessageContent(noopProvider{}, content))
+	assert.Contains(t, resolved, `"duration_ms":42`)
+	assert.Contains(t, resolved, `"num_tool_uses":3`)
+	assert.Contains(t, resolved, `"total_cost_usd":0.5`)
+	assert.Contains(t, resolved, `"context_usage":{"used":7}`)
+}
+
+func TestMessageMetadataKeepsAnUnparsableEnvelope(t *testing.T) {
+	t.Parallel()
+	// Metadata present, envelope not an object: the merge has nowhere to write, so
+	// the original bytes travel on unchanged.
+	for _, original := range []string{`not json`, `[1,2,3]`, `null`, ``} {
+		content := MessageContent{Original: []byte(original), Metadata: []byte(`{"duration_ms":42}`)}
+		assert.Equal(t, []byte(original), ResolveMessageContent(noopProvider{}, content))
+	}
 }

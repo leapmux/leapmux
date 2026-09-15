@@ -21,6 +21,7 @@ func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.
 	})
 	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
 	require.False(t, claimed, "an earlier metadata read must not reserve a replaced request")
@@ -130,7 +131,10 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 	})
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_reservation BEFORE INSERT ON control_response_answers BEGIN SELECT RAISE(ABORT, 'reservation unavailable'); END`)
 	require.NoError(t, err)
-	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA"})
+	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
 	require.ErrorContains(t, err, "reservation unavailable")
 	require.False(t, claimed, "a failed reservation must not permit delivery")
 }
@@ -176,7 +180,10 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 
 func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, requestID, claimToken string) bool {
 	t.Helper()
-	claimed, err := output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{AgentID: agentID, RequestID: requestID, ClaimToken: claimToken})
+	claimed, err := output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
 	require.NoError(t, err)
 	return claimed
 }

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
 import { Match, Show, Switch } from 'solid-js'
+import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
@@ -13,11 +14,11 @@ function getCursorParams(payload: Record<string, unknown>): Record<string, unkno
 }
 
 export function isCursorAskQuestionPayload(payload: Record<string, unknown>): boolean {
-  return payload.method === 'cursor/ask_question'
+  return payload.method === CURSOR_METHOD.AskQuestion
 }
 
 export function isCursorCreatePlanPayload(payload: Record<string, unknown>): boolean {
-  return payload.method === 'cursor/create_plan'
+  return payload.method === CURSOR_METHOD.CreatePlan
 }
 
 export function isCursorControlPayload(payload: Record<string, unknown>): boolean {

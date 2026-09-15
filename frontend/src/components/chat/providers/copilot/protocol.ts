@@ -1,8 +1,5 @@
-import { COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
+import { COPILOT_METHOD, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-
-/** The JSON-RPC method that carries every Copilot session event. */
-export const COPILOT_EVENT_METHOD = 'session.event'
 
 /**
  * One native session event, as a persisted row holds it.
@@ -21,7 +18,7 @@ export interface CopilotEventEnvelope {
 
 /** Unwrap a persisted Copilot row. Null for any other row, so callers use it as a guard. */
 export function copilotEvent(parsed: unknown): CopilotEventEnvelope | null {
-  if (!isObject(parsed) || pickString(parsed, 'method') !== COPILOT_EVENT_METHOD)
+  if (!isObject(parsed) || pickString(parsed, 'method') !== COPILOT_METHOD.SessionEvent)
     return null
   const event = pickObject(pickObject(parsed, 'params'), 'event')
   const type = pickString(event, 'type')
@@ -35,7 +32,7 @@ export function copilotEvent(parsed: unknown): CopilotEventEnvelope | null {
   }
 }
 
-/** The data of one event of the named type, or null for every other row. */
+/** The data of one event of the given type, or null for every other row. */
 export function copilotEventData(parsed: unknown, type: string): Record<string, unknown> | null {
   const event = copilotEvent(parsed)
   return event && event.type === type ? event.data : null

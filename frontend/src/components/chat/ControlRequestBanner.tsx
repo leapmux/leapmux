@@ -1,44 +1,47 @@
 import type { Component } from 'solid-js'
+import type { ControlSurface } from './controls/controlSurface'
 import type { BannerActionsProps, BannerContentProps } from './controls/types'
+import type { ControlRequest } from '~/stores/control.store'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import Square from 'lucide-solid/icons/square'
-import { createMemo, onCleanup, Show } from 'solid-js'
+import { Match, onCleanup, Show, Switch } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { controlRequestProvider } from '~/stores/control.store'
 import * as styles from './ControlRequestBanner.css'
-import { useControlRequestSource } from './controlRequestSource'
-import { AskUserQuestionActions, AskUserQuestionContent, controlQuestion } from './controls/AskUserQuestionControl'
+import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUserQuestionControl'
 import { actionButtonClass, ControlActionRow } from './controls/ControlActionRow'
 import { invokeControlAction } from './controls/controlResponseError'
 import { canAnswerControlRequest, controlPayloadFaultNotice, controlResponseStateNotice } from './controls/controlResponseState'
 import { ElicitationActions, ElicitationContent } from './controls/ElicitationControl'
 import { pluginFor } from './providers/registry'
 
-function createControlInputs(props: Pick<BannerContentProps, 'request' | 'agentProvider' | 'messageContext'>) {
-  // This memo is a SIBLING of the `<Show when={props.request}>` below, never a
-  // descendant, so that Show cannot dispose it first. A caller that passes
-  // `request` as a reactive prop therefore re-runs this memo with the removed
-  // request. `controlQuestion` accepts an absent request for that reason.
-  // `AgentEditorPanel` keys its owner on the request and never does that, but
-  // the prop is public.
-  const provider = createMemo(() => controlRequestProvider(props.request, props.agentProvider))
-  const source = useControlRequestSource(() => props.request, () => props.messageContext, provider)
-  const question = createMemo(() => controlQuestion(props.request, provider(), source()))
-  const elicitation = createMemo(() => props.request ? pluginFor(provider())?.elicitation?.(props.request.payload, source()) : undefined)
-  return { question, elicitation, provider }
+// The banner classifies nothing. It reads the surface that its caller derived,
+// which keeps ONE graph for a request that mounts a content half and an actions
+// half in two different slots. That derivation must stay OUTSIDE the
+// `<Show when={props.request}>` of each half. `createControlSurface` states
+// why, and the composer holds it beside the active request.
+function questionOf(surface: ControlSurface | undefined) {
+  return surface?.kind === 'question' ? surface.question : undefined
+}
+
+function elicitationOf(surface: ControlSurface | undefined) {
+  return surface?.kind === 'elicitation' ? surface.elicitation : undefined
 }
 
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<BannerContentProps> = (props) => {
-  const { question, elicitation, provider } = createControlInputs(props)
-  const plugin = () => pluginFor(provider())
-  const pluginContent = () => plugin()?.ControlContent
+  const question = () => questionOf(props.controlSurface)
+  const elicitation = () => elicitationOf(props.controlSurface)
+  // Every content surface disables its options for the same three reasons, so
+  // the reasons are spelled once.
+  const optionsDisabledFor = (request: ControlRequest) =>
+    props.optionsDisabled || props.answerState.responsePending() || !canAnswerControlRequest(request)
+  const pluginContent = () => pluginFor(props.agentProvider)?.ControlContent
   const { copied, copy } = useCopyButton(() => {
     const original = props.request?.originalPayload
     if (original === undefined)
@@ -97,17 +100,28 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
             when={!controlPayloadFaultNotice(request().payloadFault)}
             fallback={<p role="alert">{controlPayloadFaultNotice(request().payloadFault)}</p>}
           >
-            <Show when={question()} fallback={<Show when={elicitation()} fallback={<Dynamic component={pluginContent()} {...props} optionsDisabled={props.optionsDisabled || props.answerState.responsePending() || !canAnswerControlRequest(request())} agentProvider={provider()} request={request()} />}>{elicitation => <ElicitationContent {...props} optionsDisabled={props.optionsDisabled || props.answerState.responsePending() || !canAnswerControlRequest(request())} agentProvider={provider()} request={request()} elicitation={elicitation()} />}</Show>}>
-              {question => (
-                <AskUserQuestionContent
-                  {...props}
-                  optionsDisabled={props.optionsDisabled || props.answerState.responsePending() || !canAnswerControlRequest(request())}
-                  agentProvider={provider()}
-                  request={request()}
-                  questions={question().questions}
-                />
-              )}
-            </Show>
+            <Switch fallback={<Dynamic component={pluginContent()} {...props} optionsDisabled={optionsDisabledFor(request())} request={request()} />}>
+              <Match when={question()}>
+                {question => (
+                  <AskUserQuestionContent
+                    {...props}
+                    optionsDisabled={optionsDisabledFor(request())}
+                    request={request()}
+                    questions={question().questions}
+                  />
+                )}
+              </Match>
+              <Match when={elicitation()}>
+                {elicitation => (
+                  <ElicitationContent
+                    {...props}
+                    optionsDisabled={optionsDisabledFor(request())}
+                    request={request()}
+                    elicitation={elicitation()}
+                  />
+                )}
+              </Match>
+            </Switch>
           </Show>
         </div>
       )}
@@ -117,9 +131,9 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
 
 /** Renders control request action buttons only, for the footer slot. */
 export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
-  const { question, elicitation, provider } = createControlInputs(props)
-  const plugin = () => pluginFor(provider())
-  const pluginActions = () => plugin()?.ControlActions
+  const question = () => questionOf(props.controlSurface)
+  const elicitation = () => elicitationOf(props.controlSurface)
+  const pluginActions = () => pluginFor(props.agentProvider)?.ControlActions
   return (
     <Show when={props.request}>
       {request => (
@@ -167,23 +181,33 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 />
               )}
             >
-              <Show when={question()} fallback={<Show when={elicitation()} fallback={<Dynamic component={pluginActions()} {...props} agentProvider={provider()} request={request()} />}>{elicitation => <ElicitationActions {...props} agentProvider={provider()} request={request()} elicitation={elicitation()} />}</Show>}>
-                {question => (
-                  <AskUserQuestionActions
-                    {...props}
-                    agentProvider={provider()}
-                    request={request()}
-                    questions={question().questions}
-                    onSubmitAnswers={() => question().capability.sendAnswer(
-                      request(),
-                      props.onRespond,
-                      question().questions,
-                      props.answerState,
-                    )}
-                    onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
-                  />
-                )}
-              </Show>
+              <Switch fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
+                <Match when={question()}>
+                  {question => (
+                    <AskUserQuestionActions
+                      {...props}
+                      request={request()}
+                      questions={question().questions}
+                      onSubmitAnswers={() => question().capability.sendAnswer(
+                        request(),
+                        props.onRespond,
+                        question().questions,
+                        props.answerState,
+                      )}
+                      onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
+                    />
+                  )}
+                </Match>
+                <Match when={elicitation()}>
+                  {elicitation => (
+                    <ElicitationActions
+                      {...props}
+                      request={request()}
+                      elicitation={elicitation()}
+                    />
+                  )}
+                </Match>
+              </Switch>
             </Show>
           </Show>
         </fieldset>

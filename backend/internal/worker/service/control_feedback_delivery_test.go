@@ -94,9 +94,10 @@ func TestControlFeedbackCannotReachAReplacementSession(t *testing.T) {
 	startEchoAgent(t, svc, "agent-1")
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "new-session"}))
 	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-		(agent_id, request_id, claim_token, state, agent_session_id, input_id, feedback)
-		VALUES ('agent-1', 'request', 'claim', ?, 'old-session', 'feedback-input', 'feedback')`,
-		int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED))
+		(agent_id, request_id, claim_token, state, agent_session_id, input_id, feedback, agent_provider)
+		VALUES ('agent-1', 'request', 'claim', ?, 'old-session', 'feedback-input', 'feedback', ?)`,
+		int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED),
+		int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",

@@ -82,6 +82,7 @@ interface UseShortcutsProps {
   getAgentInputQueue: (agentId: string) => AgentInputQueueSnapshot | undefined
   /** Hand the queue head to the running turn. Rejects like every queue RPC. */
   steerQueueItem: (item: QueuedAgentInput) => Promise<void>
+  preemptQueueItem: (item: QueuedAgentInput) => Promise<void>
   /**
    * Show, hide, or flip the quake terminal panel of the focused tab's working
    * directory.
@@ -267,25 +268,32 @@ export function useShortcuts(props: UseShortcutsProps): void {
     void getFocusedChatPanel()?.send()
   }, 'Chat')
 
-  cmd('chat.steerQueuedInput', 'Steer Queued Input', () => {
+  cmd('chat.steerQueuedInput', 'Steer or Preempt Queued Input', () => {
     const tab = resolveFocusedTab()
     // The capability checks live HERE and not in the `when` clause.
-    // `supportsSteering` and `canSteer` are per-agent, per-snapshot facts that
-    // move in the middle of a turn, and `canSteer` is computed by the WORKER
-    // precisely so the browser never re-derives the precondition. A context
-    // would have to poll them from the keybinding layer and could still be a
-    // tick stale at dispatch.
-    if (tab?.type !== TabType.AGENT || !tab.supportsSteering)
+    // `supportsSteering`, `canSteer` and `canPreempt` are per-agent,
+    // per-snapshot facts that move in the middle of a turn, and both flags are
+    // computed by the WORKER precisely so the browser never re-derives the
+    // precondition. A context would have to poll them from the keybinding layer
+    // and could still be a tick stale at dispatch.
+    if (tab?.type !== TabType.AGENT)
       return
-    // Index 0 and never a scan: the worker marks `canSteer` on the head alone,
-    // so a search for a steerable item answers a different question from the
-    // one the worker enforces.
+    // Index 0 and never a scan: the worker marks `canSteer` and `canPreempt`
+    // on the head alone, so a search for a steerable item answers a different
+    // question from the one the worker enforces.
     const head = props.getAgentInputQueue(tab.id)?.items[0]
-    if (!head?.canSteer)
+    if (tab.supportsSteering) {
+      if (!head?.canSteer)
+        return
+      // RETURNED, not discarded: `executeCommand` attaches a catch to a
+      // returned promise, and `runQueueRpc` rethrows after it toasts.
+      return props.steerQueueItem(head)
+    }
+    // Preemption is the same chord on a provider that can only interrupt: the
+    // turn is cancelled and the head follows as the next dispatch.
+    if (!tab.supportsPreemption || !head?.canPreempt)
       return
-    // RETURNED, not discarded: `executeCommand` attaches a catch to a returned
-    // promise, and `runQueueRpc` rethrows after it toasts.
-    return props.steerQueueItem(head)
+    return props.preemptQueueItem(head)
   }, 'Chat')
 
   /**

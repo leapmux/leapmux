@@ -1,10 +1,17 @@
 import type { MessageCategory } from './messageClassification'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { pluginFor } from './providers/registry'
 
 /**
  * Per-message UI state keys consumed via `getMessageUiState`/`setMessageUiState`
  * (or `useSharedExpandedState`). Centralized so renderers can't collide on a
  * hand-typed string and so adding a new flag has one obvious home.
+ *
+ * A key that ONE provider draws under (the three Codex ones) still belongs here. This
+ * table is the key vocabulary, not the routing: WHICH key a row takes is the provider's
+ * own decision, and `Provider.expandUiKey` holds it. `MESSAGE_UI_DEFAULTS` below is a
+ * `Record<MessageUiKey, ...>`, so a key a plugin registered for itself would forfeit
+ * the missing-default compile error.
  */
 export const MESSAGE_UI_KEY = {
   TOOL_RESULT_EXPANDED: 'tool-result-expanded',
@@ -63,10 +70,12 @@ export function messageUiDefault(key: MessageUiKey, ctx: MessageUiDefaultContext
  * agent-prompt bubble), resolved from the row's classification kind + provider.
  * The SINGLE source of this mapping: ChatView and the renderers
  * (ThinkingBubble / AgentPromptView, via `RenderContext.expandUiKey`) both read it,
- * so hidden premeasure and visible render cannot assume different keys. Codex
- * reasoning renders under its own
- * CODEX_REASONING key (not the shared THINKING key Claude/Pi/ACP thinking uses);
- * plan_execution and agent_prompt have their own keys regardless of provider.
+ * so hidden premeasure and visible render cannot assume different keys.
+ *
+ * `plan_execution` and `agent_prompt` own their keys whatever the provider, so the two
+ * kinds answer first. Every other kind asks the provider's own `Provider.expandUiKey`
+ * hook, because a bubble that a plugin draws reads a key that the plugin picks -- Codex
+ * reasoning is one.
  *
  * Returns THINKING for any other kind: the value is only consumed for the
  * expand-bubble rows above, so a non-thinking row's key is never read -- THINKING is
@@ -77,7 +86,5 @@ export function expandedUiKeyFor(kind: MessageCategory['kind'], provider: AgentP
     return MESSAGE_UI_KEY.PLAN_EXECUTION
   if (kind === 'agent_prompt')
     return MESSAGE_UI_KEY.AGENT_PROMPT
-  if (provider === AgentProvider.CODEX)
-    return MESSAGE_UI_KEY.CODEX_REASONING
-  return MESSAGE_UI_KEY.THINKING
+  return pluginFor(provider)?.expandUiKey?.(kind) ?? MESSAGE_UI_KEY.THINKING
 }

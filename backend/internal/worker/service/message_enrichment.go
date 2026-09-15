@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -51,14 +52,25 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 	var previous []byte
 	var metadata []byte
 	if len(row.SupplementalContent) > 0 {
-		// A damaged supplement can be replaced because the original payload remains intact.
+		// The stored supplement carries TWO halves, and this change replaces one
+		// of them. The provider payload arrives again with the next change, but
+		// NOTHING rebuilds the worker's own metadata half -- duration_ms,
+		// tool_uses, total_cost_usd and context_usage exist in that blob alone.
+		// So a supplement that does not read is a refusal, not something to
+		// overwrite: writing the new payload beside a nil metadata half destroys
+		// a record the original payload cannot supply.
+		var decoded agent.MessageContent
 		var decodeErr error
 		previous, decodeErr = msgcodec.Decompress(row.SupplementalContent, row.SupplementalContentCompression)
 		if decodeErr == nil {
-			if decoded, err := agent.DecodeMessageSupplement(content, previous); err == nil {
-				metadata = decoded.Metadata
-			}
+			decoded, decodeErr = agent.DecodeMessageSupplement(content, previous)
 		}
+		if decodeErr != nil {
+			slog.Warn("read the stored supplement of a message to enrich",
+				"agent_id", s.agentID, "span_id", change.SpanID, "seq", row.Seq, "error", decodeErr)
+			return false, nil
+		}
+		metadata = decoded.Metadata
 	}
 	next, err := agent.EncodeMessageSupplement(agent.MessageContent{Supplemental: change.SupplementalContent, Metadata: metadata})
 	if err != nil {

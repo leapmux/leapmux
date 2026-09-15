@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -241,4 +242,42 @@ func TestNativeCopilotGoalClearReopensASessionTheStoreNeverRecorded(t *testing.T
 	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
 
 	require.NoError(t, a.SendInput("Carry on.", nil))
+}
+
+// A goal clear disposes of the session, so a turn that ran when it started can never
+// end: no idle event reaches a session the runtime no longer has. Without a reset the
+// agent stays busy for good, and every later input returns ErrAgentBusy.
+func TestNativeCopilotGoalClearEndsTheRunningTurn(t *testing.T) {
+	a, sink := startNativeCopilotForGoal(t)
+	_, err := a.PerformGoalAction(GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+	a.HandleOutput(nativeCopilotSessionEvent(t, a.currentNativeSessionID(), "",
+		contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "0"}))
+	require.True(t, a.PublishTurnActive().Active)
+	spansBefore := sink.ResetSpanCount()
+
+	_, err = a.PerformGoalAction(GoalActionClear, "")
+	require.NoError(t, err)
+
+	assert.False(t, a.PublishTurnActive().Active, "the disposed session's turn ends with it")
+	assert.Greater(t, sink.ResetSpanCount(), spansBefore,
+		"the spans of the session that went away are released")
+	require.NoError(t, a.SendInput("Carry on.", nil), "a reset turn accepts the next input")
+}
+
+// The clear closes the session before it opens it again, so a failure to open leaves the
+// agent with no session and nothing to roll back to. The process stops there: an agent
+// that stayed alive would accept input that can reach nowhere.
+func TestNativeCopilotGoalClearStopsWhenTheSessionCannotOpenAgain(t *testing.T) {
+	// The runtime refuses the resume, and the create that follows it fails too.
+	a, _ := startNativeCopilotForGoal(t,
+		"LEAPMUX_TEST_COPILOT_UNRESUMABLE=1", "LEAPMUX_TEST_COPILOT_REPLACEMENT_FAILURE=create")
+	_, err := a.PerformGoalAction(GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+
+	_, err = a.PerformGoalAction(GoalActionClear, "")
+	require.ErrorContains(t, err, "create the Copilot session again")
+	assert.True(t, a.IsStopped(), "an agent with no session does not keep its process")
+	assert.False(t, a.PublishTurnActive().Active)
+	require.Error(t, a.SendInput("Carry on.", nil), "a stopped agent accepts no input")
 }

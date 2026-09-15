@@ -109,7 +109,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 		newAgent:     func() *CursorCLIAgent { return &CursorCLIAgent{} },
 		base:         func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *CursorCLIAgent) {
-			transcript := newCursorToolTranscript(ctx, a.sink, func() string { return cursorACPStorePath(a.currentSessionID()) })
+			storeQuery := StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+			transcript := newCursorToolTranscript(ctx, a.sink, func() string { return cursorACPStorePath(storeQuery, a.currentSessionID()) })
 			a.sink = transcript
 			// Cursor stores the normalized (display) model id, not the wire form. The
 			// live normalizer is sourced from the registry (the same one NormalizeModelID

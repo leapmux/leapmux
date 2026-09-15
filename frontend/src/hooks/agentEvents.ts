@@ -31,6 +31,7 @@ import { isTabOnScreen } from '~/hooks/watchPlan'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
+import { messageSpanIdentity } from '~/lib/messageSpan'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { compactionContextUsage } from '~/stores/agentSession.store'
@@ -144,10 +145,12 @@ function wireGenerationProgress(info: Record<string, unknown> | undefined): Live
  * returns scalar `AgentSessionInfo` fields, and this is span-keyed accumulating
  * state that lives in the chat store.
  *
- * Every field but `span_id` is optional, because the worker forwards two
- * families that report disjoint facts (see chatToolProgress). `retry` keeps its
- * three states: absent leaves the entry's retry alone, an object sets it, and an
- * explicit null clears it -- the agent's only "the retry resolved" signal.
+ * `span_id` and `agent_session_id` together address the tool_use row, and the
+ * store keys the entry by that pair. Every other field is optional, because the
+ * worker forwards two families that report disjoint facts (see
+ * chatToolProgress). `retry` keeps its three states: absent leaves the entry's
+ * retry alone, an object sets it, and an explicit null clears it -- the agent's
+ * only "the retry resolved" signal.
  *
  * It carries ONLY what the badge renders. The payload also states the tool's
  * name and a subagent's type, and the card already has both from the tool_use
@@ -160,7 +163,9 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
   if (spanId === '')
     return undefined
 
-  const update: ToolProgressUpdate = { spanId }
+  // An absent session reads as '', which messageSpanKey also gives a row that
+  // carries none. The two therefore still meet at one key.
+  const update: ToolProgressUpdate = { spanId, agentSessionId: pickString(value, RUNNING_TOOL_FIELD.AgentSessionId) }
   // pickCounter, not a bare pickNumber: a NaN or an Infinity reaches the
   // duration formatter and renders as "NaNs" on the card, and a negative
   // elapsed time is not a duration at all.
@@ -479,8 +484,11 @@ export function dropFinishedToolProgress(
 ): void {
   if (!msg.spanId)
     return
+  // messageSpanIdentity, not the bare span id: the store keys an entry by the
+  // session and the span together, so this path must key it the same way the
+  // apply path and the read path do.
   if (providerFor(msg.agentProvider)?.spanRole?.(parsed) === 'result')
-    chatStore.dropToolProgress(agentId, msg.spanId)
+    chatStore.dropToolProgress(agentId, messageSpanIdentity(msg))
 }
 
 /**
@@ -638,7 +646,7 @@ export function buildAgentStatusTabUpdate(
 ): Partial<AgentTab> {
   return {
     ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
-    ...(hasStatus ? { supportsSteering: sc.supportsSteering } : {}),
+    ...(hasStatus ? { supportsSteering: sc.supportsSteering, supportsPreemption: sc.supportsPreemption } : {}),
     // Carry startupError alongside status transitions so the in-tab error view can
     // render the server-formatted message; only on the failed/cleared transitions, so
     // an unrelated status (e.g. INACTIVE from turn end) leaves it alone.

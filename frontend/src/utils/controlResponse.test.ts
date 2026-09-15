@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE, decodeControlBehaviorEnvelope, decodeControlResponseBehavior, normalizeRejectionMessage } from './controlResponse'
+import { buildAllowResponse, buildControlResponseEnvelope, buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE, decodeControlBehaviorEnvelope, decodeControlResponseBehavior, normalizeRejectionMessage } from './controlResponse'
 
 // Reach the deny reason nested in the control_response envelope:
 // { response: { response: { behavior, message } } }.
@@ -34,6 +34,28 @@ describe('builddenyresponse', () => {
     // -- if it drifts, the backend can no longer collapse a bare deny and the "Rejected by user."
     // placeholder leaks into the transcript/rail as if it were typed feedback.
     expect(CONTROL_REJECTED_BY_USER_MESSAGE).toBe('Rejected by user.')
+  })
+})
+
+describe('buildcontrolresponseenvelope', () => {
+  it('wraps one provider answer in the shared envelope', () => {
+    // Copilot answers with an approval SCOPE and with a question ANSWER, which neither
+    // the allow nor the deny builder can carry. Both go through this envelope.
+    expect(buildControlResponseEnvelope('req-7', { behavior: 'allow', scope: 'session' })).toEqual({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: 'req-7',
+        response: { behavior: 'allow', scope: 'session' },
+      },
+    })
+  })
+
+  it('states the same envelope the allow and deny builders produce', () => {
+    expect(buildAllowResponse('req-8', { path: '/tmp/a' }))
+      .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'allow', updatedInput: { path: '/tmp/a' } }))
+    expect(buildDenyResponse('req-8', 'no'))
+      .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'deny', message: 'no' }))
   })
 })
 

@@ -522,12 +522,12 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	// Create an agent and add a message.
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
 	}))
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-1",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -568,12 +568,12 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	// Create two agents.
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-open",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
 	}))
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-closed",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -635,12 +635,12 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	// Create an agent, add a message, then close it.
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-closed",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
 	}))
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-closed",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -1058,7 +1058,7 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	for _, id := range []string{"agent-1", "agent-2"} {
-		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			ID:         id,
 			WorkingDir: "/tmp",
 			HomeDir:    "/tmp",
@@ -1101,7 +1101,7 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -1163,7 +1163,7 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -1206,7 +1206,7 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",

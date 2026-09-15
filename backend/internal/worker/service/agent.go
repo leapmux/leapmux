@@ -877,6 +877,25 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			svc.Output.NoteAgentStopRequested(agentID, agentID)
+			// The escalation branch is the second press, for a provider that has
+			// PROVEN its own stop signal ineffective -- the running agent states
+			// that fact through the Manager's escalation probe, the same
+			// capability discovery steering uses, so no provider enum appears
+			// here. Only then may this press replace the process instead of
+			// signalling it. No pauseInputQueueForStop on this branch: the first
+			// press already set that pause, and the planned-restart guard inside
+			// the force stop owns the restart window.
+			if svc.Agents.InterruptEscalationReady(agentID) {
+				if err := svc.forceStopAgentTurn(dbAgent); err != nil {
+					svc.Output.NoteAgentStopFailed(agentID, agentID)
+					slog.Warn("forced stop failed", "agent_id", agentID, "error", err)
+					sendFailedPrecondition(sender, "failed to force-stop the agent; press Stop again")
+					return
+				}
+				svc.cancelControlRequestsForStop(agentID)
+				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+				return
+			}
 			svc.pauseInputQueueForStop(agentID)
 			if err := svc.Agents.Interrupt(agentID); err != nil {
 				svc.Output.NoteAgentStopFailed(agentID, agentID)
@@ -1511,7 +1530,7 @@ func (svc *Service) replayAgentCatchUp(
 			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: buildAgentControlRequest(svc.Queries, agentID,
-					leapmuxv1.AgentProvider(answer.AgentProvider), agent.ControlRequest{
+					answer.AgentProvider, agent.ControlRequest{
 						RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID,
 					}, answer.ClaimToken)},
 			})
@@ -1573,20 +1592,21 @@ func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
-		Id:               a.ID,
-		Title:            a.Title,
-		Status:           status,
-		WorkingDir:       a.WorkingDir,
-		AgentSessionId:   a.AgentSessionID,
-		HomeDir:          a.HomeDir,
-		WorkerId:         svc.WorkerID,
-		CreatedAt:        timefmt.Format(a.CreatedAt.Time),
-		GitStatus:        gs,
-		AgentProvider:    a.AgentProvider,
-		OptionGroups:     svc.optionGroupsForAgent(a),
-		StartupError:     startupError,
-		StartupMessage:   startupMessage,
-		SupportsSteering: isRunning && svc.agentSupportsSteering(a),
+		Id:                 a.ID,
+		Title:              a.Title,
+		Status:             status,
+		WorkingDir:         a.WorkingDir,
+		AgentSessionId:     a.AgentSessionID,
+		HomeDir:            a.HomeDir,
+		WorkerId:           svc.WorkerID,
+		CreatedAt:          timefmt.Format(a.CreatedAt.Time),
+		GitStatus:          gs,
+		AgentProvider:      a.AgentProvider,
+		OptionGroups:       svc.optionGroupsForAgent(a),
+		StartupError:       startupError,
+		StartupMessage:     startupMessage,
+		SupportsSteering:   isRunning && svc.agentSupportsSteering(a),
+		SupportsPreemption: isRunning && svc.agentSupportsPreemption(a),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -2049,6 +2069,7 @@ func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmux
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
 	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
 	sc.SupportsSteering = svc.agentSupportsSteering(dbAgent)
+	sc.SupportsPreemption = svc.agentSupportsPreemption(dbAgent)
 	return sc
 }
 
@@ -2393,7 +2414,8 @@ func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.Agen
 
 // resetEffortToAutoIfUnsupported resets newOptions' effort to EffortAuto, in place, when it
 // wouldn't be valid for the model the edit settles on -- for a provider that owns a model-dependent
-// effort catalog (Claude/Codex/Pi):
+// effort catalog, which ProviderManagesEffort states (Claude/Codex/Pi from their static catalogs,
+// and native Copilot, whose account decides both the models and their tiers):
 //   - on a model switch, also when the client sent NO effort (explicitEffort == "") -- so the new
 //     model picks its own default rather than silently inheriting the previous model's tier;
 //   - whether or not the model switched, when the effort that WOULD persist -- whether explicitly
@@ -2614,6 +2636,81 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	slog.Info("agent restarted with new settings",
 		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
 	return settled, result
+}
+
+// forceStopAgentTurn replaces the provider process to end a turn whose stop
+// the running provider already accepted and then ignored -- the escalation a
+// provider asks for by answering the Manager's InterruptEscalationReady probe,
+// which is the only way this is reached.
+//
+// When the provider's own stop signal aborts nothing, the only real stop is
+// process-level. The replacement runs the same planned-restart shape
+// applySettingsViaRestart runs: the queue pauses for the swap and resumes only
+// its own pause, and the fresh process resumes the SAME session, so the
+// conversation and the queued input survive. Any stop row the reader sees is
+// the provider's own -- Stop runs inside the replacement and knows whether a
+// stop was pending.
+//
+// A press that lands while a replacement is already starting answers nil: that
+// press's intent was carried by the one that began it, and the restart is not
+// something a second concurrent copy would improve.
+func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	if _, inFlight := svc.forceStops.LoadOrStore(agentID, struct{}{}); inFlight {
+		return nil
+	}
+	defer svc.forceStops.Delete(agentID)
+
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("failed to pause input before a forced stop", "agent_id", agentID, "error", err)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  contracts.NotificationTypeAgentError,
+			"error": "Failed to force-stop the agent because the input queue could not pause: " + err.Error(),
+		})
+		return err
+	}
+	queueRestartFinished := false
+	defer func() {
+		if !queueRestartFinished {
+			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
+				slog.Error("failed to finish input queue forced stop", "agent_id", agentID, "error", finishErr)
+			}
+		}
+	}()
+
+	// The agent keeps the settings its row already holds; only the process is
+	// replaced. RestartAgent holds the lifecycle lock across the stop and the
+	// start, so the queue's cold-start dispatch cannot race the replacement.
+	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
+	agentOpts.ResumeSessionID = resumeSessionID
+	agentOpts.Options = parseOptions(dbAgent.Options)
+	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(agentOpts.Options, provider)
+
+	sink := svc.Output.NewSink(agentID, provider)
+	_, launched, err := func() (map[string]string, bool, error) {
+		unlock := svc.Agents.LockAgent(agentID)
+		defer unlock()
+		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
+	}()
+	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
+		slog.Error("failed to finish input queue forced stop", "agent_id", agentID, "error", finishErr)
+	}
+	queueRestartFinished = true
+	if err != nil {
+		slog.Error("failed to restart agent after a forced stop", "agent_id", agentID, "error", err)
+		// Clear stale session ID so ensureAgentRunning won't try to resume a
+		// non-existent session on the next message.
+		svc.clearAgentSessionID(agentID)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  contracts.NotificationTypeAgentError,
+			"error": "Failed to restart the agent after a forced stop: " + err.Error(),
+		})
+		return err
+	}
+	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
+	return nil
 }
 
 // buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
@@ -3334,23 +3431,47 @@ func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leap
 	return err
 }
 
+// planExecutionPromptText is the turn that an approved plan starts when the
+// Worker holds no plan text of its own. The provider wrote the plan into its own
+// transcript, and the fresh context keeps that transcript, so the agent still
+// knows which plan this names.
+const planExecutionPromptText = "Implement the plan."
+
+// enqueuePlanExecution queues the approved plan as the next turn, in a fresh
+// context.
+//
+// A provider that saves NO plan file reaches here, so an absent path is a normal
+// state and not a fault. Only Claude Code and Codex record plan_file_path
+// (updatePlan writes it from their output readers), while Claude Code, ZCode and
+// native Copilot all raise the plan-exit control. The queued turn then carries
+// the neutral instruction above.
+//
+// The degraded turn is what keeps the approval consistent. The caller already
+// persisted the new permission mode, so a hard failure here leaves the mode
+// moved with no turn to use it, and each retry repeats that move and fails the
+// same way -- the plan can never be approved. A path that EXISTS and cannot be
+// read is the opposite case: the plan text is there, the read is the fault, and
+// a retry can still succeed.
 func (svc *Service) enqueuePlanExecution(agentID, targetMode, inputID string) error {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		return err
 	}
-	if dbAgent.PlanFilePath == "" {
-		return errors.New("the saved plan is unavailable")
+	var planContent []byte
+	if dbAgent.PlanFilePath != "" {
+		planContent, err = os.ReadFile(dbAgent.PlanFilePath)
+		if err != nil {
+			return fmt.Errorf("read the saved plan: %w", err)
+		}
 	}
-	planContent, err := os.ReadFile(dbAgent.PlanFilePath)
-	if err != nil {
-		return fmt.Errorf("read the saved plan: %w", err)
+	planMessage := planExecutionPromptText
+	if len(planContent) > 0 {
+		planMessage = "Execute the following plan:\n\n---\n\n" + string(planContent)
+		planMessage += "\n\n---\n\nThe plan is stored at " + dbAgent.PlanFilePath + ". Read it again if needed."
+	} else {
+		slog.Warn("plan execution has no saved plan text, so the queued turn carries the neutral instruction",
+			"agent_id", agentID, "plan_file_path", dbAgent.PlanFilePath)
 	}
-	if len(planContent) == 0 {
-		return errors.New("the saved plan is empty")
-	}
-	planMessage := "Execute the following plan:\n\n---\n\n" + string(planContent)
-	planMessage += "\n\n---\n\nThe plan is stored at " + dbAgent.PlanFilePath + ". Read it again if needed."
 	_, err = svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 		ID: inputID, AgentID: agentID,
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,

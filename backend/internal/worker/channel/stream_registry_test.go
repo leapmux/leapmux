@@ -29,10 +29,22 @@ func (c *recordingController) OnCancel() {
 	c.cancels.Add(1)
 }
 
+// bindStream reserves a correlation id and binds its controller, which is the
+// two-step sequence that session.go runs. The registry exposes no one-step
+// helper, because no production caller reserves and binds on one goroutine.
+func bindStream(t *testing.T, r *streamRegistry, id uint64, controller StreamController) func() {
+	t.Helper()
+	inbox, ok := r.reserve(id)
+	require.True(t, ok)
+	release, ok := r.bindReserved(id, inbox, controller)
+	require.True(t, ok)
+	return release
+}
+
 func TestStreamRegistry_BindDeliver(t *testing.T) {
 	var r streamRegistry
 	ctrl := &recordingController{}
-	release := r.bind(7, ctrl)
+	release := bindStream(t, &r, 7, ctrl)
 	defer release()
 
 	assertStreamDelivery(t, &r, 7, &leapmuxv1.InnerStreamRequest{Payload: []byte("hello")})
@@ -46,7 +58,7 @@ func TestStreamRegistry_BindDeliver(t *testing.T) {
 func TestStreamRegistry_DeliverCancel(t *testing.T) {
 	var r streamRegistry
 	ctrl := &recordingController{}
-	_ = r.bind(3, ctrl)
+	_ = bindStream(t, &r, 3, ctrl)
 
 	assertStreamDelivery(t, &r, 3, &leapmuxv1.InnerStreamRequest{Cancel: true})
 	assert.Equal(t, int32(1), ctrl.cancels.Load())
@@ -68,8 +80,8 @@ func TestStreamRegistry_ReleaseAll(t *testing.T) {
 	var r streamRegistry
 	a := &recordingController{}
 	b := &recordingController{}
-	_ = r.bind(1, a)
-	_ = r.bind(2, b)
+	_ = bindStream(t, &r, 1, a)
+	_ = bindStream(t, &r, 2, b)
 
 	r.releaseAll()
 	assert.Equal(t, int32(1), a.cancels.Load())
@@ -83,7 +95,7 @@ func TestStreamRegistry_ReleaseAll(t *testing.T) {
 func TestStreamRegistry_ReleaseWithoutCancel(t *testing.T) {
 	var r streamRegistry
 	ctrl := &recordingController{}
-	release := r.bind(5, ctrl)
+	release := bindStream(t, &r, 5, ctrl)
 	release()
 	assert.Equal(t, int32(0), ctrl.cancels.Load())
 
@@ -97,7 +109,7 @@ func TestStreamRegistry_ConcurrentDeliverReleaseAll(t *testing.T) {
 	ctrls := make([]*recordingController, n)
 	for i := range n {
 		ctrls[i] = &recordingController{}
-		_ = r.bind(uint64(i+1), ctrls[i])
+		_ = bindStream(t, &r, uint64(i+1), ctrls[i])
 	}
 
 	var wg sync.WaitGroup

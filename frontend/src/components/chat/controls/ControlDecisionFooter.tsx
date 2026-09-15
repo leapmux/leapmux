@@ -7,6 +7,7 @@ import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger'
 import { keepFocusOnPress } from '~/lib/focusRetention'
+import { dangerMenuItem } from '~/styles/shared.css'
 import { actionButtonClass, ControlActionRow } from './ControlActionRow'
 import { ControlAllowChoicePillGroup, ControlPermissionPillGroup } from './ControlPillGroups'
 import { invokeControlAction } from './controlResponseError'
@@ -23,7 +24,15 @@ export interface ControlDecisionAction {
   label: string
   testId: string
   onSelect: () => void | Promise<void>
-  outline?: boolean
+  /**
+   * The action REFUSES the request. The overflow menu draws it in the danger
+   * colour, so "Reject always" does not read as one more way to allow.
+   *
+   * It replaces an `outline` flag that said how the button looked rather than
+   * what it did. That flag lost its last setter when the extra options moved
+   * into the menu, and every extra then looked identical.
+   */
+  destructive?: boolean
   disabled?: boolean
 }
 
@@ -88,7 +97,14 @@ export const ControlDecisionFooter: Component<{
             <DropdownMenu trigger={moreHorizontalTrigger({ 'title': 'More actions', 'data-testid': 'control-more-actions' })} aria-label="More actions">
               <Index each={additionalActions()}>
                 {decision => (
-                  <button type="button" role="menuitem" disabled={decision().disabled} onClick={() => invokeControlAction(decision().onSelect)} data-testid={decision().testId}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    class={decision().destructive ? dangerMenuItem : undefined}
+                    disabled={decision().disabled}
+                    onClick={() => invokeControlAction(decision().onSelect)}
+                    data-testid={decision().testId}
+                  >
                     {decision().label}
                   </button>
                 )}
@@ -110,7 +126,7 @@ export const ControlDecisionFooter: Component<{
             <Show when={props.positiveAction}>
               {action => (
                 <button
-                  class={actionButtonClass(action().outline)}
+                  class={actionButtonClass()}
                   disabled={action().disabled}
                   onClick={() => invokeControlAction(action().onSelect)}
                   data-testid={action().testId}

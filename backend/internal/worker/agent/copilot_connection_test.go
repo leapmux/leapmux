@@ -19,6 +19,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// startCopilotConnectionForTest runs the three startup calls in the order
+// startNativeCopilot runs them: launch the process, start the reader, then verify the
+// protocol. The agent splits them so it can adopt the connection before the reader
+// reaches it, and a test that needs a running connection needs all three.
+func startCopilotConnectionForTest(t *testing.T, opts Options, handle outputHandler) (*copilotConnection, error) {
+	t.Helper()
+	connection, err := startCopilotConnection(t.Context(), opts)
+	if err != nil {
+		return nil, err
+	}
+	connection.startReading(handle)
+	if err := connection.verifyNativeProtocol(opts); err != nil {
+		return nil, err
+	}
+	return connection, nil
+}
+
 func TestCopilotNativeConnection(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args")
 	installFakeACPCLI(t, fakeACPCLISpec{
@@ -26,7 +43,7 @@ func TestCopilotNativeConnection(t *testing.T) {
 		wantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", argsFile: argsFile,
 	})
 	notifications := make(chan []byte, 1)
-	connection, err := startCopilotConnection(t.Context(), Options{
+	connection, err := startCopilotConnectionForTest(t, Options{
 		AgentID: "copilot-native", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
 		APITimeout: time.Second,
 	}, func(line *parsedLine) { notifications <- line.Raw })
@@ -62,7 +79,7 @@ func TestCopilotNativeConnectionRejectsAnUnknownProtocol(t *testing.T) {
 		binary: "copilot", helperRun: "TestHelperCopilotNativeConnection",
 		wantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", env: []string{"LEAPMUX_TEST_COPILOT_PROTOCOL=99"},
 	})
-	_, err := startCopilotConnection(t.Context(), Options{
+	_, err := startCopilotConnectionForTest(t, Options{
 		AgentID: "copilot-native", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
 		APITimeout: time.Second,
 	}, func(*parsedLine) {})
@@ -352,5 +369,36 @@ func invokeFakeCopilotCommand(t *testing.T, params json.RawMessage, goal *fakeCo
 		goal.status = "active"
 		goal.turns = 0
 		return map[string]any{"kind": "agent-prompt", "prompt": "Pursue: " + goal.objective, "displayPrompt": goal.objective}
+	}
+}
+
+// The agent adopts its connection between the launch and the reader, because the reader
+// reaches the agent through that field. This test pins the half that makes the window
+// real: startCopilotConnection delivers nothing until startReading runs, so nothing can
+// reach a field the caller has not assigned yet.
+func TestCopilotNativeConnectionDeliversNothingBeforeItsReaderStarts(t *testing.T) {
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary: "copilot", helperRun: "TestHelperCopilotNativeConnection",
+		wantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+	})
+	opts := Options{
+		AgentID: "copilot-native", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: time.Second,
+	}
+	connection, err := startCopilotConnection(t.Context(), opts)
+	require.NoError(t, err)
+	t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
+
+	// The runtime answers, but no goroutine reads its answer yet.
+	_, err = connection.sendRequest("status.get", json.RawMessage(`{}`), 200*time.Millisecond)
+	require.Error(t, err, "a connection with no reader delivers no response")
+
+	delivered := make(chan []byte, 8)
+	connection.startReading(func(line *parsedLine) { delivered <- line.Raw })
+	require.NoError(t, connection.verifyNativeProtocol(opts))
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("the reader delivered no frame after it started")
 	}
 }

@@ -328,31 +328,25 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   /**
-   * Set, clear, pause or resume an agent's session goal.
+   * Ask the worker to set, clear, pause or resume a session goal, and let a refusal
+   * reach the caller.
    *
    * Writes nothing locally on success. Every provider echoes a goal change back
    * as a notification, so an optimistic write would race an echo already in
    * flight and the control would visibly flip back -- the same discipline
    * handleInterrupt keeps.
    *
-   * The worker refuses an action the running agent does not support, so a stale
-   * capability list produces a toast rather than a silent no-op.
-   */
-  /**
-   * Ask the worker to change a session goal, and let a refusal reach the caller.
-   *
    * A provider states its own reason -- ZCode answers "Cannot manage goals while a prompt
    * is running" -- and where the reader reads it depends on which surface asked. The Set
    * dialog stays open and has a slot for a refusal, so it states the provider's words
    * there. See RL-004.
    */
-  const updateGoal = async (agentId: string, action: GoalAction, objective?: string) => {
+  const updateGoal = async (agentId: string, action: GoalAction, objective?: string): Promise<void> => {
     await workerRpc.updateAgentGoal(getAgentWorkerId(agentId), {
       agentId,
       action: goalActionToProto(action),
       objective: objective ?? '',
     })
-    return true
   }
 
   /**
@@ -361,7 +355,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    */
   const handleGoalAction = async (agentId: string, action: GoalAction, objective?: string) => {
     try {
-      return await updateGoal(agentId, action, objective)
+      await updateGoal(agentId, action, objective)
+      return true
     }
     catch (err) {
       showWarnToast('Failed to update the session goal', err)

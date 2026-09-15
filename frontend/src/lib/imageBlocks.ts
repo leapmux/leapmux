@@ -6,6 +6,7 @@
 
 import type { ContentBlock } from './contentBlocks'
 import type { ImageDimensions } from './imageDimensions'
+import { arrayBufferToBase64 } from './base64'
 import { isObject, pickString } from './jsonPick'
 import { fileUriToPath } from './paths'
 
@@ -34,7 +35,8 @@ export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimension
 
 /**
  * Parse an image content block or an embedded image resource.
- * Return null for other content, including a resource that lacks image bytes.
+ * Return null for other content, and for an image resource that states a URI and
+ * no payload. The MCP renderer prints that URI, which a placeholder would hide.
  *
  * Explicit image blocks without data remain image sources with absent data and URL fields.
  * Anthropic file IDs and MIME-only MCP blocks need this behavior.
@@ -49,7 +51,10 @@ export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimension
  *   - `{type:'image', source:{type:'url', url}}` -- Anthropic, URL variant.
  *   - `{type:'image', data, mimeType}` -- the MCP content shape, which ACP's
  *     `ImageContent` and Pi's `ImageContent` both reuse verbatim.
- *   - `{type:'resource', resource:{mimeType, blob}}` -- an embedded MCP image.
+ *   - `{type:'resource', resource:{mimeType, blob}}` -- an embedded MCP image,
+ *     as base64 bytes (`BlobResourceContents`).
+ *   - `{type:'resource', resource:{mimeType, text}}` -- an embedded MCP image
+ *     whose format is text (`TextResourceContents`). An SVG arrives this way.
  *   - `{type:'image', mimeType?, url}` -- the MCP variant that points at a
  *     fetchable URL instead of inlining the bytes.
  *   - `{type:'image', mimeType?, urlOrData}` -- a normalized MCP image.
@@ -62,12 +67,30 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
     return null
   const type = block.type
   if (type === 'resource') {
-    // Resource URIs belong to the MCP server and do not identify files on the worker.
+    // A resource URI belongs to the MCP server and does not identify a file on
+    // the worker, so this branch never fills filePath.
     const resource = isObject(block.resource) ? block.resource : block
     const mimeType = pickString(resource, 'mimeType')
-    return mimeType.toLowerCase().startsWith('image/') && typeof resource.blob === 'string'
-      ? { data: resource.blob, mimeType }
-      : null
+    if (!mimeType.toLowerCase().startsWith('image/'))
+      return null
+    // BlobResourceContents: the payload is already base64.
+    const blob = pickString(resource, 'blob', undefined)
+    if (blob)
+      return { data: blob, mimeType }
+    // TextResourceContents: the payload is text, so an SVG server sends its
+    // markup here. The text is not base64, and `data` is base64 by contract, so
+    // the source carries a complete data URL in `url` instead.
+    const text = pickString(resource, 'text', undefined)
+    if (text)
+      return { url: `data:${mimeType};base64,${arrayBufferToBase64(text)}`, mimeType }
+    // A URI with no payload stays a resource rather than becoming an image
+    // placeholder: the MCP renderer prints that URI, and a placeholder would
+    // replace the one fact the block carries with an empty image.
+    if (pickString(resource, 'uri', undefined))
+      return null
+    // Neither a payload nor a URI. Keep the block as an image, so it holds its
+    // index in the image list and the renderer states why it is not visible.
+    return { mimeType }
   }
   if (type !== 'image' && type !== 'inputImage')
     return null

@@ -117,7 +117,7 @@ func TestNativePlanRecordingDoesNotChangeAReplacementSession(t *testing.T) {
 	response := []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`)
 	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim", AgentSessionID: "original",
-		AgentProvider: int64(old.AgentProvider), RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
+		AgentProvider: old.AgentProvider, RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
 		ResponseContent: response, ResolvedContent: response,
 		PlanApprovalSettings: []byte(`{"permissionMode":"bypassPermissions","clearContext":false}`),
 	})

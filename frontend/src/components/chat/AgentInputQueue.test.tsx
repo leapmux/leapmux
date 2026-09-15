@@ -31,6 +31,7 @@ function snapshotOf(items: ReturnType<typeof item>[]) {
 function renderQueue(overrides: {
   items?: ReturnType<typeof item>[]
   supportsSteering?: boolean
+  supportsPreemption?: boolean
   activeEditInputId?: string
 } = {}) {
   const handlers = {
@@ -40,6 +41,7 @@ function renderQueue(overrides: {
     onMove: vi.fn(),
     onRetry: vi.fn(),
     onSteer: vi.fn(),
+    onPreempt: vi.fn(),
   }
   // A SIGNAL, not a fixed value, because the Worker pushes a whole new snapshot
   // for every queue event -- new objects, new array, same ids. `push` replays
@@ -51,6 +53,7 @@ function renderQueue(overrides: {
       clientId="client-a"
       activeEditInputId={overrides.activeEditInputId}
       supportsSteering={overrides.supportsSteering ?? false}
+      supportsPreemption={overrides.supportsPreemption ?? false}
       {...handlers}
     />
   ))
@@ -323,6 +326,34 @@ describe('agentInputQueue', () => {
   it('does not offer Steer when the provider does not support steering', () => {
     renderQueue({ supportsSteering: false, items: [item('one', { canSteer: true })] })
     expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
+  })
+
+  // Preemption's precondition is Worker-computed per item exactly like
+  // `canSteer`, and the button takes Steer's place ONLY where steering is not
+  // offered: a provider either injects into the turn or cancels it.
+  it('offers Preempt for a head the Worker marks preemptable when the provider cannot steer', async () => {
+    const handlers = renderQueue({
+      supportsPreemption: true,
+      items: [item('one', { canPreempt: true }), item('two', { canPreempt: true })],
+    })
+    expect(screen.getAllByRole('button', { name: 'Preempt' })).toHaveLength(1)
+    expect(screen.getByTestId('queued-input-one')).toContainElement(screen.getByRole('button', { name: 'Preempt' }))
+    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Preempt' }))
+
+    expect(handlers.onPreempt).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
+  })
+
+  it('does not offer Preempt when the provider can steer', () => {
+    renderQueue({ supportsSteering: true, supportsPreemption: true, items: [item('one', { canPreempt: true, canSteer: true })] })
+    expect(screen.queryByRole('button', { name: 'Preempt' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Steer' })).toBeInTheDocument()
+  })
+
+  it('does not offer Preempt for a head the Worker refuses to preempt', () => {
+    renderQueue({ supportsPreemption: true, items: [item('one', { canPreempt: false })] })
+    expect(screen.queryByRole('button', { name: 'Preempt' })).not.toBeInTheDocument()
   })
 
   it('offers Retry for a failed head', async () => {

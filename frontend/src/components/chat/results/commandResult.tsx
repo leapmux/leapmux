@@ -15,7 +15,7 @@ import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
-import { ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
+import { drawsOwnOutcome, ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
 /**
@@ -156,7 +156,7 @@ export function CommandResultBody(props: {
   const statusLabel = () => commandStatusLabel(source())
   // Compared against the shared vocabulary, not a literal: a word that changed in one
   // place and not the other would hide the header for every failed command.
-  const showStatusHeader = () => !props.context?.completionHeader && statusLabel() !== toolOutcomeLabel('succeeded')
+  const showStatusHeader = () => drawsOwnOutcome(props.context) && statusLabel() !== toolOutcomeLabel('succeeded')
 
   // When the command produced no output, surface a "[no output]" placeholder
   // alongside whatever metadata we have (duration, exit code). Without this

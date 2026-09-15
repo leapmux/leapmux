@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   claudeMcpFromToolResult,
   isClaudeMcpTool,
-  parseClaudeMcpToolName,
 } from './mcp'
 
 describe('isClaudeMcpTool', () => {
@@ -14,28 +13,6 @@ describe('isClaudeMcpTool', () => {
     expect(isClaudeMcpTool('Bash')).toBe(false)
     expect(isClaudeMcpTool('mcp_server')).toBe(false)
     expect(isClaudeMcpTool('')).toBe(false)
-  })
-})
-
-describe('parseClaudeMcpToolName', () => {
-  it('splits server and tool', () => {
-    expect(parseClaudeMcpToolName('mcp__github__create_issue')).toEqual({
-      serverName: 'github',
-      toolName: 'create_issue',
-    })
-  })
-
-  it('preserves further __ segments in the tool name', () => {
-    expect(parseClaudeMcpToolName('mcp__github__search__repos')).toEqual({
-      serverName: 'github',
-      toolName: 'search__repos',
-    })
-  })
-
-  it('returns null for missing parts', () => {
-    expect(parseClaudeMcpToolName('mcp__')).toBeNull()
-    expect(parseClaudeMcpToolName('mcp__github__')).toBeNull()
-    expect(parseClaudeMcpToolName('Bash')).toBeNull()
   })
 })
 

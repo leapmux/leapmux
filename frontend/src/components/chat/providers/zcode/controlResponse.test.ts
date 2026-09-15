@@ -1,5 +1,6 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
+import { zcodeQuestionsFromPayload } from './askUserQuestion'
 import { zcodeControlResponseDisplay } from './controlResponse'
 
 function response(result: Record<string, unknown>, params: Record<string, unknown> = {}, method = 'interaction/requestUserInput'): PersistedControlResponse {
@@ -86,6 +87,30 @@ describe('zcodeControlResponseDisplay', () => {
     expect(zcodeControlResponseDisplay(response({ action: 'accept', content: {} }, plan))).toEqual({ kind: 'label', text: 'Reject' })
     expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: { 'Review this implementation plan.': '' }, answer_0: 'approve' } }, plan)))
       .toEqual({ kind: 'label', text: 'Reject' })
+  })
+
+  // `zcodeQuestionRecords` is the provider's ONE question list. The reader answers it and
+  // this display reads the saved answer back through it, so the two cannot disagree about
+  // which question an answer belongs to.
+  it('reads the same question list the reader answered', () => {
+    const params = { schema: { questions: [{ question: 'From the schema' }] }, input: { questions: [{ question: 'From the input' }] } }
+    expect(zcodeQuestionsFromPayload({ params }).map(question => question.question)).toEqual(['From the schema'])
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer: 'yes' } }, params)))
+      .toEqual({ kind: 'label', text: 'From the schema: yes' })
+  })
+
+  // The shared control shows a header-only question by its header and keys the answer map
+  // by that text, so the display must look it up under the same text.
+  it('reads a header-only question back under its header', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answers: { Databases: 'Postgres' } } }, { input: { questions: [{ header: 'Databases' }] } })))
+      .toEqual({ kind: 'label', text: 'Databases: Postgres' })
+  })
+
+  // The worker's positional `answer_<index>` keys count EVERY question the request
+  // declared, so a question nothing can answer still holds its place in the list.
+  it('keeps the positional index of a question with no text of its own', () => {
+    expect(zcodeControlResponseDisplay(response({ action: 'accept', content: { answer_0: 'dropped', answer_1: 'kept' } }, { input: { questions: [{}, { question: 'Second' }] } })))
+      .toEqual({ kind: 'label', text: 'Second: kept' })
   })
 
   it('returns no derived label for an unknown or corrupt native response', () => {

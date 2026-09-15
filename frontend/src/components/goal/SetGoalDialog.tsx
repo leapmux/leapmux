@@ -13,8 +13,11 @@ import * as styles from './SetGoalDialog.css'
 export interface SetGoalDialogProps {
   /** The current objective to edit, or an empty value for the first goal. */
   initialObjective?: string
-  /** Return false after reporting a delivery failure to retain the objective. */
-  onSubmit: (objective: string) => Promise<boolean>
+  /**
+   * Deliver the objective. THROW to keep the dialog open with the reason in its refusal
+   * slot; the provider states its own words there. Resolving closes the dialog.
+   */
+  onSubmit: (objective: string) => Promise<void>
   onClose: () => void
 }
 
@@ -92,8 +95,10 @@ export const SetGoalDialog: Component<SetGoalDialogProps> = (props) => {
     const close = props.onClose
     setSubmitting(true)
     try {
-      const accepted = await props.onSubmit(text)
-      if (!active || accepted !== true)
+      await props.onSubmit(text)
+      // A dialog that the user already dismissed must not close a NEW one: `close` is
+      // the handler this render captured, and the owner is gone.
+      if (!active)
         return false
       close()
     }

@@ -24,7 +24,7 @@ import (
 //
 // The reader pressed Stop. `Error` names the wrong cause, and Pi already carries a
 // flag for exactly this (see noteInterruptRequested); acpBase.Interrupt is one
-// implementation covering Cursor, Copilot, Kilo, OpenCode and Goose.
+// implementation covering Cursor, Kilo, OpenCode, Goose and Reasonix.
 func TestACPToolResultAfterAStopReportsTheStop(t *testing.T) {
 	t.Parallel()
 
@@ -93,6 +93,40 @@ func TestACPInterruptNoteDoesNotOutliveItsTurn(t *testing.T) {
 	require.NotEmpty(t, msgs)
 	assert.NotEqual(t, MessageCompletionInterrupted, msgs[len(msgs)-1].Completion,
 		"the stop belonged to the turn before this one")
+}
+
+// ClearContext replaces the session, and it reaches that swap WITHOUT passing
+// clearActivePrompt. A note left behind stamped Interrupted on every completed tool row
+// of the NEXT turn.
+func TestACPClearContextDropsTheInterruptNote(t *testing.T) {
+	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) jsonrpcResponsePayload {
+		if method == acpMethodSessionNew {
+			return jsonrpcResponsePayload{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
+		}
+		return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
+	})
+	sink := &testSink{}
+	agent.sink = sink
+	agent.mu.Lock()
+	agent.promptActive = true
+	agent.mu.Unlock()
+	agent.noteACPInterruptRequested()
+	require.True(t, agent.acpInterruptRequested())
+
+	sessionID, err := agent.ClearContext()
+	require.NoError(t, err)
+	require.Equal(t, "session-2", sessionID)
+	require.False(t, agent.acpInterruptRequested(), "the note belonged to the turn the swap ended")
+
+	agent.mu.Lock()
+	agent.promptActive = true
+	agent.mu.Unlock()
+	agent.handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Later"}`))
+	agent.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-1","status":"completed"}`))
+	msgs := sink.Messages()
+	require.NotEmpty(t, msgs)
+	assert.NotEqual(t, MessageCompletionInterrupted, msgs[len(msgs)-1].Completion,
+		"nobody stopped the turn after the swap")
 }
 
 // A stop with no turn running notes nothing, so the next turn's first result is

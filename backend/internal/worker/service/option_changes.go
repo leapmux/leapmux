@@ -46,6 +46,13 @@ func (svc *Service) applyPlanOptionsLocked(current db.Agent, wanted OptionMap) (
 		if !result.AppliedLive || result.SurfacedOptions == nil {
 			return current, fmt.Errorf("the provider did not confirm the plan settings")
 		}
+		// Every requested axis needs an EXACT confirmation, and a key with no
+		// settlement at all fails here too: OptionSettlementConfirmed is the zero
+		// value, so an absent entry carries a nil Value. An axis the provider did
+		// not confirm is an axis the running process may still hold at its old
+		// value, and the plan would then execute under settings nobody chose --
+		// Codex's collaboration_mode is the plan-mode axis itself, so an
+		// unconfirmed one leaves the agent planning instead of executing.
 		for key, value := range wanted {
 			settlement := result.Settlements[key]
 			if settlement.State != agent.OptionSettlementConfirmed || settlement.Value == nil || *settlement.Value != value {

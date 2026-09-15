@@ -235,6 +235,12 @@ func (entry *streamCancelEntry) bind(ctrl channel.StreamController) bool {
 }
 
 // UpdateStream retains a revision until its controller is ready.
+//
+// An inbox that overflows CANCELS the stream, and the caller reports
+// ResourceExhausted. Dropping the frame instead would leave the client believing
+// its revision landed, and reading the wrong events for as long as the stream
+// lives. The cancel is what makes the loss visible: the client's handle closes,
+// and its next update opens a fresh stream that carries the current interest.
 func (r *Router) UpdateStream(clientReqID string, payload []byte) error {
 	if clientReqID == "" {
 		return nil

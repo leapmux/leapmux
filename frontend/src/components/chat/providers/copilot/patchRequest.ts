@@ -44,8 +44,13 @@ export function copilotPatchRequest(patch: string): FileEditDiffSource[] | null 
         index++
         // Text patches identify context without line numbers. Request titles use only the counts.
         const hunk: StructuredPatchHunk = { oldStart: 0, newStart: 0, oldLines: 0, newLines: 0, lines: [] }
-        while (index < lines.length - 1 && /^[ +\-]/.test(lines[index])) {
-          const line = lines[index++]
+        while (index < lines.length - 1 && (lines[index] === '' || /^[ +\-]/.test(lines[index]))) {
+          // A blank context line reaches the patch as the EMPTY string, because a
+          // trailing space does not survive every producer. The hunk still owns that
+          // line, so restore its marker. Without the restore, the hunk loop stops at
+          // that line, the file-header patterns then reject the same line, and the
+          // whole patch falls back to its raw text.
+          const line = lines[index++] || ' '
           hunk.lines.push(line)
           if (line[0] !== '+')
             hunk.oldLines++

@@ -500,7 +500,7 @@ func TestMergeSessionSummaries_AClosedRowCannotReviveAnOpenHandle(t *testing.T) 
 // the test below.
 func seedSessionMessage(t *testing.T, svc *Service, agentID, messageID string, at time.Time) int64 {
 	t.Helper()
-	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{
+	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            messageID,
 		AgentID:       agentID,
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

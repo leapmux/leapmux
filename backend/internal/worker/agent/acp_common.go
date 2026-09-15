@@ -46,7 +46,7 @@ const (
 	// acpMethodSessionSetConfigOption is the config-option setter (ACP's
 	// session/set_config_option): params {sessionId, configId, value}, returning the
 	// refreshed configOptions list. Used to write the mutable option groups
-	// (e.g. OpenCode/Kilo "effort", Copilot "reasoning_effort"/"allow_all") that have
+	// (e.g. OpenCode/Kilo "effort", Goose "thinking_effort") that have
 	// no dedicated set_model/set_mode channel.
 	acpMethodSessionSetConfigOption = "session/set_config_option"
 
@@ -89,7 +89,7 @@ const (
 	// This is the zero-value default; no provider currently selects it.
 	modeChannelUnmapped acpModeChannel = iota
 	// modeChannelPermissionMode: the configOptions `mode` select drives the permission
-	// mode (Copilot, Goose, Cursor).
+	// mode (Cursor, Goose, Reasonix).
 	modeChannelPermissionMode
 	// modeChannelPrimaryAgent: the configOptions `mode` select drives the primary agent
 	// (OpenCode, Kilo). This is also the sole value identifying the primary-agent family.
@@ -97,7 +97,7 @@ const (
 )
 
 // acpBase extends jsonrpcBase with fields and methods shared by every ACP agent
-// (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
+// (OpenCode, Kilo, Cursor, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -115,10 +115,6 @@ type acpBase struct {
 	// clientCapabilityMeta advertises supported provider extensions.
 	clientCapabilityMeta map[string]any
 
-	// outstandingPermissions holds the JSON-RPC id of every permission request the
-	// agent is still waiting on, so a cancel can answer them. Guarded by mu.
-	outstandingPermissions map[string]json.RawMessage
-
 	jsonrpcBase
 	sink ProviderServices
 	acpTurnOutput
@@ -127,8 +123,8 @@ type acpBase struct {
 	// advertised. Goal-capable providers read their command token from it.
 	//
 	// PROCESS-scoped, not session-scoped, which is why ClearContext leaves it
-	// alone while it clears every other per-session field. Goose and Copilot
-	// advertise once, inside the FIRST session/prompt, and never in a
+	// alone while it clears every other per-session field. Goose
+	// advertises once, inside the FIRST session/prompt, and never in a
 	// session/new reply -- so clearing it on a context clear would disarm a
 	// working control until the user's next message, and a stale update from a
 	// replaced session can only restate what the same binary already offers.
@@ -189,16 +185,6 @@ type acpBase struct {
 	// reconcileCurrentOptionID re-seeds the current selection from the same option. So
 	// the preferred mode is also the one this provider falls back to.
 	preferredFirstMode string
-	// decorateOptionGroups lets a provider add or drop groups that no ACP channel ever
-	// reports. Copilot's Assisted Approval rides the launch flags, so no server payload
-	// carries it, and the base must surface it in the catalog AND in every result derived
-	// from that catalog -- SettingsSnapshot builds its settlements from OptionGroups, and
-	// Go resolves that call to the BASE method however the provider embeds acpBase. A
-	// provider that only overrode OptionGroups would therefore report a group the UI shows
-	// but no snapshot settles. nil leaves the base catalog alone.
-	//
-	// It runs OUTSIDE b.mu, because the base body holds the lock for its whole span.
-	decorateOptionGroups func([]*leapmuxv1.AvailableOptionGroup) []*leapmuxv1.AvailableOptionGroup
 	// secondaryChannelOnce/secondaryChannelCache memoize the resolved secondary channel.
 	// modeChannel is fixed at construction (configure) and the channel's field/list POINTERS
 	// and closures all capture b (stable), so the resolution is invariant for the agent's
@@ -209,7 +195,7 @@ type acpBase struct {
 	secondaryChannelCache acpSecondaryChannel
 	// effortConfigID is the daemon config-option id this provider drives its reasoning-effort
 	// axis through when that id is a provider CONVENTION rather than the well-known "effort"
-	// (Copilot "reasoning_effort", Goose "thinking_effort"). It is "" for a provider whose
+	// (Goose "thinking_effort"). It is "" for a provider whose
 	// effort axis IS "effort" (OpenCode/Kilo -- the override maps to "effort" directly) or that
 	// has no effort axis (Cursor). applyStartupOptions maps the env-effort override
 	// (stored under the well-known "effort" id) onto it, so the operator default is re-pushed
@@ -370,13 +356,7 @@ func (b *acpBase) persistIncompleteACPTools(tools []acpIncompleteTool, completio
 		} else {
 			content := b.acpMessageContent(tool.original, tool.content)
 			content.Completion = completion
-			spanType := b.sink.GetSpanType(tool.toolCallID)
-			if spanType == "" {
-				spanType = acpUpdateToolCall
-			}
-			if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
-				SpanID: tool.toolCallID, SpanType: spanType, Closing: true,
-			}); err != nil {
+			if err := b.persistClosingACPTool(tool.toolCallID, content); err != nil {
 				slog.Error("persist incomplete acp tool", "agent_id", b.agentID, "tool_call_id", tool.toolCallID, "error", err)
 			}
 		}
@@ -388,6 +368,23 @@ func (b *acpBase) persistIncompleteACPTools(tools []acpIncompleteTool, completio
 			}
 		}
 	}
+}
+
+// persistClosingACPTool writes the row that closes one ACP tool call.
+//
+// The span type falls back to acpUpdateToolCall when no span reports one: a call that
+// ended without a span still needs a type on its row. Both closing sites share that
+// default and the Closing span shape, so a change to either now lands in one place.
+// Each caller keeps its own error message, and its own order for completeTool, the span
+// close and the background-task close, because the two sites do not agree on that order.
+func (b *acpBase) persistClosingACPTool(toolCallID string, content MessageContent) error {
+	spanType := b.sink.GetSpanType(toolCallID)
+	if spanType == "" {
+		spanType = acpUpdateToolCall
+	}
+	return b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
+		SpanID: toolCallID, SpanType: spanType, Closing: true,
+	})
 }
 
 func (b *acpBase) completeACPToolOutput(toolCallID string) {
@@ -439,7 +436,9 @@ func (b *acpBase) handleACPUpdate(update json.RawMessage, extra acpSessionUpdate
 		return
 	}
 
-	if header.Role == "result" {
+	// A native result envelope repeats the turn fields the prompt response already
+	// carries, so the dispatcher below has nothing to do with it.
+	if header.Role == contracts.ACPRoleResult {
 		return
 	}
 	if (header.SessionUpdate == acpUpdateToolCall || header.SessionUpdate == acpUpdateToolCallUpdate) &&
@@ -466,8 +465,11 @@ func (b *acpBase) handleACPUpdate(update json.RawMessage, extra acpSessionUpdate
 		contracts.ACPUpdateCurrentMode,
 		acpUpdateUserMessageChunk,
 		acpUpdateAvailableCommandsUpdate,
-		acpUpdateConfigOptionUpdate:
-		// no flush
+		acpUpdateConfigOptionUpdate,
+		acpUpdateSessionInfoUpdate:
+		// no flush. session_info_update carries the runtime's own title and modified
+		// time, and one arrives for every turn, so a flush here split each assembled
+		// message in two. The switch below reads nothing from it.
 	default:
 		b.flushThoughtBuffer()
 		b.flushAssistantBuffer()
@@ -583,8 +585,8 @@ func (b *acpBase) ClearContext() (string, error) {
 
 	// A goal belongs to a SESSION, and this call replaced the session. Codex and
 	// ZCode clear it in their own ClearContext for the same reason; this is the
-	// ACP half, and it covers every provider on this base -- Reasonix reports a
-	// goal today, and Copilot's autopilot objective would ride here too.
+	// ACP half, and it covers every provider on this base -- Reasonix is the one
+	// that reports a goal today.
 	//
 	// A provider that never reports a goal pays nothing: clearGoal reads the row
 	// first and returns before the broadcast when there was no goal to remove.
@@ -642,6 +644,10 @@ func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ou
 			b.sessionID = session.SessionID
 			b.promptActive = false
 			b.steerRunID = ""
+			// The note belongs to the turn this swap ends. Left behind, it stamped
+			// Interrupted on every completed tool row of the NEXT turn, because
+			// ClearContext reaches here without passing clearActivePrompt.
+			b.interruptRequested = false
 			b.mu.Unlock()
 		})
 	})
@@ -664,7 +670,7 @@ func (b *acpBase) withSessionID(fn func(sessionID string) error) error {
 }
 
 // secondaryAxis is the fixed (option id, label, order) presentation of an ACP provider's
-// secondary axis -- permission mode (Copilot/Goose/Cursor) or primary agent (OpenCode/Kilo).
+// secondary axis -- permission mode (Cursor/Goose/Reasonix) or primary agent (OpenCode/Kilo).
 // The triple is fixed per axis (every permission-mode provider labels it "Mode", every
 // primary-agent provider "Primary Agent"), so each is declared exactly once below and shared
 // by the live channel (secondaryChannel) and the static per-provider registration
@@ -876,7 +882,7 @@ func (b *acpBase) reapplyModelAndSecondary() {
 }
 
 // setSecondary sends a session/set_mode RPC for the agent's secondary axis (permission mode for
-// Copilot/Goose/Cursor, primary agent for OpenCode/Kilo) and writes the resolved value into the
+// Cursor/Goose/Reasonix, primary agent for OpenCode/Kilo) and writes the resolved value into the
 // corresponding local field. It reads the available-list and field POINTERS off secondaryChannel()
 // rather than naming b.availableModes/b.permissionMode (or their primary-agent twins) directly, so
 // the former setPermissionMode/setPrimaryAgent twins collapse into one body and "which field this
@@ -944,7 +950,7 @@ func (b *acpBase) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	// reasoning-effort variants differ surfaces, drops, or re-levels the effort axis (folded
 	// from the set_config_option responses above). The frontend rebuilds its option-group
 	// catalog only from statusChange events, and neither the per-axis write replies nor -- for
-	// OpenCode/Copilot/Cursor, which emit no config_option_update notification -- the server
+	// OpenCode/Cursor, which emit no config_option_update notification -- the server
 	// carries one, so push a status refresh here. Scoped to this live entry point: the
 	// reapply/ClearContext path broadcasts its own refresh (see applySessionRefresh and the
 	// post-handshake BroadcastStatusActive), so the model setter itself stays broadcast-free.
@@ -1072,7 +1078,7 @@ func (b *acpBase) refreshModelsLocked(models []*ModelInfo, modelsFieldInfos []ac
 // the native modes channel and resolves *sc.field against it the same way the handshake does:
 // adopt a valid reported value, keep the still-selectable stored selection (re-pushed by
 // reapplySettings just before this), else re-seed to default-or-first. An empty rebuild keeps
-// the prior list. A configOptions `mode` override (Copilot/Goose/Cursor permission mode, or
+// the prior list. A configOptions `mode` override (Cursor/Goose/Reasonix permission mode, or
 // OpenCode/Kilo primary agent) wins when present. Caller holds the owning acpBase.mu (the
 // closures touch acpBase fields).
 func (sc acpSecondaryChannel) refreshLocked(modes []acpModeInfo, reportedSecondary string, configOptions []acpConfigOption) {
@@ -1224,7 +1230,7 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 }
 
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
-// OpenCode, Kilo, Copilot, Goose, Cursor, and Reasonix: protocol version 1, the
+// OpenCode, Kilo, Goose, Cursor, and Reasonix: protocol version 1, the
 // LeapMux clientInfo, and clientCapabilities.
 //
 // clientCapabilities.terminal is true so agents that honor the ACP host
@@ -1723,10 +1729,6 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		b.completeTool(tcu.ToolCallID)
 		b.completeACPToolOutput(tcu.ToolCallID)
 
-		spanType := b.sink.GetSpanType(tcu.ToolCallID)
-		if spanType == "" {
-			spanType = acpUpdateToolCall
-		}
 		content := b.acpMessageContent(originalUpdate, update)
 		// The reader stopped this turn, so the row reports the stop rather than the
 		// status a cancelled call happens to carry. Cursor and Reasonix send
@@ -1735,9 +1737,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		if b.acpInterruptRequested() {
 			content.Completion = MessageCompletionInterrupted
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
-			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
-		}); err != nil {
+		if err := b.persistClosingACPTool(tcu.ToolCallID, content); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
 		}
 		b.sink.CloseSpan(tcu.ToolCallID)
@@ -2133,7 +2133,7 @@ type acpStartSpec[T any] struct {
 	provider       leapmuxv1.AgentProvider                    // registry key; lets acpStart seed b.secondaryFallback from the provider's registration
 	providerName   string                                     // process/log name, e.g. "cursor"
 	binaryName     string                                     // CLI binary to launch
-	baseArgs       []string                                   // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see copilotBaseArgs)
+	baseArgs       []string                                   // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see StartReasonix)
 	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
 	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
 	newAgent       func() *T                                  // construct a zero-value concrete agent
@@ -2144,7 +2144,7 @@ type acpStartSpec[T any] struct {
 
 // acpStart launches an ACP agent subprocess and performs the initialize +
 // session handshake, centralizing the boilerplate shared by every ACP provider
-// (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
+// (Cursor, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
 // the acpStartSpec fields: the binary/args, an optional rc marker, the session
 // config, the hooks set in configure, and the post-handshake apply step.
 func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, spec acpStartSpec[T]) (_ Agent, retErr error) {
@@ -2267,20 +2267,11 @@ var (
 // OptionGroups returns one ACP provider's configuration axes as option groups:
 // the model group, then -- for a provider with a secondary axis (permission mode or
 // primary agent) -- that mapped group carrying its current value, then any mutable option
-// groups the server surfaced. A model-only provider (Reasonix, modeChannelUnmapped) omits
-// the secondary group. One body serves every ACP family; the axis specifics come from
-// secondaryChannel and the per-provider secondaryFallback, so no provider overrides this.
+// groups the server surfaced. A model-only provider (modeChannelUnmapped, which no
+// provider selects today) omits the secondary group. One body serves every ACP family;
+// the axis specifics come from secondaryChannel and the per-provider secondaryFallback,
+// so no provider overrides this.
 func (b *acpBase) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	groups := b.baseOptionGroups()
-	if b.decorateOptionGroups != nil {
-		return b.decorateOptionGroups(groups)
-	}
-	return groups
-}
-
-// baseOptionGroups builds the catalog from the ACP channels alone. Split from
-// OptionGroups so the decorator runs after the lock is released.
-func (b *acpBase) baseOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var groups []*leapmuxv1.AvailableOptionGroup
@@ -2433,7 +2424,7 @@ const (
 	acpConfigOptionCategoryModel = "model"
 	acpConfigOptionCategoryMode  = "mode"
 	// acpConfigOptionCategoryThoughtLevel marks a reasoning-effort axis (OpenCode/Kilo
-	// "effort", Copilot "reasoning_effort"); its options are reordered strongest-first.
+	// "effort", Goose "thinking_effort"); its options are reordered strongest-first.
 	acpConfigOptionCategoryThoughtLevel = "thought_level"
 )
 
@@ -2659,7 +2650,7 @@ func (b *acpBase) trySetStartupModel(requested string) {
 }
 
 // applyStartupPermissionMode applies a requested permission mode during startup
-// for providers that track one (Copilot, Goose, Cursor). It is a no-op
+// for providers that track one (Cursor, Goose, Reasonix). It is a no-op
 // when the request is empty or already matches the server's current mode. Unlike
 // the model, the mode is mandatory: a rejected mode returns an error so the caller
 // aborts startup.
@@ -2671,12 +2662,12 @@ func (b *acpBase) trySetStartupModel(requested string) {
 // The session keeps the mode the handshake reported instead, and the warning names
 // what happened. An EXPLICIT request still aborts, so a typed --permission-mode that
 // this build cannot enter is reported rather than silently downgraded. Claude
-// (isAutoModeUnavailableError) and Copilot (the assisted-approval relaunch) degrade
+// (isAutoModeUnavailableError) degrades
 // their own safe defaults the same way.
 //
 // The current mode is read under b.mu: startACPHandshake starts the reader
 // goroutine before Start* reaches this point, and that goroutine can write
-// permissionMode concurrently (syncConfigOptionModeLocked for Copilot/Goose/Cursor).
+// permissionMode concurrently (syncConfigOptionModeLocked for Cursor/Goose/Reasonix).
 // This mirrors trySetStartupModel's locked read of b.model.
 func (b *acpBase) applyStartupPermissionMode(requested string, defaulted bool) error {
 	if requested == "" {
@@ -2701,12 +2692,12 @@ func (b *acpBase) applyStartupPermissionMode(requested string, defaulted bool) e
 // applyHandshakeMode sets availableModes and the permission mode from a session
 // handshake (under the lock), falling back to defaultMode when the server reports none.
 // A `mode` config option overrides the permission mode read from the modes channel only
-// for a provider that consumes it (modeChannelPermissionMode -- Copilot/Goose/Cursor);
+// for a provider that consumes it (modeChannelPermissionMode -- Cursor/Goose/Reasonix);
 // for an unmapped provider it is left to applyOptionGroupsLocked to
 // surface as a option group, matching the runtime and ClearContext paths so the option
 // resolves the same way at every seam instead of being applied as the permission mode here
 // but surfaced uniformly there.
-// Used by ACP providers that track a permission mode (Copilot, Goose, Cursor).
+// Used by ACP providers that track a permission mode (Cursor, Goose, Reasonix).
 func (b *acpBase) applyHandshakeMode(handshake *acpSessionResult, defaultMode string) {
 	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
 	orderModesPreferredFirst(modes, b.preferredFirstMode)
@@ -2744,7 +2735,7 @@ func (b *acpBase) applySecondaryStartup(handshake *acpSessionResult, opts Option
 }
 
 // applyPermissionModeStartup runs the post-handshake startup sequence for the
-// permission-mode providers (Copilot, Goose, Cursor): write the mode channel from the
+// permission-mode providers (Cursor, Goose, Reasonix): write the mode channel from the
 // handshake and push the requested permission mode. Cursor passes its normalized model
 // id; trySetStartupModel routes through effectiveSetModel, which picks Cursor's
 // wire-mapping setCursorModel automatically. See applySecondaryStartup for the shared
@@ -2773,7 +2764,7 @@ func (b *acpBase) applyPrimaryAgentStartup(handshake *acpSessionResult, opts Opt
 // handleACPConfigOptionUpdate processes a config_option_update notification. The
 // model channel is handled uniformly for every ACP provider; the configOptions
 // `mode` select is applied as the permission mode for modeChannelPermissionMode
-// providers (Copilot/Goose/Cursor) or the primary agent for modeChannelPrimaryAgent
+// providers (Cursor/Goose/Reasonix) or the primary agent for modeChannelPrimaryAgent
 // providers (OpenCode/Kilo); any unmapped option is surfaced as a mutable option
 // group. All
 // channels mutate under a single lock so a concurrent settings read can never observe
@@ -2849,7 +2840,7 @@ func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
 
 // applyConfigOptionModelsLocked refreshes availableModels and the current model
 // from the `model` select of a configOptions payload, applying modelIDNormalizer
-// and modelsDecorator. It returns whether the current model changed and whether
+// and modelDecorator. It returns whether the current model changed and whether
 // the available-model list changed. The caller must hold b.mu. This is the shared
 // runtime model channel: it works for any ACP provider without per-provider wiring,
 // so even an agent we have not special-cased keeps its model list and selection
@@ -2986,7 +2977,7 @@ func (b *acpBase) syncConfigOptionSelectLocked(
 // `mode` select of a configOptions payload, returning the new mode value, whether
 // it changed, and whether the available-mode list changed. The caller must hold
 // b.mu. Used by ACP providers whose configOptions `mode` maps to the permission
-// mode (Copilot, Goose, Cursor).
+// mode (Cursor, Goose, Reasonix).
 func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string, bool, bool) {
 	return b.syncConfigOptionSelectLocked(options, nil, b.preferredFirstMode, &b.availableModes, &b.permissionMode)
 }
@@ -3134,11 +3125,11 @@ func (b *acpBase) sendSessionRPC(method string, extraParams map[string]interface
 // ACP spec requires set_config_option's response to carry the full refreshed
 // configOptions, whereas session/set_model returns only _meta. Folding that response
 // surfaces (or drops) a model-dependent option group -- the reasoning-effort axis that
-// OpenCode/Kilo/Goose/Copilot each gate on the current model's own variants -- the
-// instant the model changes. The old set_model write left the effort group stale or
-// missing because its empty response gave nothing to fold. Every ACP agent we drive
-// accepts configId "model" here (OpenCode, Kilo, Goose, Copilot, Cursor); Reasonix
-// pins its model at launch and never reaches this path.
+// OpenCode/Kilo/Goose each restrict the effort tiers to the current model's own
+// variants -- the instant the model changes. The old set_model write left the effort
+// group stale or missing because its empty response gave nothing to fold. Every ACP
+// agent we drive accepts configId "model" here (OpenCode, Kilo, Goose, Cursor);
+// Reasonix pins its model at launch and never reaches this path.
 func (b *acpBase) setModelViaConfigOption(wireModel string) error {
 	resp, err := b.sendSessionRPC(acpMethodSessionSetConfigOption, map[string]interface{}{
 		"configId": acpConfigOptionIDModel,
@@ -3196,8 +3187,8 @@ func (b *acpBase) acpSetMode(modeID string, available []*leapmuxv1.AvailableOpti
 }
 
 // setConfigOption writes a mutable config option (one with no
-// dedicated set_model/set_mode channel -- e.g. OpenCode/Kilo "effort", Copilot
-// "reasoning_effort"/"allow_all") via ACP's session/set_config_option, then folds the
+// dedicated set_model/set_mode channel -- e.g. OpenCode/Kilo "effort", Goose
+// "thinking_effort") via ACP's session/set_config_option, then folds the
 // refreshed configOptions the server returns back into the local option state so the
 // next OptionGroups() read reflects the new value. configID must be a currently
 // surfaced config option id.
@@ -3394,8 +3385,8 @@ func (b *acpBase) reapplyOptions(stored map[string]string) {
 // so a persisted preference (e.g. a chosen reasoning effort) is re-pushed here. A
 // rejected option is logged and skipped, never aborting an otherwise-healthy session.
 func (b *acpBase) applyStartupOptions(opts Options) {
-	// A daemon may drive its reasoning-effort axis under a NON-"effort" id (Copilot
-	// reasoning_effort, Goose thinking_effort, or a thought_level-categorized custom id), but the
+	// A daemon may drive its reasoning-effort axis under a NON-"effort" id (Goose
+	// thinking_effort, or a thought_level-categorized custom id), but the
 	// operator env-effort override (resolveProviderDefaults / EffortEnvOverride) is stored under
 	// the well-known "effort" id. Resolve the axis id once so the loop below can map the "effort"
 	// override onto it -- mirroring the model/mode channels' well-known-id fallback, so the default
@@ -3426,68 +3417,14 @@ func (b *acpBase) applyStartupOptions(opts Options) {
 	})
 }
 
+// acpPermissionCancelAnswer is the outcome the protocol defines for a permission
+// request that the client withdraws without a reader decision. It invents no decision
+// the reader did not make.
+func acpPermissionCancelAnswer() any {
+	return map[string]any{"outcome": map[string]any{"outcome": acpPermissionOutcomeCancelled}}
+}
+
 // cancelSession sends a session/cancel notification.
-// rememberOutstandingPermission records a permission request the agent is now waiting
-// on, keyed by its JSON-RPC id.
-//
-// The agent BLOCKS on the answer. A cancel that sends no answer therefore stops
-// nothing: Goose was measured running for the rest of the session after one, with the
-// thinking indicator never stopping.
-func (b *acpBase) rememberOutstandingPermission(raw []byte) {
-	wireID, _, found := ExtractJSONRPCID(raw)
-	if !found {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.outstandingPermissions == nil {
-		b.outstandingPermissions = make(map[string]json.RawMessage)
-	}
-	b.outstandingPermissions[string(wireID)] = append(json.RawMessage(nil), wireID...)
-}
-
-// forgetOutstandingPermission drops the request one outgoing frame answers.
-//
-// Every control response reaches the agent through SendRawInput, so reading the id
-// there is what keeps this list to the requests still waiting. A frame that answers
-// nothing (a notification, a prompt) carries no id and changes nothing.
-func (b *acpBase) forgetOutstandingPermission(raw []byte) {
-	wireID, _, found := ExtractJSONRPCID(raw)
-	if !found {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.outstandingPermissions, string(wireID))
-}
-
-// SendRawInput forwards one frame and notes the request it answers.
-func (b *acpBase) SendRawInput(data []byte) error {
-	b.forgetOutstandingPermission(data)
-	return b.jsonrpcBase.SendRawInput(data)
-}
-
-// cancelOutstandingPermissions answers every permission request still waiting, with
-// the protocol's own word for "the reader gave no decision".
-//
-// It answers rather than drops: the agent is blocked on the response, so a request
-// withdrawn in silence leaves the turn running with nothing left that could end it.
-// `cancelled` is the outcome the protocol defines for exactly this, and it invents no
-// decision the reader did not make.
-func (b *acpBase) cancelOutstandingPermissions() {
-	b.mu.Lock()
-	outstanding := b.outstandingPermissions
-	b.outstandingPermissions = nil
-	b.mu.Unlock()
-	for _, wireID := range outstanding {
-		if err := b.sendResponse(wireID, map[string]any{
-			"outcome": map[string]any{"outcome": acpPermissionOutcomeCancelled},
-		}); err != nil {
-			slog.Warn("cancel outstanding ACP permission", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		}
-	}
-}
-
 func (b *acpBase) cancelSession() error {
 	return b.withSessionID(func(sessionID string) error {
 		params, err := json.Marshal(map[string]interface{}{
@@ -3502,12 +3439,12 @@ func (b *acpBase) cancelSession() error {
 
 // Interrupt aborts the active ACP turn by sending the
 // `session/cancel` notification — the wire format every ACP server
-// in our roster (Cursor, Copilot, Kilo, OpenCode, Goose)
+// in our roster (Cursor, Kilo, OpenCode, Goose, Reasonix)
 // recognizes, and the one acpProvider.IsInterrupt classifier expects.
 //
-// Embedded into every ACP-derived agent (CursorAgent,
-// CopilotCLIAgent, KiloAgent, OpenCodeAgent, GooseAgent) via the
-// acpBase embedding chain, so a single implementation covers all five
+// Embedded into every ACP-derived agent (CursorCLIAgent, KiloAgent,
+// OpenCodeAgent, GooseCLIAgent, ReasonixAgent) via the acpBase
+// embedding chain, so a single implementation covers all five
 // providers.
 //
 // No-op when no session has been opened (sessionID still empty) so
@@ -3528,7 +3465,7 @@ func (b *acpBase) Interrupt() error {
 	b.noteACPInterruptRequested()
 	// The answers go FIRST. The agent blocks on them, so a cancel that arrives while
 	// one is outstanding stops nothing until the block is released.
-	b.cancelOutstandingPermissions()
+	b.withdrawAllControlRequests(b.sink)
 	return b.cancelSession()
 }
 
@@ -3553,8 +3490,11 @@ func hasACPOption(options []*leapmuxv1.AvailableOption, id string) bool {
 // withdrawn request had been.
 //
 // The withdrawal is separate from the `cancelled` outcome LeapMux sends for its
-// own interrupt (see cancelOutstandingPermissions). An agent may cancel a
+// own interrupt (see withdrawAllControlRequests). An agent may cancel a
 // request nobody asked it to cancel, which is the case only this handler covers.
+//
+// It sends the agent no answer. The agent withdrew the request itself, so it waits
+// for nothing.
 func (b *acpBase) handleACPCancelRequest(params json.RawMessage) {
 	var notification struct {
 		RequestID json.RawMessage `json:"requestId"`
@@ -3562,11 +3502,11 @@ func (b *acpBase) handleACPCancelRequest(params json.RawMessage) {
 	if json.Unmarshal(params, &notification) != nil {
 		return
 	}
-	requestID, valid := JSONRPCControlRequestID(notification.RequestID)
+	identity, valid := newControlRequestIdentity(notification.RequestID)
 	if !valid {
 		return
 	}
-	b.sink.CancelControlRequest(requestID)
+	b.withdrawControlRequest(b.sink, identity.key, false)
 }
 
 func (b *acpBase) handlePlan(update json.RawMessage) {
@@ -3594,10 +3534,9 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
 	case contracts.MCPElicitationMethodACP:
-		b.publishControlRequest(b.sink, line.Raw)
+		b.publishControlRequest(b.sink, line.Raw, mcpElicitationCancelAnswer())
 	case acpMethodSessionRequestPermission:
-		b.rememberOutstandingPermission(line.Raw)
-		b.publishControlRequest(b.sink, line.Raw)
+		b.publishControlRequest(b.sink, line.Raw, acpPermissionCancelAnswer())
 	case acpMethodCancelRequestSnake, acpMethodCancelRequestCamel:
 		b.handleACPCancelRequest(line.Params)
 	case acpMethodTerminalCreate,

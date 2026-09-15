@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
-import { ControlRequestActions, ControlRequestContent } from '../ControlRequestBanner'
+import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { pluginFor } from '../providers/registry'
 import { createControlAnswerState } from './types'
 import '../providers'
@@ -227,5 +227,36 @@ describe('shared elicitation control', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
     expect(new TextDecoder().decode(onRespond.mock.calls[1][0])).not.toContain('content')
+  })
+})
+
+// A send that RESOLVES does not always answer the request: the worker can record
+// a response it cannot confirm, and the store then keeps the request open. The
+// pending reset lived in the catch alone, so the buttons stayed disabled with no
+// way to send again. See SCAN-S8-2.
+describe('elicitationActions after a send that leaves the request open', () => {
+  const request = () => ({ requestId: 'open', agentId: 'agent', payload: { method: 'elicitation/create', params: {
+    mode: 'form',
+    message: 'Choose the settings.',
+    requestedSchema: { type: 'object', properties: { count: { type: 'integer', title: 'Count' } } },
+  } } })
+
+  it('re-enables its decisions', async () => {
+    const answerState = createControlAnswerState()
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <>
+        <ControlRequestContent request={request()} answerState={answerState} agentProvider={AgentProvider.GOOSE} />
+        <ControlRequestActions request={request()} answerState={answerState} agentProvider={AgentProvider.GOOSE} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
+      </>
+    ))
+    fireEvent.input(screen.getByLabelText('Count'), { target: { value: '1' } })
+    const approve = screen.getByRole('button', { name: 'Approve' })
+    fireEvent.click(approve)
+    await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    await waitFor(() => expect(approve).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeEnabled()
+    fireEvent.click(approve)
+    await waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
   })
 })

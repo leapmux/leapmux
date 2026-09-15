@@ -1,6 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import type { MessageContextResolver } from '../messageContextResolver'
 import type { PermissionPresetController } from '../providerSettings'
+import type { ControlSurface } from './controlSurface'
 import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -221,6 +222,34 @@ export interface ActionsProps {
 }
 
 /**
+ * What both halves of the banner take, beyond the props a plugin's control
+ * takes.
+ *
+ * The banner CLASSIFIES nothing. Its caller derives the surface and the
+ * provider once, with `createControlSurface`, and hands the same two values to
+ * the content and to the actions. Both mount for the SAME request in two
+ * different slots, so a banner that classified its own request built that graph
+ * twice and the composer built it a third time.
+ */
+interface BannerProps {
+  /**
+   * Which surface answers the request: the question form, the elicitation form,
+   * or the provider's own plugin.
+   *
+   * `undefined` for an absent request. The caller must pass the surface of the
+   * request in {@link BannerContentProps.request}, and the composer does: both
+   * come from the one active request.
+   */
+  controlSurface: ControlSurface | undefined
+  /**
+   * The provider whose plugin renders the request, ALREADY resolved against the
+   * request's own provider. It is not the agent's provider, which the caller
+   * resolves beside the surface so that both answers come from one place.
+   */
+  agentProvider?: AgentProvider
+}
+
+/**
  * The banner's own prop types, which admit an ABSENT request.
  *
  * A provider's `ControlContent` / `ControlActions` takes `ContentProps` /
@@ -231,7 +260,7 @@ export interface ActionsProps {
  * reactive prop does exactly that. These types state it, so the compiler
  * requires the guard instead of a reader trusting that one is present.
  */
-export interface BannerContentProps extends Omit<ContentProps, 'request'> {
+export interface BannerContentProps extends Omit<ContentProps, 'request'>, BannerProps {
   request: ControlRequest | null
   /**
    * Stops the turn the request belongs to. Absent when this agent cannot be
@@ -243,7 +272,7 @@ export interface BannerContentProps extends Omit<ContentProps, 'request'> {
   onInterrupt?: () => void
 }
 
-export interface BannerActionsProps extends Omit<ActionsProps, 'request'> {
+export interface BannerActionsProps extends Omit<ActionsProps, 'request'>, BannerProps {
   onRecordResponse?: () => Promise<void>
   request: ControlRequest | null
 }

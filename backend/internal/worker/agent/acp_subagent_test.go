@@ -758,7 +758,7 @@ func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 }
 
 // A registry-only provider must leave Prompt EMPTY even when its spawn payload
-// carries one. It never reports a ChildAgentKey, so takeSubagentPrompt never
+// carries one. It never reports a ChildAgentKey, so subagentPrompts.take never
 // runs and the entry can only be dropped by the closing observation -- which
 // Reasonix does not produce at all (it wires no update hook). Recording a
 // prompt here holds a string for the life of the agent process that nothing

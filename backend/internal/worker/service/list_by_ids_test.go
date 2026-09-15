@@ -27,7 +27,7 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	for _, id := range []string{"a1", "a2", "a3"} {
-		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
 		}))
 	}
@@ -80,7 +80,7 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "a1")))
@@ -101,10 +101,10 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "a2", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
@@ -397,7 +397,7 @@ func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM agents WHERE id IN"})

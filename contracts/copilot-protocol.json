@@ -1,5 +1,8 @@
 {
-  "_readme": "GitHub owns the native event, tool, mode and permission names. LeapMux owns the session-mode option-group id, the approval-scope words its control surface sends, and the supplemental field name.",
+  "_readme": "GitHub owns the native method, event, tool, mode and permission names. LeapMux owns the session-mode option-group id, the approval-scope words its control surface sends, and the supplemental field name.",
+  "methods": {
+    "SessionEvent": "session.event"
+  },
   "events": {
     "SessionStart": "session.start",
     "SessionResume": "session.resume",

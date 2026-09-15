@@ -1,15 +1,18 @@
+import type { AgentRequestSource } from '~/components/chat/results/AgentRequestMessage'
 import type { FileEditDiffSource } from '~/components/chat/results/fileEditDiff'
 import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { agentToolPresentation } from '~/components/chat/results/AgentRequestMessage'
 import { toolInputPaths } from '~/components/chat/results/toolInputs'
+import { toolKind } from '~/components/chat/results/toolKind'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { commandIsError } from '../../results/commandResult'
 import { parseMcpContentItem } from '../../results/mcpToolCall'
+import { todoToolBody } from '../../results/toolPresentation'
 import { retainedRowIsFinal } from '../registry'
 import { copilotAgentResult } from './agentResult'
 import { copilotChecklistItems } from './checklist'
@@ -19,6 +22,27 @@ import { copilotReadResult } from './readResult'
 
 /** The trailer Copilot appends to a shell result. It repeats the exit code. */
 const SHELL_COMPLETION = /(?:\r?\n)?<shellId: [^\r\n>]+ completed with exit code (-?\d+)>\s*$/
+
+/** The text without that trailer. The row states the exit code in its own place. */
+function stripShellTrailer(value: string): string {
+  const trailer = value.match(SHELL_COMPLETION)
+  return trailer ? value.slice(0, trailer.index) : value
+}
+
+/**
+ * True when one grep argument asks for context lines around each match.
+ *
+ * The count decides whether the match total is meaningful: with context lines, one
+ * output line is not one match. Only a positive count asks for them, so `0`, `""`,
+ * `false` and `null` all leave the total in place.
+ */
+function requestsContext(value: unknown): boolean {
+  if (typeof value === 'number')
+    return Number.isFinite(value) && value > 0
+  if (typeof value === 'string')
+    return Number(value.trim()) > 0
+  return false
+}
 
 /**
  * One tool call, resolved from the two native events that describe it.
@@ -98,11 +122,13 @@ export function copilotToolRow(
     input: pickObject(paired, 'arguments') ?? {},
     finished: true,
     status,
-    // A failure states its reason in `error`. Reading `result` first there would
-    // show whatever partial output the call produced and hide why it stopped.
-    raw: status === 'completed'
-      ? pickObject(completed, 'result') ?? pickObject(completed, 'error')
-      : pickObject(completed, 'error') ?? pickObject(completed, 'result'),
+    // A FAILURE states its reason in `error`. Reading `result` first there would show
+    // whatever partial output the call produced and hide why it stopped. A cancelled
+    // call is not a fault: the turn stopped around it, and its `result` holds the
+    // output it produced before that, so the result comes first there.
+    raw: status === 'failed'
+      ? pickObject(completed, 'error') ?? pickObject(completed, 'result')
+      : pickObject(completed, 'result') ?? pickObject(completed, 'error'),
   }
 }
 
@@ -176,7 +202,7 @@ export function copilotToolPresentation(row: CopilotToolRow): ToolPresentation {
       input.content = operation.newStr
   }
   const presentation: ToolPresentation = {
-    kind: operation?.operation === 'add' ? 'write' : operation?.operation === 'delete' ? 'delete' : row.kind,
+    kind: operation?.operation === 'add' ? 'write' : operation?.operation === 'delete' ? 'delete' : toolKind(row.kind),
     // A command with no description of its own states the command itself, which the
     // shared header draws. Falling back to the tool name would put the word `bash`
     // above the very command it ran.
@@ -226,32 +252,29 @@ function copilotRequestBody(presentation: ToolPresentation, row: CopilotToolRow)
   if (row.kind === 'todo')
     return copilotTodoBody(presentation, row)
   if (row.kind === 'agent')
-    return { ...presentation, ...copilotAgentRequest(row) }
+    return agentToolPresentation(presentation, copilotAgentRequest(row))
   return presentation
 }
 
-/**
- * The to-do body, with the count in its header.
- *
- * The header would otherwise read the raw tool name, which says nothing the list
- * below does not already show. Every other provider's to-do row states its size.
- */
+/** Copilot's checklist arrives as a JSON string in one argument. */
 function copilotTodoBody(presentation: ToolPresentation, row: CopilotToolRow): ToolPresentation {
   const items = copilotChecklistItems(pickString(row.input, 'todos'))
-  return { ...presentation, title: pluralize(items.length, 'task'), body: { type: 'todo', items } }
+  return { ...presentation, ...todoToolBody(items) }
 }
 
-/** The shared subagent request card, which states what the subagent was asked to do. */
-function copilotAgentRequest(row: CopilotToolRow): Pick<ToolPresentation, 'kind' | 'title' | 'agentRequest'> {
+/**
+ * What the subagent was asked to do, for the shared request card.
+ *
+ * Copilot states the instruction in `description` and the subagent's own label in
+ * `name`, and a launch can carry either one. `copilotAgentResult` reads the same
+ * pair for the result card, so the two cards state one description.
+ */
+function copilotAgentRequest(row: CopilotToolRow): AgentRequestSource {
   return {
-    kind: 'agent',
-    title: pickString(row.input, 'name') || pickString(row.input, 'description') || 'Agent',
-    agentRequest: {
-      toolName: COPILOT_TOOL.Task,
-      description: pickString(row.input, 'description'),
-      agentType: pickString(row.input, 'agent_type'),
-      prompt: pickString(row.input, 'prompt'),
-    },
+    toolName: COPILOT_TOOL.Task,
+    description: pickString(row.input, 'description') || pickString(row.input, 'name'),
+    agentType: pickString(row.input, 'agent_type'),
+    prompt: pickString(row.input, 'prompt'),
   }
 }
 
@@ -259,7 +282,7 @@ function copilotResultBody(presentation: ToolPresentation, row: CopilotToolRow, 
   const failed = row.status === 'failed' || row.status === 'cancelled'
   const mcpStatus = failed ? 'failed' as const : 'completed' as const
   if (row.kind === 'agent')
-    return { ...presentation, ...copilotAgentRequest(row), body: { type: 'agent', source: copilotAgentResult(row, output) } }
+    return agentToolPresentation(presentation, copilotAgentRequest(row), copilotAgentResult(row, output))
   if (row.kind === 'todo')
     return copilotTodoBody(presentation, row)
   if (row.kind === 'execute')
@@ -270,17 +293,18 @@ function copilotResultBody(presentation: ToolPresentation, row: CopilotToolRow, 
     const source = {
       server: '',
       tool: presentation.title,
-      argsJson: prettifyArgsJson(presentation.input),
+      argsJson: '',
       content: (contents ?? []).map(parseMcpContentItem),
       structuredJson,
       status: mcpStatus,
     }
     // A tool this build does not recognize has no body of its own, so the rich
-    // content IS its result. A recognized one keeps its own body -- a read stays a
-    // read -- and the blocks ride beside it.
+    // content IS its result, and that body states the arguments. A recognized one
+    // keeps its own body -- a read stays a read -- and the blocks ride beside it,
+    // where the header above already states the arguments.
     if (row.kind === 'other')
-      return { ...presentation, body: { type: 'mcp', source } }
-    presentation = { ...presentation, additionalContent: { ...source, argsJson: '' } }
+      return { ...presentation, body: { type: 'mcp', source: { ...source, argsJson: prettifyArgsJson(presentation.input) } } }
+    presentation = { ...presentation, additionalContent: source }
   }
   if (failed)
     return presentation
@@ -306,13 +330,28 @@ function copilotCommandBody(
 ): ToolPresentation {
   const contents = Array.isArray(row.raw?.contents) ? row.raw.contents : []
   const exits = contents.filter(isObject).filter(item => item.type === 'shell_exit')
-  const reportedExit = exits.length === 1 ? pickNumber(exits[0], 'exitCode', undefined) : undefined
-  const knownExit = reportedExit !== undefined && Number.isSafeInteger(reportedExit) ? exits[0] : undefined
+  // The BLOCK and the CODE are two decisions. One `shell_exit` block states the shell,
+  // the directory and the output file whether or not it reports a usable code, and the
+  // rows below read it for those. Only a safe integer states the code itself.
+  const exitBlock = exits.length === 1 ? exits[0] : undefined
+  const reportedExit = pickNumber(exitBlock, 'exitCode', undefined)
+  const knownExit = reportedExit !== undefined && Number.isSafeInteger(reportedExit) ? reportedExit : undefined
   const trailer = output.match(SHELL_COMPLETION)
-  const exitCode = knownExit ? reportedExit : trailer ? Number(trailer[1]) : undefined
-  const text = trailer ? output.slice(0, trailer.index) : output
-  const extra = contents.filter(item => item !== knownExit
-    && (!isObject(item) || !(item.type === 'text' && [output, text].includes(pickString(item, 'text')))))
+  const exitCode = knownExit ?? (trailer ? Number(trailer[1]) : undefined)
+  const text = stripShellTrailer(output)
+  // Every text the result itself carries is already on the row: the displayed text and
+  // each field `copilotOutput` chose between. A content block that repeats one of them
+  // would draw the same text a second time.
+  const shown = new Set([output, text])
+  for (const key of ['content', 'detailedContent', 'message']) {
+    const value = pickString(row.raw, key, undefined)
+    if (value !== undefined) {
+      shown.add(value)
+      shown.add(stripShellTrailer(value))
+    }
+  }
+  const extra = contents.filter(item => item !== exitBlock
+    && (!isObject(item) || !(item.type === 'text' && shown.has(pickString(item, 'text')))))
   const structuredJson = prettifyStructuredJson(row.raw?.structuredContent)
   return {
     ...presentation,
@@ -324,7 +363,7 @@ function copilotCommandBody(
       interrupted: row.status === 'cancelled',
     } },
     metadata: [['Shell ID', 'shellId'], ['Directory', 'cwd'], ['Output file', 'outputFilePath']].flatMap(([label, key]) => {
-      const value = pickString(knownExit, key)
+      const value = pickString(exitBlock, key)
       return value ? [{ label, value }] : []
     }),
     additionalContent: extra.length || structuredJson
@@ -350,7 +389,7 @@ function copilotSearchBody(presentation: ToolPresentation, row: CopilotToolRow, 
   const countMode = input.output_mode === 'count'
   const counts = countMode ? lines.map(line => line.match(/:(\d+)\s*$/)).filter(match => match !== null) : []
   const hasContext = ['A', 'B', 'C', '-A', '-B', '-C', 'context', 'after_context', 'before_context']
-    .some(key => input[key] !== undefined && input[key] !== 0)
+    .some(key => requestsContext(input[key]))
   return {
     ...presentation,
     label: glob ? 'Glob' : 'Grep',

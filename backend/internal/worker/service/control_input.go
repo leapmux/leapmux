@@ -2,12 +2,20 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
+
+// notReadyInput refuses a dispatch that nothing delivered and that a later state
+// change can still deliver. The queue requeues the item and pauses, so the user
+// never retries by hand what the Worker can resume on its own.
+func notReadyInput(err error) error {
+	return &inputqueue.DeliveryError{Err: err, Outcome: inputqueue.DispatchNotReady}
+}
 
 type controlInput struct {
 	text   string
@@ -22,7 +30,10 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 		AgentID: item.AgentID, InputID: item.ID,
 	})
 	if err != nil {
-		return controlInput{}, err
+		// A missing row gives an empty slice here, so every error is a store
+		// fault rather than an answer about this input. Nothing reached the
+		// provider, and the next read can succeed.
+		return controlInput{}, notReadyInput(fmt.Errorf("read the control responses for this input: %w", err))
 	}
 	if len(sources) > 1 {
 		return controlInput{}, errors.New("the input matches more than one control response")
@@ -30,7 +41,12 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	if len(sources) == 1 {
 		source := &sources[0]
 		if source.State != storedStateCompleted {
-			return controlInput{}, errors.New("the input's approval is not recorded")
+			// The answer row exists and is still on its way to COMPLETED.
+			// enqueuePlanExecution inserts the item BEFORE processControlResponse
+			// records the delivery, so the queue can drain it first. The
+			// NotifyDependencyReady that finalizeControlResponse sends resumes
+			// the queue, which a FAILED item would not wait for.
+			return controlInput{}, notReadyInput(errors.New("the input's approval is not recorded yet"))
 		}
 		resolved.source = source
 		if err := resolved.validateSession(currentAgent); err != nil {
@@ -47,7 +63,7 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 }
 
 func (input controlInput) validateSession(current db.Agent) error {
-	if input.source != nil && (input.sessionID() == "" || input.sessionID() != current.AgentSessionID || input.source.AgentProvider != int64(current.AgentProvider)) {
+	if input.source != nil && (input.sessionID() == "" || input.sessionID() != current.AgentSessionID || input.source.AgentProvider != current.AgentProvider) {
 		return errors.New("the original provider session is no longer active")
 	}
 	return nil

@@ -1,0 +1,190 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// newCopilotOffReaderAgent builds an agent whose connection is present but stopped
+// nowhere. offReader reads sessionMu and the stopped flag, and both resolve here.
+func newCopilotOffReaderAgent() *copilotAgent {
+	return &copilotAgent{
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase: processBase{ctx: context.Background(), stdin: failingWriteCloser{}},
+		}},
+		sink: &testSink{}, sessionID: "session",
+	}
+}
+
+// A burst of change events must not start a request for each one. The runtime states
+// that an axis moved and not what it became, so every request in the burst reads the
+// same answer, and the order they finish in decides which answer stands.
+func TestCopilotOffReaderKeepsOneRunOfAKeyInFlight(t *testing.T) {
+	a := newCopilotOffReaderAgent()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var runs atomic.Int64
+	work := func() {
+		if runs.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+	}
+
+	a.offReader(copilotReadSettings, work)
+	<-started
+	// Three more events arrive while the first read is in flight.
+	for range 3 {
+		a.offReader(copilotReadSettings, work)
+	}
+	assert.Equal(t, int64(1), runs.Load(), "a request that arrives mid-read starts no second read")
+	close(release)
+
+	// One more run follows, because a change that arrived mid-read can carry a state the
+	// read already passed. Three requests still buy exactly one of them.
+	require.Eventually(t, func() bool { return runs.Load() == 2 }, time.Second, time.Millisecond)
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	assert.Empty(t, a.backgroundReads, "a finished read leaves no entry behind")
+}
+
+// A read that nobody interrupted runs exactly once.
+func TestCopilotOffReaderRunsOnceForOneRequest(t *testing.T) {
+	a := newCopilotOffReaderAgent()
+	var runs atomic.Int64
+	a.offReader(copilotReadGoal, func() { runs.Add(1) })
+	require.Eventually(t, func() bool { return runs.Load() == 1 }, time.Second, time.Millisecond)
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	assert.Empty(t, a.backgroundReads)
+}
+
+// The keys stand apart: an objective read and a settings read never wait for each other.
+func TestCopilotOffReaderSeparatesItsKeys(t *testing.T) {
+	a := newCopilotOffReaderAgent()
+	goalRan := make(chan struct{})
+	settingsRan := make(chan struct{})
+	block := make(chan struct{})
+	defer close(block)
+
+	a.offReader(copilotReadGoal, func() {
+		close(goalRan)
+		<-block
+	})
+	<-goalRan
+	a.offReader(copilotReadSettings, func() { close(settingsRan) })
+	select {
+	case <-settingsRan:
+	case <-time.After(time.Second):
+		t.Fatal("a settings read waited for the objective read")
+	}
+}
+
+// A stopped process answers nothing, so the work never starts.
+func TestCopilotOffReaderRefusesAStoppedProcess(t *testing.T) {
+	a := newCopilotOffReaderAgent()
+	a.mu.Lock()
+	a.stopped = true
+	a.mu.Unlock()
+	var runs atomic.Int64
+	a.offReader(copilotReadGoal, func() { runs.Add(1) })
+	require.Eventually(t, func() bool {
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		return len(a.backgroundReads) == 0
+	}, time.Second, time.Millisecond)
+	assert.Zero(t, runs.Load())
+}
+
+// An inbound REQUEST needs an answer. The session configuration opts into
+// requestPermission and requestElicitation, so the runtime can ask; without a reply it
+// waits for its own timeout. The frame still reaches the transcript.
+func TestCopilotAnswersAnUnsupportedRequest(t *testing.T) {
+	sink := &testSink{}
+	written := &syncBuffer{}
+	a := &copilotAgent{
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase:  processBase{ctx: context.Background(), stdin: nopWriteCloser{written}},
+			frameMessage: frameCopilotJSON,
+		}},
+		sink: sink, sessionID: "session",
+	}
+
+	raw := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"session/requestSomethingNew","params":{}}`)
+	a.HandleOutput(raw)
+
+	answer := written.String()
+	require.Contains(t, answer, `"code":-32601`)
+	require.Contains(t, answer, "Method not supported: session/requestSomethingNew")
+	assert.Contains(t, answer, `"id":9007199254740993`,
+		"the identifier returns exactly as it arrived, above the range a float keeps")
+	require.Len(t, sink.Messages(), 1, "the frame still reaches the transcript")
+	assert.Equal(t, raw, sink.Messages()[0].Content)
+}
+
+// A NOTIFICATION carries no id and needs no answer. Writing one would put a response
+// with a null identifier on the wire, which the runtime cannot route.
+func TestCopilotAnswersNoNotification(t *testing.T) {
+	written := &syncBuffer{}
+	a := &copilotAgent{
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase:  processBase{ctx: context.Background(), stdin: nopWriteCloser{written}},
+			frameMessage: frameCopilotJSON,
+		}},
+		sink: &testSink{}, sessionID: "session",
+	}
+
+	for _, raw := range []string{
+		`{"jsonrpc":"2.0","method":"session/somethingHappened","params":{}}`,
+		`{"jsonrpc":"2.0","id":null,"method":"session/somethingHappened","params":{}}`,
+		`{"jsonrpc":"2.0","method":"session.lifecycle","params":{}}`,
+	} {
+		a.HandleOutput([]byte(raw))
+	}
+	assert.Empty(t, written.String())
+}
+
+// A response the correlator already declined must not draw an error reply: it carries
+// no method, so it is nobody's request.
+func TestCopilotAnswersNoOrphanResponse(t *testing.T) {
+	written := &syncBuffer{}
+	a := &copilotAgent{
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase:  processBase{ctx: context.Background(), stdin: nopWriteCloser{written}},
+			frameMessage: frameCopilotJSON,
+		}},
+		sink: &testSink{}, sessionID: "session",
+	}
+	a.handleNativeOutput(&parsedLine{
+		Raw: []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`),
+		ID:  json.RawMessage(`7`),
+	})
+	assert.Empty(t, written.String())
+}
+
+// syncBuffer records what the agent wrote to the process. A reply travels on a
+// goroutine of its own in some paths, so the reads take a lock.
+type syncBuffer struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (b *syncBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.Write(data)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.String()
+}

@@ -5,7 +5,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
-import { AgentActivityState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
@@ -975,6 +975,78 @@ describe('showInterrupt', () => {
   })
 })
 
+// Both halves of the banner take these two, so the composer and the banner
+// cannot classify the same request differently, and one graph answers all three
+// readers. See `createControlSurface`.
+describe('activeControlSurface and activeControlProvider', () => {
+  const question = {
+    request: {
+      tool_name: 'AskUserQuestion',
+      input: { questions: [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] }] },
+    },
+  }
+
+  it('classifies the active request and reports its provider', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', question)],
+      })
+      expect(result.activeControlProvider()).toBe(AgentProvider.CLAUDE_CODE)
+      expect(result.activeControlSurface()?.kind).toBe('question')
+      expect(result.isAskUserQuestion()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('leaves a payload no shared form answers to the provider plugin', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent')],
+      })
+      expect(result.activeControlSurface()).toEqual({ kind: 'plugin' })
+      dispose()
+    })
+  })
+
+  // The request's own provider wins over the agent's, so a queued request from
+  // another provider reaches its own plugin.
+  it('prefers the provider the request carries', () => {
+    createRoot((dispose) => {
+      const request = makeControlRequest('req-1', 'test-agent')
+      request.agentProvider = AgentProvider.CODEX
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [request],
+      })
+      expect(result.activeControlProvider()).toBe(AgentProvider.CODEX)
+      dispose()
+    })
+  })
+
+  it('reports no surface once the store removes the request', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agent: { agentProvider: AgentProvider.CLAUDE_CODE }, controlRequests: [] })
+      expect(result.activeControlSurface()).toBeUndefined()
+      dispose()
+    })
+  })
+
+  // ONE graph: both halves of the banner and the composer read the same memo,
+  // so a read from three places recomputes nothing.
+  it('classifies once for every reader of the same request', () => {
+    createRoot((dispose) => {
+      const { result } = setup({
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', question)],
+      })
+      expect(result.activeControlSurface()).toBe(result.activeControlSurface())
+      dispose()
+    })
+  })
+})
+
 describe('activeControlRequest', () => {
   // `setup` spreads its overrides, which reads a getter once and freezes it, so
   // this suite builds a reactive `controlRequests` inline here.
@@ -1142,6 +1214,88 @@ describe('elicitation composer submission', () => {
       state.setChoices({ 'elicitation:"count"': '0' })
       expect(handling.handleControlSend('')).toBe(false)
       expect(onControlResponse).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
+// A control response that the worker RECORDS but does not complete leaves the
+// request open. `handleControlSend` resolved with nothing for it, and the editor
+// refuses only on a literal `false` -- so the composer cleared the text the user
+// still had to send. See SCAN-S8-1.
+describe('handleControlSend completion', () => {
+  const denyRequest = (): ControlRequest => ({
+    requestId: 'open',
+    agentId: 'test-agent',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    payload: { request: { tool_name: 'Bash', input: { command: 'pwd' } } },
+  })
+
+  async function sendWith(completed: boolean | undefined) {
+    const request = denyRequest()
+    const onControlResponse = vi.fn().mockResolvedValue(completed)
+    const state = createControlAnswerState()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: useControlResponseHandling(
+        { agentId: 'test-agent', controlRequests: [request], onControlResponse, onSendMessage: vi.fn() },
+        state,
+        () => undefined,
+        vi.fn(),
+      ),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      return await result.handleControlSend('No, use a safer command')
+    }
+    finally {
+      dispose()
+    }
+  }
+
+  it('refuses the send when the worker leaves the request open', async () => {
+    expect(await sendWith(false)).toBe(false)
+  })
+
+  it('reports the send when the worker completes the response', async () => {
+    expect(await sendWith(true)).toBe(true)
+  })
+
+  // A handler that answers nothing is the LEGACY shape, and it means completed.
+  it('treats a handler that reports nothing as completed', async () => {
+    expect(await sendWith(undefined)).toBe(true)
+  })
+})
+
+// The three presentation surfaces all refuse to offer a decision for a request
+// whose bytes LeapMux could not read, and the one place that SENDS tested the
+// delivery state alone -- so a faulted request in the READY state passed it.
+// See ALTITUDE-FE-4.
+describe('submitResponse payload fault', () => {
+  const faulted = (): ControlRequest => ({
+    requestId: 'faulted',
+    agentId: 'test-agent',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    payload: {},
+    payloadFault: 'malformed',
+    responseState: ControlResponseState.READY,
+  })
+
+  it('refuses an answer and still admits the recording', async () => {
+    const request = faulted()
+    const onControlResponse = vi.fn().mockResolvedValue(true)
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: setup({ controlRequests: [request], onControlResponse }).result,
+    }))
+    try {
+      await expect(result.respondTo(request)(new TextEncoder().encode('{}'))).rejects.toThrow()
+      expect(onControlResponse).not.toHaveBeenCalled()
+      await result.recordResponse(request)
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      expect(onControlResponse.mock.calls[0][2]).toMatchObject({ recordOnly: true })
     }
     finally {
       dispose()

@@ -76,19 +76,19 @@ function buildErrorResult(
  * `/usage`, even "Unknown command: ...") echo their already-shown output through
  * this envelope with is_error:false; rendering that echo in red was a false
  * alarm. Trust is_error and collapse to a plain "Took Xs" divider, keeping the
- * result text only for a genuine non-success subtype (e.g. "cancelled"). Mirror
- * the error branch's `subtype && ...` guard so an absent subtype is treated as
- * success-like instead of leaking the raw echo into the label.
+ * result text only for a genuine non-success subtype. Mirror the error branch's
+ * `subtype && ...` guard so an absent subtype is treated as success-like instead
+ * of leaking the raw echo into the label.
+ *
+ * The `cancelled` subtype never reaches here. `claudeResultDivider` answers it
+ * ahead of the is_error test, because the interface marks its own cancellation
+ * with `is_error: true` and only the error branch would ever have seen it.
  */
 function buildPlainResult(
   resultText: string,
   durationMs: number | null,
   subtype: string,
 ): ResultDividerModel {
-  // A cancelled turn is an interruption, whoever asked for it. The completion column
-  // covers the interrupt LeapMux sent; this covers one the interface reports itself.
-  if (subtype === CLAUDE_SUBTYPE_CANCELLED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
   const displayText = subtype && subtype !== 'success' ? resultText : ''
   // Any other non-success subtype's own text qualifies the turn end rather than
   // replacing it, so the row still opens with the words every other provider uses.
@@ -99,12 +99,16 @@ function buildPlainResult(
  * Claude result_divider hook: {"type":"result","duration_ms":865,"is_error":...}.
  * Returns the provider-neutral model; the shared `ResultDivider` draws it.
  *
- * A turn the USER stopped comes first, whatever the frame says. The command-line
- * interface reports an interrupted turn as `error_during_execution` with
- * `is_error: true` -- the same shape as a genuine failure -- and its `errors` array
- * carries its own diagnostics, so the row read "Error during execution (12s)
- * [ede_diagnostic] result_type=user ...". LeapMux asked for the stop, and its
- * completion column is what records that.
+ * A turn that STOPPED comes first, whatever the rest of the frame says, because the
+ * command-line interface marks an interruption with `is_error: true` -- the same shape
+ * as a genuine failure. Two fields report a stop, and each one carries a different half
+ * of the answer:
+ *
+ *   - LeapMux's own completion column, for the interrupt that LeapMux sent. The
+ *     interface reports that one as `error_during_execution`, and its `errors` array
+ *     carries its own diagnostics, so the row read "Error during execution (12s)
+ *     [ede_diagnostic] result_type=user ...".
+ *   - The `cancelled` subtype, for a stop the interface reports itself.
  */
 export function claudeResultDivider(parsed: unknown, completion?: MessageCompletion): ResultDividerModel | null {
   if (!isObject(parsed) || parsed.type !== 'result')
@@ -116,7 +120,7 @@ export function claudeResultDivider(parsed: unknown, completion?: MessageComplet
   const durationMs = pickNumber(parsed, 'duration_ms')
   const subtype = pickString(parsed, 'subtype')
 
-  if (completion === MessageCompletion.INTERRUPTED)
+  if (completion === MessageCompletion.INTERRUPTED || subtype === CLAUDE_SUBTYPE_CANCELLED)
     return { label: turnEndLabel('interrupted', { durationMs }) }
 
   return parsed.is_error === true

@@ -258,3 +258,46 @@ func BenchmarkPiToolArtifactRecovery(b *testing.B) {
 		})
 	}
 }
+
+func TestPiArtifactFailuresSeparateTheBudgetFromThePath(t *testing.T) {
+	t.Parallel()
+	directory := piArtifactTestDirectory(t)
+	path := filepath.Join(directory, "output-1234abcd.txt")
+	require.NoError(t, os.WriteFile(path, []byte("full"), 0o600))
+	// An exhausted budget is not a path problem, and each states its own reason.
+	_, err := readPiToolArtifact(t.Context(), piArtifactReference{path: path}, "output", -1)
+	require.ErrorContains(t, err, "no room")
+	outside := filepath.Join(t.TempDir(), "output-1234abcd.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("full"), 0o600))
+	_, err = readPiToolArtifact(t.Context(), piArtifactReference{path: outside}, "output", 8)
+	require.ErrorContains(t, err, "path")
+}
+
+func TestRecoverPiToolArtifactsRefusesAMessageThatFillsTheFrame(t *testing.T) {
+	t.Parallel()
+	directory := piArtifactTestDirectory(t)
+	path := filepath.Join(directory, "output-1234abcd.txt")
+	require.NoError(t, os.WriteFile(path, []byte("full"), 0o600))
+	raw := piArtifactTestEvent(t, map[string]any{"outputGuard": map[string]any{"truncated": true, "fullOutputPath": path}})
+	// liveStdoutMaxTokenSize reads a live atomic that a renegotiation can shrink, so
+	// the original message alone can already fill the whole frame.
+	padding := liveStdoutMaxTokenSize() - len(raw) - len(`,"padding":""`)
+	require.Positive(t, padding)
+	raw = []byte(string(raw[:len(raw)-1]) + `,"padding":"` + strings.Repeat("x", padding) + `"}`)
+	extra, complete, err := recoverPiToolArtifacts(t.Context(), raw, nil)
+	require.ErrorContains(t, err, "no room for a supplement")
+	assert.False(t, complete)
+	assert.Nil(t, extra)
+
+	// A snapshot that an earlier boundary already recovered costs no new bytes, so an
+	// exhausted budget must not discard it. Only a NEW read is refused.
+	text := "full"
+	artifact, err := json.Marshal(piOutputArtifact{Path: path, Text: &text})
+	require.NoError(t, err)
+	existing, err := json.Marshal(piToolArtifactSupplement{ToolCallID: "call", ToolName: "mcp", OutputFile: artifact})
+	require.NoError(t, err)
+	extra, complete, err = recoverPiToolArtifacts(t.Context(), raw, existing)
+	require.ErrorContains(t, err, "no room for a supplement")
+	assert.False(t, complete)
+	assert.JSONEq(t, string(existing), string(extra))
+}

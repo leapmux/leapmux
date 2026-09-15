@@ -27,7 +27,7 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -36,7 +36,7 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 	// Seed five messages; capture their assigned (ascending) seqs.
 	var seqs []int64
 	for i := 0; i < 5; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -156,10 +156,10 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-1",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -170,7 +170,7 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 		AgentID: "agent-1", RowKey: "k1", Seq: 1, TaskID: "t1",
-		Content: "Run tests", ActiveForm: "Running tests", Status: int64(todoevents.StatusInProgress),
+		Content: "Run tests", ActiveForm: "Running tests", Status: leapmuxv1.TodoStatus(todoevents.StatusInProgress),
 	}))
 
 	list := func(req *leapmuxv1.ListAgentMessagesRequest) *leapmuxv1.ListAgentMessagesResponse {
@@ -230,7 +230,7 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -239,7 +239,7 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 	// Seed 60 messages so the latest 50 differ from the oldest 50.
 	var seqs []int64
 	for i := 0; i < 60; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -309,7 +309,7 @@ func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -318,7 +318,7 @@ func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 	// Seed 60 messages so the cursor-to-tail gap (54) exceeds the 50-row replay cap.
 	var seqs []int64
 	for i := 0; i < 60; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -390,14 +390,14 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	// 60 messages; resuming from the 6th leaves a 54-message gap > the 50-row cap.
 	var seqs []int64
 	for i := 0; i < 60; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID: fmt.Sprintf("msg-%d", i+1), AgentID: "agent-1",
 			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
@@ -455,13 +455,13 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	var tail int64
 	for i := 0; i < 3; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID: fmt.Sprintf("msg-%d", i+1), AgentID: "agent-1",
 			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("hi"),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
@@ -507,7 +507,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
 		HomeDir:    "/tmp",
@@ -515,7 +515,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 
 	var seqs []int64
 	for i := 0; i < 60; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -570,12 +570,12 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	var seqs []int64
 	for i := 0; i < 3; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -588,7 +588,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	}
 	require.NoError(t, svc.Queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 		AgentID: "agent-1", RowKey: "k1", Seq: 1, TaskID: "t1",
-		Content: "Run tests", ActiveForm: "Running tests", Status: int64(todoevents.StatusInProgress),
+		Content: "Run tests", ActiveForm: "Running tests", Status: leapmuxv1.TodoStatus(todoevents.StatusInProgress),
 	}))
 
 	// Resume from the first message's seq: a RESUMING subscriber whose catch-up
@@ -630,12 +630,12 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	var seqs []int64
 	for i := 0; i < 3; i++ {
-		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			ID:            fmt.Sprintf("msg-%d", i+1),
 			AgentID:       "agent-1",
 			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -711,7 +711,7 @@ func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// One message so the latest page is non-empty.
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "m1",
 		AgentID:       "child-1",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

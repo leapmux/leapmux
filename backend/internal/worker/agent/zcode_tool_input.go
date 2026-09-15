@@ -9,7 +9,18 @@ import (
 )
 
 // supplementZCodeControlInput recovers arguments from an interaction request for the same tool call.
-func (a *zcodeAgent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (bool, error) {
+//
+// carriesInput CONFIRMS one thing: the transcript's own row for this tool call
+// now holds the control's input, because the row already carried it or because
+// this call put it there. False is "not confirmed", and the error states which
+// kind. With no error it means the transcript has no such row, or the store
+// refused the write -- and either way the caller must write the input itself or
+// lose it. With an error it means the read could not say.
+//
+// The caller decides what an unconfirmed read is worth. handleUserInputRequest
+// treats a FAILED read as "the transcript has it", because a second plan row over
+// one that is already there draws the plan twice.
+func (a *zcodeAgent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
 	if toolCallID == "" || zcodeInputIsAbsent(input) {
 		return false, nil
 	}
@@ -40,16 +51,22 @@ func (a *zcodeAgent) supplementZCodeControlInput(toolCallID, toolName string, in
 		return false, fmt.Errorf("read recovered tool input: %w", err)
 	}
 	supplement, err := zcodeToolInputSupplement(request, previous.Input, input)
-	if err != nil || len(supplement) == 0 {
-		return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	// Nothing is missing, so the stored row already carries every field of the input.
+	if len(supplement) == 0 {
+		return true, nil
 	}
 	combined, err := mergeToolSupplements(stored.Content.Supplemental, supplement)
 	if err != nil {
 		return false, fmt.Errorf("merge control tool input: %w", err)
 	}
+	// The merge added nothing, so the row's supplement already carries the input.
 	if bytes.Equal(combined, stored.Content.Supplemental) {
 		return true, nil
 	}
+	// A refused write leaves the row without the input, and its bool says so.
 	return sink.EnrichMessage(MessageEnrichment{
 		Seq: stored.Seq, SpanID: toolCallID, OriginalContent: stored.Content.Original,
 		PreviousRevision: stored.Revision, SupplementalContent: combined,

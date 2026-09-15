@@ -32,7 +32,13 @@ CREATE TABLE agents (
     -- option_groups: cached catalog of every configuration axis reported by the
     -- agent process (model/effort/permission/etc.), as a JSON array.
     option_groups    TEXT NOT NULL DEFAULT '[]',
-    agent_provider   INTEGER NOT NULL DEFAULT 1,
+    -- An AgentProvider ordinal, under the same CHECK as its two siblings
+    -- (messages, control_response_answers). Every agent runs ONE provider's
+    -- process, so a 0 here is a field the writer forgot rather than a state.
+    -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
+    -- CHECK is the only guard.
+    agent_provider   INTEGER NOT NULL DEFAULT 1
+        CHECK (agent_provider BETWEEN 1 AND 11 AND agent_provider <> 3),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
@@ -111,10 +117,25 @@ CREATE TABLE messages (
     agent_session_id    TEXT NOT NULL DEFAULT '',
     source              INTEGER NOT NULL,
     content             BLOB NOT NULL,
-    content_compression INTEGER NOT NULL,
+    -- A ContentCompression ordinal, under the same CHECK as the supplemental
+    -- sibling below. msgcodec.Decompress refuses an UNSPECIFIED 0, and every
+    -- reader of THIS column propagates that refusal -- so a stored 0 makes the
+    -- message permanently unreadable, and the failure surfaces at a read far
+    -- from the write that caused it. msgcodec.Compress is the one producer and
+    -- it answers ZSTD for every message, so only a writer that forgot the field
+    -- reaches 0. The CHECK moves that failure to the write.
+    content_compression INTEGER NOT NULL
+        CHECK (content_compression BETWEEN 1 AND 2),
     -- Supplemental rendering data never changes the original provider payload.
+    --
+    -- The compression is a ContentCompression ordinal. UNSPECIFIED (0) is
+    -- outside the CHECK, because msgcodec.Decompress refuses it and the reader
+    -- only logs that refusal -- so a stored 0 dropped the supplement silently
+    -- instead of failing its write. DEFAULT 1 (NONE) describes the empty
+    -- supplement above, which is what a writer that sets neither column stores.
     supplemental_content BLOB NOT NULL DEFAULT X'',
-    supplemental_content_compression INTEGER NOT NULL DEFAULT 0,
+    supplemental_content_compression INTEGER NOT NULL DEFAULT 1
+        CHECK (supplemental_content_compression BETWEEN 1 AND 2),
     supplemental_revision INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(supplemental_revision) = 'integer' AND supplemental_revision >= 0),
     -- Non-empty only for an accepted durable queue item. It keeps enqueue
@@ -126,7 +147,14 @@ CREATE TABLE messages (
     span_type           TEXT NOT NULL DEFAULT '',
     span_lines          TEXT NOT NULL DEFAULT '[]',
     span_color          INTEGER NOT NULL DEFAULT 0,
-    agent_provider      INTEGER NOT NULL DEFAULT 1,
+    -- An AgentProvider ordinal. UNSPECIFIED (0) is outside the CHECK, because
+    -- every message comes from one provider's process, so a 0 here is an unset
+    -- field rather than a state. Ordinal 3 is a removed provider that the proto
+    -- RESERVES, so no row may carry it either;
+    -- TestAgentProviderReservesTheRemovedOrdinal fails the suite if a new
+    -- enumerator claims 3.
+    agent_provider      INTEGER NOT NULL DEFAULT 1
+        CHECK (agent_provider BETWEEN 1 AND 11 AND agent_provider <> 3),
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
@@ -261,7 +289,13 @@ CREATE TABLE control_response_answers (
     source_seq INTEGER NOT NULL DEFAULT 0 CHECK (source_seq >= 0),
     feedback TEXT NOT NULL DEFAULT '',
     agent_session_id TEXT NOT NULL DEFAULT '',
-    agent_provider INTEGER NOT NULL DEFAULT 0,
+    -- An AgentProvider ordinal, under the same CHECK as messages.agent_provider.
+    -- It carries NO default: ClaimControlResponseAnswer binds the provider, and
+    -- the replay compares this value against the live agent's own -- so a row
+    -- that recorded 0 for a forgotten write would match an agent whose provider
+    -- field was also unset.
+    agent_provider INTEGER NOT NULL
+        CHECK (agent_provider BETWEEN 1 AND 11 AND agent_provider <> 3),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );

@@ -655,7 +655,12 @@ func (a *ClaudeCodeAgent) handleThinkingTokens(content []byte) bool {
 // whenever no span was open, which is exactly the state during a top-level
 // Agent/Task call (claudeToolSpawnsSubagent opens none).
 func (a *ClaudeCodeAgent) claudeHandleToolProgress(content []byte) {
-	update, ok := parseClaudeToolProgress(content)
+	// a.mu guards a.sessionID, which claudeCodeHandleSystemInit rewrites when the
+	// CLI reports a different session.
+	a.mu.Lock()
+	sessionID := a.sessionID
+	a.mu.Unlock()
+	update, ok := parseClaudeToolProgress(content, sessionID)
 	if !ok {
 		return
 	}
@@ -705,6 +710,12 @@ type claudeSubagentRetry struct {
 // update to broadcast, or reports ok=false for a frame with nothing to show.
 // Pure (no sink, no I/O) so the family rules are unit-testable directly.
 //
+// sessionID is the provider session that runs the tool. The update carries it
+// beside the span id because the two TOGETHER address the tool_use row: a span
+// id is unique inside one session, not across every session of one agent. The
+// browser keys its live entry by the pair, so a frame that stated no session
+// would leave the badge unreachable from the row that owns it.
+//
 // The CLI emits five families under this one type. Two reach LeapMux:
 //
 //   - tool_heartbeat -- every 30 seconds, for every tool call of the MAIN agent
@@ -722,7 +733,7 @@ type claudeSubagentRetry struct {
 // The other three are unreachable: bash_progress and powershell_progress need
 // CLAUDE_CODE_REMOTE or a container id, and repl_tool_call needs the REPL tool.
 // They are dropped rather than guessed at.
-func parseClaudeToolProgress(content []byte) (map[string]interface{}, bool) {
+func parseClaudeToolProgress(content []byte, sessionID string) (map[string]interface{}, bool) {
 	var frame claudeToolProgress
 	if err := json.Unmarshal(content, &frame); err != nil {
 		slog.Warn("invalid claude tool_progress JSON", "error", err)
@@ -735,7 +746,8 @@ func parseClaudeToolProgress(content []byte) (map[string]interface{}, bool) {
 	}
 
 	update := map[string]interface{}{
-		contracts.RunningToolFieldSpanId: frame.ParentToolUseID,
+		contracts.RunningToolFieldSpanId:         frame.ParentToolUseID,
+		contracts.RunningToolFieldAgentSessionId: sessionID,
 	}
 	switch {
 	case frame.Heartbeat:

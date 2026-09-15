@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,4 +156,125 @@ func TestPiGoalSnapshotDoesNotRequestMissingNonemptyHistory(t *testing.T) {
 	requests := rig.requests()
 	require.Len(t, requests, 1)
 	assert.Equal(t, PiCommandGetState, requests[0].Type)
+}
+
+func TestPiGoalScheduleKeepsAPendingSnapshotIntent(t *testing.T) {
+	t.Parallel()
+	rig, _, _ := piGoalSyncRig(t)
+	a := rig.agent
+	a.mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-pause": true}
+	// Hold the refresh loop, so the scheduling fields stay observable.
+	a.goal.running = true
+	a.mu.Unlock()
+	a.schedulePiGoalRefresh(true)
+	a.schedulePiGoalRefresh(false)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	assert.True(t, a.goal.snapshot, "a later hint must not spend the pending snapshot intent")
+	assert.True(t, a.goal.pending)
+}
+
+func TestPiGoalRefreshRepublishesASnapshotAfterAFailedRead(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	a.mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-pause": true}
+	a.mu.Unlock()
+	var failing atomic.Bool
+	failing.Store(true)
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != PiCommandGetEntries {
+			return nil, false, "Unexpected command"
+		}
+		if failing.Load() {
+			return nil, false, "the Pi session is busy"
+		}
+		return json.RawMessage(`{"entries":[],"leafId":"focus"}`), true, ""
+	})
+	settled := func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.goal.running
+	}
+	a.schedulePiGoalRefresh(true)
+	require.Eventually(t, settled, time.Second, time.Millisecond)
+	require.Empty(t, sink.Goals(), "a failed read publishes nothing")
+
+	// The startup snapshot never reached the sink, so the intent must survive a later
+	// hint that carries none. Without it the browser prints "Goal set" for a goal the
+	// user set in an earlier process.
+	failing.Store(false)
+	a.schedulePiGoalRefresh(false)
+	require.Eventually(t, func() bool { _, ok := sink.LastGoal(); return ok }, time.Second, time.Millisecond)
+	goal, _ := sink.LastGoal()
+	assert.True(t, goal.Snapshot)
+
+	// The publication spent the intent, so the next hint announces a real change.
+	require.Eventually(t, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.goal.running && !a.goal.snapshot
+	}, time.Second, time.Millisecond)
+	a.schedulePiGoalRefresh(false)
+	require.Eventually(t, func() bool { return len(sink.Goals()) == 2 }, time.Second, time.Millisecond)
+	assert.False(t, sink.Goals()[1].Snapshot)
+}
+
+func TestPiGoalActionReturnsBeforeTheConfirmationAnswer(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	rig.agent.mu.Lock()
+	rig.agent.extensionCommands = map[string]bool{"goal-clear": true}
+	rig.agent.mu.Unlock()
+	release := make(chan struct{})
+	var once sync.Once
+	releaseOnce := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseOnce)
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type == PiCommandPrompt {
+			// Pi answers a clear only after the user closes its confirmation dialog.
+			<-release
+			return nil, false, "the Pi goal clear was refused"
+		}
+		return json.RawMessage(`{"entries":[],"leafId":"focus"}`), true, ""
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := rig.agent.PerformGoalAction(GoalActionClear, "")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "the stdin write is the delivery acceptance")
+	case <-time.After(2 * time.Second):
+		t.Fatal("PerformGoalAction waited for the dialog answer")
+	}
+	// A late failure still reaches the user, because nothing else reports it.
+	releaseOnce()
+	require.Eventually(t, func() bool { return len(sink.LeapMuxNotifications()) > 0 }, time.Second, time.Millisecond)
+	note := sink.LeapMuxNotifications()[0]
+	assert.Equal(t, contracts.NotificationTypeAgentError, note["type"])
+	assert.Contains(t, note["error"], "refused")
+}
+
+func TestPiGoalControlRecoversFromAFailedCatalogRead(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, &testSink{})
+	var ready atomic.Bool
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != PiCommandGetCommands {
+			return nil, false, "Unexpected command"
+		}
+		if !ready.Load() {
+			return nil, false, "the Pi extension host is not ready"
+		}
+		return json.RawMessage(`{"commands":[{"name":"goal-pause","source":"extension"}]}`), true, ""
+	})
+	assert.False(t, rig.agent.refreshPiCommands(time.Second), "a failed read holds no catalog")
+	assert.Empty(t, rig.agent.SupportedGoalActions())
+	ready.Store(true)
+	assert.True(t, rig.agent.refreshPiCommands(time.Second))
+	assert.Equal(t, []GoalAction{GoalActionPause}, rig.agent.SupportedGoalActions())
 }

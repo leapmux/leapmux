@@ -10,6 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newCopilotControlAgent builds an agent whose connection is present but cannot write.
+//
+// Every real agent adopts its connection before the reader delivers the first frame, so
+// a test that drives the reader needs one too. The failing writer keeps the agent
+// offline: a request the dispatch starts fails at the write rather than waiting for an
+// answer that never arrives.
+func newCopilotControlAgent(sink ProviderServices) *copilotAgent {
+	return &copilotAgent{
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase: processBase{ctx: context.Background(), stdin: failingWriteCloser{}},
+		}},
+		sink: sink, sessionID: "session",
+	}
+}
+
 func TestNativeCopilotControlChangeWhileResponseWaits(t *testing.T) {
 	for _, replacement := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replacement=%t", replacement), func(t *testing.T) {
@@ -44,7 +59,7 @@ func TestNativeCopilotControlChangeWhileResponseWaits(t *testing.T) {
 // happened, and the handler then withdrew a dead process's prompts on the
 // strength of it.
 func TestNativeCopilotInterruptRefusesAStoppedAgent(t *testing.T) {
-	agent := &copilotAgent{copilotConnection: &copilotConnection{}, sink: &recordingControlSink{}, sessionID: "session"}
+	agent := newCopilotControlAgent(&recordingControlSink{})
 	agent.mu.Lock()
 	agent.stopped = true
 	agent.mu.Unlock()
@@ -54,7 +69,7 @@ func TestNativeCopilotInterruptRefusesAStoppedAgent(t *testing.T) {
 
 func TestNativeCopilotFailedControlPublicationKeepsNoPendingEntry(t *testing.T) {
 	sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}
-	agent := &copilotAgent{sink: sink, sessionID: "session"}
+	agent := newCopilotControlAgent(sink)
 	agent.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"user_input.requested","data":{"requestId":"question"}}}}`))
 	require.Zero(t, sink.PublishedControlCount())
 	require.Empty(t, agent.controls)
@@ -62,7 +77,8 @@ func TestNativeCopilotFailedControlPublicationKeepsNoPendingEntry(t *testing.T) 
 
 func TestNativeCopilotClosingProcessKeepsLateControlsOutOfTheUI(t *testing.T) {
 	sink := &recordingControlSink{}
-	agent := &copilotAgent{sink: sink, sessionID: "session", closing: true}
+	agent := newCopilotControlAgent(sink)
+	agent.closing = true
 	raw := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"user_input.requested","data":{"requestId":"question"}}}}`)
 	agent.HandleOutput(raw)
 	require.Zero(t, sink.PublishedControlCount())
@@ -72,7 +88,7 @@ func TestNativeCopilotClosingProcessKeepsLateControlsOutOfTheUI(t *testing.T) {
 
 func TestNativeCopilotPublishesNativeControlEvents(t *testing.T) {
 	sink := &recordingControlSink{}
-	agent := &copilotAgent{sink: sink, sessionID: "session"}
+	agent := newCopilotControlAgent(sink)
 	ids := make(map[string]struct{})
 	for index, kind := range []string{"permission", "user_input", "exit_plan_mode", "elicitation"} {
 		raw := []byte(fmt.Sprintf(` {"method":"session.event","params":{"sessionId":"session","event":{"type":"%s.requested","data":{"requestId":"shared-id","unknown":9007199254740993,"zero":0,"boolean":false,"empty":""}}}} `, kind))
@@ -89,7 +105,7 @@ func TestNativeCopilotPublishesNativeControlEvents(t *testing.T) {
 
 func TestNativeCopilotControlReannouncementRetainsItsPayload(t *testing.T) {
 	sink := &recordingControlSink{}
-	agent := &copilotAgent{sink: sink, sessionID: "session"}
+	agent := newCopilotControlAgent(sink)
 	first := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"id":"event-1","type":"user_input.requested","data":{"requestId":"question","question":"Choose a color."}}}}`)
 	agent.HandleOutput(first)
 	require.Equal(t, 1, sink.PublishedControlCount())
@@ -106,7 +122,7 @@ func TestNativeCopilotControlReannouncementRetainsItsPayload(t *testing.T) {
 
 func TestNativeCopilotControlsRejectForeignAndResolvedRequests(t *testing.T) {
 	sink := &recordingControlSink{}
-	agent := &copilotAgent{sink: sink, sessionID: "session"}
+	agent := newCopilotControlAgent(sink)
 	for _, raw := range []string{
 		`{"method":"session.event","params":{"sessionId":"foreign","event":{"type":"permission.requested","data":{"requestId":"request"}}}}`,
 		`{"method":"session.event","params":{"sessionId":"session","event":{"type":"permission.requested","data":{"requestId":"request","resolvedByHook":true}}}}`,

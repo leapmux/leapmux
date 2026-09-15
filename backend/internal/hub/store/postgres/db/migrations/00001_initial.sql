@@ -351,13 +351,10 @@ CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_
 CREATE TABLE lifecycle_outbox (
     id          BIGSERIAL PRIMARY KEY,
     user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    -- The three LifecycleOpType values in internal/hub/crdt. The drain switches
-    -- on this word, and its default arm logs and CONSUMES the row, so a typo
-    -- here is a lifecycle event that vanishes rather than one that fails.
     -- A WorkspaceLifecycleOp ordinal. The drain switches on it, and its default
-    -- arm logs and CONSUMES the row, so a value nobody writes is a lifecycle
+    -- branch logs and CONSUMES the row, so a value nobody writes is a lifecycle
     -- event that vanishes rather than one that fails. The CHECK is what keeps
-    -- that arm unreachable.
+    -- that branch unreachable.
     op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     BYTEA NOT NULL,
     enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -592,9 +589,6 @@ CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_cod
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
     id              TEXT COLLATE "C" PRIMARY KEY,
-    -- oauth.ProviderTypeOIDC / ProviderTypeGitHub. The preset table maps the
-    -- four registrable presets (github, google, apple, oidc) onto these two
-    -- stored words, so this is the whole vocabulary a row may carry.
     -- An IdentityProviderType ordinal: the PROTOCOL this provider speaks, not
     -- the preset an administrator picked. The four presets (github, google,
     -- apple, oidc) map onto these two protocols.
@@ -642,13 +636,10 @@ CREATE TABLE oauth_states (
     pkce_verifier   TEXT NOT NULL,
     nonce_hash      TEXT COLLATE "C" NOT NULL DEFAULT '',
     redirect_uri    TEXT NOT NULL DEFAULT '',
-    -- 'login' starts a sign-in; 'reauth' proves the identity again for an
-    -- ALREADY signed-in session, to elevate it. The callback branches on
-    -- this: a reauth state must never create a session or link an identity.
-    -- The CHECK is the enforcement, not the DEFAULT. Go's zero value for the
-    -- column is "", never 'login', so an explicit insert never reaches the
-    -- DEFAULT, and the callback treats every value that is not 'reauth' as a
-    -- login -- which may create a session or link an identity.
+    -- LOGIN starts a sign-in. REAUTH proves the identity again for an ALREADY
+    -- signed-in session, to elevate it. The callback branches on this: a
+    -- reauth state must never create a session or link an identity.
+    --
     -- An OAuthStatePurpose ordinal. The CHECK is the enforcement, not the
     -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
     -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
@@ -656,7 +647,7 @@ CREATE TABLE oauth_states (
     -- value that is not REAUTH as a LOGIN -- the branch that may create a
     -- session and link an identity.
     purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 2),
-    -- The session the reauth leg elevates on success. Empty for 'login'.
+    -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
     session_id      TEXT COLLATE "C" NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()

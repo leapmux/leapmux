@@ -17,7 +17,7 @@ import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
 import { ImageResultList } from './results/imageResult'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
-import { ToolHeaderRow } from './results/ToolStatusHeader'
+import { ToolOutcomeHeader } from './results/ToolStatusHeader'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import { toolOutcomeLabel } from './toolOutcomeLabel'
 import {
@@ -272,7 +272,7 @@ export function ToolResultMessage(props: {
   // display kinds — otherwise an Edit/Write rejection silently looks like a
   // success. For non-error results we keep the bash-only behavior so plain
   // tool results don't grow a redundant "Success" line.
-  const showStatusHeader = () => !props.context?.completionHeader && (props.isError === true || (isBashLike() && props.isError !== undefined))
+  const showStatusHeader = () => props.isError === true || (isBashLike() && props.isError !== undefined)
   return (
     <>
       <Show
@@ -280,17 +280,17 @@ export function ToolResultMessage(props: {
         fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
       >
         <div class={toolMessage} data-tool-message>
-          <Show when={showStatusHeader()}>
-            <ToolHeaderRow
-              icon={statusIcon()}
-              title={(
-                <>
-                  {toolOutcomeLabel(props.isError ? 'failed' : 'succeeded')}
-                  <Show when={props.statusDetail}>{detail => ` (${detail()})`}</Show>
-                </>
-              )}
-            />
-          </Show>
+          <ToolOutcomeHeader
+            when={showStatusHeader()}
+            icon={statusIcon()}
+            title={(
+              <>
+                {toolOutcomeLabel(props.isError ? 'failed' : 'succeeded')}
+                <Show when={props.statusDetail}>{detail => ` (${detail()})`}</Show>
+              </>
+            )}
+            context={props.context}
+          />
           <Show
             when={!errorText() && props.isError !== true}
             fallback={<div class={toolResultError}>{errorText() ?? props.resultContent}</div>}

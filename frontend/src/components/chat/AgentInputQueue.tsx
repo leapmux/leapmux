@@ -13,6 +13,7 @@ import SquarePen from 'lucide-solid/icons/square-pen'
 import Trash2 from 'lucide-solid/icons/trash-2'
 import TriangleAlert from 'lucide-solid/icons/triangle-alert'
 import UserPen from 'lucide-solid/icons/user-pen'
+import Zap from 'lucide-solid/icons/zap'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { DragHandle } from '~/components/common/DragHandle'
@@ -31,12 +32,15 @@ export interface AgentInputQueueProps {
   clientId: string
   activeEditInputId?: string
   supportsSteering: boolean
+  /** Preemption is offered only where steering is not: the provider can interrupt, not inject. */
+  supportsPreemption: boolean
   onEdit: (item: QueuedAgentInput, takeover: boolean) => void
   onCancelEdit: (item: QueuedAgentInput) => void
   onDelete: (item: QueuedAgentInput) => void
   onMove: (item: QueuedAgentInput, beforeInputId: string) => void
   onRetry: (item: QueuedAgentInput, confirmUncertain: boolean) => void
   onSteer: (item: QueuedAgentInput) => void
+  onPreempt: (item: QueuedAgentInput) => void
 }
 
 /**
@@ -347,19 +351,30 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             />
           </Show>
           {/*
-            Steer stays last, so the one button that still shows a word sits at
-            the end of the row and the squares before it keep an even rhythm.
+            Steer and Preempt stay last, so the one button that still shows a
+            word sits at the end of the row and the squares before it keep an
+            even rhythm. Exactly one of the two is ever offered: a provider
+            either injects into the running turn (Steer) or can only cancel it
+            (Preempt).
 
-            `canSteer` comes from the Worker, which computes it with the same
-            expression that the store's steering guard applies. The browser must
-            never re-implement that precondition: a new input kind would then
-            offer a Steer button that the Worker refuses.
+            `canSteer` and `canPreempt` come from the Worker, which computes
+            them with the same expression that the store's guards apply. The
+            browser must never re-implement that precondition: a new input kind
+            would then offer a button that the Worker refuses.
           */}
           <Show when={isHead() && props.supportsSteering && item().canSteer}>
             <Tooltip text="Steer" ariaLabel>
               <button class={styles.steerAction} type="button" onClick={() => props.onSteer(item())}>
                 <Icon icon={SendHorizontal} size="xs" />
                 <span>Steer</span>
+              </button>
+            </Tooltip>
+          </Show>
+          <Show when={isHead() && !props.supportsSteering && props.supportsPreemption && item().canPreempt}>
+            <Tooltip text="Cancel the running turn and send this message next" ariaLabel="Preempt">
+              <button class={styles.steerAction} type="button" onClick={() => props.onPreempt(item())}>
+                <Icon icon={Zap} size="xs" />
+                <span>Preempt</span>
               </button>
             </Tooltip>
           </Show>

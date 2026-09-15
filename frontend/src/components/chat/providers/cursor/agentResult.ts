@@ -1,7 +1,9 @@
+import type { AgentRequestSource } from '../../results/AgentRequestMessage'
 import type { AgentResultSource } from '../../results/agentResult'
 import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
 import { isObject, pickBoolean, pickObject, pickString } from '~/lib/jsonPick'
 import { formatDuration } from '../../rendererUtils'
+import { agentToolPresentation } from '../../results/AgentRequestMessage'
 import { collectAcpToolText } from '../acp/content'
 import { acpToolFinished } from '../acp/toolPresentation'
 
@@ -88,12 +90,15 @@ export function cursorAgentPresentation(
     metadata,
     body: output || (!background && !failed && !stopped ? 'The provider did not supply a report.' : ''),
   }
-  return {
-    ...model,
-    kind: 'agent',
-    title: description || 'Task',
-    agentRequest: { toolName: 'Task', description, agentType: agentType(input), prompt: pickString(input, 'prompt'), metadata: modelName ? [{ label: 'Model', value: modelName }] : [] },
-    output,
-    body: finished ? { type: 'agent', source } : { type: 'text' },
+  const request: AgentRequestSource = {
+    toolName: 'Task',
+    description,
+    agentType: agentType(input),
+    prompt: pickString(input, 'prompt'),
+    metadata: modelName ? [{ label: 'Model', value: modelName }] : [],
   }
+  // Cursor's row states the report this function resolved, which is not
+  // `model.output`. A row with no result yet draws that text, and the copy action
+  // takes it.
+  return { ...agentToolPresentation(model, request, finished ? source : undefined), output }
 }

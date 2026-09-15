@@ -21,6 +21,15 @@ export interface ZCodeBashCommand {
    * failures, so null genuinely means "unknown" and never "succeeded".
    */
   exitCode: number | null
+  /**
+   * True when the app-server sent the command telemetry block for this call.
+   *
+   * Separate from `exitCode`, which is null both for an ABSENT block and for a block
+   * that stated no code. Only the second contradicts a leading `Exit code N` line: the
+   * formatter that sends the block is the one that writes the line, so a block with no
+   * code in it says that the line came from somewhere else.
+   */
+  hasCommandTelemetry: boolean
   timedOut: boolean
   truncated: boolean
   isError: boolean
@@ -56,6 +65,7 @@ export function extractZCodeBash(row: ZCodeRow): ZCodeBashCommand | null {
     description: pickString(input, 'description'),
     output: update.isError ? zcodeErrorText(update) : (update.result?.content ?? ''),
     exitCode: pickNumber(commandPerf, 'exitCode'),
+    hasCommandTelemetry: commandPerf !== null && Object.keys(commandPerf).length > 0,
     timedOut: commandPerf?.timedOut === true,
     truncated: update.result?.truncated === true,
     isError: update.isError,
@@ -79,16 +89,43 @@ export function zcodeBashToCommandSource(bash: ZCodeBashCommand): CommandResultS
   // line of the content. The line is consumed so the reader sees the code once, in
   // the status label.
   const marked = splitExitCodeMarker(bash.output)
-  // A disagreement between the two is worth showing, so the line survives it. The
-  // structured field stays the one the label uses, because it is the one the
-  // app-server computed rather than formatted.
-  const agrees = marked.exitCode !== undefined && (bash.exitCode === null || marked.exitCode === bash.exitCode)
-  const exitCode = bash.exitCode ?? (agrees ? marked.exitCode : undefined)
+  const markerUsable = marked.exitCode !== undefined && exitMarkerBelongsToCall(bash, marked.exitCode)
+  const exitCode = bash.exitCode ?? (markerUsable ? marked.exitCode : undefined)
   return {
-    output: agrees ? marked.output : bash.output,
+    output: markerUsable ? marked.output : bash.output,
     exitCode: exitCode ?? undefined,
     durationMs: bash.durationMs,
     interrupted: bash.timedOut,
     isError: bash.isError || bash.timedOut || (exitCode != null && exitCode !== 0),
   }
+}
+
+/**
+ * Does the leading `Exit code N` line state THIS call's outcome?
+ *
+ * The structured field answers directly when the app-server sent one: the line states
+ * the same code, or it does not. A DIFFERENCE keeps the line, because the difference is
+ * worth showing, and the label still states the structured field -- the app-server
+ * computed that one rather than formatted it.
+ *
+ * With no structured field, nothing compares. The marker then stands unless another
+ * field of the call contradicts it, because `splitExitCodeMarker` anchors to the start
+ * of the TEXT and not to a frame the app-server drew -- so a command whose OWN output
+ * begins with those words reaches here too. Two fields contradict the line:
+ *
+ *   - A telemetry block that arrived with NO exit code in it. The formatter that sends
+ *     the block is the one that writes the line.
+ *   - A call the app-server marked an error, under a line that claims exit 0.
+ *
+ * The reverse of the second case is not a contradiction, and neither is an absent
+ * telemetry block. ZCode reports a failed command as a SUCCESSFUL tool call whose
+ * content states the code, and a build that sends no telemetry leaves the line as the
+ * only statement of it.
+ */
+function exitMarkerBelongsToCall(bash: ZCodeBashCommand, markerExitCode: number): boolean {
+  if (bash.exitCode !== null)
+    return markerExitCode === bash.exitCode
+  if (bash.hasCommandTelemetry)
+    return false
+  return !(bash.isError && markerExitCode === 0)
 }

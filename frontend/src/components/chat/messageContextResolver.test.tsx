@@ -6,6 +6,7 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createMessageContextResolver } from './messageContextResolver'
 import './providers/opencode'
@@ -37,7 +38,6 @@ function fixture(initial: AgentChatMessage[] = []) {
   return createRoot((dispose) => {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
-    const [scope, setScope] = createSignal('worker/agent')
     const [version, setVersion] = createSignal(0)
     const [todo, setTodo] = createSignal<TodoItem>()
     const index = createSpanIndex()
@@ -46,8 +46,7 @@ function fixture(initial: AgentChatMessage[] = []) {
     const fetchSpan = vi.fn(async (_identity: MessageSpanIdentity, _signal: AbortSignal): Promise<AgentChatMessage[]> => [])
     const fetchMessage = vi.fn(async (_seq: bigint, _signal: AbortSignal): Promise<AgentChatMessage | undefined> => undefined)
     const resolver = createMessageContextResolver({
-      scopeKey: scope,
-      agentSessionId: () => '',
+      scopeKey: 'worker/agent',
       messages,
       messageVersion: version,
       contentVersion: () => 0,
@@ -68,7 +67,6 @@ function fixture(initial: AgentChatMessage[] = []) {
       resolver,
       fetchSpan,
       fetchMessage,
-      setScope,
       setTodo,
       dispose,
       emit: (message: AgentChatMessage) => observers.forEach(observer => observer(message)),
@@ -162,6 +160,25 @@ describe('message context resolver', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  // Disposal is the whole lifetime mechanism: the scope of a resolver is fixed
+  // for its life, so nothing else ends one. See `MessageContextSources.scopeKey`.
+  it('drops its cache and refuses every lease after disposal', async () => {
+    const { resolver, fetchSpan, dispose } = fixture()
+    fetchSpan.mockResolvedValue([toolMessage('request', 8n, 'request')])
+    const releaseSpan = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
+    const releaseMessage = resolver.retainMessage(8n)
+    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+    expect(resolver.peek(8n)?.message.id).toBe('request')
+    dispose()
+    expect(resolver.peek(8n)).toBeUndefined()
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+    expect(releaseSpan).not.toThrow()
+    expect(releaseMessage).not.toThrow()
+    expect(resolver.retainSpan({ spanId: 'span', agentSessionId: '' })).not.toThrow()
+    expect(resolver.retainMessage(8n)).not.toThrow()
+    expect(resolver.peek(8n)).toBeUndefined()
+  })
+
   it('does not send invalid sequences to the transport', async () => {
     const { resolver, fetchMessage } = fixture()
     expect(await resolver.message(0n)).toBeUndefined()
@@ -247,17 +264,6 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
   })
 
-  it('ignores an outstanding response after the scope changes', async () => {
-    const { resolver, fetchSpan, setScope } = fixture([toolMessage('result', 2n, 'result')])
-    let finish!: (messages: AgentChatMessage[]) => void
-    fetchSpan.mockImplementationOnce(() => new Promise(resolve => finish = resolve))
-    const loading = resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
-    setScope('other-worker/agent')
-    finish([toolMessage('request', 1n, 'request')])
-    await loading
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
-  })
-
   it('shares message fetches for image and preview consumers', async () => {
     const { resolver, fetchMessage } = fixture()
     const original = toolMessage('result', 8n, 'result')
@@ -323,42 +329,12 @@ describe('message context resolver', () => {
     expect(resolver.peek(8n)).toBeUndefined()
   })
 
-  it('does not let an old scope release a new message consumer', async () => {
-    const { resolver, fetchMessage, setScope } = fixture()
-    fetchMessage.mockResolvedValue(toolMessage('request', 8n, 'request'))
-    const previous = resolver.retainMessage(8n)
-    await resolver.message(8n)
-    setScope('other-worker/agent')
-    expect(resolver.peek(8n)).toBeUndefined()
-    const current = resolver.retainMessage(8n)
-    await resolver.message(8n)
-    previous()
-    expect(resolver.peek(8n)?.message.id).toBe('request')
-    current()
-    expect(resolver.peek(8n)).toBeUndefined()
-  })
-
   it.each([0n, -1n])('does not retain an invalid sequence (%s)', (seq) => {
     const { resolver, emit } = fixture()
     const release = resolver.retainMessage(seq)
     emit(toolMessage('invalid', seq, 'request'))
     expect(resolver.peek(seq)).toBeUndefined()
     expect(release).not.toThrow()
-  })
-
-  it('does not let an old scope release a new span consumer', async () => {
-    const { resolver, fetchSpan, setScope } = fixture()
-    fetchSpan.mockResolvedValue([toolMessage('request', 8n, 'request')])
-    const previous = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
-    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
-    setScope('other-worker/agent')
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
-    const current = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
-    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
-    previous()
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
-    current()
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
   })
 
   it('releases fetched data when its window and leases no longer use the span', async () => {
@@ -370,5 +346,47 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeDefined()
     release()
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+  })
+
+  it('walks the window for a membership change, and not for an in-place body replacement', () => {
+    const store = createChatStore()
+    const agentId = 'agent'
+    store.setMessages(agentId, [toolMessage('request', 1n, 'request')])
+    let walks = 0
+    createRoot((dispose) => {
+      cleanups.push(dispose)
+      createMessageContextResolver({
+        scopeKey: 'worker/agent',
+        messages: () => {
+          walks++
+          return store.getMessages(agentId)
+        },
+        messageVersion: () => store.getMessageVersion(agentId),
+        contentVersion: store.getMessageContentVersion,
+        spanMessage: (identity, side) => store.getSpanMessage(agentId, identity, side),
+        messageBySeq: seq => store.getLoadedMessageBySeq(agentId, seq),
+        fetchSpan: async () => [],
+        fetchMessage: async () => undefined,
+        fetchFileImage: async () => { throw new Error('The image source is unavailable') },
+        subscribe: observer => store.subscribeMessages(agentId, observer),
+        todo: () => undefined,
+        backgroundTask: () => undefined,
+        progress: () => undefined,
+      })
+    })
+    // The effects of a root flush after its body returns, so the first walk is
+    // counted here rather than inside it.
+    const initial = walks
+    expect(initial).toBeGreaterThan(0)
+
+    // A same-id same-seq re-delivery merges into the stored row in place. It
+    // moves a field the walk READS (the span), and still no membership, so the
+    // walk must not run again for it.
+    expect(store.addMessage(agentId, toolMessage('request', 1n, 'request', { spanId: 'other-span' }))).toBe(true)
+    expect(walks).toBe(initial)
+
+    // A new row replaces the array, which is what prune must answer.
+    expect(store.addMessage(agentId, toolMessage('result', 2n, 'result'))).toBe(true)
+    expect(walks).toBe(initial + 1)
   })
 })

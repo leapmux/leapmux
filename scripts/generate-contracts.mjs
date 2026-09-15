@@ -588,12 +588,13 @@ export function checkWorkerVocab(v) {
     mustBe(v.notificationTypes[key] != null, 'worker-vocab.json', `workerAuthoredNotificationTypes specifies ${key}, which is not a notificationTypes key`)
   }
   mustBe(v.modelSentinels.accountDefaultModel !== v.modelSentinels.effortAuto, 'worker-vocab.json', 'the model sentinels must be distinct values')
-  // The goal status tokens ARE the agents.goal_status CHECK list, which no
-  // generator emits, so a duplicate here would silently make two statuses read
-  // back as one.
+  // These tokens are the goal_updated PAYLOAD vocabulary, not the storage
+  // format: agents.goal_status stores an AgentGoalStatus ordinal, and its CHECK
+  // lists no token. A duplicate here still makes two statuses read back as one
+  // on the wire.
   const statusTokens = Object.values(v.goalStatusTokens)
   mustBe(new Set(statusTokens).size === statusTokens.length, 'worker-vocab.json', 'two goal statuses share one wire token')
-  mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the agents row stores "" for "no goal", and every reader tests for it')
+  mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the goal_updated payload carries "" for "no goal", and every reader tests for it')
   const transitions = Object.values(v.goalTransitions)
   mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
   const metadataFields = Object.values(v.messageMetadataFields)
@@ -663,9 +664,9 @@ const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperTy
 // lifts on the rolling-window timer (the others are billing/usage caps).
 const CodexRateLimitReachedTimeWindow = ${jsonString(v.codexRateLimitReachedTimeWindow)}
 
-// GoalStatusToken* are the tokens stored in agents.goal_status and shipped in
-// the goal_updated notification payload. The column's CHECK constraint lists
-// the same tokens; the generator emits no SQL, so keep that spelling in step.
+// GoalStatusToken* are the tokens the goal_updated notification payload
+// carries. They are NOT the storage format: agents.goal_status stores an
+// AgentGoalStatus ordinal, and agent.GoalStatusWire maps one onto the other.
 const (
 ${goalStatusBlock}
 )
@@ -758,8 +759,8 @@ export const NOTIFICATION_THREAD_TYPE = ${jsonString(v.notificationThreadWrapper
 export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimitReachedTimeWindow)} as const
 
 /**
- * The tokens the worker stores in agents.goal_status and ships in the
- * goal_updated payload. The empty token means "no goal".
+ * The tokens the worker ships in the goal_updated payload. The empty token
+ * means "no goal". The agents row stores an ordinal, not one of these.
  */
 export const GOAL_STATUS_TOKEN = {
 ${goalStatusEntries}
@@ -2139,9 +2140,10 @@ const PROVIDER_PROTOCOLS = [
     goPrefix: 'ACP',
     tsPrefix: 'ACP',
     title: 'Agent Client Protocol',
-    preamble: 'The Agent Client Protocol defines these session updates.',
+    preamble: 'The Agent Client Protocol defines these session updates and message roles.',
     tables: [
       { key: 'updates', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
+      { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'ACPRole', doc: 'message `role` values' },
     ],
   },
   {
@@ -2190,12 +2192,13 @@ const PROVIDER_PROTOCOLS = [
     tsPrefix: 'COPILOT',
     title: 'GitHub Copilot',
     preamble: [
-      'GitHub owns the native event, tool, mode and permission names. LeapMux owns the',
+      'GitHub owns the native method, event, tool, mode and permission names. LeapMux owns the',
       'session-mode option-group id and the supplemental field name. Both sides read them --',
       'the Go worker dispatches the native events and builds the option groups, the browser',
       'plugin classifies the same rows and builds the presets.',
     ].join('\n// '),
     tables: [
+      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CopilotMethod', doc: 'JSON-RPC methods both sides dispatch on' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
       { key: 'eventPrefixes', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', doc: 'prefixes that name a whole event family' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CopilotTool', doc: 'native tool names' },
@@ -2214,6 +2217,7 @@ const PROVIDER_PROTOCOLS = [
     title: 'Cursor',
     tables: [
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CursorTool', doc: 'ACP tool identifiers' },
+      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CursorMethod', doc: 'JSON-RPC methods both sides dispatch on' },
     ],
   },
   {
@@ -2252,6 +2256,12 @@ const PROVIDER_PROTOCOLS = [
     goPrefix: 'Reasonix',
     tsPrefix: 'REASONIX',
     title: 'Reasonix',
+    preamble: [
+      'Reasonix owns the tool, capability, mode and approval names, and the field names of',
+      'the tool record it writes into its own transcript. LeapMux owns the envelope key that',
+      'wraps that record. Both sides read them -- the worker matches the stored record against',
+      'the protocol result, the browser plugin reads the same record back out of the supplement.',
+    ].join('\n// '),
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ReasonixMode', doc: 'session modes' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'ReasonixConfig', doc: 'config option identifiers' },
@@ -2259,6 +2269,7 @@ const PROVIDER_PROTOCOLS = [
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'ReasonixTool', doc: 'native tool names' },
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
+      { key: 'toolRecord', goTable: 'ToolRecord', tsTable: 'TOOL_RECORD', tsType: 'ReasonixToolRecordKey', doc: 'the supplement envelope key and the stored tool record\'s own fields' },
     ],
   },
 ]

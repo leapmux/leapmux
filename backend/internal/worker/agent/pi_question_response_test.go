@@ -100,3 +100,21 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 	assert.Empty(t, a.questionDialogs)
 	assert.Empty(t, a.customQuestionAnswers)
 }
+
+func TestPiCustomQuestionAnswerSurvivesAFailedAutoResponse(t *testing.T) {
+	t.Parallel()
+	a, sink, output := piQuestionResponseFixture()
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)))
+	// Pi asks for the text. The automatic answer cannot reach stdin.
+	a.stdin = failingWriteCloser{}
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
+	require.Len(t, sink.PublishedControls(), 2, "the failed answer must reach the user as a dialog")
+	// The text the user typed must survive the failure. Pi asks again, and that
+	// request carries the same answer rather than an empty one.
+	a.stdin = nopWriteCloser{output}
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"retry","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
+	frames := strings.Split(strings.TrimSpace(output.String()), "\n")
+	require.Len(t, frames, 2)
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"retry","value":"My custom answer"}`, frames[1])
+	assert.Len(t, sink.PublishedControls(), 2, "a retained answer must not ask the user to type it again")
+}

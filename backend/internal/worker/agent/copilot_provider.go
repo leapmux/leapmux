@@ -51,7 +51,7 @@ type copilotSessionEventFrame struct {
 }
 
 // copilotEventOfType decodes one stored native frame and reports its event data when
-// the frame carries the named event.
+// the frame carries the event that `eventType` identifies.
 //
 // The byte search is the cheap exit for the great majority of rows. What decides
 // CORRECTNESS is the exact check that follows: a tool result that merely quotes the

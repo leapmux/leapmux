@@ -22,11 +22,16 @@ func readPiToolArtifact(ctx context.Context, ref piArtifactReference, kind strin
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// An exhausted budget and a rejected path are different failures. One message for
+	// both reported a path problem for a message that was simply too large already.
+	if maximum <= 0 {
+		return nil, errors.New("the Pi message leaves no room for the artifact")
+	}
 	path := ref.path
 	directory, name := filepath.Dir(path), filepath.Base(path)
-	if maximum <= 0 || !filepath.IsAbs(path) || filepath.Clean(path) != path ||
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path ||
 		!piArtifactDirectory.MatchString(filepath.Base(directory)) || !piArtifactFile.MatchString(name) || !strings.HasPrefix(name, kind+"-") {
-		return nil, errors.New("invalid Pi artifact path or size limit")
+		return nil, errors.New("the Pi artifact path is not in the adapter's format")
 	}
 	var expected *int64
 	if len(ref.bytes) > 0 && (json.Unmarshal(ref.bytes, &expected) != nil || expected == nil || *expected < 0) {
@@ -128,10 +133,19 @@ func recoverPiToolArtifacts(ctx context.Context, original, existing []byte) ([]b
 		used = len(combined)
 		return nil
 	}
-	complete := true
+	// liveStdoutMaxTokenSize reads a live atomic that a renegotiation can SHRINK, and
+	// the original message can already fill the whole frame. State that ONCE and skip
+	// both reads: each read would otherwise report a negative budget as a path
+	// problem. A snapshot that an earlier boundary already recovered still travels,
+	// because it costs no new bytes that this message did not already carry.
+	budgeted := maximum > 0
+	complete := budgeted
 	var failures error
+	if !budgeted {
+		failures = errors.New("the Pi tool message leaves no room for a supplement")
+	}
 	// The native MCP result keeps resources and structured data that flattened text cannot preserve.
-	if ref := mcpRef; ref.path != "" && len(extra.McpResultFile) == 0 {
+	if ref := mcpRef; budgeted && ref.path != "" && len(extra.McpResultFile) == 0 {
 		data, err := readPiToolArtifact(ctx, ref, "mcp-result", maximum-used)
 		if err == nil {
 			var result map[string]json.RawMessage
@@ -146,7 +160,7 @@ func recoverPiToolArtifacts(ctx context.Context, original, existing []byte) ([]b
 			failures = errors.Join(failures, err)
 		}
 	}
-	if ref := outputRef; ref.path != "" && len(extra.OutputFile) == 0 {
+	if ref := outputRef; budgeted && ref.path != "" && len(extra.OutputFile) == 0 {
 		data, err := readPiToolArtifact(ctx, ref, "output", maximum-used)
 		if err == nil {
 			text := string(data)

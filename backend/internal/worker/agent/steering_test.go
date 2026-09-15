@@ -299,12 +299,12 @@ func TestAdvertisedACPSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 func TestProvidersWithoutSteeringDoNotImplementIt(t *testing.T) {
 	t.Parallel()
 
+	// Copilot is deliberately absent: its native protocol steers with
+	// `session.send` mode:"immediate", which copilotAgent.SteerInput sends.
+	// TestNativeCopilotSteerSendsImmediateMode covers that path.
 	for provider, candidate := range map[string]any{
-		"Kilo": &KiloAgent{},
-		// Copilot's native protocol offers no operation that adds text to a running
-		// turn: `session.send` starts one, and it refuses a second while one runs.
-		"Copilot": &copilotAgent{},
-		"Cursor":  &CursorCLIAgent{},
+		"Kilo":   &KiloAgent{},
+		"Cursor": &CursorCLIAgent{},
 	} {
 		_, supports := candidate.(InputSteerer)
 		assert.False(t, supports, provider)
@@ -350,7 +350,7 @@ func TestCodexSteerProcessExitIsDeliveryUncertain(t *testing.T) {
 	assert.ErrorIs(t, agent.SteerInput("guide", nil), ErrDeliveryUncertain)
 }
 
-func TestZCodeSteerRequestsGuideDelivery(t *testing.T) {
+func TestZCodeSteerSendsPlainSessionSend(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
@@ -367,7 +367,26 @@ func TestZCodeSteerRequestsGuideDelivery(t *testing.T) {
 	require.Len(t, requests, 1)
 	var params map[string]any
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
-	assert.Equal(t, "guide", params["requestedDelivery"])
+	assert.Equal(t, "guide", params["content"])
+	// The app-server's session/send schema is strict: any key it does not know
+	// fails the whole request with -32602. A steer must therefore be a plain
+	// send -- the server itself decides steer-or-queue for a mid-turn send.
+	assert.NotContains(t, params, "requestedDelivery")
+}
+
+func TestZCodeSteerRefusedWithoutActiveTurn(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	agent := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+	agent.mu.Lock()
+	agent.sessionID = "session-1"
+	agent.model = "provider/model"
+	agent.turnActive = false
+	agent.mu.Unlock()
+
+	assert.ErrorIs(t, agent.SteerInput("guide", nil), ErrNoActiveTurn)
+	assert.Empty(t, stdin.Requests(t))
 }
 
 func TestZCodeSteerTimeoutIsDeliveryUncertain(t *testing.T) {

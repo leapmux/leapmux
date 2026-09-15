@@ -50,6 +50,13 @@ func newCopilotSessionConfig(opts Options, sessionID string, resume bool) copilo
 	if UsesAccountDefaultModel(config.Model) {
 		config.Model = ""
 	}
+	// EffortAuto is the effort-side counterpart of the account-default model above: it
+	// means "send no effort at all", and the runtime then keeps the tier its own model
+	// offers. The runtime accepts the tiers of its catalogue alone, so the sentinel
+	// itself must never reach the wire.
+	if config.ReasoningEffort == EffortAuto {
+		config.ReasoningEffort = ""
+	}
 	if resume {
 		// The default interrupts pending work during resume.
 		// Request continuation where the runtime supports it.

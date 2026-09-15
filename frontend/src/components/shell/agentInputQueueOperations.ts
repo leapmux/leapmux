@@ -101,6 +101,11 @@ export function createAgentInputQueueOperations(deps: {
   const steerQueueItem = async (item: QueuedAgentInput) => {
     await runQueueRpc('Failed to steer queued input', () => workerRpc.steerQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
   }
+  // Preempt cancels the running turn; the item itself is dispatched by the
+  // ordinary turn-end drain, so the response still shows it queued.
+  const preemptQueueItem = async (item: QueuedAgentInput) => {
+    await runQueueRpc('Failed to preempt queued input', () => workerRpc.preemptQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
+  }
   const setQueuePaused = async (paused: boolean) => {
     // The shell mounts the composer for a FOCUSED agent alone, so an agent is
     // focused whenever this runs. Read that agent once, at call time: the
@@ -153,6 +158,7 @@ export function createAgentInputQueueOperations(deps: {
     moveQueueItem,
     retryQueueItem,
     steerQueueItem,
+    preemptQueueItem,
     setQueuePaused,
     sendMessage,
     sendControlFeedback,

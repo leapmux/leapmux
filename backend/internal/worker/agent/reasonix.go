@@ -41,7 +41,8 @@ func StartReasonix(ctx context.Context, opts Options, sink ProviderServices) (Ag
 		newAgent:     func() *ReasonixAgent { return &ReasonixAgent{} },
 		base:         func(a *ReasonixAgent) *acpBase { return &a.acpBase },
 		configure: func(a *ReasonixAgent) {
-			transcript := newReasonixToolTranscript(ctx, a.sink, a.currentSessionID, opts.WorkingDir)
+			storeQuery := StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+			transcript := newReasonixToolTranscript(ctx, a.sink, a.currentSessionID, storeQuery, opts.WorkingDir)
 			a.sink = transcript
 			a.clearProviderState = transcript.reset
 			a.advertisedSteerMethod = func(response []byte) string {

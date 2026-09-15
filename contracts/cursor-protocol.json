@@ -1,6 +1,10 @@
 {
-  "_readme": "Cursor owns these ACP tool identifiers. The worker and frontend use them to identify subagent launches.",
+  "_readme": "Cursor owns these ACP tool identifiers and JSON-RPC method names. The worker and frontend use them to identify subagent launches and to classify the control requests Cursor raises. Only the two methods that BOTH sides dispatch on live here -- cursor/update_todos, cursor/task and cursor/generate_image reach the worker alone, so they stay Go constants.",
   "toolNames": {
     "Task": "task"
+  },
+  "methods": {
+    "AskQuestion": "cursor/ask_question",
+    "CreatePlan": "cursor/create_plan"
   }
 }

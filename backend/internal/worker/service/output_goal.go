@@ -117,7 +117,7 @@ func (h *OutputHandler) applyGoalUpdateFromRow(agentID string, provider leapmuxv
 	sameIdentity := sameGoalIdentity(row, update)
 	replaced := row.GoalObjective != update.Objective || !sameIdentity
 	transition := row.GoalObjective != update.Objective ||
-		row.GoalStatus != int64(update.Status) ||
+		row.GoalStatus != leapmuxv1.AgentGoalStatus(update.Status) ||
 		!sameIdentity
 
 	// The status DETAIL is deliberately not part of that test. It is the
@@ -156,7 +156,7 @@ func (h *OutputHandler) applyGoalUpdateFromRow(agentID string, provider leapmuxv
 	if err := h.queries.UpdateAgentGoal(bgCtx(), db.UpdateAgentGoalParams{
 		GoalNativeID:     nativeID,
 		GoalObjective:    update.Objective,
-		GoalStatus:       int64(update.Status),
+		GoalStatus:       leapmuxv1.AgentGoalStatus(update.Status),
 		GoalStatusDetail: update.StatusDetail,
 		GoalCreatedAt:    createdAt,
 		GoalUpdatedAt:    updatedAt,

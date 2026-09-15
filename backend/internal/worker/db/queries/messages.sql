@@ -61,12 +61,20 @@ SELECT * FROM messages WHERE id = ? AND agent_id = ?;
 SELECT * FROM messages WHERE agent_id = ? AND seq = ?;
 
 -- GetAgentMessageBySpanIDAndSource finds the first message that opened the
--- given span (the tool_use / item-started side). Used by the to-do extractor
--- when a tool_result arrives and needs the paired request's input fields
--- (subject/description/activeForm for Claude TaskCreate).
+-- given span (the tool_use / item-started side). readToolRequest is the one
+-- caller, and it serves both the provider controls and the to-do extractor,
+-- which need the paired request's input fields (subject/description/activeForm
+-- for Claude TaskCreate).
+--
+-- `span_id <> ''` repeats the predicate of the PARTIAL idx_messages_span_id.
+-- SQLite matches a partial index syntactically, so without that term the
+-- planner falls back to the (agent_id, seq) unique index, and ORDER BY seq ASC
+-- then reads the agent's transcript from seq 1. Both siblings in
+-- message_enrichment.sql carry the same term.
 -- name: GetAgentMessageBySpanIDAndSource :one
 SELECT * FROM messages
 WHERE agent_id = ? AND agent_session_id = ? AND span_id = ? AND source = ?
+  AND span_id <> ''
 ORDER BY seq ASC
 LIMIT 1;
 

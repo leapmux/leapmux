@@ -264,7 +264,7 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(claude, OptionIDEffort))
 	assert.True(t, has(claude, OptionIDPermissionMode))
 	assert.False(t, has(claude, OptionIDPrimaryAgent), "claude has no primary-agent axis")
-	assert.False(t, has(claude, "allow_all"), "claude has no copilot allow_all axis")
+	assert.False(t, has(claude, "allow_all"), "claude has no foreign allow_all axis")
 
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	for _, id := range []string{OptionIDModel, OptionIDEffort, OptionIDPermissionMode,

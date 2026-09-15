@@ -555,6 +555,22 @@ func (m *Manager) Interrupt(agentID string) error {
 	return p.Interrupt()
 }
 
+// InterruptEscalationReady reports whether an earlier interrupt of this agent
+// was PROVEN ineffective and the caller may escalate the next one past the
+// provider's own signal -- the ZCode case, whose app-server acknowledges a stop
+// and then ignores it. Only a provider that can state the fact implements the
+// probe; every other provider answers false and every interrupt stays ordinary.
+func (m *Manager) InterruptEscalationReady(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	escalatable, ok := p.(interface{ InterruptEscalationReady() bool })
+	return ok && escalatable.InterruptEscalationReady()
+}
+
 // SendChildInput routes a user message to a subagent conversation (identified
 // by childKey, the provider linkage key stored in the registry row_key) inside
 // the owner process rootAgentID. It type-asserts the running Agent to
@@ -1042,11 +1058,13 @@ func cachedCatalogUsable(cached cachedCatalog, currentModel string, provider lea
 // model-dependent sub-groups (per-model effort tiers, and for Claude the per-model
 // extended-thinking group) that must be rebuilt when the model changes. A provider has
 // them exactly when it owns a model-dependent effort catalog -- ProviderManagesEffort
-// (Claude/Codex/Pi). The ACP permission-mode / primary-agent providers do NOT: although
-// every provider shares the default effortSubGroups builder, it produces nothing for a
-// model with no SupportedEfforts, and their effort/reasoning axes are model-independent
-// server-driven config options -- so a model change doesn't invalidate any cached group, and
-// falling through to the static fallback would needlessly drop those config options.
+// (Claude/Codex/Pi, and native Copilot, whose account decides both the models and each
+// model's effort tiers). The ACP permission-mode / primary-agent providers do NOT:
+// although every provider shares the default effortSubGroups builder, it produces nothing
+// for a model with no SupportedEfforts, and their effort/reasoning axes are
+// model-independent server-driven config options -- so a model change doesn't invalidate
+// any cached group, and falling through to the static fallback would needlessly drop
+// those config options.
 func providerHasModelDependentGroups(provider leapmuxv1.AgentProvider) bool {
 	return ProviderManagesEffort(provider)
 }

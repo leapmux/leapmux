@@ -33,10 +33,23 @@ func withToolUseCount(content MessageContent, count int) MessageContent {
 
 // mergeMessageMetadata supplies only validated worker metadata to semantic readers.
 // The caller validates the provider envelope. Neither source changes.
+//
+// The two parses run cheap side first, and the order is load-bearing rather than a
+// matter of taste. The provider envelope is the whole message and can be hundreds of
+// kilobytes; the metadata is a handful of numbers that only a turn-end row or a usage
+// row carries. The stdout reader runs this for EVERY persisted message, so a test of
+// the metadata first is what keeps a plain assistant row from paying a full scan of
+// its own envelope to learn that it has nothing to merge.
 func mergeMessageMetadata(content MessageContent) []byte {
-	var original, supplemental map[string]json.RawMessage
-	if json.Unmarshal(content.Original, &original) != nil || original == nil ||
-		json.Unmarshal(content.Metadata, &supplemental) != nil || supplemental == nil {
+	if len(content.Metadata) == 0 {
+		return content.Original
+	}
+	var supplemental map[string]json.RawMessage
+	if json.Unmarshal(content.Metadata, &supplemental) != nil || supplemental == nil {
+		return content.Original
+	}
+	var original map[string]json.RawMessage
+	if json.Unmarshal(content.Original, &original) != nil || original == nil {
 		return content.Original
 	}
 	changed := false

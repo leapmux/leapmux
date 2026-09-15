@@ -24,6 +24,37 @@ func TestJSONRPCControlRequestIdentityValidation(t *testing.T) {
 	require.Equal(t, literal, escaped)
 }
 
+// Two frames can spell the SAME number differently -- the request payload and the
+// withdrawal notification are separate frames -- so every spelling of one value has to
+// give one key, and a string id must stay a different request.
+func TestJSONRPCControlRequestIdentityCanonicalizesNumbers(t *testing.T) {
+	t.Parallel()
+	for _, group := range [][]string{
+		{`12`, `12.0`, `1.2e1`, `0.12e2`},
+		{`0`, `-0`, `0.0`, `-0.0`, `0e5`},
+		{`-7`, `-7.0`, `-0.7e1`},
+		{`1000`, `1e3`, `1000.0`},
+	} {
+		first, ok := JSONRPCControlRequestID(json.RawMessage(group[0]))
+		require.True(t, ok, group[0])
+		for _, spelling := range group[1:] {
+			key, ok := JSONRPCControlRequestID(json.RawMessage(spelling))
+			require.True(t, ok, spelling)
+			require.Equal(t, first, key, spelling)
+		}
+	}
+	// A 64-bit integer id keeps every digit: float64 cannot hold this one.
+	wide, ok := JSONRPCControlRequestID(json.RawMessage(`9007199254740993`))
+	require.True(t, ok)
+	require.Equal(t, "jsonrpc:9007199254740993", wide)
+	// The string branch keeps its quotation marks, so "12" and 12 stay two requests.
+	number, ok := JSONRPCControlRequestID(json.RawMessage(`12`))
+	require.True(t, ok)
+	text, ok := JSONRPCControlRequestID(json.RawMessage(`"12"`))
+	require.True(t, ok)
+	require.NotEqual(t, number, text)
+}
+
 type controlIdentityCancelSink struct {
 	recordingControlSink
 	cancelled []string

@@ -2,7 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { testMessageContext } from '~/test-support/messageContext'
@@ -11,6 +11,10 @@ import { useControlRequestSource } from './controlRequestSource'
 
 const sourceMessage = (seq: bigint, marker: string, provider = AgentProvider.PI) => makeMessage({ id: `source-${seq}-${marker}`, seq, agentProvider: provider, content: rawContent({ marker }) })
 const request = (sourceSeq?: bigint, claimToken = 'first'): ControlRequest => ({ agentId: 'agent', requestId: 'request', claimToken, payload: {}, sourceSeq })
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('control source resolution', () => {
   it.each(['loaded', 'fetched'])('rejects a %s source from another provider session', async (location) => {
@@ -106,6 +110,82 @@ describe('control source resolution', () => {
     const { container } = render(() => <View />)
     expect(container.textContent).toBe('No source')
     expect(fetchMessage).not.toHaveBeenCalled()
+  })
+
+  it('retries a failed load, and stops at the attempt limit', async () => {
+    vi.useFakeTimers()
+    const fetchMessage = vi.fn(async (): Promise<AgentChatMessage> => {
+      throw new Error('Connection lost')
+    })
+    const context = testMessageContext({ fetchMessage })
+    const View = () => {
+      const source = useControlRequestSource(() => request(7n), () => context, () => AgentProvider.PI)
+      return <div>{source() ? 'Source' : 'No source'}</div>
+    }
+    render(() => <View />)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMessage).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(fetchMessage).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(fetchMessage).toHaveBeenCalledTimes(3)
+    // The budget is spent. No timer remains, so no further attempt runs.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetchMessage).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows the source that a retry loads', async () => {
+    vi.useFakeTimers()
+    const fetchMessage = vi.fn<() => Promise<AgentChatMessage>>()
+      .mockRejectedValueOnce(new Error('Connection lost'))
+      .mockResolvedValueOnce(sourceMessage(7n, 'recovered'))
+    const context = testMessageContext({ fetchMessage })
+    const View = () => {
+      const source = useControlRequestSource(() => request(7n), () => context, () => AgentProvider.PI)
+      return <div>{pickString(source()?.parentObject, 'marker') || 'No source'}</div>
+    }
+    const { container } = render(() => <View />)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(container.textContent).toBe('No source')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(container.textContent).toBe('recovered')
+  })
+
+  it('does not retry a load that an abort stopped', async () => {
+    vi.useFakeTimers()
+    const fetchMessage = vi.fn(async (): Promise<AgentChatMessage> => {
+      throw new DOMException('Stopped', 'AbortError')
+    })
+    const context = testMessageContext({ fetchMessage })
+    const View = () => {
+      const source = useControlRequestSource(() => request(7n), () => context, () => AgentProvider.PI)
+      return <div>{source() ? 'Source' : 'No source'}</div>
+    }
+    render(() => <View />)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMessage).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetchMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives each request its own retry budget', async () => {
+    vi.useFakeTimers()
+    const fetchMessage = vi.fn(async (): Promise<AgentChatMessage> => {
+      throw new Error('Connection lost')
+    })
+    const context = testMessageContext({ fetchMessage })
+    const [current, setCurrent] = createSignal(request(7n))
+    const View = () => {
+      const source = useControlRequestSource(current, () => context, () => AgentProvider.PI)
+      return <div>{source() ? 'Source' : 'No source'}</div>
+    }
+    render(() => <View />)
+    await vi.advanceTimersByTimeAsync(2100)
+    expect(fetchMessage).toHaveBeenCalledTimes(3)
+    // A second request instance is a new card, so it starts a full budget.
+    setCurrent(request(7n, 'second'))
+    await vi.advanceTimersByTimeAsync(2100)
+    expect(fetchMessage).toHaveBeenCalledTimes(6)
   })
 
   it('rejects a loaded source from another provider', () => {

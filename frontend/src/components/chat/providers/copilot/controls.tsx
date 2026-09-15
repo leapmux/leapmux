@@ -59,7 +59,9 @@ export function copilotIsQuestion(payload: Record<string, unknown>): boolean {
  * The question one `user_input.requested` carries.
  *
  * The runtime states its choices as plain strings, and `allowFreeform` states whether
- * a typed answer is accepted. An empty answer is valid, so the control offers one.
+ * it accepts an answer that is not one of them. The empty answer is the shortest such
+ * answer, so the control offers it exactly where the runtime takes one. A request that
+ * states no flag wants one of its choices, and the submit then waits for one.
  */
 export function copilotQuestions(payload: Record<string, unknown>): Question[] {
   const data = copilotEvent(payload)?.data
@@ -69,7 +71,7 @@ export function copilotQuestions(payload: Record<string, unknown>): Question[] {
   return [{
     question: pickString(data, 'question'),
     options: choices.map(choice => ({ label: choice })),
-    allowEmpty: true,
+    allowEmpty: data.allowFreeform === true,
   }]
 }
 

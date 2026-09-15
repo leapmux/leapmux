@@ -30,8 +30,13 @@ type ControlResponseResolution struct {
 	Feedback      string
 	SelfDisplayed bool
 	// Withhold prevents forwarding a response that the provider cannot read.
-	// When the request still exists, the service returns an error and keeps the request available.
-	// When the request is gone, the service can preserve the orphaned answer without forwarding it.
+	// Withhold covers that case alone. The service returns an error and keeps the
+	// request available for another answer.
+	//
+	// The service refuses an answer whose control request row is gone, and that
+	// refusal runs before the service reads Withhold. A withheld resolution
+	// therefore always describes a request that still exists.
+	//
 	// Empty Content cannot express this decision because the service restores the original response bytes.
 	Withhold        bool
 	PlanModeControl PlanModeControlKind
@@ -49,6 +54,12 @@ func defaultControlResponseResolution(ctx ControlResponseContext) ControlRespons
 // id wins, because the pending control_request row is keyed by response.request_id. Returns "" when
 // neither shape yields a non-empty id. Shared by every provider's ControlResponseRequestID; no
 // provider narrows it, since narrowing to one shape would drop the other's real flows.
+//
+// The JSON-RPC branch returns the id TEXT, and it must not canonicalize it. The browser echoes
+// the worker's own request id -- the "jsonrpc:"-prefixed key publishControlRequest stored the row
+// under -- as a JSON STRING in that field (buildJsonRpcResult), because a JSON number loses
+// precision there. So the text already IS the stored key, and running it through
+// newControlRequestIdentity would prefix it a second time and match nothing.
 func defaultControlResponseRequestID(content []byte) string {
 	if requestID, _, _, ok := DecodeControlBehavior(content); ok && requestID != "" {
 		return requestID
@@ -60,18 +71,6 @@ func defaultControlResponseRequestID(content []byte) string {
 }
 
 func (noopProvider) ControlResponseRequestID(content []byte) string {
-	return defaultControlResponseRequestID(content)
-}
-
-func (codexProvider) ControlResponseRequestID(content []byte) string {
-	return defaultControlResponseRequestID(content)
-}
-
-func (claudeProvider) ControlResponseRequestID(content []byte) string {
-	return defaultControlResponseRequestID(content)
-}
-
-func (piProvider) ControlResponseRequestID(content []byte) string {
 	return defaultControlResponseRequestID(content)
 }
 
@@ -118,26 +117,11 @@ func (piProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResp
 	return defaultControlResponseResolution(ctx)
 }
 
-func (p acpProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+func (acpProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
 	if result, ok := resolveMCPElicitationResponse(ctx); ok {
 		return result
 	}
-	res := defaultControlResponseResolution(ctx)
-	if p.provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR || len(ctx.RequestPayload) == 0 {
-		return res
-	}
-	var request struct {
-		Method string `json:"method"`
-	}
-	if !warnUnmarshal(ctx.RequestPayload, &request, "cursor control response request") {
-		return res
-	}
-	if request.Method == CursorMethodCreatePlan {
-		if transformed, ok := transformCursorControlResponse(ctx); ok {
-			res.Content = transformed
-		}
-	}
-	return res
+	return defaultControlResponseResolution(ctx)
 }
 
 // warnUnmarshal reports invalid provider JSON and returns whether decoding succeeded.
@@ -192,66 +176,6 @@ func NormalizeRejectionMessage(message string) string {
 	return message
 }
 
-// transformCursorControlResponse rewrites the frontend's neutral approve/reject envelope for a
-// Cursor create-plan control request into the ACP outcome Cursor expects on its stdin, returning
-// ok=false (and the caller forwards the response unchanged) when the bytes aren't a create-plan
-// decision that matches the stored request id.
-func transformCursorControlResponse(ctx ControlResponseContext) ([]byte, bool) {
-	var req struct {
-		Method string `json:"method"`
-	}
-	if !warnUnmarshal(ctx.RequestPayload, &req, "cursor control response method") {
-		return nil, false
-	}
-	if req.Method != CursorMethodCreatePlan {
-		return nil, false
-	}
-
-	respRequestID, behavior, message, ok := DecodeControlBehavior(ctx.ResponseContent)
-	if !ok {
-		return nil, false
-	}
-
-	idRaw, requestID, ok := ExtractJSONRPCID(ctx.RequestPayload)
-	if !ok {
-		return nil, false
-	}
-
-	if respRequestID == "" || respRequestID != storedControlRequestID(ctx, requestID) {
-		return nil, false
-	}
-
-	outcome := "accepted"
-	reason := ""
-	switch behavior {
-	case ControlBehaviorAllow:
-	case ControlBehaviorDeny:
-		outcome = "rejected"
-		// message is already trimmed and the ControlRejectedByUserMessage placeholder collapsed
-		// to "" by DecodeControlBehavior, so a bare rejection carries no reason.
-		reason = message
-	default:
-		return nil, false
-	}
-
-	outcomeBody := map[string]interface{}{
-		"outcome": outcome,
-	}
-	if reason != "" {
-		outcomeBody["reason"] = reason
-	}
-
-	encoded, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(idRaw),
-		"result":  map[string]interface{}{"outcome": outcomeBody},
-	})
-	if err != nil {
-		return nil, false
-	}
-	return encoded, true
-}
-
 // ControlResponseRequestID reads the pending request's id off the frontend answer.
 func (zcodeProvider) ControlResponseRequestID(content []byte) string {
 	return defaultControlResponseRequestID(content)
@@ -271,7 +195,7 @@ func (zcodeProvider) ResolveControlResponse(ctx ControlResponseContext) ControlR
 		// The pending request is gone (a teardown, or a duplicate answer that read it
 		// after the winner deleted it). There is nothing to address the reply to, and
 		// forwarding the frontend envelope would put a frame the app-server cannot
-		// parse on its stdin. The answer still persists its row.
+		// parse on its stdin.
 		res.Withhold = true
 		return res
 	}
@@ -317,6 +241,13 @@ func (zcodeProvider) ResolveControlResponse(ctx ControlResponseContext) ControlR
 	}
 	res.Content = encoded
 	if stored.Method == contracts.ZCodeMethodRequestUserInput && behavior == ControlBehaviorDeny && message != "" {
+		// The RAW message, not the trimmed one, and the second decode is what reaches it.
+		//
+		// The app-server cannot carry this text, so the service queues it as the next USER
+		// INPUT. That makes it the reader's own typed message, and LeapMux delivers a typed
+		// message byte for byte. `message` above is the TRIMMED value, and it decides only
+		// whether a reason exists at all -- it excludes the ControlRejectedByUserMessage
+		// sentinel and a whitespace-only reason, which is what this guard needs it for.
 		var original ControlBehaviorEnvelope
 		if json.Unmarshal(ctx.ResponseContent, &original) == nil {
 			res.Feedback = original.Response.Response.Message

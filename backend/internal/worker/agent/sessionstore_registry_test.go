@@ -154,7 +154,7 @@ func TestNoopProviderListsNothing(t *testing.T) {
 // about where any of them is.
 func TestACPProviderWithoutAReaderListsNothing(t *testing.T) {
 	t.Parallel()
-	sessions, err := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.
+	sessions, err := cursorProvider{acpProvider{listStoredSessions: cursorStoredSessions}}.
 		ListStoredSessions(context.Background(), StoredSessionQuery{WorkingDir: "/some/dir"})
 	require.NoError(t, err)
 	assert.Empty(t, sessions)

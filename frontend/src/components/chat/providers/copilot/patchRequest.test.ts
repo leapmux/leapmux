@@ -18,6 +18,17 @@ describe('copilot patch requests', () => {
     expect(files![1]).toMatchObject({ filePath: 'removed.ts', operation: 'delete' })
   })
 
+  // A blank context line arrives as the EMPTY string, with no marker after it. The
+  // hunk loop used to stop there, the file-header pattern then rejected the same line,
+  // and the whole patch fell back to its raw text.
+  it('reads a blank context line as part of its hunk', () => {
+    const files = copilotPatchRequest('*** Begin Patch\n*** Update File: src/code.ts\n@@ function first\n context\n\n+added\n*** End Patch')
+    expect(files).toHaveLength(1)
+    expect(files![0]).toMatchObject({ filePath: 'src/code.ts', operation: 'edit' })
+    expect(fileEditDiffHunks(files![0])[0].lines).toEqual([' context', ' ', '+added'])
+    expect(diffStatsFromHunks(fileEditDiffHunks(files![0]))).toEqual({ added: 1, deleted: 0 })
+  })
+
   it('preserves a move with changed content', () => {
     const files = copilotPatchRequest('*** Begin Patch\n*** Update File: old.ts\n*** Move to: new.ts\n@@\n-old\n+new\n*** End Patch')
     expect(files?.[0]).toMatchObject({ filePath: 'new.ts', previousPath: 'old.ts', operation: 'move' })

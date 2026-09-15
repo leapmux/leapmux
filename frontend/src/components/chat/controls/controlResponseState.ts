@@ -6,6 +6,24 @@ export function canAnswerControlRequest(request: ControlRequest | null | undefin
 }
 
 /**
+ * Whether LeapMux may send an answer for this request at all.
+ *
+ * The delivery state is one half. The other half is the payload: a request whose
+ * bytes LeapMux could not read carries no option list and no decision
+ * vocabulary, so nothing can compose an answer for it. Three presentation
+ * surfaces already refuse to OFFER a decision for such a request -- the banner's
+ * content, the banner's actions and the composer's editor purpose -- but the one
+ * place that sends checked the delivery state alone, so a faulted request in the
+ * READY state passed it.
+ *
+ * Presentation asks the two questions separately, because each draws a different
+ * notice. The send asks this one.
+ */
+export function canSendControlResponse(request: ControlRequest | null | undefined): boolean {
+  return canAnswerControlRequest(request) && !request?.payloadFault
+}
+
+/**
  * What the banner says about a request whose bytes LeapMux could not read.
  *
  * The provider plugins all draw "Permission Required" from an empty payload, because an

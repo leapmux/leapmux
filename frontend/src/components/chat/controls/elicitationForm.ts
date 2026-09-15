@@ -3,6 +3,7 @@ import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation
 import { Validator } from '@cfworker/json-schema'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { isObject, pickString } from '~/lib/jsonPick'
+import { buildControlResponseEnvelope } from '~/utils/controlResponse'
 
 export interface ElicitationRequest {
   purpose?: 'permission'
@@ -155,10 +156,11 @@ export function elicitationURL(value: string | undefined): string | undefined {
 
 /** The worker restores the provider's original response identifier. */
 export function buildElicitationResponse(requestId: string, action: McpElicitationAction, content?: Record<string, unknown>, metadata?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    type: 'control_response',
-    response: { subtype: 'success', request_id: requestId, response: { action, ...(action === MCP_ELICITATION_ACTION.Accept && content ? { content } : {}), ...(action === MCP_ELICITATION_ACTION.Accept && metadata ? { _meta: metadata } : {}) } },
-  }
+  return buildControlResponseEnvelope(requestId, {
+    action,
+    ...(action === MCP_ELICITATION_ACTION.Accept && content ? { content } : {}),
+    ...(action === MCP_ELICITATION_ACTION.Accept && metadata ? { _meta: metadata } : {}),
+  })
 }
 
 export const ELICITATION_ACCEPT_CHOICE = 'elicitation-accept-choice'

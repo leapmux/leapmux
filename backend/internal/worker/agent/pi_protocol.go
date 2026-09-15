@@ -48,6 +48,12 @@ const (
 	PiCommandNewSession         = "new_session"
 )
 
+// piGoalDisplayKey is the status key and the widget key that pi-goal-x writes its
+// own display under. A set_status or a set_widget under that key is the only hint
+// LeapMux gets for a goal that changed with no tool result and no focus entry.
+// The key stays on the Go side: no browser code reads it.
+const piGoalDisplayKey = "goal"
+
 // Pi `prompt` command's `streamingBehavior` — how Pi should treat a new
 // prompt that arrives while a turn is already streaming. "steer" injects
 // the new message into the in-flight turn; the default (omit) starts a
@@ -60,7 +66,7 @@ const PiStreamingBehaviorSteer = "steer"
 const PiContentBlockText = "text"
 
 // Pi message roles — the `role` field on entries inside `agent_end.messages`
-// and on `message_end.message`. Only assistant entries carry the terminal
+// and on `message_end.message`. Only assistant entries carry the final
 // stop-reason for a turn.
 const PiRoleAssistant = "assistant"
 

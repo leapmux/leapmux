@@ -138,9 +138,59 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	require.Equal(t, base64.StdEncoding.EncodeToString(image), blob["data"])
 }
 
+func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary: "copilot", helperRun: "TestHelperCopilotNativeConnection",
+		wantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
+	})
+	sink := &testSink{}
+	provider, err := startNativeCopilot(t.Context(), Options{
+		AgentID: "native-steer", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: time.Second,
+	}, sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	a := provider.(*copilotAgent)
+	require.NotEmpty(t, sink.LastSessionID())
+
+	// A steer owns no turn: with nothing running it must refuse rather than
+	// start one, the way every other provider's steer refuses.
+	require.ErrorIs(t, a.SteerInput("too early", nil), ErrNoActiveTurn)
+
+	require.NoError(t, a.SendInput("first", nil))
+	state := a.PublishTurnActive()
+	require.True(t, state.Active)
+	require.True(t, state.Steerable, "an active Copilot turn must be published steerable")
+	require.NoError(t, a.SteerInput("steered", nil))
+
+	file, err := os.Open(requestsPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	var sends []recordedRequest
+	for decoder.More() {
+		var request recordedRequest
+		require.NoError(t, decoder.Decode(&request))
+		if request.Method == "session.send" {
+			sends = append(sends, request)
+		}
+	}
+	require.Len(t, sends, 2)
+	require.NotContains(t, sends[0].Params, "mode", "a plain send must leave the delivery mode to Copilot's default")
+	require.Equal(t, "first", sends[0].Params["prompt"])
+	require.Equal(t, "immediate", sends[1].Params["mode"])
+	require.Equal(t, "steered", sends[1].Params["prompt"])
+}
+
 func TestCopilotNativeSessionConfig(t *testing.T) {
 	for _, resume := range []bool{false, true} {
-		config := newCopilotSessionConfig(Options{WorkingDir: "/project", Options: map[string]string{OptionIDModel: DefaultModelSentinel}}, "session", resume)
+		// Both sentinels mean "let the runtime choose", and neither word is one the
+		// runtime's own catalogue holds. Each must be omitted rather than sent.
+		config := newCopilotSessionConfig(Options{WorkingDir: "/project", Options: map[string]string{
+			OptionIDModel: DefaultModelSentinel, OptionIDEffort: EffortAuto,
+		}}, "session", resume)
 		raw, err := json.Marshal(config)
 		require.NoError(t, err)
 		var fields map[string]any
@@ -201,7 +251,7 @@ func TestCopilotNativeSessionRejectsAnotherIdentity(t *testing.T) {
 		env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_RETURN_ID=another-session"},
 	})
 	opts := Options{AgentID: "native-identity", WorkingDir: t.TempDir(), Shell: testutil.TestShell()}
-	connection, err := startCopilotConnection(t.Context(), opts, func(*parsedLine) {})
+	connection, err := startCopilotConnectionForTest(t, opts, func(*parsedLine) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
 	for _, resume := range []bool{false, true} {

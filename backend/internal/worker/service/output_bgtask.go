@@ -59,7 +59,7 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		listRows: func(ctx context.Context, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
 			rows, err := h.queries.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
-				Kind:         bucket,
+				Kind:         leapmuxv1.BackgroundTaskKind(bucket),
 				Limit:        int64(limit),
 			})
 			if err != nil {
@@ -73,9 +73,9 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		},
 		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID string, bucket, seq int64) error {
 			_, err := h.queries.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
-				MinFinalStatus: int64(bgtask.MinFinalStatus),
+				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 				OwnerAgentID:   ownerID,
-				Kind:           bucket,
+				Kind:           leapmuxv1.BackgroundTaskKind(bucket),
 				Seq:            seq,
 			})
 			return err
@@ -315,7 +315,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// read does (no Go-time.Now-vs-SQLite-strftime drift).
 		now := nowMillis()
 		if err := h.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
-			Status:       int64(status),
+			Status:       leapmuxv1.BackgroundTaskStatus(status),
 			ActiveForm:   activeForm,
 			UpdatedAt:    sqltime.NewSQLiteTime(now),
 			OwnerAgentID: rootAgentID,
@@ -333,7 +333,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		// the idempotent stamp can be retried by any later final update.
 		if status.IsFinished() {
 			if err := h.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
-				MinFinalStatus: int64(bgtask.MinFinalStatus),
+				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 				EndedAt:        sqltime.SQLiteNullTimeOf(now),
 				OwnerAgentID:   rootAgentID,
 				RowKey:         rowKey,
@@ -383,8 +383,8 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 		}
 		now := nowMillis()
 		if err := h.queries.CloseAgentBackgroundTask(ctx, db.CloseAgentBackgroundTaskParams{
-			MinFinalStatus: int64(bgtask.MinFinalStatus),
-			Status:         int64(status),
+			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+			Status:         leapmuxv1.BackgroundTaskStatus(status),
 			EndedAt:        sqltime.SQLiteNullTimeOf(now),
 			UpdatedAt:      sqltime.NewSQLiteTime(now),
 			OwnerAgentID:   rootAgentID,
@@ -428,8 +428,8 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 		// matches a cold-start read (no Go-time.Now-vs-SQLite drift).
 		now := nowMillis()
 		rows, err := h.queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-			Status:         int64(bgtask.StatusRunning),
-			MinFinalStatus: int64(bgtask.MinFinalStatus),
+			Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 			UpdatedAt:      sqltime.NewSQLiteTime(now),
 			OwnerAgentID:   rootAgentID,
 			RowKey:         rowKey,
@@ -558,8 +558,8 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	// divider, permanently. Without a divider a subagent whose owner process died
 	// keeps a transcript that simply stops.
 	endedChildIDs, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
-		MinFinalStatus: int64(bgtask.MinFinalStatus),
-		Status:         int64(status),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		Status:         leapmuxv1.BackgroundTaskStatus(status),
 		EndedAt:        sqltime.SQLiteNullTimeOf(now),
 		UpdatedAt:      sqltime.NewSQLiteTime(now),
 		OwnerAgentID:   rootAgentID,
@@ -1624,7 +1624,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		OwnerAgentID:   rootAgentID,
 		RowKey:         task.RowKey,
 		Seq:            cache.nextSeq,
-		Kind:           int64(merged.Kind),
+		Kind:           leapmuxv1.BackgroundTaskKind(merged.Kind),
 		ChildAgentID:   merged.ChildAgentID,
 		ParentAgentID:  merged.ParentAgentID,
 		GroupKey:       merged.GroupKey,
@@ -1633,7 +1633,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		TitleIsCommand: ptrconv.BoolToInt64(merged.TitleIsCommand),
 		Description:    merged.Description,
 		ActiveForm:     merged.ActiveForm,
-		Status:         int64(merged.Status),
+		Status:         leapmuxv1.BackgroundTaskStatus(merged.Status),
 		// created_at binds on INSERT only (the ON CONFLICT UPDATE does not touch
 		// it); updated_at binds on both. Both derive from the same `now` so the
 		// cache and the persisted row agree to the millisecond.

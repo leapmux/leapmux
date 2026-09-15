@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -179,7 +180,7 @@ func TestPlanArchive_NonYearSubdirsIgnored(t *testing.T) {
 // given path. Used to drive the DB safeguard.
 func makeAgentWithPlanPath(t *testing.T, queries *db.Queries, agentID, planPath string) {
 	t.Helper()
-	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),

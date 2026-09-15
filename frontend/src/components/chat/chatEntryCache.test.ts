@@ -317,6 +317,64 @@ describe('createclassifiedentrycache', () => {
     })
   })
 
+  it('records no opener revision on a tool_use row, whose own span resolves to itself', () => {
+    createRoot((dispose) => {
+      // The resolver answers a tool_use row's own span WITH that row. Recording
+      // it as the row's sibling opener tracks the row's own content version a
+      // second time, in a slot the height key reads as a sibling's.
+      const [ownVersion, setOwnVersion] = createSignal(0)
+      const messages = [claudeToolUse('tu1', 2n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        requestRevision: () => ({ id: 'tu1', seq: 2n, contentVersion: ownVersion(), supplementalRevision: 0n }),
+        contentVersionById: () => ownVersion(),
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const before = cache.getEntry('tu1')!
+      expect(before.category.kind).toBe('tool_use')
+      // The presence flag stays ungated, so it holds stable at true for an opener.
+      expect(before.freshness.hasToolUseSibling).toBe(true)
+      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
+      expect(before.freshness.toolUseSiblingRevisionKey).toBe('')
+
+      setOwnVersion(1)
+      cache.visibleEntries()
+      const after = cache.getEntry('tu1')!
+      // The row rebuilds off its OWN content version, and off that alone.
+      expect(after).not.toBe(before)
+      expect(after.freshness.contentVersion).toBe(1)
+      expect(after.freshness.toolUseSiblingContentVersion).toBe(0)
+      expect(after.freshness.toolUseSiblingRevisionKey).toBe('')
+      dispose()
+    })
+  })
+
+  it('records no opener revision on a spanned row that is not a tool_result', () => {
+    createRoot((dispose) => {
+      // A Codex reasoning row carries a span but never sizes itself from an
+      // opener, so the opener's version is not one of its freshness dimensions.
+      const [openerVersion, setOpenerVersion] = createSignal(0)
+      const messages = [emptyCodexReasoning('r1', 2n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        requestRevision: () => ({ id: 'request', seq: 1n, contentVersion: openerVersion(), supplementalRevision: 0n }),
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const before = cache.getEntry('r1')!
+      expect(before.category.kind).not.toBe('tool_result')
+      expect(before.freshness.hasToolUseSibling).toBe(true)
+      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
+      expect(before.freshness.toolUseSiblingRevisionKey).toBe('')
+
+      setOpenerVersion(1)
+      cache.visibleEntries()
+      expect(cache.getEntry('r1')).toBe(before)
+      dispose()
+    })
+  })
+
   it('prunes departed-id entries when only hasVisibleEntries() is read (no leak)', () => {
     createRoot((dispose) => {
       // A leading HIDDEN row (cached because the emptiness scan must classify past

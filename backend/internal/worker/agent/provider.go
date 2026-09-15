@@ -857,19 +857,18 @@ func (piProvider) PermissionModeFromRawInput(string) (string, bool) { return "",
 
 // acpProvider recognizes ACP's `session/cancel` notification (and
 // the bare `cancel` form retained for legacy producers). Shared across all
-// ACP-based providers (Cursor, Copilot, Kilo, OpenCode, Goose).
+// ACP-based providers (Cursor, Kilo, OpenCode, Goose, Reasonix).
 // ACP doesn't consolidate notifications today, so Classify/Merge inherit
 // the no-op embedding.
 type acpProvider struct {
 	noopProvider
-	provider leapmuxv1.AgentProvider
 	// validateAttachment enforces a restrictive attachment policy for the ACP providers that need
 	// one (Reasonix is text-only). Non-nil ONLY for those providers; nil accepts everything (the
-	// default for Cursor, Copilot, Kilo, OpenCode, Goose). Set at registration (init) so the
+	// default for Cursor, Kilo, OpenCode, Goose). Set at registration (init) so the
 	// per-provider policy lives at one site rather than a provider-enum switch.
 	validateAttachment func(classifiedAttachment) error
 	// listStoredSessions reads this provider's own session store. Non-nil for
-	// every ACP provider, because each of the six keeps a store this worker can
+	// every ACP provider, because each of the five keeps a store this worker can
 	// read -- but each keeps it in a different place and shape, so the function
 	// lives in that provider's own file and is wired here at registration, the
 	// way validateAttachment already is. Nil lists nothing.
@@ -900,11 +899,11 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, listStoredSessions: cursorStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, cursorProvider{acpProvider{listStoredSessions: cursorStoredSessions}})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, copilotProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, openCodeFamilyProvider{acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, listStoredSessions: kiloStoredSessions}})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, openCodeFamilyProvider{acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, listStoredSessions: opencodeStoredSessions}})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, listStoredSessions: gooseStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, openCodeFamilyProvider{acpProvider{listStoredSessions: kiloStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, openCodeFamilyProvider{acpProvider{listStoredSessions: opencodeStoredSessions}})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{listStoredSessions: gooseStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

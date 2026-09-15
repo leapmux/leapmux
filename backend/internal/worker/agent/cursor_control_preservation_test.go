@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCursorControlsPreserveNativePayloadBytes(t *testing.T) {
-	for _, method := range []string{CursorMethodAskQuestion, CursorMethodCreatePlan} {
+	for _, method := range []string{contracts.CursorMethodAskQuestion, contracts.CursorMethodCreatePlan} {
 		t.Run(method, func(t *testing.T) {
 			sink := &recordingControlSink{}
 			agent := newCursorAgentWithSink(sink)

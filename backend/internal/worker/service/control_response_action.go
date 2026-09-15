@@ -53,9 +53,8 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 		mode := resolveTargetMode(plan.settings.GetPermissionMode(), provider.PlanModePermissionMode(agent.PlanModeControlExit))
 		return svc.enqueuePlanExecution(agentID, mode, controlResponseQueueID(agentID, plan))
 	}
-	if plan.resolution.Withhold {
-		return nil
-	}
+	// processControlResponse refuses a withheld resolution before it calls this
+	// function, so every plan that arrives here forwards its content.
 	return svc.sendControlResponseFn(agentID, plan.resolution.Content)
 }
 
@@ -82,7 +81,7 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 		return svc.enqueuePlanExecution(agentID, mode, inputID)
 	}
 	_, err = svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
-		ID: inputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "Implement the plan.",
+		ID: inputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: planExecutionPromptText,
 	})
 	return err
 }

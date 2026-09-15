@@ -148,6 +148,15 @@ describe('result_divider: Claude', () => {
     expect(renderResultText(parsed)).toBe('Turn interrupted (2.0s)')
   })
 
+  // The command-line interface marks its own cancellation with `is_error: true`, the same
+  // shape it uses for a genuine failure. The cancelled test used to live past that branch,
+  // so a stop the interface reported drew "Turn failed — Cancelled" in the danger color.
+  it('renders a cancelled subtype as an interruption even when is_error is set', () => {
+    const parsed = { type: 'result', is_error: true, subtype: 'cancelled', result: 'Cancelled', errors: ['Error: Request was aborted.'], duration_ms: 2000 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Turn interrupted (2.0s)')
+  })
+
   it('renders error with subtype as a shared turn-failed divider plus detail', () => {
     const parsed = {
       type: 'result',

@@ -7,8 +7,8 @@ import { SetGoalDialog } from './SetGoalDialog'
 
 useTestStorage()
 
-function mount(props: { initialObjective?: string, onSubmit?: () => Promise<boolean>, onClose?: () => void } = {}) {
-  const onSubmit = vi.fn(props.onSubmit ?? (async () => true))
+function mount(props: { initialObjective?: string, onSubmit?: () => Promise<void>, onClose?: () => void } = {}) {
+  const onSubmit = vi.fn(props.onSubmit ?? (async () => {}))
   const onClose = vi.fn(props.onClose)
   const result = render(() => (
     <PreferencesProvider>
@@ -42,8 +42,8 @@ async function editorReady(seeded?: string): Promise<HTMLElement> {
 
 describe('setGoalDialog', () => {
   it('blocks every close path while the goal request is pending', async () => {
-    let finish!: (accepted: boolean) => void
-    const pending = new Promise<boolean>(resolve => finish = resolve)
+    let refuse!: (reason: Error) => void
+    const pending = new Promise<void>((_, reject) => refuse = reject)
     const { getByTestId, getByRole, onClose } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
     await editorReady('Keep this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
@@ -56,13 +56,13 @@ describe('setGoalDialog', () => {
     expect(getByRole('button', { name: 'Close' })).toBeDisabled()
     expect(getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(onClose).not.toHaveBeenCalled()
-    finish(false)
+    refuse(new Error('The provider refused'))
     await waitFor(() => expect(getByRole('button', { name: 'Close' })).toBeEnabled())
   })
 
   it('keeps the objective until asynchronous delivery succeeds', async () => {
-    let finish!: (accepted: boolean) => void
-    const pending = new Promise<boolean>(resolve => finish = resolve)
+    let refuse!: (reason: Error) => void
+    const pending = new Promise<void>((_, reject) => refuse = reject)
     const { getByTestId, onClose, onSubmit } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
     const editor = await editorReady('Keep this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
@@ -71,20 +71,20 @@ describe('setGoalDialog', () => {
     expect(editor.textContent).toBe('Keep this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     expect(onSubmit).toHaveBeenCalledTimes(1)
-    finish(false)
+    refuse(new Error('The provider refused'))
     await waitFor(() => expect(getByTestId('set-goal-submit')).toBeEnabled())
     expect(onClose).not.toHaveBeenCalled()
     expect(editor.textContent).toBe('Keep this objective')
   })
 
   it('closes after asynchronous delivery succeeds', async () => {
-    let finish!: (accepted: boolean) => void
-    const pending = new Promise<boolean>(resolve => finish = resolve)
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => finish = resolve)
     const { getByTestId, onClose } = mount({ initialObjective: 'Deliver this objective', onSubmit: () => pending })
     await editorReady('Deliver this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     expect(onClose).not.toHaveBeenCalled()
-    finish(true)
+    finish()
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 
@@ -104,13 +104,13 @@ describe('setGoalDialog', () => {
   })
 
   it('does not close a new dialog when an old submission finishes after disposal', async () => {
-    let finish!: (accepted: boolean) => void
-    const pending = new Promise<boolean>(resolve => finish = resolve)
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => finish = resolve)
     const { getByTestId, onClose, unmount } = mount({ initialObjective: 'Old objective', onSubmit: () => pending })
     await editorReady('Old objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     unmount()
-    finish(true)
+    finish()
     await pending
     expect(onClose).not.toHaveBeenCalled()
   })

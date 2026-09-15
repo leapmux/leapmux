@@ -41,3 +41,40 @@ describe('file image rendering', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,BBBB')
   })
 })
+
+// `loadFile` refuses to read during a premeasure pass and for an offscreen row,
+// while the display model still reported `loading`. The row then said "Loading
+// image..." for a read nobody started, and Retry hides for as long as `loading`
+// holds -- so the row offered no way out. See SCAN-S8-5.
+describe('a file image the row cannot read yet', () => {
+  it('claims no read during a premeasure pass', () => {
+    const read = vi.fn(async () => image)
+    const { container } = render(() => (
+      <ImageResultView source={{ filePath: '/image.png' }} context={{ premeasureMode: true, sources: testMessageSources({ fileImage: read }) }} />
+    ))
+    expect(read).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('Loading image')
+  })
+
+  it('claims no read while the row is offscreen, and reads once it arrives', async () => {
+    const [offscreen, setOffscreen] = createSignal(true)
+    const read = vi.fn(async () => image)
+    const { container } = render(() => (
+      <ImageResultView source={{ filePath: '/image.png' }} context={{ rowOffscreen: offscreen, sources: testMessageSources({ fileImage: read }) }} />
+    ))
+    expect(read).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('Loading image')
+    setOffscreen(false)
+    await waitFor(() => expect(read).toHaveBeenCalledOnce())
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+  })
+
+  it('still claims a read that is genuinely in flight', async () => {
+    const read = vi.fn(() => new Promise<typeof image>(() => {}))
+    const { container } = render(() => (
+      <ImageResultView source={{ filePath: '/image.png' }} context={{ sources: testMessageSources({ fileImage: read }) }} />
+    ))
+    await waitFor(() => expect(read).toHaveBeenCalledOnce())
+    expect(container.textContent).toContain('Loading image')
+  })
+})

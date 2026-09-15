@@ -9,12 +9,13 @@ import (
 	"os"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCursorControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
-	for _, method := range []string{CursorMethodAskQuestion, CursorMethodCreatePlan} {
+	for _, method := range []string{contracts.CursorMethodAskQuestion, contracts.CursorMethodCreatePlan} {
 		t.Run(method, func(t *testing.T) {
 			var output bytes.Buffer
 			sink := &recordingControlSink{publicationError: errors.New("storage unavailable")}

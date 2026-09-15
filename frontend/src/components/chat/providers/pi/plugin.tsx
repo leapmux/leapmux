@@ -2,25 +2,20 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { FileEditDiffSource } from '../../results/fileEditDiff'
 import type { ClassificationInput, Provider, SpanRole, ToolMessageInput, ToolResultMeta } from '../registry'
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_TOOL } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { messageUsage, todosToMarkdown } from '~/lib/messageParser'
+import { messageUsage } from '~/lib/messageParser'
 import { validateSessionFilePath, validateSessionId } from '~/lib/validate'
-import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
-import { fileEditDiffHunks } from '../../results/fileEditDiff'
-import { mcpToolResultMeta } from '../../results/mcpToolCall'
-import { searchResultCollapsible } from '../../results/searchResult'
+import { toolPresentationMeta } from '../../results/toolResultMeta'
 import { registerProvider, retainedRowIsFinal } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
@@ -32,21 +27,12 @@ import {
   sendPiExtensionResponse,
 } from './controlResponse'
 import { PiControlActions, PiControlContent } from './controls'
-import { isPiAgentTool, piAgentResult } from './extractors/agent'
-import { extractPiCommand, isPiCommand } from './extractors/command'
 import { piSubagentNotificationSources, piVisibleCustomMessage } from './extractors/customMessage'
-import { extractPiRead, piResolveDiffSources, resolvePiResultDiff } from './extractors/fileEdit'
-import { piGenericToolSource } from './extractors/generic'
 import { piToolResultImages } from './extractors/image'
-import { extractPiSearch } from './extractors/search'
 import { resolvePiMessage } from './extractors/supplement'
-import { piTodoSource } from './extractors/todo'
-import { piExtractTool, piPairedRequest } from './extractors/toolCommon'
-import { piWorkflowResult } from './extractors/workflow'
 import { isPiMcpApproval, piMcpApproval } from './mcpApproval'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import { isPiPlanApproval } from './planRequest'
-import { PI_SEARCH_TOOL } from './protocol'
 import {
   describePiNotification,
   PiAssistantMessage,
@@ -56,6 +42,7 @@ import {
   PiToolExecutionRenderer,
   PiToolResultRenderer,
 } from './renderers'
+import { piToolPresentation, piToolRow } from './toolPresentation'
 
 /**
  * Pi event types that carry no UI surface (lifecycle markers / fan-out).
@@ -110,15 +97,6 @@ function isHiddenPiNotification(m: unknown): boolean {
   return describePiNotification(m) === null
 }
 
-function formatPiDiffSources(sources: FileEditDiffSource[]): string | null {
-  if (sources.length === 0)
-    return null
-  return sources
-    .map(source => formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath))
-    .filter(Boolean)
-    .join('\n') || null
-}
-
 type PiRenderer = (
   category: MessageCategory,
   parsed: unknown,
@@ -144,12 +122,19 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
 }
 
+/**
+ * Toolbar metadata for one Pi tool-result row.
+ *
+ * The row's own display model answers it, so the toolbar always describes the body the
+ * reader sees. Two things stay here, because neither is a tool: a consolidated subagent
+ * notification, which carries no tool call at all, and the guards that reject a row
+ * this hook does not own.
+ */
 function piToolResultMeta(
   category: MessageCategory,
   input: ToolMessageInput,
 ): ToolResultMeta | null {
   const parsed = input.parsed.parentObject
-  const toolUseParsed = piPairedRequest(parsed, input.request)
   if (category.kind !== 'tool_result' || !isObject(parsed))
     return null
 
@@ -159,94 +144,8 @@ function piToolResultMeta(
     return { collapsible: notifications.some(source => commandOutputIsCollapsible(source.body)), hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
   }
 
-  const tool = piExtractTool(parsed)
-  if (!tool)
-    return null
-
-  const resultText = tool.result?.text ?? ''
-  const startArgs = pickObject(toolUseParsed?.parentObject, 'args') ?? {}
-
-  if (tool.toolName === PI_TOOL.Todo) {
-    const source = piTodoSource(parsed, toolUseParsed)
-    if (source) {
-      const text = source.error ?? [todosToMarkdown(source.list.todos), source.description, ...source.metadata.map(item => `${item.label}: ${item.value}`)].filter(Boolean).join('\n\n')
-      return { collapsible: false, hasDiff: false, hasCopyable: !!text, copyableContent: () => text || null }
-    }
-  }
-
-  if (isPiAgentTool(tool.toolName)) {
-    const source = tool.toolName === PI_TOOL.SubagentWorkflow ? piWorkflowResult(parsed, toolUseParsed) : piAgentResult(parsed, toolUseParsed)
-    return {
-      collapsible: commandOutputIsCollapsible(source.body),
-      hasDiff: false,
-      hasCopyable: source.body !== '',
-      copyableContent: () => source.body || null,
-    }
-  }
-
-  if (isPiCommand(tool.toolName)) {
-    const bash = extractPiCommand(parsed)
-    if (!bash)
-      return null
-    return {
-      collapsible: commandOutputIsCollapsible(bash.output),
-      hasDiff: false,
-      hasCopyable: bash.output !== '',
-      copyableContent: () => bash.output || null,
-    }
-  }
-
-  const isFileTool = tool.toolName === PI_TOOL.Read || tool.toolName === PI_TOOL.Edit || tool.toolName === PI_TOOL.Write
-  if (!isFileTool && !Object.values<string>(PI_SEARCH_TOOL).includes(tool.toolName)) {
-    const generic = piGenericToolSource(parsed, toolUseParsed)
-    return generic ? mcpToolResultMeta(generic) : null
-  }
-
-  if (tool.isError) {
-    return {
-      collapsible: commandOutputIsCollapsible(resultText),
-      hasDiff: false,
-      hasCopyable: resultText !== '',
-      copyableContent: () => resultText || null,
-    }
-  }
-
-  if (tool.toolName === PI_TOOL.Read) {
-    const read = extractPiRead(parsed, startArgs)
-    if (!read)
-      return null
-    return {
-      collapsible: (read.source.lines?.length ?? 0) > COLLAPSED_RESULT_ROWS,
-      hasDiff: false,
-      hasCopyable: resultText !== '',
-      copyableContent: () => resultText || null,
-    }
-  }
-
-  if (tool.toolName === PI_TOOL.Edit || tool.toolName === PI_TOOL.Write) {
-    const sources = piResolveDiffSources(parsed, toolUseParsed)
-    const hasDiff = sources.length > 0
-    const fallback = resolvePiResultDiff(parsed, startArgs).rawDiff || resultText
-    return {
-      collapsible: false,
-      hasDiff,
-      hasCopyable: hasDiff || fallback !== '',
-      copyableContent: () => formatPiDiffSources(sources) ?? (fallback || null),
-    }
-  }
-
-  const search = extractPiSearch(parsed)
-  if (search) {
-    return {
-      collapsible: searchResultCollapsible(search),
-      hasDiff: false,
-      hasCopyable: resultText !== '',
-      copyableContent: () => resultText || null,
-    }
-  }
-
-  const generic = piGenericToolSource(parsed, toolUseParsed)
-  return generic ? mcpToolResultMeta(generic) : null
+  const row = piToolRow(parsed, input.request, undefined, input.parsed.completion)
+  return row ? toolPresentationMeta(piToolPresentation(row)) : null
 }
 
 /**

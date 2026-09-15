@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,21 +32,32 @@ type cursorToolContent struct {
 // cursorToolStore maps tool calls to the content hashes in one Cursor session.
 // It reads record identifiers on each scan and decodes only records with new hashes.
 // Cursor can delete and replace blobs, so a rowid alone cannot track new records.
+//
+// The database handle lives as long as the session's store file. The transcript
+// reads that file once for every agent message while a tool result waits for its
+// record, and a handle opened and closed for each read paid an open, a ping and a
+// close each time, inside the 100 ms the whole read has.
 type cursorToolStore struct {
 	mu       sync.Mutex
 	path     string
 	file     os.FileInfo
+	db       *sql.DB
 	seen     map[string]struct{}
 	requests map[string]cursorBlobReference
 	results  map[string]cursorBlobReference
 }
 
-func cursorACPStorePath(sessionID string) string {
+// cursorACPStorePath locates one Cursor session's store.
+//
+// The home directory comes from the query, not from os.UserHomeDir. A resumed agent
+// carries the home directory of the row it resumed, and the two differ whenever the
+// worker runs for a different user than the one that started the session.
+func cursorACPStorePath(q StoredSessionQuery, sessionID string) string {
 	if sessionID == "" || sessionID == "." || sessionID == ".." || filepath.Base(sessionID) != sessionID {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := q.home()
+	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".cursor", "acp-sessions", sessionID, cursorStoreFileName)
@@ -58,6 +70,12 @@ func (s *cursorToolStore) reset() {
 }
 
 func (s *cursorToolStore) resetLocked() {
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			slog.Debug("Close the Cursor session store", "error", err)
+		}
+		s.db = nil
+	}
 	s.path = ""
 	s.file = nil
 	s.seen = nil
@@ -85,12 +103,14 @@ func (s *cursorToolStore) read(ctx context.Context, path string, toolIDs []strin
 		s.requests = make(map[string]cursorBlobReference)
 		s.results = make(map[string]cursorBlobReference)
 	}
-	db, err := openSessionStoreDB(ctx, path)
-	if err != nil {
-		return nil, err
+	if s.db == nil {
+		db, err := openSessionStoreDB(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		s.db = db
 	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

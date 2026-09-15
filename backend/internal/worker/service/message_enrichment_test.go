@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 func TestPersistMessageStoresOriginalAndSupplementTogether(t *testing.T) {
@@ -202,4 +203,43 @@ func TestInvalidSupplementDoesNotDiscardOriginalMessage(t *testing.T) {
 	stored, err := msgcodec.Decompress(row.Content, row.ContentCompression)
 	require.NoError(t, err)
 	assert.Equal(t, original, stored)
+}
+
+// The stored supplement carries two halves, and an enrichment replaces one of
+// them. The provider payload arrives again with the next change; the worker's
+// metadata half does not. So a supplement that does not read is a REFUSAL: a
+// replacement would write the new payload beside a nil metadata half and destroy
+// the cost, the duration, the tool count and the context usage for good.
+func TestUnreadableSupplementRefusesTheEnrichment(t *testing.T) {
+	t.Parallel()
+	sink, writer := newGitStatusFixture(t)
+	original := []byte(` {"native":"unchanged"} `)
+	metadata := []byte(`{"duration_ms":1234,"tool_uses":7,"total_cost_usd":0.42}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: original, Metadata: metadata}, agent.SpanInfo{SpanID: "call", Closing: true}))
+	row, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
+	require.NoError(t, err)
+
+	// Damage the stored blob in place: it decompresses, and then fails to decode.
+	damaged := []byte(`{"provider":`)
+	corrupted, err := sink.h.queries.EnrichMessageContent(t.Context(), db.EnrichMessageContentParams{
+		ID: row.ID, AgentID: sink.agentID,
+		OriginalContent: row.Content, OriginalCompression: row.ContentCompression,
+		PreviousRevision:    row.SupplementalRevision,
+		SupplementalContent: damaged, SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+	})
+	require.NoError(t, err)
+	broadcasts := writer.count()
+
+	updated, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "call", OriginalContent: original, PreviousRevision: corrupted.SupplementalRevision,
+		SupplementalContent: []byte(`{"rawOutput":{"content":"Recovered"}}`),
+	})
+	require.NoError(t, err, "a damaged supplement is a refusal, not a failure the caller retries")
+	assert.False(t, updated)
+
+	after, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
+	require.NoError(t, err)
+	assert.Equal(t, corrupted, after, "the row must stay exactly as it was, so a repair is still possible")
+	assert.Equal(t, broadcasts, writer.count(), "a refused enrichment broadcasts nothing")
 }

@@ -101,7 +101,8 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", Payload: payload,
 			})
-			_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state) VALUES (?,?,?,?)`, "agent-1", "request", "claim", int64(state))
+			_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state,agent_provider) VALUES (?,?,?,?,?)`,
+				"agent-1", "request", "claim", int64(state), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 			require.NoError(t, err)
 			replayed := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "claim")
@@ -211,7 +212,9 @@ func TestControlCancellationRetainsConfirmedDelivery(t *testing.T) {
 	registerAgentWatch(svc, "delivered-cancel", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"id":1}`)}))
 	request := watcher.snapshot()[0]
-	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state) VALUES (?,?,?,?)`, "agent-1", "request", request.ClaimToken, int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED))
+	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state,agent_provider) VALUES (?,?,?,?,?)`,
+		"agent-1", "request", request.ClaimToken, int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED),
+		int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
 	sink.CancelControlRequest("request")
 	cancellations := watcher.cancellationSnapshot()

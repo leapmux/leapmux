@@ -54,6 +54,34 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "TabType"
+          # The enum columns that store a proto ordinal. Retyping them here
+          # deletes the int64() cast every call site wrote in both directions,
+          # and it makes a mixed-up pair a COMPILE error rather than a wrong
+          # ordinal a CHECK still admits.
+          - column: "revocation_events.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "RevocationEventKind"
+          - column: "oauth_clients.registration_source"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AppRegistrationSource"
+          - column: "oauth_states.purpose"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "OAuthStatePurpose"
+          - column: "webauthn_sessions.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "WebAuthnSessionKind"
+          - column: "oauth_providers.provider_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "IdentityProviderType"
+          - column: "lifecycle_outbox.op_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "WorkspaceLifecycleOp"
           # Force binary token-hash columns to []byte (sqlc would map
           # MySQL VARBINARY to NullString otherwise, which is awkward
           # for HMAC bytes).

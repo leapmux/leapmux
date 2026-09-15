@@ -62,6 +62,16 @@ func (a *PiAgent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSou
 			a.mu.Unlock()
 			return nil, false
 		}
+		// The send failed, so the code below publishes the dialog again. Restore the
+		// text that the user typed, or the next response carries an empty answer. A
+		// newer answer for the same key wins, exactly as the sibling path in
+		// SendRawInput keeps the newer one.
+		if a.customQuestionAnswers == nil {
+			a.customQuestionAnswers = make(map[piQuestionKey]*piCustomQuestionAnswer)
+		}
+		if a.customQuestionAnswers[source.Key] == nil {
+			a.customQuestionAnswers[source.Key] = answer
+		}
 	}
 	if a.questionDialogs == nil {
 		a.questionDialogs = make(map[string]*piQuestionSource)

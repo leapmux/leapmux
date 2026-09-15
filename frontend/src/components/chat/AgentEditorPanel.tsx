@@ -88,6 +88,7 @@ export interface AgentEditorPanelProps {
   onMoveQueueItem?: (item: QueuedAgentInput, beforeInputId: string) => Promise<void>
   onRetryQueueItem?: (item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
   onSteerQueueItem?: (item: QueuedAgentInput) => Promise<void>
+  onPreemptQueueItem?: (item: QueuedAgentInput) => Promise<void>
   onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
@@ -613,6 +614,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           clientId={props.queueClientId ?? ''}
           activeEditInputId={queueEdit.activeEditingInput()?.id}
           supportsSteering={props.agent?.supportsSteering ?? false}
+          supportsPreemption={props.agent?.supportsPreemption ?? false}
           onEdit={(item, takeover) => {
             queueEdit.loadQueueEdit(item, takeover, false)
           }}
@@ -630,6 +632,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               fireQueueRpc(props.onRetryQueueItem?.(item, false))
           }}
           onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(item))}
+          onPreempt={item => fireQueueRpc(props.onPreemptQueueItem?.(item))}
         />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
@@ -736,7 +739,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   request={request}
                   answerState={answerState}
                   optionsDisabled={ctrl.editorPurpose() !== 'none' && hasContent()}
-                  agentProvider={props.agent?.agentProvider}
+                  agentProvider={ctrl.activeControlProvider()}
+                  controlSurface={ctrl.activeControlSurface()}
                   onInterrupt={ctrl.showInterrupt() ? () => props.onInterrupt?.() : undefined}
                 />
               )}
@@ -773,6 +777,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // Control requests use the full footer width.
           // Read the active request once so the layout and handlers use the same request.
           // The response callback retains that request after the store removes it.
+          // The surface stays a LIVE read beside it, because it settles later:
+          // it reclassifies the request once its source message loads.
           actions={(() => {
             const request = ctrl.activeControlRequest()
             return request
@@ -783,7 +789,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       request={request}
                       messageContext={props.messageContext}
                       answerState={answerState}
-                      agentProvider={props.agent?.agentProvider}
+                      agentProvider={ctrl.activeControlProvider()}
+                      controlSurface={ctrl.activeControlSurface()}
                       onRespond={ctrl.respondTo(request)}
                       onRecordResponse={() => ctrl.recordResponse(request)}
                       hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}

@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as clipboard from '~/lib/clipboard'
-import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
+import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import * as banner from './ControlRequestBanner'
+import { controlSurface } from './controls/controlSurface'
 import { createControlAnswerState } from './controls/types'
 import './providers'
 
@@ -94,18 +96,62 @@ function questionRequest(): ControlRequest {
   }
 }
 
+// The banner classifies nothing. Its caller derives the surface and passes it,
+// so the SAME payload draws a different control when the surface says so. These
+// two cases are what prove the component reads the prop rather than the payload.
+describe('controlRequestBanner takes the surface from its caller', () => {
+  it('draws the question form when the surface says question', () => {
+    const request = questionRequest()
+    render(() => (
+      <banner.ControlRequestContent
+        request={request}
+        controlSurface={controlSurface(request, AgentProvider.CLAUDE_CODE, undefined)}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+      />
+    ))
+    expect(screen.getByText('Which database?')).toBeVisible()
+  })
+
+  it('draws the plugin content for the same payload when the surface says plugin', () => {
+    render(() => (
+      <banner.ControlRequestContent
+        request={questionRequest()}
+        controlSurface={{ kind: 'plugin' }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+      />
+    ))
+    expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+    expect(screen.queryByText('Which database?')).not.toBeInTheDocument()
+  })
+
+  it('draws the plugin actions for the same payload when the surface says plugin', () => {
+    render(() => (
+      <banner.ControlRequestActions
+        request={questionRequest()}
+        controlSurface={{ kind: 'plugin' }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    expect(screen.queryByTestId('control-submit-btn')).not.toBeInTheDocument()
+  })
+})
+
 /**
- * Both components detect an AskUserQuestion payload in a memo in their BODY,
- * beside the `<Show when={props.request}>` that renders the rest. A memo there
- * is not a descendant of that Show, so the Show cannot dispose it first. A
- * caller that passes `request` as a REACTIVE prop re-runs the memo with the
- * removed request. `controlQuestion` returns nothing for that request rather
- * than dereferencing it.
+ * A caller CAN pass `request` as a REACTIVE prop, and a store removal then
+ * turns it null under a mounted banner. These tests own that hazard because
+ * they render one half as the ROOT.
  *
- * These tests own that hazard because they render the component as the ROOT.
- * The same removal through `AgentEditorPanel` cannot reach the memo, because
- * the panel keys its owner on the request: `request` arrives there as a plain
- * value, so the memo has no reactive source and never re-runs.
+ * The harness derives the surface OUTSIDE the `<Show when={props.request}>` of
+ * each half, which is what the composer does, so the removal reaches
+ * `controlSurface` with no request rather than a disposed memo. It returns
+ * nothing for that request instead of dereferencing it. `AgentEditorPanel`
+ * keys its owner on the request and never passes a reactive one.
  *
  * `BannerContentProps` and `BannerActionsProps` are what let these tests pass
  * `null` at all. The shared `ContentProps` / `ActionsProps` that a provider

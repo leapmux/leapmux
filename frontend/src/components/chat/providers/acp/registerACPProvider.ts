@@ -23,7 +23,7 @@ import { acpToolResultMeta } from './toolResult'
 /**
  * Per-provider settings configuration for an ACP provider. The discriminator
  * picks how the provider's plan-mode/writable axis is stored: providers that
- * use the agent's top-level `permissionMode` field (Copilot, Cursor, Goose) use
+ * use the agent's top-level `permissionMode` field (Cursor, Goose, Reasonix) use
  * `kind: 'permissionMode'`; providers that store it in `optionValues` under a
  * custom group key (OpenCode `primaryAgent`, Kilo) use `kind: 'optionGroup'`.
  *
@@ -49,8 +49,8 @@ export type ACPQuestionHandling = ProviderAskUserQuestion
  * out of its `kind` plus its `defaultMode` / `defaultValue` / `optionGroupKey`.
  *
  * Supply EXACTLY ONE of `settingsConfig` or `defaultPermissionMode`: the latter is
- * sugar for the common `{ kind: 'permissionMode', defaultMode }` case (Copilot/
- * Cursor/Goose), mirroring how {@link registerOpenCodeProtocolProvider} hides the
+ * sugar for the common `{ kind: 'permissionMode', defaultMode }` case (Cursor/
+ * Goose/Reasonix), mirroring how {@link registerOpenCodeProtocolProvider} hides the
  * `optionGroup` kind behind `defaultPrimaryAgent`.
  */
 export interface ACPProviderOptions {
@@ -98,7 +98,7 @@ export interface ACPProviderOptions {
 
 /**
  * The option-group id the trigger renders as its mode segment, derived from the
- * settings config: the permission-mode field (Copilot/Cursor/Goose), the custom
+ * settings config: the permission-mode field (Cursor/Goose/Reasonix), the custom
  * optionGroup key (OpenCode/Kilo primaryAgent). This matches planModeFromConfig's groupKey, but
  * it exists even when plan mode is not wired (Goose), so it is derived independently.
  */
@@ -162,7 +162,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     toolResultImages: input => acpToolResultImages(input, opts.toolAdapter),
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
-    // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and control-response
+    // ACP-based providers (OpenCode, Cursor, Goose, ...) mark only user sends and control-response
     // answers. A user send is the LeapMux-neutral `{content}` shape the shared extractor handles; a
     // control answer is the structured `{controlResponse}` row, which classifies as
     // `control_response` and resolves through controlResponseDisplay (below), not here.

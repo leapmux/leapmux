@@ -18,8 +18,7 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       return spans
     })
     return createMessageContextResolver({
-      scopeKey: () => 'test',
-      agentSessionId: () => '',
+      scopeKey: 'test',
       messages,
       messageVersion: () => 0,
       contentVersion: () => 0,

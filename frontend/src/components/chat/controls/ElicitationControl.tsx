@@ -152,9 +152,16 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
       await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === 'form' ? answer().content : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
     }
     catch (error) {
-      setPending(false)
       if (!(error instanceof ReportedControlResponseError))
         setError(controlResponseErrorMessage(error))
+    }
+    finally {
+      // A send that RESOLVES can still leave the request open: the worker
+      // records a response it cannot confirm, and the store keeps the request.
+      // The reset belonged in the catch alone, so those buttons stayed disabled
+      // with no way to answer again. A completed response unmounts this
+      // component, where the reset costs nothing.
+      setPending(false)
     }
   }
   return (

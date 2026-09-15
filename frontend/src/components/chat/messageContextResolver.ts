@@ -26,8 +26,21 @@ export interface ResolvedMessage {
 
 /** The data sources for one agent. Entity getters read live stores. */
 export interface MessageContextSources {
-  scopeKey: () => string
-  agentSessionId: () => string
+  /**
+   * The agent partition of the span index, and the isolation promise of this
+   * resolver: no row of another agent reaches a reader through it.
+   *
+   * A plain string, not an accessor. One resolver serves ONE agent for its whole
+   * life. `TileRenderer` builds each resolver inside a `mapArray` keyed by this
+   * same string, so a changed key DISPOSES the mapped scope and builds a fresh
+   * resolver rather than moving this one. The type states that, which makes a
+   * resolver that outlives its agent unrepresentable. An accessor stated the
+   * opposite, and every runtime guard that compared it was unreachable.
+   *
+   * `onCleanup` sets `disposed` when `mapArray` drops the key. That is the
+   * lifetime mechanism, and it stays.
+   */
+  readonly scopeKey: string
   messages: () => AgentChatMessage[]
   messageVersion: () => number
   contentVersion: (messageId: string) => number
@@ -39,7 +52,7 @@ export interface MessageContextSources {
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
   todo: (taskId: string) => TodoItem | undefined
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
-  progress: (spanId: string) => ToolProgressEntry | undefined
+  progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
 }
 
 /** One resolution path for tool renderers, image tabs, and message previews. */
@@ -123,7 +136,6 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   const inflight = new Map<string, { controller: AbortController, promise: Promise<unknown> }>()
   const spans = createSpanIndex()
   const [cacheVersion, setCacheVersion] = createSignal(0)
-  let scope = source.scopeKey()
   let disposed = false
 
   function clear(): void {
@@ -136,7 +148,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     loadedSpans.clear()
     leases.clear()
     messageLeases.clear()
-    spans.reindex(scope, [])
+    spans.reindex(source.scopeKey, [])
     setCacheVersion(value => value + 1)
   }
 
@@ -161,7 +173,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   function current(message: AgentChatMessage, parsed?: ParsedMessageContent): ResolvedMessage {
     cacheVersion()
     let latest = message
-    if (!disposed && source.scopeKey() === scope) {
+    if (!disposed) {
       const resident = source.messageBySeq(message.seq)
       const cached = fetched.get(message.id)
       if (resident?.id === message.id)
@@ -193,13 +205,13 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         continue
       fetched.set(message.id, message)
       resolved.delete(message.id)
-      if (spans.index(scope, message))
+      if (spans.index(source.scopeKey, message))
         reindex = true
       changed = true
     }
     if (changed) {
       if (reindex)
-        spans.reindex(scope, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+        spans.reindex(source.scopeKey, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
       setCacheVersion(value => value + 1)
     }
   }
@@ -207,11 +219,11 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   function related(identity: MessageSpanIdentity, side: ToolMessageSide): ResolvedMessage | undefined {
     source.messageVersion()
     cacheVersion()
-    if (!identity.spanId || disposed || source.scopeKey() !== scope)
+    if (!identity.spanId || disposed)
       return undefined
     const matches = (message: AgentChatMessage | undefined) => message && messageSpanKey(message) === messageSpanKey(identity) ? message : undefined
     const resident = matches(source.spanMessage(identity, side))
-    const cached = matches(side === 'request' ? spans.getOpenerMessage(scope, identity) : spans.getResultMessage(scope, identity))
+    const cached = matches(side === 'request' ? spans.getOpenerMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
     const message = newestRelatedMessage(resident, cached)
     return message ? reference(message) : undefined
   }
@@ -264,23 +276,27 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       }
     }
     if (changed) {
-      spans.reindex(scope, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+      spans.reindex(source.scopeKey, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
       setCacheVersion(value => value + 1)
     }
   }
 
+  // The array read stays tracked, and the walk does not.
+  //
+  // `prune` reads the seq, the id and the span of every window message through
+  // the store proxy. A tracked walk therefore subscribes this effect to four
+  // nodes on each of hundreds of rows, and builds that whole subscription set
+  // again on every run. prune acts on MEMBERSHIP alone, and the array identity is
+  // what a membership change moves: the store replaces the whole array for an
+  // append, a prepend, a trim, and a reseq. An in-place merge into one row (the
+  // store's updateExistingMessage) moves no membership, so it must wake nothing
+  // here -- and a tracked walk wakes for each field of that merge which it reads.
   createEffect(() => {
-    const nextScope = source.scopeKey()
-    if (nextScope !== scope) {
-      batch(() => {
-        clear()
-        scope = nextScope
-      })
-    }
-    prune(source.messages())
+    const messages = source.messages()
+    untrack(() => prune(messages))
   })
   const unsubscribe = source.subscribe((message) => {
-    if (!disposed && source.scopeKey() === scope && (messageLeases.has(message.seq)
+    if (!disposed && (messageLeases.has(message.seq)
       || (message.spanId && (loadedSpans.has(messageSpanKey(message)) || inflight.has(`span:${messageSpanKey(message)}`))))) {
       remember([message])
     }
@@ -295,8 +311,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     const spanId = messageSpanKey(identity)
     // Fetching must not subscribe the caller to cache changes that the fetch causes.
     return untrack(async () => {
-      const currentScope = source.scopeKey()
-      if (!identity.spanId || disposed || currentScope !== scope || loadedSpans.has(spanId))
+      if (!identity.spanId || disposed || loadedSpans.has(spanId))
         return Promise.resolve()
       if (source.spanMessage(identity, 'request') && source.spanMessage(identity, 'result'))
         return Promise.resolve()
@@ -305,9 +320,8 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (running)
         return running.promise as Promise<void>
       const controller = new AbortController()
-      const capturedScope = scope
       const promise = source.fetchSpan(identity, controller.signal).then((messages) => {
-        if (disposed || controller.signal.aborted || source.scopeKey() !== capturedScope)
+        if (disposed || controller.signal.aborted)
           return
         if (messages.some(message => messageSpanKey(message) !== spanId))
           throw new Error('The related-message response contains a different span or provider session')
@@ -328,7 +342,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     return untrack(async () => {
       if (seq <= 0n)
         return undefined
-      if (disposed || source.scopeKey() !== scope)
+      if (disposed)
         throw new DOMException('The message resolver is no longer active', 'AbortError')
       const resident = messageBySeq(seq)
       if (resident)
@@ -338,9 +352,8 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (running)
         return running.promise as Promise<ResolvedMessage | undefined>
       const controller = new AbortController()
-      const capturedScope = scope
       const promise = source.fetchMessage(seq, controller.signal).then((fetchedMessage) => {
-        if (disposed || controller.signal.aborted || capturedScope !== source.scopeKey())
+        if (disposed || controller.signal.aborted)
           throw new DOMException('The message resolver is no longer active', 'AbortError')
         if (!fetchedMessage)
           return undefined
@@ -360,11 +373,10 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   }
 
   function retain<Key>(counts: Map<Key, number>, key: Key): () => void {
-    const retainedScope = scope
     counts.set(key, (counts.get(key) ?? 0) + 1)
     let released = false
     return () => {
-      if (released || disposed || retainedScope !== scope)
+      if (released || disposed)
         return
       released = true
       const count = counts.get(key) ?? 0
@@ -390,12 +402,12 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         await loadSpan(messageSpanIdentity(message))
     }),
     retainSpan: (identity) => {
-      if (!identity.spanId || disposed || source.scopeKey() !== scope)
+      if (!identity.spanId || disposed)
         return () => undefined
       return retain(leases, messageSpanKey(identity))
     },
     retainMessage: seq => untrack(() => {
-      if (seq <= 0n || disposed || source.scopeKey() !== scope)
+      if (seq <= 0n || disposed)
         return () => undefined
       const release = retain(messageLeases, seq)
       const resident = source.messageBySeq(seq)
@@ -405,7 +417,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     }),
     peek: (seq) => {
       cacheVersion()
-      if (seq <= 0n || disposed || source.scopeKey() !== scope)
+      if (seq <= 0n || disposed)
         return undefined
       const message = messageBySeq(seq)
       return message ? reference(message, undefined, false) : undefined
@@ -413,7 +425,13 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     message,
     todo: taskId => disposed ? undefined : source.todo(taskId),
     backgroundTask: rowKey => disposed ? undefined : source.backgroundTask(rowKey),
-    progress: identity => disposed || identity.agentSessionId !== source.agentSessionId() ? undefined : source.progress(identity.spanId),
+    // The lookup takes the WHOLE span identity, because the store keys an entry
+    // by the provider session and the span together. The producer states the
+    // session on the `running_tool` payload, so a row reaches its own entry and
+    // no other session's. Two clears still end an entry's life: a lifecycle
+    // event clears the agent's whole store (clearPerTurnLiveState), and the
+    // tool's result row drops its own entry (dropFinishedToolProgress).
+    progress: identity => disposed ? undefined : source.progress(identity),
     contentVersion: messageId => source.contentVersion(messageId),
   }
 }

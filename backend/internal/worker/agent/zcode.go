@@ -77,6 +77,14 @@ type zcodeAgent struct {
 	// reported. Armed by Interrupt, restarted by every session event, dropped when the
 	// turn ends on its own. Guarded by a.mu. See armStoppedZCodeTurn.
 	stoppedTurnTimer *time.Timer
+	// stopArmedAt is when the app-server ACCEPTED the stop the window watches. Zero
+	// whenever no window is armed. It clocks the two decisions a no-op stop drives:
+	// when the "stop ignored" row may be written (events still arriving past the
+	// grace) and when a second Interrupt may escalate to a forced stop.
+	stopArmedAt time.Time
+	// stopIgnoredNotified keeps the ignored-stop row to ONE per accepted stop. Reset
+	// by every fresh arm. Guarded by a.mu.
+	stopIgnoredNotified bool
 	// afterFunc is time.AfterFunc. A test replaces it to fire the window itself.
 	afterFunc func(time.Duration, func()) *time.Timer
 
@@ -607,23 +615,26 @@ func zcodeUsableSessionID(id string) bool {
 // for the turn -- the Agent.SendInput contract. A refusal because a turn is already
 // running is retried briefly, because it is transient by construction.
 func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, "")
+	return a.sendInput(content, attachments, false)
 }
 
-// SupportsSteering always reports true. The ZCode app-server accepts
-// session/send with requestedDelivery:"guide" during any turn, so the
-// capability needs no handshake discovery.
+// SupportsSteering always reports true. A plain session/send during an active
+// turn needs no handshake discovery: the app-server admits it itself, steering
+// the text into the running turn when the turn is steerable and otherwise
+// queueing it as a follow-up that drains at the next boundary. Both paths are
+// observable on the event stream (turn.steerQueued / turn.steerDrained), which
+// the dispatcher persists as notifications.
 func (a *zcodeAgent) SupportsSteering() bool { return true }
 
 func (a *zcodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, "guide")
+	return a.sendInput(content, attachments, true)
 }
 
-func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
-	return a.sendInputForSession(nil, content, attachments, requestedDelivery)
+func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	return a.sendInputForSession(nil, content, attachments, steer)
 }
 
-func (a *zcodeAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
+func (a *zcodeAgent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
 	a.mu.Lock()
 	if err := checkInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
@@ -638,10 +649,10 @@ func (a *zcodeAgent) sendInputForSession(expected *string, content string, attac
 	if sessionID == "" {
 		return fmt.Errorf("agent has no ZCode session")
 	}
-	if requestedDelivery == "" && turnActive {
+	if !steer && turnActive {
 		return ErrAgentBusy
 	}
-	if requestedDelivery != "" && !turnActive {
+	if steer && !turnActive {
 		return ErrNoActiveTurn
 	}
 
@@ -650,6 +661,10 @@ func (a *zcodeAgent) sendInputForSession(expected *string, content string, attac
 		return err
 	}
 
+	// The params carry NO delivery hint. The app-server's session/send schema is
+	// strict and rejects any key it does not know (a `requestedDelivery` field
+	// fails the whole request with -32602), and the server already decides
+	// steer-or-queue itself for a send that lands during a turn.
 	params := map[string]any{
 		"sessionId": sessionID,
 		"content":   text,
@@ -657,9 +672,6 @@ func (a *zcodeAgent) sendInputForSession(expected *string, content string, attac
 	}
 	if len(wire) > 0 {
 		params["attachments"] = wire
-	}
-	if requestedDelivery != "" {
-		params["requestedDelivery"] = requestedDelivery
 	}
 
 	deadline := time.Now().Add(zcodeSendRetryWindow)
@@ -672,7 +684,7 @@ func (a *zcodeAgent) sendInputForSession(expected *string, content string, attac
 			if json.Unmarshal(raw, &ack) == nil && !ack.Accepted {
 				return fmt.Errorf("the app-server did not accept the message")
 			}
-			if requestedDelivery != "" {
+			if steer {
 				a.mu.Lock()
 				stillActive := a.turnActive
 				a.mu.Unlock()
@@ -711,6 +723,17 @@ func classifyZCodeInputDeliveryError(err error) error {
 // agent was plainly still working, so thirty seconds is the margin above that.
 const zcodeStoppedSilenceWindow = 30 * time.Second
 
+// zcodeStopIgnoredGrace is how long a turn may keep SPEAKING after the
+// app-server accepted a stop before LeapMux calls the stop ignored.
+//
+// The shipped app-server clears the turn's abort controller at admission, so a
+// session/stop that lands after those first moments aborts nothing: the tool
+// runs on, the runtime makes its next model call, and the turn completes as if
+// no stop was asked. Session events that keep arriving past this grace are that
+// no-op -- the row they trigger tells the reader to press Stop again, and the
+// second press is the one the worker may escalate into a forced restart.
+const zcodeStopIgnoredGrace = 3 * time.Second
+
 // armStoppedZCodeTurn starts the window that ends a turn the app-server accepted a
 // stop for and then never reported.
 //
@@ -725,42 +748,88 @@ const zcodeStoppedSilenceWindow = 30 * time.Second
 // stops speaking ends once.
 func (a *zcodeAgent) armStoppedZCodeTurn() {
 	a.mu.Lock()
-	if !a.turnActive {
-		a.mu.Unlock()
+	defer a.mu.Unlock()
+	a.armStoppedZCodeTurnLocked()
+}
+
+// armStoppedZCodeTurnLocked arms the window. The caller holds a.mu.
+//
+// It refuses once the agent goes down. Stop and Wait drop the window, and the read
+// loop can still deliver a frame after they do: a re-armed window would fire into a
+// dead process, end a turn the tear-down already ended, and write its stop row after
+// the transcript closed. The three flags are the three ways the agent goes down --
+// intentionalStop marks the graceful stop before processBase.Stop sets stopped, and
+// processExited marks an exit nobody asked for.
+func (a *zcodeAgent) armStoppedZCodeTurnLocked() {
+	if !a.turnActive || a.stopped || a.processExited || a.intentionalStop.Load() {
 		return
 	}
 	after := a.afterFunc
 	if after == nil {
 		after = time.AfterFunc
 	}
-	if a.stoppedTurnTimer != nil {
-		a.stoppedTurnTimer.Stop()
-	}
+	// The timer is dropped, not CANCELLED: a cancel also retires the stop's
+	// timestamp and once-flag, and a refresh must keep both -- the window it
+	// swaps in watches the same accepted stop the old one did.
+	a.dropStoppedTurnTimerLocked()
 	a.stoppedTurnTimer = after(zcodeStoppedSilenceWindow, a.endStoppedZCodeTurn)
-	a.mu.Unlock()
 }
 
 // refreshStoppedZCodeTurn restarts the window, because the agent just spoke.
 //
 // A no-op unless a stop armed the window, so an ordinary turn pays nothing.
+//
+// The check and the re-arm share ONE critical section. Split in two, a turn that
+// ended between them re-armed the window it had just dropped, because the re-arm
+// read a turnActive that the other goroutine was about to clear.
+//
+// Speaking past the grace is also the only evidence an accepted stop was
+// IGNORED: the first event to arrive after it writes the stop-ignored row, once
+// per accepted stop.
 func (a *zcodeAgent) refreshStoppedZCodeTurn() {
 	a.mu.Lock()
-	armed := a.stoppedTurnTimer != nil
+	if a.stoppedTurnTimer == nil {
+		a.mu.Unlock()
+		return
+	}
+	notifyIgnored := !a.stopIgnoredNotified && time.Since(a.stopArmedAt) >= zcodeStopIgnoredGrace
+	if notifyIgnored {
+		a.stopIgnoredNotified = true
+	}
+	a.armStoppedZCodeTurnLocked()
 	a.mu.Unlock()
-	if armed {
-		a.armStoppedZCodeTurn()
+	if notifyIgnored {
+		a.persistZCodeStopIgnoredRow()
 	}
 }
 
 // cancelStoppedZCodeTurn drops the window, because the turn ended on its own.
 func (a *zcodeAgent) cancelStoppedZCodeTurn() {
 	a.mu.Lock()
-	timer := a.stoppedTurnTimer
-	a.stoppedTurnTimer = nil
-	a.mu.Unlock()
-	if timer != nil {
-		timer.Stop()
+	defer a.mu.Unlock()
+	a.cancelStoppedZCodeTurnLocked()
+}
+
+// cancelStoppedZCodeTurnLocked drops the window, because the turn ended on its
+// own. The caller holds a.mu.
+//
+// time.Timer.Stop takes no lock of this agent's, so it is safe to call here. The
+// callback it cannot stop -- one already running on the timer goroutine -- takes
+// a.mu itself and finds turnActive cleared.
+func (a *zcodeAgent) cancelStoppedZCodeTurnLocked() {
+	a.dropStoppedTurnTimerLocked()
+	a.stopArmedAt = time.Time{}
+	a.stopIgnoredNotified = false
+}
+
+// dropStoppedTurnTimerLocked stops and clears the timer alone. The caller holds
+// a.mu.
+func (a *zcodeAgent) dropStoppedTurnTimerLocked() {
+	if a.stoppedTurnTimer == nil {
+		return
 	}
+	a.stoppedTurnTimer.Stop()
+	a.stoppedTurnTimer = nil
 }
 
 // Interrupt aborts the running turn.
@@ -783,8 +852,25 @@ func (a *zcodeAgent) Interrupt() error {
 		// finished would hide a live agent behind an idle chat.
 		return err
 	}
+	a.mu.Lock()
+	a.stopArmedAt = time.Now()
+	a.stopIgnoredNotified = false
+	a.mu.Unlock()
 	a.armStoppedZCodeTurn()
 	return nil
+}
+
+// InterruptEscalationReady reports whether an EARLIER accepted stop has been
+// proven ignored and a fresh Interrupt may escalate to a forced stop.
+//
+// The proof is the still-armed window (the stop was accepted and the turn never
+// ended) plus the grace (the turn had its chance to fall silent). A stop that
+// worked leaves nothing armed; a stop too recent to judge stays unescalated, so
+// a double-click retries the plain stop instead of restarting the agent.
+func (a *zcodeAgent) InterruptEscalationReady() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stoppedTurnTimer != nil && time.Since(a.stopArmedAt) >= zcodeStopIgnoredGrace
 }
 
 // endStoppedZCodeTurn records what session/stop actually cut.
@@ -812,12 +898,18 @@ func (a *zcodeAgent) Interrupt() error {
 // See ZC-001 in docs/provider-parity/protocol-evidence.md.
 func (a *zcodeAgent) endStoppedZCodeTurn() {
 	a.mu.Lock()
+	if !a.turnActive {
+		// The turn already ended: the app-server reported it, or a tear-down ended
+		// it. time.Timer.Stop cannot stop a callback that already started, so a
+		// cancel that lost that race arrives here. Writing a second stop row for a
+		// turn that is over is what this guard refuses.
+		a.cancelStoppedZCodeTurnLocked()
+		a.mu.Unlock()
+		return
+	}
 	a.turnActive = false
 	a.backgroundTurn = false
-	if a.stoppedTurnTimer != nil {
-		a.stoppedTurnTimer.Stop()
-		a.stoppedTurnTimer = nil
-	}
+	a.cancelStoppedZCodeTurnLocked()
 	a.mu.Unlock()
 	defer a.PublishTurnActive()
 
@@ -856,12 +948,38 @@ func (a *zcodeAgent) persistZCodeStopRow() {
 	}
 }
 
+// persistZCodeStopIgnoredRow states that an accepted stop changed nothing.
+//
+// The row is what turns the no-op from invisible to actionable: the turn keeps
+// running, so the transcript owes the reader an explanation and an instruction --
+// press Stop again, and the worker escalates that press into a forced stop. One
+// row per accepted stop, from refreshStoppedZCodeTurn's once-flag.
+func (a *zcodeAgent) persistZCodeStopIgnoredRow() {
+	content, err := json.Marshal(map[string]string{"type": contracts.NotificationTypeStopIgnored})
+	if err != nil {
+		slog.Error("zcode marshal stop-ignored row", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+		slog.Error("zcode persist stop-ignored row", "agent_id", a.agentID, "error", err)
+	}
+}
+
 // Stop aborts a running turn, then tears the process down.
 //
 // The stop is issued SYNCHRONOUSLY before processBase.Stop sets stopped and closes
 // stdin: on a goroutine it would race that flag and be dropped in the common case.
 func (a *zcodeAgent) Stop() {
+	// noteIntentionalStop runs first for two reasons: it marks the graceful stop for
+	// Wait, and armStoppedZCodeTurnLocked reads it to refuse the window from here on.
+	// The cancel that follows therefore drops a window the read loop cannot arm again.
 	a.noteIntentionalStop()
+	// A pending window here is a stop the app-server already ignored, and the
+	// tear-down is the forced stop that finally ended the turn. The row it earns
+	// is read from the window BEFORE the cancel drops it.
+	a.mu.Lock()
+	stopWasPending := a.stoppedTurnTimer != nil
+	a.mu.Unlock()
 	a.cancelStoppedZCodeTurn()
 	a.mu.Lock()
 	stopped, turnActive, sessionID := a.stopped, a.turnActive, a.sessionID
@@ -873,6 +991,9 @@ func (a *zcodeAgent) Stop() {
 	a.processBase.Stop()
 	a.flushZCodeGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
+	if stopWasPending {
+		a.persistZCodeStopRow()
+	}
 	a.sink.ReportProgress(ResetProgress())
 }
 
@@ -908,13 +1029,18 @@ func (a *zcodeAgent) ClearContext() (string, error) {
 	}
 	a.applyStartupSettings(current, timeout)
 	subscribeErr := a.subscribe(timeout)
-	a.cancelStoppedZCodeTurn()
+	// The turn belonged to the session this call replaced, so it ends with it. The
+	// flag and the window go in ONE critical section: a frame that arrived between
+	// them re-armed the window, which then fired into the NEW session.
+	a.mu.Lock()
+	a.turnActive = false
+	a.backgroundTurn = false
+	a.cancelStoppedZCodeTurnLocked()
+	a.mu.Unlock()
 	a.flushZCodeGeneration(MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(MessageCompletionInterrupted)
 
 	a.mu.Lock()
-	a.turnActive = false
-	a.backgroundTurn = false
 	a.turnToolUses = 0
 	a.latestContextUsage = nil
 	clear(a.toolCalls)

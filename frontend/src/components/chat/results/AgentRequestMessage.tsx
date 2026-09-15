@@ -1,6 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
+import type { AgentResultSource } from './agentResult'
 import type { ToolMetadataItem } from './ToolMetadata'
+import type { ToolPresentation } from './toolPresentation'
 import Bot from 'lucide-solid/icons/bot'
 import { Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -21,6 +23,31 @@ export interface AgentRequestSource {
   promptLabel?: string
   promptFormat?: 'markdown' | 'pre'
   metadata?: ToolMetadataItem[]
+}
+
+/**
+ * The subagent row every provider draws, from the request that provider extracted.
+ *
+ * The title states what the subagent was asked to do. A request that carries no
+ * description of its own falls back to `Task`. The fallback is ONE word for every
+ * provider, because a row that reads `Agent` beside a row that reads `Task` states
+ * a difference the two launches do not have.
+ *
+ * The body waits for the result. A launch that is still pending has no report to
+ * draw, and the prompt inside the request already states the instruction.
+ *
+ * A caller that carries an extra -- its own `output`, its own `label` -- spreads
+ * this result and adds the extra. A parameter for each extra reads worse than the
+ * spread does.
+ */
+export function agentToolPresentation(model: ToolPresentation, request: AgentRequestSource, result?: AgentResultSource): ToolPresentation {
+  return {
+    ...model,
+    kind: 'agent',
+    title: request.description.trim() || 'Task',
+    agentRequest: request,
+    body: result ? { type: 'agent', source: result } : { type: 'text' },
+  }
 }
 
 /** Show pending instructions. Keep completed requests compact, with their prompt available on expansion. */

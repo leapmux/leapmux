@@ -116,7 +116,7 @@ func TestGoal_FirstReportStoresAndAnnounces(t *testing.T) {
 
 	row := readRow()
 	assert.Equal(t, "Make the tests pass", row.GoalObjective)
-	assert.Equal(t, int64(agent.GoalStatusActive), row.GoalStatus)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), row.GoalStatus)
 	assert.Equal(t, "active", row.GoalStatusDetail)
 	require.True(t, row.GoalCreatedAt.Valid)
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID))
@@ -151,7 +151,7 @@ func TestGoal_StatusChangeAnnounces(t *testing.T) {
 
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
 	row := readRow()
-	assert.Equal(t, int64(agent.GoalStatusDone), row.GoalStatus)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusDone), row.GoalStatus)
 	assert.Equal(t, "complete", row.GoalStatusDetail)
 }
 
@@ -379,7 +379,7 @@ func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	childSink.UpsertGoal(activeGoal("Subagent objective", 1, time.Unix(1_700_005_000, 0).UTC()))
 	childSink.ClearGoal(false)
 	childSink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusPaused)
-	assert.Equal(t, int64(agent.GoalStatusActive), readRow().GoalStatus)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), readRow().GoalStatus)
 
 	assert.Equal(t, "Root objective", readRow().GoalObjective,
 		"a child's goal must not overwrite the session's, and a child's clear must not erase it")
@@ -440,7 +440,7 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 	// there: GoalUpdate.Clean strips them on every path into the sink.
 	require.NoError(t, svc.Queries.UpdateAgentGoal(ctx, db.UpdateAgentGoalParams{
 		GoalObjective:    "ship \xff it",
-		GoalStatus:       int64(agent.GoalStatusActive),
+		GoalStatus:       leapmuxv1.AgentGoalStatus(agent.GoalStatusActive),
 		GoalStatusDetail: "wait\xfe",
 		GoalCreatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
 		GoalUpdatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
@@ -724,7 +724,7 @@ func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
 	// And nothing was written to reach that answer, which is the whole point:
 	// there is no stored copy left to go stale.
 	row := readRow()
-	assert.Equal(t, int64(agent.GoalStatusActive), row.GoalStatus, "the row still holds the provider's last word")
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), row.GoalStatus, "the row still holds the provider's last word")
 	assert.Equal(t, "verifying", row.GoalStatusDetail)
 }
 
@@ -781,7 +781,7 @@ func TestGoal_TheFirstReportAfterARestartAnnouncesNothing(t *testing.T) {
 
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
 		"restating a goal that outlived the worker is not a new transition")
-	assert.Equal(t, int64(agent.GoalStatusActive), readRow().GoalStatus)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), readRow().GoalStatus)
 }
 
 // A process that exits mid-session leaves a goal nothing pursues. The exit
@@ -895,7 +895,7 @@ func TestGoalStatusUpdatePreservesStoredIdentityAfterSinkRestart(t *testing.T) {
 	assert.Equal(t, before.GoalObjective, after.GoalObjective)
 	assert.Equal(t, before.GoalNativeID, after.GoalNativeID)
 	assert.Equal(t, before.GoalCreatedAt, after.GoalCreatedAt)
-	assert.Equal(t, int64(agent.GoalStatusPaused), after.GoalStatus)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusPaused), after.GoalStatus)
 	assert.Empty(t, after.GoalStatusDetail)
 	assert.Equal(t, []string{"set", "paused"}, goalTransitionKinds(t, svc, agentID))
 

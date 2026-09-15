@@ -1,25 +1,26 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
+import type { MessageUiKey } from '../messageUiKeys'
 import type { ToolMessageSource } from './toolPresentation'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
-import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS, toolInputPaths } from '~/components/chat/results/toolInputs'
+import { toolInputPaths } from '~/components/chat/results/toolInputs'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { pickFirstString, pickNumber, pickString } from '~/lib/jsonPick'
+import { pickString } from '~/lib/jsonPick'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { relativizePath } from '~/lib/paths'
 import { useSharedExpandedState } from '../messageRenderers'
 import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { toolOutcomeLabel } from '../toolOutcomeLabel'
 import { toolInputSummary } from '../toolStyles.css'
-import { renderAgentTitle, renderBashTitle, renderEditTitle, renderGlobTitle, renderReadTitle, renderSearchTitle, renderUrlTitle, renderWriteTitle } from '../toolTitleRenderers'
+import { TITLED_TOOL_KINDS, toolMessageTitle } from '../toolTitleRenderers'
+import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessageLayout } from '../widgets/ToolMessageLayout'
 import { AgentRequestMessage } from './AgentRequestMessage'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
-import { FileEditDiffTitle } from './fileEditDiff'
 import { ImageResultList } from './imageResult'
 import { McpToolCallBody } from './mcpToolCall'
 import { McpToolMessage } from './McpToolMessage'
@@ -30,7 +31,7 @@ import { toolKindIcon, toolKindLabel } from './toolKind'
 import { ToolMetadata } from './ToolMetadata'
 import { toolOutputCollapsible } from './toolResultMeta'
 
-import { ToolHeaderRow } from './ToolStatusHeader'
+import { ToolHeaderRow, ToolOutcomeHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
 
 /** Render provider tool data with one shared layout and interaction model. */
@@ -53,6 +54,7 @@ export function ToolMessage(props: {
   const input = () => headerPresentation().input
   const paths = createMemo(() => toolInputPaths(input()))
   const command = () => kind() === 'execute' ? pickString(input(), 'command') : ''
+  const commandLanguage = () => headerPresentation().commandLanguage
   const body = () => presentation().body
   const output = createMemo(() => stripLeadingBlankLines(presentation().output))
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
@@ -61,61 +63,38 @@ export function ToolMessage(props: {
   const collapsed = useCollapsedLines({ text: output, expanded })
 
   // The local state supports isolated renders without a message-store host.
+  //
+  // The READ and the WRITE of the expanded flag move together. An override that
+  // took the read alone left the inherited writer in place, so a body renderer
+  // that toggled the flag wrote its own local signal while this override kept
+  // answering every read -- the write then had no effect that anybody could see.
   const bodyContext = createMemo<RenderContext>(() => {
     const context: RenderContext = Object.create(props.context ?? null)
-    Object.defineProperty(context, 'getMessageUiState', {
-      value: (key: Parameters<NonNullable<RenderContext['getMessageUiState']>>[0]) => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
-        ? expanded()
-        : props.context?.getMessageUiState?.(key),
+    Object.defineProperties(context, {
+      getMessageUiState: {
+        value: (key: MessageUiKey) => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+          ? expanded()
+          : props.context?.getMessageUiState?.(key),
+      },
+      setMessageUiState: {
+        value: (key: MessageUiKey, value: boolean) => {
+          if (key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+            setExpanded(value)
+          else
+            props.context?.setMessageUiState?.(key, value)
+        },
+      },
     })
     return context
   })
 
-  const title = (): JSX.Element => {
-    const model = headerPresentation()
-    const args = model.input
-    const path = pickFirstString(args, TOOL_FILE_PATH_KEYS)
-    const context = props.context
-    // A read whose only path is the WORKING DIRECTORY has no file to name, and a
-    // row titled with it reads as a bare ".". Cursor's `ReadLints` reaches here:
-    // it declares ACP kind `read`, sends `title: "Read Lints"`, and gives the
-    // working directory as its only location -- so the title it sent lost to a
-    // path that says nothing. `list` keeps that path on purpose, because listing
-    // the working directory IS what "." means there.
-    const readPath = () => path && relativizePath(path, context?.workingDir, context?.homeDir) === '.' ? '' : path
-    if (model.kind === 'write' && typeof args.content === 'string')
-      return renderWriteTitle(path, args.content, context?.workingDir, context?.homeDir) || model.title
-    const changes = model.body.type === 'diff' ? model.body.sources : model.requestedChanges
-    if (changes?.length) {
-      if (changes.length === 1)
-        return <FileEditDiffTitle source={model.body.type === 'diff' ? changes[0] : { ...changes[0], operation: undefined }} context={context} />
-      const paths = new Set(changes.map(source => source.filePath))
-      return paths.size === 1
-        ? `${changes.length} changes in ${relativizePath(changes[0].filePath, context?.workingDir, context?.homeDir)}`
-        : `${paths.size} files${model.body.type === 'diff' ? ' changed' : ''}`
-    }
-    switch (model.kind) {
-      case 'agent': return renderAgentTitle(model.title, model.agentRequest?.agentType)
-      case 'execute': return renderBashTitle(pickString(args, 'description') || (model.title !== pickString(args, 'command') && model.title !== model.kind ? model.title : ''), pickString(args, 'command')) || model.title || 'Run command'
-      case 'read': return renderReadTitle(readPath(), pickNumber(args, 'offset', undefined), pickNumber(args, 'limit', undefined), context?.workingDir, context?.homeDir) || model.title
-      case 'list': return renderReadTitle(path || '.', undefined, undefined, context?.workingDir, context?.homeDir) || model.title
-      case 'glob': return renderGlobTitle(pickString(args, 'pattern'), path, context?.workingDir, context?.homeDir) || model.title
-      case 'grep': return renderSearchTitle(pickString(args, 'pattern'), undefined, context?.workingDir, context?.homeDir) || model.title
-      case 'search': return renderSearchTitle(pickString(args, 'pattern') || pickString(args, 'query'), path, context?.workingDir, context?.homeDir) || model.title
-      case 'edit':
-      case 'write':
-      case 'delete': return renderEditTitle(path, pickFirstString(args, TOOL_OLD_TEXT_KEYS), pickFirstString(args, TOOL_NEW_TEXT_KEYS), undefined, context?.workingDir, context?.homeDir) || model.title
-      case 'fetch': return renderUrlTitle(pickString(args, 'url')) || model.title
-      default: return model.title
-    }
-  }
   const images = () => props.source.images
   const additionalImageCount = () => presentation().additionalContent?.content.filter(item => item.type === 'image').length ?? 0
   const status = () => props.source.status
   const genericInput = createMemo(() => {
     if (presentation().inputText)
       return presentation().inputText!
-    if (['mcp', 'todo', 'markdown'].includes(body().type) || kind() === 'execute' || ['agent', 'read', 'list', 'edit', 'write', 'delete', 'search', 'glob', 'grep', 'fetch'].includes(kind()))
+    if (['mcp', 'todo', 'markdown'].includes(body().type) || TITLED_TOOL_KINDS.has(kind()))
       return ''
     return Object.keys(input()).length > 0 ? prettifyJson(input()) : ''
   })
@@ -134,7 +113,7 @@ export function ToolMessage(props: {
       <Show when={presentation().metadata}>{items => <ToolMetadata items={items()} />}</Show>
       <For each={presentation().unresolvedTerminals}>{id => <ToolHeaderRow icon={Terminal} title={`Terminal ${id}`} />}</For>
       <Show when={!pairedResult() && expanded() && commandExpandable()}>
-        <CommandInputBody command={command()} context={props.context} />
+        <CommandInputBody command={command()} language={commandLanguage()} context={props.context} />
       </Show>
       <Show
         when={body().type !== 'text'}
@@ -146,6 +125,9 @@ export function ToolMessage(props: {
       >
         <Show when={showBody()}>{renderToolBody(body(), bodyContext())}</Show>
       </Show>
+      <Show when={presentation().truncated}>
+        <div class={toolInputSummary}>{TRUNCATION_NOTICE}</div>
+      </Show>
       <Show when={presentation().requestedChanges?.length && (finished() || !hasCompletedResult())}>
         <RequestedFileChanges sources={presentation().requestedChanges!} context={bodyContext()} />
       </Show>
@@ -155,9 +137,12 @@ export function ToolMessage(props: {
       <Show when={body().type !== 'mcp' && images().length > 0}>
         <ImageResultList sources={images()} indexOffset={additionalImageCount()} title={presentation().title} context={props.context} />
       </Show>
-      <Show when={!props.context?.completionHeader && (status() === 'failed' || status() === 'cancelled') && !['agent', 'command', 'commands'].includes(body().type)}>
-        <ToolHeaderRow icon={CircleAlert} title={toolOutcomeLabel(status() === 'cancelled' ? 'interrupted' : 'failed')} />
-      </Show>
+      <ToolOutcomeHeader
+        when={(status() === 'failed' || status() === 'cancelled') && !['agent', 'command', 'commands', 'status'].includes(body().type)}
+        icon={CircleAlert}
+        title={toolOutcomeLabel(status() === 'cancelled' ? 'interrupted' : 'failed')}
+        context={props.context}
+      />
     </>
   )
 
@@ -175,11 +160,11 @@ export function ToolMessage(props: {
               hasRequest={pairedResult()}
               icon={toolKindIcon(kind())}
               toolName={headerPresentation().label || toolKindLabel(kind())}
-              title={title()}
+              title={toolMessageTitle(headerPresentation(), props.context)}
               summary={(
                 <>
                   <Show when={command() && !(expanded() && commandExpandable())}>
-                    <CommandInputSummary command={command()} context={props.context} collapsed={!expanded()} onOverflowChange={setSummaryOverflows} />
+                    <CommandInputSummary command={command()} language={commandLanguage()} context={props.context} collapsed={!expanded()} onOverflowChange={setSummaryOverflows} />
                   </Show>
                   <Show when={genericInput()}>
                     <div class={toolInputSummary}>
@@ -206,7 +191,7 @@ export function ToolMessage(props: {
         </Show>
       )}
     >
-      {source => <McpToolMessage source={source()} role={finished() ? 'result' : 'request'} hasRequest={pairedResult()} failureLabel={status() === 'cancelled' ? toolOutcomeLabel('interrupted') : undefined} context={props.context} />}
+      {source => <McpToolMessage source={source()} role={finished() ? 'result' : 'request'} hasRequest={pairedResult()} failureLabel={status() === 'cancelled' ? toolOutcomeLabel('interrupted') : undefined} additionalContent={presentation().additionalContent} context={props.context} />}
     </Show>
   )
 }

@@ -53,19 +53,6 @@ func (r *streamRegistry) bindReserved(id uint64, inbox *StreamInbox, controller 
 	return func() { r.remove(id, inbox); inbox.Release() }, true
 }
 
-// bind supports direct writers whose handler runs synchronously.
-func (r *streamRegistry) bind(id uint64, controller StreamController) func() {
-	inbox, ok := r.reserve(id)
-	if !ok {
-		return func() {}
-	}
-	release, ok := r.bindReserved(id, inbox, controller)
-	if !ok {
-		return func() {}
-	}
-	return release
-}
-
 // deliver returns cleanup on failure. The caller must send the error before cleanup can emit a clean End.
 func (r *streamRegistry) deliver(id uint64, frame *leapmuxv1.InnerStreamRequest) (func(), error) {
 	r.mu.Lock()

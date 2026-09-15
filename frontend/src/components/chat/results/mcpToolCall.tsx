@@ -28,6 +28,21 @@ export type McpContentItem
 export type McpToolCallStatus = 'inProgress' | 'completed' | 'failed'
 
 /**
+ * Maps an Agent Client Protocol tool status onto the three words an MCP body shows.
+ *
+ * A cancelled call reads as a failure here, because the body has one word for "this
+ * did not produce a result" and the reason belongs in the outcome header. Every ACP
+ * provider answers this question, so it lives beside the type it returns rather than
+ * once in each plugin -- four copies of the ternary had already drifted apart on
+ * whether to spell `as const`.
+ */
+export function mcpStatusFromToolStatus(status: unknown): McpToolCallStatus {
+  if (status === 'failed' || status === 'cancelled')
+    return 'failed'
+  return status === 'completed' ? 'completed' : 'inProgress'
+}
+
+/**
  * Provider-neutral source for an MCP-style tool call (Claude `mcp__server__tool`,
  * Codex `mcpToolCall`, Codex `dynamicToolCall`). The body renders args + content
  * blocks + error; the caller wraps it in a header/layout per their convention.
@@ -54,6 +69,32 @@ export interface McpToolCallSource {
 /** Display name fragment: "Server / tool" (or just "tool" when server is empty). */
 export function mcpToolCallDisplayName(source: { server: string, tool: string }): string {
   return source.server ? `${source.server} / ${source.tool}` : source.tool
+}
+
+/** The prefix an `mcp__server__tool` identifier carries. */
+const MCP_TOOL_NAME_PREFIX = 'mcp__'
+
+/**
+ * Split an `mcp__server__tool` identifier into its two halves.
+ *
+ * This naming is a Model Context Protocol convention rather than one agent's wire
+ * shape: Claude Code and Reasonix both spell a tool this way, and each had its own
+ * splitter. It lives beside {@link McpToolCallSource}, whose two fields it fills.
+ *
+ * The TOOL half keeps every further `__` segment, so `mcp__github__search__repos`
+ * gives the server `github` and the tool `search__repos`. Returns null when the prefix
+ * is absent or EITHER half is empty -- an empty half labels the row with nothing, which
+ * states less than the raw identifier does.
+ */
+export function parseMcpToolName(name: string): { server: string, tool: string } | null {
+  if (!name.startsWith(MCP_TOOL_NAME_PREFIX))
+    return null
+  const index = name.indexOf('__', MCP_TOOL_NAME_PREFIX.length)
+  if (index < 0)
+    return null
+  const server = name.slice(MCP_TOOL_NAME_PREFIX.length, index)
+  const tool = name.slice(index + '__'.length)
+  return server && tool ? { server, tool } : null
 }
 
 /**
@@ -129,6 +170,12 @@ export function McpToolCallBody(props: {
   source: McpToolCallSource
   context?: RenderContext
   expanded?: () => boolean
+  /**
+   * How many images of this MESSAGE precede the ones this body draws. A row that
+   * draws two MCP bodies -- the result itself and the content that accompanies it --
+   * numbers the second one after the first, so no picture takes an index twice.
+   */
+  indexOffset?: number
 }): JSX.Element {
   const expanded = () => props.expanded?.() ?? getToolResultExpanded(props.context)
   // Each image's position among the IMAGES of this message, which is what an
@@ -137,7 +184,7 @@ export function McpToolCallBody(props: {
   // the same ordering from the same blocks, so index N here and index N there
   // are the same picture.
   const imageOrdinals = createMemo(() => {
-    let seen = 0
+    let seen = props.indexOffset ?? 0
     return props.source.content.map(item => item.type === 'image' ? seen++ : -1)
   })
   return (

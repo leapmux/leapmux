@@ -103,8 +103,8 @@ export const iconAction = style({
 })
 
 /**
- * Steer, the one action whose icon alone does not say what it does, so it keeps
- * its label at EVERY width.
+ * Steer -- and Preempt, its interrupt-only twin -- the one action whose icon
+ * alone does not say what it does, so it keeps its label at EVERY width.
  *
  * The other five actions give their name to a `<Tooltip>` instead. Steer cannot.
  * A tooltip opens on hover and on focus, and never on touch, so on a phone this

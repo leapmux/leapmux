@@ -12,6 +12,7 @@ import { FileEditDiffBody, FileEditDiffTitle, fileEditHasDiff } from './fileEdit
 import { McpToolCallBody } from './mcpToolCall'
 import { ReadFileResultBody } from './readFileResult'
 import { SearchResultBody } from './searchResult'
+import { StatusResultBody } from './statusResult'
 import { WebFetchResultBody } from './webFetchResult'
 
 /** Render the body that the provider describes through shared tool sources. */
@@ -37,7 +38,15 @@ export function renderToolBody(body: ToolBodySource, context: RenderContext): JS
     case 'search': return <SearchResultBody source={body.source} context={context} />
     case 'fetch': return <WebFetchResultBody source={body.source} context={context} />
     case 'mcp': return <McpToolCallBody source={body.source} context={context} />
-    case 'todo': return <TodoListBody todos={body.items} />
+    case 'status': return <StatusResultBody source={body.source} context={context} />
+    case 'todo': return (
+      <>
+        <TodoListBody todos={body.items} emptyText={body.emptyText} />
+        <Show when={body.description}>
+          {text => <CollapsibleContent kind="markdown-tool-result" text={text()} isCollapsed={false} context={context} />}
+        </Show>
+      </>
+    )
     case 'markdown': return <CollapsibleContent kind="markdown-tool-result" text={body.text} isCollapsed={false} context={context} />
     case 'text': return null
   }

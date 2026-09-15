@@ -6,7 +6,7 @@ import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { buildRawJsonEnvelope } from '../../chatRawJson'
 import { input } from '../testUtils'
 import { classifyACPMessage } from './classification'
-import { acpToolPresentation, resolveACPMessage } from './toolPresentation'
+import { acpToolNeedsResult, acpToolPresentation, resolveACPMessage } from './toolPresentation'
 
 describe('file change confirmation (ACP)', () => {
   it.each(['pending', 'completed', 'failed', 'cancelled'])('keeps requested changes separate from a %s result', (status) => {
@@ -110,5 +110,51 @@ describe('an interrupted tool call (ACP)', () => {
   it('classifies the row as a tool use although its status is not final', () => {
     const parsed = parseMessageContent(message)
     expect(classifyACPMessage()({ ...parsed, completion: message.completion }).kind).toBe('tool_use')
+  })
+})
+
+// `acpToolNeedsResult` stops at the BASE build, before the terminal merge that only an
+// execute row needs. The adapter still runs, because an adapter can change the three
+// fields this decision rests on.
+describe('acpToolNeedsResult', () => {
+  const execute = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'tc-1',
+    kind: 'execute',
+    status: 'pending',
+    rawInput: { command: 'ls -la' },
+  }
+
+  it('asks for the result when the target is still unknown', () => {
+    expect(acpToolNeedsResult({ ...execute, rawInput: {} })).toBe(true)
+    expect(acpToolNeedsResult(execute)).toBe(false)
+  })
+
+  it('reads the KIND the adapter chose, not the one the call declared', () => {
+    // `agent` always asks for the result; `execute` with a command does not.
+    expect(acpToolNeedsResult(execute, (_tool, presentation) => ({ ...presentation, kind: 'agent' }))).toBe(true)
+  })
+
+  it('reads the INPUT the adapter supplied', () => {
+    const blank = { ...execute, rawInput: {} }
+    expect(acpToolNeedsResult(blank, (_tool, presentation) => ({ ...presentation, input: { command: 'ls -la' } }))).toBe(false)
+  })
+
+  it('reads the requested changes the adapter attached', () => {
+    const edit = { sessionUpdate: 'tool_call', toolCallId: 'tc-2', kind: 'edit', status: 'pending', rawInput: {} }
+    expect(acpToolNeedsResult(edit)).toBe(true)
+    expect(acpToolNeedsResult(edit, (_tool, presentation) => ({
+      ...presentation,
+      requestedChanges: [{ filePath: '/a.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' }],
+    }))).toBe(false)
+  })
+
+  // The terminal merge rewrites `output`, `body` and `unresolvedTerminals` alone, so a
+  // row whose output lives in a terminal still answers from its input.
+  it('answers from the input on an execute row whose output lives in a terminal', () => {
+    const withTerminal = { ...execute, content: [{ type: 'terminal', terminalId: 'term-1' }] }
+    expect(acpToolPresentation(withTerminal).unresolvedTerminals).toEqual(['term-1'])
+    expect(acpToolNeedsResult(withTerminal)).toBe(false)
+    expect(acpToolNeedsResult({ ...withTerminal, rawInput: {} })).toBe(true)
   })
 })

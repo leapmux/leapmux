@@ -19,6 +19,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
+import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider, retainedRowIsFinal } from '../registry'
@@ -329,6 +330,10 @@ function codexSpanRole(parsed: ParsedMessageContent): SpanRole {
 }
 
 const codexPlugin: Provider = {
+  // Codex reasoning draws its own bubble (`reasoning.tsx`), which reads and writes this
+  // key. The shared THINKING key belongs to the providers whose thinking rows draw
+  // through the shared bubble.
+  expandUiKey: () => MESSAGE_UI_KEY.CODEX_REASONING,
   resolveMessage: resolveCodexMessage,
   spanRole: codexSpanRole,
   relatedMessages: (parsed) => {

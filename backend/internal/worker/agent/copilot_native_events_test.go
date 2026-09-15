@@ -20,17 +20,27 @@ func newNativeCopilotForEvents(t *testing.T) (*copilotAgent, *testSink) {
 	t.Helper()
 	sink := &testSink{}
 	a := &copilotAgent{
-		copilotConnection: &copilotConnection{},
-		sink:              sink,
-		sessionID:         "session-1",
-		options:           optionmap.Map{},
+		copilotConnection: &copilotConnection{jsonrpcBase: jsonrpcBase{
+			processBase: processBase{ctx: t.Context(), stdin: failingWriteCloser{}},
+		}},
+		sink:      sink,
+		sessionID: "session-1",
+		options:   optionmap.Map{},
 	}
 	a.agentID = "copilot-events"
 	return a, sink
 }
 
-// nativeCopilotEvent frames one session event exactly as the runtime sends it.
+// nativeCopilotEvent frames one session event exactly as the runtime sends it, for the
+// session newNativeCopilotForEvents opens.
 func nativeCopilotEvent(t *testing.T, agentID, eventType string, data any) []byte {
+	t.Helper()
+	return nativeCopilotSessionEvent(t, "session-1", agentID, eventType, data)
+}
+
+// nativeCopilotSessionEvent frames one session event for a named session, which is what
+// a test against a LIVE agent needs: that agent's identity is a generated one.
+func nativeCopilotSessionEvent(t *testing.T, sessionID, agentID, eventType string, data any) []byte {
 	t.Helper()
 	event := map[string]any{"id": eventType + "-id", "type": eventType, "data": data}
 	if agentID != "" {
@@ -38,7 +48,7 @@ func nativeCopilotEvent(t *testing.T, agentID, eventType string, data any) []byt
 	}
 	raw, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "method": "session.event",
-		"params": map[string]any{"sessionId": "session-1", "event": event},
+		"params": map[string]any{"sessionId": sessionID, "event": event},
 	})
 	require.NoError(t, err)
 	return raw
@@ -518,8 +528,8 @@ func TestNativeCopilotDropsTheDeltasItsFinishedMessageReplaces(t *testing.T) {
 	}
 }
 
-// Copilot 1.0.24 reports the answer's running SIZE on a stream of its own, which names
-// no message and carries no text. Every report is a running total for the whole
+// Copilot 1.0.24 reports the answer's running SIZE on a stream of its own, which
+// identifies no message and carries no text. Every report is a running total for the whole
 // response, so they all land on one scope: a scope for each event would add the
 // totals, and a three-byte answer would count as six.
 func TestNativeCopilotCountsTheAnswerSizeOnOneScope(t *testing.T) {
@@ -565,4 +575,112 @@ func TestNativeCopilotKeepsAnUnrecognizedMethod(t *testing.T) {
 
 	require.Len(t, sink.Messages(), 1)
 	assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content))
+}
+
+// A subagent reports its OWN context, so its counter belongs to its own transcript. The
+// root's counter describes the root's context, and a child's number written there would
+// overwrite it with a figure for a different conversation.
+func TestNativeCopilotSubagentUsageInfoReachesItsOwnTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "task-1", "toolName": contracts.CopilotToolTask,
+		"arguments": map[string]any{"name": "Reviewer", "prompt": "Review the diff."},
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, map[string]any{
+		"toolCallId": "task-1", "agentName": "reviewer", "agentDisplayName": "Reviewer",
+	}))
+	row, ok := copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	child, ok := sink.ChildSink(row.ChildAgentID).(*testSink)
+	require.True(t, ok)
+	require.Zero(t, sink.SessionInfoCount())
+
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSessionUsageInfo, map[string]any{
+		"currentTokens": 300, "tokenLimit": 64000,
+	}))
+
+	assert.Zero(t, sink.SessionInfoCount(), "a subagent's context counter never reaches the root")
+	usage, ok := child.LastSessionInfo()[contracts.SessionInfoKeyContextUsage].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(300), usage[contracts.ContextUsageFieldContextTokens])
+	assert.Equal(t, int64(64000), usage[contracts.ContextUsageFieldContextWindow])
+}
+
+// The scope of an accumulating segment is the runtime's own message or reasoning
+// identity. The FRAME id is not a substitute: it changes for every delta, so a build
+// that omitted both identities would open one segment per delta and store each of them
+// as its own assembled message.
+func TestNativeCopilotDeltaWithNoMessageIdentityOpensNoSegment(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "0"}))
+	for index, text := range []string{"Chapter ", "1."} {
+		raw, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "method": "session.event",
+			"params": map[string]any{"sessionId": "session-1", "event": map[string]any{
+				"id": fmt.Sprintf("frame-%d", index), "type": contracts.CopilotEventAssistantMessageDelta,
+				"ephemeral": true, "data": map[string]any{"deltaContent": text},
+			}},
+		})
+		require.NoError(t, err)
+		a.HandleOutput(raw)
+	}
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+
+	for _, message := range sink.Messages() {
+		kind, _ := MessageMetadata(MessageContent{Original: message.Content, Completion: message.Completion})
+		assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED, kind,
+			"a delta that states no message identity stores no assembled row")
+	}
+	for _, update := range sink.ProgressUpdates() {
+		assert.NotEqual(t, ProgressModelText, update.Operation,
+			"a delta with no message identity moves no text counter either")
+	}
+}
+
+// The runtime sends a separate change event for each settings axis, and one move can
+// raise all three. Each event needs a read, and three reads in flight publish a mixed
+// snapshot: whichever one finishes last decides, and its view of the other two axes can
+// be older than theirs. One read runs, and one more follows it.
+func TestNativeCopilotSettingsChangeEventsShareOneRead(t *testing.T) {
+	t.Parallel()
+	a, _ := newNativeCopilotForEvents(t)
+	// Hold every background run at its first step, so the table states what the dispatch
+	// registered rather than what a race let through.
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+
+	for _, eventType := range []string{
+		contracts.CopilotEventSessionModeChanged,
+		contracts.CopilotEventSessionPermissionsChanged,
+		contracts.CopilotEventSessionModelChange,
+	} {
+		a.HandleOutput(nativeCopilotEvent(t, "", eventType, map[string]any{}))
+	}
+
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	assert.Equal(t, map[string]bool{copilotReadSettings: true}, a.backgroundReads,
+		"three change events start one read, with one more queued behind it")
+}
+
+// The objective read takes the same route, and its key keeps it apart from the settings
+// read.
+func TestNativeCopilotObjectiveChangeEventsShareOneRead(t *testing.T) {
+	t.Parallel()
+	a, _ := newNativeCopilotForEvents(t)
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+
+	for range 2 {
+		a.HandleOutput(nativeCopilotEvent(t, "",
+			contracts.CopilotEventSessionAutopilotObjectiveChanged, map[string]any{}))
+	}
+
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundReads)
 }

@@ -27,6 +27,7 @@ describe('extractZCodeBash', () => {
       description: 'list files',
       output: 'total 48\nfile1\n',
       exitCode: 0,
+      hasCommandTelemetry: true,
       timedOut: false,
       truncated: false,
       isError: false,
@@ -38,6 +39,16 @@ describe('extractZCodeBash', () => {
   // failures -- so a null exit code genuinely means "unknown", never "succeeded".
   it('reports a null exit code when the app-server sent no command telemetry', () => {
     expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out' }), ZCODE_TOOL.Bash, undefined))?.exitCode).toBeNull()
+  })
+
+  // An ABSENT telemetry block and a block that stated no code both leave `exitCode`
+  // null, and only the second contradicts a leading `Exit code N` line -- so the two
+  // cases need a field of their own to tell them apart.
+  it('reports the telemetry block separately from the exit code it may omit', () => {
+    const withoutCode = extractZCodeBash(zcodeRow(commandResult({ content: 'out', perf: perf({ timedOut: false }) }), ZCODE_TOOL.Bash, undefined))
+    expect(withoutCode).toMatchObject({ exitCode: null, hasCommandTelemetry: true })
+    expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out' }), ZCODE_TOOL.Bash, undefined))?.hasCommandTelemetry).toBe(false)
+    expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out', perf: perf({}) }), ZCODE_TOOL.Bash, undefined))?.hasCommandTelemetry).toBe(false)
   })
 
   // The detail block is per-kind. Reading `command` off a patch detail would pick up
@@ -97,6 +108,7 @@ describe('zcodeBashToCommandSource', () => {
     description: '',
     output: 'out',
     exitCode: null as number | null,
+    hasCommandTelemetry: false,
     timedOut: false,
     truncated: false,
     isError: false,
@@ -116,17 +128,17 @@ describe('zcodeBashToCommandSource', () => {
   // The app-server reports a FAILED command as a successful tool call whose content
   // says "Exit code 3", so the exit code is the only signal that the command failed.
   it('treats a non-zero exit as an error even when the call succeeded', () => {
-    expect(zcodeBashToCommandSource({ ...base, exitCode: 3 }))
+    expect(zcodeBashToCommandSource({ ...base, exitCode: 3, hasCommandTelemetry: true }))
       .toMatchObject({ exitCode: 3, isError: true })
   })
 
   it('keeps a zero exit non-error', () => {
-    expect(zcodeBashToCommandSource({ ...base, exitCode: 0 }))
+    expect(zcodeBashToCommandSource({ ...base, exitCode: 0, hasCommandTelemetry: true }))
       .toMatchObject({ exitCode: 0, isError: false })
   })
 
   it('treats a timeout as both interrupted and an error', () => {
-    expect(zcodeBashToCommandSource({ ...base, timedOut: true }))
+    expect(zcodeBashToCommandSource({ ...base, timedOut: true, hasCommandTelemetry: true }))
       .toMatchObject({ interrupted: true, isError: true })
   })
 
@@ -142,6 +154,7 @@ describe('zcodeBashToCommandSource exit-code line', () => {
   const base = {
     command: 'mv a b',
     description: '',
+    hasCommandTelemetry: false,
     timedOut: false,
     truncated: false,
     isError: false,
@@ -153,6 +166,7 @@ describe('zcodeBashToCommandSource exit-code line', () => {
       ...base,
       output: 'Exit code 1\nmv: rename a to b: No such file or directory',
       exitCode: 1,
+      hasCommandTelemetry: true,
     })
     expect(source.output).toBe('mv: rename a to b: No such file or directory')
     expect(source.exitCode).toBe(1)
@@ -162,7 +176,7 @@ describe('zcodeBashToCommandSource exit-code line', () => {
   // A disagreement is worth showing, so the line survives it and the structured
   // field -- the one the app-server computed rather than formatted -- wins the label.
   it('keeps the line when it disagrees with the structured code', () => {
-    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 3\nboom', exitCode: 1 })
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 3\nboom', exitCode: 1, hasCommandTelemetry: true })
     expect(source.output).toBe('Exit code 3\nboom')
     expect(source.exitCode).toBe(1)
   })
@@ -176,7 +190,7 @@ describe('zcodeBashToCommandSource exit-code line', () => {
   })
 
   it('leaves output without the line untouched', () => {
-    const source = zcodeBashToCommandSource({ ...base, output: 'plain output', exitCode: 0 })
+    const source = zcodeBashToCommandSource({ ...base, output: 'plain output', exitCode: 0, hasCommandTelemetry: true })
     expect(source.output).toBe('plain output')
     expect(source.exitCode).toBe(0)
     expect(source.isError).toBe(false)
@@ -189,5 +203,37 @@ describe('zcodeBashToCommandSource exit-code line', () => {
     expect(source.output).toBe('done')
     expect(source.exitCode).toBe(0)
     expect(source.isError).toBe(false)
+  })
+
+  // The marker anchors to the start of the TEXT, not to a frame the app-server drew, so
+  // a command whose OWN output begins with those words reaches the same test. With no
+  // structured code there is nothing to compare, so another field has to contradict it.
+  it('keeps the line when telemetry arrived without an exit code', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 2\nnope', exitCode: null, hasCommandTelemetry: true })
+    expect(source.output).toBe('Exit code 2\nnope')
+    expect(source.exitCode).toBeUndefined()
+  })
+
+  it('keeps a line claiming exit 0 on a call the app-server marked an error', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 0\nstill broken', exitCode: null, isError: true })
+    expect(source.output).toBe('Exit code 0\nstill broken')
+    expect(source.exitCode).toBeUndefined()
+    expect(source.isError).toBe(true)
+  })
+
+  // A failed command reported as a SUCCESSFUL tool call is ZCode's normal shape, so a
+  // non-zero line under `isError: false` is not a contradiction.
+  it('still takes a non-zero code from the line on a call the app-server did not mark', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 4\nboom', exitCode: null })
+    expect(source.output).toBe('boom')
+    expect(source.exitCode).toBe(4)
+  })
+
+  // An error row's own text is the app-server's words, so a non-zero line there states
+  // the code the same way.
+  it('takes a non-zero code from the line on an error row', () => {
+    const source = zcodeBashToCommandSource({ ...base, output: 'Exit code 7\nboom', exitCode: null, isError: true })
+    expect(source.output).toBe('boom')
+    expect(source.exitCode).toBe(7)
   })
 })

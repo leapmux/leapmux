@@ -183,9 +183,7 @@ func (a *copilotAgent) handleNativeControlEvent(raw []byte, event copilotEvent) 
 				delete(a.controls, identifier)
 			}
 			a.controlMu.Unlock()
-			if a.copilotConnection != nil {
-				go a.abortNativeControlSession(sessionID)
-			}
+			go a.abortNativeControlSession(sessionID)
 		}
 	}
 	return true

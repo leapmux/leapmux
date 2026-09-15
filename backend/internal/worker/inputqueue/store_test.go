@@ -450,8 +450,9 @@ func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
 		WHERE id = 'agent-1' RETURNING message_seq_hwm`).Scan(&turnEndSeq))
 	_, err = database.ExecContext(ctx, `
 		INSERT INTO messages (id, agent_id, seq, source, content, content_compression)
-		VALUES ('turn-end', 'agent-1', ?, ?, '{}', 0)`,
-		turnEndSeq, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+		VALUES ('turn-end', 'agent-1', ?, ?, '{}', ?)`,
+		turnEndSeq, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE)
 	require.NoError(t, err)
 	_, _, err = store.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
@@ -880,6 +881,39 @@ func TestStoreUnclassifiedProviderTurnRefusesASteer(t *testing.T) {
 
 	_, _, err = store.PrepareSteer(ctx, "agent-1", "one")
 	assert.ErrorIs(t, err, ErrSteeringState, "and the Worker refuses one that arrives anyway")
+}
+
+// TestStoreSnapshotAnswersThePreemptPrecondition is preemption's counterpart of
+// the steer precondition: the same head/kind/turn terms, minus the steerable
+// turn -- an unclassified turn is exactly the turn Preempt cancels.
+func TestStoreSnapshotAnswersThePreemptPrecondition(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"one", "two"} {
+		_, err := store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id})
+		require.NoError(t, err)
+	}
+	idle, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, idle.Items[0].CanPreempt, "with no active turn there is nothing to cancel")
+
+	snapshot, _, err := store.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	assert.False(t, snapshot.ActiveTurnSteerable)
+	active, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, active.Items[0].CanPreempt,
+		"an unsteerable active turn is the turn Preempt exists to cancel")
+	assert.False(t, active.Items[0].CanSteer)
+	assert.False(t, active.Items[1].CanPreempt, "only the head may pre-empt")
+
+	_, _, err = store.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	ended, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, ended.Items[0].CanPreempt)
 }
 
 func TestStoreClassifiedProviderTurnOffersASteer(t *testing.T) {

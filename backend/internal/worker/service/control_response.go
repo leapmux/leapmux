@@ -30,10 +30,35 @@ type controlResponseRequestMetadata struct {
 type controlResponsePlan struct {
 	requestMeta controlResponseRequestMetadata
 	// Keep the complete provider resolution as one value.
-	resolution  agent.ControlResponseResolution
-	decision    agent.ControlBehaviorEnvelope
-	settings    *leapmuxv1.PlanApprovalSettings
-	hasDecision bool
+	resolution agent.ControlResponseResolution
+	decision   agent.ControlBehaviorEnvelope
+	settings   *leapmuxv1.PlanApprovalSettings
+	// settingsJSON is the ONE encoding of settings, and every consumer writes
+	// these bytes. The claim row stores them and the transcript row repeats
+	// them, so one approval has one stored form: a later change to the marshal
+	// options cannot reshape one row and leave the other one alone.
+	//
+	// It is nil while settings is nil. With settings set, the plan carries it
+	// only after encodePlanApprovalSettings runs, or after the answer row
+	// supplied the stored bytes -- and controlResponseMessageContent refuses a
+	// plan that reached it in neither state.
+	settingsJSON []byte
+	hasDecision  bool
+}
+
+// encodePlanApprovalSettings fills settingsJSON from settings. Call it once,
+// before the first consumer reads the bytes. A plan rebuilt from a stored answer
+// row does not call it: that row already holds the encoding.
+func (plan *controlResponsePlan) encodePlanApprovalSettings() error {
+	if plan.settings == nil {
+		return nil
+	}
+	encoded, err := protojson.MarshalOptions{EmitDefaultValues: true}.Marshal(plan.settings)
+	if err != nil {
+		return fmt.Errorf("encode plan approval settings: %w", err)
+	}
+	plan.settingsJSON = encoded
+	return nil
 }
 
 func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string) (controlResponseRequestMetadata, error) {
@@ -145,28 +170,33 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 		return fmt.Errorf("read the control request: %w", err)
 	}
 	plan := resolveControlResponsePlan(plugin, meta, content, request.GetPlanApproval())
+	// An agent restart, a context clear, or a provider-side cancel deletes the
+	// request row. LeapMux then refuses the answer instead of keeping it.
+	// ClaimControlResponseAnswer repeats the same condition in SQL (WHERE EXISTS),
+	// and the two do not duplicate each other: this guard is the fast path that
+	// gives the caller a clear error, and the SQL predicate closes the race between
+	// the read above and the INSERT below.
 	if !plan.requestMeta.Exists {
 		return errors.New("the control request is no longer pending")
 	}
-	if plan.requestMeta.Exists && plan.requestMeta.ClaimToken != claimToken {
+	if plan.requestMeta.ClaimToken != claimToken {
 		return nil
 	}
 	if plan.isPlanPrompt() && (!plan.requestMeta.Loaded || !plan.hasDecision) {
 		return errors.New("the plan approval has no valid decision")
 	}
-	if plan.requestMeta.Exists && plan.resolution.Withhold {
+	if plan.resolution.Withhold {
 		return errors.New("the agent provider could not read this control response")
 	}
 	if plan.settings != nil && (!plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow ||
 		!plan.isPlanPrompt() && plan.resolution.PlanModeControl != agent.PlanModeControlExit) {
 		return errors.New("plan settings require an approval for a matching plan request")
 	}
-	var settings []byte
-	if plan.settings != nil {
-		settings, err = protojson.MarshalOptions{EmitDefaultValues: true}.Marshal(plan.settings)
-		if err != nil {
-			return fmt.Errorf("encode plan approval settings: %w", err)
-		}
+	// Encode ONCE, after the gates that can refuse the response. The claim row
+	// below and the transcript row that finalizeControlResponse writes both read
+	// these bytes, and a second marshal would give them a different byte string.
+	if err := plan.encodePlanApprovalSettings(); err != nil {
+		return err
 	}
 	firstAnswer := true
 	if requestID != "" {
@@ -174,9 +204,9 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 			AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 			RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
 			ResolvedContent: plan.resolution.Content, Feedback: plan.resolution.Feedback,
-			PlanApprovalSettings: settings,
+			PlanApprovalSettings: plan.settingsJSON,
 			SourceSeq:            plan.requestMeta.SourceSeq,
-			AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: int64(dbAgent.AgentProvider),
+			AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: dbAgent.AgentProvider,
 			InputID: controlResponseQueueID(agentID, plan),
 		})
 		if err != nil {
@@ -196,20 +226,7 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 
 	svc.broadcastControlResponseState(dbAgent, requestID, claimToken)
 	if deliveryErr := svc.executeControlResponse(agentID, dbAgent, plan); deliveryErr != nil {
-		var recordErr error
-		if requestID != "" {
-			if errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
-				_, recordErr = svc.Queries.SetControlResponseDeliveryState(bgCtx(), db.SetControlResponseDeliveryStateParams{
-					AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-					State: storedStateUncertain, RequiredState: storedStatePending,
-				})
-			} else {
-				recordErr = svc.Queries.ReleaseUnsentControlResponseAnswer(bgCtx(), db.ReleaseUnsentControlResponseAnswerParams{
-					AgentID: agentID, RequestID: requestID, ClaimToken: claimToken, State: storedStatePending,
-				})
-			}
-		}
-		return errors.Join(deliveryErr, recordErr)
+		return errors.Join(deliveryErr, svc.recordControlResponseDeliveryFailure(agentID, requestID, claimToken, deliveryErr))
 	}
 	if requestID == "" {
 		return nil
@@ -228,6 +245,29 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	return svc.finalizeControlResponse(answer)
 }
 
+// recordControlResponseDeliveryFailure marks the reservation that a refused
+// delivery left behind. An UNCERTAIN delivery keeps the reservation, so no
+// retry can send the answer a second time. Every other failure releases it back
+// to PENDING, where a retry sends the answer again.
+//
+// A response that carries no request id reserved nothing, so there is nothing to
+// record.
+func (svc *Service) recordControlResponseDeliveryFailure(agentID, requestID, claimToken string, deliveryErr error) error {
+	if requestID == "" {
+		return nil
+	}
+	if errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
+		_, err := svc.Queries.SetControlResponseDeliveryState(bgCtx(), db.SetControlResponseDeliveryStateParams{
+			AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
+			State: storedStateUncertain, RequiredState: storedStatePending,
+		})
+		return err
+	}
+	return svc.Queries.ReleaseUnsentControlResponseAnswer(bgCtx(), db.ReleaseUnsentControlResponseAnswerParams{
+		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken, State: storedStatePending,
+	})
+}
+
 // approvedClearContext identifies an approval that requests a fresh context.
 func (plan controlResponsePlan) approvedClearContext() bool {
 	return plan.behavior() == agent.ControlBehaviorAllow && plan.settings.GetClearContext()
@@ -242,6 +282,12 @@ func (plan controlResponsePlan) exitPlanClearingContext() bool {
 // needsTranscriptRow omits duplicate answer displays.
 // Plan feedback already uses a queued user message. A native answer echo also replaces the LeapMux row.
 // A fresh-context plan exit still needs the row because the old process cannot emit that echo.
+//
+// The decision ignores whether the control request still exists, and that is
+// deliberate (#258). An agent restart deletes the request row, and the delivered
+// answer that ListControlResponsesAwaitingRecording recovers still draws its row.
+// An answer that ARRIVES after the request row disappeared never reaches this
+// point, because processControlResponse refuses it.
 func (plan controlResponsePlan) needsTranscriptRow() bool {
 	if plan.isPlanPrompt() && plan.behavior() == agent.ControlBehaviorDeny && plan.rejectionMessage() != "" {
 		return false
@@ -319,12 +365,16 @@ func controlResponseMessageContent(plan controlResponsePlan) (agent.MessageConte
 		contracts.MessageMetadataFieldControlRequestID:         plan.requestMeta.RequestID,
 		contracts.MessageMetadataFieldControlRequestClaimToken: plan.requestMeta.ClaimToken,
 	}
-	if plan.settings != nil {
-		settings, err := protojson.MarshalOptions{EmitDefaultValues: true}.Marshal(plan.settings)
-		if err != nil {
-			return agent.MessageContent{}, fmt.Errorf("encode plan approval metadata: %w", err)
-		}
-		fields[contracts.MessageMetadataFieldPlanApprovalSettings] = json.RawMessage(settings)
+	if plan.settings != nil && len(plan.settingsJSON) == 0 {
+		// The plan carries settings that nothing encoded, so this row would drop
+		// them in silence. Refuse instead: the caller rebuilds the plan from the
+		// answer row, which always carries the stored encoding.
+		return agent.MessageContent{}, errors.New("the plan approval settings have no stored encoding")
+	}
+	if len(plan.settingsJSON) > 0 {
+		// The SAME bytes the claim row stored, not a second encoding of the
+		// message they decode to.
+		fields[contracts.MessageMetadataFieldPlanApprovalSettings] = json.RawMessage(plan.settingsJSON)
 	}
 	metadata, err := json.Marshal(fields)
 	if err != nil {

@@ -48,3 +48,21 @@ describe('cursor agent sources', () => {
     }
   })
 })
+
+describe('cursor subagent card', () => {
+  it('titles the row from the description and keeps the resolved report', () => {
+    const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'task', rawInput: { _toolName: 'task', description: 'Inspect sample' } }
+    const presentation = cursorAgentPresentation(tool, acpToolPresentation(tool), { output: { success: { resultSuffix: 'Native notice' } } })
+    expect(presentation.kind).toBe('agent')
+    expect(presentation.title).toBe('Inspect sample')
+    expect(presentation.output).toBe('Native notice')
+    expect(presentation.body).toEqual({ type: 'agent', source: expect.objectContaining({ description: 'Inspect sample' }) })
+  })
+
+  it('falls back to the shared word when the launch describes nothing', () => {
+    const tool = { sessionUpdate: 'tool_call', status: 'pending', toolCallId: 'task', rawInput: { _toolName: 'task' } }
+    const presentation = cursorAgentPresentation(tool, acpToolPresentation(tool))
+    expect(presentation.title).toBe('Task')
+    expect(presentation.body).toEqual({ type: 'text' })
+  })
+})

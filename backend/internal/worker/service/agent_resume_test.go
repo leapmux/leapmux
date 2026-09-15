@@ -348,7 +348,7 @@ func TestAgentResume_RestoresAnAgentWithASessionButNoResumeFlag(t *testing.T) {
 	rec.install(svc)
 
 	seedOpenAgent(t, svc, "agent-messaged", false)
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-messaged",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -469,7 +469,7 @@ func TestAgentResume_ResumesTheSessionTheRowPointsAt(t *testing.T) {
 	// The row Claude Code leaves after its first turn: a real conversation, and
 	// a session id stamped after the user's message.
 	seedOpenAgent(t, svc, "agent-1", false)
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-1",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

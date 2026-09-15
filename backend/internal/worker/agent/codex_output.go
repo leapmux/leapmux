@@ -92,12 +92,16 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
 	// they arrive as notifications in the output stream.
-	case contracts.MCPElicitationMethodCodex,
-		"item/commandExecution/requestApproval",
+	case contracts.MCPElicitationMethodCodex:
+		a.publishControlRequest(a.sink, line.Raw, mcpElicitationCancelAnswer())
+
+	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput":
-		a.publishControlRequest(a.sink, line.Raw)
+		// Codex retires its own approval requests through serverRequest/resolved, and it
+		// defines no outcome for one the client withdraws, so LeapMux sends no answer.
+		a.publishControlRequest(a.sink, line.Raw, nil)
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(line.Params)
@@ -1216,11 +1220,12 @@ func (a *CodexAgent) handleServerRequestResolved(params json.RawMessage) {
 	if json.Unmarshal(params, &notif) != nil {
 		return
 	}
-	requestID, valid := JSONRPCControlRequestID(notif.RequestID)
+	identity, valid := newControlRequestIdentity(notif.RequestID)
 	if !valid {
 		return
 	}
-	a.sink.CancelControlRequest(requestID)
+	// Codex withdrew the request itself, so it waits for no answer.
+	a.withdrawControlRequest(a.sink, identity.key, false)
 }
 
 // handleErrorNotification processes error notifications.

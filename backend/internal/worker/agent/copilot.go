@@ -69,6 +69,11 @@ func init() {
 		copilotBinaryName,
 	)
 	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, OptionIDEffort)
+	// Each model states its own reasoning-effort tiers, and the account decides which
+	// models exist -- so the catalog above is nil and only the open session can report
+	// them. Without this declaration a model switch would keep the PREVIOUS model's
+	// tiers, and an effort the new model refuses would survive the switch.
+	setManagesEffort(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
 	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, PermissionDefaults{
 		// A new session asks for Assisted: it approves what a safety check finds
 		// safe and asks about everything else, which is the narrowest mode that

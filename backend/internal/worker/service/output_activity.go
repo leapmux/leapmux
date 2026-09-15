@@ -130,11 +130,17 @@ type agentActivity struct {
 	//     back into the turn it just cancelled, and a held stop would leave the
 	//     indicator and the Interrupt button on screen for settleDelay.
 	//
-	// The provider's own next turn-flag publish clears it, whether that publish
-	// ends the turn or opens another one: either answers the stop. A refused
-	// delivery clears it too (NoteAgentStopFailed), and so does a process
-	// boundary. A publish does NOT clear it -- that bound let the withdrawal of
-	// the pending prompt spend the mark before the stop it was taken for.
+	// The provider's own next turn-flag publish clears it, when that publish
+	// CHANGES the flag: the turn ended, or another one opened, and either
+	// answers the stop. A refused delivery clears it too (NoteAgentStopFailed),
+	// and so does a process boundary.
+	//
+	// A REPEAT publish of the value the entry already holds does NOT clear it.
+	// It answers nothing, because the provider reports the state it reported
+	// before. Providers do send one: pi_output.go republishes the turn flag on a
+	// retried run, and zcode_output.go publishes it at every turn start. Spending
+	// the mark there let the withdrawal of the pending prompt re-derive WORKING
+	// before the stop the mark was taken for arrived.
 	//
 	// One residual, stated because it is not free to close. A provider that
 	// accepts a delivered stop, ignores it, and reports no turn flag again keeps
@@ -284,23 +290,9 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 // A Stop that reports false means the timer already fired and its callback runs
 // now. This call cannot recall it, so it retires the callback instead: moving
 // settleGen makes deliverHeldSettle return without publishing. That token is
-// what the comment
-// here used to
-// claim the
-// re-derivation
-// gave for free,
-// and the
-// re-derivation
-// does not give
-// it. Against a
-// retired entry or
-// a dead process,
-// the callback
-// derives a state
-// that DIFFERS
-// from `published`
-// and publishes
-// it.
+// what the comment here used to claim the re-derivation gave for free, and the
+// re-derivation does not give it. Against a retired entry or a dead process,
+// the callback derives a state that DIFFERS from `published` and publishes it.
 //
 // It leaves settlePending alone. Stopping the timer says nothing about whether a
 // client learned the work stopped; only a publish and voidHeldSettleLocked do.
@@ -443,6 +435,13 @@ func (h *OutputHandler) NoteAgentStopFailed(agentID, rootAgentID string) {
 // because the withdrawal that follows a refusal must void a window rather than
 // land behind one.
 func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
+	if h.shuttingDown.Load() {
+		// WaitActivityRefreshes may already run, and an Add that lands inside a
+		// Wait is a WaitGroup misuse, not only a lost broadcast. The goroutine
+		// would also read the registry after the caller closed the database.
+		// holdSettleLocked tests the same latch before it takes its own count.
+		return
+	}
 	seq := h.activitySeq.Add(1)
 	h.activityRefreshes.Add(1)
 	go func() {
@@ -457,12 +456,9 @@ func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
 // broadcasts once the caller closes the database.
 //
 // The order matters in both directions. An armed window holds an
-// activityRefreshes count, so joining
-// first would park Shutdown for a whole
-// settleDelay. And holdSettleLocked
-// refuses to arm once the latch is set,
-// so nothing can open a window after this
-// call.
+// activityRefreshes count, so joining first would park Shutdown for a whole
+// settleDelay. And holdSettleLocked refuses to arm once the latch is set, so
+// nothing can open a window after this call.
 //
 // The process exits already cancel each window they reach, because they publish
 // through settleImmediate. This call is the redundant guard: it stays correct
@@ -1196,22 +1192,23 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 		st.settledToolUses = nil
 	}
 	st.mu.Unlock()
-	if changed {
-		h.refreshActivity(agentID, rootAgentID)
+	if !changed {
+		// A REPEAT publish reports the state the entry already holds, so it
+		// answers no stop and must spend no mark: see stopRequested.
+		return
 	}
+	h.refreshActivity(agentID, rootAgentID)
 	if root {
-		// This flag IS the provider's answer to a stop the reader asked for: it
-		// ended the turn, or it opened another one, and either way the mark has
-		// nothing left to describe. The clear runs AFTER the refresh above,
-		// because that refresh is the stop the mark exists to publish at once --
-		// clearing first would hand it to the debounce window instead.
-		//
-		// A publish does not reach here, and must not: see stopRequested.
+		// A CHANGED flag IS the provider's answer to a stop the reader asked
+		// for: it ended the turn, or it opened another one, and either way the
+		// mark has nothing left to describe. The clear runs AFTER the refresh
+		// above, because that refresh is the stop the mark exists to publish at
+		// once -- clearing first would hand it to the debounce window instead.
 		st.mu.Lock()
 		st.stopRequested = false
 		st.mu.Unlock()
 	}
-	if !changed || active || !root {
+	if active || !root {
 		return
 	}
 	// Only the settle that THIS clear produces may spend the count. When the
@@ -1433,6 +1430,12 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	// process rather than exempting the next one's first stop.
 	st.stopRequested = false
 	st.mu.Unlock()
+	// The field writes above run whatever the latch says, because
+	// AgentActivitySnapshot reads them and a process boundary must leave the
+	// entry truthful. Only the deferred refresh is refused: see publishStopMark.
+	if h.shuttingDown.Load() {
+		return
+	}
 	h.activityRefreshes.Add(1)
 	go func() {
 		defer h.activityRefreshes.Done()

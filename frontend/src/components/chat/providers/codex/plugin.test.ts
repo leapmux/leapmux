@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
+import { expandedUiKeyFor, MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
@@ -21,6 +22,20 @@ describe('codex provider capabilities', () => {
 
   it('preserves an option selection alongside the free-text note', () => {
     expect(plugin.preservesSelectionNotes).toBe(true)
+  })
+
+  // Codex reasoning renders under its OWN key (reasoning.tsx), not the shared THINKING
+  // key that Claude, Pi and the ACP family use -- so the row estimator and the renderer
+  // must agree through this one mapper.
+  it('routes a thinking row to its own reasoning key', () => {
+    expect(expandedUiKeyFor('assistant_thinking', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(expandedUiKeyFor('assistant_text', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
+  })
+
+  // The two kind-owned keys answer before the plugin does.
+  it('leaves the kind-owned keys alone', () => {
+    expect(expandedUiKeyFor('plan_execution', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.PLAN_EXECUTION)
+    expect(expandedUiKeyFor('agent_prompt', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.AGENT_PROMPT)
   })
 })
 

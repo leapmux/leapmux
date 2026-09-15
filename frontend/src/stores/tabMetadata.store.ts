@@ -111,6 +111,7 @@ export interface AgentMeta {
   acceptsMessages?: boolean
   /** Whether the live provider accepts an explicit queue-head steer. */
   supportsSteering?: boolean
+  supportsPreemption?: boolean
   /** The root agent that owns this agent's process and notification streams. */
   rootAgentId?: string
 }

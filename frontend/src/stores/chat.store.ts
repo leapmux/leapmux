@@ -822,13 +822,13 @@ export function createChatStore() {
      * Read through the row's render context, by a leaf component that subscribes
      * on its own -- see ToolRunningBadge.
      */
-    getToolProgress(agentId: string, spanId: string): ToolProgressEntry | undefined {
-      return toolProgress.get(agentId, spanId)
+    getToolProgress(agentId: string, identity: MessageSpanIdentity): ToolProgressEntry | undefined {
+      return toolProgress.get(agentId, identity)
     },
 
     /** Drop one span's tool progress -- its result row landed. */
-    dropToolProgress(agentId: string, spanId: string) {
-      toolProgress.drop(agentId, spanId)
+    dropToolProgress(agentId: string, identity: MessageSpanIdentity) {
+      toolProgress.drop(agentId, identity)
     },
 
     /**

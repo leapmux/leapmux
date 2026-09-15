@@ -50,6 +50,35 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "MarkType"
+          # The enum columns that store a proto ordinal. Retyping them here is
+          # what makes a mixed-up pair a COMPILE error: kind and status of
+          # agent_background_tasks share one params struct, and as int64 each
+          # the swapped pair compiled and wrote two wrong ordinals. It also
+          # deletes the int64() cast every call site wrote in both directions.
+          - column: "agents.goal_status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentGoalStatus"
+          - column: "agent_todos.status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TodoStatus"
+          - column: "agent_background_tasks.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "BackgroundTaskKind"
+          - column: "agent_background_tasks.status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "BackgroundTaskStatus"
+          - column: "control_response_answers.state"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ControlResponseState"
+          - column: "control_response_answers.agent_provider"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentProvider"
           # The INTEGER-as-bool columns, retyped so BOTH directions are a Go
           # bool. Without these the write half needed a conversion helper and
           # the read half was open-coded as `!= 0` at fourteen sites -- a

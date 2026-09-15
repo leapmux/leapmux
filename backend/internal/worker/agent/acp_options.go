@@ -17,16 +17,16 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
-// optionState bundles the bookkeeping for an ACP provider's server-driven config option
-// config options -- the selectors the model and mode channels do not claim (effort,
-// reasoning_effort, allow_all, ...). It is a field of acpBase, NOT a standalone locked
+// optionState bundles the bookkeeping for an ACP provider's server-driven config
+// options -- the selectors the model and mode channels do not claim (effort,
+// thinking_effort, tool_approval, ...). It is a field of acpBase, NOT a standalone locked
 // object: every method here assumes the caller holds the OWNING acpBase.mu (they are the
 // former *Locked methods). Carrying its own mutex would break the single-snapshot atomicity
 // applySessionRefresh relies on (it pairs an option change with the model/secondary under one
 // acpBase.mu critical section), so the type deliberately has none.
 type optionState struct {
 	// groups holds the surfaced config-option selectors -- a thought_level axis (OpenCode/Kilo
-	// "effort", Copilot "reasoning_effort"), a permissions axis (Copilot "allow_all"), or any
+	// "effort", Goose "thinking_effort"), a permissions axis (Reasonix "tool_approval"), or any
 	// other select. They are surfaced as MUTABLE groups: displayed via OptionGroups(),
 	// kept in sync at handshake / runtime / ClearContext, and written back via
 	// session/set_config_option (applyOptionUpdates). nil when the provider emits none.
@@ -105,11 +105,11 @@ const maxOptionStateIDs = 256
 
 // boundedIDSet is an insertion-ordered string set with LRU eviction at maxOptionStateIDs:
 // adding (or re-adding) an id makes it most-recently-used, and the least-recently-used id is
-// evicted once the cap is exceeded. It mirrors settingsLabelCache.setLabelWithCap -- each
-// configOptions payload re-marks its current ids (keeping them fresh), so an id that stops
-// appearing drifts to the front and is evicted first. It carries no lock of its own; the
-// owning acpBase.mu guards it like every other optionState field. The read methods are
-// nil-safe so a never-populated set reads as empty.
+// evicted once the cap is exceeded. It mirrors setWithCap in the frontend's
+// settingsLabelCache -- each configOptions payload re-marks its current ids (keeping them
+// fresh), so an id that stops appearing drifts to the front and is evicted first. It carries
+// no lock of its own; the owning acpBase.mu guards it like every other optionState field. The
+// read methods are nil-safe so a never-populated set reads as empty.
 type boundedIDSet struct {
 	order *list.List               // front = least-recently-used, back = most-recently-used; values are ids
 	elems map[string]*list.Element // id -> its element in `order`
@@ -409,10 +409,10 @@ func buildOptionGroup(option acpConfigOption, current string) *leapmuxv1.Availab
 // double-rendered as a option group.
 //
 // Complete-snapshot semantics: every configOptions payload is the COMPLETE set of the
-// options that currently apply -- verified across all six ACP providers (Goose, Kilo,
-// OpenCode, Cursor, Copilot, Reasonix); none emits a partial/delta payload, and an option
-// is omitted ONLY when it no longer applies (e.g. Copilot drops reasoning_effort for a
-// model without effort support; OpenCode/Kilo drop effort for a model without variants).
+// options that currently apply -- verified across all five ACP providers (Goose, Kilo,
+// OpenCode, Cursor, Reasonix); none emits a partial/delta payload, and an option
+// is omitted ONLY when it no longer applies (e.g. OpenCode and Kilo drop effort for a
+// model with no variants).
 // So an option absent from a NON-EMPTY payload no longer applies and is dropped --
 // optionState.mergeOptionValues then deletes its stale persisted value via its `surfaced` set.
 // The only preserve case is an EMPTY payload (len(options) == 0): no configOptions were
@@ -586,7 +586,7 @@ func OptionGroupSetEqualExact(a, b []*leapmuxv1.AvailableOptionGroup) bool {
 // server re-sending the same options in a different display order is not a meaningful change, so
 // it must not be reported as a list change (which would fire a redundant status broadcast +
 // catalog write). The effort/thought_level axis is already canonicalized strongest-first by
-// buildOptionGroup, so this only changes the result for other selects (e.g. Copilot allow_all).
+// buildOptionGroup, so this only changes the result for other selects (e.g. Reasonix tool_approval).
 // The stored slice still keeps the latest order (apply assigns g.groups = groups), so a genuine
 // reorder rides along on the next real change. Clone-then-sort by id, then proto.Equal compares
 // every other field (current/default value, label, mutability, order) exactly.

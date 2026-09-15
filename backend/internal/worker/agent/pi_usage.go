@@ -227,7 +227,9 @@ func (a *PiAgent) applyPiSessionStats(stats piSessionStats, generation uint64, e
 	a.mu.Unlock()
 	if changed {
 		a.sink.UpdateSessionID(handle)
-		a.schedulePiGoalRefresh(true)
+		// An extension can replace the session without a worker new_session request,
+		// and the replacement can load a different extension set.
+		go a.refreshPiGoalControl()
 	}
 	return snap, true
 }

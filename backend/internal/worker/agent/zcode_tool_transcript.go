@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
@@ -48,67 +49,126 @@ func (ref zcodeToolReference) lookup(previous zcodeToolLookup) (zcodeToolLookup,
 	return previous, true
 }
 
-func newZCodeToolTranscript(ctx context.Context, services ProviderServices, locate func() zcodeToolStoreLocation) *toolTranscript {
-	requests := make(map[string]zcodeToolLookup)
-	var location zcodeToolStoreLocation
-	clearRequests := func() { clear(requests) }
-	return &toolTranscript{
-		ProviderServices: services,
-		ctx:              ctx,
-		providerName:     "ZCode",
-		locate: func(_ string) toolTranscriptLocation {
-			location = locate()
-			return toolTranscriptLocation{sessionKey: location.sessionID, path: location.databasePath}
-		},
-		toolCallID: func(raw []byte) string {
-			ref, valid := zcodeToolReferenceFrom(raw)
-			if valid && (ref.Kind == contracts.ZCodeToolKindResult || ref.Kind == contracts.ZCodeToolKindError) {
-				return ref.ToolCallID
-			}
-			return ""
-		},
-		observeMessage: func(content MessageContent, span SpanInfo) {
-			ref, valid := zcodeToolReferenceFrom(content.Original)
-			if !valid || ref.Kind != contracts.ZCodeToolKindScheduled || ref.ToolCallID != span.SpanID {
-				return
-			}
-			if lookup, valid := ref.lookup(zcodeToolLookup{}); valid {
-				requests[ref.ToolCallID] = lookup
-			}
-		},
-		resetRecords: clearRequests,
-		finishTurn:   clearRequests,
-		newChild: func(child ProviderServices) *toolTranscript {
-			return newZCodeToolTranscript(ctx, child, locate)
-		},
-		readSupplements: func(ctx context.Context, _ string, pending map[string]MessageContent, final bool) (map[string][]byte, error) {
-			lookups := make(map[string]zcodeToolLookup)
-			for id, original := range pending {
-				ref, valid := zcodeToolReferenceFrom(original.Original)
-				if !valid || ref.ToolCallID != id {
-					continue
-				}
-				if lookup, valid := ref.lookup(requests[id]); valid {
-					lookups[id] = lookup
-				}
-			}
-			records, readErr := readZCodeToolRecords(ctx, location, lookups)
-			out := make(map[string][]byte)
-			for id, record := range records {
-				if !record.ready && !final {
-					continue
-				}
-				supplement, err := zcodeToolResultSupplement(pending[id].Original, record)
-				if err != nil {
-					readErr = errors.Join(readErr, err)
-					continue
-				}
-				out[id] = supplement
-				delete(requests, id)
-			}
-			return out, readErr
-		},
+// zcodeToolSource reads ZCode's tool records out of the CLI's session database.
+//
+// requests holds what each scheduled tool notification stated about a call. The later
+// record read needs that to select the right row.
+//
+// mu guards requests, which is the one field that two goroutines reach. The reader
+// goroutine writes it from observeMessage and clears it from resetRecords and
+// finishTurn; the supplement worker reads it from readSupplements. mu is held for the
+// map operations alone and never across the database read.
+type zcodeToolSource struct {
+	noopToolSupplementSource
+	// store keeps the one database handle of the agent. The agent's transcript and
+	// every child transcript share it, and the store's own mutex serializes the reads.
+	store *zcodeToolStore
+	// resolveLocation reports the agent's database, artifact root and current session.
+	// The agent holds its own mutex for that answer, so both goroutines may ask.
+	resolveLocation func() zcodeToolStoreLocation
+
+	mu       sync.Mutex
+	requests map[string]zcodeToolLookup
+}
+
+func newZCodeToolTranscript(ctx context.Context, services ProviderServices, resolveLocation func() zcodeToolStoreLocation) *toolTranscript {
+	store := &zcodeToolStore{}
+	// The store holds one database handle for the agent. The agent's context ending
+	// is what releases it, because the transcript itself has no teardown call.
+	context.AfterFunc(ctx, store.close)
+	return newToolTranscript(ctx, services, newZCodeToolSource(store, resolveLocation))
+}
+
+func newZCodeToolSource(store *zcodeToolStore, resolveLocation func() zcodeToolStoreLocation) *zcodeToolSource {
+	return &zcodeToolSource{store: store, resolveLocation: resolveLocation, requests: make(map[string]zcodeToolLookup)}
+}
+
+func (z *zcodeToolSource) providerName() string { return "ZCode" }
+
+func (z *zcodeToolSource) locate(string) toolTranscriptLocation {
+	location := z.resolveLocation()
+	return toolTranscriptLocation{sessionKey: location.sessionID, path: location.databasePath, ready: location.databasePath != ""}
+}
+
+func (z *zcodeToolSource) toolCallID(original []byte) string {
+	ref, valid := zcodeToolReferenceFrom(original)
+	if valid && (ref.Kind == contracts.ZCodeToolKindResult || ref.Kind == contracts.ZCodeToolKindError) {
+		return ref.ToolCallID
 	}
+	return ""
+}
+
+func (z *zcodeToolSource) observeMessage(content MessageContent, span SpanInfo) {
+	ref, valid := zcodeToolReferenceFrom(content.Original)
+	if !valid || ref.Kind != contracts.ZCodeToolKindScheduled || ref.ToolCallID != span.SpanID {
+		return
+	}
+	lookup, valid := ref.lookup(zcodeToolLookup{})
+	if !valid {
+		return
+	}
+	z.mu.Lock()
+	z.requests[ref.ToolCallID] = lookup
+	z.mu.Unlock()
+}
+
+func (z *zcodeToolSource) resetRecords() { z.clearRequests() }
+
+func (z *zcodeToolSource) finishTurn() { z.clearRequests() }
+
+func (z *zcodeToolSource) clearRequests() {
+	z.mu.Lock()
+	clear(z.requests)
+	z.mu.Unlock()
+}
+
+// newChild builds a source on the SAME store, which is how each child transcript
+// shares the agent's one database handle.
+func (z *zcodeToolSource) newChild() toolSupplementSource {
+	return newZCodeToolSource(z.store, z.resolveLocation)
+}
+
+// readSupplements asks the agent for the store location again rather than reading what
+// locate reported. The transcript calls locate on the reader goroutine, so a field that
+// held that answer would be one more value that two goroutines share, and the one this
+// read needs is the current one.
+func (z *zcodeToolSource) readSupplements(ctx context.Context, _ string, pending map[string]MessageContent, final bool) (map[string][]byte, error) {
+	location := z.resolveLocation()
+	z.mu.Lock()
+	lookups := make(map[string]zcodeToolLookup)
+	for id, original := range pending {
+		ref, valid := zcodeToolReferenceFrom(original.Original)
+		if !valid || ref.ToolCallID != id {
+			continue
+		}
+		if lookup, valid := ref.lookup(z.requests[id]); valid {
+			lookups[id] = lookup
+		}
+	}
+	z.mu.Unlock()
+	records, readErr := readZCodeToolRecords(ctx, z.store, location, lookups)
+	out := make(map[string][]byte)
+	answered := make([]string, 0, len(records))
+	for id, record := range records {
+		if !record.ready && !final {
+			continue
+		}
+		supplement, err := zcodeToolResultSupplement(pending[id].Original, record)
+		if err != nil {
+			readErr = errors.Join(readErr, err)
+			continue
+		}
+		out[id] = supplement
+		answered = append(answered, id)
+	}
+	if len(answered) > 0 {
+		z.mu.Lock()
+		for _, id := range answered {
+			delete(z.requests, id)
+		}
+		z.mu.Unlock()
+	}
+	return out, readErr
 }
 
 func zcodeToolResultSupplement(original []byte, record zcodeToolRecord) ([]byte, error) {

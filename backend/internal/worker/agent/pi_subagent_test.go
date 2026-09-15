@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -384,4 +385,36 @@ func TestPi_SubagentFinalResultReplacesTheProvisionalRow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// piRenameFailureSink refuses every registry rename, as a busy store does.
+type piRenameFailureSink struct{ *testSink }
+
+func (piRenameFailureSink) RenameBackgroundTask(string, string) error {
+	return errors.New("the background-task store is busy")
+}
+
+func TestPiApplySubagentEndClosesTheOriginalRowWhenTheRenameFails(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	// tool_execution_start opened the row under the tool-call id.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "tc-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+	result := json.RawMessage(`{"content":[],"details":{"status":"completed","agentId":"a-1"}}`)
+	piApplySubagentEnd(piRenameFailureSink{sink}, result, "tc-1", "title", "")
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "tc-1", tasks[0].RowKey)
+	// piApplySubagentNotification writes to the agent id, and no row holds that key,
+	// so a skipped final status would leave the row Running for the whole session.
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+}
+
+func TestPiApplySubagentEndKeepsTheToolCallRowWhenTheBackgroundRenameFails(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "tc-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+	result := json.RawMessage(`{"content":[],"details":{"status":"background","agentId":"a-1"}}`)
+	piApplySubagentEnd(piRenameFailureSink{sink}, result, "tc-1", "title", "spawn prompt")
+	assert.Equal(t, []string{"tc-1"}, bgTaskRowKeys(sink), "a row that kept its key must not gain a second row")
+	assert.Empty(t, sink.ChildAgentIDs(), "no child links to a key the registry does not hold")
 }

@@ -213,9 +213,10 @@ func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage
 		return
 	}
 	if req.RequestID == "" {
-		slog.Warn("zcode user input request carried no request id", "agent_id", a.agentID)
-		a.replyZCodeUserInput(id, ControlBehaviorDeny, "leapmux could not route this request",
-			zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
+		// Without an id the answer cannot be routed back, and an unanswerable prompt
+		// would stall the turn. LeapMux denies it, so the turn continues.
+		slog.Warn("leapmux denied a zcode user-input request with no request id", "agent_id", a.agentID)
+		a.replyZCodeUserInput(id, ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		return
 	}
 	nativeInput, err := req.toolInput()
@@ -224,7 +225,7 @@ func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage
 		a.replyZCodeControlFailure(id, "LeapMux could not read the tool input.")
 		return
 	}
-	matched, sourceErr := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, nativeInput)
+	carriesInput, sourceErr := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, nativeInput)
 	if sourceErr != nil {
 		slog.Warn("recover interaction tool input", "agent_id", a.agentID, "tool_call_id", req.ToolCallID, "error", sourceErr)
 	}
@@ -240,7 +241,10 @@ func (a *zcodeAgent) handleUserInputRequest(id, params, original json.RawMessage
 		a.publishZCodeControlRequest(req.RequestID, stored)
 		return
 	}
-	if req.isPlanApproval() && !matched {
+	// The transcript confirms no row that carries this plan, so this call writes one.
+	// A read that FAILED confirms nothing either, and it is treated as "the row is
+	// there": a second plan row over one already in the transcript draws it twice.
+	if req.isPlanApproval() && !carriesInput && sourceErr == nil {
 		if len(original) == 0 {
 			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
 			return
@@ -393,7 +397,11 @@ func (a *zcodeAgent) replyZCodePermission(id json.RawMessage, options []zcodePer
 }
 
 // replyZCodeUserInput answers a user-input request directly.
-func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior, message string, reply zcodeUserInputReply) {
+//
+// The reply carries a behavior and nothing else. ZCode's user-input result has no
+// field for a reason, unlike the permission result, so the caller logs its reason
+// rather than passing one here.
+func (a *zcodeAgent) replyZCodeUserInput(id json.RawMessage, behavior string, reply zcodeUserInputReply) {
 	if err := a.sendZCodeReply(id, zcodeUserInputResult(behavior, reply)); err != nil {
 		slog.Warn("zcode user input reply failed", "agent_id", a.agentID, "error", err)
 	}

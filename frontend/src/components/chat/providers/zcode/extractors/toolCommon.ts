@@ -1,10 +1,12 @@
 import type { RenderContext } from '../../../messageRenderers'
-import type { TodoListSource } from '../../../todoListMessage'
+import type { SpanRole } from '../../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
+import type { TodoItem } from '~/stores/chatTodos'
+import { ZCODE_EVENT, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
 import { rawTodosToItems } from '~/stores/chatTodos'
+import { parseToolOutcome } from '../../../toolOutcome'
+import { retainedRowIsFinal } from '../../registry'
 
 /**
  * The `payload` of a `tool.updated` event, normalized across its six kinds.
@@ -89,6 +91,24 @@ function zcodeToolResult(result: Record<string, unknown>): ZCodeToolResult {
 }
 
 /**
+ * Join the two output tails of a `progress` payload into one block of text.
+ *
+ * The app-server cuts each tail at a byte count, not at a line end, so a stdout tail
+ * often stops in the middle of a line. A plain concatenation then glues the first
+ * stderr line onto that partial line and shows one line that neither stream wrote.
+ * A line break separates them, and only when the stdout tail does not already end in
+ * one -- a second break would print a blank line the command never wrote.
+ *
+ * An absent or empty tail contributes nothing, so a call with output on one stream
+ * alone keeps exactly the text of that stream.
+ */
+function joinOutputTails(stdout: string, stderr: string): string {
+  if (!stdout || !stderr)
+    return stdout || stderr
+  return stdout.endsWith('\n') ? stdout + stderr : `${stdout}\n${stderr}`
+}
+
+/**
  * The partial output of a call that reported no result of its own.
  *
  * A `progress` payload carries the output tails, and the worker stores that frame as
@@ -97,7 +117,7 @@ function zcodeToolResult(result: Record<string, unknown>): ZCodeToolResult {
  * finish, and the shared renderer draws the Interrupted or Failed header from it.
  */
 function zcodeProgressResult(payload: Record<string, unknown>): ZCodeToolResult | null {
-  const content = pickString(payload, 'stdoutTail') + pickString(payload, 'stderrTail')
+  const content = joinOutputTails(pickString(payload, 'stdoutTail'), pickString(payload, 'stderrTail'))
   if (!content)
     return null
   return {
@@ -285,23 +305,20 @@ export function zcodeErrorText(update: ZCodeToolUpdate): string {
 }
 
 /**
- * The to-do list a `TodoWrite` input carries, in the shared checklist shape.
+ * The to-do items a `TodoWrite` input carries.
  *
  * ZCode's input matches Claude Code's -- `{todos:[{content,status,activeForm}]}` --
  * and this reads ZCode's own copy of it rather than borrowing that provider's
  * extractor, so a divergence in either one stays local to the provider that made
  * it. Returns null when the input holds no `todos` array, which is what makes the
  * renderer fall back to the generic tool row instead of drawing an empty list.
+ *
+ * The ITEMS alone. The header above them belongs to `todoToolBody`, which every
+ * provider's checklist shares, so the size and the cleared state read the same way
+ * across providers.
  */
-export function zcodeTodoListFromInput(input: Record<string, unknown> | null | undefined): TodoListSource | null {
-  if (!input || !Array.isArray(input.todos))
-    return null
-  const todos = rawTodosToItems(input.todos)
-  return {
-    toolName: ZCODE_TOOL.TodoWrite,
-    title: pluralize(todos.length, 'task'),
-    todos,
-  }
+export function zcodeTodoItemsFromInput(input: Record<string, unknown> | null | undefined): TodoItem[] | null {
+  return input && Array.isArray(input.todos) ? rawTodosToItems(input.todos) : null
 }
 
 /** Validate the native record against this event before resolving any of its fields. */
@@ -343,4 +360,32 @@ export function zcodeNativeTool(row: ZCodeRow): {
     return null
   }
   return { sessionId, messageId, state, artifacts: pickObject(supplement, 'artifacts') }
+}
+
+/**
+ * The tool.updated kinds that OPEN a span rather than close it.
+ *
+ * `scheduled` is the opener. `result`, `error`, and `batch` are final.
+ * The Worker consumes `started` and `progress` for live counters.
+ *
+ * A RETAINED row is final whatever its kind. A turn that ends while the call runs
+ * stores the agent's own last frame, which is a scheduled, started or progress kind,
+ * and LeapMux's completion column is what states that the call did not finish. Every
+ * Agent Client Protocol provider reads its retained rows the same way.
+ *
+ * A row that carries a tool-outcome note is final for the same reason: the agent sent
+ * no result of its own, and the note is what LeapMux concluded instead.
+ *
+ * `parsed` is absent where a caller holds the row's bytes alone -- an isolated render
+ * with no message store. The kind then decides, which is what the agent's own frames
+ * say.
+ */
+export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): SpanRole {
+  if (retainedRowIsFinal(parsed?.completion) || parseToolOutcome(parsed?.messageMetadata) !== null)
+    return 'result'
+  if (kind === ZCODE_TOOL_KIND.Scheduled)
+    return 'opener'
+  if (kind === ZCODE_TOOL_KIND.Result || kind === ZCODE_TOOL_KIND.Error || kind === ZCODE_TOOL_KIND.Batch)
+    return 'result'
+  return 'other'
 }

@@ -71,7 +71,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	}
 	resolvedInput, err := svc.resolveControlInput(item, dbAgent)
 	if err != nil {
-		return inputqueue.DispatchResult{}, err
+		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
 	text := resolvedInput.text
 	// Two checks, because either one alone can miss. The registry holds the
@@ -207,6 +207,13 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 //     that has no problem, and hold it stopped until the user resumed it by
 //     hand.
 func classifyQueueDeliveryError(err error) error {
+	var stated *inputqueue.DeliveryError
+	if errors.As(err, &stated) {
+		// The refusal already carries its outcome. A second wrap would discard
+		// it, because queueDispatchOutcome reads the CAUSE and answers
+		// DispatchFailed for every cause it does not know.
+		return err
+	}
 	deliveryErr := &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
 	var busyErr *agent.AgentBusyError
 	if errors.As(err, &busyErr) {
@@ -248,7 +255,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	}
 	resolvedInput, err := a.svc.resolveControlInput(item, dbAgent)
 	if err != nil {
-		return inputqueue.DispatchResult{}, err
+		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
 	text := resolvedInput.text
 	attachments, err := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, providerAttachments(item.Attachments))
@@ -297,6 +304,32 @@ func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 	return a.svc.agentSupportsSteering(&dbAgent)
 }
 
+// Interrupt cancels the agent's active turn for Preempt. It is the provider
+// call alone: the queue pause, stop notices and control withdrawal that the
+// InterruptAgent RPC applies belong to a user STOP, and a stop-pause would hold
+// the very dispatch Preempt exists to unblock.
+func (a *agentInputQueueAdapter) Interrupt(agentID string) error {
+	err := a.svc.Agents.Interrupt(agentID)
+	if errors.Is(err, agent.ErrAgentNotFound) {
+		return fmt.Errorf("agent is not running: %w", err)
+	}
+	return err
+}
+
+// SupportsPreemption answers whether Preempt may be offered: a running ROOT
+// provider that cannot steer. Steerable providers keep their Steer control,
+// and subagent tabs keep their read-only posture for now -- the child-interrupt
+// capability exists, but no provider pairing has been verified against it.
+// The HasAgent term keeps a not-running provider from answering true through
+// the negated steering capability alone.
+func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
+	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		return false
+	}
+	return !dbAgent.ParentAgentID.Valid && a.svc.Agents.HasAgent(agentID) && !a.svc.agentSupportsSteering(&dbAgent)
+}
+
 // agentSupportsSteering answers the capability from a row the caller already
 // holds. agentToProto and buildAgentActiveStatus each hold one, and ListAgents
 // runs agentToProto for every requested tab, so an ID-based call would repeat
@@ -310,6 +343,15 @@ func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 		return err == nil && svc.Agents.SupportsSteering(row.OwnerAgentID)
 	}
 	return svc.Agents.SupportsSteering(dbAgent.ID)
+}
+
+// agentSupportsPreemption answers preemption's capability from a row the
+// caller already holds: a running ROOT provider that cannot steer. Steering
+// keeps its own control for the providers that have it; preemption is what
+// the rest (Cursor, Kilo) get. Children are excluded until a provider pairing
+// is verified against the child-interrupt route.
+func (svc *Service) agentSupportsPreemption(dbAgent *db.Agent) bool {
+	return !dbAgent.ParentAgentID.Valid && svc.Agents.HasAgent(dbAgent.ID) && !svc.agentSupportsSteering(dbAgent)
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
@@ -361,7 +403,8 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
 			Attachments: attachments, Order: item.Order, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
-			CanSteer: item.CanSteer, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
+			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
 	}
 	return result
@@ -455,6 +498,15 @@ func registerAgentInputQueueHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
 		})
 
+	registerAgentGuardedByID(d, "PreemptQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.PreemptQueuedAgentInputRequest, sender channel.ResponseWriter) {
+			snapshot, err := svc.InputQueue.Preempt(bgCtx(), r.GetAgentId(), r.GetInputId())
+			if sendQueueError(sender, err) {
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+		})
+
 	registerAgentGuardedByID(d, "RetryQueuedAgentInput", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Retry(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetConfirmDeliveryUncertain())
@@ -477,7 +529,7 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
-		errors.Is(err, inputqueue.ErrManagerStopped):
+		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

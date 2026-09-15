@@ -266,6 +266,12 @@ type OutputHandler struct {
 	// tab's Steer action off for a provider that does support steering.
 	supportsSteering func(agentID string) bool
 
+	// supportsPreemption is steering's counterpart for the interrupt-only
+	// providers: whether the queue head may be sent by cancelling the active
+	// turn first. Same wiring rule and same every-status contract as
+	// supportsSteering above.
+	supportsPreemption func(agentID string) bool
+
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
 	// in service.New; nil in tests that build an OutputHandler directly, where
@@ -359,6 +365,12 @@ func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 // status change carries. Call before any agent output is processed.
 func (h *OutputHandler) SetSupportsSteeringFunc(fn func(agentID string) bool) {
 	h.supportsSteering = fn
+}
+
+// SetSupportsPreemptionFunc wires the preemption-capability answer that every
+// status change carries. Call before any agent output is processed.
+func (h *OutputHandler) SetSupportsPreemptionFunc(fn func(agentID string) bool) {
+	h.supportsPreemption = fn
 }
 
 // SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
@@ -999,15 +1011,20 @@ func (s *agentOutputSink) buildStatusChange(
 	if s.h.supportsSteering != nil {
 		supportsSteering = s.h.supportsSteering(s.agentID)
 	}
+	supportsPreemption := false
+	if s.h.supportsPreemption != nil {
+		supportsPreemption = s.h.supportsPreemption(s.agentID)
+	}
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:          s.agentID,
-		Status:           status,
-		AgentSessionId:   sessionID,
-		WorkerOnline:     true,
-		GitStatus:        gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:    s.agentProvider,
-		OptionGroups:     optionGroupsView(s.h.agents, &dbAgent, nil),
-		SupportsSteering: supportsSteering,
+		AgentId:            s.agentID,
+		Status:             status,
+		AgentSessionId:     sessionID,
+		WorkerOnline:       true,
+		GitStatus:          gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentProvider:      s.agentProvider,
+		OptionGroups:       optionGroupsView(s.h.agents, &dbAgent, nil),
+		SupportsSteering:   supportsSteering,
+		SupportsPreemption: supportsPreemption,
 	}
 }
 
@@ -1688,6 +1705,15 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
 	}
+	// An EMPTY supplement carries no compression, and NONE is what an empty
+	// blob is. The column says the same thing with DEFAULT 1, but the generated
+	// INSERT binds every column, so no caller ever reaches that default. A
+	// non-empty supplement keeps whatever it states, and the column's CHECK
+	// refuses an UNSPECIFIED one -- a supplement no reader can decompress.
+	if params.SupplementalContentCompression == leapmuxv1.ContentCompression_CONTENT_COMPRESSION_UNSPECIFIED &&
+		len(params.SupplementalContent) == 0 {
+		params.SupplementalContentCompression = leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+	}
 	switch params.MarkType {
 	case leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED,
 		leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
@@ -1952,7 +1978,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			Content:     merged.Content,
 			ActiveForm:  merged.ActiveForm,
 			Description: merged.Description,
-			Status:      int64(merged.Status.OrPending()),
+			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
 		}); err != nil {
 			return nil, false, err
 		}
@@ -1982,7 +2008,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			Content:     merged.Content,
 			ActiveForm:  merged.ActiveForm,
 			Description: merged.Description,
-			Status:      int64(merged.Status.OrPending()),
+			Status:      leapmuxv1.TodoStatus(merged.Status.OrPending()),
 			AgentID:     agentID,
 			RowKey:      cache.Rows[idx].rowKey,
 		}); err != nil {
@@ -2007,7 +2033,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			return nil, false, nil
 		}
 		if err := h.queries.UpdateAgentTodoStatus(ctx, db.UpdateAgentTodoStatusParams{
-			Status:  int64(todoevents.StatusDeleted),
+			Status:  leapmuxv1.TodoStatus(todoevents.StatusDeleted),
 			AgentID: agentID,
 			RowKey:  cache.Rows[idx].rowKey,
 		}); err != nil {
@@ -2099,7 +2125,7 @@ func (h *OutputHandler) snapshotWriteNonTx(ctx context.Context, q *db.Queries, a
 			Content:     it.Content,
 			ActiveForm:  it.ActiveForm,
 			Description: it.Description,
-			Status:      int64(it.Status.OrPending()),
+			Status:      leapmuxv1.TodoStatus(it.Status.OrPending()),
 		}); err != nil {
 			return fmt.Errorf("insert agent_todo: %w", err)
 		}
@@ -2147,7 +2173,7 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 // every cache instance shares the same type-specific behaviour. Mirrors bgTaskOps.
 func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 	return registryOps[cachedTodo]{
-		// agent_todos is a SINGLE-pool registry, so `bucket` is always "".
+		// agent_todos is a SINGLE-pool registry, so `bucket` is always 0.
 		listRows: func(ctx context.Context, ownerID string, _ int64, limit int32) ([]seedEntry[cachedTodo], error) {
 			rows, err := h.queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
 				AgentID: ownerID,
@@ -2699,6 +2725,10 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 	settings := indexedRaw{idx: -1}
 	contextCleared := indexedRaw{idx: -1}
 	interrupted := indexedRaw{idx: -1}
+	// stop_ignored folds like interrupted: keep the latest. Every occurrence
+	// says the same thing -- the accepted stop changed nothing, press again --
+	// and the newest one is the one whose turn is still running.
+	stopIgnored := indexedRaw{idx: -1}
 	planExec := indexedRaw{idx: -1}
 	planUpdated := indexedRaw{idx: -1}
 	status := indexedRaw{idx: -1}
@@ -2768,6 +2798,9 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		case contracts.NotificationTypeInterrupted:
 			interrupted = indexedRaw{idx: i, raw: raw}
 
+		case contracts.NotificationTypeStopIgnored:
+			stopIgnored = indexedRaw{idx: i, raw: raw}
+
 		case contracts.NotificationTypeRateLimit:
 			key := "unknown"
 			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
@@ -2831,7 +2864,7 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		}
 	}
 
-	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, status, apiRetry} {
+	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, stopIgnored, status, apiRetry} {
 		if slot.idx >= 0 {
 			entries = append(entries, slot)
 		}

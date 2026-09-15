@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
@@ -126,4 +127,41 @@ func TestZCodePlanPersistsFallbackWhenEnrichmentLosesRevision(t *testing.T) {
 	assert.Equal(t, original, messages[1].Content)
 	assert.True(t, messages[1].NoSpan)
 	assert.Len(t, sink.PublishedControls(), 1)
+}
+
+type zcodeFailingToolRequestSink struct {
+	recordingControlSink
+}
+
+func (*zcodeFailingToolRequestSink) ReadToolRequest(string) (*StoredMessage, error) {
+	return nil, errors.New("the transcript store is unavailable")
+}
+
+// A read that FAILED cannot say whether the transcript already holds the plan.
+// Writing a second plan row over one that is there draws the plan twice, so a
+// failed read counts as "the transcript has it".
+func TestZCodePlanWritesNoSecondRowWhenTheStoredRequestReadFails(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeFailingToolRequestSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}`))
+	a.HandleOutput([]byte(` {"id":"server-1","method":"interaction/requestUserInput","params":{"requestId":"approval","toolCallId":"call","toolName":"ExitPlanMode","input":{"plan":"# Retain the plan"},"schema":{"interaction":"plan_approval"}}} `))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 1, "the scheduled request is the only row this plan gets")
+	assert.Len(t, sink.PublishedControls(), 1, "the user still holds the prompt, which carries the plan")
+}
+
+// A store that REFUSES the enrichment leaves the row without the plan, so the
+// caller writes the plan's own row rather than lose it. The failed read above and
+// this refusal are different answers, and the recovery must not conflate them.
+func TestZCodeControlInputReportsARefusedEnrichment(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeRejectedEnrichmentSink{}
+	a := newZCodeTestAgent(t, sink)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}`))
+
+	carriesInput, err := a.supplementZCodeControlInput("call", "ExitPlanMode", json.RawMessage(`{"plan":"# Plan"}`))
+	require.NoError(t, err)
+	assert.False(t, carriesInput, "the store refused the write, so the row holds no plan")
 }

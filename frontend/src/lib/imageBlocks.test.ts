@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { imageBlockToMarkdown, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
+import { imageBlockToMarkdown, imageRenderInfo, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
 
 describe('parseImageBlock', () => {
   it('parses an embedded MCP image resource for every provider', () => {
@@ -20,6 +20,34 @@ describe('parseImageBlock', () => {
     null,
   ])('leaves a resource without image bytes to the resource renderer: %j', (resource) => {
     expect(parseImageBlock({ type: 'resource', resource })).toBeNull()
+  })
+
+  it('parses a text image resource into a data URL', () => {
+    // MCP states an embedded resource as TextResourceContents or as
+    // BlobResourceContents. An SVG server sends its markup as text.
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/svg+xml', text: svg } }))
+      .toEqual({ url: `data:image/svg+xml;base64,${btoa(svg)}`, mimeType: 'image/svg+xml' })
+  })
+
+  it('renders a text image resource inline', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+    const source = parseImageBlock({ type: 'resource', resource: { mimeType: 'image/svg+xml', text: svg } })!
+    expect(imageRenderInfo(source)).toEqual({ src: `data:image/svg+xml;base64,${btoa(svg)}`, via: 'inline' })
+  })
+
+  it('prefers the blob of a resource that states both payloads', () => {
+    expect(parseImageBlock({ type: 'resource', resource: { mimeType: 'image/png', blob: 'AAAA', text: 'ignored' } }))
+      .toEqual({ data: 'AAAA', mimeType: 'image/png' })
+  })
+
+  it('keeps an image resource that states no payload and no URI', () => {
+    // Every other payload-less image shape answers a placeholder, so the block
+    // holds its index in the image list. This one must not be the exception.
+    expect(parseImageBlock({ type: 'resource', resource: { mimeType: 'image/png' } }))
+      .toEqual({ mimeType: 'image/png' })
+    expect(parseImageBlock({ type: 'resource', mimeType: 'image/png' }))
+      .toEqual({ mimeType: 'image/png' })
   })
 
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {

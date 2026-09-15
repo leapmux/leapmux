@@ -156,20 +156,22 @@ func effortListed(eg *leapmuxv1.AvailableOptionGroup, effort string) bool {
 // session to validate (and were already passable, unvalidated, before this refactor -- so not
 // validating them is no regression).
 //
-// Permission mode, by contrast, is a FIXED CLI capability for the leapmux-managed providers
-// (Claude/Codex) -- not discovered -- so an invalid one IS authoritatively rejectable here. The check
-// is gated to those providers via ProviderManagesEffort (true for the CLI-backed camp Claude/Codex/Pi,
-// false for ACP): an ACP provider DISCOVERS its modes from the daemon (its static group is a seed), so
-// validating against that seed would false-reject a valid dynamic mode; Pi has no permission modes, so
-// its empty group accepts anything. Empty requested values (an axis the user did not supply) are
+// Permission mode, by contrast, is a FIXED capability of the providers whose permission enum
+// LeapMux states itself (Claude, Codex, and native Copilot) -- not discovered -- so an invalid
+// one IS authoritatively rejectable here. ProviderManagesEffort selects those providers: it is
+// true for Claude, Codex, Pi and Copilot, and false for every ACP provider. An ACP provider
+// DISCOVERS its modes from the daemon (its static group is a seed), so validating against that
+// seed would false-reject a valid dynamic mode. Pi declares no permission modes, so its empty
+// group accepts anything. Empty requested values (an axis the user did not supply) are
 // skipped. requested holds the user's raw, pre-default option values.
 func ValidateLaunchOptions(provider leapmuxv1.AgentProvider, requested optionmap.Map) error {
 	pm := requested.Get(OptionIDPermissionMode)
 	if pm == "" {
 		return nil
 	}
-	// Only a CLI-managed provider (Claude/Codex/Pi) has a fixed, complete permission-mode enum to
-	// check against; an ACP provider's modes are daemon-discovered, so leave them to the session.
+	// Only a provider with a fixed, complete permission-mode enum (Claude, Codex, Pi, Copilot)
+	// can be checked here; an ACP provider's modes are daemon-discovered, so leave them to the
+	// session.
 	if !ProviderManagesEffort(provider) {
 		return nil
 	}

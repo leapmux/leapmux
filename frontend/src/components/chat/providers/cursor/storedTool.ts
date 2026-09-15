@@ -7,7 +7,7 @@ import { isAbsolute, join } from '~/lib/paths'
 import { parseUnifiedDiffCached } from '../../diff'
 import { commandIsError } from '../../results/commandResult'
 import { fileEditDiffFromHunks, fileEditHasDiff } from '../../results/fileEditDiff'
-import { mcpToolCallDisplayName, parseMcpContentItem } from '../../results/mcpToolCall'
+import { mcpStatusFromToolStatus, mcpToolCallDisplayName, parseMcpContentItem } from '../../results/mcpToolCall'
 import { readFileSourceFromContent } from '../../results/readFileResult'
 import { cursorAgentPresentation } from './agentResult'
 
@@ -114,7 +114,7 @@ export function cursorStoredToolPresentation(tool: Record<string, unknown>, mode
       tool: pickString(model.input, 'toolName') || name,
       argsJson: prettifyArgsJson(raw.toolArguments ?? model.input.args),
       content: cursorMcpContent(saved, success, output),
-      status: tool.status === 'failed' || tool.status === 'cancelled' ? 'failed' as const : tool.status === 'completed' ? 'completed' as const : 'inProgress' as const,
+      status: mcpStatusFromToolStatus(tool.status),
     }
     return { ...restored, input: toolArguments ?? pickObject(model.input, 'args') ?? {}, kind: 'other', title: mcpToolCallDisplayName(source), label: 'MCP Tool Call', body: { type: 'mcp', source } }
   }

@@ -4,7 +4,7 @@ import type { ActionsProps } from './types'
 
 import { createMemo } from 'solid-js'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
-import { isAllowPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
+import { isAllowPermissionKind, isRejectPermissionKind, permissionOptionLabel } from './permissionOptionLabels'
 import {
   allowScopePillOptions,
   decisionLabel,
@@ -101,6 +101,10 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       additionalActions={() => layout().additional.map(option => ({
         label: permissionOptionLabel(option),
         testId: `control-decision-${option.optionId}`,
+        // A refusal reads as a refusal wherever it lands. "Reject always" and
+        // "Allow for this workspace" are both extras, and an undifferentiated
+        // menu made them look like the same kind of answer.
+        destructive: isRejectPermissionKind(option.kind),
         onSelect: () => handleOption(option),
       }))}
     />

@@ -1122,7 +1122,7 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 	// cache that says running over a DB row that still says completed would
 	// survive until the next worker restart and then silently un-revive.
 	stored := registryRow(t, svc)
-	assert.Equal(t, int64(bgtask.StatusRunning), stored.Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning), stored.Status)
 	assert.False(t, stored.EndedAt.Valid, "ended_at is cleared to NULL, not left stamped")
 	assert.Empty(t, stored.ActiveForm)
 	assert.Empty(t, stored.Description)
@@ -1345,7 +1345,7 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	// Put the DB back to running behind the cache's back, so the two disagree
 	// exactly as a concurrent revive would leave them.
 	require.NoError(t, svc.Queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
-		Status:       int64(bgtask.StatusRunning),
+		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 		UpdatedAt:    sqltime.NewSQLiteTime(nowMillis()),
 		OwnerAgentID: "root-1",
 		RowKey:       "task-1",

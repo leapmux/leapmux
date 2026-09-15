@@ -6,7 +6,7 @@ import {
   zcodeErrorText,
   zcodeExtractTool,
   zcodeRow,
-  zcodeTodoListFromInput,
+  zcodeTodoItemsFromInput,
   zcodeToolInput,
 } from './toolCommon'
 
@@ -118,6 +118,43 @@ describe('zcodeExtractTool', () => {
   })
 })
 
+// A `progress` payload is what the worker stores for a call a turn end cut short, and
+// it carries the two output tails instead of a result. The app-server cuts each tail at
+// a byte count, not at a line end.
+describe('zcodeExtractTool progress tails', () => {
+  const progress = (payload: Record<string, unknown>) => zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Progress, payload))
+
+  // Concatenation glued a mid-line stdout tail to the first stderr line and showed one
+  // line that neither stream wrote.
+  it('separates the two streams with a line break', () => {
+    expect(progress({ stdoutTail: 'building', stderrTail: 'warning: unused' })?.result?.content)
+      .toBe('building\nwarning: unused')
+  })
+
+  it('adds no second break when the stdout tail already ends in one', () => {
+    expect(progress({ stdoutTail: 'building\n', stderrTail: 'warning' })?.result?.content)
+      .toBe('building\nwarning')
+  })
+
+  it('keeps the text of one stream exactly when the other is empty or absent', () => {
+    expect(progress({ stdoutTail: 'only stdout', stderrTail: '' })?.result?.content).toBe('only stdout')
+    expect(progress({ stdoutTail: 'only stdout' })?.result?.content).toBe('only stdout')
+    expect(progress({ stderrTail: 'only stderr' })?.result?.content).toBe('only stderr')
+  })
+
+  // The outcome is unknown, so a partial result claims no failure. The row's LeapMux
+  // completion is what states that the call did not finish.
+  it('reports no result at all when both tails are empty', () => {
+    expect(progress({ stdoutTail: '', stderrTail: '' })?.result).toBeNull()
+    expect(progress({})?.result).toBeNull()
+  })
+
+  it('claims success for a partial result, because the outcome is unknown', () => {
+    expect(progress({ stdoutTail: 'partial' })?.result?.success).toBe(true)
+    expect(progress({ stdoutTail: 'partial' })?.isError).toBe(false)
+  })
+})
+
 describe('zcodeToolName', () => {
   const result = toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'x' } })
 
@@ -195,33 +232,29 @@ describe('zcodeErrorText', () => {
   })
 })
 
-describe('zcodeTodoListFromInput', () => {
-  it('reads the todos into the shared checklist shape', () => {
-    const source = zcodeTodoListFromInput({
+describe('zcodeTodoItemsFromInput', () => {
+  it('reads the todos into the shared checklist items', () => {
+    const items = zcodeTodoItemsFromInput({
       todos: [
         { content: 'A', status: 'in_progress', activeForm: 'Doing A' },
         { content: 'B', status: 'completed' },
       ],
     })
-    expect(source).toMatchObject({ toolName: 'TodoWrite', title: '2 tasks' })
-    expect(source!.todos.map(t => [t.content, t.status])).toEqual([['A', 'in_progress'], ['B', 'completed']])
-  })
-
-  it('titles a single task in the singular', () => {
-    expect(zcodeTodoListFromInput({ todos: [{ content: 'A', status: 'pending' }] })!.title).toBe('1 task')
+    expect(items!.map(t => [t.content, t.status])).toEqual([['A', 'in_progress'], ['B', 'completed']])
+    expect(items![0].activeForm).toBe('Doing A')
   })
 
   // An emptied list is a real snapshot -- the renderer draws the cleared state for it.
   it('keeps an empty list', () => {
-    expect(zcodeTodoListFromInput({ todos: [] })).toMatchObject({ title: '0 tasks', todos: [] })
+    expect(zcodeTodoItemsFromInput({ todos: [] })).toEqual([])
   })
 
   it('refuses an input that carries no todos array', () => {
-    expect(zcodeTodoListFromInput({ command: 'ls' })).toBeNull()
-    expect(zcodeTodoListFromInput({ todos: 'nope' })).toBeNull()
-    expect(zcodeTodoListFromInput({})).toBeNull()
-    expect(zcodeTodoListFromInput(null)).toBeNull()
-    expect(zcodeTodoListFromInput(undefined)).toBeNull()
+    expect(zcodeTodoItemsFromInput({ command: 'ls' })).toBeNull()
+    expect(zcodeTodoItemsFromInput({ todos: 'nope' })).toBeNull()
+    expect(zcodeTodoItemsFromInput({})).toBeNull()
+    expect(zcodeTodoItemsFromInput(null)).toBeNull()
+    expect(zcodeTodoItemsFromInput(undefined)).toBeNull()
   })
 })
 

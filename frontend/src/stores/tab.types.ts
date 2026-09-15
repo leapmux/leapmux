@@ -88,6 +88,8 @@ export interface AgentTab extends BaseTab {
   acceptsMessages?: boolean
   /** Whether the live provider accepts an explicit queue-head steer. */
   supportsSteering?: boolean
+  /** Whether the live provider can only pre-empt: interrupt the turn, then send. */
+  supportsPreemption?: boolean
   /**
    * The ROOT owner agent id (top of the parentAgentId chain). Equals the tab's
    * own id for a root. Set on hydration from AgentInfo.root_agent_id; the

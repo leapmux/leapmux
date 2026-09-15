@@ -12,7 +12,7 @@ import (
 
 // configureACPTerminalCmd suppresses the console window and bounds
 // CommandContext teardown. Tree kill on Windows is via the JobObject
-// attached after Start (see attachACPTerminalJob).
+// attached after Start (procutil.AssignPID, called from acp_terminal.go).
 func configureACPTerminalCmd(cmd *exec.Cmd) {
 	procutil.HideConsoleWindow(cmd)
 	cmd.Cancel = func() error {

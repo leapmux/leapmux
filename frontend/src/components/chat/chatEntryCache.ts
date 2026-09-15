@@ -178,15 +178,30 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   const revisionKeyOf = (revision: SpanMessageRevision | undefined): string =>
     revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
 
+  /**
+   * Build the freshness signature for `msg` classified as `kind`. The SINGLE place
+   * the freshness dimensions are enumerated: isEntryFresh compares against this and
+   * buildEntry stores it, so neither can drift from a hand-synced field list. `kind`
+   * is the row's classification (only a tool_result row tracks an opener's
+   * revision); isEntryFresh passes the CACHED entry's kind, so the comparison reads
+   * the same slots the entry was built with.
+   */
   const freshnessOf = (msg: AgentChatMessage, kind: string): EntryFreshness => {
     const request = msg.spanId ? deps.requestRevision?.(messageSpanIdentity(msg)) : undefined
+    // The opener's REVISION, for a tool_result row alone -- the only kind that
+    // sizes itself from a sibling opener. A tool_use row's own span resolves to
+    // ITSELF, so an ungated read records that row's own content version a second
+    // time, in a slot whose name states that it holds a sibling's. The presence
+    // flag below stays ungated: an opener that resolves to itself holds that flag
+    // stable at true, which is what keeps an opener row from rebuilding.
+    const opener = kind === 'tool_result' ? request : undefined
     const result = msg.spanId && kind.startsWith('tool_use') ? deps.resultRevision?.(messageSpanIdentity(msg)) : undefined
     return {
       seq: msg.seq,
       contentVersion: deps.contentVersionById?.(msg.id) ?? 0,
       hasToolUseSibling: request !== undefined,
-      toolUseSiblingContentVersion: request?.contentVersion ?? 0,
-      toolUseSiblingRevisionKey: revisionKeyOf(request),
+      toolUseSiblingContentVersion: opener?.contentVersion ?? 0,
+      toolUseSiblingRevisionKey: revisionKeyOf(opener),
       hasToolResultSibling: result !== undefined,
       toolResultSiblingContentVersion: result?.contentVersion ?? 0,
       toolResultSiblingRevisionKey: revisionKeyOf(result),

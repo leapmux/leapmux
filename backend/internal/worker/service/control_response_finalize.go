@@ -33,12 +33,16 @@ func controlResponsePlanFromAnswer(answer db.ControlResponseAnswer) (controlResp
 		SourceSeq: answer.SourceSeq,
 		Exists:    len(answer.RequestPayload) > 0,
 	})
-	plan := resolveControlResponsePlan(agent.ProviderFor(leapmuxv1.AgentProvider(answer.AgentProvider)), meta, answer.ResponseContent, nil)
+	plan := resolveControlResponsePlan(agent.ProviderFor(answer.AgentProvider), meta, answer.ResponseContent, nil)
 	if len(answer.PlanApprovalSettings) != 0 {
 		plan.settings = &leapmuxv1.PlanApprovalSettings{}
 		if err := protojson.Unmarshal(answer.PlanApprovalSettings, plan.settings); err != nil {
 			return controlResponsePlan{}, fmt.Errorf("read saved plan approval settings: %w", err)
 		}
+		// Keep the STORED bytes rather than re-encode the message. The transcript
+		// row must repeat what the claim row holds, and protojson gives a
+		// different byte string for each marshal of one message.
+		plan.settingsJSON = answer.PlanApprovalSettings
 	}
 	// Recovery must retain the actual prepared bytes, even if the provider encoder changes.
 	plan.resolution.Content = answer.ResolvedContent
@@ -54,7 +58,7 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	if err != nil {
 		return err
 	}
-	provider := leapmuxv1.AgentProvider(answer.AgentProvider)
+	provider := answer.AgentProvider
 	if !plan.isPlanPrompt() && !plan.exitPlanClearingContext() {
 		if err := svc.recordControlResponsePlanMode(agentID, provider, plan); err != nil {
 			return err

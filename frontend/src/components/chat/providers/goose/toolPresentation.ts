@@ -2,12 +2,13 @@ import type { ACPToolAdapter } from '../acp/toolPresentation'
 import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
 import { rawTodosToItems } from '~/stores/chatTodos'
+import { agentToolPresentation } from '../../results/AgentRequestMessage'
 import { commandIsError } from '../../results/commandResult'
 import { splitExitCodeMarker } from '../../results/exitCodeMarker'
-import { mcpToolCallDisplayName, parseMcpContentItem } from '../../results/mcpToolCall'
+import { mcpStatusFromToolStatus, mcpToolCallDisplayName, parseMcpContentItem } from '../../results/mcpToolCall'
 import { readFileSourceFromContent } from '../../results/readFileResult'
+import { todoToolBody } from '../../results/toolPresentation'
 import { flattenAcpContent } from '../acp/content'
 import { acpToolFinished, acpToolPresentation } from '../acp/toolPresentation'
 import { gooseAgentRequest, gooseAgentResult } from './agentResult'
@@ -40,14 +41,11 @@ function nativeGooseToolPresentation(tool: Record<string, unknown>, initial: Too
   const extension = pickString(metadata, 'extensionName') || (separator >= 0 ? fullName.slice(0, separator) : '')
   const name = separator >= 0 ? fullName.slice(separator + 2) : fullName
   if (extension === 'summon' && name === 'delegate') {
-    const request = gooseAgentRequest(initial.input)
-    return {
-      ...initial,
-      kind: 'agent',
-      title: request.description,
-      agentRequest: request,
-      body: acpToolFinished(tool) ? { type: 'agent', source: gooseAgentResult(initial.input, initial.output, tool.status) } : { type: 'text' },
-    }
+    return agentToolPresentation(
+      initial,
+      gooseAgentRequest(initial.input),
+      acpToolFinished(tool) ? gooseAgentResult(initial.input, initial.output, tool.status) : undefined,
+    )
   }
   if (extension === 'todo' && name === 'todo_write' && typeof initial.input.content === 'string' && tool.status !== 'failed' && tool.status !== 'cancelled') {
     const markdown = pickString(initial.input, 'content')
@@ -55,7 +53,7 @@ function nativeGooseToolPresentation(tool: Record<string, unknown>, initial: Too
     const entries = lines.map(line => /^[-*+] \[([ x])\] (.+)$/i.exec(line))
     if (entries.every(entry => entry !== null)) {
       const items = rawTodosToItems(entries.map(entry => ({ content: entry![2], status: entry![1].toLowerCase() === 'x' ? 'completed' : 'pending' })))
-      return { ...initial, kind: 'todo', title: items.length ? pluralize(items.length, 'task') : 'To-do list cleared', body: { type: 'todo', items } }
+      return { ...initial, ...todoToolBody(items) }
     }
     return { ...initial, kind: 'todo', title: 'To-do list', body: { type: 'markdown', text: markdown } }
   }
@@ -109,7 +107,7 @@ function nativeGooseToolPresentation(tool: Record<string, unknown>, initial: Too
     argsJson: Object.keys(initial.input).length > 0 ? prettifyJson(initial.input) : '',
     content: flattenAcpContent(tool.content).map(parseMcpContentItem),
     structuredJson: tool.rawOutput !== undefined ? prettifyJson(tool.rawOutput) : undefined,
-    status: tool.status === 'failed' || tool.status === 'cancelled' ? 'failed' as const : tool.status === 'completed' ? 'completed' as const : 'inProgress' as const,
+    status: mcpStatusFromToolStatus(tool.status),
   }
   return { ...initial, kind: 'other', label: 'MCP Tool Call', title: mcpToolCallDisplayName(source), body: { type: 'mcp', source } }
 }

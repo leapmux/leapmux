@@ -596,8 +596,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const [workerId, agentId] = JSON.parse(key) as [string, string]
     const backgroundRows = createMemo(() => new Map(bgTasksFor(agentId).map(row => [row.rowKey, row])))
     const resolver = createMessageContextResolver({
-      scopeKey: () => key,
-      agentSessionId: () => view.getAgentTab(agentId)?.agentSessionId ?? '',
+      scopeKey: key,
       messages: () => chatStore.getMessages(agentId),
       messageVersion: () => chatStore.getMessageVersion(agentId),
       contentVersion: chatStore.getMessageContentVersion,
@@ -617,7 +616,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
       todo: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
-      progress: spanId => chatStore.getToolProgress(agentId, spanId),
+      progress: identity => chatStore.getToolProgress(agentId, identity),
     })
     return [key, resolver] as const
   }))
@@ -1259,6 +1258,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onMoveQueueItem={queueOps.moveQueueItem}
         onRetryQueueItem={queueOps.retryQueueItem}
         onSteerQueueItem={queueOps.steerQueueItem}
+        onPreemptQueueItem={queueOps.preemptQueueItem}
         onSetQueuePaused={queueOps.setQueuePaused}
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}

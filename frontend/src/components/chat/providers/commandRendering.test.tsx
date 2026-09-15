@@ -84,13 +84,13 @@ const { CollapsibleContent } = await import('../results/CollapsibleContent')
 const { CommandInputBody, CommandInputSummary } = await import('../results/multiLineCommandBody')
 const { ToolUseMessage } = await import('./claude/toolUse/genericToolUse')
 const { ToolCallUpdateMessage } = await import('./acp/renderers/toolCallUpdate')
-const { PiCommandRenderer } = await import('./pi/renderers/toolExecution')
+const { PiToolExecutionRenderer } = await import('./pi/renderers/toolMessage')
 
 describe('pi command syntax', () => {
   it('uses PowerShell syntax for the PowerShell tool', async () => {
     tokenizeAsyncCalls.mockClear()
     const command = 'Get-ChildItem -Path .'
-    render(() => <PiCommandRenderer payload={{ type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } }} />)
+    render(() => <PiToolExecutionRenderer parsed={{ type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } }} />)
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalled())
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('powershell', command)
   })
@@ -547,8 +547,8 @@ describe('command summary syntax highlighting selection stability', () => {
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
       const { container } = render(() => (
-        <PiCommandRenderer
-          payload={{
+        <PiToolExecutionRenderer
+          parsed={{
             type: 'tool_execution_start',
             toolCallId: 'call_bash_1',
             toolName: 'bash',

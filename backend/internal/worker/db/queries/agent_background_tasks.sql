@@ -196,8 +196,15 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 -- silently moves the answer, and a caller that steers or interrupts through it
 -- addresses a different row than it did yesterday. The lowest seq is the OLDEST
 -- row, which is the run that opened the transcript.
+--
+-- `child_agent_id <> ''` repeats the predicate of the PARTIAL
+-- idx_agent_background_tasks_child, which SQLite matches syntactically: without
+-- that term the planner reads every background task of every agent. It also
+-- refuses an EMPTY id, which would otherwise answer with the oldest shell row.
 -- name: GetAgentBackgroundTaskByChildAgentID :one
-SELECT * FROM agent_background_tasks WHERE child_agent_id = ? ORDER BY seq LIMIT 1;
+SELECT * FROM agent_background_tasks
+WHERE child_agent_id = ? AND child_agent_id <> ''
+ORDER BY seq LIMIT 1;
 
 -- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
 -- final status (used on clean process exit).

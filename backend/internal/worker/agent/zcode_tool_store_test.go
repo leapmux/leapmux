@@ -35,7 +35,7 @@ func TestZCodeToolStoreReadsOriginalRecordsAndArtifacts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(artifactDirectory, "call-media-1-"+zcodeArtifactFixtureID+".txt"), []byte(zcodeArtifactFixtureData), 0o600))
 
 	for _, messageID := range []string{"message", ""} {
-		records, err := readZCodeToolRecords(t.Context(), location, map[string]zcodeToolLookup{"call": {messageID: messageID, toolName: "mcp__docs__read"}})
+		records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, map[string]zcodeToolLookup{"call": {messageID: messageID, toolName: "mcp__docs__read"}})
 		require.NoError(t, err)
 		require.Len(t, records, 1)
 		assert.Equal(t, original, string(records["call"].native.Data))
@@ -55,12 +55,12 @@ func TestZCodeToolStoreWaitsForTheCompletedRecord(t *testing.T) {
 	_, err := db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("running"))
 	require.NoError(t, err)
 	request := map[string]zcodeToolLookup{"call": {messageID: "message"}}
-	records, err := readZCodeToolRecords(t.Context(), location, request)
+	records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, request)
 	require.NoError(t, err)
 	assert.Empty(t, records)
 	_, err = db.Exec(`UPDATE part SET data = ?`, zcodeNativeToolFixture("completed"))
 	require.NoError(t, err)
-	records, err = readZCodeToolRecords(t.Context(), location, request)
+	records, err = readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, request)
 	require.Error(t, err, "the artifact directory is absent")
 	require.Len(t, records, 1, "missing artifacts must not discard the native record")
 	assert.Empty(t, records["call"].artifacts)
@@ -80,12 +80,12 @@ func TestZCodeToolStoreRejectsUnrelatedAndAmbiguousRecords(t *testing.T) {
 		{"foreign-call": {messageID: "message"}},
 		{"call' OR 1=1 --": {messageID: "message"}},
 	} {
-		records, err := readZCodeToolRecords(t.Context(), location, request)
+		records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, request)
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	}
 	location.sessionID = "foreign-session"
-	records, err := readZCodeToolRecords(t.Context(), location, map[string]zcodeToolLookup{"call": {messageID: "message"}})
+	records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, map[string]zcodeToolLookup{"call": {messageID: "message"}})
 	require.NoError(t, err)
 	assert.Empty(t, records)
 }
@@ -97,7 +97,7 @@ func TestZCodeToolStoreKeepsValidRecordsBesideMalformedData(t *testing.T) {
 	original := strings.Replace(zcodeNativeToolFixture("completed"), `"attachments":[`, `"attachments":[null,17,`, 1)
 	_, err := db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?), ('bad-json', 'session', 'message', '{'), ('not-tool', 'session', 'message', '{"type":"text","callID":"call"}')`, original)
 	require.NoError(t, err)
-	records, err := readZCodeToolRecords(t.Context(), location, map[string]zcodeToolLookup{"call": {messageID: "message"}})
+	records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), location, map[string]zcodeToolLookup{"call": {messageID: "message"}})
 	require.Error(t, err, "the artifact directory is absent")
 	require.Len(t, records, 1)
 	assert.Equal(t, original, string(records["call"].native.Data))
@@ -149,7 +149,7 @@ func TestReadZCodeArtifactSupportsBinaryAndEnforcesTheSizeLimit(t *testing.T) {
 func TestZCodeToolStoreDoesNotCreateAnAbsentDatabase(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "absent.db")
-	records, err := readZCodeToolRecords(t.Context(), zcodeToolStoreLocation{databasePath: path, sessionID: "session"}, map[string]zcodeToolLookup{"call": {}})
+	records, err := readZCodeToolRecords(t.Context(), newZCodeToolStoreForTest(t), zcodeToolStoreLocation{databasePath: path, sessionID: "session"}, map[string]zcodeToolLookup{"call": {}})
 	require.NoError(t, err)
 	assert.Empty(t, records)
 	_, err = os.Stat(path)
@@ -161,4 +161,45 @@ func TestZCodeStoredToolMarshalsWithoutChangingProviderNumbers(t *testing.T) {
 	encoded, err := json.Marshal(zcodeStoredTool{Data: json.RawMessage(zcodeNativeToolFixture("completed"))})
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"futureCounter":9007199254740993`)
+}
+
+// The store keeps one handle on the session database, and it keeps the artifacts
+// it already read. A second read answers from both: the transcript reads the
+// store for EVERY agent message, and a directory sweep for each of those reads
+// spent the budget that the read itself has.
+func TestZCodeToolStoreAnswersASecondReadFromItsOwnCache(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	location := zcodeToolStoreLocation{databasePath: filepath.Join(directory, "store.db"), artifactRoot: filepath.Join(directory, "artifacts"), sessionID: "session"}
+	db := newFixtureDB(t, location.databasePath, zcodeToolStoreDDL)
+	_, err := db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
+	require.NoError(t, err)
+	artifactDirectory := filepath.Join(location.artifactRoot, "session")
+	require.NoError(t, os.MkdirAll(artifactDirectory, 0o700))
+	artifact := filepath.Join(artifactDirectory, "call-media-1-"+zcodeArtifactFixtureID+".txt")
+	require.NoError(t, os.WriteFile(artifact, []byte(zcodeArtifactFixtureData), 0o600))
+
+	store := newZCodeToolStoreForTest(t)
+	request := map[string]zcodeToolLookup{"call": {messageID: "message", toolName: "mcp__docs__read"}}
+	records, err := readZCodeToolRecords(t.Context(), store, location, request)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, zcodeArtifactFixtureData, records["call"].artifacts[zcodeArtifactFixtureURI])
+
+	// The whole artifact tree goes. A read that swept the directory now fails.
+	require.NoError(t, os.RemoveAll(location.artifactRoot))
+	records, err = readZCodeToolRecords(t.Context(), store, location, request)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.True(t, records["call"].ready)
+	assert.Equal(t, zcodeArtifactFixtureData, records["call"].artifacts[zcodeArtifactFixtureURI])
+}
+
+// newZCodeToolStoreForTest closes the store's database handle when the test ends,
+// so an open file cannot defeat the temporary directory's own cleanup.
+func newZCodeToolStoreForTest(t *testing.T) *zcodeToolStore {
+	t.Helper()
+	store := &zcodeToolStore{}
+	t.Cleanup(store.close)
+	return store
 }

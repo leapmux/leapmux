@@ -34,7 +34,7 @@ func (a *copilotAgent) SendInputForSession(sessionID, content string, attachment
 }
 
 func (a *zcodeAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, "")
+	return a.sendInputForSession(&sessionID, content, attachments, false)
 }
 
 func (a *PiAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

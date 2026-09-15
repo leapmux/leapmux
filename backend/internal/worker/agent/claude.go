@@ -400,7 +400,11 @@ func StartClaudeCode(ctx context.Context, opts Options, sink ProviderServices) (
 // returns a formatted startup error on a hard failure (initialize / set_permission_mode);
 // the caller tears the process down. Every field write here runs on the StartClaudeCode
 // goroutine before the agent is registered with the manager -- the same lock-free
-// pre-registration window buildStartupFlagSettings documents -- so no a.mu is taken.
+// pre-registration window buildStartupFlagSettings documents -- so a bare field write
+// needs no a.mu. The permission-mode writes still go through their own locked helpers
+// (settlePermissionMode, setAutoModeAvailable), because the READER goroutine already
+// runs: HandleOutput delivers the control responses this handshake waits for, and a
+// deferred one reaches claudeCodeHandleControlResponse, which writes the same fields.
 func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options) error {
 	timeout := opts.startupTimeout()
 
@@ -433,11 +437,11 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_permission_mode")
-	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout)
-	if err != nil {
+	// applyStartupPermissionMode records the acknowledged mode as the confirmed one, so
+	// this discards the response rather than writing the field a second time.
+	if _, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout); err != nil {
 		return a.formatStartupError("set_permission_mode", err)
 	}
-	a.confirmedPermissionMode = resp.Mode
 	TraceStartupPhase(opts.AgentID, "after_permission_mode")
 
 	// Apply persisted options that differ from initialized defaults.
@@ -1485,6 +1489,35 @@ func (a *ClaudeCodeAgent) SettingsSnapshot() SettingsApplyResult {
 	return result
 }
 
+// settlePermissionMode adopts the mode the CLI acknowledged and drops the deferred
+// ack, in ONE critical section. The caller holds no lock.
+//
+// An acknowledged set_permission_mode SETTLES the axis. It supersedes two requests that
+// record their own request id as the deferred ack: an older toggle, and the startup auto
+// probe that timed out. An id that outlives its request costs two things.
+//
+//   - SettingsSnapshot reports the axis UNRESOLVED while an id is set, and
+//     applyPlanOptionsLocked then refuses every plan that specifies the permission mode.
+//   - claudeCodeHandleControlResponse folds the mode of the MATCHING ack back into the
+//     confirmed state. A late ack of a superseded request would therefore replace the
+//     mode this session runs with the mode that request asked for.
+//
+// A mode that LANDED on auto proves the session can enter it, so this also clears a
+// stale autoModeAvailable=false that a transient startup probe failure left behind.
+// Without that, OptionGroups keeps filtering "auto" out of the picker although the
+// session runs it. (livePermissionModeGroup still keeps the current value selectable as
+// a backstop, but the flag then states the catalog accurately instead of only
+// self-correcting.)
+func (a *ClaudeCodeAgent) settlePermissionMode(mode string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.confirmedPermissionMode = mode
+	a.deferredPermissionModeReqID = ""
+	if mode == contracts.ClaudeModeAuto {
+		a.autoModeAvailable = true
+	}
+}
+
 // applyPermissionModeLive applies a permission-mode change to the running CLI via
 // set_permission_mode. The first result reports whether the caller can keep the process. The
 // second result reports whether the command acknowledged the value. The caller holds no lock.
@@ -1497,20 +1530,7 @@ func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) (applied, confirm
 	resp, err := a.sendSetPermissionMode(a.ctx, mode, min(permissionModeApplyTimeout, a.APITimeout()))
 	switch {
 	case err == nil:
-		a.mu.Lock()
-		a.confirmedPermissionMode = resp.Mode
-		// This acknowledged request supersedes any older deferred toggle. Its
-		// late response must not keep the current value unresolved.
-		a.deferredPermissionModeReqID = ""
-		// A live switch that LANDED on auto proves the session can enter it, so clear a stale
-		// autoModeAvailable=false a transient startup probe failure may have left behind. Without
-		// this, OptionGroups would keep filtering "auto" out of the picker even though the session
-		// is running it. (livePermissionModeGroup still keeps the current value selectable as a
-		// backstop, but updating the flag makes the catalog state accurate, not just self-correcting.)
-		if resp.Mode == contracts.ClaudeModeAuto {
-			a.autoModeAvailable = true
-		}
-		a.mu.Unlock()
+		a.settlePermissionMode(resp.Mode)
 		confirmed = true
 	case errors.Is(err, errControlTimeout):
 		// The ack is deferred because a turn is in progress, but the CLI still queues
@@ -2236,7 +2256,7 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 		resp, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout)
 		if err == nil {
 			a.setAutoModeAvailable(true)
-			return resp, nil
+			return a.settleStartupPermissionMode(resp, nil)
 		}
 		// EVERY new session requests auto (setNewAgentOptionDefaults), so this branch
 		// decides whether a failure here costs the picker one entry or costs the user the
@@ -2254,7 +2274,7 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 				"agent_id", a.agentID, "error", err)
 		}
 		a.setAutoModeAvailable(false)
-		return a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout)
+		return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout))
 	}
 
 	if _, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout); err != nil {
@@ -2266,7 +2286,22 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 	} else {
 		a.setAutoModeAvailable(true)
 	}
-	return a.sendSetPermissionMode(ctx, requested, timeout)
+	return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, requested, timeout))
+}
+
+// settleStartupPermissionMode records an acknowledged startup mode through
+// settlePermissionMode and passes a failure through unchanged, so every exit of
+// applyStartupPermissionMode settles the axis from one place.
+//
+// The auto PROBE runs before the requested mode, and a probe that times out records its
+// own request id as the deferred ack (see sendSetPermissionMode). The mode that follows
+// it supersedes that request, so the id must go with it. A failure needs no settlement:
+// the caller tears the process down.
+func (a *ClaudeCodeAgent) settleStartupPermissionMode(resp claudeCodeControlResult, err error) (claudeCodeControlResult, error) {
+	if err == nil {
+		a.settlePermissionMode(resp.Mode)
+	}
+	return resp, err
 }
 
 // sendSetPermissionMode issues set_permission_mode and falls back to the

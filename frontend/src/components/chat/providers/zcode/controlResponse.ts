@@ -1,7 +1,8 @@
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_DECISION, ZCODE_INTERACTION, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD } from '~/generated/contracts/zcode-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { pickObject, pickString } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, feedback, label } from '../../persistedControlResponse'
+import { zcodeQuestionRecords, zcodeQuestionText } from './askUserQuestion'
 
 /** Match the installed provider's string and string-array answer normalization. */
 function normalizedAnswer(value: unknown): string | undefined {
@@ -12,33 +13,41 @@ function normalizedAnswer(value: unknown): string | undefined {
   return undefined
 }
 
-/** The native tool input supplies question order. The request's display fields permit recovery when it is absent. */
-function requestQuestions(params: Record<string, unknown> | null | undefined): string[] {
-  const input = pickObject(params, 'input')
-  const schema = pickObject(params, 'schema')
-  const questions = input?.questions ?? params?.questions ?? schema?.questions
-  if (!Array.isArray(questions))
+/**
+ * The question texts of the request, in order.
+ *
+ * `zcodeQuestionRecords` is the provider's ONE question list, so the reader and this
+ * display agree about which question each answer belongs to. The order is what lines the
+ * positional `answer_<index>` fallback up with the list the worker keyed the reply by.
+ * A record with neither question text nor header contributes an empty string: it keeps
+ * the INDEX of the later questions correct, and the caller skips it because nothing can
+ * answer it.
+ */
+function requestQuestions(payload: Record<string, unknown> | null | undefined): string[] {
+  if (!payload)
     return []
-  return questions.filter(isObject).flatMap(question => typeof question.question === 'string' ? [question.question] : [])
+  return zcodeQuestionRecords(payload).map(zcodeQuestionText)
 }
 
-function questionAnswerDisplay(params: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseDisplay | null {
+function questionAnswerDisplay(payload: Record<string, unknown> | null | undefined, content: Record<string, unknown> | null | undefined): ControlResponseDisplay | null {
   if (!content)
     return null
   const answers = pickObject(content, ZCODE_ANSWER_FIELD.Map)
   // The native mapper treats an explicit empty map as an empty answer, even if positional fields exist.
   if (answers && Object.keys(answers).length === 0)
     return null
-  const questions = requestQuestions(params)
+  const questions = requestQuestions(payload)
   const resolved = new Map<string, string>()
   questions.forEach((question, index) => {
+    if (!question)
+      return
     const value = answers?.[question] ?? content[`${ZCODE_ANSWER_FIELD.IndexedPrefix}${index}`]
       ?? (questions.length === 1 ? content[ZCODE_ANSWER_FIELD.Single] : undefined)
     const answer = normalizedAnswer(value)
     if (answer !== undefined)
       resolved.set(question, answer)
   })
-  const lines = [...resolved].map(([question, answer]) => question ? `${question}: ${answer}` : answer)
+  const lines = [...resolved].map(([question, answer]) => `${question}: ${answer}`)
   return lines.length ? label(lines.join('\n')) : null
 }
 
@@ -86,5 +95,5 @@ export function zcodeControlResponseDisplay(cr: PersistedControlResponse): Contr
       return label(CONTROL_DECISION_WORDS.plan.allow)
     return answer ? feedback(answer) : label(CONTROL_DECISION_WORDS.plan.deny)
   }
-  return questionAnswerDisplay(params, content)
+  return questionAnswerDisplay(cr.request, content)
 }

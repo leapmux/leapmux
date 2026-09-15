@@ -1,8 +1,8 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { copilotPermissionRequest } from '~/test-support/copilotFixtures'
-import { ControlRequestContent } from '../ControlRequestBanner'
 import { createControlAnswerState } from './types'
 import '../providers'
 

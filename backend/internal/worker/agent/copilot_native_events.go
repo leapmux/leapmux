@@ -14,7 +14,7 @@ import (
 
 const (
 	// copilotMethodSessionEvent carries every frame the transcript reads.
-	copilotMethodSessionEvent = "session.event"
+	copilotMethodSessionEvent = contracts.CopilotMethodSessionEvent
 	// copilotMethodSessionLifecycle carries the runtime's own session metadata: the
 	// start time and the last modified time. One trivial turn sends ten of them.
 	copilotMethodSessionLifecycle = "session.lifecycle"
@@ -38,7 +38,7 @@ func copilotMethodIsTelemetry(method string) bool {
 	return method == copilotMethodSessionLifecycle || method == copilotMethodHostEvent
 }
 
-// copilotEventIsRuntimeTrace reports whether an event type names a family that
+// copilotEventIsRuntimeTrace reports whether an event type identifies a family that
 // describes the RUNTIME rather than the work.
 //
 // Two families qualify. The `model.` family is the runtime's own model-call trace:
@@ -157,7 +157,7 @@ func (a *copilotAgent) handleNativeEvent(raw []byte, event copilotEvent) {
 			return
 		}
 	case contracts.CopilotEventSessionUsageInfo:
-		a.reportNativeContextUsage(event.Data)
+		a.reportNativeContextUsage(sink, event.Data)
 	case copilotEventUsageCheckpoint:
 		// Credit totals and model cache state. LeapMux surfaces neither, and the
 		// runtime does not mark the event ephemeral, so the transcript would hold one
@@ -210,7 +210,7 @@ func (a *copilotAgent) childForEvent(event copilotEvent) *copilotNativeChild {
 	}
 	child := a.children[event.AgentID]
 	if child == nil {
-		slog.Debug("Copilot event names an unknown subagent", "agent_id", a.agentID, "native_agent_id", event.AgentID, "event", event.Type)
+		slog.Debug("Copilot event identifies an unknown subagent", "agent_id", a.agentID, "native_agent_id", event.AgentID, "event", event.Type)
 	}
 	return child
 }
@@ -366,7 +366,7 @@ func (a *copilotAgent) startNativeSubagent(raw []byte, event copilotEvent) {
 			slog.Debug("Decode Copilot subagent arguments", "agent_id", a.agentID, "tool_call_id", started.ToolCallID, "error", err)
 		}
 	}
-	title := firstNonEmpty(input.Name, started.AgentDisplayName, started.AgentName, input.Description, started.AgentDescription)
+	title := firstNonBlank(input.Name, started.AgentDisplayName, started.AgentName, input.Description, started.AgentDescription)
 	workerAgentID, err := owner.EnsureChildAgent(started.ToolCallID, event.AgentID, title)
 	if err != nil {
 		slog.Error("Open Copilot subagent transcript", "agent_id", a.agentID, "tool_call_id", started.ToolCallID, "error", err)
@@ -437,13 +437,13 @@ func (a *copilotAgent) childForSpawnToolCall(toolCallID string) *copilotNativeCh
 	return nil
 }
 
-// copilotResponseSizeScope names the counter for a stream that reports a size and no
+// copilotResponseSizeScope identifies the counter for a stream that reports a size and no
 // identity. The size is a RUNNING TOTAL for the whole response, so every report has
 // to land on one scope: a scope for each event would add the totals instead of
 // replacing one, and an eight-byte answer would count as thirty-six.
 const copilotResponseSizeScope = "copilot:response"
 
-// copilotAssistantText is every field an assistant text event has been seen to carry.
+// copilotAssistantText holds every field that an assistant text event carries.
 //
 // The runtime does not spell them alike: Copilot 1.0.24 streams both its answer and
 // its reasoning as `deltaContent`, and sends the finished message as `content`.
@@ -463,7 +463,7 @@ type copilotAssistantText struct {
 
 // body reports the text one assistant event carries, whichever field holds it.
 func (t copilotAssistantText) body() string {
-	return firstNonEmpty(t.DeltaContent, t.Delta, t.Content, t.Text)
+	return firstNonBlank(t.DeltaContent, t.Delta, t.Content, t.Text)
 }
 
 // copilotAssistantTextKind reports which assembled segment one assistant event
@@ -498,7 +498,7 @@ func copilotAssistantTextKind(eventType string) (AssembledMessageKind, bool, boo
 // authoritative row, so the deltas it replaces are discarded rather than stored twice.
 //
 // A stream that reports a SIZE and no text moves the output counter instead, on one
-// scope of its own -- it names no message, and its total is for the whole response.
+// scope of its own -- it identifies no message, and its total is for the whole response.
 func (a *copilotAgent) reportNativeTextProgress(sink ProviderServices, event copilotEvent) {
 	kind, isDelta, ok := copilotAssistantTextKind(event.Type)
 	if !ok {
@@ -513,8 +513,13 @@ func (a *copilotAgent) reportNativeTextProgress(sink ProviderServices, event cop
 		sink.ReportProgress(OutputExactTotalProgress(copilotResponseSizeScope, text.TotalResponseSizeBytes))
 		return
 	}
-	scope := firstNonEmpty(text.MessageID, text.ReasoningID, event.ID)
+	// The scope is the runtime's own message or reasoning identity. The FRAME id is
+	// not a substitute: it changes for every delta, so it would open one segment for
+	// each delta, and the finished message would then discard none of them.
+	scope := firstNonBlank(text.MessageID, text.ReasoningID)
 	if scope == "" {
+		slog.Debug("Skip a Copilot assistant event that states no message identity",
+			"agent_id", a.agentID, "event", event.Type, "frame_id", event.ID)
 		return
 	}
 	if body != "" {
@@ -530,8 +535,8 @@ func (a *copilotAgent) reportNativeTextProgress(sink ProviderServices, event cop
 
 // appendStreamedNativeText accumulates one delta under its message identity.
 //
-// The caller holds outputMu, which guards nativeTextSinks as it guards every other
-// map the dispatch touches.
+// The caller holds outputMu, which guards nativeTextSegments as it guards every
+// other field the dispatch touches.
 func (a *copilotAgent) appendStreamedNativeText(sink ProviderServices, scope string, kind AssembledMessageKind, delta string) {
 	if delta == "" {
 		return
@@ -584,8 +589,10 @@ func (a *copilotAgent) closeStreamedNativeText(completion MessageCompletion) {
 	}
 }
 
-// reportNativeContextUsage publishes the live context counter.
-func (a *copilotAgent) reportNativeContextUsage(data json.RawMessage) {
+// reportNativeContextUsage publishes the live context counter in the transcript that
+// owns the event. A subagent reports its own context, so the root sink is not the
+// answer for every caller.
+func (a *copilotAgent) reportNativeContextUsage(sink ProviderServices, data json.RawMessage) {
 	var usage struct {
 		CurrentTokens *int64 `json:"currentTokens"`
 		TokenLimit    *int64 `json:"tokenLimit"`
@@ -597,7 +604,7 @@ func (a *copilotAgent) reportNativeContextUsage(data json.RawMessage) {
 	if usage.TokenLimit != nil && *usage.TokenLimit > 0 {
 		fields[contracts.ContextUsageFieldContextWindow] = *usage.TokenLimit
 	}
-	a.sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyContextUsage: fields})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyContextUsage: fields})
 }
 
 // persistNativeFrameTo stores one native frame in the transcript that owns it.
@@ -625,13 +632,4 @@ func (a *copilotAgent) clearNativeChildren() {
 		child.sink.ResetSpans()
 		child.owner.CleanupChildAgent(child.workerAgentID)
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return value
-		}
-	}
-	return ""
 }

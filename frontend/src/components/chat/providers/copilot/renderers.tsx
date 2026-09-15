@@ -68,10 +68,9 @@ export function CopilotToolMessage(props: { parsed: unknown, context?: RenderCon
     const parsed = props.context?.sources?.result()
     return parsed ? copilotToolSource(parsed.parentObject, props.context?.spanType, props.context?.sources?.request(), parsed.completion) : undefined
   })
-  const model = createMemo(() => source())
   return (
     <>
-      {model() ? <ToolMessage source={model()!} request={request()} result={result()} context={props.context} /> : null}
+      {source() ? <ToolMessage source={source()!} request={request()} result={result()} context={props.context} /> : null}
     </>
   )
 }

@@ -10,11 +10,6 @@ INSERT INTO revocation_events (
     sqlc.arg(user_auth_generation)
 );
 
--- `kind = 2` is REVOCATION_EVENT_KIND_SESSION_REVOKED, spelled as a literal
--- rather than bound. SQLite's partial-index matcher is SYNTACTIC: a bound `?`
--- never matches the index's own `WHERE kind = 2` term, so the probe would fall
--- back to scanning the whole retention window. TestRevocationEventKindNumbering
--- pins the number, and TestRetentionAndBootstrapScansAreSargable pins the plan.
 -- name: SessionRevokedEventExists :one
 -- Was this session taken away by an administrator, rather than signed out?
 -- The two paths delete the same row and leave the account's auth generation
@@ -27,6 +22,12 @@ INSERT INTO revocation_events (
 -- once left unindexed to avoid is close to zero. Without it this is a full
 -- scan of the retention window's events, and it runs while the caller holds
 -- the user-auth row lock.
+--
+-- `kind = 2` is REVOCATION_EVENT_KIND_SESSION_REVOKED, spelled as a literal
+-- rather than bound. SQLite matches a partial index SYNTACTICALLY: a bound `?`
+-- never matches the index's own `WHERE kind = 2` term, so the probe would fall
+-- back to scanning the whole retention window. TestRevocationEventKindNumbering
+-- pins the number, and TestRetentionAndBootstrapScansAreSargable pins the plan.
 SELECT EXISTS(
     SELECT 1 FROM revocation_events
     WHERE subject_id = ? AND kind = 2

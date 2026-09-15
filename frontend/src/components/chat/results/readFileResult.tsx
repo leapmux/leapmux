@@ -58,6 +58,18 @@ export function readFileSourceFromContent(args: {
   }
 }
 
+/**
+ * The file text a read body DRAWS.
+ *
+ * The parsed lines win, because a provider that returns its file already numbered
+ * (`1\tfirst`) keeps those prefixes in `fallbackContent`, and the body strips them.
+ * A presentation sets its `output` from this, so the Copy button hands over the text
+ * on screen rather than the wire form of it.
+ */
+export function readFileBodyText(source: ReadFileResultSource): string {
+  return source.lines ? source.lines.map(line => line.text).join('\n') : source.fallbackContent
+}
+
 // Stable empty fallback so memo equality holds when `lines` is null —
 // otherwise every read re-allocates `[]` and downstream `displayItems`
 // trips its equality check on every render.

@@ -1,10 +1,8 @@
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { feedbackOrLabel, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 import { acpControlResponseDisplay } from '../acp/controlResponse'
-
-const CURSOR_METHOD_ASK_QUESTION = 'cursor/ask_question'
-const CURSOR_METHOD_CREATE_PLAN = 'cursor/create_plan'
 
 /** The transformed/native outcome object at `result.outcome`, or undefined when absent. */
 function cursorOutcome(response: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -139,9 +137,9 @@ function cursorCreatePlanDisplay(response: Record<string, unknown> | undefined):
  */
 export function cursorControlResponseDisplay(cr: PersistedControlResponse): ControlResponseDisplay | null {
   switch (pickString(cr.request, 'method', '')) {
-    case CURSOR_METHOD_ASK_QUESTION:
+    case CURSOR_METHOD.AskQuestion:
       return cursorQuestionDisplay(cr.request, cr.response)
-    case CURSOR_METHOD_CREATE_PLAN:
+    case CURSOR_METHOD.CreatePlan:
       return cursorCreatePlanDisplay(cr.response)
     case '':
       return cursorCreatePlanDisplay(cr.response)

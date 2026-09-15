@@ -63,6 +63,59 @@ func TestHandleOutput_ToolProgressHeartbeatBroadcastsTheRunningTool(t *testing.T
 	assert.Equal(t, 0, sink.NotificationCount())
 }
 
+// The span id alone does not address a tool_use row: it is unique inside one
+// provider session, and the browser keys its live entry by the pair. The
+// producer must therefore state the session it runs in, for BOTH families.
+func TestHandleOutput_ToolProgressStatesTheAgentSession(t *testing.T) {
+	t.Parallel()
+
+	for name, frame := range map[string]string{
+		"heartbeat":     claudeHeartbeatFrame,
+		"subagentRetry": claudeSubagentRetryFrame,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &outputTestSink{}
+			agent := newTestAgent(sink)
+			agent.sessionID = "sess-1"
+			agent.HandleOutput([]byte(frame))
+
+			assert.Equal(t, "sess-1", runningToolUpdate(t, sink)[contracts.RunningToolFieldAgentSessionId])
+		})
+	}
+}
+
+// The session the update states must be the one the worker stamps on the rows,
+// so it follows the CLI rather than the id the launch chose. The transcript rows
+// of the new session would otherwise find no entry.
+func TestHandleOutput_ToolProgressFollowsASessionTheCLIReports(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.sessionID = "sess-1"
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-2"}`))
+	agent.HandleOutput([]byte(claudeHeartbeatFrame))
+
+	assert.Equal(t, "sess-2", runningToolUpdate(t, sink)[contracts.RunningToolFieldAgentSessionId])
+}
+
+// A frame that arrives before any session is known still ships. An empty string
+// is what the browser reads for a row that states no session, so the two meet at
+// one key rather than the update dropping.
+func TestHandleOutput_ToolProgressShipsAnEmptySessionUnchanged(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(claudeHeartbeatFrame))
+
+	update := runningToolUpdate(t, sink)
+	require.Contains(t, update, contracts.RunningToolFieldAgentSessionId)
+	assert.Equal(t, "", update[contracts.RunningToolFieldAgentSessionId])
+}
+
 // The leak this handler closes: before it existed, tool_progress fell to the
 // default case and was broadcast as a span-less stream chunk. With NO span open
 // -- exactly the state during a top-level Agent/Task call, which opens none --
@@ -236,9 +289,9 @@ func TestHandleOutput_ToolProgressDropsAnUndecodableRetry(t *testing.T) {
 	}
 }
 
-// The update carries the span and the elapsed time, and NOTHING else. The card
-// already shows the tool's name and a subagent's type from the tool_use row, so
-// broadcasting either here would store a value no component reads.
+// The update carries the span identity and the elapsed time, and NOTHING else.
+// The card already shows the tool's name and a subagent's type from the tool_use
+// row, so broadcasting either here would store a value no component reads.
 //
 // `tool_name` is also not captured at all, which is what keeps a MISTYPED one
 // harmless: an unknown field is skipped, while a `tool_name` field of the wrong
@@ -259,11 +312,13 @@ func TestHandleOutput_ToolProgressCarriesOnlyWhatTheBadgeRenders(t *testing.T) {
 
 			sink := &outputTestSink{}
 			agent := newTestAgent(sink)
+			agent.sessionID = "sess-1"
 			agent.HandleOutput([]byte(line))
 
 			update := runningToolUpdate(t, sink)
 			assert.Equal(t, map[string]interface{}{
 				contracts.RunningToolFieldSpanId:         "toolu_A",
+				contracts.RunningToolFieldAgentSessionId: "sess-1",
 				contracts.RunningToolFieldElapsedSeconds: int64(30),
 			}, update)
 		})

@@ -232,7 +232,7 @@ func StartPi(ctx context.Context, opts Options, sink ProviderServices) (Agent, e
 		return nil, a.formatStartupError(PiCommandGetState, err)
 	}
 	a.applyStateResponse(stateRaw)
-	a.refreshPiCommands(timeout)
+	commandsKnown := a.refreshPiCommands(timeout)
 	a.schedulePiGoalRefresh(true)
 
 	// 2. get_available_models — best-effort; failure logs and continues.
@@ -266,6 +266,12 @@ func StartPi(ctx context.Context, opts Options, sink ProviderServices) (Agent, e
 	// on a goroutine so startup readiness is not gated on a usage RPC.
 	// Failures are non-fatal; message_end / agent_end keep updating usage.
 	go func() {
+		// One failed catalog read at startup would otherwise switch goal control and
+		// the extension-command dispatch off for the life of the process, because
+		// nothing else asks again until the session changes.
+		if !commandsKnown {
+			a.refreshPiGoalControl()
+		}
 		_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(timeout))
 	}()
 
@@ -324,10 +330,15 @@ func (a *PiAgent) applyStateResponse(raw json.RawMessage) {
 // The caller holds a.mu and goal.publishMu.
 func (a *PiAgent) applyPiSessionIdentityLocked(sessionID, sessionFile string) bool {
 	changed := (sessionID != "" && sessionID != a.sessionID) || (sessionFile != "" && sessionFile != a.sessionFile)
-	if sessionID != "" {
+	// The ID and the path identify ONE session, so a new ID replaces both. Guarding
+	// them apart retained the previous session's path whenever the reply carried a new
+	// ID and no path: UpdateSessionID then persisted a resume handle for the session
+	// that Pi replaced, and the goal reader's header check refused that file forever.
+	switch {
+	case sessionID != "" && sessionID != a.sessionID:
 		a.sessionID = sessionID
-	}
-	if sessionFile != "" {
+		a.sessionFile = sessionFile
+	case sessionFile != "":
 		a.sessionFile = sessionFile
 	}
 	if changed {
@@ -615,7 +626,9 @@ func (a *PiAgent) ClearContext() (string, error) {
 		return "", fmt.Errorf("the new Pi session has no handle")
 	}
 	a.sink.UpdateSessionID(handle)
-	a.schedulePiGoalRefresh(true)
+	// The replacement session can load a different extension set, so the catalog is
+	// stale with the session.
+	go a.refreshPiGoalControl()
 	return handle, nil
 }
 

@@ -154,7 +154,8 @@ func (a *copilotAgent) invokeNativeGoalCommand(input string) (GoalOutcome, error
 // stored under.
 //
 // The caller holds sessionMu for writing, so no input and no setting change can
-// reach the session between the shutdown and the reopen.
+// reach the session between the shutdown and the reopen. A failure after the close
+// stops the process: the session it had is gone, and no other one took its place.
 func (a *copilotAgent) clearNativeGoal() error {
 	if a.currentNativeGoal().objective == "" {
 		return nil
@@ -173,26 +174,27 @@ func (a *copilotAgent) clearNativeGoal() error {
 	if _, err := a.sendRequest("sessions.close", params, a.APITimeout()); err != nil {
 		return fmt.Errorf("close the Copilot session before opening it again: %w", err)
 	}
-	// The disposed session answers no pending control, and its subscriptions die
-	// with it. Drop both before the reopen so the new session starts with neither
-	// a stale pending request nor a handle it cannot release.
-	a.outputMu.Lock()
-	a.clearNativeControls()
-	a.outputMu.Unlock()
-	a.forgetNativeControlEvents()
 	opts := a.opts
 	a.stateMu.Lock()
 	opts.Options = a.options.Clone()
 	a.stateMu.Unlock()
+	// The disposed session runs no turn, answers no pending control, owns no child
+	// transcript, and its subscriptions die with it. The identity does NOT move: the
+	// session opens again under its own, so the transcript keeps it.
+	a.forgetNativeSessionState("")
+	// Every failure below leaves the agent with no session at all, because the close
+	// already disposed of the one it had. There is nothing to roll back to.
 	if err := a.reopenNativeSessionAfterClear(opts, sessionID); err != nil {
+		a.stopNativeConnection()
 		return err
 	}
-	if err := a.registerNativeControlEvents(); err != nil {
+	if err := a.prepareNativeSession(opts.Options); err != nil {
+		a.stopNativeConnection()
 		return err
 	}
-	if err := a.restoreNativeSettings(opts.Options); err != nil {
-		return err
-	}
+	// The spans and the live counters belong to the session that went away.
+	a.sink.ResetSpans()
+	a.sink.ReportProgress(ResetProgress())
 	state, err := a.readNativeGoal()
 	if err != nil {
 		return err
@@ -319,28 +321,9 @@ func (a *copilotAgent) refreshNativeGoal(snapshot bool) {
 
 // refreshNativeGoalInBackground reads the objective off the reader goroutine.
 //
-// `session.autopilot_objective_changed` states that the objective moved and not
-// what it became, so the answer needs a request -- and the response to that request
-// arrives on the goroutine that handles the event, which cannot wait for itself.
+// `session.autopilot_objective_changed` states that the objective moved and not what
+// it became, so the answer needs a request. offReader states why that request cannot
+// run on the goroutine that handles the event.
 func (a *copilotAgent) refreshNativeGoalInBackground() {
-	a.goalMu.Lock()
-	if a.goalRefreshing {
-		a.goalMu.Unlock()
-		return
-	}
-	a.goalRefreshing = true
-	a.goalMu.Unlock()
-	go func() {
-		defer func() {
-			a.goalMu.Lock()
-			a.goalRefreshing = false
-			a.goalMu.Unlock()
-		}()
-		a.sessionMu.RLock()
-		defer a.sessionMu.RUnlock()
-		if a.IsStopped() {
-			return
-		}
-		a.refreshNativeGoal(false)
-	}()
+	a.offReader(copilotReadGoal, func() { a.refreshNativeGoal(false) })
 }

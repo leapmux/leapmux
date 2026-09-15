@@ -34,8 +34,10 @@ func TestApprovedPlanClearCanReplaceTheTurnThatAwaitsItsApproval(t *testing.T) {
 			require.NoError(t, err)
 			if tc.approval != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED {
 				_, err = database.ExecContext(t.Context(), `INSERT INTO control_response_answers
-                (agent_id, request_id, claim_token, state, input_id, plan_approval_settings)
-                VALUES ('agent-1','approval','claim',?,'plan',?)`, int64(tc.approval), []byte(`{"clearContext":true}`))
+                (agent_id, request_id, claim_token, state, input_id, plan_approval_settings, agent_provider)
+                VALUES ('agent-1','approval','claim',?,'plan',?,?)`,
+					int64(tc.approval), []byte(`{"clearContext":true}`),
+					int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 				require.NoError(t, err)
 			}
 			if tc.paused {

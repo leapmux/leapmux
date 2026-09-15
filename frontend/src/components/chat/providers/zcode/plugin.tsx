@@ -5,7 +5,7 @@ import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationInput, Provider, SpanRole, ToolMessageInput, ToolResultMeta } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { ZCODE_DEFAULT_MODE, ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_DEFAULT_MODE, ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
@@ -15,17 +15,16 @@ import { sendResponse } from '../../controls/types'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
-import { parseToolOutcome } from '../../toolOutcome'
+import { toolPresentationMeta } from '../../results/toolResultMeta'
 import { MarkdownPlanLayout } from '../../widgets/MarkdownPlanLayout'
-import { registerProvider, retainedRowIsFinal } from '../registry'
+import { registerProvider } from '../registry'
 import { zcodeQuestionsFromPayload } from './askUserQuestion'
 import { zcodeControlResponseDisplay } from './controlResponse'
 import { ZCodeControlActions, ZCodeControlContent, zcodeIsAskUserQuestion } from './controls'
 import { zcodeToolResultImages } from './extractors/image'
 import { zcodeControlPlanText } from './extractors/plan'
-import { zcodeResultMeta, zcodeResultPresentation } from './extractors/result'
 import { resolveZCodeMessage } from './extractors/supplement'
-import { zcodeEnvelope, zcodeExtractTool, zcodeRow } from './extractors/toolCommon'
+import { zcodeEnvelope, zcodeExtractTool, zcodeRow, zcodeToolSpanRole } from './extractors/toolCommon'
 import { zcodeAssistantText, zcodeIsBackgroundTask, zcodeIsModelResponse } from './messageContent'
 import { ZCODE_WEB_FETCH } from './protocol'
 import {
@@ -36,6 +35,7 @@ import {
   ZCodeToolExecutionRenderer,
   ZCodeToolResultRenderer,
 } from './renderers'
+import { zcodeToolPresentation } from './toolPresentation'
 
 /**
  * The event types that thread into chat as notifications.
@@ -101,30 +101,6 @@ function isHiddenZCodeNotification(msg: unknown): boolean {
 }
 
 /**
- * The tool.updated kinds that OPEN a span rather than close it.
- *
- * `scheduled` is the opener. `result`, `error`, and `batch` are final.
- * The Worker consumes `started` and `progress` for live counters.
- *
- * A RETAINED row is final whatever its kind. A turn that ends while the call runs
- * stores the agent's own last frame, which is a scheduled, started or progress kind,
- * and LeapMux's completion column is what states that the call did not finish. Every
- * Agent Client Protocol provider reads its retained rows the same way.
- *
- * A row that carries a tool-outcome note is final for the same reason: the agent sent
- * no result of its own, and the note is what LeapMux concluded instead.
- */
-function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent): SpanRole {
-  if (retainedRowIsFinal(parsed.completion) || parseToolOutcome(parsed.messageMetadata) !== null)
-    return 'result'
-  if (kind === ZCODE_TOOL_KIND.Scheduled)
-    return 'opener'
-  if (kind === ZCODE_TOOL_KIND.Result || kind === ZCODE_TOOL_KIND.Error || kind === ZCODE_TOOL_KIND.Batch)
-    return 'result'
-  return 'other'
-}
-
-/**
  * ZCode span role. The `tool.updated` KIND discriminates the opener from the result,
  * because both halves arrive as the same event type -- a content-block scan would
  * bucket every one of them the same way.
@@ -166,8 +142,9 @@ const ZCODE_RENDERERS: Partial<Record<MessageCategory['kind'], ZCodeRenderer>> =
 function zcodeToolResultMeta(category: MessageCategory, input: ToolMessageInput): ToolResultMeta | null {
   if (category.kind !== 'tool_result')
     return null
-  const presentation = zcodeResultPresentation(zcodeRow(input.parsed.parentObject, input.spanType, input.request, input.parsed.supplementalContent))
-  return presentation ? zcodeResultMeta(presentation) : null
+  const row = zcodeRow(input.parsed.parentObject, input.spanType, input.request, input.parsed.supplementalContent)
+  const presentation = zcodeToolPresentation(row, input.parsed)
+  return presentation ? toolPresentationMeta(presentation) : null
 }
 
 /**

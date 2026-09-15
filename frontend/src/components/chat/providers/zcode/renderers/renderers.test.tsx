@@ -5,8 +5,7 @@ import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolBodyContent, toolUseHeader } from '../../../toolStyles.css'
 import { ZCODE_DISPLAY } from '../protocol'
 import { ZCodeAssistantMessage } from './assistantMessage'
-import { ZCodeToolExecutionRenderer } from './toolExecution'
-import { ZCodeToolResultRenderer } from './toolResult'
+import { ZCodeToolExecutionRenderer, ZCodeToolResultRenderer } from './toolMessage'
 
 function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
   return { type: ZCODE_EVENT.ToolUpdated, payload: { kind, toolCallId: 'call-1', ...payload } }

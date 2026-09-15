@@ -1507,6 +1507,7 @@ export const AppShell: Component = () => {
     setPreferredExternalAppId: preferences.setPreferredExternalAppId,
     getAgentInputQueue: agentId => agentInputQueueStore.get(agentId),
     steerQueueItem: item => tileRenderer.queueOps.steerQueueItem(item),
+    preemptQueueItem: item => tileRenderer.queueOps.preemptQueueItem(item),
     quakePanel: {
       open: tab => void quakeStore.open(tab),
       close: key => quakeStore.close(key),

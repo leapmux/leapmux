@@ -1460,3 +1460,43 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTheInterruptNote(t *testing.T) {
 	require.Equal(t, 2, sink.MessageCount())
 	assert.Equal(t, MessageCompletionInterrupted, sink.Messages()[1].Completion)
 }
+
+func TestPiIncompleteToolsReleaseOutputForACallWithNoStartFrame(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	a := &PiAgent{sink: sink}
+	// A partial result can arrive for a call whose start frame this worker never saw.
+	// The call opens no row, and the counter still holds its whole text.
+	a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"orphan","toolName":"bash","partialResult":{"content":[{"type":"text","text":"a long line of output"}]}}`))
+	a.mu.Lock()
+	_, observed := a.cumulativeOutput["orphan"]
+	a.mu.Unlock()
+	require.True(t, observed, "the partial result must reach the output counter")
+
+	a.persistIncompletePiTools(MessageCompletionError)
+	a.mu.Lock()
+	_, retained := a.cumulativeOutput["orphan"]
+	a.mu.Unlock()
+	assert.False(t, retained, "a call with no start frame must still release its output")
+	assert.Empty(t, sink.Messages(), "a call that opened no row persists nothing")
+	assert.Contains(t, sink.ProgressUpdates(), CompleteOutputProgress("orphan"))
+}
+
+func TestPiAgentStartProbesTheSessionOnlyOnTheFirstAttempt(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.mu.Lock()
+	rig.agent.sessionID = "sess"
+	rig.agent.mu.Unlock()
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		return json.RawMessage(`{"sessionId":"sess","sessionFile":"/tmp/pi-test.jsonl","cost":1}`), true, ""
+	})
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	require.Eventually(t, func() bool { return len(rig.requests()) == 1 }, time.Second, time.Millisecond)
+	assert.Equal(t, PiCommandGetSessionStats, rig.requests()[0].Type)
+	// Pi restarts a failed run itself. A retry continues the SAME turn, so it cannot
+	// have replaced the session, and a retry storm must not repeat the probe.
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	assert.Never(t, func() bool { return len(rig.requests()) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
+}

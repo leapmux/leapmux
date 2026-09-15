@@ -61,14 +61,15 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// messages.created_at is Go-bound on every persisted chat message.
 	_, err = queries.CreateMessage(ctx, gendb.CreateMessageParams{
-		ID:                 "msg-1",
-		AgentID:            "agent-1",
-		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:            []byte("hello"),
-		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		SpanLines:          "[]",
-		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:          sqltime.NewSQLiteTime(now),
+		ID:                             "msg-1",
+		AgentID:                        "agent-1",
+		Source:                         leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:                        []byte("hello"),
+		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		SpanLines:                      "[]",
+		AgentProvider:                  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:                      sqltime.NewSQLiteTime(now),
 	})
 	require.NoError(t, err)
 
@@ -126,7 +127,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Seq:     1,
 		TaskID:  "task-1",
 		Content: "do the thing",
-		Status:  int64(todoevents.StatusPending),
+		Status:  leapmuxv1.TodoStatus(todoevents.StatusPending),
 	}))
 
 	// agent_background_tasks: created_at/updated_at are Go-bound on the Upsert;
@@ -136,14 +137,14 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		OwnerAgentID: "agent-1",
 		RowKey:       "bg-1",
 		Seq:          1,
-		Kind:         int64(bgtask.KindSubagent),
-		Status:       int64(bgtask.StatusRunning),
+		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
+		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 		CreatedAt:    sqltime.NewSQLiteTime(now),
 		UpdatedAt:    sqltime.NewSQLiteTime(now),
 	}))
 	require.NoError(t, queries.CloseAgentBackgroundTask(ctx, gendb.CloseAgentBackgroundTaskParams{
-		Status:         int64(bgtask.StatusCompleted),
-		MinFinalStatus: int64(bgtask.MinFinalStatus),
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		EndedAt:        sqltime.SQLiteNullTimeOf(now),
 		UpdatedAt:      sqltime.NewSQLiteTime(now),
 		OwnerAgentID:   "agent-1",
@@ -153,7 +154,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// agents.goal_created_at / goal_updated_at are Go-bound on UpdateAgentGoal.
 	require.NoError(t, queries.UpdateAgentGoal(ctx, gendb.UpdateAgentGoalParams{
 		GoalObjective:    "make the tests pass",
-		GoalStatus:       int64(agent.GoalStatusActive),
+		GoalStatus:       leapmuxv1.AgentGoalStatus(agent.GoalStatusActive),
 		GoalStatusDetail: "active",
 		GoalCreatedAt:    sqltime.SQLiteNullTimeOf(now),
 		GoalUpdatedAt:    sqltime.SQLiteNullTimeOf(now),

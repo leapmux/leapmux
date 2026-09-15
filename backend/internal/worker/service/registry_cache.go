@@ -474,7 +474,7 @@ func (c *registryCache[T]) renameRowKeyLocked(oldKey, newKey string) bool {
 }
 
 // atCapForBucket reports whether one cap pool is full, so an insert into that
-// pool knows it must evict before appending. Pass "" for a single-pool registry
+// pool knows it must evict before appending. Pass 0 for a single-pool registry
 // (bucketOf nil), where every row shares one pool. Caller must hold c.Mu.
 func (c *registryCache[T]) atCapForBucket(bucket int64) bool {
 	n := 0

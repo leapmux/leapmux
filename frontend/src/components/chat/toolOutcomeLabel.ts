@@ -10,9 +10,9 @@
  * This is `turnEndLabel` one level down: the turn-end divider already shares its three
  * words across every provider, and a tool row now shares these.
  */
-export type ToolOutcome = 'succeeded' | 'failed' | 'interrupted'
+export type ToolRowOutcome = 'succeeded' | 'failed' | 'interrupted'
 
-const OUTCOME_WORDS: Record<ToolOutcome, string> = {
+const OUTCOME_WORDS: Record<ToolRowOutcome, string> = {
   succeeded: 'Success',
   failed: 'Error',
   interrupted: 'Interrupted',
@@ -25,7 +25,7 @@ const OUTCOME_WORDS: Record<ToolOutcome, string> = {
  * tool that reports no code. An empty or absent qualifier is dropped, so a row never
  * shows empty parentheses.
  */
-export function toolOutcomeLabel(outcome: ToolOutcome, qualifier?: string | null): string {
+export function toolOutcomeLabel(outcome: ToolRowOutcome, qualifier?: string | null): string {
   const detail = qualifier?.trim()
   return detail ? `${OUTCOME_WORDS[outcome]} (${detail})` : OUTCOME_WORDS[outcome]
 }

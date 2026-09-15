@@ -2118,3 +2118,100 @@ func TestActivity_AnIgnoredStopDoesNotExemptTheNextTurn(t *testing.T) {
 	require.Equal(t, 1, settles.close(), "the next stop is an ordinary settle again")
 	assert.Equal(t, []bool{true, false, true, false}, rec.busyStates())
 }
+
+// A REPEAT publish of the turn flag is not the provider's answer to a stop. It
+// reports the state the entry already holds, so it withdraws nothing and must
+// leave the mark for the answer that really comes. Two providers send one: pi
+// republishes the flag on a retried run, and zcode publishes it at every turn
+// start.
+func TestActivity_ARepeatTurnFlagDoesNotSpendTheStopMark(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1", "tok-1")
+	require.Equal(t, []bool{true, false}, rec.busyStates(), "the prompt stops the indicator")
+
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false, false}, rec.busyStates(), "the stop moves the agent off WAITING")
+
+	// The repeat. Nothing changed, so nothing is published either.
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true, false, false}, rec.busyStates(), "a repeat publishes nothing")
+
+	// The withdrawal of the question the stopped turn was blocked on. With the
+	// mark spent, this re-derives WORKING and puts the spinner back at the
+	// moment the reader pressed Stop.
+	h.noteControlRequestsRemoved("agent-1", "agent-1", controlRequestInstance{RequestID: "req-1", ClaimToken: "tok-1"})
+
+	assert.Equal(t, []bool{true, false, false}, rec.busyStates(),
+		"withdrawing the stopped turn's question is not the agent going back to work")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State)
+	assert.Equal(t, 0, settles.close(), "the stop the reader asked for waits for nothing")
+}
+
+// The turn flag that CHANGES still spends the mark, whichever way it moved.
+func TestActivity_AChangedTurnFlagStillSpendsTheStopMark(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	settles := holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+
+	// The provider ends the turn: its answer to the stop. The mark has nothing
+	// left to describe.
+	h.setTurnActive("agent-1", "agent-1", false)
+	// The next turn is ordinary again, so its own stop waits out a window.
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	assert.Equal(t, 1, settles.close(), "the mark cannot exempt a later turn")
+	assert.Equal(t, []bool{true, false, true, false}, rec.busyStates())
+}
+
+// Shutdown latches, then joins the deferred refreshes. A count taken after that
+// join starts is a WaitGroup misuse, and the goroutine it guards reads the
+// registry after the caller closes the database. holdSettleLocked already tests
+// the latch; these two paths must too.
+//
+// The synchronous field writes are exempt, because AgentActivitySnapshot reads
+// them and the entry must stay truthful whatever the latch says.
+func TestActivity_AStopAfterShutdownWritesTheMarkAndPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.SetShuttingDown()
+	h.NoteAgentStopRequested("agent-1", "agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "no broadcast leaves after the latch")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State, "the mark itself is still recorded")
+}
+
+func TestActivity_AProcessBoundaryAfterShutdownClearsTheEntryAndPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	h, rec := newActivityHandler(t, "agent-1")
+	holdSettles(t, h)
+	h.setTurnActive("agent-1", "agent-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	h.SetShuttingDown()
+	h.resetAgentActivity("agent-1")
+	h.WaitActivityRefreshes()
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "no broadcast leaves after the latch")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		h.AgentActivitySnapshot("agent-1", "agent-1").State, "the turn flag is still cleared")
+}

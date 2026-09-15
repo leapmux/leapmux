@@ -5,6 +5,7 @@
     "SettingsChanged": "settings_changed",
     "ContextCleared": "context_cleared",
     "Interrupted": "interrupted",
+    "StopIgnored": "stop_ignored",
     "PlanExecution": "plan_execution",
     "PlanUpdated": "plan_updated",
     "Compacting": "compacting",

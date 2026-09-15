@@ -7,7 +7,7 @@ import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '~/generated/contracts/copilot-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
+import { buildControlResponseEnvelope, buildDenyResponse } from '~/utils/controlResponse'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendResponse } from '../../controls/types'
 import { defaultMarkPreview } from '../../markPreviewShared'
@@ -142,10 +142,8 @@ const copilotPlugin: Provider = {
       // The runtime distinguishes a typed answer from a selected choice, and it
       // accepts an explicit empty answer. Both facts travel exactly as given.
       const answer = selected.length > 0 ? selected.join(', ') : typed
-      const envelope = buildAllowResponse(request.requestId, {})
-      const response = envelope.response as Record<string, unknown>
-      response.response = { behavior: 'allow', answer, wasFreeform: selected.length === 0 }
-      return sendResponse(sendControlResponse, envelope)
+      const response = { behavior: 'allow', answer, wasFreeform: selected.length === 0 }
+      return sendResponse(sendControlResponse, buildControlResponseEnvelope(request.requestId, response))
     },
     sendReject: (request, sendControlResponse, message) =>
       sendResponse(sendControlResponse, buildDenyResponse(request.requestId, message)),

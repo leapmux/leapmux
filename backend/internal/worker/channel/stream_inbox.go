@@ -9,6 +9,23 @@ import (
 
 var ErrStreamInboxFull = errors.New("the stream receive buffer is full")
 
+// maxPendingStreamFrames caps the frames one inbox holds while its controller
+// is not bound yet. That window opens when the router registers the stream and
+// closes when the handler binds, so only the frames a client sends INSIDE it
+// queue here.
+//
+// One client sends more than one: the CLI's streamevents Subscription, which
+// sends one UpdateStream for each revision of its watch interest. A `leapmux
+// agent messages --follow` run re-states that interest for each agent it adds
+// and for each LOOKUP_FAILED retry, so a burst is a handful of frames and never
+// dozens. 64 covers a complete re-state of the interest set with the retries
+// behind it.
+//
+// Over the cap the inbox refuses every later frame, and the router then cancels
+// the stream rather than dropping the frame in silence: a client that believes
+// its revision landed reads the wrong events for as long as the stream lives.
+// The CLI recovers on its own -- the cancelled stream closes its handle, and the
+// next Update sees that and opens a fresh stream with the current interest.
 const maxPendingStreamFrames = 64
 
 // StreamInbox retains early frames and serializes delivery after the controller binds.

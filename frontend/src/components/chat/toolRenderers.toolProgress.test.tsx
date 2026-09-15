@@ -8,6 +8,9 @@ import { createToolProgressStore } from '~/stores/chatToolProgress'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { ToolUseLayout } from './toolRenderers'
 
+/** The tool_use row the live-store case renders: one span of one provider session. */
+const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
+
 /**
  * Render a tool card over a live progress signal, the way a real row does: the
  * context hands the layout a THUNK, and only the badge inside calls it.
@@ -93,9 +96,9 @@ describe('toolUseLayout running-tool badge', () => {
    */
   it('holds every node of the card and honours the selection over a live store', () => {
     const store = createToolProgressStore()
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const [selecting, setSelecting] = createSignal(false)
-    const context = { textSelectionActive: selecting, sources: testMessageSources({ progress: () => store.get('a1', 'toolu_A') }) } as unknown as RenderContext
+    const context = { textSelectionActive: selecting, sources: testMessageSources({ progress: () => store.get('a1', SPAN) }) } as unknown as RenderContext
     const { getByText, getByTestId } = render(() => (
       <ToolUseLayout
         icon={SquareTerminal}
@@ -112,7 +115,7 @@ describe('toolUseLayout running-tool badge', () => {
 
     const badgeTextNode = badge.firstChild
 
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 60 })
     expect(badge.textContent).toBe('1m')
     expect(getByText('npm run build')).toBe(title)
     expect(getByTestId('summary')).toBe(summary)
@@ -125,7 +128,7 @@ describe('toolUseLayout running-tool badge', () => {
     expect(badge.firstChild).toBe(badgeTextNode)
 
     setSelecting(true)
-    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 90 })
+    store.apply('a1', { ...SPAN, elapsedSeconds: 90 })
     expect(badge.textContent).toBe('1m')
   })
 })

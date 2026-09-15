@@ -1,12 +1,13 @@
 import type { WirePermissionOption } from '../../controls/permissionOptionLabels'
 import { COPILOT_APPROVAL_SCOPE, COPILOT_DECISION, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
+import { buildControlResponseEnvelope, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
 import {
   KIND_ALLOW_ALWAYS,
   KIND_ALLOW_ONCE,
   KIND_REJECT_ONCE,
 } from '../../controls/permissionOptionLabels'
+import { sendResponse } from '../../controls/types'
 import { copilotEvent } from './protocol'
 
 /**
@@ -46,7 +47,7 @@ const DECISION_KINDS: Record<string, string> = {
   [COPILOT_DECISION.Reject]: KIND_REJECT_ONCE,
 }
 
-/** The option a saved decision word names, or the kind alone when the request never offered it. */
+/** The option a saved decision word identifies, or the kind alone when the request never offered it. */
 export function copilotDecisionOption(
   payload: Record<string, unknown> | undefined,
   decision: string,
@@ -126,6 +127,5 @@ export function sendCopilotPermissionResponse(
   const response = COPILOT_ALLOW_SCOPES.has(optionId)
     ? { behavior: 'allow', scope: optionId }
     : { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE }
-  const envelope = { type: 'control_response', response: { subtype: 'success', request_id: requestId, response } }
-  return onRespond(new TextEncoder().encode(JSON.stringify(envelope)))
+  return sendResponse(onRespond, buildControlResponseEnvelope(requestId, response))
 }

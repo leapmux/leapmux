@@ -1,18 +1,50 @@
 import type { ACPToolAdapter } from '../acp/toolPresentation'
 import type { ToolPresentation } from '~/components/chat/results/toolPresentation'
-import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL } from '~/generated/contracts/reasonix-protocol'
+import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL, REASONIX_TOOL_RECORD } from '~/generated/contracts/reasonix-protocol'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
 import { rawTodosToItems } from '~/stores/chatTodos'
 import { parseUnifiedDiffCached } from '../../diff'
+import { agentToolPresentation } from '../../results/AgentRequestMessage'
 import { fileEditDiffFromHunks, fileEditHasDiff } from '../../results/fileEditDiff'
-import { mcpToolCallDisplayName, parseMcpContentItem } from '../../results/mcpToolCall'
+import { mcpStatusFromToolStatus, mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../../results/mcpToolCall'
+import { todoToolBody } from '../../results/toolPresentation'
 import { collectAcpToolText, flattenAcpContent } from '../acp/content'
 import { acpToolFinished, acpToolPresentation } from '../acp/toolPresentation'
 import { reasonixAgentResult } from './agentResult'
 import { reasonixDirectoryOutput } from './directoryOutput'
 import { reasonixEditReceipt } from './editReceipt'
+
+/**
+ * The capability prefix that carries a Model Context Protocol tool.
+ *
+ * Not in `contracts/reasonix-protocol.json`, which holds the identifiers BOTH programs
+ * read. The worker never splits this one, so the contract rule keeps it on the side
+ * that does.
+ */
+const REASONIX_MCP_CAPABILITY_PREFIX = 'mcp-tool:'
+
+/**
+ * Split `<prefix><server><separator><tool>` into its two halves.
+ *
+ * This serves Reasonix's own capability id. The `mcp__server__tool` spelling is a
+ * Model Context Protocol convention that several agents share, so `parseMcpToolName`
+ * in `~/components/chat/results/mcpToolCall` states that one.
+ *
+ * Returns null when the prefix is absent, when the separator is absent, or when
+ * EITHER half is empty. An empty tool half labels the row with nothing, which states
+ * less than the raw identifier does.
+ */
+function splitPrefixedPair(id: string, prefix: string, separator: string): { server: string, tool: string } | null {
+  if (!id.startsWith(prefix))
+    return null
+  const index = id.indexOf(separator, prefix.length)
+  if (index < 0)
+    return null
+  const server = id.slice(prefix.length, index)
+  const tool = id.slice(index + separator.length)
+  return server && tool ? { server, tool } : null
+}
 
 const toolKinds: Record<string, string> = {
   read_file: 'read',
@@ -45,9 +77,13 @@ function searchResult(name: string, model: ToolPresentation): ToolPresentation {
 
 /** Unwrap a capability call before choosing the normal tool components. */
 export const reasonixToolAdapter: ACPToolAdapter = (tool, initial, supplemental) => {
-  const stored = pickObject(pickObject(supplemental, 'rawOutput'), 'reasonix')
-  const saved = stored?.role === 'tool' && stored.tool_call_id === tool.toolCallId ? stored : undefined
-  const savedText = pickString(saved, 'raw_content', undefined) || pickString(saved, 'content', undefined)
+  // The worker wraps Reasonix's own transcript record under this envelope key, and
+  // both sides read the record's field names from contracts/reasonix-protocol.json.
+  // A Go struct tag takes a literal, so TestReasonixToolRecordTagsMatchTheContract
+  // pins the worker's tags to the same table.
+  const stored = pickObject(pickObject(supplemental, 'rawOutput'), REASONIX_TOOL_RECORD.Envelope)
+  const saved = stored?.[REASONIX_TOOL_RECORD.RoleField] === REASONIX_TOOL_RECORD.ToolRole && stored[REASONIX_TOOL_RECORD.ToolCallIDField] === tool.toolCallId ? stored : undefined
+  const savedText = pickString(saved, REASONIX_TOOL_RECORD.RawContentField, undefined) || pickString(saved, REASONIX_TOOL_RECORD.ContentField, undefined)
   const readResult = pickObject(saved, 'read_result')
   const filePath = pickString(pickObject(readResult, 'source'), 'canonical_path')
   const resolvedTool = savedText !== undefined
@@ -63,44 +99,42 @@ export const reasonixToolAdapter: ACPToolAdapter = (tool, initial, supplemental)
       name = id.slice(REASONIX_CAPABILITY_PREFIX.Tool.length)
       input = args
     }
-    else if (args && id.startsWith('mcp-tool:')) {
-      const separator = id.indexOf('/', 9)
-      if (separator > 9 && separator < id.length - 1) {
-        mcp = { server: id.slice(9, separator), tool: id.slice(separator + 1) }
+    else if (args) {
+      const pair = splitPrefixedPair(id, REASONIX_MCP_CAPABILITY_PREFIX, '/')
+      if (pair) {
+        mcp = pair
         input = args
       }
     }
   }
-  else if (name.startsWith('mcp__')) {
-    const separator = name.indexOf('__', 5)
-    if (separator > 5)
-      mcp = { server: name.slice(5, separator), tool: name.slice(separator + 2) }
+  else {
+    mcp = parseMcpToolName(name) ?? undefined
   }
   if (mcp) {
     const source = {
       ...mcp,
       argsJson: Object.keys(input).length > 0 ? prettifyJson(input) : '',
       content: flattenAcpContent(resolvedTool.content).map(parseMcpContentItem),
-      status: tool.status === 'failed' || tool.status === 'cancelled' ? 'failed' as const : tool.status === 'completed' ? 'completed' as const : 'inProgress' as const,
+      status: mcpStatusFromToolStatus(tool.status),
     }
     return { ...initial, input, kind: 'other', label: 'MCP Tool Call', title: mcpToolCallDisplayName(source), body: { type: 'mcp', source } }
   }
-  name ||= pickString(saved, 'name')
+  name ||= pickString(saved, REASONIX_TOOL_RECORD.NameField)
   if (name === 'todo_write' && Array.isArray(input.todos) && tool.status !== 'failed' && tool.status !== 'cancelled') {
     const items = rawTodosToItems(input.todos)
-    return { ...initial, kind: 'todo', title: items.length ? pluralize(items.length, 'task') : 'To-do list cleared', input, body: { type: 'todo', items } }
+    return { ...initial, input, ...todoToolBody(items) }
   }
   if (name === 'read_file' && filePath)
     input = { ...input, path: filePath }
   const model = acpToolPresentation({ ...resolvedTool, title: name, kind: pickString(toolKinds, name) || tool.kind, rawInput: input })
   if (name === REASONIX_TOOL.Task || name === REASONIX_TOOL.ReadOnlyTask) {
-    return {
-      ...model,
-      kind: 'agent',
-      title: pickString(input, 'description') || 'Task',
-      agentRequest: { toolName: 'Task', description: pickString(input, 'description'), agentType: pickString(input, 'profile'), prompt: pickString(input, 'prompt') },
-      body: acpToolFinished(tool) ? { type: 'agent', source: reasonixAgentResult({ toolName: name, input, output: model.output, originalOutput: collectAcpToolText(tool, { rawObjects: false }), status: tool.status }) } : { type: 'text' },
-    }
+    return agentToolPresentation(
+      model,
+      { toolName: 'Task', description: pickString(input, 'description'), agentType: pickString(input, 'profile'), prompt: pickString(input, 'prompt') },
+      acpToolFinished(tool)
+        ? reasonixAgentResult({ toolName: name, input, output: model.output, originalOutput: collectAcpToolText(tool, { rawObjects: false }), status: tool.status })
+        : undefined,
+    )
   }
   if (name === 'bash')
     model.title = pickString(input, 'description')

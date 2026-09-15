@@ -452,6 +452,49 @@ describe('pi toolResultMeta', () => {
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('Found 2 occurrences.')
   })
+
+  // `PI_TOOL.PlanComplete` had a renderer entry and no branch in the metadata chain, so the
+  // generic MCP reading answered here and copied the JSON envelope that holds the plan.
+  // The entry that draws the body now answers for it.
+  it('copies the plan a plan-complete result shows, not the envelope around it', () => {
+    const planText = '# Plan\n\n1. Read the code.\n2. Write the test.'
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      result: { content: [{ type: 'text', text: 'Plan ready.' }], details: { plan: planText } },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
+    expect(meta?.copyableContent()).toBe(planText)
+  })
+
+  // `MarkdownPlanLayout` draws the whole plan, so nothing on the row collapses.
+  it('falls back to the result text when a plan-complete result carries no plan', () => {
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      result: { content: [{ type: 'text', text: 'Plan ready for review.' }] },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta?.copyableContent()).toBe('Plan ready for review.')
+    expect(meta?.collapsible).toBe(false)
+  })
+
+  // The entry hands a failed plan-complete row to the SHARED error renderer, which draws the
+  // result text and nothing of the tool's own body -- so the toolbar describes that text.
+  it('describes the result text of a failed plan-complete row, as its renderer draws it', () => {
+    const end = {
+      type: 'tool_execution_end',
+      toolCallId: 'call-1',
+      toolName: 'plan_mode_complete',
+      isError: true,
+      result: { content: [{ type: 'text', text: 'The plan tool refused.' }], details: { plan: '# Ignored' } },
+    }
+    const meta = plugin.toolResultMeta!({ kind: 'tool_result' }, toolMessageInput(end, 'plan_mode_complete', undefined))
+    expect(meta?.copyableContent()).toBe('The plan tool refused.')
+  })
 })
 
 describe('pi extractQuotableText', () => {

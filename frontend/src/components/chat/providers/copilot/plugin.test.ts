@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import type { ControlAnswerState } from '../../controls/types'
+import { describe, expect, it, vi } from 'vitest'
 import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
+import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -169,5 +171,32 @@ describe('copilot relatedMessages', () => {
     expect(plugin.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: {} })))).toEqual(['result'])
     expect(plugin.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: { command: 'ls' } })))).toEqual([])
     expect(plugin.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Task, arguments: { prompt: 'x' } })))).toEqual(['result'])
+  })
+})
+
+// The runtime distinguishes a typed answer from a selected choice, and it accepts an
+// explicit empty answer. Both facts travel inside the neutral control-response
+// envelope, which carries a scope or an answer that neither shared builder can hold.
+describe('copilot question answers', () => {
+  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
+  const request = { requestId: 'req-1', agentId: 'agent-1', payload: frame(COPILOT_EVENT.UserInputRequested, { question: 'Which one?', choices: ['A', 'B'] }) }
+  const questions = [{ question: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }]
+
+  async function sent(state: ControlAnswerState) {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    await plugin.askUserQuestion!.sendAnswer(request, onRespond, questions, state)
+    expect(onRespond).toHaveBeenCalledOnce()
+    return JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0] as Uint8Array))
+  }
+
+  it.each([
+    ['a selected choice', { selections: { 0: ['B'] } }, { behavior: 'allow', answer: 'B', wasFreeform: false }],
+    ['a typed answer', { customTexts: { 0: '  neither  ' } }, { behavior: 'allow', answer: 'neither', wasFreeform: true }],
+    ['an explicit empty answer', {}, { behavior: 'allow', answer: '', wasFreeform: true }],
+  ])('sends %s inside the control-response envelope', async (_label, seed, answer) => {
+    expect(await sent(createControlAnswerState(seed))).toEqual({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'req-1', response: answer },
+    })
   })
 })

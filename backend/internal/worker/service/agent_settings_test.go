@@ -30,7 +30,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 
 	// Create an agent in the DB with a session ID already set
 	// (simulates a previously running agent that established a session).
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: workDir,
 		HomeDir:    t.TempDir(),
@@ -88,7 +88,7 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 
 	// Create an agent with resumed=1 (simulates a resumed session).
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-resumed",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -118,7 +118,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 
 	// Create an agent (non-resumed).
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-clear",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -132,7 +132,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	}))
 
 	// User sends a message in session-A.
-	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-1",
 		AgentID:       "agent-clear",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -165,7 +165,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 		"session-B should NOT be resumable — no messages exchanged yet")
 
 	// After the user sends a message in session-B, it should become resumable.
-	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-2",
 		AgentID:       "agent-clear",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -187,7 +187,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	svc, _, _ := setupTestService(t)
 
 	// Create a non-resumed agent (simulates opening a fresh tab).
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-idle",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),
@@ -210,7 +210,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 		"should NOT resume — no user messages were exchanged before this send")
 
 	// Persist the accepted user input.
-	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:            "msg-first",
 		AgentID:       "agent-idle",
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -235,7 +235,7 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	// Create an agent with a session ID.
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: t.TempDir(),
 		HomeDir:    t.TempDir(),

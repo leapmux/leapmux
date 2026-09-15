@@ -81,7 +81,7 @@ func TestGetAgentSpanMessagesSeparatesProviderSessions(t *testing.T) {
 	}))
 	for _, sessionID := range []string{"old", "new", ""} {
 		for _, side := range []string{"request", "result"} {
-			_, err := createMessageRow(t.Context(), service.Queries, db.CreateMessageParams{
+			_, err := createMessageRow(t.Context(), service.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 				ID: sessionID + "-" + side, AgentID: "agent", AgentSessionID: sessionID,
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, SpanID: "same-tool",

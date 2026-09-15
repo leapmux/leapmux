@@ -102,7 +102,7 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 	request := []byte(` {"request":{"tool_name":"ExitPlanMode","input":{"plan":"# Plan"}},"extra":false} `)
 	for _, settings := range []string{`{"permissionMode":"","clearContext":false}`, `{"permissionMode":"default","clearContext":true}`} {
 		plan, err := controlResponsePlanFromAnswer(db.ControlResponseAnswer{
-			AgentProvider: int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			RequestID:     "plan", RequestPayload: request, ResponseContent: response, ResolvedContent: response,
 			PlanApprovalSettings: []byte(settings),
 		})
@@ -148,4 +148,28 @@ func TestClaudePlanApprovalIncludesTheNativePermissionUpdate(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(delivered, &native))
 	require.Equal(t, []map[string]string{{"type": "setMode", "mode": "bypassPermissions", "destination": "session"}}, native.Response.Response.UpdatedPermissions)
+}
+
+// The transcript row repeats the bytes the claim row holds; it does not encode
+// the message a second time. One value therefore has one encoding, and the
+// stored form cannot be reshaped by a later change to the marshal options --
+// which is what a settings blob written without EmitDefaultValues would meet.
+func TestSavedPlanSettingsReachTheTranscriptAsStored(t *testing.T) {
+	response := []byte(`{"response":{"subtype":"success","request_id":"plan","response":{"behavior":"allow"}}}`)
+	stored := []byte(`{"permissionMode":"default"}`)
+	plan, err := controlResponsePlanFromAnswer(db.ControlResponseAnswer{
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		RequestID:     "plan", RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
+		ResponseContent: response, ResolvedContent: response,
+		PlanApprovalSettings: stored,
+	})
+	require.NoError(t, err)
+	require.Equal(t, stored, plan.settingsJSON)
+
+	content, err := controlResponseMessageContent(plan)
+	require.NoError(t, err)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(content.Metadata, &metadata))
+	require.Equal(t, string(stored), string(metadata["plan_approval_settings"]),
+		"a second marshal would add the default clearContext the stored bytes omit")
 }

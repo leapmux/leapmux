@@ -24,6 +24,7 @@ import type {
   ListMessageMarksResponse,
   MoveQueuedAgentInputResponse,
   OpenAgentResponse,
+  PreemptQueuedAgentInputResponse,
   RenameAgentResponse,
   RetryQueuedAgentInputResponse,
   SendAgentRawMessageResponse,
@@ -119,6 +120,8 @@ import {
   MoveQueuedAgentInputResponseSchema,
   OpenAgentRequestSchema,
   OpenAgentResponseSchema,
+  PreemptQueuedAgentInputRequestSchema,
+  PreemptQueuedAgentInputResponseSchema,
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
   RetryQueuedAgentInputRequestSchema,
@@ -456,6 +459,10 @@ export function setAgentInputQueuePaused(workerId: string, req: MessageInitShape
 
 export function steerQueuedAgentInput(workerId: string, req: MessageInitShape<typeof SteerQueuedAgentInputRequestSchema>): Promise<SteerQueuedAgentInputResponse> {
   return callWorker(workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, req)
+}
+
+export function preemptQueuedAgentInput(workerId: string, req: MessageInitShape<typeof PreemptQueuedAgentInputRequestSchema>): Promise<PreemptQueuedAgentInputResponse> {
+  return callWorker(workerId, 'PreemptQueuedAgentInput', PreemptQueuedAgentInputRequestSchema, PreemptQueuedAgentInputResponseSchema, req)
 }
 
 export function retryQueuedAgentInput(workerId: string, req: MessageInitShape<typeof RetryQueuedAgentInputRequestSchema>): Promise<RetryQueuedAgentInputResponse> {

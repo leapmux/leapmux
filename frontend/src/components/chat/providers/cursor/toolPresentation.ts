@@ -38,12 +38,78 @@ function planBody(model: ToolPresentation, plan: string, proposing: boolean, has
     : model.body
 }
 
+/**
+ * The protocol-level error, for a row that states nothing else.
+ *
+ * Cursor reports a failed call in `rawOutput.error` and writes no output beside it.
+ * A body built from a saved result can be empty for exactly that reason -- a failed
+ * `mcp_*` call whose saved result is empty is the reachable case -- so EVERY return
+ * from the adapter passes through here.
+ */
+function withProtocolError(model: ToolPresentation, raw: Record<string, unknown> | null): ToolPresentation {
+  const error = pickString(raw, 'error')
+  return error && !model.output ? { ...model, output: error } : model
+}
+
+/**
+ * The identity of one Cursor tool call: the fields that say WHAT the call is.
+ *
+ * This is the one place below the early returns that writes `kind`, so every body
+ * branch that follows only READS it. Cursor states a search's shape in two places --
+ * the title the runtime rendered, and the counters the result carries -- and the two
+ * disagree for a file search that also reports matches. A body branch that decided
+ * the kind a second time lets the weaker statement overwrite the stronger one.
+ *
+ * Precedence for a search, strongest first:
+ *  1. The rendered TITLE. The runtime writes `Find` for a file-name search and
+ *     `grep` for a content search.
+ *  2. The result COUNTERS. `totalFiles` rides a file-name search, and a content
+ *     search reports its match total instead.
+ *
+ * `rawInput._toolName` is the runtime's own identifier, and it would rank above both.
+ * A search row carries none. Cursor writes `_toolName` for five tools only -- `task`,
+ * `createPlan`, `askQuestion`, `updateTodos` and `generateImage`. Its file-name search
+ * sends `{pattern}` and its content search sends `{pattern, path}`. Four released
+ * versions, from 2026.07 to 2026.09, agree. So the title is the only identity a search
+ * row carries, and it must lead.
+ *
+ * The title match must therefore accept every title the runtime composes. Cursor builds
+ * the content-search title from the arguments: `grep`, then one optional flag for each
+ * argument (`-i`, `-n`, `-A N`, `-l`, `--include="..."`, and more), then the quoted
+ * pattern last. A flag moves the pattern away from the front, so the `grep ` prefix is
+ * the one part that stays constant. The file-name search writes `Find`, then an optional
+ * path and an optional pattern, each one inside backticks.
+ */
+function cursorToolIdentity(
+  tool: Record<string, unknown>,
+  model: ToolPresentation,
+  input: Record<string, unknown>,
+  raw: Record<string, unknown> | null,
+): ToolPresentation {
+  if (model.kind === 'execute')
+    return { ...model, title: pickString(input, 'description') }
+  if (model.kind !== 'search')
+    return model
+  const title = pickString(tool, 'title')
+  if (title === 'Find' || title.startsWith('Find `'))
+    return { ...model, kind: 'glob' }
+  if (title === 'grep' || title.startsWith('grep '))
+    return { ...model, kind: 'grep' }
+  if (tool.status !== 'completed' || !raw)
+    return model
+  const totalFiles = pickNumber(raw, 'totalFiles', undefined)
+  const matches = pickNumber(raw, 'totalMatches', undefined) ?? pickNumber(raw, 'resultCount', undefined)
+  if (totalFiles === undefined && matches === undefined)
+    return model
+  return { ...model, kind: totalFiles !== undefined ? 'glob' : 'grep' }
+}
+
 /** Cursor returns file and shell output in rawOutput without ACP content blocks. */
 export const cursorToolAdapter: ACPToolAdapter = (tool, presentation, supplemental, row) => {
+  const raw = pickObject(tool, 'rawOutput')
   const restored = cursorStoredToolPresentation(tool, presentation, supplemental)
   if (restored && restored.body !== presentation.body)
-    return restored
-  const raw = pickObject(tool, 'rawOutput')
+    return withProtocolError(restored, raw)
   const input = restored?.input ?? presentation.input
   let model = restored ?? presentation
   // A plan arrives in two halves: the stored call carries the tool name alone, and the
@@ -67,15 +133,7 @@ export const cursorToolAdapter: ACPToolAdapter = (tool, presentation, supplement
     const source = { ...model.body.source, server: pickString(input, 'providerIdentifier'), tool: pickString(input, 'toolName'), argsJson: prettifyArgsJson(input.args) }
     model = { ...model, input: pickObject(input, 'args') ?? {}, title: mcpToolCallDisplayName(source), label: 'MCP Tool Call', body: { type: 'mcp', source } }
   }
-  if (model.kind === 'execute')
-    model = { ...model, title: pickString(input, 'description') }
-  if (model.kind === 'search') {
-    const title = pickString(tool, 'title')
-    if (title === 'Find' || title.startsWith('Find `'))
-      model = { ...model, kind: 'glob' }
-    else if (title === 'grep' || title.startsWith('grep "'))
-      model = { ...model, kind: 'grep' }
-  }
+  model = cursorToolIdentity(tool, model, input, raw)
   if (presentation.body.type === 'diff') {
     model = {
       ...model,
@@ -117,13 +175,13 @@ export const cursorToolAdapter: ACPToolAdapter = (tool, presentation, supplement
     const totalFiles = pickNumber(raw, 'totalFiles', undefined)
     const matches = pickNumber(raw, 'totalMatches', undefined) ?? pickNumber(raw, 'resultCount', undefined)
     if (totalFiles !== undefined || matches !== undefined) {
+      const glob = model.kind === 'glob'
       return {
         ...model,
-        kind: totalFiles !== undefined ? 'glob' : 'grep',
         body: {
           type: 'search',
           source: {
-            variant: totalFiles !== undefined ? 'glob' : 'search',
+            variant: glob ? 'glob' : 'search',
             filenames: [],
             content: model.output,
             numFiles: totalFiles ?? 0,
@@ -136,6 +194,5 @@ export const cursorToolAdapter: ACPToolAdapter = (tool, presentation, supplement
       }
     }
   }
-  const error = pickString(raw, 'error')
-  return error && !model.output ? { ...model, output: error } : model
+  return withProtocolError(model, raw)
 }
