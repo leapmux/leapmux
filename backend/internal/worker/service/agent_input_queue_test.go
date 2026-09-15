@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -931,6 +933,53 @@ func startEchoAgent(t *testing.T, svc *Service, agentID string) {
 	startMockAgent(t, svc, agentID, svc.Agents.MockStartAgent)
 }
 
+// startRecordingEchoAgent is startEchoAgent whose echo is observed through a
+// recorder on the sink rather than through the control_requests table.
+//
+// The raw stop path withdraws the stopped turn's pending control requests the
+// moment its interrupt is delivered, and the withdrawal is a DELETE by agent id.
+// An echo landing in the window between that delivery and the withdrawal is
+// deleted with the rest, so a test that reads the table races the very stop it
+// sent and loses on the wrong scheduling. The recorder sees the request the
+// reader goroutine published BEFORE any withdrawal can reach it, which is the
+// same fact -- the process echoed the frame -- stated without the race.
+func startRecordingEchoAgent(t *testing.T, svc *Service, agentID string) *controlRequestRecorder {
+	t.Helper()
+	recorder := &controlRequestRecorder{}
+	startMockAgentWrappingSink(t, svc, agentID, svc.Agents.MockStartAgent, func(sink agent.ProviderServices) agent.ProviderServices {
+		recorder.ProviderServices = sink
+		return recorder
+	})
+	return recorder
+}
+
+// controlRequestRecorder wraps an agent's sink and records every control request
+// its process published. Embedding the interface keeps every other facet
+// forwarding to the wrapped sink.
+type controlRequestRecorder struct {
+	agent.ProviderServices
+
+	mu        sync.Mutex
+	published []agent.ControlRequest
+}
+
+// PublishControlRequest records the request, then forwards it. Recording first
+// is the point: the underlying store write is what a stop's withdrawal deletes,
+// and the recorder must not depend on it having survived.
+func (r *controlRequestRecorder) PublishControlRequest(request agent.ControlRequest) error {
+	r.mu.Lock()
+	r.published = append(r.published, request)
+	r.mu.Unlock()
+	return r.ProviderServices.PublishControlRequest(request)
+}
+
+// requests returns the control requests published so far.
+func (r *controlRequestRecorder) requests() []agent.ControlRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.published)
+}
+
 // startSilentAgent is startEchoAgent with a mock that writes nothing back. A
 // case that reads the derived activity state needs it; see MockStartSilentAgent
 // for the artifact the echo leaves behind.
@@ -946,12 +995,28 @@ func startMockAgent(
 	start func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error),
 ) {
 	t.Helper()
+	startMockAgentWrappingSink(t, svc, agentID, start, nil)
+}
+
+// startMockAgentWrappingSink is startMockAgent with the sink passed through
+// wrap first, so a test can interpose an observer on one facet.
+func startMockAgentWrappingSink(
+	t *testing.T,
+	svc *Service,
+	agentID string,
+	start func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error),
+	wrap func(agent.ProviderServices) agent.ProviderServices,
+) {
+	t.Helper()
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	if wrap != nil {
+		sink = wrap(sink)
+	}
 	_, err := start(context.Background(), agent.Options{
 		AgentID: agentID, WorkingDir: workingDir, APITimeout: 200 * time.Millisecond,
 	}, sink)
@@ -1172,11 +1237,16 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 // it runs the same pause when that frame is an interrupt, so it must survive
 // the refused pause too. Here the caller reads a plain success, because the
 // forward waits for no answer of its own.
+//
+// The echo is read through the recorder rather than the control_requests table
+// (see startRecordingEchoAgent): this stop path delivers and then withdraws the
+// turn's pending requests, and a table read races that withdrawal -- the same
+// scheduling lottery on every run, lost often enough to fail CI.
 func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 	t.Parallel()
 
 	svc, dispatcher, _ := setupTestService(t)
-	startEchoAgent(t, svc, "agent-1")
+	recorder := startRecordingEchoAgent(t, svc, "agent-1")
 	stopInputQueue(t, svc, "agent-1")
 
 	writer := newTestWriter()
@@ -1187,12 +1257,15 @@ func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 
 	assert.Empty(t, writer.rejections(), "a refused pause must not refuse the stop")
 	assert.Len(t, writer.responses, 1)
-	requireInterruptReachedAgent(t, svc, "agent-1")
-	stored, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
-		AgentID: "agent-1", RequestID: "raw-interrupt-1",
-	})
-	require.NoError(t, err, "the agent received a frame with a different request id")
-	assert.Contains(t, string(stored.Payload), `"subtype":"interrupt"`)
+	var echoed []agent.ControlRequest
+	require.Eventually(t, func() bool {
+		echoed = recorder.requests()
+		return len(echoed) > 0
+	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	require.Len(t, echoed, 1)
+	assert.Equal(t, "raw-interrupt-1", echoed[0].RequestID,
+		"the agent received a frame with a different request id")
+	assert.Contains(t, string(echoed[0].Payload), `"subtype":"interrupt"`)
 }
 
 // TestDispatchRefusesAnAgentThatFailedToStartInMemory pins the FIRST of the two
