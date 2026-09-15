@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -59,6 +60,112 @@ func pendingSpanIDs(s *toolTranscript) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// toolStoreSource is a transcript source that keeps a provider database handle.
+//
+// A source with no handle of its own declares neither method, and
+// releaseToolStoreAtTestEnd then fails rather than pass over it in silence.
+type toolStoreSource interface {
+	// closeToolStore releases the handle.
+	closeToolStore()
+	// toolStoreHandleOpen reports whether a handle is open now.
+	toolStoreHandleOpen() bool
+}
+
+func (z *zcodeToolSource) closeToolStore() { z.store.close() }
+
+func (z *zcodeToolSource) toolStoreHandleOpen() bool {
+	z.store.mu.Lock()
+	defer z.store.mu.Unlock()
+	return z.store.db != nil
+}
+
+// reset is the only close the Cursor store has: the handle and the blob index go
+// together, because a store file that is gone invalidates both.
+func (c *cursorToolSource) closeToolStore() { c.store.reset() }
+
+func (c *cursorToolSource) toolStoreHandleOpen() bool {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	return c.store.db != nil
+}
+
+// releaseToolStoreAtTestEnd closes the transcript's provider database handle when the
+// test ends, and closes it SYNCHRONOUSLY.
+//
+// Production releases that handle from context.AfterFunc, which runs on a goroutine
+// of its own once the agent's context ends. A test context ends just BEFORE the
+// test's cleanup functions run, so that goroutine races the RemoveAll of t.TempDir.
+// Unix unlinks an open file without complaint, so the race is invisible there.
+// Windows refuses to remove a file that any handle holds open, and SQLite opens
+// every file -- read-only included -- with FILE_SHARE_READ|FILE_SHARE_WRITE and
+// never FILE_SHARE_DELETE. The race therefore failed the cleanup of the temporary
+// directory on Windows alone.
+//
+// Call this AFTER t.TempDir, because cleanup functions run in reverse order.
+func releaseToolStoreAtTestEnd(t *testing.T, transcript *toolTranscript) {
+	t.Helper()
+	source, ok := transcript.source.(toolStoreSource)
+	require.True(t, ok, "a %T transcript source keeps no provider database handle", transcript.source)
+	t.Cleanup(source.closeToolStore)
+}
+
+// releaseToolStoreAtTestEnd must close a handle that is really open, for each
+// provider that keeps one.
+//
+// TestEveryTestClosesTheProviderStoreHandleItOpens reads the call sites and cannot see
+// this: a closeToolStore wired to the wrong object satisfies that scan and closes
+// nothing. The assertion INSIDE the subtest is what keeps this test honest, because a
+// handle that never opened would pass the one outside it for the wrong reason.
+func TestReleaseToolStoreAtTestEndClosesTheProviderHandle(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	cursorPath := filepath.Join(directory, "cursor.db")
+	newFixtureDB(t, cursorPath, cursorStoreDDL)
+	zcodePath := filepath.Join(directory, "zcode.db")
+	newFixtureDB(t, zcodePath, zcodeToolStoreDDL)
+
+	// A context that THIS test ends, after the assertion below. Each constructor also
+	// releases its handle from context.AfterFunc when the agent context ends, and
+	// t.Context() ends at the subtest's cleanup -- so a subtest built on t.Context()
+	// would assert what that AfterFunc did and never what the helper did. It passed
+	// with closeToolStore emptied to a no-op, which is how the vacuity was found.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var sources []toolStoreSource
+	// A subtest, because t.Run returns only after the subtest's cleanup functions
+	// finish. That is the point in time this test is about.
+	t.Run("one turn of each provider", func(t *testing.T) {
+		cursor := newCursorToolTranscript(ctx, &testSink{}, func() string { return cursorPath })
+		releaseToolStoreAtTestEnd(t, cursor)
+		zcode := newZCodeToolTranscript(ctx, &testSink{}, func() zcodeToolStoreLocation {
+			return zcodeToolStoreLocation{databasePath: zcodePath, sessionID: "session"}
+		})
+		releaseToolStoreAtTestEnd(t, zcode)
+
+		// The turn end reads each store, which is what opens the handle.
+		require.NoError(t, cursor.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			MessageContent{Original: []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"completed"}`)},
+			SpanInfo{SpanID: "search", Closing: true}))
+		require.NoError(t, zcode.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			MessageContent{Original: []byte(zcodeStoredImageRequest)}, SpanInfo{SpanID: "call"}))
+		require.NoError(t, zcode.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			MessageContent{Original: []byte(zcodeStoredImageResult)}, SpanInfo{SpanID: "call", Closing: true}))
+		for _, transcript := range []*toolTranscript{cursor, zcode} {
+			require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"done":true}`)}, SpanInfo{}))
+			source, isStoreSource := transcript.source.(toolStoreSource)
+			require.True(t, isStoreSource, "a %T source keeps no handle", transcript.source)
+			require.True(t, source.toolStoreHandleOpen(), "the turn end must leave a handle open to close")
+			sources = append(sources, source)
+		}
+	})
+
+	for _, source := range sources {
+		assert.False(t, source.toolStoreHandleOpen(),
+			"%T still holds its database handle after the test that opened it ended", source)
+	}
 }
 
 func TestToolTranscriptUsesClosingSpansAcrossProtocols(t *testing.T) {

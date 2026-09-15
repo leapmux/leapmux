@@ -40,6 +40,7 @@ func TestCursorToolTranscriptPreservesNativeContentFields(t *testing.T) {
 			insertCursorBlob(t, db, "result", `{"role":"tool","content":[`+sibling+block+`]}`)
 			sink := &testSink{}
 			transcript := newCursorToolTranscript(t.Context(), sink, func() string { return path })
+			releaseToolStoreAtTestEnd(t, transcript)
 			original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"image","status":"completed"}`)
 			require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "image", Closing: true}))
 			require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, SpanInfo{}))
@@ -58,6 +59,17 @@ func TestCursorToolTranscriptPreservesNativeContentFields(t *testing.T) {
 	}
 }
 
+// newCursorToolStoreForTest closes the store's database handle when the test ends, so
+// an open file cannot defeat the temporary directory's own cleanup. The ZCode store
+// has the same helper, and releaseToolStoreAtTestEnd states why the close must be
+// synchronous.
+func newCursorToolStoreForTest(t *testing.T) *cursorToolStore {
+	t.Helper()
+	store := &cursorToolStore{}
+	t.Cleanup(store.reset)
+	return store
+}
+
 func TestCursorToolStoreReadsMatchingRecords(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "store.db")
@@ -67,7 +79,7 @@ func TestCursorToolStoreReadsMatchingRecords(t *testing.T) {
 	insertCursorBlob(t, db, "request", cursorStoredRequest)
 	insertCursorBlob(t, db, "result", cursorStoredResult)
 
-	var store cursorToolStore
+	store := newCursorToolStoreForTest(t)
 	found, err := store.read(t.Context(), path, []string{"search", "missing"})
 	require.NoError(t, err)
 	require.Len(t, found, 1)
@@ -83,7 +95,7 @@ func TestCursorToolStoreFindsLateRecordsAndReplacements(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.db")
 	db := newFixtureDB(t, path, cursorStoreDDL)
 	insertCursorBlob(t, db, "request", cursorStoredRequest)
-	var store cursorToolStore
+	store := newCursorToolStoreForTest(t)
 	found, err := store.read(t.Context(), path, []string{"search"})
 	require.NoError(t, err)
 	assert.Empty(t, found)
@@ -104,7 +116,7 @@ func TestCursorToolStoreFindsLateRecordsAndReplacements(t *testing.T) {
 func TestCursorToolStoreHandlesAbsentAndInvalidStores(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "absent.db")
-	var store cursorToolStore
+	store := newCursorToolStoreForTest(t)
 	found, err := store.read(t.Context(), path, []string{"search"})
 	require.NoError(t, err)
 	assert.Empty(t, found)
@@ -123,7 +135,7 @@ func TestCursorToolStoreResetsAcrossSessions(t *testing.T) {
 	second := filepath.Join(dir, "second.db")
 	insertCursorBlob(t, newFixtureDB(t, first, cursorStoreDDL), "result", cursorStoredResult)
 	newFixtureDB(t, second, cursorStoreDDL)
-	var store cursorToolStore
+	store := newCursorToolStoreForTest(t)
 	found, err := store.read(t.Context(), first, []string{"search"})
 	require.NoError(t, err)
 	require.Contains(t, found, "search")
@@ -140,6 +152,7 @@ func TestCursorToolTranscriptEnrichesAfterProviderWrites(t *testing.T) {
 	insertCursorBlob(t, db, "request", cursorStoredRequest)
 	sink := &testSink{}
 	transcript := newCursorToolTranscript(t.Context(), sink, func() string { return path })
+	releaseToolStoreAtTestEnd(t, transcript)
 	original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","kind":"search","status":"completed","rawOutput":{"totalMatches":1}}`)
 	initialSupplement := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"completed","protocol":{"title":"Search files"}}`)
 	span := SpanInfo{SpanID: "search", SpanType: "search", Closing: true}
@@ -181,6 +194,7 @@ func TestCursorToolTranscriptPreservesResultsWithoutStoreData(t *testing.T) {
 	for _, path := range []string{"", filepath.Join(t.TempDir(), "absent.db")} {
 		sink := &testSink{}
 		transcript := newCursorToolTranscript(t.Context(), sink, func() string { return path })
+		releaseToolStoreAtTestEnd(t, transcript)
 		original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"failed","rawOutput":{"error":"permission denied"}}`)
 		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "search", Closing: true}))
 		require.NoError(t, transcript.PersistTurnEnd(MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, SpanInfo{}))
@@ -198,6 +212,7 @@ func TestCursorToolTranscriptEnrichesSessionReplay(t *testing.T) {
 	var activePath string
 	sink := &testSink{}
 	transcript := newCursorToolTranscript(t.Context(), sink, func() string { return activePath })
+	releaseToolStoreAtTestEnd(t, transcript)
 	original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"completed","rawOutput":{"totalMatches":1}}`)
 	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "search", Closing: true}))
 	assert.Empty(t, sink.Messages()[0].SupplementalContent)
@@ -223,6 +238,7 @@ func TestCursorToolTranscriptDiscardsPendingFromPreviousSession(t *testing.T) {
 	insertCursorBlob(t, second, "result", cursorStoredResult)
 	sink := &testSink{}
 	transcript := newCursorToolTranscript(t.Context(), sink, func() string { return activePath })
+	releaseToolStoreAtTestEnd(t, transcript)
 	original := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"search","status":"completed"}`)
 	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: original}, SpanInfo{SpanID: "search", Closing: true}))
 	activePath = secondPath

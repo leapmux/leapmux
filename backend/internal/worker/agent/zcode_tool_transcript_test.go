@@ -23,6 +23,7 @@ func TestZCodeToolTranscriptRecoversCompletedImagesAfterProcessCancellation(t *t
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	f.transcript = newZCodeToolTranscript(ctx, f.sink, func() zcodeToolStoreLocation { return f.location })
+	releaseToolStoreAtTestEnd(t, f.transcript)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
 	require.NoError(t, err)
 	f.writeArtifact(t, "session")
@@ -52,6 +53,7 @@ func newZCodeTranscriptFixture(t *testing.T, createDatabase bool) *zcodeTranscri
 		f.db = newFixtureDB(t, f.location.databasePath, zcodeToolStoreDDL)
 	}
 	f.transcript = newZCodeToolTranscript(t.Context(), f.sink, func() zcodeToolStoreLocation { return f.location })
+	releaseToolStoreAtTestEnd(t, f.transcript)
 	return f
 }
 

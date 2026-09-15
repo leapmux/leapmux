@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -300,7 +301,16 @@ func TestZCodeToolStoreKeepsItsHandleWhenAStatFails(t *testing.T) {
 // unlinked inode and answers every later read from the deleted file. A path
 // comparison cannot see that, because ZCode's database path never changes within
 // one agent. Cursor and Reasonix already compared by inode; see sessionStoreMoved.
+//
+// Windows cannot stage this, and it also cannot reach the defect. SQLite opens every
+// file with FILE_SHARE_READ|FILE_SHARE_WRITE and never FILE_SHARE_DELETE, so the open
+// handle below refuses the os.Remove that the replacement needs -- and it refuses the
+// owning runtime the same delete, which is what makes the cached handle unable to
+// outlive its file there. See the Windows note on sessionStoreMoved.
 func TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to delete a file that an open SQLite handle holds")
+	}
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "store.db")
