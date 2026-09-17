@@ -48,7 +48,7 @@ function looksLikeAddress(label: string): boolean {
   // than as one regex because the regex form needs two open-ended quantifiers
   // that can trade characters, and a hostile label would then cost polynomial
   // time to reject.
-  const host = label.split('/', 1)[0]
+  const host = label.split('/', 1)[0] ?? ''
   return host.includes('.') && !host.startsWith('.') && !host.endsWith('.')
 }
 

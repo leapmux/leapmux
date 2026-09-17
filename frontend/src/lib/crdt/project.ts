@@ -720,6 +720,8 @@ function registeredRoots(state: UserCrdtState): Map<string, string> {
   // `project.go:registeredRoots` sorts and first-wins identically.
   for (const wsId of Object.keys(state.workspaces).sort()) {
     const ws = state.workspaces[wsId]
+    if (ws === undefined)
+      continue
     if (ws.rootNodeId !== '' && !roots.has(ws.rootNodeId))
       roots.set(ws.rootNodeId, wsId)
   }
@@ -728,6 +730,8 @@ function registeredRoots(state: UserCrdtState): Map<string, string> {
   // while a window root may be tombstoned by an internal sweep.
   for (const windowId of Object.keys(state.floatingWindows).sort()) {
     const fw = state.floatingWindows[windowId]
+    if (fw === undefined)
+      continue
     // Only LIVE (non-tombstoned) floating windows contribute a root.
     // Mirrors `backend/internal/hub/crdt/project.go:registeredRoots`,
     // which skips tombstoned windows with the same guard. The prior
@@ -871,9 +875,7 @@ function buildTree(rec: NodeRecord, childIndex: Map<string, NodeRecord[]>, seen:
       const pb = b.position?.value ?? ''
       return pa !== pb ? cmpStr(pa, pb) : cmpStr(a.nodeId, b.nodeId)
     })
-    const built = Array.from<RenderTree>({ length: sorted.length })
-    for (let i = 0; i < sorted.length; i++)
-      built[i] = buildTree(sorted[i], childIndex, seen, cache)
+    const built = sorted.map(child => buildTree(child, childIndex, seen, cache))
     // SPLIT with one live child renders as just that child (visual collapse),
     // under the CHILD's own node id.
     //
@@ -888,8 +890,11 @@ function buildTree(rec: NodeRecord, childIndex: Map<string, NodeRecord[]>, seen:
     //
     // Nothing to cache under this node: the tree it returns is the child's, and
     // the child cached it under its own id.
-    if (built.length === 1)
-      return built[0]
+    if (built.length === 1) {
+      const only = built[0]
+      if (only !== undefined)
+        return only
+    }
     children = built
   }
   else if (kind === NodeKind.GRID && rows > 0 && cols > 0) {
@@ -988,8 +993,9 @@ function normalizeRatios(ratios: readonly number[], n: number): number[] {
   const out = Array.from<number>({ length: n })
   for (let i = 0; i < n; i++) out[i] = 1.0 / n
   for (let i = 0; i < n && i < ratios.length; i++) {
-    if (ratios[i] >= 0)
-      out[i] = ratios[i]
+    const r = ratios[i]
+    if (r !== undefined && r >= 0)
+      out[i] = r
   }
   return out
 }

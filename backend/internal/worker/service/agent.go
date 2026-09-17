@@ -792,8 +792,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
 			if len(changes) > 0 {
 				svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-					"type":    contracts.NotificationTypeSettingsChanged,
-					"changes": changes,
+					contracts.NotificationFieldType:    contracts.NotificationTypeSettingsChanged,
+					contracts.NotificationFieldChanges: changes,
 				})
 			}
 
@@ -1892,8 +1892,8 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if !running {
 		svc.broadcastAgentInactive(&activeDbAgent)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to apply the settings changed during startup; the agent stopped. Send a message to start it again.",
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: "Failed to apply the settings changed during startup; the agent stopped. Send a message to start it again.",
 		})
 		return
 	}
@@ -2346,15 +2346,15 @@ func reportModelChange(provider leapmuxv1.AgentProvider, oldModel, settledModel 
 
 // optionChangeEntry is the settings_changed payload for one changed option group: the value
 // ids (old/new) and their human-readable labels, plus the group's own label. It marshals to
-// the {old,new,oldLabel,newLabel,label} JSON shape the chat-view notification renderer reads
+// the {old,new,old_label,new_label,label} JSON shape the chat-view notification renderer reads
 // (see frontend notificationRenderers). Using a typed struct rather than a bare
 // map[string]string makes a misspelled key a compile error here instead of a silently-absent
 // field in the UI, and documents the wire shape in one place that every emitter shares.
 type optionChangeEntry struct {
 	Old        string `json:"old"`
 	New        string `json:"new"`
-	OldLabel   string `json:"oldLabel"`
-	NewLabel   string `json:"newLabel"`
+	OldLabel   string `json:"old_label"`
+	NewLabel   string `json:"new_label"`
 	GroupLabel string `json:"label"`
 }
 
@@ -2645,8 +2645,8 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 	if err != nil {
 		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": messages.pauseFailedNotice + err.Error(),
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: messages.pauseFailedNotice + err.Error(),
 		})
 		return "", err
 	}
@@ -2695,8 +2695,8 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, options Opti
 		// non-existent session on the next message.
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": messages.restartFailedNotice + err.Error(),
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: messages.restartFailedNotice + err.Error(),
 		})
 		return "", err
 	}
@@ -2738,7 +2738,7 @@ var forcedStopMessages = restartMessages{
 }
 
 // buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
-// {old,new,oldLabel,newLabel,label} entry per axis in `keys` whose value actually changed between
+// {old,new,old_label,new_label,label} entry per axis in `keys` whose value actually changed between
 // the prior options (oldOptions) and the settled values (newOptions). Display labels are resolved
 // here against the agent's option-group catalog so the frontend needs no label maps of its own.
 // When notifyFirstSet is false, an axis whose prior value was empty (a first set) is skipped.
@@ -2992,8 +2992,8 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		svc.persistAgentStartupError(agentID, errMsg)
 		svc.broadcastAgentFailed(&dbAgent, errMsg, nil)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart agent after clearing context: " + errMsg,
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: "Failed to restart agent after clearing context: " + errMsg,
 		})
 		return nil, err
 	}
@@ -3016,7 +3016,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		// STARTUP_FAILED pair above stands on its own so clients do not see a
 		// "cleared" UI state for an agent that is down.
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypeContextCleared,
+			contracts.NotificationFieldType: contracts.NotificationTypeContextCleared,
 		})
 
 		// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
@@ -3531,11 +3531,11 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
 	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": contracts.NotificationTypeContextCleared,
+		contracts.NotificationFieldType: contracts.NotificationTypeContextCleared,
 	})
 	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":           contracts.NotificationTypePlanExecution,
-		"plan_file_path": dbAgent.PlanFilePath,
+		contracts.NotificationFieldType:         contracts.NotificationTypePlanExecution,
+		contracts.NotificationFieldPlanFilePath: dbAgent.PlanFilePath,
 	})
 
 	// Restart agent with plan content. Use svc.startAgent — the
@@ -3555,8 +3555,8 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Failed to restart agent for plan execution: " + err.Error(),
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: "Failed to restart agent for plan execution: " + err.Error(),
 		})
 		return "", err
 	}

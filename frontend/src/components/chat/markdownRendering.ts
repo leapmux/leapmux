@@ -1,4 +1,4 @@
-import type { RenderContext } from './messageRenderers'
+import type { MarkdownRenderContext } from './renderContext'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
@@ -9,17 +9,17 @@ export function markdownCacheNamespace(): string {
 }
 
 /** Return true when a renderer must keep the displayed syntax stable. */
-export function shouldPauseSyntaxHighlighting(context: RenderContext | undefined): boolean {
+export function shouldPauseSyntaxHighlighting(context: MarkdownRenderContext | undefined): boolean {
   return context?.premeasureMode === true || context?.syntaxHighlightingPaused?.() === true || isTextSelectionActive(context)
 }
 
-function isTextSelectionActive(context: RenderContext | undefined): boolean {
+function isTextSelectionActive(context: MarkdownRenderContext | undefined): boolean {
   return context?.textSelectionActive?.() === true
 }
 
 function cachedHighlightedMarkdown(
   text: string,
-  context: RenderContext | undefined,
+  context: MarkdownRenderContext | undefined,
 ): string | undefined {
   const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
   if (rowCached !== undefined)
@@ -29,7 +29,7 @@ function cachedHighlightedMarkdown(
 }
 
 function rememberDisplayedMarkdown(
-  context: RenderContext | undefined,
+  context: MarkdownRenderContext | undefined,
   text: string,
   html: string,
 ): string {
@@ -37,7 +37,7 @@ function rememberDisplayedMarkdown(
 }
 
 /** Render markdown without replacing selected text or stale theme colors. */
-export function renderMarkdownForContext(text: string, context: RenderContext | undefined): string {
+export function renderMarkdownForContext(text: string, context: MarkdownRenderContext | undefined): string {
   if (context?.premeasureMode)
     return cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text))
   if (isTextSelectionActive(context)) {

@@ -26,7 +26,7 @@ function items(testId: string): string[] {
     .map(el => el.textContent?.trim() ?? '')
 }
 
-describe('repositoryTargetMenu', () => {
+describe('RepositoryTargetMenu', () => {
   // A submenu holding the only choice is a click the user should not have to
   // make, which is the rule the tab-creation items already followed.
   it('renders one target FLAT, with no submenu and no header', () => {

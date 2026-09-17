@@ -9,7 +9,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeR
 
 installScrollTestEnv()
 
-describe('usechatscroll programmatic-write pagination guard', () => {
+describe('useChatScroll programmatic-write pagination guard', () => {
   it('does not swallow a user scroll that lands mid programmatic-write burst', () =>
     createRoot((dispose) => {
       const div = makeFakeScrollDiv()
@@ -76,7 +76,7 @@ describe('usechatscroll programmatic-write pagination guard', () => {
     }))
 })
 
-describe('usechatscroll auto-load through hidden-only window pages', () => {
+describe('useChatScroll auto-load through hidden-only window pages', () => {
   // makeStubVirtualizer reports totalHeight() === 0, which models a window with
   // no VISIBLE rows (e.g. a 150-message page that is entirely hidden items).
   it('auto-loads older when the window has no visible rows and older history exists', () =>
@@ -909,7 +909,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
     }))
 })
 
-describe('usechatscroll fresh-mount placement vs older prefetch', () => {
+describe('useChatScroll fresh-mount placement vs older prefetch', () => {
   // A FRESH hook mount over an ALREADY-POPULATED window models both production
   // remount paths: a tile SPLIT (the layout-tree change recreates the leaf subtree,
   // remounting ChatView) and a page reload whose WatchEvents replay landed before the
@@ -1154,7 +1154,7 @@ describe('usechatscroll fresh-mount placement vs older prefetch', () => {
     }))
 })
 
-describe('usechatscroll scroll pagination dispatch', () => {
+describe('useChatScroll scroll pagination dispatch', () => {
   it('loads a single direction (not both) when a small bidirectional window reads as near at both edges', () => {
     createRoot((dispose) => {
       const div = makeFakeScrollDiv()

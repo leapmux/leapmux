@@ -54,7 +54,10 @@ describe('createStableContext usage', () => {
     const byKey = new Map<string, string[]>()
     for (const file of sourceFiles) {
       const source = readFileSync(file, 'utf8')
-      for (const [, key] of source.matchAll(/createStableContext(?:\s*<[^>]*>)?\s*\(\s*'([^']+)'/g)) {
+      for (const match of source.matchAll(/createStableContext(?:\s*<[^>]*>)?\s*\(\s*'([^']+)'/g)) {
+        const key = match[1]
+        if (key === undefined)
+          continue
         const owners = byKey.get(key) ?? []
         owners.push(posixRelative(frontendRoot, file))
         byKey.set(key, owners)

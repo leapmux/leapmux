@@ -1117,7 +1117,8 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(2000)
           hook.handlers.onScroll()
           expect(jumpWarns()).toHaveLength(2)
-          expect(jumpWarns()[1][2]).toMatchObject({ suppressedSinceLastWarn: 1 })
+          // Two warns asserted above; `?.` is the type-level guard alone.
+          expect(jumpWarns()[1]?.[2]).toMatchObject({ suppressedSinceLastWarn: 1 })
           nowSpy.mockRestore()
           dispose()
           resolve()

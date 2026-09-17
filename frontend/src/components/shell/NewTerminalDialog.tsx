@@ -54,8 +54,8 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const { submit: { submitting, error, setError, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create terminal' },
     worker: {
-      preselectedWorkerId: props.defaultWorkerId,
-      defaultWorkingDir: props.defaultWorkingDir,
+      ...(props.defaultWorkerId !== undefined ? { preselectedWorkerId: props.defaultWorkerId } : {}),
+      ...(props.defaultWorkingDir !== undefined ? { defaultWorkingDir: props.defaultWorkingDir } : {}),
     },
     pathInfo: { remapWorktreeRoot: true },
   })
@@ -78,15 +78,20 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   // keystroke — the memo keeps those walks to one per actual change.
   const blockedReason = createMemo(() => props.blockedReason?.())
 
-  const submitDisabled = () => isTerminalCreateDisabled({
-    submitting: submitting.loading(),
-    blockedReason: blockedReason(),
-    workerId: worker.workerId(),
-    workingDir: worker.workingDir(),
-    shell: shell(),
-    titleError: title.error(),
-    git: gitMode.currentIntent(),
-  })
+  const submitDisabled = () => {
+    // Hoisted so the spreads narrow; the state takes no explicit undefined.
+    const reason = blockedReason()
+    const intent = gitMode.currentIntent()
+    return isTerminalCreateDisabled({
+      submitting: submitting.loading(),
+      ...(reason !== undefined ? { blockedReason: reason } : {}),
+      workerId: worker.workerId(),
+      workingDir: worker.workingDir(),
+      shell: shell(),
+      titleError: title.error(),
+      ...(intent !== undefined ? { git: intent } : {}),
+    })
+  }
 
   const handleSubmit = formHandler(submitDisabled, async () => {
     const resp = await workerRpc.openTerminal(worker.workerId(), {

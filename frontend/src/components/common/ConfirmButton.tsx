@@ -182,11 +182,16 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
   // With neither `tooltip` nor `blocked`, `text` is undefined: `<Tooltip>` then
   // has nothing to show, keeps its wrapper at `display: contents`, and installs
   // no observer. `IconButton` wraps unconditionally on the same terms.
+  // `text`/`ariaLabel` fall back to '' rather than undefined: `Tooltip` reads
+  // both only for truthiness, so the empty string is the same "nothing to
+  // show / no label" as the absent key. `describedBy` is different -- ''
+  // would reach aria-describedby as an id that matches nothing -- so the key
+  // is spread in only when a blocked reason exists.
   return (
     <Tooltip
-      text={local.blocked?.reason ?? tooltipText()}
-      describedBy={local.blocked?.reasonId}
-      ariaLabel={tooltipText()}
+      text={local.blocked?.reason ?? tooltipText() ?? ''}
+      {...(local.blocked?.reasonId !== undefined ? { describedBy: local.blocked.reasonId } : {})}
+      ariaLabel={tooltipText() ?? ''}
     >
       {button}
     </Tooltip>

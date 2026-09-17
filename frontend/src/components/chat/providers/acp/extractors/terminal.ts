@@ -1,5 +1,8 @@
-import type { CommandResultEntry } from '../../../results/commandResult'
-import { isObject, pickBoolean, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import type { CommandResult } from '../../../ir/commandResult'
+import type { ACPToolSupplement } from '../toolSupplement'
+import { ACP_BLOCK_TYPE, ACP_CONTENT_BLOCK } from '~/generated/contracts/acp-protocol'
+import { isObject, pickString } from '~/lib/jsonPick'
+import { acpSupplementTerminals } from '../toolSupplement'
 
 /**
  * First ACP tool-call content entry of `{ type: 'terminal', terminalId }`.
@@ -15,10 +18,9 @@ export function acpTerminalIds(
   for (const entry of content) {
     if (!isObject(entry))
       continue
-    const obj = entry as Record<string, unknown>
-    if (obj.type !== 'terminal')
+    if (entry[ACP_CONTENT_BLOCK.Type] !== ACP_BLOCK_TYPE.Terminal)
       continue
-    const terminalId = pickString(obj, 'terminalId')
+    const terminalId = pickString(entry, ACP_CONTENT_BLOCK.TerminalID)
     if (!terminalId)
       continue
     ids.add(terminalId)
@@ -27,26 +29,24 @@ export function acpTerminalIds(
 }
 
 /** Resolve only terminal IDs that this tool call actually carries. */
-export function acpTerminalResults(tool: Record<string, unknown>, supplemental: Record<string, unknown> | undefined): { entries: CommandResultEntry[], unresolved: string[] } {
-  const entries: CommandResultEntry[] = []
+export function acpTerminalResults(tool: Record<string, unknown>, supplemental: ACPToolSupplement | undefined): { entries: CommandResult[], unresolved: string[] } {
+  const entries: CommandResult[] = []
   const unresolved: string[] = []
-  const terminals = pickObject(supplemental, 'terminals')
-  for (const id of acpTerminalIds(tool.content)) {
-    const result = pickObject(terminals, id)
-    if (typeof result?.output !== 'string') {
+  const terminals = acpSupplementTerminals(supplemental)
+  for (const id of acpTerminalIds(tool[ACP_CONTENT_BLOCK.Content])) {
+    const result = terminals.get(id)
+    if (!result) {
       unresolved.push(id)
       continue
     }
-    const exitCode = pickNumber(result, 'exitCode', undefined)
     entries.push({
       label: `Terminal ${id}`,
-      source: {
-        output: result.output,
-        exitCode,
-        truncated: pickBoolean(result, 'truncated') ?? false,
-        interrupted: tool.status === 'cancelled',
-        isError: exitCode !== undefined && exitCode !== 0,
-      },
+      output: result.output,
+      truncated: result.truncated,
+      // Exactly one, because the worker derives them from one process state, and a
+      // terminal still running states neither. One chained spread, so the exit the
+      // type carries stays exclusive instead of two independent optional keys.
+      ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : result.signal !== undefined ? { signal: result.signal } : {}),
     })
   }
   return { entries, unresolved }

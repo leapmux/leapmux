@@ -67,7 +67,8 @@ export function codexDecisionKey(value: unknown): string {
     return 'unknown'
   if (typeof decision === 'string')
     return decision
-  return Object.keys(decision)[0]
+  // The parser admits an object decision only with exactly one key.
+  return Object.keys(decision)[0] ?? 'unknown'
 }
 
 /** Extract Codex approval params from the control request payload. */
@@ -122,8 +123,11 @@ export function sendCodexUserInputResponse(
 ): Promise<void> {
   const answers: Record<string, { answers: string[] }> = {}
   for (let i = 0; i < questions.length; i++) {
-    const values = codexAnswerValues(questions[i], i, answerState)
-    const key = questions[i].id || questions[i].header || `q${i}`
+    const question = questions[i]
+    if (question === undefined)
+      continue
+    const values = codexAnswerValues(question, i, answerState)
+    const key = question.id || question.header || `q${i}`
     answers[key] = { answers: values }
   }
   return sendJsonRpcResult(onRespond, requestId, { answers })
@@ -303,7 +307,15 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   if (negative)
     consumed.add(negative)
   const additional = decisions.filter(decision => !consumed.has(decision))
-  return { negative, positive, allowChoices, additional }
+  // Each optional half is OMITTED rather than passed as `undefined`: the banner
+  // reads the key's absence as "no button of this polarity", which is the rule the
+  // doc above states.
+  return {
+    ...(negative !== undefined ? { negative } : {}),
+    ...(positive !== undefined ? { positive } : {}),
+    ...(allowChoices !== undefined ? { allowChoices } : {}),
+    additional,
+  }
 }
 
 export function codexRequestedPermissions(payload: Record<string, unknown>): Record<string, unknown> {

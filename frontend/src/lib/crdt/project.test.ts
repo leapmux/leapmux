@@ -32,10 +32,11 @@ function hlc(p: bigint, l: bigint, c: string) {
 // had a stack of byte-identical wrappers differing only in the oneof case, and a
 // new field meant another copy. The named helpers below stay -- they read better
 // at a call site than an inline oneof literal -- but they no longer repeat the
-// envelope.
-type NodeField = MessageInitShape<typeof SetNodeRegisterOpSchema>['field']
-type TabField = MessageInitShape<typeof SetTabRegisterOpSchema>['field']
-type FwField = MessageInitShape<typeof SetFloatingWindowRegisterOpSchema>['field']
+// envelope. Exclude<..., undefined> drops the oneof's "no member selected" arm:
+// a builder call always names a field.
+type NodeField = Exclude<MessageInitShape<typeof SetNodeRegisterOpSchema>['field'], undefined>
+type TabField = Exclude<MessageInitShape<typeof SetTabRegisterOpSchema>['field'], undefined>
+type FwField = Exclude<MessageInitShape<typeof SetFloatingWindowRegisterOpSchema>['field'], undefined>
 
 function setNodeOp(nodeId: string, field: NodeField, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
@@ -168,7 +169,7 @@ describe('project', () => {
     const proj = project(state)
     expect(proj.ownedTabs.length).toBe(1)
     expect(proj.renderedTabs.length).toBe(1)
-    expect(proj.renderedTabs[0].workspaceId).toBe('w1')
+    expect(proj.renderedTabs[0]?.workspaceId).toBe('w1')
   })
 })
 
@@ -495,7 +496,10 @@ describe('projection cache', () => {
   const REDACTION_RATE = 0.03
 
   function pick<T>(rand: () => number, xs: readonly T[]): T {
-    return xs[Math.floor(rand() * xs.length)]
+    const x = xs[Math.floor(rand() * xs.length)]
+    if (x === undefined)
+      throw new Error('pick called with an empty pool')
+    return x
   }
 
   function pickWeighted(rand: () => number) {
@@ -505,7 +509,12 @@ describe('projection cache', () => {
       if (n < 0)
         return op
     }
-    return FUZZ_OPS[FUZZ_OPS.length - 1]
+    // Same value the index access produced before; the guard only satisfies
+    // noUncheckedIndexedAccess (FUZZ_OPS is a non-empty constant table).
+    const fallback = FUZZ_OPS[FUZZ_OPS.length - 1]
+    if (fallback === undefined)
+      throw new Error('FUZZ_OPS must not be empty')
+    return fallback
   }
 
   it('agrees with the uncached projection after every op, across every register', () => {
@@ -786,7 +795,7 @@ describe('projection cache', () => {
     // Three of four cells. The missing one renders as a virtual empty leaf,
     // which used to be a fresh object per call -- enough on its own to make
     // every grid with a hole miss forever.
-    for (const [id, pos] of [['c00', '0,0'], ['c01', '0,1'], ['c10', '1,0']]) {
+    for (const [id, pos] of [['c00', '0,0'], ['c01', '0,1'], ['c10', '1,0']] as const) {
       applyOp(state, setNodeKindOp(id, NodeKind.LEAF, 1n, next(), 'a'))
       applyOp(state, setNodeParentOp(id, 'root', 1n, next(), 'a'))
       applyOp(state, setNodePosOp(id, pos, 1n, next(), 'a'))
@@ -794,7 +803,7 @@ describe('projection cache', () => {
     const cache = new ProjectionCache()
     const first = project(state, cache)
     expect(first.workspaces.get('w1')?.mainTree.children).toHaveLength(4)
-    expect(first.workspaces.get('w1')?.mainTree.children[3].nodeId).toBe('')
+    expect(first.workspaces.get('w1')?.mainTree.children[3]?.nodeId).toBe('')
     expect(project(state, cache)).toBe(first)
   })
 
@@ -860,6 +869,8 @@ describe('projection cache', () => {
     // not arrived, so no chain reaches a root and the tab drops out of the
     // projection while `tabView` holds it on screen.
     const tile = state.nodes.leafA1
+    if (tile === undefined)
+      throw new Error('fixture node leafA1 must exist before deletion')
     delete state.nodes.leafA1
     const gone = project(state, cache)
     expect(rowFor(gone, 'tabA1'), 'unplaceable while the tile is unknown').toBeUndefined()
@@ -883,6 +894,8 @@ describe('projection cache', () => {
     const row = rowFor(before, 'tabA1')
 
     const tile = state.nodes.leafA1
+    if (tile === undefined)
+      throw new Error('fixture node leafA1 must exist before deletion')
     delete state.nodes.leafA1
     project(state, cache)
     applyOp(state, setTabTileOp('tabA1', 'leafA2', 2n, next(), 'a'))

@@ -136,7 +136,7 @@ describe('createSessionIdState', () => {
   })
 })
 
-describe('sessionIdInput', () => {
+describe('SessionIdInput', () => {
   it('renders the value and forwards onInput to setValue', () => {
     const state = createSessionIdState(claude)
     render(() => <SessionIdInput state={state} />)
@@ -153,7 +153,7 @@ describe('sessionIdInput', () => {
   })
 })
 
-describe('sessionIdInput accessibility', () => {
+describe('SessionIdInput accessibility', () => {
   // The visible label is a plain `div`, so without an explicit aria-label the
   // PLACEHOLDER becomes the last-resort accessible name — and that name then
   // changes with the selected provider, from "Session ID" to "Session ID or

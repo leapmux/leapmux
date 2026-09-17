@@ -13,7 +13,7 @@ import {
   stringArray,
 } from './jsonPick'
 
-describe('isobject', () => {
+describe('isObject', () => {
   it('accepts plain objects', () => {
     expect(isObject({})).toBe(true)
     expect(isObject({ a: 1 })).toBe(true)
@@ -27,7 +27,7 @@ describe('isobject', () => {
   })
 })
 
-describe('pickstring', () => {
+describe('pickString', () => {
   it('returns the string value when present', () => {
     expect(pickString({ a: 'x' }, 'a')).toBe('x')
   })
@@ -42,7 +42,7 @@ describe('pickstring', () => {
   })
 })
 
-describe('picknumber', () => {
+describe('pickNumber', () => {
   it('returns the number value when present', () => {
     expect(pickNumber({ n: 42 }, 'n')).toBe(42)
   })
@@ -56,7 +56,7 @@ describe('picknumber', () => {
   })
 })
 
-describe('pickbool', () => {
+describe('pickBool', () => {
   it('returns true only for the strict boolean true', () => {
     expect(pickBool({ b: true }, 'b')).toBe(true)
   })
@@ -68,7 +68,7 @@ describe('pickbool', () => {
   })
 })
 
-describe('pickobject', () => {
+describe('pickObject', () => {
   it('returns the nested object when present', () => {
     expect(pickObject({ o: { a: 1 } }, 'o')).toEqual({ a: 1 })
   })
@@ -86,7 +86,7 @@ describe('pickobject', () => {
   })
 })
 
-describe('pickfirststring', () => {
+describe('pickFirstString', () => {
   it('returns the first matching string from key candidates', () => {
     expect(pickFirstString({ b: 'second', a: 'first' }, ['a', 'b'])).toBe('first')
     expect(pickFirstString({ b: 'second' }, ['a', 'b'])).toBe('second')
@@ -97,7 +97,7 @@ describe('pickfirststring', () => {
   })
 })
 
-describe('pickfirstnumber', () => {
+describe('pickFirstNumber', () => {
   it('returns the first matching number from key candidates', () => {
     expect(pickFirstNumber({ b: 2, a: 1 }, ['a', 'b'])).toBe(1)
     expect(pickFirstNumber({ b: 2 }, ['a', 'b'])).toBe(2)
@@ -108,7 +108,7 @@ describe('pickfirstnumber', () => {
   })
 })
 
-describe('pickfirstobject', () => {
+describe('pickFirstObject', () => {
   it('returns the first matching object from key candidates', () => {
     expect(pickFirstObject({ b: { v: 2 }, a: { v: 1 } }, ['a', 'b'])).toEqual({ v: 1 })
     expect(pickFirstObject({ b: { v: 2 } }, ['a', 'b'])).toEqual({ v: 2 })
@@ -123,7 +123,7 @@ describe('pickfirstobject', () => {
   })
 })
 
-describe('stringarray', () => {
+describe('stringArray', () => {
   it('keeps only the string elements of an array', () => {
     expect(stringArray(['a', 1, 'b', null, 'c', undefined, {}])).toEqual(['a', 'b', 'c'])
   })
@@ -136,7 +136,7 @@ describe('stringarray', () => {
   })
 })
 
-describe('pickboolean', () => {
+describe('pickBoolean', () => {
   it('returns the boolean when the value is one', () => {
     expect(pickBoolean({ b: true }, 'b')).toBe(true)
     expect(pickBoolean({ b: false }, 'b')).toBe(false)

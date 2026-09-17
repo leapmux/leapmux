@@ -29,8 +29,8 @@ function renderPopover(opts: {
       optionGroups={opts.groups ?? [group({ options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus' })]}
       optionValues={opts.values ?? {}}
       onChange={onChange}
-      disabledReason={opts.disabled ? 'This subagent doesn\'t accept messages.' : undefined}
-      popoverTestId={opts.popoverTestId}
+      {...(opts.disabled ? { disabledReason: 'This subagent doesn\'t accept messages.' } : {})}
+      {...(opts.popoverTestId === undefined ? {} : { popoverTestId: opts.popoverTestId })}
       trigger={(triggerProps, view) => (
         <button data-testid="trigger" {...triggerProps}>
           {view.currentLabel || view.label}
@@ -67,7 +67,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('optionGroupPopover', () => {
+describe('OptionGroupPopover', () => {
   it('shows the resolved current option in the trigger view', () => {
     const { trigger } = renderPopover()
     expect(trigger).toHaveTextContent('Opus')

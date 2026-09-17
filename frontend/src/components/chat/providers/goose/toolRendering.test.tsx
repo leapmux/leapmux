@@ -102,15 +102,16 @@ describe('goose native tools', () => {
     expect(container.querySelector(`.${diffAdded}`)).toBeNull()
   })
 
-  it('keeps a failed write and labels its requested changes', () => {
+  it('draws no requested diff for a failed write', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       rawInput: { path: 'sample.py', content: 'unwritten()' },
       _meta: { goose: { toolCall: { toolName: 'write', extensionName: 'developer' } } },
     }, { status: 'failed', content: acpTextContent('Permission denied') })
     expect(container.textContent).toContain('Permission denied')
     expect(container.textContent).toContain('Error')
-    expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('unwritten()')
-    expect(container.textContent?.match(/Requested changes/g)).toHaveLength(1)
+    // The file took nothing, so the attempted content draws nowhere.
+    expect(container.querySelector(`.${diffAdded}`)).toBeNull()
+    expect(container.textContent).not.toContain('Requested changes')
   })
 })
 

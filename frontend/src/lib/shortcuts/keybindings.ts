@@ -73,10 +73,11 @@ export function mergeKeybindings(
       for (const o of commandOverrides) {
         if (o.key === '')
           continue
+        const when = o.when ?? def.when
         result.push({
           key: o.key,
           command: def.command,
-          when: o.when ?? def.when,
+          ...(when !== undefined ? { when } : {}),
           args: def.args,
         })
       }
@@ -98,7 +99,7 @@ export function mergeKeybindings(
       result.push({
         key: o.key,
         command: o.command,
-        when: o.when,
+        ...(o.when !== undefined ? { when: o.when } : {}),
       })
     }
   }
@@ -131,7 +132,7 @@ const SINGLE_LETTER_RE = /^[a-z]$/i
 
 /** Check if a key string contains modifier keys. */
 function hasModifier(key: string): boolean {
-  const first = key.split(' ')[0]
+  const first = key.split(' ')[0] ?? ''
   return MODIFIER_RE.test(first)
 }
 
@@ -222,9 +223,9 @@ function toTinykeysKey(key: string): string {
 
 /** Check if a key string is a plain function key like F5 or F12. */
 function isPlainFunctionKey(key: string): boolean {
-  const firstChord = key.split(' ')[0]
+  const firstChord = key.split(' ')[0] ?? ''
   const parts = firstChord.split('+')
-  return parts.length === 1 && FUNCTION_KEY_RE.test(parts[0])
+  return parts.length === 1 && FUNCTION_KEY_RE.test(parts[0] ?? '')
 }
 
 /**

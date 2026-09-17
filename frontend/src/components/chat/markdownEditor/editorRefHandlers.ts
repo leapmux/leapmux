@@ -50,10 +50,14 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
           const lastChild = doc.lastChild
           if (lastChild && lastChild.type.name === 'blockquote') {
             const insertPos = doc.content.size
-            const paragraph = schema.nodes.paragraph.create()
-            const tr = view.state.tr.insert(insertPos, paragraph)
-            tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
-            view.dispatch(tr)
+            // The prose schema always registers `paragraph` for this editor;
+            // `?.` is the type-level guard alone.
+            const paragraph = schema.nodes.paragraph?.create()
+            if (paragraph) {
+              const tr = view.state.tr.insert(insertPos, paragraph)
+              tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
+              view.dispatch(tr)
+            }
           }
           else {
             const endPos = doc.content.size - 1

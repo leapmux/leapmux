@@ -96,22 +96,28 @@ export function controlForField(
       const max = limitToNumber(field.max)
       if (field.unit === '%' || field.unit === 'percent')
         return { kind: 'slider', min: min ?? 0, max: max ?? 100, step: 1, unit: '%' }
-      return { kind: 'number', min, max, step: 1, unit: field.unit || undefined }
+      return {
+        kind: 'number',
+        ...(min === undefined ? {} : { min }),
+        ...(max === undefined ? {} : { max }),
+        step: 1,
+        ...(field.unit ? { unit: field.unit } : {}),
+      }
     }
     case SettingFieldKind.FLOAT:
       return {
         kind: 'number',
-        min: field.minF,
-        max: field.maxF,
+        ...(field.minF === undefined ? {} : { min: field.minF }),
+        ...(field.maxF === undefined ? {} : { max: field.maxF }),
         step: 0.05,
-        unit: field.unit || undefined,
+        ...(field.unit ? { unit: field.unit } : {}),
       }
     case SettingFieldKind.STRING:
-      return { kind: 'text', placeholder: field.placeholder || undefined }
+      return { kind: 'text', ...(field.placeholder ? { placeholder: field.placeholder } : {}) }
     case SettingFieldKind.ENUM:
       return {
         kind: 'enum',
-        options: field.enumValues.map(v => ({ value: v.value, label: v.label, help: v.help || undefined })),
+        options: field.enumValues.map(v => ({ value: v.value, label: v.label, ...(v.help ? { help: v.help } : {}) })),
       }
     case SettingFieldKind.STRING_LIST:
       return { kind: 'stringList', addLabel: 'Add' }
@@ -274,7 +280,7 @@ export function buildProtoRows(
         // reset is exact. A field row must state what else goes with it,
         // which is what `resetsWholeKey` makes the row do.
         reset: () => source.reset(desc.key).then(() => undefined),
-        resetsWholeKey: scalar ? undefined : desc.key,
+        ...(scalar ? {} : { resetsWholeKey: desc.key }),
       }
       if (field.secret) {
         binding.set = (v) => {
@@ -317,19 +323,23 @@ export function buildProtoRows(
       const dependsOn = field.dependsOn
       if (dependsOn)
         hideReasons.push(() => !conditionHolds(dependsOn, desc.key, source.values()))
+      // `field.label || desc.title` and the help/summary fallback chain keep
+      // their empty-string-means-absent reading: an omitted property and a
+      // `|| undefined` one both read as undefined at the row.
+      const help = field.help || desc.summary
       rows.push({
         protoKey: desc.key,
         descriptor: {
           id,
           category: desc.category as CategoryId,
           label: field.label || desc.title,
-          help: field.help || desc.summary || undefined,
+          ...(help === '' ? {} : { help }),
           // The setting's own title, so a search for the object name finds
           // every one of its fields even when each field is labelled apart.
           keywords: [desc.title],
           scope: 'hub',
           control,
-          restart: desc.restart || undefined,
+          ...(desc.restart ? { restart: true } : {}),
           // NO `needsElevation` here. `scope: 'hub'` above already answers it,
           // and `descriptorNeedsElevation` reads the scope: the hub requires an
           // elevated session for every settings write rather than for one key
@@ -340,9 +350,9 @@ export function buildProtoRows(
           //
           // Stating it from the SCOPE is what the hub does too, and it leaves
           // no per-key flag that a new key can be added without.
-          hidden: hideReasons.length === 0
-            ? undefined
-            : () => hideReasons.some(holds => holds()),
+          ...(hideReasons.length === 0
+            ? {}
+            : { hidden: () => hideReasons.some(holds => holds()) }),
         },
         binding,
       })

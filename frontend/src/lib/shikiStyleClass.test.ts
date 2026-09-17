@@ -89,7 +89,7 @@ describe('collectNewShikiStyles', () => {
   })
 })
 
-describe('shikistyledecl', () => {
+describe('shikiStyleDecl', () => {
   it('passes a string style through unchanged', () => {
     expect(shikiStyleDecl('--shiki-light:#24292E;--shiki-dark:#E1E4E8')).toBe('--shiki-light:#24292E;--shiki-dark:#E1E4E8')
   })
@@ -106,7 +106,7 @@ describe('shikistyledecl', () => {
   })
 })
 
-describe('shikistyleclassname', () => {
+describe('shikiStyleClassName', () => {
   it('is deterministic and prefixed', () => {
     const name = shikiStyleClassName('--shiki-light:#abc')
     expect(name).toBe(shikiStyleClassName('--shiki-light:#abc'))
@@ -121,7 +121,7 @@ describe('shikistyleclassname', () => {
   })
 })
 
-describe('recordshikistyle', () => {
+describe('recordShikiStyle', () => {
   it('mints a class, injects its rule once, and is idempotent', () => {
     const name = recordShikiStyle('--shiki-light:#abc;--shiki-dark:#def')
     expect(name).toBe(shikiStyleClassName('--shiki-light:#abc;--shiki-dark:#def'))
@@ -129,9 +129,9 @@ describe('recordshikistyle', () => {
     const rules = injectedRules()
     // Injected exactly once despite two record calls.
     expect(rules).toHaveLength(1)
-    expect(rules[0].selector).toBe(`.${name}`)
-    expect(rules[0].light).toBe('#abc')
-    expect(rules[0].dark).toBe('#def')
+    expect(rules[0]?.selector).toBe(`.${name}`)
+    expect(rules[0]?.light).toBe('#abc')
+    expect(rules[0]?.dark).toBe('#def')
   })
 
   it('injects via the CSSOM sheet (insertRule), not a textContent re-parse', () => {
@@ -152,7 +152,7 @@ describe('recordshikistyle', () => {
   })
 })
 
-describe('ensureshikistylerules', () => {
+describe('ensureShikiStyleRules', () => {
   it('injects rules for a worker-shipped dictionary, skipping already-known classes', () => {
     const known = recordShikiStyle('--shiki-light:#111')!
     const foreign = shikiStyleClassName('--shiki-light:#222')
@@ -190,7 +190,7 @@ describe('ensureshikistylerules', () => {
   })
 })
 
-describe('collectshikistyles', () => {
+describe('collectShikiStyles', () => {
   it('snapshots every recorded declaration keyed by class name', () => {
     const a = recordShikiStyle('--shiki-light:#a')!
     const b = recordShikiStyle('--shiki-light:#b')!
@@ -201,7 +201,7 @@ describe('collectshikistyles', () => {
   })
 })
 
-describe('shikistyleclasstransformer', () => {
+describe('shikiStyleClassTransformer', () => {
   const transformer = () => shikiStyleClassTransformer().span! as (node: any) => any
 
   it('moves a token span\'s inline style into a shared class', () => {

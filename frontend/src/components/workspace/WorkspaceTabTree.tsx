@@ -238,9 +238,9 @@ const TabLeaf: Component<{
       <TabContextMenu
         contextMenuFor={rowEl}
         data-testid="tab-tree-leaf-menu"
-        onRename={props.onRename}
-        onClose={props.canClose ? props.onClose : undefined}
-        isClosing={props.isClosing}
+        {...(props.onRename !== undefined ? { onRename: props.onRename } : {})}
+        {...(props.canClose && props.onClose !== undefined ? { onClose: props.onClose } : {})}
+        {...(props.isClosing !== undefined ? { isClosing: props.isClosing } : {})}
       />
     </div>
   )
@@ -315,10 +315,13 @@ interface RowEditingContextValue {
 /**
  * Branch-row callbacks. Only BranchGroupRow consumes these; nested rows
  * ignore the context.
+ *
+ * Both are live getters on the context object, so the property always exists
+ * and an explicit undefined is the only "not set" the getters can express.
  */
 interface BranchActionsContextValue {
-  branchActions?: BranchRefActions
-  isWorkerKnownOnline?: (workerId: string) => boolean
+  branchActions?: BranchRefActions | undefined
+  isWorkerKnownOnline?: ((workerId: string) => boolean) | undefined
 }
 
 const RowSelectionContext = createStableContext<RowSelectionContextValue>('workspace/WorkspaceTabTree#rowSelection')
@@ -349,6 +352,13 @@ function useBranchActions(): BranchActionsContextValue {
 const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   const sel = useRowSelection()
   const edit = useRowEditing()
+  // Spread-ready `isClosing`, read ONCE: the chain answers undefined while no
+  // ops bundle (or closing set) exists, and the spread keeps the prop absent
+  // then -- a second read beside the first could not be narrowed.
+  const isClosingProps = () => {
+    const isClosing = sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))
+    return isClosing !== undefined ? { isClosing } : {}
+  }
   return (
     <TabLeaf
       tab={props.tab}
@@ -359,9 +369,9 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
       editingValue={edit.editingValue()}
       onClick={() => sel.onTabClick(props.tab.type, props.tab.id)}
       onDblClick={() => edit.startEditing(props.tab)}
-      onRename={edit.canRename(props.tab) ? () => edit.startEditing(props.tab) : undefined}
+      {...(edit.canRename(props.tab) ? { onRename: () => edit.startEditing(props.tab) } : {})}
       onClose={() => sel.tabItemOps()?.onClose?.(props.tab)}
-      isClosing={sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))}
+      {...isClosingProps()}
       canClose={sel.canClose()}
       onEditInput={v => edit.setEditingValue(v)}
       onEditCommit={() => edit.commitEdit(props.tab)}
@@ -471,6 +481,20 @@ const BranchGroupRow: Component<{
   })
   // The row element, for its right-click / long-press menu.
   const [rowEl, setRowEl] = createContextMenuAnchor()
+  // Spread-ready `flavor`, read ONCE: the branch answers undefined until the
+  // worker's system info lands, and the spread keeps the prop absent then --
+  // a second `props.branch()` call beside the first could not be narrowed.
+  const flavorProps = () => {
+    const flavor = props.branch().flavor
+    return flavor !== undefined ? { flavor } : {}
+  }
+  // Spread-ready menu reason, read ONCE: `menuDisabledReason()` answers
+  // undefined while the items are usable, and the spread keeps the prop
+  // absent then -- a second call beside the first could not be narrowed.
+  const menuDisabledReasonProps = () => {
+    const reason = menuDisabledReason()
+    return reason !== undefined ? { disabledReason: reason } : {}
+  }
   return (
     <>
       <div
@@ -513,9 +537,9 @@ const BranchGroupRow: Component<{
               isWorktree={props.branch().isWorktree}
               name={props.branch().branchName ?? NO_BRANCH_LABEL}
               directory={props.branch().gitToplevel}
-              homeDir={props.branch().homeDir}
-              flavor={props.branch().flavor}
-              worker={props.branch().workerLabel}
+              {...(props.branch().homeDir !== undefined ? { homeDir: props.branch().homeDir } : {})}
+              {...flavorProps()}
+              {...(props.branch().workerLabel !== undefined ? { worker: props.branch().workerLabel } : {})}
               stats={branchStats()}
             />
           )}
@@ -558,7 +582,7 @@ const BranchGroupRow: Component<{
                   originUrl: repoOriginUrlFromKey(props.repoKey),
                   isLocal: sel.isLocalWorker(props.branch().workerId),
                 })}
-                disabledReason={menuDisabledReason()}
+                {...menuDisabledReasonProps()}
                 actions={bindBranchActions(
                   branchActions(),
                   // Lazy: the ref is built at click time, from the branch this

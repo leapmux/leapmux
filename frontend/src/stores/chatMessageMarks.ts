@@ -108,7 +108,7 @@ const EMPTY_MARKS: MessageMarks = { loaded: false, minSeq: 0n, seedMaxSeq: 0n, m
  */
 export function insertMarkSorted(marks: readonly SeqMark[], seq: bigint, type: MarkType): readonly SeqMark[] {
   const idx = lowerBoundBySeq(marks, seq)
-  if (idx < marks.length && marks[idx].seq === seq)
+  if (idx < marks.length && marks[idx]?.seq === seq)
     return marks
   const next = marks.slice()
   next.splice(idx, 0, { seq, type })
@@ -121,7 +121,7 @@ export function insertMarkSorted(marks: readonly SeqMark[], seq: bigint, type: M
  */
 export function removeMarkAt(marks: readonly SeqMark[], seq: bigint): readonly SeqMark[] {
   const idx = lowerBoundBySeq(marks, seq)
-  if (idx >= marks.length || marks[idx].seq !== seq)
+  if (idx >= marks.length || marks[idx]?.seq !== seq)
     return marks
   const next = marks.slice()
   next.splice(idx, 1)
@@ -132,7 +132,11 @@ export function removeMarkAt(marks: readonly SeqMark[], seq: bigint): readonly S
 function normalizeSeed(marks: readonly SeqMark[]): SeqMark[] {
   let alreadySorted = true
   for (let i = 1; i < marks.length; i++) {
-    if (marks[i - 1].seq > marks[i].seq) {
+    const prev = marks[i - 1]
+    const cur = marks[i]
+    if (prev === undefined || cur === undefined)
+      break
+    if (prev.seq > cur.seq) {
       alreadySorted = false
       break
     }
@@ -140,7 +144,7 @@ function normalizeSeed(marks: readonly SeqMark[]): SeqMark[] {
   const sorted = alreadySorted ? marks : [...marks].sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
   const out: SeqMark[] = []
   for (const m of sorted) {
-    if (out.length > 0 && out[out.length - 1].seq === m.seq)
+    if (out.length > 0 && out[out.length - 1]?.seq === m.seq)
       continue
     out.push({ seq: m.seq, type: m.type })
   }

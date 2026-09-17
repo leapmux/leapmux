@@ -105,7 +105,7 @@ function harness() {
   return { restore, state, writeScrollTop, setSuppressOlder, onGeometrySettled, el }
 }
 
-describe('chatscrollviewportrestore handleResize', () => {
+describe('chatScrollViewportRestore handleResize', () => {
   it('defers a hidden->visible restore while an animation runs, then restores once it ends', () => {
     const raf = installRaf()
     try {
@@ -152,7 +152,7 @@ describe('chatscrollviewportrestore handleResize', () => {
  * windowed away (hasMoreNewer) must be RESTORED to their raw offset, not yanked to
  * the live tail by the tail-snap.
  */
-describe('chatscrollviewportrestore restore priority', () => {
+describe('chatScrollViewportRestore restore priority', () => {
   function priorityHarness(opts: {
     totalHeight: number
     rawScrollTop?: number
@@ -166,10 +166,10 @@ describe('chatscrollviewportrestore restore priority', () => {
     // The exact anchor never resolves (scrollTopForAnchor returns null); a provided
     // `anchor` exercises the nearest-survivor recovery via scrollTopNearAnchor.
     const saved: ChatScrollState = {
-      anchor: opts.anchor,
+      ...(opts.anchor !== undefined ? { anchor: opts.anchor } : {}),
       atBottom: false,
       hasMoreNewer: opts.hasMoreNewer,
-      rawScrollTop: opts.rawScrollTop,
+      ...(opts.rawScrollTop !== undefined ? { rawScrollTop: opts.rawScrollTop } : {}),
     }
     const writeScrollTop = vi.fn()
     const forceScrollToBottom = vi.fn()
@@ -280,7 +280,7 @@ describe('chatscrollviewportrestore restore priority', () => {
   })
 })
 
-describe('chatscrollviewportrestore geometry-settle + suppression', () => {
+describe('chatScrollViewportRestore geometry-settle + suppression', () => {
   // A viewport-restore over a single element with no saved scroll, so handleResize
   // routes through recheckOnResize (the already-visible-resize path) once
   // initClientHeight has seeded prevClientHeight (making wasHidden false).

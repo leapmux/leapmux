@@ -52,10 +52,10 @@ describe('end-to-end launcher', () => {
   it('uses the cached backend build and passes development mode to both processes', async () => {
     processes()
     expect(await runE2E(['--grep', 'a pattern with spaces'])).toBe(0)
-    expect(calls[0].args).toEqual(['build-backend'])
+    expect(calls[0]?.args).toEqual(['build-backend'])
     expect(calls).toHaveLength(2)
     expect(calls.every(call => call.env.LEAPMUX_DEV === '1')).toBe(true)
-    expect(calls[1].args.slice(-2)).toEqual(['--grep', 'a pattern with spaces'])
+    expect(calls[1]?.args.slice(-2)).toEqual(['--grep', 'a pattern with spaces'])
     expect(process.env.LEAPMUX_DEV).toBe('')
   })
 

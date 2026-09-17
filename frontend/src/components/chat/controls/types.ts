@@ -3,7 +3,7 @@ import type { MessageContextResolver } from '../messageContextResolver'
 import type { PermissionPresetController } from '../providerSettings'
 import type { ControlSurface } from './controlSurface'
 import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo } from '~/models/agentSession'
 import type { ControlRequest } from '~/stores/control.store'
 import { createSignal } from 'solid-js'
 
@@ -36,6 +36,30 @@ export interface Question {
   multiSelect?: boolean
   /** The provider accepts an explicit empty answer. */
   allowEmpty?: boolean
+}
+
+/**
+ * Read an untyped wire array into questions, dropping what the dialog cannot draw.
+ *
+ * A cast is not a check. Two plugins tested the OUTER array with `Array.isArray` and
+ * asserted the ELEMENTS, so a `null` element reached `q().question` and threw the
+ * whole banner away, and a bare string reached it as `undefined` -- a blank dialog
+ * the reader can see and cannot answer. `AskUserQuestionControl` then hands
+ * `q().options` to a `<For>`, which needs a real array on every element.
+ *
+ * Each element keeps whatever it stated and takes the empty list for an `options`
+ * that is not an array. It does NOT drop a question that states no option: a
+ * free-text question is a real one, and `allowEmpty` is what says so.
+ */
+export function questionsFromWire(raw: unknown): Question[] {
+  if (!Array.isArray(raw))
+    return []
+  return raw.flatMap((item) => {
+    if (typeof item !== 'object' || item === null)
+      return []
+    const source = item as Partial<Question>
+    return [{ ...source, question: source.question ?? '', options: Array.isArray(source.options) ? source.options : [] }]
+  })
 }
 
 /**

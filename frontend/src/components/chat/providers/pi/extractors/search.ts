@@ -1,5 +1,6 @@
-import type { SearchResultSource } from '../../../results/searchResult'
-import { pickCounter, pickObject, pickString } from '~/lib/jsonPick'
+import type { SearchResult } from '../../../ir/searchResult'
+import { pickCounter, pickObject } from '~/lib/jsonPick'
+import { grepMatches } from '../../grepOutput'
 import { PI_SEARCH_TOOL } from '../protocol'
 import { piExtractTool } from './toolCommon'
 
@@ -14,7 +15,7 @@ import { piExtractTool } from './toolCommon'
  */
 const PI_SEARCH_NOTICE = /\n\n\[([^\]\n]*)\]$/
 
-export function extractPiSearch(payload: Record<string, unknown>): SearchResultSource | null {
+export function extractPiSearch(payload: Record<string, unknown>): SearchResult | null {
   const tool = piExtractTool(payload)
   if (!tool || tool.isError || !Object.values<string>(PI_SEARCH_TOOL).includes(tool.toolName))
     return null
@@ -32,27 +33,29 @@ export function extractPiSearch(payload: Record<string, unknown>): SearchResultS
     const empty = content === 'No files found matching pattern' || content === '(empty directory)' || content === ''
     const filenames = empty ? [] : content.split('\n').filter(line => line !== '')
     return {
-      variant: 'glob',
       filenames,
       numFiles: filenames.length,
       numLines: 0,
       content: '',
       fallbackContent: empty ? '' : content,
+      empty,
       truncated,
-      notice,
+      ...(notice !== undefined ? { notice } : {}),
     }
   }
-  const matches = content.split('\n').filter(line => /^.+:\d+:/.test(line)).length
+  const matches = grepMatches(content.split('\n'))
+  const matchCount = matches.lines.length || (content === 'No matches found' || content === '' ? 0 : undefined)
   return {
-    variant: 'search',
-    pattern: pickString(tool.args, 'pattern'),
     filenames: [],
     content,
-    numFiles: 0,
-    numLines: matches,
-    matches: matches || (content === 'No matches found' || content === '' ? 0 : undefined),
+    numFiles: matches.numFiles,
+    numLines: matches.lines.length,
+    ...(matchCount !== undefined ? { matchCount } : {}),
     fallbackContent: content,
+    // The wording Pi prints for a grep that matched nothing, which the counter above
+    // already reads. One spelling serves both.
+    empty: content === 'No matches found' || content.trim() === '',
     truncated,
-    notice,
+    ...(notice !== undefined ? { notice } : {}),
   }
 }

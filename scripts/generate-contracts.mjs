@@ -25,7 +25,7 @@
 // a reviewer can read. The tables are tested for injectivity.
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { posix } from 'node:path'
 import { argv, exit } from 'node:process'
 
@@ -392,8 +392,8 @@ export function emitGoUserSettings(u) {
     .join('\n\n')
   return `${GO_HEADER('user-settings.json')}package contracts
 
-// The proto key of every account setting. The hub names its descriptor with one
-// of these, and the browser addresses that descriptor by the same string, so a
+// The proto key of every account setting. The hub identifies its descriptor with
+// one of these, and the browser addresses that descriptor by the same string, so a
 // rename reaches both sides at once.
 const (
 ${goConstBlock(keyDecls)}
@@ -444,7 +444,7 @@ export function emitTsUserSettings(u) {
   return `${TS_HEADER('user-settings.json')}
 /**
  * The proto key of every account setting. The browser addresses a descriptor by
- * the same string the hub names it with.
+ * the same string the hub identifies it with.
  */
 ${keys}
 
@@ -492,7 +492,7 @@ export function checkSessionInfo(v) {
   // Biject the JSON's own tables with SESSION_INFO_TABLES. Without this, a table
   // added to session-info.json and to its schema emits no Go and no TS, and says
   // nothing: the emitters below iterate the descriptor list alone, so the first
-  // report is an undefined-constant build failure that never names the contract.
+  // report is an undefined-constant build failure that never identifies the contract.
   checkTableCoverage('session-info.json', 'session-info', Object.keys(v), [
     ['SESSION_INFO_TABLES', Object.fromEntries(SESSION_INFO_TABLES.map(t => [t.json, t]))],
   ])
@@ -584,8 +584,8 @@ export function checkWorkerVocab(v) {
   const tokens = entries.map(([, token]) => token)
   mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', 'two notification types share one wire token')
   mustBe(!tokens.includes(v.notificationThreadWrapperType), 'worker-vocab.json', `notificationThreadWrapperType ${JSON.stringify(v.notificationThreadWrapperType)} collides with a notificationTypes token -- the browser's thread probe routes on that exact value, so a colliding envelope would be misrouted`)
-  for (const key of v.workerAuthoredNotificationTypes) {
-    mustBe(v.notificationTypes[key] != null, 'worker-vocab.json', `workerAuthoredNotificationTypes specifies ${key}, which is not a notificationTypes key`)
+  for (const key of v.workerWrittenNotificationTypes) {
+    mustBe(v.notificationTypes[key] != null, 'worker-vocab.json', `workerWrittenNotificationTypes specifies ${key}, which is not a notificationTypes key`)
   }
   mustBe(v.modelSentinels.accountDefaultModel !== v.modelSentinels.effortAuto, 'worker-vocab.json', 'the model sentinels must be distinct values')
   // These tokens are the goal_updated PAYLOAD vocabulary, not the storage
@@ -599,6 +599,8 @@ export function checkWorkerVocab(v) {
   mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
   const metadataFields = Object.values(v.messageMetadataFields)
   mustBe(new Set(metadataFields).size === metadataFields.length, 'worker-vocab.json', 'two message metadata fields share one wire token')
+  const notificationFields = Object.values(v.notificationFields)
+  mustBe(new Set(notificationFields).size === notificationFields.length, 'worker-vocab.json', 'two notification fields share one wire token')
   const supplementFields = Object.values(v.messageSupplementFields)
   mustBe(new Set(supplementFields).size === supplementFields.length, 'worker-vocab.json', 'two message supplement fields share one wire token')
   for (const [group, values] of Object.entries(v.assembledMessage ?? {})) {
@@ -656,6 +658,11 @@ const (
 ${goConstBlock(Object.entries(v.messageSupplementFields).map(([key, token]) => ({ name: `MessageSupplementField${key}`, value: jsonString(token) })))}
 )
 
+// NotificationField* are payload keys the worker writes and the browser reads back.
+const (
+${goConstBlock(Object.entries(v.notificationFields).map(([key, token]) => ({ name: `NotificationField${key}`, value: jsonString(token) })))}
+)
+
 // NotificationThreadWrapperType is the wrapper discriminator the worker's
 // wrapNotifContent stamps on every notification-thread row.
 const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperType)}
@@ -705,7 +712,7 @@ export function emitTsWorkerVocab(v) {
   const notif = Object.entries(v.notificationTypes)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
-  const authored = v.workerAuthoredNotificationTypes
+  const written = v.workerWrittenNotificationTypes
     .map(key => `  ${jsonString(v.notificationTypes[key])},`)
     .join('\n')
   const goalStatusEntries = Object.entries(v.goalStatusTokens)
@@ -745,11 +752,16 @@ export const MESSAGE_SUPPLEMENT_FIELD = {
 ${Object.entries(v.messageSupplementFields).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
 } as const
 
+/** Payload keys the worker writes onto a notification and the browser reads back. */
+export const NOTIFICATION_FIELD = {
+${Object.entries(v.notificationFields).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
+} as const
+
 export type NotificationType = typeof NOTIFICATION_TYPE[keyof typeof NOTIFICATION_TYPE]
 
 /** The types the WORKER is the sole writer of (standalone rows, no plugin). */
-export const WORKER_AUTHORED_NOTIFICATION_TYPES = [
-${authored}
+export const WORKER_WRITTEN_NOTIFICATION_TYPES = [
+${written}
 ] as const
 
 /** Wrapper discriminator on every notification-thread row (wrapNotifContent). */
@@ -1619,7 +1631,7 @@ export function emitTsValidate(v) {
 // regex character-class BODIES: build with new RegExp(\`[\${X}]\`).
 // NAME_INVISIBLE_CLASS is the DERIVED full strip class (Cc minus the
 // whitespace folds, plus the format set), computed here so neither language
-// re-derives it. The companion comment above each class names its ranges.
+// re-derives it. The companion comment above each class lists its ranges.
 
 export const NAME_BYTE_LIMIT = ${v.name.byteLimit} as const
 export const SESSION_ID_BYTE_LIMIT = ${v.session.byteLimit} as const
@@ -1853,7 +1865,7 @@ export function checkDesktop(d) {
   mustBe(
     [...DESKTOP_RS_MACOS_ONLY_EVENTS].every(k => k in DESKTOP_RS_EVENT_NAMES),
     'desktop.json',
-    'DESKTOP_RS_MACOS_ONLY_EVENTS names a key missing from DESKTOP_RS_EVENT_NAMES',
+    'DESKTOP_RS_MACOS_ONLY_EVENTS lists a key missing from DESKTOP_RS_EVENT_NAMES',
   )
   checkTableCoverage('desktop.json', 'tauriEvents', Object.keys(d.tauriEvents), [
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
@@ -2134,16 +2146,34 @@ ${rows}
  * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
  * is the bare `Key` inside a `<TS_PREFIX>_<TABLE>` object.
  */
-const PROVIDER_PROTOCOLS = [
+export const PROVIDER_PROTOCOLS = [
   {
     name: 'acp-protocol',
     goPrefix: 'ACP',
     tsPrefix: 'ACP',
     title: 'Agent Client Protocol',
-    preamble: 'The Agent Client Protocol defines these session updates and message roles.',
+    preamble: [
+      'The Agent Client Protocol defines these session updates and message roles. LeapMux owns',
+      'the SET of keys in the three supplement tables, not their spellings: a tool row keeps the',
+      'fields the protocol delivered LATE, or that no protocol frame carries at all, beside the',
+      'agent\'s original bytes. `protocol` and `terminals` are the two names LeapMux chose, and',
+      '`rawOutput` is the protocol\'s own tool-call field, which the worker reuses as a key. The',
+      'worker writes that envelope and the browser plugin reads it back, so every key in it is a',
+      'dispatch key on both sides. Six providers share the tables, because all six speak ACP.',
+    ].join('\n// '),
     tables: [
       { key: 'updates', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
       { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'ACPRole', doc: 'message `role` values' },
+      { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ACPToolKindWord', readers: ['ts'], readersWhy: 'the worker stores a tool frame whole and never branches on its kind; the browser picks the renderer from it', doc: 'tool-call `kind` words, the behavioural set the protocol groups every tool into' },
+      { key: 'supplementIdentity', goTable: 'SupplementIdentity', tsTable: 'SUPPLEMENT_IDENTITY', tsType: 'ACPSupplementIdentityField', goSlice: true, owner: 'LeapMux checks these', doc: 'protocol fields before a supplement can reach a row' },
+      { key: 'supplementRequest', goTable: 'SupplementRequest', tsTable: 'SUPPLEMENT_REQUEST', tsType: 'ACPSupplementRequestField', goSlice: true, doc: 'request fields a later tool_call_update can revise' },
+      // No blanket `owner`: LeapMux chose `protocol` and `terminals`, and `rawOutput` is
+      // the protocol's own tool-call field, which acp_common.go reads off the wire. The
+      // doc therefore carries the split, because one owner word cannot.
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ACPSupplementField', doc: 'payloads a tool row keeps beside a frame -- LeapMux chose `protocol` and `terminals`, and `rawOutput` is the protocol\'s own field' },
+      { key: 'terminalResult', goTable: 'TerminalResult', tsTable: 'TERMINAL_RESULT', tsType: 'ACPTerminalResultField', doc: 'fields of one terminal\'s stored output, inside the `terminals` payload' },
+      { key: 'contentBlock', goTable: 'ContentBlock', tsTable: 'CONTENT_BLOCK', tsType: 'ACPContentBlockField', doc: 'fields of a tool call\'s own content array, which lists the terminals it refers to' },
+      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'ACPBlockType', doc: 'content block `type` values both sides dispatch on' },
     ],
   },
   {
@@ -2164,8 +2194,21 @@ const PROVIDER_PROTOCOLS = [
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
       { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ZCodeMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
-      { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', doc: '`turn.completed.resultType`' },
+      { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', readers: ['ts'], readersWhy: 'the worker carries resultType through as an opaque string (zcode_output.go) and compares none of them; the browser words the turn-end row from it', doc: '`turn.completed.resultType`' },
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'ZCodeDecision', doc: '`permission.resolved.decision`' },
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ZCodeSupplementField', doc: 'keys of the envelope a retained tool row keeps -- the last two are LeapMux\'s own payload names' },
+      { key: 'supplementPayload', goTable: 'SupplementPayload', tsTable: 'SUPPLEMENT_PAYLOAD', tsType: 'ZCodeSupplementPayloadField', doc: 'fields of that envelope\'s payload, which identifies the call it belongs to' },
+      { key: 'storedTool', goTable: 'StoredTool', tsTable: 'STORED_TOOL', tsType: 'ZCodeStoredToolField', doc: 'fields of the tool record ZCode\'s own store holds' },
+      { key: 'storedPart', goTable: 'StoredPart', tsTable: 'STORED_PART', tsType: 'ZCodeStoredPartField', doc: 'fields of that record\'s `data` part' },
+      { key: 'storedPartTypes', goTable: 'StoredPartType', tsTable: 'STORED_PART_TYPE', tsType: 'ZCodeStoredPartType', doc: 'the `type` a stored part must state to be a tool call' },
+      { key: 'storedPartStatuses', goTable: 'StoredPartStatus', tsTable: 'STORED_PART_STATUS', tsType: 'ZCodeStoredPartStatus', doc: 'the two `state.status` words a finished part states' },
+      // This table covers THREE records, so the doc must be true of all of them.
+      // `Attachments` is a field of `storedPart.state`, `ArtifactURI` is a field of the
+      // nested `metadata`, and the rest are the attachment record's own. Splitting it
+      // would rename ZCODE_STORED_ATTACHMENT.* at every browser call site, which buys
+      // nothing the wording does not.
+      { key: 'storedAttachment', goTable: 'StoredAttachment', tsTable: 'STORED_ATTACHMENT', tsType: 'ZCodeStoredAttachmentField', doc: 'keys of one stored attachment at all three levels: the list on the part state, the record itself, and its nested metadata' },
+      { key: 'storedAttachmentTypes', goTable: 'StoredAttachmentType', tsTable: 'STORED_ATTACHMENT_TYPE', tsType: 'ZCodeStoredAttachmentType', doc: 'the `type` an attachment must state to carry a file' },
     ],
   },
   {
@@ -2175,6 +2218,43 @@ const PROVIDER_PROTOCOLS = [
     title: 'Goose',
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GooseMode', doc: 'permission modes' },
+      { key: 'subagent', goTable: 'Subagent', tsTable: 'SUBAGENT', tsType: 'GooseSubagent', doc: 'the extension and tool a subagent spawn rides' },
+      { key: 'subagentRequest', goTable: 'SubagentRequest', tsTable: 'SUBAGENT_REQUEST', tsType: 'GooseSubagentRequestField', doc: 'fields of the subagent tool request, which rides inside logging metadata' },
+    ],
+  },
+  {
+    name: 'opencode-protocol',
+    goPrefix: 'OpenCode',
+    tsPrefix: 'OPENCODE',
+    title: 'OpenCode and Kilo',
+    preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward.',
+    tables: [
+      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
+      { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/opencode_questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
+    ],
+  },
+  {
+    name: 'codex-protocol',
+    goPrefix: 'Codex',
+    tsPrefix: 'CODEX',
+    title: 'Codex',
+    preamble: [
+      'Codex streams a command\'s output as a run of `outputDelta` events and fills',
+      '`aggregatedOutput` only on the COMPLETED item, so a turn that ends first leaves an item',
+      'with no output at all. LeapMux joins the deltas and stores the join beside the frame.',
+      'Both sides run the same resolve -- the worker for its semantic extractors, the browser',
+      'for the row it draws -- so a drift put a retained command row on screen with its output',
+      'missing and nothing to say so. OpenAI owns the item field names; LeapMux owns the',
+      'supplement keys.',
+    ].join('\n// '),
+    tables: [
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CodexSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope that carries a Codex call\'s joined output' },
+      { key: 'item', goTable: 'Item', tsTable: 'ITEM_FIELD', tsType: 'CodexItemField', doc: 'fields of the item frame the join lands on' },
+      { key: 'collabItem', goTable: 'CollabItem', tsTable: 'COLLAB_ITEM', tsType: 'CodexCollabItemField', goTagPin: 'backend/internal/worker/agent/supplement_tags_test.go', doc: 'fields of a collab tool call that list the subagents it created' },
+      { key: 'itemTypes', goTable: 'ItemType', tsTable: 'ITEM', tsType: 'CodexItemType', doc: '`item.type` discriminators both sides dispatch on' },
+      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
+      { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
+      { key: 'optionDefaults', goTable: 'OptionDefault', tsTable: 'OPTION_DEFAULT', tsType: 'CodexOptionDefault', defaultsFor: 'options', doc: 'the value each of those axes takes when the agent row stores none' },
     ],
   },
   {
@@ -2193,21 +2273,26 @@ const PROVIDER_PROTOCOLS = [
     title: 'GitHub Copilot',
     preamble: [
       'GitHub owns the native method, event, tool, mode and permission names. LeapMux owns the',
-      'session-mode option-group id and the supplemental field name. Both sides read them --',
+      'session-mode option-group id. Both sides read them --',
       'the Go worker dispatches the native events and builds the option groups, the browser',
       'plugin classifies the same rows and builds the presets.',
     ].join('\n// '),
     tables: [
       { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CopilotMethod', doc: 'JSON-RPC methods both sides dispatch on' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'CopilotEvent', doc: 'native event types' },
-      { key: 'eventPrefixes', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', doc: 'prefixes that name a whole event family' },
+      // `goSlice`, because the MEMBERSHIP crosses the boundary. The browser hides all
+      // six families; the worker filtered on two hand-listed ones and PERSISTED the
+      // other four, so a session that used canvas, Fusion or a factory run wrote one
+      // message row per experiment event that the browser then always hid.
+      { key: 'eventPrefixes', goTable: 'EventPrefix', tsTable: 'EVENT_PREFIX', tsType: 'CopilotEventPrefix', goSlice: true, doc: 'prefixes that identify a whole event family' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CopilotTool', doc: 'native tool names' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CopilotOption', doc: 'LeapMux option-group ids for Copilot axes' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CopilotMode', doc: 'native session modes' },
       { key: 'permissionModes', goTable: 'PermissionMode', tsTable: 'PERMISSION_MODE', tsType: 'CopilotPermissionMode', doc: 'native permission modes' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'CopilotApprovalScope', doc: 'how long one approved permission lasts' },
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'CopilotDecision', doc: 'the words a permission answer carries to the runtime' },
-      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CopilotSupplementField', doc: 'supplemental content fields' },
+      { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'CopilotPermissionOutcome', readers: ['ts'], readersWhy: 'the worker persists permission.completed whole; the browser words the refusal, which is the only place a self-refused permission is ever stated', doc: 'how one permission ended, which `permission.completed` states' },
+      { key: 'permissionDecisionSources', goTable: 'PermissionDecisionSource', tsTable: 'PERMISSION_DECISION_SOURCE', tsType: 'CopilotPermissionDecisionSource', readers: ['ts'], readersWhy: 'the worker persists the completion whole; the browser is what must tell an approval a PERSON gave from one a judge, a policy or a replayed record produced, because all of them carry the same result', doc: 'who decided one permission, which `permission.completed` states beside the outcome' },
     ],
   },
   {
@@ -2218,6 +2303,11 @@ const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'CursorTool', doc: 'ACP tool identifiers' },
       { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'CursorMethod', doc: 'JSON-RPC methods both sides dispatch on' },
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'CursorSupplementField', owner: 'LeapMux chose these', doc: 'supplemental content fields on a Cursor tool row' },
+      { key: 'storedTool', goTable: 'StoredTool', tsTable: 'STORED_TOOL', tsType: 'CursorStoredToolField', owner: 'LeapMux chose these', doc: 'fields of the record the worker builds from a Cursor transcript under the shared ACP `rawOutput` key' },
+      { key: 'storedBlock', goTable: 'StoredBlock', tsTable: 'STORED_BLOCK', tsType: 'CursorStoredBlockField', doc: 'fields of one block in Cursor\'s own transcript' },
+      { key: 'extensionFrame', goTable: 'ExtensionFrame', tsTable: 'EXTENSION_FRAME', tsType: 'CursorExtensionFrameField', owner: 'LeapMux chose these', doc: 'fields of the frame stored under the `cursorExtension` key' },
+      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'CursorBlockType', doc: 'the `type` values that identify a call and its result' },
     ],
   },
   {
@@ -2228,14 +2318,19 @@ const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'mcpApprovalChoices', goTable: 'MCPApprovalChoice', tsTable: 'MCP_APPROVAL_CHOICE', tsType: 'PiMcpApprovalChoice', doc: 'MCP approval response values' },
       { key: 'mcpApprovalText', goTable: 'MCPApprovalText', tsTable: 'MCP_APPROVAL_TEXT', tsType: 'PiMcpApprovalText', doc: 'MCP approval dialog delimiters' },
-      { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', doc: 'plan approval dialog titles' },
+      { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in pi_protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
       { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
       { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
-      { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', doc: 'assistant message-update sub-types' },
+      { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
       { key: 'customTypes', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
       { key: 'dialogMethods', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
       { key: 'extensionMethods', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'PiTool', doc: 'tool names the renderers dispatch on' },
+      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'PiSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope a retained or truncated Pi call keeps beside its frame' },
+      { key: 'artifact', goTable: 'Artifact', tsTable: 'ARTIFACT', tsType: 'PiArtifactField', owner: 'LeapMux chose these', doc: 'fields of one stored artifact inside that envelope' },
+      { key: 'resultFields', goTable: 'ResultField', tsTable: 'RESULT_FIELD', tsType: 'PiResultField', doc: 'fields of a tool-execution frame, and of the result inside it, that both sides read to place an artifact' },
+      { key: 'contentBlock', goTable: 'ContentBlock', tsTable: 'CONTENT_BLOCK', tsType: 'PiContentBlockField', doc: 'fields of the content block a recovered output is written into' },
+      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'PiBlockType', doc: 'content block `type` values both sides dispatch on' },
     ],
   },
   {
@@ -2265,7 +2360,7 @@ const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ReasonixMode', doc: 'session modes' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'ReasonixConfig', doc: 'config option identifiers' },
-      { key: 'approvalValues', goTable: 'Approval', tsTable: 'APPROVAL', tsType: 'ReasonixApproval', doc: 'tool approval values' },
+      { key: 'approvalValues', goTable: 'Approval', tsTable: 'APPROVAL', tsType: 'ReasonixApproval', readers: ['ts'], readersWhy: 'the worker forwards the tool_approval option value without reading it; the browser spells Yolo alone, to build the bypass preset, and Reasonix labels the three choices itself on the option group it sends', doc: 'tool approval values' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'ReasonixTool', doc: 'native tool names' },
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
@@ -2275,38 +2370,301 @@ const PROVIDER_PROTOCOLS = [
 ]
 
 /**
+ * The Go types a generated struct field may take, and what each one means.
+ *
+ * Deliberately small. A field whose type is not here belongs in a hand-written struct:
+ * the generated ones live in `package contracts`, which the worker imports, so they
+ * can refer to no type the worker owns. `#Name` refers to ANOTHER struct of the same
+ * domain, which is how a nested record stays generated too.
+ */
+const GO_FIELD_TYPES = new Set([
+  'string',
+  'bool',
+  'int',
+  'float64',
+  '*string',
+  '*int',
+  'json.RawMessage',
+  '[]string',
+  '[]json.RawMessage',
+  'map[string]string',
+  'map[string]json.RawMessage',
+])
+
+/** The other struct of the same domain a field type refers to, or null. */
+function structReference(type) {
+  return type.replace(/^(?:\[\]|map\[string\])?/, '').startsWith('#')
+    ? type.replace(/^(?:\[\]|map\[string\])?#/, '')
+    : null
+}
+
+/**
+ * Whether a `#Name` field puts the struct it refers to behind a slice or a map.
+ *
+ * Go rejects a struct that contains ITSELF by value, and a `#Name` field emits by
+ * value. A slice header and a map header are pointers, so either one breaks the
+ * recursion and makes a self-reference or a longer cycle legal.
+ */
+function structReferenceIsIndirect(type) {
+  return type.startsWith('[]') || type.startsWith('map[string]')
+}
+
+/** The Go spelling of a field type, with `#Name` resolved to the generated struct. */
+function goFieldType(type) {
+  return type.replace('#', '')
+}
+
+/**
+ * The structs a domain generates, if any.
+ *
+ * A struct states its FIELD LIST once and takes every json tag from a table that the
+ * browser already reads. A Go struct tag takes a LITERAL, so a hand-written one can
+ * only be held to the contract by a reflection test that someone must remember to
+ * extend -- and five Pi fields showed that nobody does. Generating the struct removes
+ * the tag from the source entirely, so there is nothing left to drift.
+ */
+export function checkProviderStructs(spec, p) {
+  const file = `${spec.name}.json`
+  const structs = p.structs ?? {}
+  const declared = new Set(spec.tables.map(t => t.key))
+  // Every package-level name this domain emits beside the structs: one constant for
+  // each table key, and the ordered key slice of each `goSlice` table. A struct that
+  // takes one of those names redeclares it, and the compiler then reports the
+  // GENERATED file, which states no contract and no domain.
+  const constants = new Set(spec.tables.flatMap(t => Object.keys(p[t.key] ?? {}).map(key => `${spec.goPrefix}${t.goTable}${key}`)))
+  for (const t of spec.tables) {
+    if (t.goSlice)
+      constants.add(`${spec.goPrefix}${t.goTable}Keys`)
+  }
+  for (const [name, definition] of Object.entries(structs)) {
+    mustBe(/^[A-Z][A-Za-z0-9]*$/.test(name), file, `structs.${name} must be a PascalCase Go type name`)
+    mustBe(!constants.has(name), file, `structs.${name} takes the name of a constant or key slice this domain already emits -- pick another, or the generated package will not compile`)
+    mustBe(declared.has(definition.table), file, `structs.${name}.table ${JSON.stringify(definition.table)} is not a declared table`)
+    const seen = new Set()
+    for (const field of definition.fields) {
+      const table = field.table ?? definition.table
+      mustBe(declared.has(table), file, `structs.${name}.${field.key} specifies table ${JSON.stringify(table)}, which is not declared`)
+      mustBe(p[table][field.key] != null, file, `structs.${name}.${field.key} is not a key of the ${table} table`)
+      mustBe(!seen.has(field.key), file, `structs.${name} lists ${field.key} twice`)
+      seen.add(field.key)
+      const reference = structReference(field.type)
+      if (reference != null) {
+        mustBe(structs[reference] != null, file, `structs.${name}.${field.key} refers to ${reference}, which this domain does not declare`)
+        continue
+      }
+      mustBe(GO_FIELD_TYPES.has(field.type), file, `structs.${name}.${field.key} has type ${JSON.stringify(field.type)}, which is not one a generated struct may take`)
+    }
+  }
+  checkStructReferencesAreAcyclic(file, structs)
+  return {}
+}
+
+/**
+ * Refuse a cycle of BY-VALUE struct references.
+ *
+ * `emitGoStructs` emits a `#Name` field by value, so a struct that reaches itself
+ * through one or more of those fields is an invalid recursive type. Go reports that
+ * against the GENERATED file, which states no contract and no domain, and only at
+ * `task build` -- `task generate` passes, because the existence check above proves
+ * the reference resolves and asks nothing more. A slice or a map breaks the
+ * recursion, so `[]#Name` and `map[string]#Name` are not edges of this graph.
+ *
+ * Every reference resolves by the time this runs, so the walk cannot leave the
+ * declared set.
+ */
+function checkStructReferencesAreAcyclic(file, structs) {
+  const edges = new Map(Object.entries(structs).map(([name, definition]) => [
+    name,
+    definition.fields
+      .filter(field => structReference(field.type) != null && !structReferenceIsIndirect(field.type))
+      .map(field => structReference(field.type)),
+  ]))
+  const acyclic = new Set()
+  const chain = []
+  const visit = (name) => {
+    const opened = chain.indexOf(name)
+    if (opened >= 0) {
+      const cycle = [...chain.slice(opened), name].join(' -> ')
+      mustBe(false, file, `structs.${cycle} is a cycle of by-value references, which Go rejects as an invalid recursive type -- put one step of it behind []#Name or map[string]#Name`)
+    }
+    if (acyclic.has(name))
+      return
+    chain.push(name)
+    for (const next of edges.get(name) ?? [])
+      visit(next)
+    chain.pop()
+    acyclic.add(name)
+  }
+  for (const name of edges.keys())
+    visit(name)
+}
+
+/** The Go struct declarations of one domain, in the order the contract states them. */
+function emitGoStructs(spec, p) {
+  const structs = Object.entries(p.structs ?? {})
+  if (structs.length === 0)
+    return { blocks: [], needsJSON: false }
+  let needsJSON = false
+  const blocks = structs.map(([name, definition]) => {
+    const rows = definition.fields.map((field) => {
+      if (field.type.includes('json.RawMessage'))
+        needsJSON = true
+      const tag = p[field.table ?? definition.table][field.key] + (field.omitempty ? ',omitempty' : '')
+      return { name: field.key, type: goFieldType(field.type), tag: `\`json:${jsonString(tag)}\`` }
+    })
+    const nameWidth = Math.max(...rows.map(r => r.name.length))
+    const typeWidth = Math.max(...rows.map(r => r.type.length))
+    const body = rows.map(r => `\t${r.name.padEnd(nameWidth)} ${r.type.padEnd(typeWidth)} ${r.tag}`).join('\n')
+    const doc = (definition.doc ?? `${name} is one ${spec.title} record.`).split('\n').map(line => `// ${line}`.trimEnd()).join('\n')
+    const tables = [...new Set(definition.fields.map(f => f.table ?? definition.table))]
+    const from = tables.length === 1 ? `the \`${tables[0]}\` table` : `the ${tables.map(t => `\`${t}\``).join(' and ')} tables`
+    return `${doc}\n//\n// Its json tags come from ${from}, so a rename in the contract\n// reaches this struct and the browser's reader in ONE change.\ntype ${name} struct {\n${body}\n}`
+  })
+  return { blocks, needsJSON }
+}
+
+/**
  * A provider protocol is valid when every declared table is present and non-empty,
  * every table the FILE carries is declared (so a table added to the JSON cannot sit
  * unemitted), and no two keys inside one table share a literal -- a duplicate would
  * make two dispatch branches indistinguishable on the wire.
  */
+/** The language sides a generated table can be read from. */
+const READER_SIDES = new Set(['go', 'ts'])
+
+/**
+ * The sides that must import one table, and the reason a one-sided table is one-sided.
+ *
+ * A table is read from BOTH sides unless it says otherwise, because that is what earns
+ * a value its place in a contract. A one-sided table states `readers` and `readersWhy`,
+ * and `contractsAreConsumed.test.mjs` holds each side to what it declares here.
+ */
+export function tableReaders(t) {
+  return t.readers ?? ['go', 'ts']
+}
+
 export function checkProviderProtocol(spec, p) {
   const file = `${spec.name}.json`
   const declared = spec.tables.map(t => t.key)
-  const present = Object.keys(p).filter(k => !k.startsWith('_') && typeof p[k] === 'object')
+  for (const t of spec.tables) {
+    const readers = tableReaders(t)
+    mustBe(readers.length > 0, file, `table ${t.key} declares no reader -- a table nothing reads is a contract for a value that does not cross the boundary, so delete it`)
+    for (const side of readers)
+      mustBe(READER_SIDES.has(side), file, `table ${t.key} specifies the reader ${JSON.stringify(side)}, which is not one of go, ts`)
+    // Compare the SET, never the length. `readers: ['ts', 'ts']` has the length of
+    // the full set, so a length test took it for a two-sided table and demanded no
+    // readersWhy, while every per-element test above passed.
+    const sides = new Set(readers)
+    mustBe(sides.size === readers.length, file, `table ${t.key} lists a reader twice -- give each side once, because a repeat reads as a second side and hides that the table is one-sided`)
+    mustBe(sides.size === READER_SIDES.size || typeof t.readersWhy === 'string', file, `table ${t.key} is read from ${readers.join(' alone, ')} alone and must say why in readersWhy -- the next reader has to know whether that is the design or a key somebody forgot to wire`)
+    if (t.goTagPin != null) {
+      mustBe(sides.has('go'), file, `table ${t.key} states goTagPin but does not list go as a reader -- the pin exists to explain a Go reader that is a test`)
+      mustBe(typeof t.goTagPin === 'string' && t.goTagPin.endsWith('_test.go'), file, `table ${t.key} must give goTagPin as the path of the Go test that pins the hand-written struct tags to this table`)
+    }
+  }
+  const present = Object.keys(p).filter(k => !k.startsWith('_') && k !== 'structs' && typeof p[k] === 'object')
   for (const key of declared)
     mustBe(p[key] != null && Object.keys(p[key]).length > 0, file, `${key} is missing or empty`)
   for (const key of present)
     mustBe(declared.includes(key), file, `table ${key} is not declared in PROVIDER_PROTOCOLS -- a new table must be registered in the same change, or it is never emitted`)
+  // `emitGoProviderProtocol` emits `var <Prefix><Table>Keys` beside the constants of
+  // a goSlice table, so a key called Keys emits a const and a var of one name.
+  for (const t of spec.tables) {
+    mustBe(!t.goSlice || p[t.key]?.Keys == null, file, `${t.key}.Keys collides with the ordered key slice ${spec.goPrefix}${t.goTable}Keys that this goSlice table emits -- rename the key, or the generated package will not compile`)
+  }
+  // A DEFAULTS table is the one table whose literals may repeat. Its keys are axes,
+  // not dispatch branches, and two axes legitimately rest at the same word -- Codex
+  // starts both its collaboration mode and its service tier at `default`. What it must
+  // hold instead is one entry for each key of the table it supplies defaults for: a
+  // default with no axis states a value nothing applies, and an axis with no default
+  // sends the agent up with an empty option the other side then fills by hand.
+  const defaultsTables = new Set(spec.tables.filter(t => t.defaultsFor != null).map(t => t.key))
+  for (const t of spec.tables) {
+    if (t.defaultsFor == null)
+      continue
+    mustBe(declared.includes(t.defaultsFor), file, `table ${t.key} states defaultsFor ${JSON.stringify(t.defaultsFor)}, which is not a declared table`)
+    const axes = Object.keys(p[t.defaultsFor] ?? {})
+    const defaults = new Set(Object.keys(p[t.key] ?? {}))
+    for (const axis of axes)
+      mustBe(defaults.has(axis), file, `${t.defaultsFor}.${axis} has no entry in ${t.key} -- every axis states the value it starts at, or one side invents one`)
+    for (const key of defaults)
+      mustBe(axes.includes(key), file, `${t.key}.${key} supplies a default for no key of ${t.defaultsFor} -- delete it, or add the axis it belongs to`)
+  }
   for (const key of declared) {
+    if (defaultsTables.has(key))
+      continue
     const seen = new Map()
     for (const [name, literal] of Object.entries(p[key])) {
       mustBe(!seen.has(literal), file, `${key}.${name} repeats the literal ${JSON.stringify(literal)} already used by ${key}.${seen.get(literal)} -- two dispatch branches would be indistinguishable on the wire`)
       seen.set(literal, name)
     }
   }
-  // A key-valued pointer must name a member of the table it points into, or the
-  // emitted default names a value the enum does not carry.
+  checkProviderStructs(spec, p)
+  checkUnreadKeys(spec, p)
+  // A key-valued pointer must specify a member of the table it points into, or the
+  // emitted default states a value the enum does not carry.
   if (p.defaultMode != null)
     mustBe(p.modes[p.defaultMode] != null, file, `defaultMode ${JSON.stringify(p.defaultMode)} is not a key of modes`)
   return {}
 }
 
+/**
+ * The per-key exemptions a domain states in its `_unread` block.
+ *
+ * `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader, not only
+ * the table as a whole. A key that one declared side genuinely never reads states
+ * that here, once, with the reason -- `_unread.<table>.<Key>.sides` lists the sides
+ * that skip it and `.why` says why. The key stays in the contract, because the other
+ * side still reads it and a rename must still reach that side.
+ *
+ * The answer is a Map from `<table>.<Key>` to the Set of sides that skip it.
+ */
+export function unreadKeys(p) {
+  const unread = new Map()
+  for (const [table, keys] of Object.entries(p._unread ?? {})) {
+    for (const [key, exemption] of Object.entries(keys))
+      unread.set(`${table}.${key}`, new Set(exemption.sides))
+  }
+  return unread
+}
+
+/**
+ * An exemption must point at a real key, and at a side that really reads the table.
+ *
+ * The shape is checked here; whether the exemption is still NEEDED is checked by
+ * `contractsAreConsumed.test.mjs`, which is the half that can read the source tree.
+ */
+function checkUnreadKeys(spec, p) {
+  const file = `${spec.name}.json`
+  const tables = new Map(spec.tables.map(t => [t.key, t]))
+  for (const [table, keys] of Object.entries(p._unread ?? {})) {
+    const t = tables.get(table)
+    mustBe(t != null, file, `_unread.${table} is not a declared table`)
+    const readers = new Set(tableReaders(t))
+    for (const [key, exemption] of Object.entries(keys)) {
+      mustBe(p[table]?.[key] != null, file, `_unread.${table}.${key} is not a key of the ${table} table -- delete the exemption, or restore the key`)
+      mustBe(Array.isArray(exemption.sides) && exemption.sides.length > 0, file, `_unread.${table}.${key}.sides must list at least one side that skips the key`)
+      for (const side of exemption.sides)
+        mustBe(readers.has(side), file, `_unread.${table}.${key} excuses the side ${JSON.stringify(side)}, which the ${table} table does not declare as a reader at all`)
+      mustBe(new Set(exemption.sides).size === exemption.sides.length, file, `_unread.${table}.${key}.sides lists a side twice`)
+      mustBe(typeof exemption.why === 'string' && exemption.why.length > 30, file, `_unread.${table}.${key}.why must say what reads the key instead, or the next reader cannot tell the design from a gap`)
+    }
+  }
+}
+
 export function emitGoProviderProtocol(spec, p) {
-  const blocks = spec.tables.map((t) => {
+  const blocks = spec.tables.flatMap((t) => {
     const decls = Object.entries(p[t.key])
       .map(([name, literal]) => ({ name: `${spec.goPrefix}${t.goTable}${name}`, value: jsonString(literal) }))
-    return `// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(decls)}\n)`
+    const block = `// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(decls)}\n)`
+    if (!t.goSlice)
+      return [block]
+    // The MEMBERSHIP of this table crosses the boundary, not only the spellings: the
+    // browser derives the same set with Object.values(), so a Go copy listed by hand
+    // checks a different number of keys once the table grows, and neither side fails.
+    const rows = decls.map(d => `\t${d.name},`).join('\n')
+    const list = `// ${spec.goPrefix}${t.goTable}Keys is every key of that table, in the contract's own order.\nvar ${spec.goPrefix}${t.goTable}Keys = []string{\n${rows}\n}`
+    return [`${block}\n\n${list}`]
   })
   const extra = p.defaultMode == null
     ? ''
@@ -2315,11 +2673,14 @@ export function emitGoProviderProtocol(spec, p) {
 // the Go worker classifies each row, the browser plugin renders it -- so they are
 // generated from one file rather than hand-copied into two. ${spec.title}'s vendor owns
 // the values; LeapMux follows them.`
+  const { blocks: structs, needsJSON } = emitGoStructs(spec, p)
+  const imports = needsJSON ? '\nimport "encoding/json"\n' : ''
+  const declarations = [...blocks, ...structs].join('\n\n')
   return `${GO_HEADER(`${spec.name}.json`)}package contracts
-
+${imports}
 // ${preamble}
 
-${blocks.join('\n\n')}
+${declarations}
 ${extra}`
 }
 
@@ -2327,7 +2688,10 @@ export function emitTsProviderProtocol(spec, p) {
   const blocks = spec.tables.map((t) => {
     const rows = Object.entries(p[t.key]).map(([name, literal]) => `  ${name}: ${jsonString(literal)},`).join('\n')
     const symbol = `${spec.tsPrefix}_${t.tsTable}`
-    return `/** ${spec.title} ${t.doc}. */\nexport const ${symbol} = {\n${rows}\n} as const\nexport type ${t.tsType} = typeof ${symbol}[keyof typeof ${symbol}]`
+    // `owner` identifies who chose the literals when that is not the provider's
+    // vendor. A generated comment that claims the wrong owner is worse than none, so
+    // a table whose keys have TWO owners states the split in its doc and omits this.
+    return `/** ${t.owner ?? spec.title} ${t.doc}. */\nexport const ${symbol} = {\n${rows}\n} as const\nexport type ${t.tsType} = typeof ${symbol}[keyof typeof ${symbol}]`
   })
   const extra = p.defaultMode == null
     ? ''
@@ -2877,6 +3241,12 @@ ${kindRows}
 /** Reads the contracts; generate() requires every registered domain's file. */
 export function loadContracts(contractsDir) {
   const read = name => JSON.parse(readFileSync(posix.join(contractsDir, `${name}.json`), 'utf8'))
+  // Every contract the directory holds, so generate() can report a file no domain
+  // reads. A schema is a SIBLING of its contract and never a domain of its own.
+  const names = () => readdirSync(contractsDir)
+    .filter(file => file.endsWith('.json') && !file.endsWith('.schema.json'))
+    .map(file => file.slice(0, -'.json'.length))
+    .sort()
   const has = (name) => {
     try {
       readFileSync(posix.join(contractsDir, `${name}.json`))
@@ -2890,7 +3260,7 @@ export function loadContracts(contractsDir) {
       throw err
     }
   }
-  return { read, has }
+  return { read, has, names }
 }
 
 /**
@@ -3109,13 +3479,21 @@ const DOMAINS = [
  * cross-checks.
  */
 export function generate(contractsDir, descriptorSet = null) {
-  const { read, has } = loadContracts(contractsDir)
+  const { read, has, names } = loadContracts(contractsDir)
+  // A contract no domain reads emits NOTHING, and nothing says so: it validates
+  // against its schema, `task lint` passes, and the constants it declares never reach
+  // either language. That is the inverse of the missing-file check below, and the two
+  // together make the directory and the registry one list.
+  const registered = new Set(DOMAINS.map(domain => domain.name))
+  for (const name of names()) {
+    mustBe(registered.has(name), `${name}.json`, 'is not registered -- add a DOMAINS entry so it emits, or delete the file; an unregistered contract emits nothing and no test notices')
+  }
   const out = {}
   for (const domain of DOMAINS) {
     mustBe(has(domain.name), `${domain.name}.json`, 'is missing -- every registered domain ships its contract; retire a domain by removing its DOMAINS entry in the same change that deletes the file')
     // A domain that cross-checks against a SIBLING contract declares it in
     // `reads`, so the missing-file report stays this loop's rather than an
-    // ENOENT out of the emitter -- which names a temp path and no domain.
+    // ENOENT out of the emitter -- which states a temp path and no domain.
     for (const dep of domain.reads ?? []) {
       mustBe(has(dep), `${dep}.json`, `is missing -- the ${domain.name} domain cross-checks against it`)
     }

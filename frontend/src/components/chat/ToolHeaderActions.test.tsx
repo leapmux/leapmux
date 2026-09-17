@@ -1,9 +1,10 @@
+import type { ToolHeaderActionsCallerProps } from './messageActions'
 import { cleanup, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { createMemo, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ToolHeaderActions } from './ToolHeaderActions'
 
-describe('toolHeaderActions', () => {
+describe('ToolHeaderActions', () => {
   afterEach(() => cleanup())
 
   /**
@@ -36,9 +37,12 @@ describe('toolHeaderActions', () => {
 
   it('adds and removes a button when the row gains or loses that action', () => {
     const [quotable, setQuotable] = createSignal(false)
+    // A MEMO that rebuilds the caller (the shape MessageBubble itself uses) rather
+    // than a getter that resolves through undefined, which the caller props reject.
+    const caller = createMemo<ToolHeaderActionsCallerProps>(() => (quotable() ? { onReply: () => {} } : {}))
     render(() => (
       <ToolHeaderActions
-        caller={{ get onReply() { return quotable() ? () => {} : undefined } }}
+        caller={caller()}
         layout={{ onCopyJson: () => {} }}
       />
     ))

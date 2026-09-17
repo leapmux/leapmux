@@ -79,15 +79,15 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
   // The provider-declared mode axis (permissionMode for Claude, collaboration_mode
   // for Codex, primaryAgent for OpenCode/Kilo, …). Reused verbatim from the old
   // fused trigger label so the chip shows the same "mode" the panel does.
-  const modeGroupKey = () => pluginFor(props.agent?.agentProvider)?.triggerModeGroupKey
+  const modeGroupKey = () => pluginFor(props.agent?.agentProvider)?.configuration?.triggerModeGroupKey
 
   return (
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
         <WorkingTreeChip
           workingTree={props.workingTree}
-          disabledReason={props.branchDisabledReason}
-          actions={props.branchActions}
+          {...(props.branchDisabledReason === undefined ? {} : { disabledReason: props.branchDisabledReason })}
+          {...(props.branchActions === undefined ? {} : { actions: props.branchActions })}
           workerId={props.branchWorkerId ?? ''}
         />
         <Show when={hasGroup(props.agent, OPTION_ID_MODEL)}>
@@ -95,8 +95,8 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             groupId={OPTION_ID_MODEL}
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
-            onChange={props.onSettingChange}
-            disabledReason={props.disabledReason}
+            {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}
+            {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
             testIdPrefix="composer-model"
           />
         </Show>
@@ -105,8 +105,8 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             groupId={OPTION_ID_EFFORT}
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
-            onChange={props.onSettingChange}
-            disabledReason={props.disabledReason}
+            {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}
+            {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
             optional
             testIdPrefix="composer-effort"
           />
@@ -116,8 +116,8 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             groupId={modeGroupKey()!}
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
-            onChange={props.onSettingChange}
-            disabledReason={props.disabledReason}
+            {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}
+            {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
             optional
             testIdPrefix="composer-mode"
           />

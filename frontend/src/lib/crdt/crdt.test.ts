@@ -93,36 +93,36 @@ describe('crdt apply', () => {
     const state = newState('user')
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
     applyOp(state, setNodePosition('n1', 'B', hlc(20n, 0n, 'b')))
-    expect(state.nodes.n1.position?.value).toBe('B')
+    expect(state.nodes.n1?.position?.value).toBe('B')
   })
 
   it('lww: lower hlc drops', () => {
     const state = newState('user')
     applyOp(state, setNodePosition('n1', 'B', hlc(20n, 0n, 'b')))
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
-    expect(state.nodes.n1.position?.value).toBe('B')
+    expect(state.nodes.n1?.position?.value).toBe('B')
   })
 
   it('tombstone clears non-tombstone registers', () => {
     const state = newState('user')
     applyOp(state, setNodePosition('n1', 'A', hlc(10n, 0n, 'a')))
     applyOp(state, tombstoneNode('n1', hlc(20n, 0n, 'a')))
-    expect(state.nodes.n1.position).toBeUndefined()
-    expect(hlcIsZero(state.nodes.n1.tombstoneAt)).toBe(false)
+    expect(state.nodes.n1?.position).toBeUndefined()
+    expect(hlcIsZero(state.nodes.n1?.tombstoneAt)).toBe(false)
   })
 
   it('set after tombstone (later HLC) drops', () => {
     const state = newState('user')
     applyOp(state, tombstoneNode('n1', hlc(20n, 0n, 'a')))
     applyOp(state, setNodePosition('n1', 'X', hlc(30n, 0n, 'a')))
-    expect(state.nodes.n1.position).toBeUndefined()
+    expect(state.nodes.n1?.position).toBeUndefined()
   })
 
   it('parent_id is set-once', () => {
     const state = newState('user')
     applyOp(state, setNodeParentId('n1', 'P1', hlc(10n, 0n, 'a')))
     applyOp(state, setNodeParentId('n1', 'P2', hlc(20n, 0n, 'b')))
-    expect(state.nodes.n1.parentId).toBe('P1')
+    expect(state.nodes.n1?.parentId).toBe('P1')
   })
 
   // Regression: pre-fix, `applySetWorkspaceRootNode` early-returned
@@ -140,7 +140,7 @@ describe('crdt apply', () => {
     expect(state.workspaces.w1).toBeUndefined()
     applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
     expect(state.workspaces.w1).toBeDefined()
-    expect(state.workspaces.w1.rootNodeId).toBe('root1')
+    expect(state.workspaces.w1?.rootNodeId).toBe('root1')
   })
 
   // The op is set-once: re-applying with a different root id must not
@@ -149,7 +149,7 @@ describe('crdt apply', () => {
     const state = newState('user')
     applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
     applyOp(state, setWorkspaceRootNode('w1', 'root2', hlc(2n, 0n, 'a')))
-    expect(state.workspaces.w1.rootNodeId).toBe('root1')
+    expect(state.workspaces.w1?.rootNodeId).toBe('root1')
   })
 
   it('-0.0 normalizes to +0.0 on double registers', () => {
@@ -167,8 +167,8 @@ describe('crdt apply', () => {
       },
     })
     applyOp(state, op)
-    expect(Object.is(state.floatingWindows.w1.x?.value, 0)).toBe(true)
-    expect(Object.is(state.floatingWindows.w1.x?.value, -0)).toBe(false)
+    expect(Object.is(state.floatingWindows.w1?.x?.value, 0)).toBe(true)
+    expect(Object.is(state.floatingWindows.w1?.x?.value, -0)).toBe(false)
   })
 })
 

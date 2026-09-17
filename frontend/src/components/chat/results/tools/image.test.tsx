@@ -1,0 +1,21 @@
+import { beforeAll, describe } from 'vitest'
+import { checkKindModule } from '~/test-support/kindTestHarness'
+
+// jsdom does not provide ResizeObserver, which the shared layouts observe with.
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+})
+
+describe('image renderer', () => {
+  checkKindModule({
+    kind: 'image',
+    request: { prompt: 'a red square' },
+    titlePart: 'a red square',
+    result: { revisedPrompt: 'a red square on white' },
+    resultPart: 'a red square on white',
+  })
+})

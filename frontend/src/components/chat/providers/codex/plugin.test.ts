@@ -1,13 +1,13 @@
 import type { Question } from '../../controls/types'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
+import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { renderDivider } from '~/test-support/messageRenderProbes'
+import { providerQuotableText } from '~/test-support/toolCallIr'
 import { createControlAnswerState } from '../../controls/types'
-import { renderDivider } from '../../messageRenderTestUtils'
-import { expandedUiKeyFor, MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
 
 import { sendCodexDecision, sendCodexUserInputResponse } from './controlResponse'
 // Side-effect import to register the Codex plugin.
@@ -17,539 +17,63 @@ describe('codex provider capabilities', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
   it('seeds the default collaboration mode as a provider option on a new agent', () => {
-    expect(plugin.defaultProviderOptions).toEqual({ [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE })
+    expect(plugin?.configuration?.defaultProviderOptions).toEqual({ [CODEX_OPTION.CollaborationMode]: CODEX_OPTION_DEFAULT.CollaborationMode })
   })
 
   it('preserves an option selection alongside the free-text note', () => {
-    expect(plugin.preservesSelectionNotes).toBe(true)
+    expect(plugin?.controls?.preservesSelectionNotes).toBe(true)
   })
-
-  // Codex reasoning renders under its OWN key (reasoning.tsx), not the shared THINKING
-  // key that Claude, Pi and the ACP family use -- so the row estimator and the renderer
-  // must agree through this one mapper.
-  it('routes a thinking row to its own reasoning key', () => {
-    expect(expandedUiKeyFor('assistant_thinking', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
-    expect(expandedUiKeyFor('assistant_text', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.CODEX_REASONING)
-  })
-
-  // The two kind-owned keys answer before the plugin does.
-  it('leaves the kind-owned keys alone', () => {
-    expect(expandedUiKeyFor('plan_execution', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.PLAN_EXECUTION)
-    expect(expandedUiKeyFor('agent_prompt', AgentProvider.CODEX)).toBe(MESSAGE_UI_KEY.AGENT_PROMPT)
-  })
-})
-
-describe('codex extractQuotableText', () => {
-  const plugin = providerFor(AgentProvider.CODEX)!
-
-  it('reads parent.item.text for assistant_text', () => {
-    const parent = { item: { type: 'agentMessage', text: '  Hello  ' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBe('Hello')
-  })
-
-  it('reads parent.item.text for assistant_thinking', () => {
-    const parent = { item: { type: 'reasoning', text: 'thinking...' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_thinking' }, input(parent))).toBe('thinking...')
-  })
-
-  it('reads parent.content string for user_content / plan_execution', () => {
-    expect(plugin.extractQuotableText!({ kind: 'user_content' }, input({ content: 'hi' }))).toBe('hi')
-    expect(plugin.extractQuotableText!({ kind: 'plan_execution' }, input({ content: 'plan' }))).toBe('plan')
-  })
-
-  it('returns null when item has no text', () => {
-    const parent = { item: { type: 'agentMessage' } }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBeNull()
-  })
-
-  it('returns null for non-quotable categories', () => {
-    expect(plugin.extractQuotableText!({ kind: 'hidden' }, input({ item: { type: 'agentMessage', text: 'x' } }))).toBeNull()
-  })
-})
-
-describe('codex classify', () => {
-  const plugin = providerFor(AgentProvider.CODEX)!
 
   it('exposes attachment capabilities', () => {
-    expect(plugin.attachments).toEqual({
+    expect(plugin?.configuration?.attachments).toEqual({
       text: true,
       image: true,
       pdf: false,
       binary: false,
     })
   })
+})
 
-  it('hides thread/started notifications', () => {
-    const parent = {
-      method: 'thread/started',
-      params: {
-        threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+describe('codex quotable text', () => {
+  it('reads parent.item.text for assistant_text', () => {
+    const parent = { item: { type: 'agentMessage', text: '  Hello  ' } }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_text' } })).toBe('Hello')
   })
 
-  it('hides turn/started notifications', () => {
-    const parent = {
-      method: 'turn/started',
-      params: {
-        threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
-        turn: {
-          id: 'turn_123',
-        },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+  it('reads parent.item.text for assistant_thinking', () => {
+    const parent = { item: { type: 'reasoning', text: 'thinking...' } }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_thinking' } })).toBe('thinking...')
   })
 
-  it('hides thread/status/changed notifications', () => {
-    const parent = {
-      method: 'thread/status/changed',
-      params: {
-        threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
-        status: {
-          type: 'active',
-          activeFlags: ['waitingOnApproval'],
-        },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+  it('reads parent.content string for user_content / plan_execution', () => {
+    expect(providerQuotableText(AgentProvider.CODEX, { content: 'hi' }, { category: { kind: 'user_content' } })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.CODEX, { content: 'plan' }, { category: { kind: 'plan_execution' } })).toBe('plan')
   })
 
-  it('hides skills/changed notifications', () => {
-    const parent = {
-      method: 'skills/changed',
-      params: {},
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+  it('returns null when item has no text', () => {
+    const parent = { item: { type: 'agentMessage' } }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_text' } })).toBeNull()
   })
 
-  it('hides remoteControl/status/changed notifications', () => {
-    const parent = {
-      method: 'remoteControl/status/changed',
-      params: { status: 'disabled', environmentId: null },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it.each([
-    'hook/started',
-    'hook/completed',
-  ])('hides %s notifications', (method) => {
-    const parent = {
-      method,
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        run: { name: 'hook' },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
-    const contextCleared = { type: 'context_cleared' }
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        { method: 'thread/started', params: { threadId: 'thread-1' } },
-        contextCleared,
-      ],
-    }
-    // thread/started is a hidden lifecycle event, so it is dropped from the
-    // rendered messages; the visible context_cleared keeps the thread alive.
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification', messages: [contextCleared] })
-  })
-
-  it('classifies a completed contextCompaction item as a notification thread', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [{ threadId: 't1', turnId: 'turn1', item: { type: 'contextCompaction', id: 'compact-1' } }],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification')
-  })
-
-  it('classifies wrapped raw item/started+contextCompaction (Phase 4.2) as a notification thread', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [{
-        method: 'item/started',
-        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-      }],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification')
-  })
-
-  it('classifies wrapped raw item/completed+contextCompaction as a notification thread', () => {
-    // The Worker persists the COMPLETION of a contextCompaction item as the
-    // compaction boundary. The thread that shows the compacting indicator must
-    // recognize the boundary that closes it.
-    const wrapper = {
-      old_seqs: [],
-      messages: [{
-        method: 'item/completed',
-        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-      }],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).toBe('notification')
-  })
-
-  it('does NOT classify wrapped item/completed for non-compaction items as a notification thread', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [{
-        method: 'item/completed',
-        params: { item: { type: 'agentMessage', id: 'msg-1' } },
-      }],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).not.toBe('notification')
-  })
-
-  it('does NOT classify wrapped item/started for non-compaction items as a notification thread', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [{
-        method: 'item/started',
-        params: { item: { type: 'commandExecution', id: 'cmd-1' } },
-      }],
-    }
-    // commandExecution is rendered through the assistant span flow, not the
-    // notification thread. Wrapping it must not turn it into a notification.
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result.kind).not.toBe('notification')
-  })
-
-  it('collapses a thread of only hidden Codex metadata (skills + remote-control) to hidden', () => {
-    // Both are hidden lifecycle methods that render nothing; a thread of only
-    // such entries must collapse to hidden rather than surface a `notification`
-    // that renders no rows and falls back to a raw-JSON bubble.
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        { method: 'skills/changed', params: {} },
-        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
-      ],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('drops hidden Codex metadata but keeps the visible notification thread entry', () => {
-    const settingsChanged = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        { method: 'skills/changed', params: {} },
-        settingsChanged,
-        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
-      ],
-    }
-    // The hidden metadata is filtered from the rendered messages (the full
-    // wrapper is still preserved for "Copy Raw JSON" via parsed.rawText); only
-    // the visible settings_changed survives.
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification', messages: [settingsChanged] })
-  })
-
-  it('collapses a thread of only thread/name/updated + thread/tokenUsage/updated to hidden', () => {
-    // Both are hidden lifecycle methods, so the consolidated thread is hidden --
-    // matching how each is hidden when it arrives standalone.
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        { method: 'thread/name/updated', params: { threadId: 't1', name: 'Refactor auth' } },
-        { method: 'thread/tokenUsage/updated', params: { threadId: 't1' } },
-      ],
-    }
-    const result = plugin.classify(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('keeps high-usage rate limit notifications visible', () => {
-    const parent = {
-      method: 'account/rateLimits/updated',
-      params: {
-        rateLimits: {
-          primary: {
-            usedPercent: 85,
-            windowMinutes: 300,
-          },
-        },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
-  })
-
-  it('keeps a reached-type block visible even when all windows are under threshold', () => {
-    // Credit depletion leaves the rolling windows with headroom, so the
-    // all-allowed check would hide it; the authoritative reached-type must not.
-    const parent = {
-      method: 'account/rateLimits/updated',
-      params: {
-        rateLimits: {
-          rateLimitReachedType: 'workspace_owner_credits_depleted',
-          primary: { usedPercent: 20, windowDurationMins: 300 },
-        },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
-  })
-
-  it('classifies MCP startup starting notifications as visible', () => {
-    const parent = {
-      method: 'mcpServer/startupStatus/updated',
-      params: { name: 'codex_apps', status: 'starting', error: null },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
-  })
-
-  it('classifies MCP startup terminal notifications as visible', () => {
-    for (const status of ['ready', 'failed', 'cancelled']) {
-      const parent = {
-        method: 'mcpServer/startupStatus/updated',
-        params: { name: 'codex_apps', status, error: status === 'failed' ? 'boom' : null },
-      }
-      expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
-    }
-  })
-
-  it('classifies compacting as notification', () => {
-    const parent = { type: 'compacting' }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
-  })
-
-  it('classifies compact_boundary system messages as notification', () => {
-    const parent = { type: 'system', subtype: 'compact_boundary' }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'notification', messages: [parent] })
-  })
-
-  it('classifies turn/plan/updated as a Codex tool-use message', () => {
-    const parent = {
-      method: 'turn/plan/updated',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        explanation: null,
-        plan: [
-          { step: 'Inspect messages', status: 'inProgress' },
-          { step: 'Update renderer', status: 'pending' },
-        ],
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] })
-  })
-
-  it('classifies webSearch items as Codex tool-use messages', () => {
-    const parent = {
-      item: {
-        type: 'webSearch',
-        id: 'ws-1',
-        query: 'https://example.com',
-        action: { type: 'openPage', url: 'https://example.com' },
-      },
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
-  })
-
-  it('hides webSearch openPage items with null url', () => {
-    const parent = {
-      item: {
-        type: 'webSearch',
-        id: 'ws-2',
-        query: '',
-        action: { type: 'openPage', url: null },
-      },
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides thread/tokenUsage/updated notifications', () => {
-    const parent = {
-      method: 'thread/tokenUsage/updated',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        tokenUsage: {
-          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
-          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
-          modelContextWindow: 4096,
-        },
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides notification threads containing only hidden Codex notifications', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        {
-          method: 'thread/tokenUsage/updated',
-          params: {
-            threadId: 'thread-1',
-            turnId: 'turn-1',
-            tokenUsage: {
-              total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
-              last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
-              modelContextWindow: 4096,
-            },
-          },
-        },
-        {
-          method: 'account/rateLimits/updated',
-          params: {
-            rateLimits: {
-              primary: { usedPercent: 34, windowMinutes: 300 },
-              secondary: { usedPercent: 10, windowMinutes: 10080 },
-            },
-          },
-        },
-      ],
-    }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a standalone thread/compacted notification', () => {
-    // Codex reports an automatic compaction with this method. The chat shows
-    // the boundary that item/completed carries, so this one renders nothing.
-    const parent = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a thread/compacted consolidated into a notification thread', () => {
-    const compacted = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
-    const wrapper = { old_seqs: [7], messages: [compacted] }
-    expect(plugin.classify(input(compacted, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a standalone thread/settings/updated notification', () => {
-    // Codex emits this whenever thread settings change (model, effort, sandbox,
-    // etc.); it carries no chat-worthy content, so it is a hidden lifecycle event.
-    const parent = {
-      method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5', effort: 'xhigh' } },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a thread/settings/updated consolidated into a notification thread', () => {
-    const settingsUpdated = {
-      method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
-    }
-    const wrapper = { old_seqs: [6], messages: [settingsUpdated] }
-    expect(plugin.classify(input(settingsUpdated, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a standalone terminal compaction status (status=null, compact_result=success)', () => {
-    const parent = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides a terminal compaction status when consolidated into a notification thread', () => {
-    // Parity with the standalone classifier and with Claude: a status hidden on
-    // its own stays hidden once Hub threads it, instead of leaking as raw JSON.
-    const statusMsg = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
-    const wrapper = { old_seqs: [305], messages: [statusMsg] }
-    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
-  it('keeps the in-progress compacting status visible standalone and consolidated', () => {
-    const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(plugin.classify(input(compactingMsg))).toEqual({ kind: 'notification', messages: [compactingMsg] })
-    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
-    expect(plugin.classify(input(compactingMsg, wrapper))).toEqual({ kind: 'notification', messages: [compactingMsg] })
-  })
-
-  it('drops a hidden thread/settings/updated from a thread but keeps the visible entry', () => {
-    const settingsUpdated = {
-      method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
-    }
-    const contextCleared = { type: 'context_cleared' }
-    const wrapper = { old_seqs: [5, 6], messages: [settingsUpdated, contextCleared] }
-    expect(plugin.classify(input(settingsUpdated, wrapper)))
-      .toEqual({ kind: 'notification', messages: [contextCleared] })
-  })
-
-  it('hides plain JSON-RPC response envelopes', () => {
-    const parent = {
-      id: 1001,
-      result: {},
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+  it('returns null for non-quotable categories', () => {
+    expect(providerQuotableText(AgentProvider.CODEX, { item: { type: 'agentMessage', text: 'x' } }, { category: { kind: 'hidden' } })).toBeNull()
   })
 })
 
 describe('codex result divider', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
-  it('classifies turn/completed as result_divider', () => {
-    const parent = {
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        turn: { id: 'turn-1', status: 'completed' },
-      },
-      turn: { id: 'turn-1', status: 'completed' },
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
-  })
-
-  it('hides synthetic Codex turn failed notifications', () => {
-    const parent = {
-      type: 'agent_error',
-      error: 'Codex turn failed',
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides notification threads containing only synthetic Codex turn failed notifications', () => {
-    const wrapper = {
-      old_seqs: [],
-      messages: [
-        { type: 'agent_error', error: 'Codex turn failed' },
-      ],
-    }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
   // Every provider states a turn end in one shared vocabulary, so the runtime's own
   // status word never reaches the label on its own. Codex said "Turn completed" where
   // the Agent Client Protocol providers said "Turn ended".
   it('maps a completed turn to the shared turn-end label', () => {
-    expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
+    expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
       .toEqual({ label: 'Turn ended' })
   })
 
   it('maps the statuses that mean the reader stopped the turn', () => {
     for (const status of ['interrupted', 'cancelled', 'aborted']) {
-      expect(plugin.resultDivider!({ turn: { id: 'turn-1', status } }), status)
+      expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status } }), status)
         .toEqual({ label: 'Turn interrupted' })
     }
   })
@@ -557,18 +81,18 @@ describe('codex result divider', () => {
   // A word this build does not know still reads as a turn end, with the word itself
   // kept so nothing the runtime reported is lost.
   it('qualifies the turn end with a status this build does not know', () => {
-    expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'compacted' } }))
+    expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status: 'compacted' } }))
       .toEqual({ label: 'Turn ended (compacted)' })
   })
 
   it('maps a failed turn to a danger divider with the error inline', () => {
-    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
+    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
       .toEqual({ label: 'Turn failed — Boom', isError: true, detail: 'timeout' })
   })
 
   // A failure the runtime reports with no error object at all still reads as one.
   it('marks a failed turn that carries no error object', () => {
-    expect(plugin.resultDivider!({ turn: { status: 'failed' } }))
+    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed' } }))
       .toEqual({ label: 'Turn failed', isError: true })
   })
 
@@ -576,16 +100,16 @@ describe('codex result divider', () => {
     // An explicit empty-string message is a present string, so pickString's
     // missing-key fallback does not apply -- guard with `|| 'Unknown error'` so
     // the divider never renders a label-less red row.
-    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: '' } } }))
+    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed', error: { message: '' } } }))
       .toEqual({ label: 'Turn failed — Unknown error', isError: true })
   })
 
   it('returns null when the turn carries no status', () => {
-    expect(plugin.resultDivider!({ turn: {} })).toBeNull()
+    expect(plugin?.transcript.extractDivider!({ turn: {} })).toBeNull()
   })
 
   it('renders a failed turn as a danger divider through the shared renderer end-to-end', () => {
-    // MessageBubble routes result_divider through renderResultDivider, which draws
+    // MessageBubble routes result_divider through the shared row extraction, which draws
     // the shared ResultDivider with the inline danger color for a failed turn.
     const { text, isError } = renderDivider(
       { turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } },
@@ -604,19 +128,45 @@ describe('codex isAskUserQuestion', () => {
       method: 'item/tool/requestUserInput',
       params: { questions: [] },
     }
-    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(true)
+    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(true)
   })
 
   it('returns false for approval methods', () => {
-    expect(plugin.askUserQuestion!.isRequest({
+    expect(plugin?.controls?.askUserQuestion!.isRequest({
       method: 'item/commandExecution/requestApproval',
     })).toBe(false)
   })
 
   it('returns false for payloads without method', () => {
-    expect(plugin.askUserQuestion!.isRequest({
+    expect(plugin?.controls?.askUserQuestion!.isRequest({
       request: { tool_name: 'AskUserQuestion' },
     })).toBe(false)
+  })
+
+  it('reads each question and its options', () => {
+    const payload = {
+      method: 'item/tool/requestUserInput',
+      params: { questions: [{ question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] }] },
+    }
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions(payload)).toEqual([
+      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] },
+    ])
+  })
+
+  // An `Array.isArray` on the OUTER array says nothing about the elements, and the
+  // control surface dereferences `question` and hands `options` to a `<For>` -- so a
+  // null or a bare string among them threw the whole banner away.
+  it('drops an element the control surface cannot draw', () => {
+    const payload = {
+      method: 'item/tool/requestUserInput',
+      params: { questions: [null, 'plain text', 7, { question: 'Which one?', options: [] }] },
+    }
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions(payload)).toEqual([{ question: 'Which one?', options: [] }])
+  })
+
+  it('answers an empty list for a payload that states no questions', () => {
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions({ method: 'item/tool/requestUserInput' })).toEqual([])
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions({ method: 'item/tool/requestUserInput', params: { questions: 'nope' } })).toEqual([])
   })
 })
 
@@ -886,25 +436,25 @@ describe('codex settings config', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
   it('wires plan mode to the collaboration_mode group', () => {
-    expect(plugin.planMode).toMatchObject({
+    expect(plugin?.configuration?.planMode).toMatchObject({
       groupKey: 'collaboration_mode',
       planValue: 'plan',
-      defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
+      defaultValue: CODEX_OPTION_DEFAULT.CollaborationMode,
     })
   })
 
   it('renders the collaboration_mode "Workflow" group as the trigger mode segment', () => {
     // Not the approval-policy permissionMode -- Codex's mode axis is the Workflow group.
-    expect(plugin.triggerModeGroupKey).toBe(CODEX_OPTION_COLLABORATION_MODE)
+    expect(plugin?.configuration?.triggerModeGroupKey).toBe(CODEX_OPTION.CollaborationMode)
   })
 
   it('reads the current collaboration mode from optionValues, defaulting when unset', () => {
-    expect(plugin.planMode!.currentMode({ optionValues: { [CODEX_OPTION_COLLABORATION_MODE]: 'plan' } })).toBe('plan')
-    expect(plugin.planMode!.currentMode({})).toBe(DEFAULT_CODEX_COLLABORATION_MODE)
+    expect(plugin?.configuration?.planMode!.currentMode({ optionValues: { [CODEX_OPTION.CollaborationMode]: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode!.currentMode({})).toBe(CODEX_OPTION_DEFAULT.CollaborationMode)
   })
 
   it('declares one complete bypass permission preset', () => {
-    expect(plugin.permissionPresets).toEqual({
+    expect(plugin?.controls?.permissionPresets).toEqual({
       bypass: { sets: {
         network_access: 'enabled',
         sandbox_policy: 'danger-full-access',
@@ -918,7 +468,7 @@ describe('codex control response builder', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
   it('uses an offered cancel decision for typed feedback', () => {
-    expect(plugin.buildControlResponse!({
+    expect(plugin?.controls?.buildControlResponse!({
       method: 'item/commandExecution/requestApproval',
       params: { availableDecisions: ['accept', 'cancel'] },
     }, 'do something else', '7')).toEqual({
@@ -929,7 +479,7 @@ describe('codex control response builder', () => {
   })
 
   it('uses an empty grant to reject a permission request', () => {
-    expect(plugin.buildControlResponse!({
+    expect(plugin?.controls?.buildControlResponse!({
       method: 'item/permissions/requestApproval',
       params: { permissions: { network: { enabled: true } } },
     }, 'do something else', '7')).toEqual({
@@ -963,7 +513,7 @@ describe('codex contextUsageFromMessage', () => {
         },
       },
     })
-    expect(plugin.contextUsageFromMessage!(msg)).toEqual({
+    expect(plugin?.session?.contextUsageFromMessage!(msg)).toEqual({
       inputTokens: 5,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 5,
@@ -972,7 +522,7 @@ describe('codex contextUsageFromMessage', () => {
   })
 
   it('returns null for an unrelated method', () => {
-    expect(plugin.contextUsageFromMessage!(parsed({ method: 'turn/completed', params: {} }))).toBeNull()
+    expect(plugin?.session?.contextUsageFromMessage!(parsed({ method: 'turn/completed', params: {} }))).toBeNull()
   })
 })
 
@@ -980,7 +530,7 @@ describe('codex rateLimitsFromMessage', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
   it('extracts Codex native rate limit info', () => {
-    const result = plugin.rateLimitsFromMessage!(parsed({
+    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
@@ -990,23 +540,23 @@ describe('codex rateLimitsFromMessage', () => {
       },
     }))
     expect(result).toHaveLength(2)
-    expect(result![0].key).toBe('five_hour')
-    expect(result![0].info.utilization).toBeCloseTo(0.85)
-    expect(result![0].info.status).toBe('allowed_warning')
-    expect(result![1].key).toBe('seven_day')
-    expect(result![1].info.utilization).toBeCloseTo(0.04)
-    expect(result![1].info.status).toBe('allowed')
+    expect(result![0]?.key).toBe('five_hour')
+    expect(result![0]?.info.utilization).toBeCloseTo(0.85)
+    expect(result![0]?.info.status).toBe('allowed_warning')
+    expect(result![1]?.key).toBe('seven_day')
+    expect(result![1]?.info.utilization).toBeCloseTo(0.04)
+    expect(result![1]?.info.status).toBe('allowed')
   })
 
   it('returns empty array without tiers', () => {
-    expect(plugin.rateLimitsFromMessage!(parsed({
+    expect(plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: { rateLimits: {} },
     }))).toEqual([])
   })
 
   it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
-    const result = plugin.rateLimitsFromMessage!(parsed({
+    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
@@ -1016,13 +566,13 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result![0].key).toBe('five_hour')
-    expect(result![0].info.status).toBe('exceeded')
-    expect(result![1].info.status).toBe('allowed')
+    expect(result![0]?.key).toBe('five_hour')
+    expect(result![0]?.info.status).toBe('exceeded')
+    expect(result![1]?.info.status).toBe('allowed')
   })
 
   it('does not elevate for non-time-window reached-type', () => {
-    const result = plugin.rateLimitsFromMessage!(parsed({
+    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
       method: 'account/rateLimits/updated',
       params: {
         rateLimits: {
@@ -1031,27 +581,11 @@ describe('codex rateLimitsFromMessage', () => {
         },
       },
     }))
-    expect(result![0].info.status).toBe('allowed')
+    expect(result![0]?.info.status).toBe('allowed')
   })
 
   it('returns null for a non-rate-limit method', () => {
-    expect(plugin.rateLimitsFromMessage!(parsed({ method: 'turn/completed' }))).toBeNull()
-  })
-})
-
-describe('codex resultSubtype', () => {
-  const plugin = providerFor(AgentProvider.CODEX)!
-
-  it('maps a completed turn object to turn_completed', () => {
-    expect(plugin.resultSubtype!(parsed({ turn: { status: 'completed', usage: { inputTokens: 100 } } }))).toBe('turn_completed')
-  })
-
-  it('maps a failed turn object to turn_completed', () => {
-    expect(plugin.resultSubtype!(parsed({ turn: { status: 'failed' } }))).toBe('turn_completed')
-  })
-
-  it('returns undefined without a turn object', () => {
-    expect(plugin.resultSubtype!(parsed({ type: 'result', subtype: 'turn_end' }))).toBeUndefined()
+    expect(plugin?.session?.rateLimitsFromMessage!(parsed({ method: 'turn/completed' }))).toBeNull()
   })
 })
 
@@ -1063,15 +597,15 @@ describe('codex relatedMessages', () => {
   const item = (fields: Record<string, unknown>) => ({ item: { id: 'call', ...fields } })
 
   it('an MCP result wants its request', () => {
-    expect(plugin.relatedMessages!(input(item({ type: 'mcpToolCall', status: 'completed', server: 's', tool: 't' })))).toEqual(['request'])
+    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'mcpToolCall', status: 'completed', server: 's', tool: 't' })))).toEqual(['request'])
   })
 
   it('an image view and a collaboration call want both halves', () => {
-    expect(plugin.relatedMessages!(input(item({ type: 'imageView', status: 'completed', path: '/a.png' })))).toEqual(['request', 'result'])
-    expect(plugin.relatedMessages!(input(item({ type: 'collabAgentToolCall', status: 'completed', tool: 'spawnAgent' })))).toEqual(['request', 'result'])
+    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'imageView', status: 'completed', path: '/a.png' })))).toEqual(['request', 'result'])
+    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'collabAgentToolCall', status: 'completed', tool: 'spawnAgent' })))).toEqual(['request', 'result'])
   })
 
   it('a command execution wants nothing, because each row carries its own body', () => {
-    expect(plugin.relatedMessages!(input(item({ type: 'commandExecution', status: 'completed', command: 'ls' })))).toEqual([])
+    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'commandExecution', status: 'completed', command: 'ls' })))).toEqual([])
   })
 })

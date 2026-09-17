@@ -12,7 +12,7 @@ function textbox(name = 'Public URL'): HTMLInputElement {
   return screen.getByRole('textbox', { name }) as HTMLInputElement
 }
 
-describe('textControl', () => {
+describe('TextControl', () => {
   // One commit per write RPC. A commit on `input` stored each prefix of what
   // the user typed, so `https://h`, `https://hu`, ... each reached the hub in
   // turn, and mail sent inside that window carried the half-typed URL.

@@ -77,7 +77,9 @@ export function createProgrammaticScrollGuard(
   // the ring holds only still-eligible ones rather than filling with stale entries.
   const pruneStale = () => {
     for (let i = markers.length - 1; i >= 0; i--) {
-      if (!isFresh(markers[i]))
+      // The bound keeps `i` in range; the undefined check is the type-level guard alone.
+      const m = markers[i]
+      if (m !== undefined && !isFresh(m))
         markers.splice(i, 1)
     }
   }
@@ -95,7 +97,7 @@ export function createProgrammaticScrollGuard(
       return
     pruneStale()
     writeGen++
-    markers.push({ top: el.scrollTop, at: now(), gen: writeGen, source })
+    markers.push({ top: el.scrollTop, at: now(), gen: writeGen, ...(source !== undefined ? { source } : {}) })
     if (markers.length > MAX_ECHO_MARKERS)
       markers.shift()
     onMark?.(el.scrollTop)
@@ -124,7 +126,9 @@ export function createProgrammaticScrollGuard(
     if (!el)
       return -1
     for (let i = 0; i < markers.length; i++) {
-      if (isFresh(markers[i]) && Math.abs(el.scrollTop - markers[i].top) < 1)
+      // The bound keeps `i` in range; the undefined check is the type-level guard alone.
+      const m = markers[i]
+      if (m !== undefined && isFresh(m) && Math.abs(el.scrollTop - m.top) < 1)
         return i
     }
     return -1
@@ -146,7 +150,8 @@ export function createProgrammaticScrollGuard(
    */
   const matchedEchoGen = (): number => {
     const i = matchIndex()
-    return i >= 0 ? markers[i].gen : 0
+    // A matched index is inside the ring by construction; `?? 0` (no marker) is the type-level guard alone.
+    return i >= 0 ? markers[i]?.gen ?? 0 : 0
   }
 
   /**
@@ -171,7 +176,7 @@ export function createProgrammaticScrollGuard(
       top: m.top,
       ageMs: at - m.at,
       gen: m.gen,
-      source: m.source,
+      ...(m.source !== undefined ? { source: m.source } : {}),
     }))
   }
 

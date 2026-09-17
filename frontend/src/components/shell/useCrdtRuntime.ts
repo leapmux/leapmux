@@ -531,7 +531,14 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // cleared here — this is a re-install for the SAME account, so its
     // persisted pair must survive.
     void recorder?.dispose()
-    recorder = createCheckpointRecorder({ userId: uid, clientId, mgr, hydratedFrom })
+    // ABSENT, not undefined, is the cold-start signal the recorder reads; the
+    // option type takes no explicit undefined.
+    recorder = createCheckpointRecorder({
+      userId: uid,
+      clientId,
+      mgr,
+      ...(hydratedFrom === undefined ? {} : { hydratedFrom }),
+    })
     const active = recorder
     // Both hooks in ONE call, so recording cannot be enabled without them or
     // vice versa. The checkpoint-reset half matters as much as the append half:

@@ -44,6 +44,17 @@ function widgetEls(container: HTMLElement): FakeAltchaWidget[] {
   return Array.from(container.querySelectorAll('altcha-widget')) as unknown as FakeAltchaWidget[]
 }
 
+// The one widget a rendered field owns. Throwing (rather than returning
+// undefined) keeps a not-yet-upgraded widget retryable inside `vi.waitFor`
+// and fails the test outright everywhere else, which is what indexing the
+// list did before noUncheckedIndexedAccess.
+function firstWidget(container: HTMLElement): FakeAltchaWidget {
+  const widget = widgetEls(container)[0]
+  if (widget === undefined)
+    throw new Error('altcha-widget not rendered')
+  return widget
+}
+
 function renderField(props: Partial<Parameters<typeof AltchaField>[0]> = {}) {
   const onPayload = props.onPayload ?? vi.fn()
   const onUnavailable = props.onUnavailable ?? vi.fn()
@@ -52,7 +63,7 @@ function renderField(props: Partial<Parameters<typeof AltchaField>[0]> = {}) {
   ))
 }
 
-describe('altchaField', () => {
+describe('AltchaField', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
@@ -62,9 +73,9 @@ describe('altchaField', () => {
   it('fetches a challenge on mount and configures the widget with the parsed object', async () => {
     const { container } = renderField()
     await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+      expect(firstWidget(container).configure).toHaveBeenCalled()
     })
-    const arg = widgetEls(container)[0].configure.mock.calls[0]?.[0] as
+    const arg = firstWidget(container).configure.mock.calls[0]?.[0] as
       | { challenge?: { parameters?: { algorithm?: string } }, auto?: string }
       | undefined
     // The challenge must be handed over as an object — a raw string would
@@ -82,16 +93,16 @@ describe('altchaField', () => {
     await vi.waitFor(() => {
       expect(onUnavailable).toHaveBeenCalled()
     })
-    expect(widgetEls(container)[0].configure).not.toHaveBeenCalled()
+    expect(firstWidget(container).configure).not.toHaveBeenCalled()
   })
 
   it('emits the payload on verified statechange and null otherwise', async () => {
     const onPayload = vi.fn()
     const { container } = renderField({ onPayload })
     await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+      expect(firstWidget(container).configure).toHaveBeenCalled()
     })
-    const widget = widgetEls(container)[0]
+    const widget = firstWidget(container)
 
     widget.dispatchEvent(new CustomEvent('statechange', {
       detail: { state: 'verified', payload: 'cGF5bG9hZA==' },
@@ -105,9 +116,9 @@ describe('altchaField', () => {
   it('re-arms on expired statechange', async () => {
     const { container } = renderField()
     await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+      expect(firstWidget(container).configure).toHaveBeenCalled()
     })
-    const widget = widgetEls(container)[0]
+    const widget = firstWidget(container)
 
     widget.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'expired' } }))
     await vi.waitFor(() => {
@@ -119,7 +130,7 @@ describe('altchaField', () => {
     mockFetchAltchaChallenge.mockRejectedValue(new Error('network'))
     const { container, findByText } = renderField()
     expect(await findByText(/could not load the human-verification challenge/i)).toBeTruthy()
-    expect(widgetEls(container)[0].configure).not.toHaveBeenCalled()
+    expect(firstWidget(container).configure).not.toHaveBeenCalled()
   })
 
   it('refreshes the system info once when the challenge fetch fails, so a provider switch converges without a denial', async () => {
@@ -156,13 +167,13 @@ describe('altchaField', () => {
     handle!.reset()
     await vi.waitFor(() => {
       expect(mockFetchAltchaChallenge).toHaveBeenCalledTimes(2)
-      expect(widgetEls(container)[0].configure).toHaveBeenCalledTimes(1)
+      expect(firstWidget(container).configure).toHaveBeenCalledTimes(1)
     })
 
     // The hung first fetch resolves late; only the newer arm may configure.
     releaseFirst(challenge)
     await new Promise(r => setTimeout(r, 0))
-    expect(widgetEls(container)[0].configure).toHaveBeenCalledTimes(1)
+    expect(firstWidget(container).configure).toHaveBeenCalledTimes(1)
   })
 
   it('reset handle clears the payload and fetches a fresh challenge', async () => {
@@ -171,11 +182,11 @@ describe('altchaField', () => {
       <div><AltchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
     ))
     await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+      expect(firstWidget(container).configure).toHaveBeenCalled()
     })
 
     handle!.reset()
-    expect(widgetEls(container)[0].reset).toHaveBeenCalled()
+    expect(firstWidget(container).reset).toHaveBeenCalled()
     await vi.waitFor(() => {
       expect(mockFetchAltchaChallenge).toHaveBeenCalledTimes(2)
     })
@@ -187,9 +198,9 @@ describe('altchaField', () => {
       <div><AltchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
     ))
     await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+      expect(firstWidget(container).configure).toHaveBeenCalled()
     })
-    widgetEls(container)[0].reset.mockImplementation(() => {
+    firstWidget(container).reset.mockImplementation(() => {
       throw new Error('n?.reset is not a function')
     })
 
@@ -200,7 +211,7 @@ describe('altchaField', () => {
   })
 })
 
-describe('captchaHoneypot', () => {
+describe('CaptchaHoneypot', () => {
   it('renders the input hidden from users but visible to bots, and reports input', () => {
     const onInput = vi.fn()
     const { container } = render(() => (

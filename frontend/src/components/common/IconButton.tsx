@@ -90,7 +90,10 @@ export const IconButton: Component<IconButtonProps> = (props) => {
   }
 
   return (
-    <Tooltip text={local.title} ariaLabel>
+    // `''` rather than undefined: `Tooltip` decides by truthiness, so the
+    // empty string is its documented spelling for "nothing to show" and the
+    // reactive read inside the JSX stays.
+    <Tooltip text={local.title ?? ''} ariaLabel>
       <button
         type="button"
         class={classes()}

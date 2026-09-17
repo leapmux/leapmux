@@ -46,6 +46,9 @@ describe('buildMessageActions', () => {
 
   it('falls back to a bare Copy when the renderer named no content label', () => {
     const [action] = buildMessageActions({ onCopyContent: () => {} }, {})
+    // The suite's own contract: an onCopyContent caller gets one action; the guard is type-level alone.
+    if (action === undefined)
+      throw new Error('expected a copy action')
     expect(action.label).toBe('Copy')
   })
 
@@ -79,12 +82,18 @@ describe('buildMessageActions', () => {
 
   it('uses the renderer expand label when the row supplies one', () => {
     const [action] = buildMessageActions({}, { onToggleExpand: () => {}, expandLabel: 'Show 40 more lines' })
+    // An expand toggle always yields its action; the guard is type-level alone.
+    if (action === undefined)
+      throw new Error('expected an expand action')
     expect(action.label).toBe('Show 40 more lines')
   })
 
   it('runs the handler the caller supplied', () => {
     const onReply = vi.fn()
     const [action] = buildMessageActions({ onReply }, {})
+    // An onReply caller always gets its quote action; the guard is type-level alone.
+    if (action === undefined)
+      throw new Error('expected a reply action')
     action.run()
     expect(onReply).toHaveBeenCalledTimes(1)
   })

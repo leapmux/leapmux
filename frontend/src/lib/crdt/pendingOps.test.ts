@@ -26,7 +26,15 @@ function makeMgr(notify?: () => void) {
   return new PendingOpsManager('user', clock, notify)
 }
 
-describe('pendingOpsManager', () => {
+/** The one op a fixture batch was built around; fails loudly if it is missing. */
+function soleOp(batch: ReturnType<typeof newBatch>) {
+  const op = batch.ops[0]
+  if (op === undefined)
+    throw new Error('fixture batch must carry its op')
+  return op
+}
+
+describe('PendingOpsManager', () => {
   let mgr: PendingOpsManager
 
   beforeEach(() => {
@@ -51,7 +59,7 @@ describe('pendingOpsManager', () => {
     mgr.submit(batch)
     expect(mgr.state.pendingBatches.length).toBe(1)
     // Hub echoes back the same batch_id with a canonical_hlc stamped.
-    batch.ops[0].canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
+    soleOp(batch).canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
     mgr.consumeRemote(batch)
     // Pending batch has been removed (matched by batchId).
     expect(mgr.state.pendingBatches.length).toBe(0)
@@ -157,7 +165,7 @@ describe('pendingOpsManager', () => {
     // The same batch_id arrives in a delta (an echo): it is dropped from
     // pending and NOT double-applied (the op is still applied once, matching
     // consumeRemote's echo semantics).
-    const echoOp = pending.ops[0]
+    const echoOp = soleOp(pending)
     echoOp.canonicalHlc = create(HLCSchema, { physical: 150n, logical: 0n, clientId: 'hub' })
     mgr.applyDelta(create(ResumeDeltaSchema, {
       frames: [create(WatchUserEventSchema, {
@@ -263,7 +271,7 @@ describe('pendingOpsManager', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
     mgr.submit(batch)
-    const opId = batch.ops[0].opId
+    const opId = soleOp(batch).opId
     const canonical = create(HLCSchema, { physical: 500n, logical: 3n, clientId: 'hub' })
     mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
       committed: [create(CommittedOpSchema, { opId, canonicalHlc: canonical })],
@@ -305,7 +313,7 @@ describe('pendingOpsManager', () => {
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: 10, // BATCH_REJECTION_TAB_PLACEMENT_INVALID
-      offendingOpId: batch.ops[0].opId,
+      offendingOpId: soleOp(batch).opId,
     }))
     expect(result.retryable).toBe(false)
     expect(result.reason).toBe(10)
@@ -320,7 +328,7 @@ describe('pendingOpsManager', () => {
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
-      offendingOpId: batch.ops[0].opId,
+      offendingOpId: soleOp(batch).opId,
     }))
     expect(result.retryable).toBe(true)
   })
@@ -358,7 +366,7 @@ describe('pendingOpsManager', () => {
     // revert-then-reapply flicker across the reconnect+retry window).
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
-      offendingOpId: batch.ops[0].opId,
+      offendingOpId: soleOp(batch).opId,
     }))
     expect(result.retryable).toBe(true)
     expect(mgr.state.pendingBatches.length).toBe(1)
@@ -376,7 +384,7 @@ describe('pendingOpsManager', () => {
     mgr.submit(batch)
     mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
-      offendingOpId: batch.ops[0].opId,
+      offendingOpId: soleOp(batch).opId,
     }))
     expect(mgr.state.pendingBatches.length).toBe(1) // kept applied
 
@@ -384,7 +392,7 @@ describe('pendingOpsManager', () => {
     // confirmed and dropped from pending exactly once.
     const canonical = create(HLCSchema, { physical: 900n, logical: 1n, clientId: 'hub' })
     mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
-      committed: [create(CommittedOpSchema, { opId: batch.ops[0].opId, canonicalHlc: canonical })],
+      committed: [create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical })],
       maxHlc: canonical,
       epoch: 8n,
     }))
@@ -420,7 +428,7 @@ describe('pendingOpsManager', () => {
       setNodeKind(ctx, 'unrelated-node', NodeKind.LEAF),
     ])
     mgr.submit(batch)
-    expect(mgr.state.pendingBatches[0].ops.length).toBe(2)
+    expect(mgr.state.pendingBatches[0]?.ops.length).toBe(2)
 
     const evt = create(EntityRemovedSchema, {
       atHlc: create(HLCSchema, { physical: 2000n, logical: 0n, clientId: 'hub' }),
@@ -432,9 +440,9 @@ describe('pendingOpsManager', () => {
     const result = mgr.consumeEntityRemoved(evt)
     expect(result.droppedPending).toBe(true)
     // The unrelated op should still be in the pending batch.
-    expect(mgr.state.pendingBatches[0].ops.length).toBe(1)
-    const remaining = mgr.state.pendingBatches[0].ops[0]
-    expect(remaining.body.case).toBe('setNodeRegister')
+    expect(mgr.state.pendingBatches[0]?.ops.length).toBe(1)
+    const remaining = mgr.state.pendingBatches[0]?.ops[0]
+    expect(remaining?.body.case).toBe('setNodeRegister')
   })
 
   it('notify is invoked after every state-mutating method', () => {
@@ -445,7 +453,7 @@ describe('pendingOpsManager', () => {
     m.submit(batch)
     expect(notify).toHaveBeenCalledTimes(1)
 
-    batch.ops[0].canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
+    soleOp(batch).canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
     m.consumeRemote(batch)
     expect(notify).toHaveBeenCalledTimes(2)
   })
@@ -471,14 +479,14 @@ describe('pendingOpsManager', () => {
     expect(mgr.state.speculativeState.tabs.tA?.tileId?.value).toBe('B')
 
     // Hub commits b1 with a higher canonical HLC than b2's clientHlc.
-    const opB2 = b2.ops[0]
+    const opB2 = soleOp(b2)
     const b1Canonical = create(HLCSchema, {
       physical: opB2.clientHlc!.physical + 100n,
       logical: 0n,
       clientId: 'hub',
     })
     mgr.consumeBatchCommitted(b1.batchId, create(BatchCommittedSchema, {
-      committed: [create(CommittedOpSchema, { opId: b1.ops[0].opId, canonicalHlc: b1Canonical })],
+      committed: [create(CommittedOpSchema, { opId: soleOp(b1).opId, canonicalHlc: b1Canonical })],
       maxHlc: b1Canonical,
       epoch: 1n,
     }))
@@ -556,7 +564,7 @@ describe('pendingOpsManager', () => {
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
 
       // Hub echoes; pending list drains.
-      batch.ops[0].canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
+      soleOp(batch).canonicalHlc = create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(batch)
       expect(mgr.state.pendingBatches.length).toBe(0)
       // Back to aliased after pending drains.
@@ -569,7 +577,7 @@ describe('pendingOpsManager', () => {
       mgr.submit(batch)
       const committed = create(BatchCommittedSchema, {
         committed: [create(CommittedOpSchema, {
-          opId: batch.ops[0].opId,
+          opId: soleOp(batch).opId,
           canonicalHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
         })],
       })
@@ -587,7 +595,7 @@ describe('pendingOpsManager', () => {
       // the retryable classification.
       const rejection = create(BatchRejectionSchema, {
         reason: 99 as any,
-        offendingOpId: batch.ops[0].opId,
+        offendingOpId: soleOp(batch).opId,
       })
       mgr.consumeBatchRejected(batch.batchId, rejection)
       expect(mgr.state.pendingBatches.length).toBe(0)
@@ -602,12 +610,12 @@ describe('pendingOpsManager', () => {
       mgr.submit(b2)
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
       // After the first echo, one batch still pending → still detached.
-      b1.ops[0].canonicalHlc = create(HLCSchema, { physical: 10n, logical: 0n, clientId: 'hub' })
+      soleOp(b1).canonicalHlc = create(HLCSchema, { physical: 10n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(b1)
       expect(mgr.state.pendingBatches.length).toBe(1)
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
       // Second echo drains the queue → re-aliased.
-      b2.ops[0].canonicalHlc = create(HLCSchema, { physical: 20n, logical: 0n, clientId: 'hub' })
+      soleOp(b2).canonicalHlc = create(HLCSchema, { physical: 20n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(b2)
       expect(mgr.state.pendingBatches.length).toBe(0)
       expect(mgr.state.speculativeState).toBe(mgr.state.confirmedState)
@@ -652,7 +660,7 @@ describe('pendingOpsManager', () => {
       mgr.submit(b2)
       mgr.consumeBatchRejected(b2.batchId, create(BatchRejectionSchema, {
         reason: BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
-        offendingOpId: b2.ops[0].opId,
+        offendingOpId: soleOp(b2).opId,
       }))
 
       expect(mgr.state.confirmedState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
@@ -694,14 +702,14 @@ describe('pendingOpsManager', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
       // Sanity: ops are minted with clientHlc only.
-      expect(batch.ops[0].clientHlc).toBeDefined()
-      expect(batch.ops[0].canonicalHlc).toBeUndefined()
+      expect(batch.ops[0]?.clientHlc).toBeDefined()
+      expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
       mgr.submit(batch)
       // Speculative state reflects the local intent…
       expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
       // …but the op's canonicalHlc stays unset so the wire-emit sends
       // a "client hasn't assigned canonical" payload to the hub.
-      expect(batch.ops[0].canonicalHlc).toBeUndefined()
+      expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
     })
 
     it('recomputeSpeculative does not mutate op.canonicalHlc when re-folding pending batches', () => {
@@ -714,7 +722,7 @@ describe('pendingOpsManager', () => {
       const remote = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'other-node', NodeKind.SPLIT)
       remote.canonicalHlc = create(HLCSchema, { physical: 999n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([remote]))
-      expect(batch.ops[0].canonicalHlc).toBeUndefined()
+      expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
       // And speculative still has the local op.
       expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
     })
@@ -723,16 +731,16 @@ describe('pendingOpsManager', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
       mgr.submit(batch)
-      expect(batch.ops[0].canonicalHlc).toBeUndefined()
+      expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
       const canonical = create(HLCSchema, { physical: 700n, logical: 0n, clientId: 'hub' })
       mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, { opId: batch.ops[0].opId, canonicalHlc: canonical })],
+        committed: [create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical })],
         maxHlc: canonical,
         epoch: 1n,
       }))
       // Now the persisted op carries the real canonical HLC.
-      expect(batch.ops[0].canonicalHlc?.physical).toBe(700n)
-      expect(batch.ops[0].canonicalHlc?.clientId).toBe('hub')
+      expect(batch.ops[0]?.canonicalHlc?.physical).toBe(700n)
+      expect(batch.ops[0]?.canonicalHlc?.clientId).toBe('hub')
     })
 
     it('ops with neither clientHlc nor canonicalHlc are dropped (no-op apply)', () => {
@@ -740,8 +748,9 @@ describe('pendingOpsManager', () => {
       // should silently skip it rather than throw or corrupt state.
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
-      batch.ops[0].clientHlc = undefined as never
-      batch.ops[0].canonicalHlc = undefined as never
+      const malformed = soleOp(batch)
+      malformed.clientHlc = undefined as never
+      malformed.canonicalHlc = undefined as never
       mgr.submit(batch)
       expect(mgr.state.speculativeState.nodes.n1).toBeUndefined()
     })
@@ -1389,7 +1398,7 @@ describe('pruneTombstonesAtOrBelow', () => {
 // Without pinning, that replay lands an unconfirmed local batch on the pruned
 // entity and `applyOp` lazily re-creates it as a LIVE record -- a ghost tab in
 // the tab bar that the checkpoint then serializes to disk.
-describe('pendingOpsManager compactTombstones with unconfirmed local ops', () => {
+describe('PendingOpsManager compactTombstones with unconfirmed local ops', () => {
   it('does not resurrect an entity a pending batch still targets', () => {
     const mgr = makeMgr()
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
@@ -1509,7 +1518,7 @@ describe('batch-end boundary', () => {
   })
 })
 
-describe('pendingOpsManager compactTombstones', () => {
+describe('PendingOpsManager compactTombstones', () => {
   it('prunes shells below the resume cursor and re-derives the projection base', () => {
     const mgr = makeMgr()
     mgr.state.confirmedState = create(UserCrdtStateSchema, {
@@ -1534,7 +1543,7 @@ describe('pendingOpsManager compactTombstones', () => {
       userId: 'u',
       nodes: { gone: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } } },
     })
-    mgr.state.resumeWatermark = undefined
+    delete mgr.state.resumeWatermark
 
     expect(mgr.compactTombstones()).toBe(0)
     expect(Object.keys(mgr.state.confirmedState.nodes)).toEqual(['gone'])
@@ -1545,7 +1554,7 @@ describe('pendingOpsManager compactTombstones', () => {
 // means the pin set cannot be enumerated -- and an unpinned shell is exactly
 // what lets recomputeSpeculative resurrect a tombstoned record. So the whole
 // prune pass is skipped rather than run with a partial pin set.
-describe('pendingOpsManager compactTombstones with an unrecognized op', () => {
+describe('PendingOpsManager compactTombstones with an unrecognized op', () => {
   it('prunes nothing rather than pruning with a partial pin set', () => {
     const mgr = makeMgr()
     const peerTombstone = tombstoneTab(

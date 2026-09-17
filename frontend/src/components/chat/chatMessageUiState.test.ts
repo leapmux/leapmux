@@ -41,7 +41,7 @@ describe('capInsertionOrder', () => {
   })
 })
 
-describe('createmessageuistate', () => {
+describe('createMessageUiState', () => {
   it('stores and reads a per-message diff-view override', () => {
     createRoot((dispose) => {
       const ui = createMessageUiState()

@@ -148,7 +148,7 @@ export const WorkingTreeIcon: Component<WorkingTreeIconProps> = props => (
   <Icon
     icon={props.isWorktree ? GitBranchFilled : GitBranch}
     size={props.size}
-    class={props.class}
+    {...(props.class !== undefined ? { class: props.class } : {})}
     data-testid={props.isWorktree ? 'worktree-icon' : 'branch-icon'}
     // A CONDITIONAL SPREAD, never `role={props.label ? 'img' : undefined}`.
     // Both glyphs decide `aria-hidden` by testing whether a `role`/`aria-*` key
@@ -281,8 +281,10 @@ export interface WorkingTreeTooltipProps {
  */
 export const WorkingTreeTooltip: Component<WorkingTreeTooltipProps> = props => (
   <Tooltip
-    text={props.disabledReason}
-    content={props.disabledReason ? undefined : <WorkingTreeRows {...props.info} />}
+    // `''` for no reason: `Tooltip` decides `text` by truthiness, and the
+    // rows take the content slot only when there is no reason to state.
+    text={props.disabledReason ?? ''}
+    {...(props.disabledReason ? {} : { content: <WorkingTreeRows {...props.info} /> })}
   >
     {props.children}
   </Tooltip>

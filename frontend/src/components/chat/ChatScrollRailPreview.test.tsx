@@ -26,7 +26,7 @@ function cardProps(overrides: Partial<Parameters<typeof DotPreviewCard>[0]> = {}
   }
 }
 
-describe('dotPreviewCard height reporting', () => {
+describe('DotPreviewCard height reporting', () => {
   it('reports its height as soon as it mounts, before any resize', () => {
     // The rail clamps the card's Y against this. Without the report the clamp has nothing to work
     // with for the card's whole life, because jsdom fires no resize and a card that never changes
@@ -54,7 +54,7 @@ describe('dotPreviewCard height reporting', () => {
   })
 })
 
-describe('dotPreviewCard rendering', () => {
+describe('DotPreviewCard rendering', () => {
   it('renders the preview for the dot it was handed, resolved by that dot\'s seq', () => {
     // The card takes `(seq) => text` and the whole cluster, rather than a thunk closed over one
     // dot: it must ask for ITS dot's preview, not for whichever dot the closure captured.

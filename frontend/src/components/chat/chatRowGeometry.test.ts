@@ -60,8 +60,8 @@ const SCOPED_KEY_BY_KIND: Record<MessageCategory['kind'], string> = {
   user_text: '',
 }
 
-describe('chatrowgeometry', () => {
-  describe('kindscopedlayoutkey', () => {
+describe('chatRowGeometry', () => {
+  describe('kindScopedLayoutKey', () => {
     it('folds the effective diff-view value into tool_use and tool_result rows', () => {
       expect(kindScopedLayoutKey('tool_use', () => 'split', () => true)).toBe('|d:split')
       expect(kindScopedLayoutKey('tool_result', () => 'unified', () => true)).toBe('|d:unified')

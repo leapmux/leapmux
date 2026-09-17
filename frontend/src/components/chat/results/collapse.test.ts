@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canHighlightBySize, hasMoreLinesThan, HIGHLIGHT_CHAR_LIMIT, HIGHLIGHT_LINE_LIMIT } from './collapse'
-
-describe('hasMoreLinesThan', () => {
-  it('counts newlines and short-circuits at the threshold', () => {
-    expect(hasMoreLinesThan('a\nb\nc', 3)).toBe(false) // 3 lines, not MORE than 3
-    expect(hasMoreLinesThan('a\nb\nc\nd', 3)).toBe(true) // 4 lines
-    expect(hasMoreLinesThan('', 1000)).toBe(false) // empty body is well under the cap
-  })
-})
+import { canHighlightBySize, HIGHLIGHT_CHAR_LIMIT, HIGHLIGHT_LINE_LIMIT } from './collapse'
 
 describe('canHighlightBySize', () => {
   it('accepts a body within both default caps', () => {

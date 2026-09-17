@@ -61,10 +61,17 @@ export function messageBandKind(kind: string): MessageBandKind | undefined {
 export const BAND_BORDER_PX = 1
 
 /**
- * Per-row inputs that make a cached DOM measurement stale even when the message
- * id stays stable.
+ * Per-row inputs that make a row's CONTENT stale even when the message id stays
+ * stable.
+ *
+ * Every one of these changes what the row DRAWS, so each reader that caches
+ * anything derived from the row -- its extracted IR, its normalized command body,
+ * its Myers diff, its rendered markdown -- re-keys on them. The UI state that
+ * changes only the row's HEIGHT lives on {@link HeightKeyInputs} instead, one level
+ * out, so an expand or a diff-view toggle re-measures the row without discarding
+ * work the click did not change.
  */
-export interface HeightKeyInputs {
+export interface ContentKeyInputs {
   /** Message seq -- a reseq / in-place consolidation bumps it. */
   seq: bigint
   /** A paired tool_use sibling is available. */
@@ -90,10 +97,18 @@ export interface HeightKeyInputs {
   toolResultContentVersion: number
   /** Paired tool_result identity/seq/content-version token. */
   toolResultRevisionKey: string
-  /** Per-message UI version -- a per-row expand / diff-view toggle bumps it. */
-  uiVersion: number
   /** Content version -- a same-seq in-place body replacement bumps it. */
   contentVersion: number
+  /**
+   * Supplemental revision -- a late supplement arrival bumps it.
+   *
+   * The row's preparation MERGES the supplemental content into the payload before it
+   * classifies, so a supplement changes the body, the category and therefore the
+   * height. Redundant with `contentVersion` while the store bumps that for the same
+   * arrival; stated anyway, so the measurement does not rest on the store keeping
+   * that discipline for a field the row reads directly.
+   */
+  supplementalRevision: bigint
   /**
    * Whether the row was classified as part of a SUBAGENT's own transcript. The
    * flag re-classifies a forwarded row between a collapsed "Prompt" card and a
@@ -103,10 +118,30 @@ export interface HeightKeyInputs {
   isChildTranscript: boolean
 }
 
-export function buildHeightKey(inputs: HeightKeyInputs): string {
+/**
+ * Per-row inputs that make a cached DOM measurement stale even when the message
+ * id stays stable: every content signal, plus the row's own UI state.
+ */
+export interface HeightKeyInputs extends ContentKeyInputs {
+  /** Per-message UI version -- a per-row expand / diff-view toggle bumps it. */
+  uiVersion: number
+}
+
+export function buildContentKey(inputs: ContentKeyInputs): string {
   const toolUseRevision = `${inputs.toolUseRevisionKey.length}:${inputs.toolUseRevisionKey}`
   const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
-  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.contentVersion}|${inputs.supplementalRevision}|${inputs.isChildTranscript ? 'k' : ''}`
+}
+
+/**
+ * The measurement key: the content key plus the UI version.
+ *
+ * The UI version is APPENDED rather than folded in, so the two keys cannot state
+ * different things about one content signal. A height key that was built field by
+ * field beside a content key would let the pair drift on the next field anyone adds.
+ */
+export function buildHeightKey(inputs: HeightKeyInputs): string {
+  return `${buildContentKey(inputs)}|${inputs.uiVersion}`
 }
 
 /**

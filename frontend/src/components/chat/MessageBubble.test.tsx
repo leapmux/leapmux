@@ -136,7 +136,8 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble).toHaveTextContent('2 questions')
+    // The row leads with the FIRST question's header; the body lists them all.
+    expect(bubble).toHaveTextContent('Auth')
     expect(bubble).toHaveTextContent('Auth')
     expect(bubble).toHaveTextContent('Database')
   })
@@ -149,7 +150,7 @@ describe('askUserQuestion thread rendering', () => {
 describe('result_divider dispatch', () => {
   it('renders a turn-end divider for a registered provider result', () => {
     // Happy path: a CLAUDE_CODE result classifies as result_divider and renders
-    // through the shared renderResultDivider as the turn-end row.
+    // through the shared row extraction as the turn-end row.
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.CLAUDE_CODE,
@@ -992,7 +993,8 @@ describe('header-only renderers', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble).toHaveTextContent('Entering Plan Mode')
+    // The kind's own word: the mode the session takes, under the kind's label.
+    expect(bubble).toHaveTextContent('plan')
   })
 
   it('skill renders header only', () => {
@@ -1341,7 +1343,7 @@ describe('edit/write tool_use rendering', () => {
       return render(() => (
         <PreferencesProvider>
           <MessageContextMenuHostProvider>
-            <MessageBubble message={msg} onReply={() => {}} premeasureMode={opts.premeasureMode} />
+            <MessageBubble message={msg} onReply={() => {}} {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})} />
           </MessageContextMenuHostProvider>
         </PreferencesProvider>
       ))
@@ -1429,5 +1431,111 @@ describe('edit/write tool_use rendering', () => {
 
       expect(e.defaultPrevented).toBe(false)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tool row toolbar: the kind's own words, and Quote
+// ---------------------------------------------------------------------------
+
+describe('tool row toolbar labels', () => {
+  // A command that printed nothing leaves the COMMAND as the only thing Copy can
+  // write, and the kind words that button "Copy Command". The bubble's outer toolbar
+  // dropped every word a kind states, so this row offered the command under "Copy".
+  it('states the kind\'s own words on the outer toolbar Copy button', () => {
+    const msg = makeMsg({
+      agentProvider: AgentProvider.CODEX,
+      source: MessageSource.AGENT,
+      spanId: 'codex-exec',
+      content: rawContent({ item: { id: 'codex-exec', type: 'commandExecution', status: 'completed', command: 'ls -la', aggregated_output: '', exit_code: 0 } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByRole('button', { name: 'Copy Command', hidden: true })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy', hidden: true })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tool row Quote
+// ---------------------------------------------------------------------------
+
+describe('tool row quote', () => {
+  /** Render one bubble, click its Quote button, and answer what it wrote. */
+  function quoteOf(msg: ReturnType<typeof makeMsg>): string[] {
+    const quoted: string[] = []
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={text => quoted.push(text)} />
+      </PreferencesProvider>
+    ))
+    fireEvent.click(screen.getByTestId('message-quote'))
+    return quoted
+  }
+
+  // A running TodoWrite draws its whole checklist with no result behind it. The row
+  // carried NO button at all: `resultMeta` never ran, so nothing was copyable.
+  it('offers Quote and Copy on a running to-do row', () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(todoWriteToolUse([
+        { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+        { content: 'Task B', status: 'completed', activeForm: 'Working on B' },
+      ])),
+    })
+
+    expect(quoteOf(msg)).toEqual(['> - [ ] Task A\n> - [x] Task B\n\n'])
+    expect(screen.getByRole('button', { name: 'Copy', hidden: true })).toBeInTheDocument()
+  })
+
+  it('quotes a to-do row that carries a result with the saved checklist', () => {
+    const msg = makeMsg({
+      agentProvider: AgentProvider.OPENCODE,
+      source: MessageSource.AGENT,
+      content: rawContent({
+        sessionUpdate: 'plan',
+        entries: [
+          { content: 'plan one', status: 'pending' },
+          { content: 'plan two', status: 'completed' },
+        ],
+      }),
+    })
+
+    expect(quoteOf(msg)).toEqual(['> - [ ] plan one\n> - [x] plan two\n\n'])
+  })
+
+  it('offers Quote on a grep result row, with the matches as its text', () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      spanId: 'toolu_grep_1',
+      spanType: 'Grep',
+      content: rawContent({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_grep_1', content: 'src/a.ts:1:hit\nsrc/b.ts:2:hit' }] },
+      }),
+    })
+
+    expect(quoteOf(msg)).toEqual(['> src/a.ts:1:hit\n> src/b.ts:2:hit\n\n'])
+  })
+
+  // The scroll rail's `previewText` answers a file-change row with the file PATHS.
+  // Quoting a list of paths into the composer states nothing about the change, so
+  // Quote must read `copyableContent` and never that snippet.
+  it('quotes a file-change row with the diff rather than the file path', () => {
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(editToolUse('const a = 1', 'const a = 2')),
+    })
+
+    const quoted = quoteOf(msg)
+    expect(quoted).toHaveLength(1)
+    expect(quoted[0]).toContain('> -const a = 1')
+    expect(quoted[0]).toContain('> +const a = 2')
+    expect(quoted[0]).not.toBe('> /src/app.ts\n\n')
   })
 })

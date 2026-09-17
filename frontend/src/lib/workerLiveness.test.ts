@@ -6,7 +6,7 @@ function worker(id: string, online: boolean): Worker {
   return { id, online } as Worker
 }
 
-describe('workerliveness', () => {
+describe('workerLiveness', () => {
   it('reports a listed online worker as online', () => {
     expect(isWorkerKnownOnline([worker('w1', true)], 'w1')).toBe(true)
   })

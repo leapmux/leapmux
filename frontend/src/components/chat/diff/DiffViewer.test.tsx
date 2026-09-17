@@ -1,5 +1,5 @@
 import type { StructuredPatchHunk } from '.'
-import type { RenderContext } from '../messageRenderers'
+import type { MarkdownRenderContext } from '../renderContext'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
 import { createSignal } from 'solid-js'
@@ -49,7 +49,7 @@ describe('diffWordsWithSpace preserves whitespace on both sides', () => {
   }
 })
 
-describe('diffView rendering preserves whitespace', () => {
+describe('DiffView rendering preserves whitespace', () => {
   /**
    * Render DiffView with crafted hunks containing paired removed+added
    * lines with different indentation, then verify the rendered text
@@ -272,7 +272,7 @@ describe('diffView rendering preserves whitespace', () => {
   })
 })
 
-describe('diffView old/new-side syntax highlighting (useAsyncCodeTokens migration)', () => {
+describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migration)', () => {
   // A context line is tokenized from the OLD side; a bare added line from the NEW side.
   // Pre-seed the shared token cache for both sides so the migrated useDiffTokens hook
   // takes its synchronous cache-hit path (no Worker needed), proving both sides flow
@@ -313,7 +313,9 @@ describe('diffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
     // on the first frame rather than flashing plain until the pause lifts. (The hold gate
     // still defers tokens for an IN-PLACE content change on an already-mounted diff.)
     seedSides()
-    const context = { syntaxHighlightingPaused: () => true } as unknown as RenderContext
+    // DiffView takes the markdown capability alone, so the paused flag fixture
+    // states it directly -- no orchestration-bag cast needed.
+    const context: MarkdownRenderContext = { syntaxHighlightingPaused: () => true }
     render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" context={context} />)
 
     // Present synchronously on the first render (the seed), not after a deferred effect.
@@ -331,7 +333,7 @@ describe('diffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
   })
 })
 
-describe('diffView ansi (.log) highlighting', () => {
+describe('DiffView ansi (.log) highlighting', () => {
   // The ANSI escape byte, built via fromCharCode so the source stays plain ASCII.
   const ESC = String.fromCharCode(27)
 
@@ -392,7 +394,7 @@ describe('diffView ansi (.log) highlighting', () => {
   })
 })
 
-describe('diffView shared gap scaffold (unified + split)', () => {
+describe('DiffView shared gap scaffold (unified + split)', () => {
   // Both views render through one DiffGapScaffold; these exercise the shared reveal path
   // in the split view and the trailing-gap branch, which the unified leading-gap tests
   // above don't cover -- guarding the unified/split -> scaffold extraction.
@@ -590,8 +592,11 @@ describe('rawDiffToHunks', () => {
       '    const y = 2;\n',
     )
     expect(hunks).toHaveLength(1)
-    expect(hunks[0].lines).toContain('-    const x = 1;')
-    expect(hunks[0].lines).toContain('+    const y = 2;')
+    const hunk = hunks[0]
+    if (hunk === undefined)
+      throw new Error('expected one hunk')
+    expect(hunk.lines).toContain('-    const x = 1;')
+    expect(hunk.lines).toContain('+    const y = 2;')
   })
 
   it('preserves leading whitespace in removed lines', () => {
@@ -600,9 +605,12 @@ describe('rawDiffToHunks', () => {
       '    return newValue;\n',
     )
     expect(hunks).toHaveLength(1)
-    const removedLine = hunks[0].lines.find(l => l.startsWith('-'))
+    const hunk = hunks[0]
+    if (hunk === undefined)
+      throw new Error('expected one hunk')
+    const removedLine = hunk.lines.find(l => l.startsWith('-'))
     expect(removedLine).toBe('-        return value;')
-    const addedLine = hunks[0].lines.find(l => l.startsWith('+'))
+    const addedLine = hunk.lines.find(l => l.startsWith('+'))
     expect(addedLine).toBe('+    return newValue;')
   })
 })
@@ -738,7 +746,7 @@ describe('groupByHunk', () => {
 const EXPAND_RE = /expand/i
 const COLLAPSE_RE = /collapse/i
 
-describe('diffView gap rendering without original file', () => {
+describe('DiffView gap rendering without original file', () => {
   const hunks: StructuredPatchHunk[] = [
     { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
     { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
@@ -808,16 +816,22 @@ describe('dual-side tokenization dedup', () => {
 
       // Two hook instances (old side + new side), ONE spawned worker, ONE dispatch.
       expect(workers).toHaveLength(1)
-      expect(workers[0].messages).toHaveLength(1)
-      expect(workers[0].messages[0].lang).toBe('typescript')
-      expect(workers[0].messages[0].code).toBe('const dedupSideA = 1\nconst dedupSideB = 2')
+      const worker = workers[0]
+      if (worker === undefined)
+        throw new Error('expected one worker')
+      expect(worker.messages).toHaveLength(1)
+      const dispatch = worker.messages[0]
+      if (dispatch === undefined)
+        throw new Error('expected one dispatch')
+      expect(dispatch.lang).toBe('typescript')
+      expect(dispatch.code).toBe('const dedupSideA = 1\nconst dedupSideB = 2')
 
       // Resolve the single dispatch (interned wire shape — see internTokenLines);
       // BOTH sides of the split view apply the shared tokens (each context line
       // renders left + right).
-      workers[0].onmessage?.({
+      worker.onmessage?.({
         data: {
-          id: workers[0].messages[0].id,
+          id: dispatch.id,
           tokens: {
             styles: [],
             lines: [
@@ -835,7 +849,7 @@ describe('dual-side tokenization dedup', () => {
         expect(tokenSpans).toHaveLength(2) // left column + right column
       })
       // Applying to the second side never re-dispatched.
-      expect(workers[0].messages).toHaveLength(1)
+      expect(worker.messages).toHaveLength(1)
     }
     finally {
       // jsdom defines no Worker; restore that so later tests keep the no-worker path.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -22,30 +24,74 @@ const (
 	openCodeMethodSessionResume = "session/resume"
 )
 
-// OpenCodeAgent manages a single OpenCode ACP process.
-type OpenCodeAgent struct {
+// openCodeFamilyBase is what OpenCode and Kilo share beyond the ACP base.
+//
+// Both daemons run the same two transports: the Agent Client Protocol stream that
+// carries the session, and the daemon's own HTTP server that carries the questions
+// the ACP adapter drops. openCodeQuestions states why that second transport exists.
+type openCodeFamilyBase struct {
 	acpBase
+	questions openCodeQuestions
+}
+
+// SendRawInput answers a question through the daemon's HTTP server, and sends every
+// other control answer to the ACP stream unchanged.
+//
+// The two answers cannot share one path. An ACP control request is a JSON-RPC request
+// that LeapMux answers by id on the stream it arrived on; a question never reached
+// that stream, so it has no id there to answer and the daemon reads its answer from
+// a route instead.
+func (b *openCodeFamilyBase) SendRawInput(raw []byte) error {
+	if handled, err := b.questions.answer(b.ctx, raw); handled {
+		return err
+	}
+	return b.acpBase.SendRawInput(raw)
 }
 
 // SupportsSteering always reports true, and overrides the acpBase answer.
-// OpenCode steers with a plain second session/prompt on the same session, so it
-// needs no advertised steer method. The acpBase implementation reads
+//
+// This family steers with a plain second session/prompt on the SAME session, which
+// is the Agent Client Protocol's own mechanism and not one provider's extension --
+// so it needs no advertised steer method. The acpBase implementation reads
 // b.steerMethod, which advertisedACPSteerMethod leaves empty for every provider
 // except Goose and Reasonix.
-func (a *OpenCodeAgent) SupportsSteering() bool { return true }
+//
+// It sits on the FAMILY, not on OpenCodeAgent. Kilo runs the same daemon and the
+// same session methods, and while this answer lived one type lower its Steer control
+// was dead with nothing to say why.
+func (b *openCodeFamilyBase) SupportsSteering() bool { return true }
 
-func (a *OpenCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	a.mu.Lock()
-	active := a.promptActive
-	a.mu.Unlock()
+// SteerInput sends the steer as a second prompt on the running session.
+//
+// A refusal reaches the READER, not the log alone. The steer is something the reader
+// typed and watched for, and a daemon that declines a concurrent prompt -- which the
+// protocol does not oblige it to accept -- otherwise swallowed those words with no
+// trace anywhere the reader can see.
+//
+// A STOPPED agent states nothing: the reader ended the turn themselves, so a steer
+// that did not land is the outcome they asked for.
+func (b *openCodeFamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	b.mu.Lock()
+	active := b.promptActive
+	b.mu.Unlock()
 	if !active {
 		return ErrNoActiveTurn
 	}
-	return a.sendACPPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
-		if err != nil && !a.IsStopped() {
-			slog.Error("opencode steer failed", "agent_id", a.agentID, "error", err)
+	return b.sendACPPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
+		if err == nil || b.IsStopped() {
+			return
 		}
+		slog.Error("acp steer failed", "agent_id", b.agentID, "provider", b.providerName, "error", err)
+		b.sink.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: fmt.Sprintf("steer failed: %v", err),
+		})
 	})
+}
+
+// OpenCodeAgent manages a single OpenCode ACP process.
+type OpenCodeAgent struct {
+	openCodeFamilyBase
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -54,14 +100,16 @@ func StartOpenCode(ctx context.Context, opts Options, sink ProviderServices) (Ag
 		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		providerName:   "opencode",
 		binaryName:     "opencode",
-		baseArgs:       []string{"acp"},
+		baseArgs:       openCodeACPArgs(),
 		rcMarkerEnvKey: "OPENCODE_CLIENT",
+		pinnedEnv:      []string{openCodeQuestionToolEnv + "=1"},
 		sessionConfig:  acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume},
 		newAgent:       func() *OpenCodeAgent { return &OpenCodeAgent{} },
 		base:           func(a *OpenCodeAgent) *acpBase { return &a.acpBase },
 		configure: func(a *OpenCodeAgent) {
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			a.questions.configure(sink)
 			// Subagent spawn detection (registry-only; OpenCode drops child
 			// sessions over ACP so there is no transcript). Detect by input
 			// shape, not tool-name guessing.
@@ -69,6 +117,9 @@ func StartOpenCode(ctx context.Context, opts Options, sink ProviderServices) (Ag
 			a.subagentFromToolCallUpdate = openCodeSubagentFromToolCallUpdate
 		},
 		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
+			// The launched process is the shell, which a POSIX shell replaces with the
+			// daemon and PowerShell does not. Discovery walks below it for that case.
+			a.questions.begin(a.ctx, a.agentID, a.cmd.Process.Pid)
 			return a.applyPrimaryAgentStartup(handshake, opts, OpenCodePrimaryAgentBuild)
 		},
 	})
@@ -141,7 +192,7 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 	}
 }
 
-// openCodeSubagentFromToolCallUpdate closes the registry row on a terminal
+// openCodeSubagentFromToolCallUpdate closes the registry row on a final
 // status, and when rawOutput.metadata.sessionId is present, re-keys the row to
 // the child session id (the metadata surfaces only on the final update).
 // The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
@@ -162,7 +213,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		// leaving a Running row that no later event closes.
 		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false)
 	}
-	// The terminal rawOutput may carry the child session id under metadata.
+	// The final rawOutput may carry the child session id under metadata.
 	rowKey := tcu.ToolCallID
 	renameFrom := ""
 	if len(tcu.RawOutput) > 0 {

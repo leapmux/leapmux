@@ -16,8 +16,8 @@ describe('reasonix provider', () => {
   describeACPProviderBasics(AgentProvider.REASONIX, { text: true, image: false, pdf: false, binary: false })
 
   it('uses the advertised mode and tool approval controls', () => {
-    expect(plugin.planMode).toBeDefined()
-    expect(plugin.triggerModeGroupKey).toBe('permissionMode')
-    expect(plugin.permissionPresets?.bypass?.sets).toEqual({ tool_approval: 'yolo' })
+    expect(plugin?.configuration?.planMode).toBeDefined()
+    expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
+    expect(plugin?.controls?.permissionPresets?.bypass?.sets).toEqual({ tool_approval: 'yolo' })
   })
 })

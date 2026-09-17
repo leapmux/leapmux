@@ -131,6 +131,8 @@ export function emitMakeGrid(
     if (dest) {
       for (let i = 0; i < tabs.length; i++) {
         const t = tabs[i]
+        if (t === undefined)
+          continue
         ops.push(setTabTileId(ctx, t.tabType, t.tabId, dest))
         ops.push(setTabPosition(ctx, t.tabType, t.tabId, lexorankAt(i)))
       }

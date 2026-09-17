@@ -48,7 +48,9 @@ function action(
     workspaceId: 'ws1',
     workspaceTabs: () => (tabs.length > 0 ? tabs : t ? [t] : []),
     repoGitStore: store,
-    isWorkerKnownOnline: isOnline,
+    // Omitted while unset, rather than a present-undefined the option's
+    // type refuses: an absent gate and a failed-open one read the same.
+    ...(isOnline !== undefined ? { isWorkerKnownOnline: isOnline } : {}),
   })
 }
 

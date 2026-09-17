@@ -1,5 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { buildJsonRpcResult, CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch } from './types'
+import { buildJsonRpcResult, CONTROL_ALLOW_CHOICE_ID, createControlAnswerState, createControlChoice, createControlSwitch, questionsFromWire } from './types'
+
+/**
+ * A cast is not a check.
+ *
+ * Two plugins tested the OUTER array with `Array.isArray` and asserted the ELEMENTS,
+ * so a `null` element reached `q().question` and threw the whole banner away, and a
+ * bare string reached it as `undefined` -- a blank dialog the reader can see and
+ * cannot answer. `AskUserQuestionControl` then hands `q().options` to a `<For>`,
+ * which needs a real array on every element.
+ */
+describe('questionsFromWire', () => {
+  it('answers no questions for anything that is not an array', () => {
+    expect(questionsFromWire(undefined)).toEqual([])
+    expect(questionsFromWire(null)).toEqual([])
+    expect(questionsFromWire({ questions: [] })).toEqual([])
+    expect(questionsFromWire('Which one?')).toEqual([])
+  })
+
+  it('drops an element that is not an object', () => {
+    expect(questionsFromWire([null, 'Which one?', 7, true, undefined])).toEqual([])
+  })
+
+  it('keeps the readable questions beside the elements it drops', () => {
+    expect(questionsFromWire([null, { question: 'Which one?', options: [{ label: 'A' }] }])).toEqual([
+      { question: 'Which one?', options: [{ label: 'A' }] },
+    ])
+  })
+
+  it('gives an element with no readable text an empty question rather than undefined', () => {
+    expect(questionsFromWire([{ options: [{ label: 'A' }] }])).toEqual([{ question: '', options: [{ label: 'A' }] }])
+  })
+
+  it('coerces a non-array options field to the empty list the For needs', () => {
+    expect(questionsFromWire([{ question: 'Which one?', options: 'A' }])).toEqual([{ question: 'Which one?', options: [] }])
+    expect(questionsFromWire([{ question: 'Which one?' }])).toEqual([{ question: 'Which one?', options: [] }])
+  })
+
+  // A question that states no option is a real one -- it asks for free text, and
+  // `allowEmpty` is what says the provider accepts an empty answer.
+  it('keeps a question that offers no option', () => {
+    expect(questionsFromWire([{ question: 'Say more', options: [], allowEmpty: true }]))
+      .toEqual([{ question: 'Say more', options: [], allowEmpty: true }])
+  })
+
+  it('carries every other field the element stated', () => {
+    expect(questionsFromWire([{ id: 'q1', question: 'Which one?', header: 'Pick', options: [{ label: 'A' }], multiSelect: true }]))
+      .toEqual([{ id: 'q1', question: 'Which one?', header: 'Pick', options: [{ label: 'A' }], multiSelect: true }])
+  })
+})
 
 describe('control response identity', () => {
   it.each(['42', '0', '-5', '001', '1e3', '9007199254740993', 'abc-123'])('preserves the worker request ID %s', (requestId) => {

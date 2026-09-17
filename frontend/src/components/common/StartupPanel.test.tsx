@@ -2,14 +2,14 @@ import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { StartupBody, StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 
-describe('startupSpinner', () => {
+describe('StartupSpinner', () => {
   it('renders the label text', () => {
     render(() => <StartupSpinner label="Starting agent…" />)
     expect(screen.getByText('Starting agent…')).toBeInTheDocument()
   })
 })
 
-describe('startupBody', () => {
+describe('StartupBody', () => {
   it('renders title only when neither body nor children are given', () => {
     render(() => <StartupBody title="Just a title" />)
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Just a title')
@@ -37,7 +37,7 @@ describe('startupBody', () => {
   })
 })
 
-describe('startupErrorBody (back-compat layered on StartupBody)', () => {
+describe('StartupErrorBody (back-compat layered on StartupBody)', () => {
   it('renders the title and the danger-styled error details block', () => {
     render(() => <StartupErrorBody title="Terminal failed to start" error="exec: not found" />)
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Terminal failed to start')

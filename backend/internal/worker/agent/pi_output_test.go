@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -376,7 +378,7 @@ func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
 	assert.Equal(t, MessageCompletionError, closing.Completion)
 }
 
-// A supplement that names another call cannot reach this row's result.
+// A supplement that identifies another call cannot reach this row's result.
 func TestPiResolveProviderData_RefusesASupplementForAnotherCall(t *testing.T) {
 	t.Parallel()
 
@@ -1499,4 +1501,320 @@ func TestPiAgentStartProbesTheSessionOnlyOnTheFirstAttempt(t *testing.T) {
 	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
 	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
 	assert.Never(t, func() bool { return len(rig.requests()) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
+}
+
+// TestHandlePiOutput_BashExecutionUpdate_PersistsNothing pins the drop that keeps a
+// single shell command from writing one transcript row per output chunk. Pi emits the
+// event once per chunk, and the dispatch's `default` branch persisted every one.
+func TestHandlePiOutput_BashExecutionUpdate_PersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	for _, delta := range []string{"first\n", "second\n", "third\n"} {
+		raw, err := json.Marshal(map[string]any{"type": "bash_execution_update", "id": "cmd-1", "delta": delta})
+		require.NoError(t, err)
+		handlePiOutput(a, parseLine(raw))
+	}
+
+	assert.Empty(t, sink.Messages(), "a bash output chunk is not a transcript row")
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+// TestHandlePiOutput_SessionInfoChanged_PersistsNothing pins the drop for Pi's own
+// session name, which LeapMux never shows.
+func TestHandlePiOutput_SessionInfoChanged_PersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(`{"type":"session_info_changed","name":"renamed session"}`)))
+
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+// TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting covers the clamp
+// Pi applies on a model switch: it lowers the level the new model cannot serve and
+// announces the one it settled on. LeapMux must adopt that value, because its own
+// field is what the effort segment reads.
+func TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.model = "gpt-5"
+	a.provider = "openai"
+	a.thinkingLevel = "high"
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"thinking_level_changed","level":"low"}`)))
+
+	a.mu.Lock()
+	level := a.thinkingLevel
+	a.mu.Unlock()
+	assert.Equal(t, "low", level)
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "low", refresh.Effort)
+	assert.Equal(t, "gpt-5", refresh.Model)
+	assert.Equal(t, "openai", refresh.Options[PiOptionProvider])
+	assert.Empty(t, sink.Messages(), "the settings notification states the change; a raw row would repeat it")
+}
+
+// TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest keeps the
+// transcript quiet for the level LeapMux itself asked for: `applyThinkingLevel` already
+// stored it, so Pi's announcement states nothing new.
+func TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.thinkingLevel = "medium"
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"thinking_level_changed","level":"medium"}`)))
+
+	assert.Zero(t, sink.SettingsRefreshCount())
+	assert.Empty(t, sink.Messages())
+}
+
+// TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel refuses to store an
+// empty level, which would blank the effort segment.
+func TestHandlePiOutput_ThinkingLevelChanged_IgnoresAFrameWithNoLevel(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.thinkingLevel = "high"
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"thinking_level_changed"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"thinking_level_changed","level":`)))
+
+	a.mu.Lock()
+	level := a.thinkingLevel
+	a.mu.Unlock()
+	assert.Equal(t, "high", level)
+	assert.Zero(t, sink.SettingsRefreshCount())
+}
+
+// TestHandlePiOutput_SummarizationRetries_PersistAsNotifications pins the three retry
+// events onto the notification channel, beside the compaction and auto-retry events
+// they belong with. Each one used to draw a raw JSON row.
+func TestHandlePiOutput_SummarizationRetries_PersistAsNotifications(t *testing.T) {
+	t.Parallel()
+
+	for name, raw := range map[string]string{
+		"scheduled":    `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"overloaded"}`,
+		"attemptStart": `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}`,
+		"finished":     `{"type":"summarization_retry_finished"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+			handlePiOutput(a, parseLine([]byte(raw)))
+
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.JSONEq(t, raw, string(sink.PersistedNotifications()[0].Content))
+			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.PersistedNotifications()[0].Source)
+			assert.Empty(t, sink.Messages(), "a notification is not a plain message row")
+		})
+	}
+}
+
+// Pi sends the partial result WHOLE on every update, so the tail the running row
+// draws is that text. The truncation flag travels beside it, because the row must
+// say when the bytes it shows are a window on more.
+func TestHandlePiOutput_ToolExecutionUpdateReportsTheOutputTail(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"}}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_update","toolCallId":"call-1","toolName":"bash","partialResult":{"content":[{"type":"text","text":"file1\n"}]}}`)))
+	assert.Contains(t, sink.ProgressUpdates(), OutputTailProgress("call-1", "file1\n", false))
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_update","toolCallId":"call-1","toolName":"bash","partialResult":{"content":[{"type":"text","text":"file1\nfile2\n"}],"details":{"truncation":{"totalBytes":4096,"truncated":true}}}}`)))
+	assert.Contains(t, sink.ProgressUpdates(), OutputTailProgress("call-1", "file1\nfile2\n", true))
+}
+
+// A goal marker refreshes the goal panel whatever entry type carries it.
+//
+// Pi states the marker in `customType`, which is a field of EVERY entry, so the check
+// sits ABOVE the switch on the entry type. Under that switch, a marker written on an
+// entry type this worker does not know left the panel showing a goal the session had
+// already moved past.
+func TestHandlePiOutput_EntryAppendedGoalMarkerReachesThePanel(t *testing.T) {
+	t.Parallel()
+
+	for _, entryType := range []string{"custom", "goal_event"} {
+		t.Run(entryType, func(t *testing.T) {
+			t.Parallel()
+			a := newPiAgentWithSink(&recordingControlSink{})
+			a.ctx = context.Background()
+			a.mu.Lock()
+			a.sessionID = "session"
+			a.extensionCommands = map[string]bool{piGoalCommands[GoalActionSet]: true}
+			// A refresh that already runs absorbs this one, so the hint lands on the
+			// revision and no refresh goroutine starts.
+			a.goal.running = true
+			a.mu.Unlock()
+
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"entry_appended","entry":{"type":"`+entryType+`","id":"e1","customType":"pi-goal-focus"}}`)))
+
+			a.mu.Lock()
+			revision := a.goal.revision
+			a.mu.Unlock()
+			assert.Equal(t, uint64(1), revision, "the goal marker asks for a refresh")
+		})
+	}
+}
+
+// piOutputTail reports the tail one update broadcast for a tool call.
+func piOutputTail(t *testing.T, sink *recordingControlSink, scopeID string) ProgressUpdate {
+	t.Helper()
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == ProgressOutputTail && update.ScopeID == scopeID {
+			return update
+		}
+	}
+	require.FailNow(t, "no output tail reached the sink", "scope %q", scopeID)
+	return ProgressUpdate{}
+}
+
+// piToolUpdateLine builds one tool_execution_update whose partial result holds text.
+func piToolUpdateLine(t *testing.T, text, details string) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(text)
+	require.NoError(t, err)
+	line := `{"type":"tool_execution_update","toolCallId":"call-1","toolName":"bash",` +
+		`"partialResult":{"content":[{"type":"text","text":` + string(encoded) + `}]`
+	if details != "" {
+		line += `,"details":` + details
+	}
+	return []byte(line + `}}`)
+}
+
+// Only the last bytes of a running tool reach a reader, so the tail is capped here.
+// The cap is what keeps the join off the accumulated output, which Pi re-sends whole
+// on every update -- and the cap drops head bytes, which the report must state.
+func TestHandlePiOutput_ToolExecutionUpdateCapsTheOutputTail(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	long := strings.Repeat("x", piLiveOutputLimit+512)
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"}}`)))
+	handlePiOutput(a, parseLine(piToolUpdateLine(t, long, "")))
+
+	tail := piOutputTail(t, sink, "call-1")
+	assert.Equal(t, piLiveOutputLimit, len(tail.Text), "the tail carries the cap and no more")
+	assert.Equal(t, long[len(long)-piLiveOutputLimit:], tail.Text, "the LAST bytes are the tail")
+	assert.True(t, tail.Truncated, "the cap dropped the head of the output")
+	// The counter still sees the whole snapshot, so the total is exact.
+	assert.Contains(t, sink.ProgressUpdates(), OutputTotalProgress("call-1", int64(len(long)), false))
+}
+
+// The cap cuts at a byte offset, and that offset can land inside a rune. A cut that
+// split one would send a replacement character to the browser.
+func TestHandlePiOutput_ToolExecutionUpdateCutsTheTailAtARuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	long := strings.Repeat("\uac00", piLiveOutputLimit) // three bytes each
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"}}`)))
+	handlePiOutput(a, parseLine(piToolUpdateLine(t, long, "")))
+
+	tail := piOutputTail(t, sink, "call-1")
+	assert.True(t, utf8.ValidString(tail.Text), "the tail starts on a rune boundary")
+	assert.LessOrEqual(t, len(tail.Text), piLiveOutputLimit)
+	assert.True(t, strings.HasSuffix(long, tail.Text))
+}
+
+// A snapshot Pi TRUNCATED is not append-only: its head is gone, so its length is not
+// the total. The counter measures growth by the overlap of two snapshots, and the
+// counter must be told -- the flag used to be a hard-coded false, so a window that
+// had lost its head reported its own length as the exact byte total.
+func TestHandlePiOutput_ToolExecutionUpdateCountsATruncatedSnapshotByItsGrowth(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	truncated := `{"truncation":{"truncated":true}}`
+	handlePiOutput(a, parseLine([]byte(`{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"ls"}}`)))
+	handlePiOutput(a, parseLine(piToolUpdateLine(t, "abcdef", truncated)))
+	handlePiOutput(a, parseLine(piToolUpdateLine(t, "cdefgh", truncated)))
+
+	// Six bytes, then two more that the overlap of the two windows shows. A counter
+	// that read the second window as an append-only snapshot answered six again.
+	assert.Contains(t, sink.ProgressUpdates(), OutputTotalProgress("call-1", 8, true))
+}
+
+// Pi appends one session-file entry for every step of its own bookkeeping. Most
+// of them repeat a fact the event stream already stated, and each used to reach
+// the transcript as an unrecognized row that drew raw JSON.
+func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("keeps an extension's own entry", func(t *testing.T) {
+		t.Parallel()
+		sink := &recordingControlSink{}
+		a := newPiAgentWithSink(sink)
+		raw := []byte(`{"type":"entry_appended","entry":{"type":"custom","id":"e1","customType":"pi-subagents","data":{}}}`)
+		handlePiOutput(a, parseLine(raw))
+		require.Len(t, sink.Messages(), 1)
+		assert.Equal(t, raw, sink.Messages()[0].Content)
+	})
+
+	for _, entryType := range []string{"message", "compaction", "branch_summary", "label", "session_info", "thinking_level_change"} {
+		t.Run("draws no row for "+entryType, func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+			handlePiOutput(a, parseLine([]byte(`{"type":"entry_appended","entry":{"type":"`+entryType+`","id":"e1"}}`)))
+			assert.Empty(t, sink.Messages())
+		})
+	}
+
+	// An entry type this worker does not know still reaches the transcript. A drop
+	// left the reader nothing and the worker a log line the reader never sees, which
+	// is the same case the unmarshal path already answers with the raw frame.
+	t.Run("keeps an entry type it does not know", func(t *testing.T) {
+		t.Parallel()
+		sink := &recordingControlSink{}
+		a := newPiAgentWithSink(sink)
+		raw := []byte(`{"type":"entry_appended","entry":{"type":"goal_event","id":"e1"}}`)
+		handlePiOutput(a, parseLine(raw))
+		require.Len(t, sink.Messages(), 1)
+		assert.Equal(t, raw, sink.Messages()[0].Content)
+	})
+
+	// A model change is a SETTINGS fact, and it goes through the same pipeline
+	// every other axis uses -- a transcript row beside that notification would
+	// state it twice.
+	t.Run("announces a model change through the settings pipeline", func(t *testing.T) {
+		t.Parallel()
+		sink := &recordingControlSink{}
+		a := newPiAgentWithSink(sink)
+		a.model, a.provider, a.thinkingLevel = "old-model", "anthropic", "medium"
+		handlePiOutput(a, parseLine([]byte(`{"type":"entry_appended","entry":{"type":"model_change","id":"e1","provider":"openai","modelId":"gpt-5"}}`)))
+		assert.Empty(t, sink.Messages())
+		require.Equal(t, 1, sink.SettingsRefreshCount())
+		refresh := sink.LastSettingsRefresh()
+		assert.Equal(t, "gpt-5", refresh.Model)
+		assert.Equal(t, "medium", refresh.Effort)
+		assert.Equal(t, "openai", refresh.Options[PiOptionProvider])
+	})
+
+	// A repeat of the model the agent already runs announces nothing.
+	t.Run("stays quiet when the model did not move", func(t *testing.T) {
+		t.Parallel()
+		sink := &recordingControlSink{}
+		a := newPiAgentWithSink(sink)
+		a.model, a.provider = "gpt-5", "openai"
+		handlePiOutput(a, parseLine([]byte(`{"type":"entry_appended","entry":{"type":"model_change","id":"e1","provider":"openai","modelId":"gpt-5"}}`)))
+		assert.Equal(t, 0, sink.SettingsRefreshCount())
+	})
 }

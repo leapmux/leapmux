@@ -86,7 +86,7 @@ const FILES = [
   gitEntry({ path: 'src/cherry.js', size: 100n, modTime: '2023-01-01T00:00:00Z' }),
 ]
 
-describe('filesSection git error hint', () => {
+describe('FilesSection git error hint', () => {
   it('shows errorHint when the focused repo probe failed', () => {
     render(() => (
       <FilesSection
@@ -137,7 +137,7 @@ describe('filesSection git error hint', () => {
   })
 })
 
-describe('filesSection sort preference', () => {
+describe('FilesSection sort preference', () => {
   it('defaults to name ascending', () => {
     const { handle } = renderSection([])
     expect(handle().sortOrder()).toEqual(DEFAULT_FILE_SORT_ORDER)
@@ -164,7 +164,7 @@ describe('filesSection sort preference', () => {
   })
 })
 
-describe('filesSection flat list ordering', () => {
+describe('FilesSection flat list ordering', () => {
   // The flat list only replaces the tree while a git filter is active, so the
   // tab has to move off "All" first.
   function openFlatList(handle: () => FilesSectionHandle) {
@@ -262,7 +262,7 @@ describe('filesSection flat list ordering', () => {
  * once -- the mirrored props it replaced each carried their own copy in
  * buildSectionDef, a second value that could drift from what the toolbar shows.
  */
-describe('filesSectionHeaderActions', () => {
+describe('FilesSectionHeaderActions', () => {
   function renderActions(handle: FilesSectionHandle | undefined) {
     return render(() => (
       <FilesSectionHeaderActions
@@ -336,7 +336,7 @@ describe('filesSectionHeaderActions', () => {
   })
 })
 
-describe('filesSection tree root', () => {
+describe('FilesSection tree root', () => {
   function rootRowName(): string | undefined {
     return document
       .querySelector('[data-testid="tree-root-node"] [data-testid="tree-row-name"]')

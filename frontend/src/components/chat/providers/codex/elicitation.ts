@@ -18,15 +18,16 @@ export function codexElicitation(payload: Record<string, unknown>): ElicitationR
       acceptChoices.push({ key: MCP_ELICITATION_APPROVAL_SCOPE.Always, label: 'Always', metadata: { persist: MCP_ELICITATION_APPROVAL_SCOPE.Always } })
   }
   return {
-    purpose: approval ? 'permission' : undefined,
+    // A permission approval states its purpose, its arguments and its choices; a
+    // plain form states none of the three, and each key stays out rather than
+    // carrying `undefined` down.
+    ...(approval ? { purpose: 'permission' as const, arguments: meta.tool_params, acceptChoices } : {}),
     mode: mode === 'openai/form' || mode === 'openaiForm' ? 'form' : mode,
     message: pickString(params, 'message', ''),
     server: pickString(params, 'serverName', ''),
     schema: params.requestedSchema,
     url: pickString(params, 'url', ''),
     title: pickString(params, 'title', approval ? 'Permission Required' : ''),
-    arguments: approval ? meta.tool_params : undefined,
-    acceptChoices: approval ? acceptChoices : undefined,
     description: pickString(params, 'description', approval ? pickString(meta, 'tool_description', '') : ''),
   }
 }

@@ -228,7 +228,7 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
   }
 }
 
-describe('gitOptions activeMode ownership', () => {
+describe('GitOptions activeMode ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(workerRpc.listGitBranches).mockResolvedValue({
@@ -325,7 +325,7 @@ describe('gitOptions activeMode ownership', () => {
     ))
 
     await waitFor(() => expect(onGitModeChange).toHaveBeenCalled())
-    const firstIntent = onGitModeChange.mock.calls[0][0] as { mode: GitMode }
+    const firstIntent = onGitModeChange.mock.calls[0]?.[0] as { mode: GitMode }
     expect(firstIntent.mode).toBe(GitMode.CreateWorktree)
   })
 
@@ -352,7 +352,7 @@ describe('gitOptions activeMode ownership', () => {
     // DEFAULT_GIT_MODES includes Current as the first/default mode, so
     // the seed intent emitted on mount must NOT be undefined.
     await waitFor(() => expect(onGitModeChange).toHaveBeenCalled())
-    const firstIntent = onGitModeChange.mock.calls[0][0] as { mode: GitMode | undefined }
+    const firstIntent = onGitModeChange.mock.calls[0]?.[0] as { mode: GitMode | undefined }
     expect(firstIntent.mode).toBeDefined()
     // And the radio is rendered (proves the fallback list reached the
     // render loop). Use a generic label that DEFAULT_GIT_MODES always
@@ -383,7 +383,7 @@ describe('gitOptions activeMode ownership', () => {
     // The first enabled mode, because Current is not enabled either.
     await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
     await waitFor(() => expect(onGitModeChange).toHaveBeenCalled())
-    const firstIntent = onGitModeChange.mock.calls[0][0] as { mode: GitMode }
+    const firstIntent = onGitModeChange.mock.calls[0]?.[0] as { mode: GitMode }
     expect(firstIntent.mode).toBe(GitMode.SwitchBranch)
   })
 
@@ -567,7 +567,7 @@ describe('gitOptions activeMode ownership', () => {
   })
 })
 
-describe('gitOptions branch name field', () => {
+describe('GitOptions branch name field', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(workerRpc.listGitBranches).mockResolvedValue({

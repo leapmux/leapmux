@@ -26,7 +26,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   }
 })
 
-describe('launcherView', () => {
+describe('LauncherView', () => {
   beforeEach(() => {
     window.history.replaceState({}, '', '/?cleanup_error=lease%20release%20failed')
     bridgeMocks.getRuntimeState.mockResolvedValue({ shellMode: 'launcher', connected: false })

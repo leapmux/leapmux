@@ -130,7 +130,7 @@ describe('createQuakeTerminalStore', () => {
 
     expect(listTerminals).toHaveBeenCalledWith('w1', { tabIds: [], quakeWorkingDirs: ['/repo'] })
     expect(openTerminal).toHaveBeenCalledOnce()
-    expect(openTerminal.mock.calls[0][1]).toMatchObject({ quake: true, shell: '', workingDir: '/repo' })
+    expect(openTerminal.mock.calls[0]?.[1]).toMatchObject({ quake: true, shell: '', workingDir: '/repo' })
     expect(store.entryFor(KEY)?.terminalId).toBe('quake-1')
     dispose()
   })

@@ -13,7 +13,8 @@ export function piPlanApprovalDetails(payload: Record<string, unknown>): string[
 /** Match the native menu before assigning approval semantics to its string choices. */
 export function isPiPlanApproval(payload: Record<string, unknown>): boolean {
   if (payload.type !== PI_EVENT.ExtensionUIRequest || payload.method !== PI_DIALOG_METHOD.Select
-    || pickString(payload, 'title').split('\n', 1)[0].trim() !== PI_PLAN_DIALOG.ReadyTitle) {
+    // A split with limit 1 always answers one row; `?? ''` is the type-level guard alone.
+    || (pickString(payload, 'title').split('\n', 1)[0] ?? '').trim() !== PI_PLAN_DIALOG.ReadyTitle) {
     return false
   }
   const options = payload.options

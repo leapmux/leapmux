@@ -35,7 +35,7 @@ export function CollapsibleList<T>(props: CollapsibleListProps<T>): JSX.Element 
           expanded={expanded()}
           onToggle={() => setExpanded(prev => !prev)}
           moreLabel={props.moreLabel?.(hiddenCount()) ?? `Show ${hiddenCount()} more\u2026`}
-          lessLabel={props.lessLabel}
+          {...(props.lessLabel === undefined ? {} : { lessLabel: props.lessLabel })}
         />
       </Show>
     </>

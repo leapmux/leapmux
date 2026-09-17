@@ -15,7 +15,8 @@ function cumulative(ratios: readonly number[]): number[] {
   const out: number[] = []
   let acc = 0
   for (let i = 0; i < ratios.length - 1; i++) {
-    acc += ratios[i]
+    // The bound keeps i in range; ?? 0 is the type-level guard alone.
+    acc += ratios[i] ?? 0
     out.push(acc)
   }
   return out
@@ -87,14 +88,26 @@ interface GridRendererProps extends TilingCallbacks {
   grid: GridNode
 }
 
+/**
+ * The callback props are optional, so an absent one must stay absent — not
+ * explicit undefined — when handed down to the nested renderers.
+ */
+function threadCallbacks(props: TilingCallbacks): TilingCallbacks {
+  /* eslint-disable solid/reactivity -- every caller spreads this inside JSX, where Solid wraps the expression in a lazy mergeProps getter, so these reads stay tracked. */
+  return {
+    renderTile: props.renderTile,
+    ...(props.onRatioChange === undefined ? {} : { onRatioChange: props.onRatioChange }),
+    ...(props.onGridRatiosChange === undefined ? {} : { onGridRatiosChange: props.onGridRatiosChange }),
+  }
+  /* eslint-enable solid/reactivity */
+}
+
 export const TilingLayout: Component<TilingLayoutProps> = (props) => {
   return (
     <div class={styles.tilingRoot}>
       <LayoutNodeRenderer
         node={props.root}
-        renderTile={props.renderTile}
-        onRatioChange={props.onRatioChange}
-        onGridRatiosChange={props.onGridRatiosChange}
+        {...threadCallbacks(props)}
       />
     </div>
   )
@@ -128,9 +141,7 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
         {grid => (
           <GridRenderer
             grid={grid()}
-            renderTile={props.renderTile}
-            onRatioChange={props.onRatioChange}
-            onGridRatiosChange={props.onGridRatiosChange}
+            {...threadCallbacks(props)}
           />
         )}
       </Match>
@@ -138,9 +149,7 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
         {split => (
           <SplitRenderer
             split={split()}
-            renderTile={props.renderTile}
-            onRatioChange={props.onRatioChange}
-            onGridRatiosChange={props.onGridRatiosChange}
+            {...threadCallbacks(props)}
           />
         )}
       </Match>
@@ -219,9 +228,7 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
           >
             <LayoutNodeRenderer
               node={child()}
-              renderTile={props.renderTile}
-              onRatioChange={props.onRatioChange}
-              onGridRatiosChange={props.onGridRatiosChange}
+              {...threadCallbacks(props)}
             />
           </div>
         )}
@@ -302,9 +309,7 @@ function GridRenderer(props: GridRendererProps): JSX.Element {
             >
               <LayoutNodeRenderer
                 node={cell()}
-                renderTile={props.renderTile}
-                onRatioChange={props.onRatioChange}
-                onGridRatiosChange={props.onGridRatiosChange}
+                {...threadCallbacks(props)}
               />
             </div>
           )

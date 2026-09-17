@@ -10,9 +10,9 @@ import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
@@ -36,8 +36,8 @@ import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
 import { isLocalWorker } from '~/lib/workerLocality'
+import { todoProgress } from '~/models/todo'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
-import { todoProgress } from '~/stores/chatTodos'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
@@ -76,16 +76,21 @@ export interface SectionDefContext {
   /** Expand a collapsed section, so a revealed row has a box to scroll into. */
   expandSection?: (sectionId: string) => void
   sectionActions: SectionActions
+  // The fields below arrive through always-present reactive getters on the
+  // context object (`useSidebarCore.createCtx`), so their declared type is
+  // "required, maybe undefined" rather than optional: under
+  // exactOptionalPropertyTypes a getter yielding undefined cannot satisfy an
+  // optional property.
   /** Open a new agent / terminal at one of a workspace's checkouts. */
-  workspaceStartActions?: WorkspaceStartActions
-  view?: TabView
-  selection?: TabSelectionStore
-  onTabClick?: (type: number, id: string) => void
-  tabItemOps?: TabItemOps
+  workspaceStartActions: WorkspaceStartActions | undefined
+  view: TabView | undefined
+  selection: TabSelectionStore | undefined
+  onTabClick: ((type: number, id: string) => void) | undefined
+  tabItemOps: TabItemOps | undefined
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
-  getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
+  getTileOrderForWorkspace: ((workspaceId: string) => readonly string[]) | undefined
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
-  branchActions?: BranchRefActions
+  branchActions: BranchRefActions | undefined
 
   // Files section
   workerId: string
@@ -94,13 +99,14 @@ export interface SectionDefContext {
   homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
-  onFileOpen?: (path: string, openSource?: GitFilterTab) => void
-  onFileMention?: (path: string) => void
-  onOpenTerminal?: (dirPath: string) => void
+  onFileOpen: ((path: string, openSource?: GitFilterTab) => void) | undefined
+  onFileMention: ((path: string) => void) | undefined
+  onOpenTerminal: ((dirPath: string) => void) | undefined
   gitStatusStore: ReturnType<typeof createRepoGitStore>
-  activeFilePath?: string
-  hasActiveFileTab?: boolean
-  turnEndTrigger?: number
+  /** Always provided via a reactive getter; undefined when no file tab is active. */
+  activeFilePath: string | undefined
+  hasActiveFileTab: boolean | undefined
+  turnEndTrigger: number | undefined
   /**
    * Whether the active tab's working dir is settled enough to fetch
    * directory listings / git status. Mirrors the same gate used for
@@ -121,7 +127,7 @@ export interface SectionDefContext {
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
-  onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
+  onOpenBackgroundTask: ((item: BackgroundTaskItem) => void) | undefined
 
   // Workers section
   workers: Worker[]
@@ -151,6 +157,7 @@ export function buildSectionDef(
 ): SidebarSectionDef {
   const sectionType = section.sectionType
   const sectionId = section.id
+  const defaultSize = SECTION_DEFAULT_SIZES[sectionType]
 
   /**
    * The section as the STORE holds it now, not as this call captured it.
@@ -270,15 +277,15 @@ export function buildSectionDef(
           getActiveTabKeyForWorkspace={(wsId: string) => ctx.selection?.activeKeyForWorkspace(wsId) ?? null}
           getTileOrderForWorkspace={(wsId: string) => ctx.getTileOrderForWorkspace?.(wsId) ?? []}
           onTabClick={ctx.onTabClick ?? (() => {})}
-          tabItemOps={ctx.tabItemOps}
+          {...(ctx.tabItemOps !== undefined ? { tabItemOps: ctx.tabItemOps } : {})}
           workerInfoFn={ctx.workerInfoFn}
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
           // Derived here, beside the liveness predicate and exactly the same
           // way: one line off `ctx.workers` and one flag, rather than a prop
           // threaded down the whole sidebar chain.
           isLocalWorkerFn={workerId => isLocalWorker(ctx.workers, workerId, ctx.localSolo)}
-          startActions={ctx.workspaceStartActions}
-          branchActions={ctx.branchActions}
+          {...(ctx.workspaceStartActions !== undefined ? { startActions: ctx.workspaceStartActions } : {})}
+          {...(ctx.branchActions !== undefined ? { branchActions: ctx.branchActions } : {})}
           repoGitStore={ctx.gitStatusStore}
         />
       ),
@@ -294,7 +301,7 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
+      ...(defaultSize !== undefined ? { defaultSize } : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <FilesSectionHeaderActions
@@ -311,7 +318,7 @@ export function buildSectionDef(
             const path = gitStatusProbePath(probeCtx)
             const key = focusedRepoKeyFromTab(tab, probeCtx, ctx.gitStatusStore)
             if (ctx.workerId && path)
-              void ctx.gitStatusStore.refresh(ctx.workerId, path, { repoKey: key })
+              void ctx.gitStatusStore.refresh(ctx.workerId, path, key !== undefined ? { repoKey: key } : {})
             ctx.filesSectionHandle()?.refresh()
           }}
           hasActiveFileTab={ctx.hasActiveFileTab ?? false}
@@ -330,13 +337,13 @@ export function buildSectionDef(
             flavor={flavorFromOs(ctx.workerInfoFn(ctx.workerId)?.os)}
             fileTreePath={ctx.fileTreePath}
             onFileSelect={ctx.onFileSelect}
-            onFileOpen={ctx.onFileOpen}
-            onMention={ctx.onFileMention}
-            onOpenTerminal={ctx.onOpenTerminal}
+            {...(ctx.onFileOpen !== undefined ? { onFileOpen: ctx.onFileOpen } : {})}
+            {...(ctx.onFileMention !== undefined ? { onMention: ctx.onFileMention } : {})}
+            {...(ctx.onOpenTerminal !== undefined ? { onOpenTerminal: ctx.onOpenTerminal } : {})}
             gitStatusStore={ctx.gitStatusStore}
-            activeFilePath={ctx.activeFilePath}
+            {...(ctx.activeFilePath !== undefined ? { activeFilePath: ctx.activeFilePath } : {})}
             hasActiveFileTab={ctx.hasActiveFileTab ?? false}
-            turnEndTrigger={ctx.turnEndTrigger}
+            {...(ctx.turnEndTrigger !== undefined ? { turnEndTrigger: ctx.turnEndTrigger } : {})}
             enabled={ctx.activeTabReady}
             ref={ctx.setFilesSectionHandle}
           />
@@ -353,7 +360,7 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showGoalsAndTodos,
       draggable: true,
-      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
+      ...(defaultSize !== undefined ? { defaultSize } : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: () => {
         const { done, total } = todoProgress(ctx.activeTodos)
@@ -370,7 +377,7 @@ export function buildSectionDef(
       content: () => (
         <GoalsAndTodos
           variant="sidebar"
-          goal={ctx.activeGoal}
+          {...(ctx.activeGoal !== undefined ? { goal: ctx.activeGoal } : {})}
           todos={ctx.activeTodos}
           announceGoal
         />
@@ -393,17 +400,15 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showBackgroundTasks,
       draggable: true,
-      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
+      ...(defaultSize !== undefined ? { defaultSize } : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      railBadge: activeCount > 0
-        ? () => <span class={csStyles.railBadgeText}>{activeCount}</span>
-        : undefined,
+      ...(activeCount > 0 ? { railBadge: () => <span class={csStyles.railBadgeText}>{activeCount}</span> } : {}),
       content: () => (
         <BackgroundTaskPanel
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
           loadFailed={ctx.activeBackgroundTasksFailed}
-          onOpenSubagent={ctx.onOpenBackgroundTask}
+          {...(ctx.onOpenBackgroundTask !== undefined ? { onOpenSubagent: ctx.onOpenBackgroundTask } : {})}
         />
       ),
     }
@@ -418,7 +423,7 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      defaultSize: SECTION_DEFAULT_SIZES[sectionType],
+      ...(defaultSize !== undefined ? { defaultSize } : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <IconButton

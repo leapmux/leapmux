@@ -12,6 +12,8 @@ describe('claudeWebFetchFromToolResult', () => {
     expect(claudeWebFetchFromToolResult({}, '')).toBeNull()
   })
 
+  // The payload's `url` stays out of the result: the call's request states the
+  // address, and no body draws a second copy of it.
   it('extracts the full structured payload', () => {
     expect(claudeWebFetchFromToolResult({
       code: 200,
@@ -26,7 +28,6 @@ describe('claudeWebFetchFromToolResult', () => {
       bytes: 4096,
       durationMs: 850,
       result: '# Body',
-      url: 'https://example.com/page',
     })
   })
 
@@ -37,7 +38,6 @@ describe('claudeWebFetchFromToolResult', () => {
       bytes: 0,
       durationMs: 0,
       result: 'fallback body',
-      url: undefined,
     })
   })
 })

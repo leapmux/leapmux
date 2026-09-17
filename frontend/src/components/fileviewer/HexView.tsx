@@ -16,9 +16,9 @@ function formatRow(bytes: Uint8Array, offset: number): { offsetStr: string, hex:
   for (let i = 0; i < 16; i++) {
     if (i === 8)
       hexParts.push('')
-    if (i < bytes.length) {
-      hexParts.push(bytes[i].toString(16).padStart(2, '0'))
-      const b = bytes[i]
+    const b = i < bytes.length ? bytes[i] : undefined
+    if (b !== undefined) {
+      hexParts.push(b.toString(16).padStart(2, '0'))
       asciiParts.push(b >= 0x20 && b <= 0x7E ? String.fromCharCode(b) : '.')
     }
     else {

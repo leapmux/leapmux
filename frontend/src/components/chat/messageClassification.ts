@@ -5,7 +5,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
-import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
+import { isWorkerWrittenNotification } from '~/lib/notificationTypes'
 import { parseAssembledMessage } from './assembledMessage'
 import { messageBandKind } from './chatRowGeometry'
 import * as chatStyles from './messageStyles.css'
@@ -24,7 +24,12 @@ export type MessageCategory
     // thread (`messages: [parentObject]`). renderNotificationThread is the sole
     // renderer for both, so there is one notification category, not two.
     | { kind: 'notification', messages: unknown[] }
-    | { kind: 'tool_use', toolName: string, toolUse: Record<string, unknown>, content: Array<Record<string, unknown>> }
+    // The tool BLOCK the row carries is deliberately absent. A classification says
+    // which kind of row this is, and nothing more: a provider's own bytes riding in
+    // it would put one provider's wire shape inside a shared type, and every reader
+    // of the category could then reach for it. The extractor reads the payload
+    // itself, which is the layer that knows how.
+    | { kind: 'tool_use' }
     | { kind: 'tool_result' }
     | { kind: 'agent_prompt' }
     | { kind: 'assistant_text' }
@@ -136,29 +141,19 @@ export function classifyMessage(
     return { kind: 'unsupported_provider' }
   }
 
-  // A worker-authored notification is provider-neutral BY CONSTRUCTION: the worker writes it, the
+  // A worker-written notification is provider-neutral BY CONSTRUCTION: the worker writes it, the
   // agent never does, so no plugin can recognize it from its own wire format. Classifying it here
   // makes registering one a single edit; the per-provider tables would each have to add it, and the
   // one that forgot would render the row as raw JSON.
   //
-  // Scoped to WORKER_AUTHORED_NOTIFICATION_TYPES, never to NOTIFICATION_TYPE as a whole: most of that
+  // Scoped to WORKER_WRITTEN_NOTIFICATION_TYPES, never to NOTIFICATION_TYPE as a whole: most of that
   // vocabulary is agent-emitted and a plugin may legitimately suppress a member (Codex hides
   // `agent_error` for a turn it already reported), which a blanket test placed ahead of
-  // plugin.classify would resurrect.
-  if (!input.wrapper && isWorkerAuthoredNotification(input.parentObject))
+  // plugin?.transcript.classify would resurrect.
+  if (!input.wrapper && isWorkerWrittenNotification(input.parentObject))
     return { kind: 'notification', messages: [input.parentObject] }
 
-  return plugin.classify(input, context)
-}
-
-/** Classify a message, returning both the parsed content and category. */
-export function classifyParsedMessage(
-  message: AgentChatMessage,
-  classificationContext?: ClassificationContext,
-) {
-  const parsed = parseMessageContent(message)
-  const category = classifyMessage(toClassificationInput(parsed, message), classificationContext)
-  return { parsed, category }
+  return plugin?.transcript.classify(input, context)
 }
 
 // AgentChatMessage is immutable once persisted, so caching the

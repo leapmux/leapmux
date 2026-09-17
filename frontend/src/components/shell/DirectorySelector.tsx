@@ -1,5 +1,6 @@
 import type { Accessor, Component } from 'solid-js'
 import type { DirectoryTreeState } from '~/hooks/createDirectoryTreeState'
+import type { PathFlavor } from '~/lib/paths'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
@@ -20,6 +21,15 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { emptyState } from '~/styles/shared.css'
 import { DriveSelector } from './DriveSelector'
 import { PathInput } from './PathInput'
+
+/**
+ * The `flavor` props below take no explicit undefined, so the key stays
+ * omitted until the worker reports its OS. A helper (not a hoisted read)
+ * keeps the spread's getter reactivity.
+ */
+function flavorProps(flavor: PathFlavor | undefined): { flavor?: PathFlavor } {
+  return flavor === undefined ? {} : { flavor }
+}
 
 /**
  * Narrow slice of `WorkerDialogContext` that `DirectorySelector` reads —
@@ -186,7 +196,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
           <PathInput
             selectedPath={props.state.workingDir()}
             homeDir={homeDir()}
-            flavor={flavor()}
+            {...flavorProps(flavor())}
             onSubmit={props.state.setWorkingDir}
             leading={(
               <Show when={driveMenuRoot()}>
@@ -216,7 +226,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
                 rootPath={root()}
                 revealPath={homeDir()}
                 homeDir={homeDir()}
-                flavor={flavor()}
+                {...flavorProps(flavor())}
                 showHiddenFiles={showHiddenFiles()}
                 gitStatusStore={props.repoGitStore}
                 showGitStatus={false}

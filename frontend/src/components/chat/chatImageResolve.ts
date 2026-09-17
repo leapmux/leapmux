@@ -1,8 +1,10 @@
 import type { MessageContextResolver, ResolvedMessage } from './messageContextResolver'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import { parseMessageContent } from '~/lib/messageParser'
-import { parsedMessageForRendering, pluginFor } from './providers/registry'
+import { createLogger } from '~/lib/logger'
+import { imagesForIR } from './ir/derivations'
+import { extractedRow } from './rowExtraction'
+import { extractPreparedRow, prepareMessage } from './rowPreparation'
 
 // Image tabs keep a message sequence and image index. The shared resolver supplies the bytes.
 
@@ -21,22 +23,55 @@ export type ChatImageResolution
     | { status: 'error', message: string }
 
 /**
- * The images one message carries, in the order its provider defines.
+ * The images one message carries, in the order its provider read them.
  *
- * Routed through `Provider.toolResultImages` -- the SAME function the chat row
- * rendered from. That is the whole reason `imageIndex` means anything: two
- * walks of the same JSON would agree until one of them learned a new block
- * kind, and by then the tab would be showing a different image than the row the
- * user clicked.
+ * Read from the SAME row IR the chat row drew. That is the whole reason
+ * `imageIndex` means anything: two walks of the same JSON would agree until one
+ * of them learned a new block kind, and by then the tab would show a
+ * different picture than the row the reader clicked.
  */
-export function messageToolResultImages(message: AgentChatMessage, resolved?: ResolvedMessage, request?: ReturnType<MessageContextResolver['request']>): ImageResultSource[] {
+const logger = createLogger('chatImageResolve')
+
+/** What a resolver adds to one message's own bytes. Every field is absent for an isolated read. */
+export interface ImageExtractionSources {
+  /** The message as the resolver currently holds it, with its supplemental content. */
+  resolved?: ResolvedMessage
+  /** The span's opener, which carries the file metadata a result alone does not. */
+  request?: ReturnType<MessageContextResolver['request']>
+  /**
+   * The live to-do store. The transcript row reads it, so a resolver that left it
+   * out read a DIFFERENT row than the one the reader clicked -- and the index of a
+   * picture only means anything while the two rows agree.
+   */
+  todoById?: MessageContextResolver['todo']
+}
+
+export function messageToolResultImages(message: AgentChatMessage, sources: ImageExtractionSources = {}): ImageResultSource[] {
+  // The extraction guards the PLUGIN call, and two unguarded plugin calls run before
+  // it: `resolveMessage` inside the supplemental merge, and `classify`. A frame that
+  // makes either one throw used to degrade to no images; without this it reaches the
+  // caller's outer catch and the image tab shows a raw JavaScript error where the
+  // picture belongs.
   try {
-    const parsed = resolved?.parsed ?? parsedMessageForRendering(parseMessageContent(message), message.agentProvider)
-    const plugin = pluginFor(message.agentProvider)
-    return plugin?.toolResultImages?.({ parsed, spanType: message.spanType, request: request?.parsed }) ?? []
+    // The resolver's own payload when it holds one, so the tab reads the row the
+    // transcript drew. Preparation CLASSIFIES that payload, which is the correction
+    // this carries: the tab used to classify the raw bytes and extract the merged
+    // ones, so an ACP result wrapped in a native envelope was extracted as a row its
+    // own category contradicted and its pictures were lost.
+    const resolved = sources.resolved?.parsed
+    const prepared = prepareMessage(message, ...(resolved === undefined ? [{}] : [{ resolved }]))
+    // `role: 'result'` is deliberate and not the row's own place in its span: a
+    // resolver that runs outside the render tree must read the FINISHED side, or a
+    // provider that requires a completed call before it states its picture (Codex
+    // states no status on an `imageView` item) resolves every image tab to nothing.
+    const extraction = extractPreparedRow(prepared, {
+      sides: { current: prepared.resolved, request: sources.request?.parsed, result: undefined, role: 'result' },
+      ...(sources.todoById === undefined ? {} : { todoById: sources.todoById }),
+    })
+    return imagesForIR(extractedRow(extraction))
   }
   catch (err) {
-    console.warn('image extraction failed', { id: message.id, err })
+    logger.warn('image extraction failed', { id: message.id, err })
     return []
   }
 }
@@ -78,7 +113,11 @@ export async function resolveChatImage(
         }
       }
       const current = messages.current(resolved.message, resolved.original)
-      const source = messageToolResultImages(current.message, current, messages.request(identity))[ref.imageIndex]
+      const source = messageToolResultImages(current.message, {
+        resolved: current,
+        request: messages.request(identity),
+        todoById: messages.todo,
+      })[ref.imageIndex]
       if (!source)
         return { status: 'gone' }
       if (!source.data && !source.url && source.filePath)

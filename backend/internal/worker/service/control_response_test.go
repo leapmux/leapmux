@@ -370,7 +370,7 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
+		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -427,10 +427,10 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDPermissionMode:       agent.CodexDefaultApprovalPolicy,
-			agent.CodexOptionSandboxPolicy:     agent.CodexSandboxWorkspaceWrite,
-			agent.CodexOptionNetworkAccess:     agent.CodexNetworkRestricted,
-			agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+			agent.OptionIDPermissionMode:           agent.CodexDefaultApprovalPolicy,
+			contracts.CodexOptionSandboxPolicy:     agent.CodexSandboxWorkspaceWrite,
+			contracts.CodexOptionNetworkAccess:     agent.CodexNetworkRestricted,
+			contracts.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 		}),
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -454,9 +454,9 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 	require.NoError(t, err)
 	options := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	assert.Equal(t, "never", options[agent.OptionIDPermissionMode])
-	assert.Equal(t, agent.CodexNetworkEnabled, options[agent.CodexOptionNetworkAccess])
-	assert.Equal(t, agent.CodexSandboxDangerFullAccess, options[agent.CodexOptionSandboxPolicy])
-	assert.Equal(t, agent.CodexCollaborationDefault, options[agent.CodexOptionCollaborationMode])
+	assert.Equal(t, agent.CodexNetworkEnabled, options[contracts.CodexOptionNetworkAccess])
+	assert.Equal(t, agent.CodexSandboxDangerFullAccess, options[contracts.CodexOptionSandboxPolicy])
+	assert.Equal(t, agent.CodexCollaborationDefault, options[contracts.CodexOptionCollaborationMode])
 }
 
 // TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce pins the plan-prompt side of
@@ -472,7 +472,7 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
+		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
 	storeRequest := func() {
@@ -1088,7 +1088,7 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
+		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1846,7 +1846,7 @@ func TestProcessControlResponse(t *testing.T) {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-			Options:       marshalOptions(map[string]string{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
+			Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}),
 		}))
 		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 			AgentID: "agent-1", RequestID: "plan-1",
@@ -2012,12 +2012,12 @@ func confirmPlanCollaborationForTest(t *testing.T, svc *Service) {
 	t.Helper()
 	svc.updateAgentSettingsFn = func(agentID string, options OptionMap) agent.SettingsApplyResult {
 		assert.Equal(t, "agent-1", agentID)
-		assert.Equal(t, OptionMap{agent.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}, options)
+		assert.Equal(t, OptionMap{contracts.CodexOptionCollaborationMode: agent.CodexCollaborationDefault}, options)
 		value := agent.CodexCollaborationDefault
 		return agent.SettingsApplyResult{
 			AppliedLive:     true,
-			Settlements:     agent.OptionSettlements{agent.CodexOptionCollaborationMode: {State: agent.OptionSettlementConfirmed, Value: &value}},
-			SurfacedOptions: OptionMap{agent.CodexOptionCollaborationMode: value},
+			Settlements:     agent.OptionSettlements{contracts.CodexOptionCollaborationMode: {State: agent.OptionSettlementConfirmed, Value: &value}},
+			SurfacedOptions: OptionMap{contracts.CodexOptionCollaborationMode: value},
 		}
 	}
 }

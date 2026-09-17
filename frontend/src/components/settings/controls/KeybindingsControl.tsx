@@ -62,13 +62,16 @@ export function buildCommandRows(
   const rows: CommandRow[] = []
   for (const [command, meta] of commands) {
     const keys = keysByCommand.get(command) ?? []
+    // An absent when-clause is a missing key in defaultWhen, so omit rather
+    // than pass explicit undefined.
+    const when = defaultWhen.get(command)
     rows.push({
       command,
       title: meta.title,
       category: meta.category,
       keys,
       customized: overridden.has(command),
-      when: defaultWhen.get(command),
+      ...(when === undefined ? {} : { when }),
     })
   }
   rows.sort((a, b) => a.category.localeCompare(b.category) || a.title.localeCompare(b.title))
@@ -184,7 +187,7 @@ export const KeybindingsControl: Component = () => {
       setError(`Too many keybinding overrides (max ${MAX_KEYBINDING_OVERRIDES})`)
       return
     }
-    next.push({ key: chord, command, when: row.when })
+    next.push({ key: chord, command, ...(row.when === undefined ? {} : { when: row.when }) })
     setCapturing(null)
     write(next)
   }

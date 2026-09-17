@@ -30,7 +30,7 @@ function renderDispatcher() {
   ))
 }
 
-describe('captchaField dispatcher', () => {
+describe('CaptchaField dispatcher', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setProvider(CaptchaProvider.ALTCHA)

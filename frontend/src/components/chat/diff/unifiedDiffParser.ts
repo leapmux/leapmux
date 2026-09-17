@@ -33,11 +33,23 @@ export function parseUnifiedDiff(diff: string): ParsedUnifiedDiff | null {
   for (const line of lines) {
     const header = line.match(UNIFIED_DIFF_HEADER_RE)
     if (header) {
+      // The start groups are unconditional `(\d+)` captures, so a match always
+      // carries them; the guard keeps the indexed reads honest for the checker.
+      const [, oldStartText, oldCountText, newStartText, newCountText] = header
+      if (oldStartText === undefined || newStartText === undefined)
+        continue
       current = {
-        oldStart: Number.parseInt(header[1], 10),
-        oldLines: header[2] ? Number.parseInt(header[2], 10) : 1,
-        newStart: Number.parseInt(header[3], 10),
-        newLines: header[4] ? Number.parseInt(header[4], 10) : 1,
+        oldStart: Number.parseInt(oldStartText, 10),
+        // The counts are the HEADER's, never a count of the lines below it. They are
+        // what a consumer checks the body against, and the mismatch is a signal:
+        // Copilot recovers a read from a `detailedContent` diff, and rejects one whose
+        // hunk holds fewer lines than its header promised, because that is a TRUNCATED
+        // payload rather than a short hunk (`copilot/readResult.ts`). Deriving the
+        // counts from `lines` makes that check compare a number with itself, and the
+        // row then states a fraction of a file as the whole of it.
+        oldLines: oldCountText !== undefined ? Number.parseInt(oldCountText, 10) : 1,
+        newStart: Number.parseInt(newStartText, 10),
+        newLines: newCountText !== undefined ? Number.parseInt(newCountText, 10) : 1,
         lines: [],
       }
       hunks.push(current)

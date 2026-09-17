@@ -20,7 +20,7 @@ function renderWorktreeSelect(overrides: Partial<Parameters<typeof WorktreeSelec
   return { onChange }
 }
 
-describe('worktreeSelect', () => {
+describe('WorktreeSelect', () => {
   it('shows the loading sentinel while loading', () => {
     renderWorktreeSelect({ loading: true })
     expect(menuTrigger(MENU)).toBeDisabled()

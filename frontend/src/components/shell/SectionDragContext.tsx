@@ -351,15 +351,19 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
 
         if (insertPos === 'after') {
           // Insert after target
+          // findIndex proved targetIdx valid and the ternary bounds targetIdx + 1;
+          // the '' defaults are the type-level guard alone.
           const nextPos = targetIdx + 1 < sidebarSections.length
-            ? sidebarSections[targetIdx + 1].position
+            ? sidebarSections[targetIdx + 1]?.position ?? ''
             : ''
-          position = mid(sidebarSections[targetIdx].position, nextPos)
+          position = mid(sidebarSections[targetIdx]?.position ?? '', nextPos)
         }
         else {
           // Insert before target
-          const prevPos = targetIdx > 0 ? sidebarSections[targetIdx - 1].position : ''
-          position = mid(prevPos, sidebarSections[targetIdx].position)
+          // findIndex proved targetIdx valid and the ternary bounds targetIdx - 1;
+          // the '' defaults are the type-level guard alone.
+          const prevPos = targetIdx > 0 ? sidebarSections[targetIdx - 1]?.position ?? '' : ''
+          position = mid(prevPos, sidebarSections[targetIdx]?.position ?? '')
         }
       }
       else if (dropId.startsWith(SIDEBAR_ZONE_PREFIX)) {

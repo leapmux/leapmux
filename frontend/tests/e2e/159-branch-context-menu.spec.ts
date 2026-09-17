@@ -172,7 +172,7 @@ test.describe('Branch context menu', () => {
       ['Switch to branch...', 'Switch to branch'],
       ['Create new branch...', 'Create new branch'],
       ['Create new worktree...', 'Create new worktree'],
-    ]) {
+    ] as const) {
       await clickBranchMenuItem(page, branchGroupRow(page), item)
       await expect(dialog.getByRole('heading', { name: 'Change branch' })).toBeVisible()
       await expect(dialog.getByRole('radio', { name: mode })).toBeChecked()

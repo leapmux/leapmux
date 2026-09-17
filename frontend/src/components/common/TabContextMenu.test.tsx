@@ -14,7 +14,7 @@ vi.mock('~/components/common/DropdownMenu', () => ({
   },
 }))
 
-describe('tabContextMenu', () => {
+describe('TabContextMenu', () => {
   it('renders nothing when the tab offers no action', () => {
     const { container } = render(() => <TabContextMenu />)
 

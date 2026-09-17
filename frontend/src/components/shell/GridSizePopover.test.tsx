@@ -27,7 +27,7 @@ function setup(overrides?: { onSelect?: (rows: number, cols: number) => void, on
   return { onSelect, onClose, setOpen }
 }
 
-describe('gridSizePopover hover-grid', () => {
+describe('GridSizePopover hover-grid', () => {
   it('renders 54 cells (6×9)', () => {
     setup()
     expect(screen.getByTestId('grid-size-popover')).toBeInTheDocument()
@@ -53,7 +53,7 @@ describe('gridSizePopover hover-grid', () => {
   })
 })
 
-describe('gridSizePopover manual entry', () => {
+describe('GridSizePopover manual entry', () => {
   it('typing 8 × 5 and clicking Create calls onSelect(8, 5)', () => {
     const { onSelect } = setup()
     const rowsInput = screen.getByTestId('grid-size-rows-input') as HTMLInputElement
@@ -110,7 +110,7 @@ describe('gridSizePopover manual entry', () => {
   })
 })
 
-describe('gridSizePopover keyboard', () => {
+describe('GridSizePopover keyboard', () => {
   it('escape calls onClose', () => {
     const { onClose } = setup()
     fireEvent.keyDown(screen.getByTestId('grid-size-popover'), { key: 'Escape' })

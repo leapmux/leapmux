@@ -31,7 +31,8 @@ export function lastMessageSeq(messages: AgentChatMessage[]): bigint | undefined
 
 /** Insert a message while sequence order remains ascending. */
 export function insertMessageBySeq(list: AgentChatMessage[], message: AgentChatMessage): AgentChatMessage[] {
-  if (list.length === 0 || message.seq > list[list.length - 1].seq)
+  const tail = list[list.length - 1]
+  if (list.length === 0 || (tail !== undefined && message.seq > tail.seq))
     return [...list, message]
   const index = lowerBoundBySeq(list, message.seq)
   return [...list.slice(0, index), message, ...list.slice(index)]
@@ -74,7 +75,7 @@ export function applyFreshMessage(
   message: AgentChatMessage,
 ): { next: AgentChatMessage[], inserted: boolean } {
   const duplicateIndex = lowerBoundBySeq(previous, message.seq)
-  if (duplicateIndex < previous.length && previous[duplicateIndex].seq === message.seq)
+  if (duplicateIndex < previous.length && previous[duplicateIndex]?.seq === message.seq)
     return { next: previous, inserted: false }
   return { next: insertMessageBySeq(previous, message), inserted: true }
 }
@@ -87,7 +88,9 @@ function olderRowsPrecedeWindowHead(older: AgentChatMessage[], base: AgentChatMe
 /** Test whether every sequence in `list` is greater than the sequence before it. */
 function ascendsBySeq(list: AgentChatMessage[]): boolean {
   for (let index = 1; index < list.length; index++) {
-    if (list[index].seq <= list[index - 1].seq)
+    const cur = list[index]
+    const prev = list[index - 1]
+    if (cur === undefined || prev === undefined || cur.seq <= prev.seq)
       return false
   }
   return true
@@ -110,14 +113,29 @@ function mergeAscendingBySeq(base: AgentChatMessage[], incoming: AgentChatMessag
   let incomingIndex = 0
   let out = 0
   while (baseIndex < base.length && incomingIndex < incoming.length) {
-    merged[out++] = incoming[incomingIndex].seq <= base[baseIndex].seq
-      ? incoming[incomingIndex++]
-      : base[baseIndex++]
+    const inc = incoming[incomingIndex]
+    const bas = base[baseIndex]
+    if (inc === undefined || bas === undefined)
+      break
+    if (inc.seq <= bas.seq) {
+      merged[out++] = inc
+      incomingIndex++
+    }
+    else {
+      merged[out++] = bas
+      baseIndex++
+    }
   }
-  while (baseIndex < base.length)
-    merged[out++] = base[baseIndex++]
-  while (incomingIndex < incoming.length)
-    merged[out++] = incoming[incomingIndex++]
+  for (; baseIndex < base.length; baseIndex++) {
+    const bas = base[baseIndex]
+    if (bas !== undefined)
+      merged[out++] = bas
+  }
+  for (; incomingIndex < incoming.length; incomingIndex++) {
+    const inc = incoming[incomingIndex]
+    if (inc !== undefined)
+      merged[out++] = inc
+  }
   return merged
 }
 

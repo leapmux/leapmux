@@ -90,7 +90,7 @@ describe('createRafResizeObserver', () => {
     runFrame(1)
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].map(e => [e.target, e.contentRect.width])).toEqual([
+    expect(calls[0]?.map(e => [e.target, e.contentRect.width])).toEqual([
       [targetA, 150],
       [targetB, 200],
     ])
@@ -110,7 +110,7 @@ describe('createRafResizeObserver', () => {
     runFrame(1)
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].map(e => e.target)).toEqual([targetB])
+    expect(calls[0]?.map(e => e.target)).toEqual([targetB])
   })
 
   it('cancels queued work on disconnect', () => {
@@ -142,7 +142,7 @@ describe('createRafResizeObserver', () => {
     FakeResizeObserver.last!.emit([entry(target, 100)])
 
     expect(calls).toHaveLength(1)
-    expect(calls[0][0].target).toBe(target)
+    expect(calls[0]?.[0]?.target).toBe(target)
 
     observer!.disconnect()
 
@@ -164,7 +164,7 @@ describe('createRafResizeObserver', () => {
 
       expect(() => vi.runOnlyPendingTimers()).not.toThrow()
       expect(calls).toHaveLength(1)
-      expect(calls[0][0].target).toBe(target)
+      expect(calls[0]?.[0]?.target).toBe(target)
     }
     finally {
       vi.useRealTimers()

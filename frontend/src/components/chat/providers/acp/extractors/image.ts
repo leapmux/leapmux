@@ -1,11 +1,9 @@
-import type { ToolMessageInput } from '../../registry'
-import type { ACPToolAdapter } from '../toolPresentation'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import { TOOL_FILE_PATH_KEYS } from '~/components/chat/results/toolInputs'
+import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
-import { isObject, pickFirstString, pickObject } from '~/lib/jsonPick'
+import { pickFirstString, pickObject } from '~/lib/jsonPick'
+import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { flattenAcpContent } from '../content'
-import { acpToolPresentation, resolveACPToolCall } from '../toolPresentation'
 
 /**
  * Extract every ACP image in wire order.
@@ -15,7 +13,7 @@ import { acpToolPresentation, resolveACPToolCall } from '../toolPresentation'
 export function acpImagesFromToolCall(toolUse: Record<string, unknown> | null | undefined): ImageResultSource[] {
   if (!toolUse)
     return []
-  const fallbackPath = pickFirstString(pickObject(toolUse, 'rawInput'), TOOL_FILE_PATH_KEYS)
+  const fallbackPath = pickFirstString(pickObject(toolUse, ACP_SUPPLEMENT_REQUEST.RawInput), TOOL_FILE_PATH_KEYS)
   const images: ImageResultSource[] = []
   for (const block of flattenAcpContent(toolUse.content)) {
     const source = parseImageBlock(block)
@@ -24,23 +22,4 @@ export function acpImagesFromToolCall(toolUse: Record<string, unknown> | null | 
     images.push(withFallbackFilePath(source, fallbackPath))
   }
   return images
-}
-
-/** `Provider.toolResultImages` for every ACP-based provider. */
-export function acpToolResultImages(
-  input: ToolMessageInput,
-  adapter?: ACPToolAdapter,
-): ImageResultSource[] {
-  const parsed = input.parsed.parentObject
-  if (!isObject(parsed))
-    return []
-  // The resolved ACP message contains the tool fields directly.
-  const tool = resolveACPToolCall(parsed, input.request?.parentObject)
-  const presentation = acpToolPresentation(tool, adapter, input.parsed.supplementalContent, input.parsed.completion)
-  const body = presentation.body
-  const primary = body.type === 'mcp'
-    ? body.source.content.flatMap(item => item.type === 'image' ? [item.source] : [])
-    : acpImagesFromToolCall({ ...tool, rawInput: presentation.input })
-  const additional = presentation.additionalContent?.content.flatMap(item => item.type === 'image' ? [item.source] : []) ?? []
-  return [...additional, ...primary]
 }

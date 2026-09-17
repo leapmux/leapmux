@@ -84,6 +84,23 @@ export function formatDuration(ms: number): string {
   return formatSecondsParts(totalSeconds)
 }
 
+/**
+ * A short wait, as a countdown states it: "800ms", "2s", "45s", "1m 30s".
+ *
+ * WHOLE seconds at one second and above, because the reader watches a countdown and
+ * a decimal there reads as a measurement. Below one second it states milliseconds:
+ * `Math.round(ms / 1000)` answers 0 for every delay under 500 ms, so a retry that
+ * waited 300 ms and a dialog that expired in 400 ms both read "in 0s" -- a wait the
+ * reader cannot tell from no wait at all.
+ *
+ * Separate from {@link formatDuration}, which MEASURES an elapsed time: that one
+ * renders a decimal below ten seconds ("3.2s"), which is right for a measurement and
+ * wrong beside a counter that steps in whole seconds.
+ */
+export function formatShortWait(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)}ms` : formatSecondsParts(ms / 1000)
+}
+
 /** Format a number with locale-aware separators (e.g. 1,234). */
 export function formatNumber(n: number): string {
   return n.toLocaleString('en-US')

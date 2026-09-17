@@ -44,5 +44,10 @@ const KIND_FALLBACK_LABELS: Record<string, string> = {
 export function permissionOptionLabel(option: WirePermissionOption): string {
   if (option.name !== undefined && option.name !== option.optionId)
     return option.name
-  return KIND_FALLBACK_LABELS[option.kind] ?? option.name ?? option.optionId
+  // `Object.hasOwn`, not `??`: `kind` comes straight off the wire, and a value
+  // that spells an `Object.prototype` member resolves to that function -- a truthy value,
+  // so the two fallbacks below never ran and the function's source text became the
+  // decision button's LABEL.
+  const fallback = Object.hasOwn(KIND_FALLBACK_LABELS, option.kind) ? KIND_FALLBACK_LABELS[option.kind] : undefined
+  return fallback ?? option.name ?? option.optionId
 }

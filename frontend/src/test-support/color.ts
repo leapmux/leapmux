@@ -62,7 +62,9 @@ export function contrast(fg: string, bg: string): number {
   const b = parseColor(bg)
   if (!a || !b)
     throw new Error(`cannot measure contrast between ${fg} and ${bg}`)
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+  const [aLuminance, bLuminance] = [luminance(a), luminance(b)]
+  const hi = Math.max(aLuminance, bLuminance)
+  const lo = Math.min(aLuminance, bLuminance)
   return (hi + 0.05) / (lo + 0.05)
 }
 

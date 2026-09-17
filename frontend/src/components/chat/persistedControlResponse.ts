@@ -1,3 +1,4 @@
+import type { ControlRequestIR } from './ir/controlRequest'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
@@ -30,6 +31,20 @@ export const CONTROL_DECISION_WORDS = {
 
 /** The pair of words one saved decision chooses between. */
 export type ControlDecisionWords = typeof CONTROL_DECISION_WORDS[keyof typeof CONTROL_DECISION_WORDS]
+
+/**
+ * The pair of words the answer to ONE request shows.
+ *
+ * Which pair is a property of the REQUEST, and the answer cannot state it: a plan
+ * approval and a bare permission share the neutral envelope, and their buttons carry
+ * different words. The control IR already answers which control arrived -- it is what
+ * the banner drew -- so a provider reads its own `extractControl` here rather than a
+ * second field of the same request. Claude and ZCode each read one, and the two
+ * discriminators disagreed for a request that carried only one of them.
+ */
+export function controlDecisionWords(control: ControlRequestIR | null | undefined): ControlDecisionWords {
+  return control?.kind === 'plan' ? CONTROL_DECISION_WORDS.plan : CONTROL_DECISION_WORDS.permission
+}
 /** Lead-in shown above the user's typed rejection reason (their feedback follows as markdown). */
 export const CONTROL_RESPONSE_FEEDBACK_LEAD = 'Sent feedback:'
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { pluginFor, providerFor, retainedOutcome, retainedRowIsFinal } from './registry'
+import { __resetProviderRegistryForTest, pluginFor, providerFor, registerProvider, retainedOutcome, retainedRowIsFinal } from './registry'
 // Side-effect import: register every provider plugin so the registry is populated.
 import '.'
 
@@ -26,9 +26,57 @@ describe('pluginFor', () => {
   })
 })
 
+/** A plugin shaped well enough to register, for the registration-refusal tests below. */
+function stubPlugin() {
+  return {
+    transcript: {
+      classify: () => ({ kind: 'hidden' } as never),
+      spanRole: () => 'other' as const,
+      extractRow: () => null,
+      extractDivider: () => null,
+    },
+  }
+}
+
 describe('provider registration', () => {
   it.each(ALL_PROVIDERS)('registers the provider %s', (provider) => {
     expect(pluginFor(provider)).toBeDefined()
+  })
+
+  // The registry is populated by SIDE-EFFECT imports, so a provider nobody imported and
+  // a provider whose plugin failed to register read the same from `pluginFor`. The
+  // count is what separates the two: every supported provider holds exactly one
+  // entry, which the duplicate-refusal below keeps from ever becoming two.
+  it('registers every supported provider exactly once', () => {
+    expect(ALL_PROVIDERS).toHaveLength(10)
+    for (const provider of ALL_PROVIDERS)
+      expect(pluginFor(provider), AgentProvider[provider]).toBeDefined()
+  })
+
+  it('refuses UNSPECIFIED, which names no provider', () => {
+    __resetProviderRegistryForTest()
+    try {
+      expect(() => registerProvider(AgentProvider.UNSPECIFIED, stubPlugin()))
+        .toThrow('UNSPECIFIED names no provider')
+      expect(pluginFor(AgentProvider.UNSPECIFIED)).toBeUndefined()
+    }
+    finally {
+      __resetProviderRegistryForTest()
+    }
+  })
+
+  // Last-write-wins silently left the registry holding whichever plugin imported
+  // later -- a bundling decision, not a program decision.
+  it('refuses a second registration of a provider already registered', () => {
+    __resetProviderRegistryForTest()
+    try {
+      registerProvider(AgentProvider.CLAUDE_CODE, stubPlugin())
+      expect(() => registerProvider(AgentProvider.CLAUDE_CODE, stubPlugin()))
+        .toThrow('CLAUDE_CODE is already registered')
+    }
+    finally {
+      __resetProviderRegistryForTest()
+    }
   })
 })
 

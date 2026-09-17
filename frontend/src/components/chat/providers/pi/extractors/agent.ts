@@ -1,5 +1,4 @@
-import type { AgentRequestSource } from '../../../results/AgentRequestMessage'
-import type { AgentResultSource } from '../../../results/agentResult'
+import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -22,18 +21,18 @@ export function isPiAgentTool(toolName: string | undefined): boolean {
   return toolName === PI_TOOL.Agent || toolName === PI_TOOL.SubagentWorkflow || toolName === PI_AGENT_TOOL.GetResult || toolName === PI_AGENT_TOOL.Steer
 }
 
-export function piAgentRequest(payload: Record<string, unknown>, request?: ParsedMessageContent): AgentRequestSource {
+export function piAgentRequest(payload: Record<string, unknown>, request?: ParsedMessageContent): AgentRequest {
   const tool = piExtractTool(payload)
   const args = piExtractTool(piPairedRequest(payload, request)?.parentObject)?.args ?? tool?.args ?? {}
   const details = tool?.result?.details ?? {}
-  const metadata: NonNullable<AgentRequestSource['metadata']> = []
+  const metadata: NonNullable<AgentRequest['metadata']> = []
   if (tool?.toolName === PI_AGENT_TOOL.GetResult || tool?.toolName === PI_AGENT_TOOL.Steer) {
     const operation = tool.toolName === PI_AGENT_TOOL.GetResult ? 'Get agent result' : 'Send message'
     for (const [key, label] of [['wait', 'Wait'], ['verbose', 'Full conversation']]) {
       if (typeof args[key] === 'boolean')
         metadata.push({ label, value: args[key] ? 'Yes' : 'No' })
     }
-    return { toolName: operation, description: `${operation}${pickString(args, 'agent_id') ? `: ${pickString(args, 'agent_id')}` : ''}`, prompt: pickString(args, 'message'), metadata }
+    return { description: `${operation}${pickString(args, 'agent_id') ? `: ${pickString(args, 'agent_id')}` : ''}`, prompt: pickString(args, 'message'), metadata }
   }
   for (const [key, label] of [['model', 'Model'], ['thinking', 'Thinking'], ['resume', 'Resume'], ['isolation', 'Isolation']]) {
     const value = pickString(args, key)
@@ -43,7 +42,6 @@ export function piAgentRequest(payload: Record<string, unknown>, request?: Parse
   if (counter(args.max_turns))
     metadata.push({ label: 'Maximum turns', value: formatNumber(args.max_turns) })
   return {
-    toolName: PI_TOOL.Agent,
     description: pickString(args, 'description') || pickString(details, 'description'),
     agentType: pickString(args, 'subagent_type') || pickString(details, 'displayName') || pickString(details, 'subagentType'),
     prompt: pickString(args, 'prompt'),
@@ -67,7 +65,7 @@ function agentReport(text: string, details: Record<string, unknown>): string {
 }
 
 /** Native child status remains distinct from successful completion of the launch tool. */
-export function piAgentResult(payload: Record<string, unknown>, request?: ParsedMessageContent): AgentResultSource {
+export function piAgentResult(payload: Record<string, unknown>, request?: ParsedMessageContent): AgentRun {
   const tool = piExtractTool(payload)
   const result = tool?.result ?? tool?.partialResult
   const details = result?.details ?? {}
@@ -78,7 +76,7 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
   const nativeStatus = pickString(details, 'status')
   const failed = tool?.isError === true || nativeStatus === 'error'
   const state = failed ? 'failed' : nativeStatus
-  const outcome: AgentResultSource['outcome'] = state === 'failed'
+  const outcome: AgentRun['outcome'] = state === 'failed'
     ? 'failed'
     : state === 'completed'
       ? 'completed'
@@ -90,7 +88,7 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
     : state === 'aborted' || state === 'steered'
       ? 'partial'
       : state || 'returned a result'
-  const metadata: AgentResultSource['metadata'] = []
+  const metadata: AgentRun['metadata'] = []
   for (const [key, label] of [['agentId', 'Agent ID'], ['displayName', 'Agent type'], ['modelName', 'Model'], ['tokens', 'Tokens'], ['error', 'Error']]) {
     const value = pickString(details, key)
     if (value)
@@ -119,11 +117,11 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
       metadata.push(item)
   }
   const body = agentReport(result?.text ?? '', details)
-  return { description: source.description, agentId: pickString(details, 'agentId'), status, outcome, metadata, body }
+  return { description: source.description, agentId: pickString(details, 'agentId'), statusLabel: status, outcome, metadata, body }
 }
 
 /** The result tool omits structured details. Validate its complete header before extracting them. */
-function retrievedAgentReport(text: string, expectedId: string): AgentResultSource | null {
+function retrievedAgentReport(text: string, expectedId: string): AgentRun | null {
   const separator = text.indexOf('\n\n')
   if (separator < 0)
     return null
@@ -142,7 +140,7 @@ function retrievedAgentReport(text: string, expectedId: string): AgentResultSour
     || stateText !== state + pickString(STATUS_NOTES, state)) {
     return null
   }
-  const metadata: AgentResultSource['metadata'] = [
+  const metadata: AgentRun['metadata'] = [
     { label: 'Agent ID', value: id },
     { label: 'Agent type', value: fields[0].slice('Type: '.length) },
   ]
@@ -156,19 +154,19 @@ function retrievedAgentReport(text: string, expectedId: string): AgentResultSour
   return {
     description: lines[2].slice('Description: '.length),
     agentId: id,
-    status: state === 'error' ? 'failed' : state === 'aborted' || state === 'steered' ? 'partial' : state,
+    statusLabel: state === 'error' ? 'failed' : state === 'aborted' || state === 'steered' ? 'partial' : state,
     outcome: state === 'completed' ? 'completed' : state === 'error' ? 'failed' : state === 'stopped' ? 'stopped' : state === 'queued' || state === 'running' ? 'running' : 'unknown',
     metadata,
     body: text.slice(separator + 2),
   }
 }
 
-function piAgentControlResult(toolName: string, args: Record<string, unknown>, text: string, isError: boolean): AgentResultSource {
+function piAgentControlResult(toolName: string, args: Record<string, unknown>, text: string, isError: boolean): AgentRun {
   const missing = /^Agent not found: "([^"\r\n]+)"\. It may have been cleaned up\.$/.exec(text)
   const id = pickString(args, 'agent_id') || missing?.[1] || ''
   const report = toolName === PI_AGENT_TOOL.GetResult ? retrievedAgentReport(text, id) : null
   if (report)
-    return isError ? { ...report, outcome: 'failed', status: 'failed' } : report
+    return isError ? { ...report, outcome: 'failed', statusLabel: 'failed' } : report
   const unavailable = id && (text === `Agent not found: "${id}". It may have been cleaned up.`
     || (text.startsWith(`Agent "${id}" is not running (status: `) && text.endsWith('). Cannot steer a non-running agent.')))
   const failed = isError || !!unavailable || (toolName === PI_AGENT_TOOL.Steer && text.startsWith('Failed to steer agent: '))
@@ -177,7 +175,7 @@ function piAgentControlResult(toolName: string, args: Record<string, unknown>, t
   return {
     description: '',
     agentId: id,
-    status: failed ? 'failed' : sent ? 'received a message' : queued ? 'queued a message' : 'returned a result',
+    statusLabel: failed ? 'failed' : sent ? 'received a message' : queued ? 'queued a message' : 'returned a result',
     outcome: failed ? 'failed' : sent || queued ? 'running' : 'unknown',
     metadata: id ? [{ label: 'Agent ID', value: id }] : [],
     body: text,

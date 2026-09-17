@@ -7,7 +7,7 @@ import { SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 
-describe('controlDecisionFooter', () => {
+describe('ControlDecisionFooter', () => {
   it('keeps disabled decisions inactive and restores them when enabled', () => {
     const [disabled, setDisabled] = createSignal(true)
     const select = vi.fn()
@@ -208,7 +208,7 @@ describe('controlDecisionFooter', () => {
 // "Reject always" and "Allow for this workspace" both land in the overflow menu,
 // and an undifferentiated menu made them read as the same kind of answer. See
 // REMOVALS-FE-1.
-describe('controlDecisionFooter destructive extras', () => {
+describe('ControlDecisionFooter destructive extras', () => {
   it('marks a refusal in the overflow menu and leaves the others plain', () => {
     render(() => (
       <ControlDecisionFooter

@@ -94,20 +94,29 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     await vi.advanceTimersByTimeAsync(0)
   }
 
+  // Stream lookup: each test opens exactly the streams it expects, so a
+  // missing entry is a harness failure, not a case to guard.
+  function streamAt(index: number): FakeStream {
+    const s = streams[index]
+    if (s === undefined)
+      throw new Error(`expected a fake stream at index ${index}`)
+    return s
+  }
+
   it('backs off exponentially on repeated failures and resets after a healthy message', async () => {
     const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
     // First drop schedules a reconnect at 250ms.
-    streams[0].emitError(new Error('drop'))
+    streamAt(0).emitError(new Error('drop'))
     await tick(249)
     expect(stream).toHaveBeenCalledTimes(1)
     await tick(1)
     expect(stream).toHaveBeenCalledTimes(2)
 
     // Second consecutive drop doubles the delay to 500ms.
-    streams[1].emitError(new Error('drop'))
+    streamAt(1).emitError(new Error('drop'))
     await tick(499)
     expect(stream).toHaveBeenCalledTimes(2)
     await tick(1)
@@ -123,14 +132,14 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     })
     await tick(0)
     const baseline = stream.mock.calls.length
-    streams[streams.length - 1].emitMessage(encodeTabRenamed('tab-1'))
+    streamAt(streams.length - 1).emitMessage(encodeTabRenamed('tab-1'))
     expect(renamed).toEqual(['tab-1'])
     // Grow the streak once, then a healthy message, then drop again.
-    streams[streams.length - 1].emitError(new Error('drop'))
+    streamAt(streams.length - 1).emitError(new Error('drop'))
     await tick(250)
     expect(stream).toHaveBeenCalledTimes(baseline + 1)
-    streams[streams.length - 1].emitMessage(encodeTabRenamed('tab-2'))
-    streams[streams.length - 1].emitError(new Error('drop'))
+    streamAt(streams.length - 1).emitMessage(encodeTabRenamed('tab-2'))
+    streamAt(streams.length - 1).emitError(new Error('drop'))
     // After the reset, the next delay is the initial 250ms, not the doubled 500.
     await tick(250)
     expect(stream).toHaveBeenCalledTimes(baseline + 2)
@@ -141,9 +150,9 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   it('teardown calls cancel on the stream handle (#337)', async () => {
     const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
     await tick(0)
-    expect(streams[0].cancel).toHaveBeenCalledTimes(0)
+    expect(streamAt(0).cancel).toHaveBeenCalledTimes(0)
     stop()
-    expect(streams[0].cancel).toHaveBeenCalledOnce()
+    expect(streamAt(0).cancel).toHaveBeenCalledOnce()
   })
 
   it('teardown wakes a parked loop so it does not linger on a clean close with a live channel', async () => {
@@ -174,7 +183,7 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
 
     // Drop the stream so a reconnect timer is armed, then tear down before it
     // fires. cancelAll() must cancel the pending retry.
-    streams[0].emitError(new Error('drop'))
+    streamAt(0).emitError(new Error('drop'))
     stop()
     await tick(10_000)
     expect(stream).toHaveBeenCalledTimes(1)

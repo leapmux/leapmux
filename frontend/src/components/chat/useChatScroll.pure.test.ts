@@ -9,7 +9,7 @@ import { installScrollTestEnv, makeScrollContext } from './useChatScroll.testkit
 
 installScrollTestEnv()
 
-describe('createscrollvelocity', () => {
+describe('createScrollVelocity', () => {
   // A controllable clock so velocity is deterministic (no real timing).
   function fakeClock(start = 0) {
     let t = start
@@ -185,7 +185,7 @@ describe('createscrollvelocity', () => {
   })
 })
 
-describe('inferscrolldirection', () => {
+describe('inferScrollDirection', () => {
   it('returns older when scrollTop moved up (toward older history)', () => {
     expect(inferScrollDirection(500, 300)).toBe('older')
   })
@@ -204,7 +204,7 @@ describe('inferscrolldirection', () => {
   })
 })
 
-describe('computekeepnewest', () => {
+describe('computeKeepNewest', () => {
   const msg = (id: string, seq: bigint) => ({ id, seq } as AgentChatMessage)
   const anchor = (id: string) => ({ id, offsetWithinRow: 0 })
   const msgs = [msg('m1', 1n), msg('m2', 2n), msg('m3', 3n), msg('m4', 4n)]
@@ -223,7 +223,7 @@ describe('computekeepnewest', () => {
   })
 })
 
-describe('computebufferawarekeepnewest', () => {
+describe('computeBufferAwareKeepNewest', () => {
   const msg = (id: string, seq: bigint) => ({ id, seq } as AgentChatMessage)
   const anchor = (id: string) => ({ id, offsetWithinRow: 0 })
   const msgs = [msg('m1', 1n), msg('m2', 2n), msg('m3', 3n), msg('m4', 4n)]
@@ -256,7 +256,7 @@ describe('computebufferawarekeepnewest', () => {
   })
 })
 
-describe('createscrollinput', () => {
+describe('createScrollInput', () => {
   function fakeEl(opts: { clientHeight?: number, scrollTop?: number, clamp?: boolean } = {}) {
     const el = {
       clientHeight: opts.clientHeight ?? 500,

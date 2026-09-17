@@ -54,7 +54,7 @@ function renderRouted() {
   ))
 }
 
-describe('accountEmail', () => {
+describe('AccountEmail', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
@@ -155,7 +155,7 @@ describe('accountEmail', () => {
 // and no passkey elevates only at its identity provider, and that option
 // leaves the app. Losing the address there meant retyping it on the one shape
 // that has no other way to verify.
-describe('accountEmail draft', () => {
+describe('AccountEmail draft', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
@@ -212,7 +212,7 @@ describe('accountEmail draft', () => {
   })
 })
 
-describe('accountEmail verification', () => {
+describe('AccountEmail verification', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()

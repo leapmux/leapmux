@@ -98,6 +98,10 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   const filePath = imageBlockFilePath(block)
   const withPath = (source: ImageBlockSource): ImageBlockSource =>
     withFallbackFilePath(source, filePath)
+  // `mimeType?: string` on ImageBlockSource requires the key to be absent, not
+  // present-with-undefined, when the provider did not state one.
+  const withMime = (source: { url?: string, data?: string }, mime: string | undefined): ImageBlockSource =>
+    withPath(mime === undefined ? source : { ...source, mimeType: mime })
 
   // Codex `dynamicToolCall` content item: a URL, usually already a data URL.
   if (type === 'inputImage') {
@@ -112,17 +116,17 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   // A colon cannot occur in base64, so URL detection cannot misread a valid base64 payload.
   const data = pickString(block, 'data', undefined)
   if (data)
-    return withPath(isRenderableUrl(data) ? { url: data, mimeType } : { data, mimeType })
+    return withMime(isRenderableUrl(data) ? { url: data } : { data }, mimeType)
 
   // MCP `url` variant: a server may state a fetchable URL instead of inlining.
   const url = pickString(block, 'url', undefined)
   if (url)
-    return withPath({ url, mimeType })
+    return withMime({ url }, mimeType)
 
   // ZCode part shape.
   const dataUrl = pickString(block, 'dataUrl', undefined)
   if (dataUrl)
-    return withPath({ url: dataUrl, mimeType: mimeType ?? pickString(block, 'mediaType', undefined) })
+    return withMime({ url: dataUrl }, mimeType ?? pickString(block, 'mediaType', undefined))
 
   // Anthropic nested shape.
   const source = isObject(block.source) ? block.source : null
@@ -131,7 +135,7 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
       const b64 = pickString(source, 'data', undefined)
       const mediaType = pickString(source, 'media_type', undefined)
       if (b64)
-        return withPath({ data: b64, mimeType: mediaType })
+        return withMime({ data: b64 }, mediaType)
     }
     if (source.type === 'url') {
       const url = pickString(source, 'url', undefined)
@@ -140,15 +144,15 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
     }
     // File IDs and unknown source formats cannot supply image bytes here.
     // Keep the MIME type for the placeholder.
-    return withPath({ mimeType })
+    return withMime({}, mimeType)
   }
 
   // Already-normalized MCP shape (`urlOrData` holds either a URL or bare base64).
   const urlOrData = pickString(block, 'urlOrData', undefined)
   if (urlOrData)
-    return withPath(isRenderableUrl(urlOrData) ? { url: urlOrData, mimeType } : { data: urlOrData, mimeType })
+    return withMime(isRenderableUrl(urlOrData) ? { url: urlOrData } : { data: urlOrData }, mimeType)
 
-  return withPath({ mimeType })
+  return withMime({}, mimeType)
 }
 
 /**

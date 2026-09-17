@@ -104,7 +104,7 @@ describe('useSectionOperations', () => {
       await h.ops.renameSection('sec-1', '  New  ')
 
       expect(mockRenameSection).toHaveBeenCalledWith({ sectionId: 'sec-1', name: 'New' })
-      expect(h.sectionStore.state.sections[0].name).toBe('New')
+      expect(h.sectionStore.state.sections[0]?.name).toBe('New')
       h.dispose()
     })
 
@@ -113,7 +113,7 @@ describe('useSectionOperations', () => {
       const h = harness([section('sec-1', 'Old')])
 
       await expect(h.ops.renameSection('sec-1', 'New')).rejects.toThrow('nope')
-      expect(h.sectionStore.state.sections[0].name).toBe('Old')
+      expect(h.sectionStore.state.sections[0]?.name).toBe('Old')
       h.dispose()
     })
 

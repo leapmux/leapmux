@@ -588,8 +588,10 @@ export const FileViewer: Component<{
       <Show when={showToolbar()}>
         <DiffModeToolbar
           mode={props.fileViewMode!}
-          diffBase={props.fileDiffBase}
-          hasStagedAndUnstaged={props.hasStagedAndUnstaged}
+          {...(props.fileDiffBase !== undefined ? { diffBase: props.fileDiffBase } : {})}
+          {...(props.hasStagedAndUnstaged !== undefined
+            ? { hasStagedAndUnstaged: props.hasStagedAndUnstaged }
+            : {})}
           diffAvailable={diffAvailable()}
           onModeChange={mode => props.onFileViewModeChange?.(mode)}
           onDiffBaseChange={base => props.onFileDiffBaseChange?.(base)}
@@ -604,15 +606,15 @@ export const FileViewer: Component<{
             workerId={props.workerId}
             path={props.filePath}
             flavor={flavor()}
-            rootPath={props.rootPath}
-            homeDir={props.homeDir}
+            {...(props.rootPath !== undefined ? { rootPath: props.rootPath } : {})}
+            {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
             // The size the viewer already loaded, so its own three-dot menu
             // shows the Size row the identical menu shows in the sidebar tree.
-            // `|| undefined` because 0 here means "not loaded yet", not "an
+            // Omitted when 0, because 0 here means "not loaded yet", not "an
             // empty file" -- the signal starts at 0 before the read resolves.
-            size={totalSize() || undefined}
-            modTime={modTime() || undefined}
-            onMention={props.onMention ? () => props.onMention?.() : undefined}
+            {...(totalSize() > 0 ? { size: totalSize() } : {})}
+            {...(modTime() ? { modTime: modTime() } : {})}
+            {...(props.onMention !== undefined ? { onMention: () => props.onMention?.() } : {})}
             triggerClass={styles.viewToggleButton}
             triggerTestId="file-actions-trigger"
             actions={saveActions}
@@ -637,7 +639,7 @@ export const FileViewer: Component<{
               content={new TextEncoder().encode(diffOldContent()!)}
               filePath={props.filePath}
               totalSize={diffOldContent()!.length}
-              onQuote={props.onQuote}
+              {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
             />
           </Show>
           <Show when={isRefMode() && !diffLoading() && diffOldContent() === null}>
@@ -655,7 +657,7 @@ export const FileViewer: Component<{
               hunks={diffHunks()}
               view={diffViewPref()}
               filePath={props.filePath}
-              originalFile={diffOldContent() ?? undefined}
+              {...(diffOldContent() !== null ? { originalFile: diffOldContent()! } : {})}
             />
           </Show>
 
@@ -676,14 +678,16 @@ export const FileViewer: Component<{
                       canShowAnyway={totalSize() > 0}
                       onDownload={saveActions.handleDownload}
                       onShowAnyway={handleShowAnyway}
-                      desktop={isDesktop
+                      {...(isDesktop
                         ? {
-                            onSaveAs: saveActions.handleSaveAs,
-                            onSaveToDownloads: saveActions.handleSaveToDownloads,
-                            revealAfterDownload: prefs.revealAfterDownload(),
-                            onRevealAfterDownloadChange: prefs.setRevealAfterDownload,
+                            desktop: {
+                              onSaveAs: saveActions.handleSaveAs,
+                              onSaveToDownloads: saveActions.handleSaveToDownloads,
+                              revealAfterDownload: prefs.revealAfterDownload(),
+                              onRevealAfterDownloadChange: prefs.setRevealAfterDownload,
+                            },
                           }
-                        : undefined}
+                        : {})}
                     />
                   </Match>
                   <Match when={viewMode() === 'text' && content()}>
@@ -691,7 +695,7 @@ export const FileViewer: Component<{
                       content={content()!}
                       filePath={props.filePath}
                       totalSize={totalSize()}
-                      onQuote={props.onQuote}
+                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
                     />
                   </Match>
                   <Match when={viewMode() === 'markdown' && content()}>
@@ -700,7 +704,7 @@ export const FileViewer: Component<{
                       filePath={props.filePath}
                       totalSize={totalSize()}
                       mode={displayMode()}
-                      onQuote={props.onQuote}
+                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
                     />
                   </Match>
                   <Match when={viewMode() === 'image' && content()}>
@@ -709,7 +713,7 @@ export const FileViewer: Component<{
                       filePath={props.filePath}
                       totalSize={totalSize()}
                       mode={displayMode()}
-                      onQuote={props.onQuote}
+                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
                     />
                   </Match>
                 </Switch>

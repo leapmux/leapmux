@@ -131,11 +131,15 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
       // can enumerate — a handle from another machine, one already open in a
       // tab, and one past the cap are all missing from it.
       { value: TYPE_A_HANDLE_VALUE, label: typeAHandleLabel(props.isFilePath), pinned: true },
-      ...props.sessions.map(session => ({
-        value: session.sessionId,
-        label: sessionOptionLabel(session),
-        detail: sessionOptionDetail(session),
-      })),
+      ...props.sessions.map((session) => {
+        const detail = sessionOptionDetail(session)
+        return {
+          value: session.sessionId,
+          label: sessionOptionLabel(session),
+          // Omitted when absent: the option type takes no explicit undefined.
+          ...(detail === undefined ? {} : { detail }),
+        }
+      }),
     ]
   })
 
@@ -143,10 +147,12 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
     <LoadingMenu
       ariaLabel={RESUME_SESSION_LABEL}
       ariaInvalid={props.invalid}
-      ariaDescribedBy={props.invalid ? RESUME_SESSION_ERROR_ID : undefined}
+      // The error id is omitted when the field is valid: the attribute target
+      // takes no explicit undefined.
+      {...(props.invalid ? { ariaDescribedBy: RESUME_SESSION_ERROR_ID } : {})}
       value={props.value}
       onChange={props.onChange}
-      loadingLabel={props.loading ? 'Loading sessions...' : undefined}
+      {...(props.loading ? { loadingLabel: 'Loading sessions...' } : {})}
       // Unreachable, and required, so it is stated rather than left to puzzle a
       // reader: `options` always holds the "start a new session" row, so
       // `LoadingMenu`'s empty state -- which tests `options.length === 0` --

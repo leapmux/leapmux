@@ -34,7 +34,9 @@ export interface CreateWorkerScopedListOpts<Args extends WorkerScopedArgs, Resp>
   applySuccess: (resp: Resp, args: Args) => void
   /** Drop the previous worker's answer, before the new fetch starts. */
   clear: () => void
-  onError?: (err: unknown) => void
+  // `| undefined` because callers pass their own optional callback straight
+  // through; the consumer below reads it with `?.`, so undefined == absent.
+  onError?: ((err: unknown) => void) | undefined
 }
 
 export interface WorkerScopedList {

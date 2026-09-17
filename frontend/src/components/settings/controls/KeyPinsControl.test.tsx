@@ -25,7 +25,7 @@ afterEach(() => {
   localStorageClearForTests()
 })
 
-describe('keyPinsControl', () => {
+describe('KeyPinsControl', () => {
   it('lists pinned workers oldest first and removes one pin after confirm', () => {
     seedPins()
     render(() => <KeyPinsControl />)

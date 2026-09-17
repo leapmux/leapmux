@@ -19,7 +19,7 @@ function dispatchDragEvent(target: Element, type: string, dataTransfer: FakeData
   return event
 }
 
-describe('chatDropZone', () => {
+describe('ChatDropZone', () => {
   it('shows the overlay while dragging files over the zone and clears it on dragleave', () => {
     const { container, queryByText } = render(() => (
       <ChatDropZone>

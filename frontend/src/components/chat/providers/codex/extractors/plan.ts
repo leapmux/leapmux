@@ -1,16 +1,14 @@
-import type { TodoListSource } from '../../../todoListMessage'
-import type { TodoItem } from '~/stores/chatTodos'
-import { pickString } from '~/lib/jsonPick'
-import { pluralize } from '~/lib/plural'
-import { normalizeTodoStatus, todoRowKey } from '~/stores/chatTodos'
-import { CODEX_ITEM } from '~/types/toolMessages'
+import type { TodoItem } from '~/models/todo'
+import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { normalizeTodoStatus, todoRowKey } from '~/models/todo'
 
 /** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
 function codexPlanToTodos(plan: unknown[]): TodoItem[] {
   return plan.flatMap((entry, i) => {
-    if (typeof entry !== 'object' || entry === null)
+    if (!isObject(entry))
       return []
-    const step = String((entry as Record<string, unknown>).step || '')
+    const step = String(entry.step || '')
     if (!step)
       return []
     return [{
@@ -20,42 +18,35 @@ function codexPlanToTodos(plan: unknown[]): TodoItem[] {
       // entry makes it differ from the output index.
       rowKey: todoRowKey(undefined, i, step),
       content: step,
-      status: normalizeTodoStatus((entry as Record<string, unknown>).status),
+      status: normalizeTodoStatus(entry.status),
       activeForm: step,
     }]
   })
 }
 
 /**
- * Build a TodoListSource from Codex `turn/plan/updated` params. Returns null
- * when the params don't carry a `plan` array.
+ * The checklist a Codex `turn/plan/updated` notification carries, or null when it
+ * carries no `plan` array at all.
+ *
+ * Null rather than an empty list: a frame with no plan is one the row cannot draw,
+ * while an empty ARRAY is a cleared plan, which the shared checklist header states in
+ * its own words.
  */
-export function codexTurnPlanFromParams(
-  params: Record<string, unknown> | null | undefined,
-): TodoListSource | null {
-  if (!params)
-    return null
-  const plan = params.plan
-  if (!Array.isArray(plan))
-    return null
+export function codexTurnPlanTodos(params: Record<string, unknown> | null | undefined): TodoItem[] | null {
+  const plan = params?.plan
+  return Array.isArray(plan) ? codexPlanToTodos(plan) : null
+}
 
-  const todos = codexPlanToTodos(plan)
-  const explanation = pickString(params, 'explanation').trim()
-
-  if (todos.length === 0) {
-    return {
-      toolName: 'Plan Update',
-      title: '',
-      todos: [],
-    }
-  }
-
-  const label = `${pluralize(todos.length, 'task')}${explanation ? ` - ${explanation}` : ''}`
-  return {
-    toolName: 'Plan Update',
-    title: label,
-    todos,
-  }
+/**
+ * The half of a `turn/plan/updated` frame that carries the plan.
+ *
+ * Its own `params`, or the frame itself for a stored row that was unwrapped. The
+ * classifier and the extractor both read it THROUGH this, because they must reach the
+ * same answer: a classifier that claimed a tool row the extractor then refused left
+ * the transcript drawing the raw notification JSON in a measured row.
+ */
+export function codexTurnPlanParams(notification: Record<string, unknown>): Record<string, unknown> {
+  return pickObject(notification, 'params') ?? notification
 }
 
 /**
@@ -67,7 +58,7 @@ export function codexPlanItemMarkdown(
 ): string | null {
   if (!item)
     return null
-  if (item.type !== CODEX_ITEM.PLAN)
+  if (item.type !== CODEX_ITEM.Plan)
     return null
   const text = pickString(item, 'text')
   return text.length > 0 ? text : null

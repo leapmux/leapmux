@@ -22,7 +22,7 @@ async function flushMicrotasks() {
   await Promise.resolve()
 }
 
-describe('rendermarkdown off-thread highlight path', () => {
+describe('renderMarkdown off-thread highlight path', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()
@@ -234,7 +234,7 @@ describe('rendermarkdown off-thread highlight path', () => {
   })
 })
 
-describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
+describe('renderMarkdown persisted artifacts (indexeddb warm-start)', () => {
   beforeEach(() => {
     _resetMarkdownCache()
     mockWorker.mockReset()

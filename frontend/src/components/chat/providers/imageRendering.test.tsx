@@ -2,15 +2,16 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
+import { providerRowImages, providerToolMeta } from '~/test-support/toolCallIr'
+import { imageActionsFrom } from '../renderContext'
 import { toolUseHeader } from '../toolStyles.css'
-import './claude'
-import './codex'
-import './opencode'
-import './pi'
+import './claude/plugin'
+import './codex/plugin'
+import './opencode/plugin'
+import './pi/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -22,7 +23,7 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 
 const PNG = 'iVBORw0KGgo='
 const PNG_DATA_URL = `data:image/png;base64,${PNG}`
@@ -37,7 +38,7 @@ function renderToolResult(provider: AgentProvider, payload: unknown, context?: R
 }
 
 function renderToolUse(provider: AgentProvider, toolUse: Record<string, unknown>, toolName: string, context?: RenderContext) {
-  const category: MessageCategory = { kind: 'tool_use', toolName, toolUse, content: [] }
+  const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(toolUse, context, category, provider))
 }
 
@@ -159,9 +160,12 @@ describe('codex image items', () => {
   })
 
   it('loads a file-backed image and keeps one header for the view request and result', async () => {
+    // Codex sends the view twice, as `item/started` and `item/completed`, and each
+    // frame states its own status. The picture rides the finished one: a row that
+    // says the call still runs carries none (invariant I1).
     const item = { type: 'imageView', id: 'view-1', path: '/repo/shot.png' }
-    const request = parsed({ item, threadId: 't1' })
-    const result = parsed({ item: { ...item }, threadId: 't1' })
+    const request = parsed({ item: { ...item, status: 'inProgress' }, threadId: 't1' })
+    const result = parsed({ item: { ...item, status: 'completed' }, threadId: 't1' })
     const fileImage = vi.fn(async () => ({ filePath: '/repo/shot.png', mimeType: 'image/png', data: PNG }))
     const sources = (role: 'opener' | 'result') => testMessageSources({
       current: () => role === 'opener' ? request : result,
@@ -170,10 +174,12 @@ describe('codex image items', () => {
       role: () => role,
       fileImage,
     })
-    const category: MessageCategory = { kind: 'tool_use', toolName: 'imageView', toolUse: { item }, content: [] }
+    const category: MessageCategory = { kind: 'tool_use' }
+    // One actions object serves both rows: it closes over `fileImage` alone.
+    const images = imageActionsFrom({ fileImage })
     const { container } = render(() => [
-      renderMessageContent(request.parentObject, { sources: sources('opener') }, category, AgentProvider.CODEX),
-      renderMessageContent(result.parentObject, { sources: sources('result') }, category, AgentProvider.CODEX),
+      renderMessageContent(request.parentObject, { sources: sources('opener'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
+      renderMessageContent(result.parentObject, { sources: sources('result'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
     ])
     await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL))
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
@@ -272,13 +278,14 @@ describe('shared image guardrails', () => {
 })
 
 // ---------------------------------------------------------------------------
-// `Provider.toolResultImages` — the order an image tab addresses by index
+// The row's own images — the order an image tab addresses by index
 // ---------------------------------------------------------------------------
 
-const { pluginFor } = await import('./registry')
-
-function imagesOf(provider: AgentProvider, parsedMessage: unknown, spanType?: string, toolUse?: Record<string, unknown>) {
-  return pluginFor(provider)?.toolResultImages?.(toolMessageInput(parsedMessage, spanType, toolUse ? parsed(toolUse) : undefined)) ?? []
+function imagesOf(provider: AgentProvider, parsedMessage: Record<string, unknown>, spanType?: string, toolUse?: Record<string, unknown>) {
+  return providerRowImages(provider, parsedMessage, {
+    ...(spanType !== undefined ? { spanType } : {}),
+    ...(toolUse !== undefined ? { request: parsed(toolUse) } : {}),
+  })
 }
 
 describe('provider toolResultImages', () => {
@@ -358,7 +365,7 @@ describe('provider toolResultImages', () => {
 
   it('claude returns nothing for a message with no tool_result', () => {
     expect(imagesOf(AgentProvider.CLAUDE_CODE, { type: 'assistant', message: { content: [] } })).toEqual([])
-    expect(imagesOf(AgentProvider.CLAUDE_CODE, null)).toEqual([])
+    expect(imagesOf(AgentProvider.CLAUDE_CODE, {})).toEqual([])
   })
 
   it('an ACP update keeps wire order and falls back to the tool input path', () => {
@@ -380,17 +387,20 @@ describe('provider toolResultImages', () => {
     expect(images.map(i => i.filePath)).toEqual(['/repo/shot.png', '/repo/other.png'])
   })
 
+  // Every Codex item states its own status, and `item/completed` states `completed`.
+  // A row whose frame says the call still runs carries no result and no picture --
+  // invariant I1 -- so an item fixture that omits the word describes no answered call.
   it('codex reads each of its three image-bearing item shapes', () => {
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageGeneration', result: PNG, savedPath: '/tmp/a.png' } }))
+    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageGeneration', status: 'completed', result: PNG, savedPath: '/tmp/a.png' } }))
       .toEqual([{ data: PNG, mimeType: 'image/png', filePath: '/tmp/a.png' }])
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'mcpToolCall', result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] } } }))
+    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'mcpToolCall', status: 'completed', result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] } } }))
       .toEqual([{ data: PNG, mimeType: 'image/png' }])
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'dynamicToolCall', contentItems: [{ type: 'inputImage', imageUrl: PNG_DATA_URL }] } }))
+    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'dynamicToolCall', status: 'completed', contentItems: [{ type: 'inputImage', imageUrl: PNG_DATA_URL }] } }))
       .toEqual([{ url: PNG_DATA_URL }])
   })
 
   it('codex exposes imageView files through the common image resolver', () => {
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageView', id: 'v1', path: '/repo/shot.png' } })).toEqual([{ filePath: '/repo/shot.png' }])
+    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageView', id: 'v1', status: 'completed', path: '/repo/shot.png' } })).toEqual([{ filePath: '/repo/shot.png' }])
   })
 
   it('pi keeps wire order and takes the path from the paired start event', () => {
@@ -413,24 +423,22 @@ describe('provider toolResultImages', () => {
 // The clipboard and the scroll rail must not carry the base64
 // ---------------------------------------------------------------------------
 
-const { claudeToolResultMeta } = await import('./claude/toolResult')
-
 describe('claude tool-result toolbar with an image', () => {
   // Copying a `Read` on a screenshot used to put a megabyte of base64 on the
   // clipboard, because the copy text and the rendered body came from the same
   // Markdown-formatted join.
   it('copies the text beside the image, never the base64', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(claudeToolResult([
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
-    ]), 'mcp__playwright__screenshot', undefined))
+    ]), { spanType: 'mcp__playwright__screenshot' })
     const copied = meta?.copyableContent() ?? ''
     expect(copied).toContain('captured the page')
     expect(copied).not.toContain('base64,')
   })
 
   it('offers nothing to copy for an image-only result', () => {
-    const meta = claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(claudeToolResult([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }]), 'Read', undefined))
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, claudeToolResult([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }]), { spanType: 'Read' })
     expect(meta?.copyableContent() ?? '').not.toContain('base64,')
   })
 })
@@ -449,7 +457,7 @@ describe('opening a tool-result image', () => {
       { type: 'image', data: PNG, mimeType: 'image/png' },
       { type: 'text', text: 'second' },
       { type: 'image', data: PNG, mimeType: 'image/png' },
-    ]), { spanType: 'mcp__playwright__screenshot', onOpenImage } as unknown as RenderContext)
+    ]), { spanType: 'mcp__playwright__screenshot', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
 
     const buttons = [...container.querySelectorAll('button')].filter(b => b.querySelector('img'))
     expect(buttons).toHaveLength(2)
@@ -462,7 +470,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Read', onOpenImage, sources: testMessageSources({ request: () => (parsed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } })) }) } as unknown as RenderContext,
+      { spanType: 'Read', images: imageActionsFrom({ openImage: onOpenImage }), sources: testMessageSources({ request: () => (parsed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } })) }) } as unknown as RenderContext,
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 0, filePath: '/repo/shot.png' }))
@@ -476,7 +484,7 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'mcp__playwright__screenshot', onOpenImage } as unknown as RenderContext,
+      { spanType: 'mcp__playwright__screenshot', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext,
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
@@ -494,7 +502,7 @@ describe('opening a tool-result image', () => {
       rawInput: { description: 'Screenshot the login page' },
       content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { onOpenImage } as unknown as RenderContext)
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
     const imageButton = [...container.querySelectorAll('button')].find(b => b.querySelector('img'))
     imageButton?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
@@ -509,12 +517,15 @@ describe('opening a tool-result image', () => {
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
       claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Bash', onOpenImage } as unknown as RenderContext,
+      { spanType: 'Bash', images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext,
     )
     container.querySelector('button')?.click()
-    expect(onOpenImage).toHaveBeenCalledWith(
-      expect.objectContaining({ title: undefined }),
-    )
+    expect(onOpenImage).toHaveBeenCalledOnce()
+    // The renderer states no title of its own: the key is absent rather than undefined,
+    // which is the exact-optional spelling, and the bubble supplies the word.
+    const opened = onOpenImage.mock.calls[0]?.[0]
+    expect(opened).toBeDefined()
+    expect(opened && 'title' in opened).toBe(false)
   })
 
   it('renders no button at all when the host offers no way to open one', () => {
@@ -542,7 +553,7 @@ describe('opening a tool-result image', () => {
         { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { onOpenImage } as unknown as RenderContext)
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActionsFrom({ openImage: onOpenImage }) } as unknown as RenderContext)
     // Scoped to the buttons that WRAP an image: the row also carries an
     // expand toggle, and picking by position would silently start asserting
     // about that one the day the header grows another control.

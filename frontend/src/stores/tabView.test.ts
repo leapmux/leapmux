@@ -354,8 +354,8 @@ describe('tabView', () => {
         const tabs = view.forWorkspace(harness.workspaceId)
         expect(tabs).toHaveLength(1)
         // Held at its last resolved tile, with its metadata intact.
-        expect(tabs[0].tileId).toBe(harness.rootTileId)
-        expect(tabs[0].title).toBe('My Agent')
+        expect(tabs[0]?.tileId).toBe(harness.rootTileId)
+        expect(tabs[0]?.title).toBe('My Agent')
         dispose()
       })
     })
@@ -478,7 +478,7 @@ describe('tabView', () => {
         await flush()
 
         const after = h.view.forWorkspace(harness.workspaceId)
-        expect(after[1].title, 'the memo really did re-run').toBe('Renamed')
+        expect(after[1]?.title, 'the memo really did re-run').toBe('Renamed')
         expect(after[0], 'the untouched tab is the same object').toBe(before[0])
         h.d()
       })
@@ -536,7 +536,7 @@ describe('tabView', () => {
         await flush()
 
         const after = h.view.forWorkspace(harness.workspaceId)
-        expect(after[0].workerId, 'the value is what it always was').toBe('wkr-1')
+        expect(after[0]?.workerId, 'the value is what it always was').toBe('wkr-1')
         expect(after[0], 'and the rewrite re-keyed nothing').toBe(before[0])
         expect(after[1]).toBe(before[1])
         h.d()
@@ -669,7 +669,8 @@ describe('tabView', () => {
 
         const tiles = layoutStore.getAllTileIds()
         expect(tiles).toHaveLength(1)
-        expect(view.forTile(tiles[0]).map(t => t.id)).toEqual(['a1'])
+        // The length assertion proves the slot; ?? '' is the type-level guard alone.
+        expect(view.forTile(tiles[0] ?? '').map(t => t.id)).toEqual(['a1'])
         dispose()
       })
     })
@@ -1169,7 +1170,7 @@ describe('tabView', () => {
           // And the metadata sweep, keyed on the raw record set, spares it: the
           // tab is still LIVE, so nothing retires its row.
           const state = harness.pending.state.speculativeState
-          expect(hlcIsZero(state.tabs.a1.tombstoneAt), 'not tombstoned').toBe(true)
+          expect(hlcIsZero(state.tabs.a1?.tombstoneAt), 'not tombstoned').toBe(true)
           expect(liveTabIds(state).has('a1'), 'an unresolvable tab is still live').toBe(true)
           // The sweep's real question, transcribed: retire every row the CRDT
           // has no live record for. Passing an EMPTY set instead would assert

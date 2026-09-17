@@ -13,10 +13,12 @@ export function getRandomVerb(): string {
   if (allVerbs.length === 0)
     return 'Thinking'
   if (allVerbs.length === 1)
-    return allVerbs[0]
+    // The length check keeps the index in range; `?? 'Thinking'` is the type-level guard alone.
+    return allVerbs[0] ?? 'Thinking'
   let verb: string
   do {
-    verb = allVerbs[Math.floor(Math.random() * allVerbs.length)]
+    // The index is modulo a non-empty list; `?? 'Thinking'` is the type-level guard alone.
+    verb = allVerbs[Math.floor(Math.random() * allVerbs.length)] ?? 'Thinking'
   } while (verb === lastVerb)
   lastVerb = verb
   return verb

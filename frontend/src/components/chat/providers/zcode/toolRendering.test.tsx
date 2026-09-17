@@ -1,19 +1,20 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolOutcomeLabel } from '~/components/chat/toolOutcomeLabel'
 import { TRUNCATION_NOTICE } from '~/components/chat/truncationNotice'
 import { MESSAGE_METADATA_FIELD, TOOL_OUTCOME } from '~/generated/contracts/worker-vocab'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { providerToolMeta } from '~/test-support/toolCallIr'
 import { diffAdded } from '../../diff/diffStyles.css'
-import { renderMessageContent } from '../../messageRenderers'
-import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
-import { toolInputPath } from '../../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS } from '../../ir/collapse'
+import { toolOutcomeLabel } from '../../ir/toolOutcomeLabel'
+import { renderMessageContent } from '../../rowRenderers'
+import { toolInputPath, toolResultCollapsed } from '../../toolStyles.css'
 import { parsedMessageForRendering, providerFor } from '../registry'
-import { input, toolMessageInput } from '../testUtils'
-import './index'
+import { input } from '../testUtils'
+import './plugin'
 import '../testMocks'
 
 const provider = () => providerFor(AgentProvider.ZCODE)!
@@ -21,7 +22,7 @@ const event = (kind: string, fields: Record<string, unknown>) => ({ type: 'tool.
 
 function renderRequest(toolName: string, args: Record<string, unknown>) {
   const request = event('scheduled', { toolName, input: args })
-  return render(() => renderMessageContent(request, { workingDir: '/project', premeasureMode: true }, provider().classify(input(request)), AgentProvider.ZCODE))
+  return render(() => renderMessageContent(request, { workingDir: '/project', premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
 }
 
 it('renders the ZCode plan in the transcript through the shared plan layout', () => {
@@ -33,7 +34,7 @@ it('renders the ZCode plan in the transcript through the shared plan layout', ()
 
 it('renders a plan preserved from a native control request', () => {
   const request = { id: 'server-1', method: 'interaction/requestUserInput', params: { requestId: 'plan', toolName: 'ExitPlanMode', schema: { interaction: 'plan_approval' }, input: { plan: '# Stored plan\n\n- Keep **original bytes**.' } } }
-  const { getByRole, container } = render(() => renderMessageContent(request, { premeasureMode: true }, provider().classify(input(request)), AgentProvider.ZCODE))
+  const { getByRole, container } = render(() => renderMessageContent(request, { premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
   expect(getByRole('heading', { name: 'Stored plan' })).toBeInTheDocument()
   expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
   expect(container.querySelector('.lucide-plane-takeoff')).not.toBeNull()
@@ -42,16 +43,16 @@ it('renders a plan preserved from a native control request', () => {
 function renderResult(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>, expanded = false) {
   const request = input(event('scheduled', { toolName, input: args }))
   const end = event('result', { result })
-  const row = toolMessageInput(end, toolName, request)
-  const category = provider().classify({ ...row.parsed, spanType: toolName })
+  const parsed = input(end)
+  const category = provider().transcript.classify({ ...parsed, spanType: toolName })
   const view = render(() => renderMessageContent(end, {
     workingDir: '/project',
     spanType: toolName,
     premeasureMode: true,
     getMessageUiState: () => expanded,
-    sources: testMessageSources({ current: () => row.parsed, request: () => request }),
+    sources: testMessageSources({ current: () => parsed, request: () => request }),
   }, category, AgentProvider.ZCODE))
-  return { ...view, category, meta: provider().toolResultMeta?.(category, row) }
+  return { ...view, category, meta: providerToolMeta(AgentProvider.ZCODE, end, { category, spanType: toolName, request }) }
 }
 
 describe('zcode tool rendering', () => {
@@ -59,7 +60,7 @@ describe('zcode tool rendering', () => {
   // It shows what the tool returned and invents no name.
   it('shows an unmatched completion by its content alone', () => {
     const end = event('result', { result: { success: true, content: 'recovered output' } })
-    const category = provider().classify(input(end))
+    const category = provider().transcript.classify(input(end))
     const { container } = render(() => renderMessageContent(end, {
       premeasureMode: true,
       sources: testMessageSources({ current: () => input(end), request: () => undefined }),
@@ -90,7 +91,7 @@ describe('zcode tool rendering', () => {
     const original = JSON.stringify(request)
     const parsed = { ...input(request), supplementalContent: event('scheduled', { input: { command: 'printf recovered' } }) }
     const resolved = parsedMessageForRendering(parsed, AgentProvider.ZCODE)
-    const { container } = render(() => renderMessageContent(resolved.parentObject, { premeasureMode: true }, provider().classify(resolved), AgentProvider.ZCODE))
+    const { container } = render(() => renderMessageContent(resolved.parentObject, { premeasureMode: true }, provider().transcript.classify(resolved), AgentProvider.ZCODE))
     expect(container.textContent).toContain('printf recovered')
     expect(JSON.stringify(request)).toBe(original)
   })
@@ -187,12 +188,16 @@ describe('zcode tool rendering', () => {
     expect(container.textContent).not.toContain('200')
   })
 
-  it('collapses unknown tool output consistently with its toolbar metadata', () => {
+  it('offers the expand control for unknown tool output and fades it collapsed', () => {
+    // An unknown tool now draws through the shared generic body, whose text blocks
+    // render as markdown: the words always render and the collapsed state fades
+    // them rather than slicing lines. The toolbar's offer and the fade agree.
     const output = Array.from({ length: COLLAPSED_RESULT_ROWS + 3 }, (_, index) => `result line ${index}`).join('\n')
     const collapsed = renderResult('FutureTool', {}, { content: output })
     const expanded = renderResult('FutureTool', {}, { content: output }, true)
     expect(collapsed.meta?.collapsible).toBe(true)
-    expect(collapsed.container.textContent).not.toContain(`result line ${COLLAPSED_RESULT_ROWS + 2}`)
+    expect(collapsed.container.querySelector(`.${toolResultCollapsed}`)).not.toBeNull()
+    expect(expanded.container.querySelector(`.${toolResultCollapsed}`)).toBeNull()
     expect(expanded.container.textContent).toContain(`result line ${COLLAPSED_RESULT_ROWS + 2}`)
   })
 })
@@ -203,7 +208,7 @@ describe('zcode rows on the shared tool path', () => {
   // name on it.
   it('draws its own header when no request row sits beside the result', () => {
     const end = event('result', { result: { success: true, content: 'a.ts' } })
-    const category = provider().classify(input(end))
+    const category = provider().transcript.classify(input(end))
     const { container } = render(() => renderMessageContent(end, {
       spanType: ZCODE_TOOL.Glob,
       premeasureMode: true,
@@ -229,7 +234,7 @@ describe('zcode rows the agent never finished', () => {
   // metadata column. Nothing in the row's bytes claims a result the agent never sent.
   function renderRetained(frame: Record<string, unknown>, extra: Partial<ParsedMessageContent>) {
     const parsed = { ...input(frame), spanType: ZCODE_TOOL.Bash, ...extra }
-    const category = provider().classify(parsed)
+    const category = provider().transcript.classify(parsed)
     const view = render(() => renderMessageContent(frame, {
       spanType: ZCODE_TOOL.Bash,
       premeasureMode: true,

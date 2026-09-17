@@ -68,7 +68,10 @@ function createSharedPremeasureFrame() {
     const results = tasks.map(task => task.read())
     // Phase 2: every commit in one reactive batch.
     batch(() => {
-      tasks.forEach((task, i) => task.apply(results[i]))
+      tasks.forEach((task, i) => {
+        // `results` is this array's own map output, so `i` is in range; `?? ` below is the type-level guard alone.
+        task.apply(results[i] ?? { height: 0, settled: true, measureDurationMs: 0 })
+      })
     })
   }
   return {
@@ -188,7 +191,7 @@ function PremeasureRow(props: {
   const chrome = createMemo(() => messageRowChrome(
     styles.premeasureRow,
     props.candidate.entry.category.kind,
-    props.candidate.entry.msg.source,
+    props.candidate.entry.message.source,
   ))
 
   const lineCount = () => props.candidate.entry.parsedSpanLines.length

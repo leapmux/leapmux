@@ -98,7 +98,10 @@ export function rowStartSeqs(items: readonly VirtualItem[]): number[] | null {
     return null
   const out = Array.from<number>({ length: n + 1 })
   for (let i = 0; i < n; i++) {
-    const s = items[i].seq
+    const item = items[i]
+    if (item === undefined)
+      return null
+    const s = item.seq
     if (s === undefined || s <= 0n)
       return null
     const safe = safeSeqNumber(s)
@@ -106,9 +109,10 @@ export function rowStartSeqs(items: readonly VirtualItem[]): number[] | null {
       return null
     out[i] = safe
   }
-  if (out[n - 1] >= Number.MAX_SAFE_INTEGER)
+  const last = out[n - 1]
+  if (last === undefined || last >= Number.MAX_SAFE_INTEGER)
     return null
-  out[n] = out[n - 1] + 1
+  out[n] = last + 1
   return out
 }
 
@@ -170,7 +174,11 @@ export function seqAtContentY(prep: PreparedGeometry, y: number): number | null 
   const bot = offAt(i + 1)
   const span = bot - top
   const t = span > 0 ? clamp((cy - top) / span, 0, 1) : 0
-  return rowSeqs[i] + t * (rowSeqs[i + 1] - rowSeqs[i])
+  const rowTopSeq = rowSeqs[i]
+  const rowBotSeq = rowSeqs[i + 1]
+  if (rowTopSeq === undefined || rowBotSeq === undefined)
+    return null
+  return rowTopSeq + t * (rowBotSeq - rowTopSeq)
 }
 
 /**
@@ -183,14 +191,20 @@ export function contentYForSeq(prep: PreparedGeometry, seqF: number): number | n
   if (!rowSeqs)
     return null
   const n = geo.items.length
-  if (seqF < rowSeqs[0] || seqF > rowSeqs[n])
+  const firstSeq = rowSeqs[0]
+  const lastSeq = rowSeqs[n]
+  if (firstSeq === undefined || lastSeq === undefined || seqF < firstSeq || seqF > lastSeq)
     return null
-  const i = largestIndexWhere(n, k => rowSeqs[k] <= seqF)
+  const i = largestIndexWhere(n, k => (rowSeqs[k] ?? Number.POSITIVE_INFINITY) <= seqF)
+  const rowTopSeq = rowSeqs[i]
+  const rowBotSeq = rowSeqs[i + 1]
+  if (rowTopSeq === undefined || rowBotSeq === undefined)
+    return null
   // `rowSpan`, not `seqSpan`: the module exports a `seqSpan()` function, and a local of
   // that name would shadow it -- a future `seqSpan(range)` call added here would resolve
   // to this number and throw "seqSpan is not a function".
-  const rowSpan = rowSeqs[i + 1] - rowSeqs[i]
-  const t = rowSpan > 0 ? clamp((seqF - rowSeqs[i]) / rowSpan, 0, 1) : 0
+  const rowSpan = rowBotSeq - rowTopSeq
+  const t = rowSpan > 0 ? clamp((seqF - rowTopSeq) / rowSpan, 0, 1) : 0
   const top = geo.offsetOfIndex(i)
   const bot = i + 1 >= n ? geo.totalHeight : geo.offsetOfIndex(i + 1)
   return top + t * (bot - top)

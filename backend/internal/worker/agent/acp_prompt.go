@@ -89,7 +89,8 @@ func (b *acpBase) finishPromptRequest(sessionID string, response json.RawMessage
 	if !stopped {
 		slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
 		b.sink.PersistLeapMuxNotification(map[string]interface{}{
-			"type": contracts.NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err),
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
 		})
 	}
 }

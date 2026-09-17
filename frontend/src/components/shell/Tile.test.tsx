@@ -33,7 +33,9 @@ function renderTile(opts: RenderOpts = {}) {
         }}
         tabBar={<div data-testid="tab-bar">tabs</div>}
         onFocus={opts.onFocus ?? (() => {})}
-        pop={opts.pop}
+        // Omitted when the fixture passed no pop action: the prop takes no
+        // explicit undefined.
+        {...(opts.pop !== undefined ? { pop: opts.pop } : {})}
       >
         <div data-testid="tile-content">content</div>
       </Tile>

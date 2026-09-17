@@ -5,7 +5,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -36,13 +38,73 @@ func TestGooseToolOutputProgressCountsSequencedMetadata(t *testing.T) {
 		"toolNotification":{"type":"live_output","params":{"sequence":1,"truncated":false,
 		"chunks":[{"stream":"stdout","output":"hello"},{"stream":"stderr","output":"error"}]}}
 	}`)}
-	total, minimum, ok := a.gooseToolOutputProgress(update)
+	out, ok := a.gooseToolOutput(update)
 	require.True(t, ok)
-	assert.Equal(t, int64(10), total)
-	assert.False(t, minimum)
+	assert.Equal(t, int64(10), out.Total)
+	assert.False(t, out.TotalIsMinimum)
+	// ONE observation: the count and the text a row draws leave the same read.
+	assert.Equal(t, "helloerror", out.Tail)
 
-	_, _, ok = a.gooseToolOutputProgress(update)
+	_, ok = a.gooseToolOutput(update)
 	assert.False(t, ok, "a repeated sequence must not count twice")
+}
+
+// Goose sends one live_output notification per CHUNK, so only this agent knows
+// where the earlier ones ended. The running row draws everything the call has
+// printed so far, which is what this joins.
+func TestGooseToolOutputTailJoinsTheChunksItCounted(t *testing.T) {
+	t.Parallel()
+
+	a := &GooseCLIAgent{}
+	tail, truncated := a.gooseToolOutputTail("tool-1")
+	assert.Equal(t, "", tail)
+	assert.False(t, truncated)
+
+	first := acpToolCallUpdateEnvelope{ToolCallID: "tool-1", Meta: json.RawMessage(`{
+		"toolNotification":{"type":"live_output","params":{"sequence":1,"truncated":false,
+		"chunks":[{"stream":"stdout","output":"first\n"}]}}
+	}`)}
+	second := acpToolCallUpdateEnvelope{ToolCallID: "tool-1", Meta: json.RawMessage(`{
+		"toolNotification":{"type":"live_output","params":{"sequence":2,"truncated":true,
+		"chunks":[{"stream":"stdout","output":"second\n"}]}}
+	}`)}
+	_, ok := a.gooseToolOutput(first)
+	require.True(t, ok)
+	tail, truncated = a.gooseToolOutputTail("tool-1")
+	assert.Equal(t, "first\n", tail)
+	assert.False(t, truncated)
+
+	_, ok = a.gooseToolOutput(second)
+	require.True(t, ok)
+	tail, truncated = a.gooseToolOutputTail("tool-1")
+	assert.Equal(t, "first\nsecond\n", tail)
+	assert.True(t, truncated, "the provider said it dropped output before this chunk")
+
+	// The call ends, and its live text ends with it.
+	a.clearGooseToolOutput("tool-1")
+	tail, _ = a.gooseToolOutputTail("tool-1")
+	assert.Equal(t, "", tail)
+}
+
+// The joined text cannot grow without limit for a command that prints for
+// minutes. The cap keeps the END, which is what a reader watches.
+func TestGooseToolOutputTailKeepsTheEndWhenItGrowsPastTheCap(t *testing.T) {
+	t.Parallel()
+
+	a := &GooseCLIAgent{}
+	chunk := strings.Repeat("x", gooseLiveOutputLimit)
+	for sequence, text := range []string{chunk, "tail-marker"} {
+		update := acpToolCallUpdateEnvelope{ToolCallID: "tool-1", Meta: json.RawMessage(fmt.Sprintf(`{
+			"toolNotification":{"type":"live_output","params":{"sequence":%d,"truncated":false,
+			"chunks":[{"stream":"stdout","output":%q}]}}
+		}`, sequence+1, text))}
+		_, ok := a.gooseToolOutput(update)
+		require.True(t, ok)
+	}
+	tail, truncated := a.gooseToolOutputTail("tool-1")
+	assert.LessOrEqual(t, len(tail), gooseLiveOutputLimit)
+	assert.True(t, strings.HasSuffix(tail, "tail-marker"))
+	assert.True(t, truncated)
 }
 
 func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) jsonrpcResponsePayload) (*GooseCLIAgent, func() []recordedRequest) {
@@ -302,4 +364,187 @@ func TestGooseAvailableOptionGroupsFallsBack(t *testing.T) {
 func TestDefaultModel_GooseUsesEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_GOOSE_DEFAULT_MODEL", "custom-model")
 	assert.Equal(t, "custom-model", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE))
+}
+
+// Goose sends its live status and its usage totals ONLY to a client that asks
+// for them, on a method of its own. Without the advertisement the counters
+// stayed empty and every status line was lost.
+func TestGooseSessionUpdateReadsUsageAndNotices(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := &GooseCLIAgent{}
+	a.sink = sink
+	a.agentID = "goose-1"
+
+	claimed := a.handleGooseExtraMethod(parseLine([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{
+		"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":1200,"contextLimit":200000,
+		"accumulatedInputTokens":900,"accumulatedOutputTokens":300,"accumulatedCost":0.0125}}}`)))
+	assert.True(t, claimed, "the handler claims its own method so no raw row is persisted")
+
+	require.Positive(t, sink.SessionInfoCount())
+	last := sink.LastSessionInfo()
+	usage, ok := last[contracts.SessionInfoKeyContextUsage].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(1200), usage[contracts.ContextUsageFieldContextTokens])
+	assert.Equal(t, int64(200000), usage[contracts.ContextUsageFieldContextWindow])
+	assert.Equal(t, 0.0125, last[contracts.SessionInfoKeyTotalCostUsd])
+	// Every count the breakdown draws is present, and the two Goose does not measure
+	// carry a ZERO. An ABSENT key blanks its row rather than showing that the
+	// provider counted none, which is why this site goes through the shared
+	// projection instead of spelling the keys itself.
+	assert.Equal(t, int64(900), usage[contracts.ContextUsageFieldInputTokens])
+	assert.Equal(t, int64(300), usage[contracts.ContextUsageFieldOutputTokens])
+	assert.Equal(t, int64(0), usage[contracts.ContextUsageFieldCacheCreationInputTokens])
+	assert.Equal(t, int64(0), usage[contracts.ContextUsageFieldCacheReadInputTokens])
+
+	// A NOTICE is a sentence the reader must see; `progress` is live chrome that
+	// Goose's own schema says must not become history.
+	a.handleGooseExtraMethod(parseLine([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{
+		"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Switched provider"}}}}`)))
+	a.handleGooseExtraMethod(parseLine([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{
+		"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"progress","message":"Thinking"}}}}`)))
+
+	notifications := sink.Notifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, contracts.NotificationTypeAgentStatus, notifications[0]["type"])
+	assert.Equal(t, "Switched provider", notifications[0]["text"])
+
+	// A method this handler does not own reaches the shared dispatcher unchanged.
+	assert.False(t, a.handleGooseExtraMethod(parseLine([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{}}`))))
+}
+
+// The frames below are the ones Goose's own Rust tests assert
+// (`crates/goose/src/acp/server/tool_notifications.rs`). All four notification
+// types ride a `tool_call_update` whose status is `in_progress`, so the shared
+// classifier hides the ROW -- which is why the text inside has to reach the reader
+// through a hook instead.
+
+// A progress sentence describes a call that STILL RUNS, so it takes the ephemeral
+// tail the shell output uses: the row draws it while the call runs and drops it when
+// the result lands. Persisting one would write a row per tick.
+func TestGooseProgressNotificationReachesTheRunningRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := &GooseCLIAgent{}
+	a.sink = sink
+	claimed := a.observeGooseToolNotification(acpToolCallUpdateEnvelope{
+		ToolCallID: "tool-1",
+		Meta: json.RawMessage(`{"toolNotification":{"type":"progress","params":{
+			"progressToken":"scan-repo","progress":3.0,"total":10.0,
+			"message":"Scanned 3 of 10 directories"}}}`),
+	})
+	require.True(t, claimed)
+	assert.Empty(t, sink.Messages(), "a progress tick is not a transcript row")
+	require.NotEmpty(t, sink.ProgressUpdates())
+	last := sink.ProgressUpdates()[len(sink.ProgressUpdates())-1]
+	assert.Equal(t, ProgressOutputTail, last.Operation)
+	assert.Equal(t, "tool-1", last.ScopeID)
+	assert.Equal(t, "Scanned 3 of 10 directories", last.Text)
+}
+
+// Goose sends the counts beside its own sentence. The sentence leads, because
+// "Scanned 3 of 10 directories (3/10)" reads worse than the sentence alone -- so the
+// counts stand in only when the runtime sent no sentence.
+func TestGooseProgressFallsBackToTheCountsItSent(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		params string
+		want   string
+	}{
+		{"a sentence wins", `{"progress":3.0,"total":10.0,"message":"Scanned the repository"}`, "Scanned the repository"},
+		{"counts stand in", `{"progress":3.0,"total":10.0}`, "3 of 10"},
+		{"a count with no total", `{"progress":7.0}`, "7"},
+		{"a fractional count keeps its fraction", `{"progress":2.5}`, "2.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var meta gooseToolNotification
+			require.NoError(t, json.Unmarshal([]byte(`{"type":"progress","params":`+tc.params+`}`), &meta))
+			assert.Equal(t, tc.want, gooseProgressLine(meta))
+		})
+	}
+}
+
+// A progress notification that states NEITHER a sentence nor a count says nothing a
+// reader can use, so it reaches no surface -- but it is still claimed, because an
+// empty update must not reach the merge that folds an update into the stored row.
+func TestGooseEmptyProgressIsClaimedAndReachesNoSurface(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := &GooseCLIAgent{}
+	a.sink = sink
+	claimed := a.observeGooseToolNotification(acpToolCallUpdateEnvelope{
+		ToolCallID: "tool-1",
+		Meta:       json.RawMessage(`{"toolNotification":{"type":"progress","params":{"progressToken":"t"}}}`),
+	})
+	assert.True(t, claimed)
+	assert.Empty(t, sink.ProgressUpdates())
+	assert.Empty(t, sink.Messages())
+}
+
+// A platform event is an extension announcing something that happened OUTSIDE this
+// call, so it outlives the call and reaches the transcript as a notification.
+func TestGoosePlatformEventBecomesANotification(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := &GooseCLIAgent{}
+	a.sink = sink
+	claimed := a.observeGooseToolNotification(acpToolCallUpdateEnvelope{
+		ToolCallID: "tool-1",
+		Meta: json.RawMessage(`{"toolNotification":{"type":"platform_event","params":{
+			"extension":"apps","event_type":"app_created","app_name":"platform-event-repro"}}}`),
+	})
+	require.True(t, claimed)
+	require.Len(t, sink.Notifications(), 1)
+	assert.Equal(t, map[string]interface{}{
+		"type": contracts.NotificationTypeAgentStatus, "text": "apps: app created",
+	}, sink.Notifications()[0])
+}
+
+func TestGoosePlatformEventLineStatesWhatItCan(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ params, want string }{
+		{`{"extension":"apps","event_type":"app_created"}`, "apps: app created"},
+		{`{"event_type":"app_created"}`, "app created"},
+		{`{"extension":"apps"}`, "apps sent an event"},
+		// An extension's own field names are ITS vocabulary, so a line built from
+		// them would state a word this code cannot explain.
+		{`{"app_name":"only-its-own-field"}`, ""},
+	} {
+		t.Run(tc.params, func(t *testing.T) {
+			t.Parallel()
+			var meta gooseToolNotification
+			require.NoError(t, json.Unmarshal([]byte(`{"type":"platform_event","params":`+tc.params+`}`), &meta))
+			assert.Equal(t, tc.want, goosePlatformEventLine(meta))
+		})
+	}
+}
+
+// The two types this hook does NOT claim stay with the paths that own them:
+// `live_output` reaches the byte counter and the tail, and `message` is a log line
+// the runtime keeps for itself.
+func TestGooseToolNotificationClaimsOnlyItsOwnTwoTypes(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := &GooseCLIAgent{}
+	a.sink = sink
+	for _, meta := range []string{
+		`{"toolNotification":{"type":"live_output","params":{"sequence":1,"chunks":[{"output":"x"}]}}}`,
+		`{"toolNotification":{"type":"message","params":{"level":"info","logger":"goose"}}}`,
+		`{"toolNotification":{"type":"a_type_from_a_later_release","params":{}}}`,
+		`{}`,
+	} {
+		assert.False(t, a.observeGooseToolNotification(acpToolCallUpdateEnvelope{
+			ToolCallID: "tool-1", Meta: json.RawMessage(meta),
+		}), meta)
+	}
+	assert.Empty(t, sink.Messages())
 }

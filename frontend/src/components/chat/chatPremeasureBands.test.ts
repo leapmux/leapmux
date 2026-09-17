@@ -3,13 +3,13 @@ import type { VirtualItem } from './useChatVirtualizer'
 import { describe, expect, it } from 'vitest'
 import { clampPremeasureRange, collectUnmeasuredCandidates } from './chatPremeasureBands'
 
-describe('chatpremeasurebands', () => {
+describe('chatPremeasureBands', () => {
   // The collector reads only `item.id`; the entry is opaque (passed straight through), so a
   // marker object suffices and lets the tests assert index-aligned entry<->item pairing.
   const item = (id: string): VirtualItem => ({ id, hasSpanLines: false })
   const entry = (id: string): ClassifiedEntry => ({ marker: id } as unknown as ClassifiedEntry)
 
-  describe('clamppremeasurerange', () => {
+  describe('clampPremeasureRange', () => {
     it('passes an in-bounds range through unchanged', () => {
       expect(clampPremeasureRange(10, 10, { start: 2, end: 6 })).toEqual({ len: 10, start: 2, end: 6 })
     })
@@ -32,7 +32,7 @@ describe('chatpremeasurebands', () => {
     })
   })
 
-  describe('collectunmeasuredcandidates', () => {
+  describe('collectUnmeasuredCandidates', () => {
     const all = [entry('a'), entry('b'), entry('c'), entry('d'), entry('e')]
     const items = [item('a'), item('b'), item('c'), item('d'), item('e')]
 
@@ -41,9 +41,10 @@ describe('chatpremeasurebands', () => {
       const out = collectUnmeasuredCandidates(all, items, id => measured.has(id), 0, 4)
       expect(out.map(c => c.item.id)).toEqual(['a', 'c', 'd'])
       // Index-aligned pairing: candidate N carries the entry AND item at the same index.
-      expect(out[0].entry).toBe(all[0])
-      expect(out[1].entry).toBe(all[2])
-      expect(out[1].item).toBe(items[2])
+      // `?.` is the type-level guard alone; toBe fails just as hard on an absent candidate.
+      expect(out[0]?.entry).toBe(all[0])
+      expect(out[1]?.entry).toBe(all[2])
+      expect(out[1]?.item).toBe(items[2])
     })
 
     it('excludes the [skipFrom, skipTo) sub-range another band already covers', () => {

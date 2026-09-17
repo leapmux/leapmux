@@ -38,7 +38,7 @@ function renderForm(onElevated = vi.fn()) {
   return onElevated
 }
 
-describe('elevateForm', () => {
+describe('ElevateForm', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
@@ -92,7 +92,7 @@ describe('elevateForm', () => {
  * raises, because no address anybody publishes makes a plain-HTTP page
  * secure.
  */
-describe('elevateForm dead-end copy', () => {
+describe('ElevateForm dead-end copy', () => {
   const passkeyOnlyUser = {
     ...passwordUser,
     passwordSet: false,
@@ -152,7 +152,7 @@ describe('elevateForm dead-end copy', () => {
  * with it. The FLAG is the host's and the WORDING is the form's, because only
  * the form knows whether a provider option is on screen at all.
  */
-describe('elevateForm oauth round-trip warning', () => {
+describe('ElevateForm oauth round-trip warning', () => {
   const providerOnlyUser = {
     ...passwordUser,
     passwordSet: false,
@@ -200,7 +200,7 @@ describe('elevateForm oauth round-trip warning', () => {
  * manager and every sign-in-form guide specifies is the same: an
  * `autocomplete="username"` field beside the password.
  */
-describe('elevateForm password-manager hints', () => {
+describe('ElevateForm password-manager hints', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()

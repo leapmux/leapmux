@@ -109,7 +109,7 @@ export interface RepoGitRefreshOpts {
 }
 
 /** Path to pass to GetGitFileStatus: prefer repo toplevel over agent cwd. */
-export function gitStatusProbePath(ctx: { gitToplevel?: string, workingDir?: string }): string {
+export function gitStatusProbePath(ctx: { gitToplevel?: string | undefined, workingDir?: string | undefined }): string {
   return ctx.gitToplevel || ctx.workingDir || ''
 }
 
@@ -117,7 +117,10 @@ export function repoKey(workerId: string, gitToplevel: string): RepoKey {
   return `${workerId}\0${gitToplevel}`
 }
 
-export function repoKeyFromTab(tab: { workerId?: string, gitToplevel?: string }): RepoKey | undefined {
+// Tab-shaped inputs keep `| undefined` optionals: tab rows are assembled from
+// metadata records whose absent fields read as undefined (see tab.types.ts), so
+// these params admit a whole Tab without rebuilding it per call site.
+export function repoKeyFromTab(tab: { workerId?: string | undefined, gitToplevel?: string | undefined }): RepoKey | undefined {
   const workerId = tab.workerId ?? ''
   const toplevel = tab.gitToplevel ?? ''
   if (!workerId || !toplevel)
@@ -235,7 +238,7 @@ export interface UpsertRepoGitFromProtoOpts {
 /** Probe-path store key when a tab has not resolved `gitToplevel` yet. */
 export function probePathOrphanKey(
   workerId: string,
-  tab: { gitToplevel?: string, workingDir?: string },
+  tab: { gitToplevel?: string | undefined, workingDir?: string | undefined },
 ): RepoKey | undefined {
   if (!workerId || tab.gitToplevel || !tab.workingDir)
     return undefined
@@ -244,7 +247,7 @@ export function probePathOrphanKey(
 
 export function migrateErrorHintFromForResolvedRepo(
   workerId: string,
-  tab: { gitToplevel?: string, workingDir?: string },
+  tab: { gitToplevel?: string | undefined, workingDir?: string | undefined },
   status: GitRepoStatus | undefined,
 ): RepoKey | undefined {
   const orphanKey = probePathOrphanKey(workerId, tab)
@@ -486,8 +489,8 @@ export function upsertRepoGitFromProtoStatus(
 
 /** Repo key for reads; pass `ctx` and `store` when the probe path differs from tab fields. */
 export function focusedRepoKeyFromTab(
-  tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
-  ctx?: { gitToplevel?: string, workingDir?: string },
+  tab: { workerId?: string | undefined, gitToplevel?: string | undefined, workingDir?: string | undefined },
+  ctx?: { gitToplevel?: string | undefined, workingDir?: string | undefined },
   store?: RepoGitLookup,
 ): RepoKey | undefined {
   const fromTab = repoKeyFromTab(tab)
@@ -590,9 +593,9 @@ export function patchFromNonRepoGetGitFileStatus(
 
 /** Join a tab's repo identity to the keyed store for UI reads. */
 export function repoGitView(
-  tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
+  tab: { workerId?: string | undefined, gitToplevel?: string | undefined, workingDir?: string | undefined },
   store: RepoGitStore,
-  ctx?: { gitToplevel?: string, workingDir?: string },
+  ctx?: { gitToplevel?: string | undefined, workingDir?: string | undefined },
 ): RepoGitView {
   const key = focusedRepoKeyFromTab(tab, ctx ?? tab, store)
   if (!key)

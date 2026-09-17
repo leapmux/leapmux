@@ -109,7 +109,7 @@ afterEach(() => {
 
 // Tests ----------------------------------------------------------------
 
-describe('verifyEmailPage', () => {
+describe('VerifyEmailPage', () => {
   it('passes the verify_email and resend_verification actions to their captcha fields', async () => {
     // Both paths are captcha-protected: the verify path burns a guess for
     // free, and the resend path drives an SMTP send. Each renders its own

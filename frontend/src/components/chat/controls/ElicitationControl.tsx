@@ -43,7 +43,9 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
         <PermissionRequestContent
           request={props.request}
           source={{
-            title: props.elicitation.title === 'Permission Required' ? undefined : props.elicitation.title,
+            // The generic title is the banner's own; any other replaces it.
+            // Omitted when absent — `Show` reads it the same either way.
+            ...(props.elicitation.title === undefined || props.elicitation.title === 'Permission Required' ? {} : { title: props.elicitation.title }),
             input: props.elicitation.arguments,
           }}
         >
@@ -82,7 +84,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
                             value={value()}
                             options={[{ value: '', label: 'Select an option', pinned: true }, ...field.options]}
                             emptyLabel="No options"
-                            disabled={props.optionsDisabled}
+                            {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
                             onChange={value => setValue(field.key, value)}
                           />
                         </Match>

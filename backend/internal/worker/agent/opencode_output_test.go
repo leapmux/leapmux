@@ -285,10 +285,15 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\nline2\n"}}]}}}`
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
+	// Each update reports TWO things: the byte total the meter counts, and the
+	// cumulative text the running row draws. The Agent Client Protocol sends the
+	// whole output every time, so the second tail carries both lines.
 	updates := sink.ProgressUpdates()
-	require.Len(t, updates, 2)
+	require.Len(t, updates, 4)
 	require.Equal(t, int64(6), updates[0].Value)
-	require.Equal(t, int64(12), updates[1].Value)
+	require.Equal(t, OutputTailProgress("tc-1", "line1\n", false), updates[1])
+	require.Equal(t, int64(12), updates[2].Value)
+	require.Equal(t, OutputTailProgress("tc-1", "line1\nline2\n", false), updates[3])
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {

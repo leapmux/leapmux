@@ -27,18 +27,25 @@ vi.mock('~/context/PreferencesContext', () => preferencesMock(spies))
 
 const { FileActionsMenu } = await import('~/components/common/FileActionsMenu')
 
-function renderMenu(overrides: Partial<Parameters<typeof FileActionsMenu>[0]> = {}) {
-  const defaults: Parameters<typeof FileActionsMenu>[0] = {
+function renderMenu(overrides: Partial<Omit<Parameters<typeof FileActionsMenu>[0], 'rootPath'>> & { rootPath?: string | undefined } = {}) {
+  const { rootPath, ...rest } = overrides
+  // Use a single merged object so an override replaces its default. `rootPath`
+  // is merged by the `in` test rather than spread: the test that supplies
+  // `rootPath: undefined` means "not supplied" (the component reads the prop
+  // by value, so a dropped key and a written `undefined` reach it the same),
+  // and the component's own `rootPath?: string` refuses an explicit
+  // `undefined` under exactOptionalPropertyTypes.
+  const props: Parameters<typeof FileActionsMenu>[0] = {
     workerId: 'w1',
     path: '/repo/src/file.ts',
     flavor: 'posix',
-    rootPath: '/repo',
     homeDir: '/home/alice',
+    ...rest,
   }
-  // Use a single merged object so explicit `undefined` in overrides
-  // actually unsets defaults (Solid's spread keeps earlier values when
-  // the new value is undefined).
-  const props = { ...defaults, ...overrides }
+  if (!('rootPath' in overrides))
+    props.rootPath = '/repo'
+  else if (rootPath !== undefined)
+    props.rootPath = rootPath
   return render(() => <FileActionsMenu {...props} />)
 }
 
@@ -46,7 +53,7 @@ beforeEach(() => {
   resetSaveActionsSpies(spies)
 })
 
-describe('fileActionsMenu — common items', () => {
+describe('FileActionsMenu — common items', () => {
   it('always shows Copy path; shows Copy relative path when rootPath is supplied', () => {
     renderMenu()
     expect(screen.getByTestId('file-actions-copy-path-button')).toBeInTheDocument()
@@ -132,7 +139,7 @@ describe('fileActionsMenu — common items', () => {
   })
 })
 
-describe('fileActionsMenu — web mode', () => {
+describe('FileActionsMenu — web mode', () => {
   it('shows a single Download item that calls downloadFileFromWorker', async () => {
     renderMenu()
     const dl = screen.getByTestId('file-actions-download-button')
@@ -144,7 +151,7 @@ describe('fileActionsMenu — web mode', () => {
   })
 })
 
-describe('fileActionsMenu — desktop mode', () => {
+describe('FileActionsMenu — desktop mode', () => {
   beforeEach(() => {
     spies.isTauriAppImpl.mockReturnValue(true)
   })
@@ -187,7 +194,7 @@ describe('fileActionsMenu — desktop mode', () => {
   })
 })
 
-describe('fileActionsMenu — size and modified info', () => {
+describe('FileActionsMenu — size and modified info', () => {
   const modTime = '2026-05-01T10:00:00Z'
 
   /**
@@ -250,7 +257,10 @@ describe('fileActionsMenu — size and modified info', () => {
     fireEvent.click(screen.getByTestId('file-actions-info-button'))
 
     await waitFor(() => expect(writeText).toHaveBeenCalled())
-    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
+    const copied = writeText.mock.calls[0]?.[0]
+    if (copied === undefined)
+      throw new Error('expected the info copy to have run')
+    expect(JSON.parse(copied)).toEqual({
       path: '/repo/src/file.ts',
       size: 2048,
       modified: modTime,
@@ -267,7 +277,10 @@ describe('fileActionsMenu — size and modified info', () => {
     fireEvent.click(screen.getByTestId('file-actions-info-button'))
 
     await waitFor(() => expect(writeText).toHaveBeenCalled())
-    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
+    const copied = writeText.mock.calls[0]?.[0]
+    if (copied === undefined)
+      throw new Error('expected the info copy to have run')
+    expect(JSON.parse(copied)).toEqual({
       path: '/repo/src',
       modified: modTime,
     })

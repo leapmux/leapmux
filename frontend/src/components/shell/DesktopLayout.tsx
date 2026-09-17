@@ -408,8 +408,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {props.createLeftSidebar({
             isCollapsed: leftSide.collapsed,
             onExpand: leftSide.expand,
-            initialOpenSections: savedSidebar?.leftOpenSections,
-            initialSectionSizes: savedSidebar?.leftSectionSizes,
+            ...(savedSidebar?.leftOpenSections !== undefined ? { initialOpenSections: savedSidebar.leftOpenSections } : {}),
+            ...(savedSidebar?.leftSectionSizes !== undefined ? { initialSectionSizes: savedSidebar.leftSectionSizes } : {}),
             onStateChange: (open, sizes) => {
               leftOpenSections = open
               leftSectionSizes = sizes
@@ -448,7 +448,10 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
               />
             )}
           >
-            <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+            <ChatDropZone
+              {...(props.onFileDrop !== undefined ? { onDrop: props.onFileDrop } : {})}
+              {...(props.fileDropDisabled !== undefined ? { disabled: props.fileDropDisabled } : {})}
+            >
               {/*
                   Key TilingLayout on the active workspace id so the
                   entire tile tree (and all its TabBar instances)
@@ -466,7 +469,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   root={props.layoutStore.state.root}
                   renderTile={props.renderTile}
                   onRatioChange={props.onRatioChange}
-                  onGridRatiosChange={props.onGridRatiosChange}
+                  {...(props.onGridRatiosChange !== undefined ? { onGridRatiosChange: props.onGridRatiosChange } : {})}
                 />
               </Show>
               {props.editorPanel}
@@ -493,8 +496,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {props.createRightSidebar({
             isCollapsed: rightSide.collapsed,
             onExpand: rightSide.expand,
-            initialOpenSections: savedSidebar?.rightOpenSections,
-            initialSectionSizes: savedSidebar?.rightSectionSizes,
+            ...(savedSidebar?.rightOpenSections !== undefined ? { initialOpenSections: savedSidebar.rightOpenSections } : {}),
+            ...(savedSidebar?.rightSectionSizes !== undefined ? { initialSectionSizes: savedSidebar.rightSectionSizes } : {}),
             onStateChange: (open, sizes) => {
               rightOpenSections = open
               rightSectionSizes = sizes

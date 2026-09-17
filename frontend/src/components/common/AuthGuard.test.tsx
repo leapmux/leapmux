@@ -72,7 +72,7 @@ function renderGuard(options: { path?: string } = {}) {
   return { ...result, navigations }
 }
 
-describe('authGuard', () => {
+describe('AuthGuard', () => {
   beforeEach(() => {
     mockIsSoloMode.mockReturnValue(false)
     mockSoloAccess.mockReturnValue(SoloAccess.UNSPECIFIED)

@@ -101,7 +101,7 @@ describe('groupBackgroundTasks', () => {
     const grouped = groupBackgroundTasks(items)
     expect(grouped.ungrouped.map(i => i.rowKey)).toEqual(['free'])
     expect(grouped.groups.map(g => g.key)).toEqual(['g1', 'g2'])
-    expect(grouped.groups[0].items.map(i => i.rowKey)).toEqual(['g1a', 'g1b'])
+    expect(grouped.groups[0]?.items.map(i => i.rowKey)).toEqual(['g1a', 'g1b'])
   })
 })
 
@@ -271,7 +271,7 @@ describe('opensSubagentTranscript', () => {
   })
 
   it('reports a subagent whose provider never linked one', () => {
-    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent', childAgentId: undefined }))).toBe(false)
+    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent' }))).toBe(false)
   })
 
   // The falsy-empty-string case, which is why the predicate tests truthiness

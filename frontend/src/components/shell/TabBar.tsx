@@ -51,7 +51,9 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
   </Tooltip>
 )
 
-const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalStatus }> = (props) => {
+// `status` carries an explicit undefined for the non-terminal kinds — that is
+// `terminalStatusOf`'s documented answer, not a missing value.
+const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalStatus | undefined }> = (props) => {
   return (
     <Tooltip text={props.tooltip} showWhen={props.showWhen}>
       <span
@@ -511,14 +513,19 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </Show>
         {/* Outside the close block: a tab that cannot be closed can still be
             renamed or popped out. The menu host collapses to `display: contents`,
-            so it costs the row no layout either way. */}
+            so it costs the row no layout either way. The optional props are
+            omitted, not undefined: absent is what hides each item. */}
         <TabContextMenu
-          contextMenuFor={dnd?.rowEl}
+          {...(dnd?.rowEl !== undefined ? { contextMenuFor: dnd.rowEl } : {})}
           data-testid={surface.menuTestId}
-          onRename={canRename() ? () => startEditing(tab()) : undefined}
-          onClose={canCloseTab(props.archived) ? () => props.onClose(tab()) : undefined}
+          {...(canRename() ? { onRename: () => startEditing(tab()) } : {})}
+          {...(canCloseTab(props.archived) ? { onClose: () => props.onClose(tab()) } : {})}
           isClosing={isClosing()}
-          pop={props.tabPop?.(tab())}
+          {...(() => {
+            // Hoisted per evaluation so the spread narrows and stays reactive.
+            const pop = props.tabPop?.(tab())
+            return pop !== undefined ? { pop } : {}
+          })()}
         />
       </div>
     )
@@ -579,9 +586,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
           them, because there the items act on that branch instead. */}
       <NewTabMenuItems
         shortcuts
-        availableProviders={props.newTab.availableProviders}
-        availableShells={props.newTab.availableShells}
-        defaultShell={props.newTab.defaultShell}
+        {...(props.newTab.availableProviders !== undefined ? { availableProviders: props.newTab.availableProviders } : {})}
+        {...(props.newTab.availableShells !== undefined ? { availableShells: props.newTab.availableShells } : {})}
+        {...(props.newTab.defaultShell !== undefined ? { defaultShell: props.newTab.defaultShell } : {})}
         onNewAgent={handleNewAgent}
         onNewAgentAdvanced={() => props.newTab.onNewAgentAdvanced?.()}
         onNewTerminalWithShell={shell => props.newTab.onNewTerminalWithShell?.(shell)}

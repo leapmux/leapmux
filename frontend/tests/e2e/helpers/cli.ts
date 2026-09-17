@@ -456,8 +456,13 @@ function withHubFlag(args: string[], hubURL: string): string[] {
   if (args.includes('--hub'))
     return args
   let i = 0
-  while (i < args.length && !args[i].startsWith('-'))
+  while (i < args.length) {
+    const arg = args[i]
+    // i < args.length implies a defined element, so the undefined check is type-level only.
+    if (arg === undefined || arg.startsWith('-'))
+      break
     i++
+  }
   return [...args.slice(0, i), '--hub', hubURL, ...args.slice(i)]
 }
 

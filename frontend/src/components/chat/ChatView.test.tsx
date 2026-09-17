@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { testMessageContext } from '~/test-support/messageContext'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
 import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
@@ -17,7 +18,6 @@ import { sameVirtualItems } from './useChatVirtualizer'
 import { ROW_BLEED_LEFT_VAR, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 
 const A_TXT_RE = /a\.txt/
-const B_TXT_RE = /b\.txt/
 
 type HiddenPremeasureOnMeasure = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean
 
@@ -557,8 +557,13 @@ describe('computeOverscanPx', () => {
   })
 })
 
-describe('samevirtualitems', () => {
-  const item = (id: string, hasSpanLines = false, heightKey?: string): VirtualItem => ({ id, hasSpanLines, heightKey })
+describe('sameVirtualItems', () => {
+  const item = (id: string, hasSpanLines = false, heightKey?: string): VirtualItem => ({
+    id,
+    hasSpanLines,
+    // Omitted (not undefined) when the row states no height key.
+    ...(heightKey !== undefined ? { heightKey } : {}),
+  })
 
   it('is true for the same reference and for a geometry-equivalent rebuild', () => {
     const a = [item('m1', false, '1'), item('m2', true, '2')]
@@ -578,7 +583,59 @@ describe('samevirtualitems', () => {
   })
 })
 
-describe('chatView', () => {
+describe('ChatView', () => {
+  it('renders an edit request recovered from the matching provider session', async () => {
+    const spanId = 'reused-edit'
+    const agentSessionId = 'new-session'
+    const request = create(AgentChatMessageSchema, {
+      id: 'new-session-request',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify({
+        sessionUpdate: 'tool_call',
+        toolCallId: spanId,
+        status: 'pending',
+        kind: 'edit',
+        title: 'edit',
+        rawInput: { filePath: '/project/example.ts', oldString: 'correctSessionBefore', newString: 'correctSessionAfter' },
+      })),
+      contentCompression: ContentCompression.NONE,
+      seq: 2n,
+      agentProvider: AgentProvider.OPENCODE,
+      spanId,
+      spanType: 'edit',
+      agentSessionId,
+    })
+    const result = create(AgentChatMessageSchema, {
+      id: 'new-session-result',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: spanId,
+        status: 'completed',
+        rawOutput: 'No file changes occurred.',
+      })),
+      contentCompression: ContentCompression.NONE,
+      seq: 73n,
+      agentProvider: AgentProvider.OPENCODE,
+      spanId,
+      spanType: 'edit',
+      agentSessionId,
+    })
+    const fetchSpan = vi.fn(async () => [request, result])
+    const messageContext = testMessageContext({ messages: () => [result], fetchSpan })
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[result]} messageContext={messageContext} />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(fetchSpan).toHaveBeenCalledWith({ spanId, agentSessionId }, expect.any(AbortSignal)))
+    await waitFor(() => expect(messageContext.request({ spanId, agentSessionId })?.message.id).toBe(request.id))
+    await waitFor(() => expect(view.container).toHaveTextContent('correctSessionBefore'))
+    expect(view.container).toHaveTextContent('correctSessionAfter')
+    expect(view.container).toHaveTextContent('No file changes occurred.')
+  })
+
   it('renders empty state when no messages', () => {
     render(() => (
       <PreferencesProvider>
@@ -1437,8 +1494,9 @@ describe('chatView', () => {
     ))
 
     const chatContainers = screen.getAllByTestId('chat-container')
-    const hiddenList = chatContainers[0].firstElementChild?.firstElementChild as HTMLDivElement
-    const visibleList = chatContainers[1].firstElementChild?.firstElementChild as HTMLDivElement
+    // The view above renders exactly two containers; `?.` is the type-level guard alone.
+    const hiddenList = chatContainers[0]?.firstElementChild?.firstElementChild as HTMLDivElement
+    const visibleList = chatContainers[1]?.firstElementChild?.firstElementChild as HTMLDivElement
 
     Object.defineProperty(hiddenList, 'clientHeight', { configurable: true, get: () => 120 })
     Object.defineProperty(visibleList, 'clientHeight', { configurable: true, get: () => 240 })
@@ -1593,7 +1651,10 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(2)
-    expect(screen.getByText('0 files')).toBeInTheDocument()
+    // The running row states the KIND, not a count. Codex sends the item before its
+    // `changes` list, and "0 files" read as an edit that touched nothing.
+    expect(screen.queryByText('0 files')).not.toBeInTheDocument()
+    expect(screen.getAllByLabelText('File Change').length).toBeGreaterThan(0)
     expect(screen.getByText('old')).toBeInTheDocument()
   })
 
@@ -1615,8 +1676,10 @@ describe('chatView', () => {
     ))
 
     expect(view.container).toHaveTextContent('a.txt')
-    expect(view.container).not.toHaveTextContent('-old')
-    expect(view.container).not.toHaveTextContent('+new')
+    // A change that has not landed states itself as a REQUEST, which is the shared
+    // card every provider draws for a pending edit. It claims nothing about the file.
+    expect(view.container).toHaveTextContent('Requested changes')
+    expect(view.container).toHaveTextContent('-old')
   })
 
   it('renders a simple codex fileChange with Edit-style diff content', () => {
@@ -1633,8 +1696,9 @@ describe('chatView', () => {
     expect(screen.queryByText('completed')).not.toBeInTheDocument()
     expect(screen.getByText('old')).toBeInTheDocument()
     expect(screen.getByText('new')).toBeInTheDocument()
-    expect(screen.queryByText(A_TXT_RE)).not.toBeInTheDocument()
-    expect(screen.queryByTestId('git-diff-stats')).not.toBeInTheDocument()
+    // The shared row states the file it changed in its header, as every other
+    // provider's edit row does. The old Codex renderer left a one-file diff unnamed.
+    expect(screen.getByText(A_TXT_RE)).toBeInTheDocument()
   })
 
   it('renders a simple codex add fileChange start message like Write tool_use', () => {
@@ -1655,7 +1719,11 @@ describe('chatView', () => {
     ))
 
     expect(view.container).toHaveTextContent('new-file.ts')
-    expect(view.container).not.toHaveTextContent('export const hello = "world"')
+    // The pending write states the change it ASKS for, under the shared "Requested
+    // changes" heading every provider uses -- which claims nothing about the file
+    // having been written.
+    expect(view.container).toHaveTextContent('Requested changes')
+    expect(view.container).toHaveTextContent('export const hello = "world"')
   })
 
   it('renders a simple codex add fileChange completion like Write tool_use_result', () => {
@@ -1697,7 +1765,7 @@ describe('chatView', () => {
     ))
 
     expect(view.container).toHaveTextContent('old-file.ts')
-    expect(view.container).not.toHaveTextContent('export const old = true')
+    expect(view.container).toHaveTextContent('Requested changes')
   })
 
   it('renders a simple codex delete fileChange completion as file deletion', () => {
@@ -1717,7 +1785,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container).toHaveTextContent('Deleted /repo/src/old-file.ts')
+    expect(view.container).toHaveTextContent('/repo/src/old-file.ts (deleted)')
     expect(view.container).not.toHaveTextContent('1 file changed')
     expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
   })
@@ -1742,8 +1810,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container).toHaveTextContent('a.ts +1 -1')
-    expect(view.container).toHaveTextContent('new-file.tsx +1')
+    expect(view.container).toHaveTextContent('/repo/src/a.ts+1 -1')
+    expect(view.container).toHaveTextContent('/repo/src/new-file.tsx+1')
     expect(view.container).toHaveTextContent('+1')
     expect(view.container).toHaveTextContent('oldValue')
     expect(view.container).toHaveTextContent('newValue')
@@ -1775,21 +1843,24 @@ describe('chatView', () => {
         spanId: 'fc-1',
         status: 'completed',
         changes: [
-          { path: 'a.txt', kind: 'create', diff: '' },
-          { path: 'b.txt', kind: 'delete', diff: '' },
+          { path: 'a.txt', kind: { type: 'add' }, diff: '' },
+          { path: 'b.txt', kind: { type: 'delete' }, diff: '' },
         ],
       }),
     ]
 
-    render(() => (
+    const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
 
+    // An add and a delete that carry no body still state WHICH files they touched:
+    // the header counts them and the body lists each one. Dropping a change with no
+    // diff would hide a file the call created or removed.
     expect(screen.getByText('2 files changed')).toBeInTheDocument()
-    expect(screen.queryByText(A_TXT_RE)).not.toBeInTheDocument()
-    expect(screen.queryByText(B_TXT_RE)).not.toBeInTheDocument()
+    expect(view.container).toHaveTextContent('a.txt')
+    expect(view.container).toHaveTextContent('b.txt')
   })
 
   it('renders persisted codex raw reasoning when no summary exists', () => {
@@ -1854,7 +1925,7 @@ describe('chatView', () => {
     const list = view.container.querySelector('ul')
     expect(list).not.toBeNull()
     expect(list?.querySelectorAll(':scope > li')).toHaveLength(2)
-    expect(list?.querySelectorAll(':scope > li > div strong')).toHaveLength(2)
+    expect(list?.querySelectorAll(':scope > li strong')).toHaveLength(2)
     expect(list?.children[0]).toHaveTextContent('Researching Windows panic recovery')
     expect(list?.children[1]).toHaveTextContent('Checking Windows reproduction tools')
   })
@@ -1881,7 +1952,6 @@ describe('chatView', () => {
     const outerList = view.container.querySelector('ul')
     const outerItems = outerList?.querySelectorAll(':scope > li')
     expect(outerItems).toHaveLength(2)
-    expect(outerList?.querySelectorAll(':scope > li > div')).toHaveLength(2)
     expect(outerItems?.[0]?.querySelectorAll('ul > li')).toHaveLength(2)
     expect(outerItems?.[0]).toHaveTextContent('Catch panics')
     expect(outerItems?.[0]).toHaveTextContent('Record stacks')
@@ -2026,7 +2096,7 @@ describe('chatView', () => {
     expect(view.container).not.toHaveTextContent('site:github.com openai codex')
     expect(view.container).not.toHaveTextContent('site:github.com "turn/plan/updated" codex app server')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand output' }))
 
     expect(view.container).toHaveTextContent('site:github.com openai codex "turn/plan/updated"')
     expect(view.container).toHaveTextContent('site:github.com "turn/plan/updated" codex app server')
@@ -2172,7 +2242,8 @@ describe('chat view virtualized with stubbed deps', () => {
         expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m0'])
       })
 
-      const heightKey = hiddenPremeasureState.candidates[0].item.heightKey
+      // The wait above proved the candidate list; `?.` is the type-level guard alone.
+      const heightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
       const onMeasure = hiddenPremeasureState.onMeasure as unknown as HiddenPremeasureOnMeasure
       onMeasure('m0', 20, heightKey, 0, false)
       await waitFor(() => {
@@ -2204,7 +2275,8 @@ describe('chat view virtualized with stubbed deps', () => {
         expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m0'])
       })
 
-      const heightKey = hiddenPremeasureState.candidates[0].item.heightKey
+      // The wait above proved the candidate list; `?.` is the type-level guard alone.
+      const heightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
       const staleHeightKey = `${heightKey ?? 'missing'}:stale`
       const onMeasure = hiddenPremeasureState.onMeasure as unknown as HiddenPremeasureOnMeasure
       onMeasure('m0', 20, staleHeightKey, 0, true)
@@ -2245,7 +2317,7 @@ describe('chat view virtualized with stubbed deps', () => {
       let fallbackWidthHeightKey: string | undefined
       await waitFor(() => {
         expect(hiddenPremeasureState.contentWidthPx).toBe(PRE_MEASURE_WIDTH_PX)
-        fallbackWidthHeightKey = hiddenPremeasureState.candidates[0].item.heightKey
+        fallbackWidthHeightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
         expect(fallbackWidthHeightKey).toBeDefined()
       })
 
@@ -2253,7 +2325,7 @@ describe('chat view virtualized with stubbed deps', () => {
 
       await waitFor(() => {
         expect(hiddenPremeasureState.contentWidthPx).toBe(PRE_MEASURE_WIDTH_PX)
-        expect(hiddenPremeasureState.candidates[0].item.heightKey).toBe(fallbackWidthHeightKey)
+        expect(hiddenPremeasureState.candidates[0]?.item.heightKey).toBe(fallbackWidthHeightKey)
       })
     })
 
@@ -2559,12 +2631,13 @@ describe('chat view virtualized with stubbed deps', () => {
       const overlay = skeletons.filter(s => !s.parentElement?.hasAttribute('data-seq'))
       expect(inRow).toHaveLength(2) // m8, m9 (m0 was already real)
       expect(overlay).toHaveLength(7) // m1..m7 (unmeasured, premeasure-hidden)
-      expect(inRow[0].style.height).toBe('100px') // stub heightOfIndex
+      // The lengths are asserted above; `?.` reads are the type-level guard alone.
+      expect(inRow[0]?.style.height).toBe('100px') // stub heightOfIndex
       // The body is ONE masked Oat fill block; its role="status" is what Oat's
       // `[role=status].skeleton` selector REQUIRES for the styles to apply.
-      const fills = [...inRow[0].querySelectorAll('.skeleton.line')] as HTMLElement[]
+      const fills = [...(inRow[0]?.querySelectorAll('.skeleton.line') ?? [])] as HTMLElement[]
       expect(fills).toHaveLength(1)
-      expect(fills[0].getAttribute('role')).toBe('status')
+      expect(fills[0]?.getAttribute('role')).toBe('status')
       expect(visibleBubbleIds(container)).toEqual(
         ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'],
       )
@@ -2582,7 +2655,8 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(during.filter(s => s.parentElement?.hasAttribute('data-seq'))).toHaveLength(0)
       const crossfading = during.filter(s => s.closest('[data-seq]') !== null)
       expect(crossfading).toHaveLength(2) // m8, m9 fading out over their bubbles
-      expect(crossfading[0].parentElement!.classList.contains(rowSkeletonClosing)).toBe(true)
+      // Two crossfading skeletons asserted above; `?.` is the type-level guard alone.
+      expect(crossfading[0]?.parentElement?.classList.contains(rowSkeletonClosing)).toBe(true)
 
       // After the crossfade beat, only the 7 loading overlays (unmeasured rows)
       // remain.

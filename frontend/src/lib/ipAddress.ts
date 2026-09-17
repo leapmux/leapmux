@@ -101,14 +101,21 @@ export function parseIPv6(v: string): number[] | null {
     return out
   }
 
-  const head = expand(halves[0])
+  // split('::') always yields at least one half, so these guards never fire.
+  const headHalf = halves[0]
+  if (headHalf === undefined)
+    return null
+  const head = expand(headHalf)
   if (!head)
     return null
   if (halves.length === 1) {
     const full = [...head, ...tail]
     return full.length === 16 ? full : null
   }
-  const rest = expand(halves[1])
+  const restHalf = halves[1]
+  if (restHalf === undefined)
+    return null
+  const rest = expand(restHalf)
   if (!rest)
     return null
   // "::" must stand for at least ONE zero group: net.ParseIP rejects a "::" that

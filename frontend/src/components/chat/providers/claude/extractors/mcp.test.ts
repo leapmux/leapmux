@@ -38,9 +38,7 @@ describe('claudeMcpFromToolResult', () => {
       server: 'claude_ai_Tavily',
       tool: 'tavily_search',
       content: [{ type: 'text', text: 'A research summary.' }],
-      status: 'completed',
     })
-    expect(source?.argsJson).toContain('"query"')
   })
 
   it('parses Claude content arrays into structured items', () => {
@@ -56,7 +54,7 @@ describe('claudeMcpFromToolResult', () => {
       { type: 'text', text: '## Results' },
       { type: 'image', source: { mimeType: 'image/png' } },
     ])
-    expect(source?.argsJson).toBe('')
+    expect(source?.argsJson).toBeUndefined()
   })
 
   it('marks error and surfaces text content as the error message', () => {
@@ -65,7 +63,7 @@ describe('claudeMcpFromToolResult', () => {
       resultContent: [{ type: 'text', text: 'Permission denied' }],
       isError: true,
     })
-    expect(source?.status).toBe('failed')
+    expect(source?.failed).toBe(true)
     expect(source?.error).toBe('Permission denied')
     expect(source?.content).toEqual([])
   })
@@ -76,6 +74,6 @@ describe('claudeMcpFromToolResult', () => {
       toolInput: {},
       resultContent: '',
     })
-    expect(source?.argsJson).toBe('')
+    expect(source?.argsJson).toBeUndefined()
   })
 })

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 type RenderContext = import('../messageRenderers').RenderContext
 
 /** Construct a TaskStop tool_use assistant message. */
@@ -41,8 +41,7 @@ function makeTaskStopResult(resultContent: string) {
 /** Render a TaskStop tool_use message and return its text content. */
 function renderToolUseText(input?: Record<string, unknown>, context?: RenderContext): string {
   const msg = makeTaskStopMessage(input)
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = { kind: 'tool_use', toolName: 'TaskStop', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''

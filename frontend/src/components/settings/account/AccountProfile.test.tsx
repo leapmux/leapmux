@@ -31,7 +31,7 @@ const alice = {
   oauthProviders: [],
 }
 
-describe('accountProfile', () => {
+describe('AccountProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUser.mockReturnValue(alice)

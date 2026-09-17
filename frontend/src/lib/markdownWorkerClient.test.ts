@@ -19,6 +19,15 @@ async function importClient() {
   return await import('./markdownWorkerClient')
 }
 
+// Captured-worker/message lookup: each test pushes exactly the entries it
+// expects, so a missing entry is a harness failure, not a case to guard.
+function captured<T>(list: readonly T[], index: number): T {
+  const value = list[index]
+  if (value === undefined)
+    throw new Error(`expected a captured entry at index ${index}`)
+  return value
+}
+
 describe('markdownWorkerClient', () => {
   afterEach(() => {
     restoreWorker()
@@ -106,7 +115,7 @@ describe('markdownWorkerClient', () => {
     const { renderMarkdownInWorker } = await importClient()
 
     const first = renderMarkdownInWorker('first', PAIR)
-    workers[0].onerror?.()
+    captured(workers, 0).onerror?.()
     await expect(first).resolves.toBeNull()
 
     const second = renderMarkdownInWorker('second', PAIR)
@@ -114,12 +123,12 @@ describe('markdownWorkerClient', () => {
     second.then(() => {
       settled = true
     })
-    workers[0].onerror?.()
+    captured(workers, 0).onerror?.()
     await Promise.resolve()
     expect(settled).toBe(false)
 
-    const { id } = workers[1].messages[0]
-    workers[1].onmessage?.({ data: { id, html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } } } as MessageEvent)
+    const { id } = captured(captured(workers, 1).messages, 0)
+    captured(workers, 1).onmessage?.({ data: { id, html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } } } as MessageEvent)
     await expect(second).resolves.toEqual({ html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } })
   })
 
@@ -164,17 +173,17 @@ describe('markdownWorkerClient', () => {
       renderMarkdownInWorker('b', oldPair),
       renderMarkdownInWorker('c', oldPair),
     ]
-    expect(workers[0].messages).toHaveLength(2)
+    expect(captured(workers, 0).messages).toHaveLength(2)
 
     // The user picks another theme while 'c' is still queued.
     setSyntaxThemePair(newPair)
 
     // Release a slot so 'c' is posted.
-    const first = workers[0].messages[0]
-    workers[0].onmessage?.({ data: { id: first.id, html: '<p>a</p>', retryable: false, styles: {} } } as MessageEvent)
+    const first = captured(captured(workers, 0).messages, 0)
+    captured(workers, 0).onmessage?.({ data: { id: first.id, html: '<p>a</p>', retryable: false, styles: {} } } as MessageEvent)
     await held[0]
 
-    const posted = workers[0].messages.find(m => m.text === 'c')
+    const posted = captured(workers, 0).messages.find(m => m.text === 'c')
     expect(posted?.syntax).toEqual(oldPair)
   })
 
@@ -204,8 +213,8 @@ describe('markdownWorkerClient', () => {
     const { renderMarkdownInWorker } = await importClient()
 
     const pending = renderMarkdownInWorker('text', PAIR)
-    const { id } = workers[0].messages[0]
-    workers[0].onmessage?.({ data: { id, html: '<p>text</p>', retryable: false } } as MessageEvent)
+    const { id } = captured(captured(workers, 0).messages, 0)
+    captured(workers, 0).onmessage?.({ data: { id, html: '<p>text</p>', retryable: false } } as MessageEvent)
     await expect(pending).resolves.toEqual({ html: '<p>text</p>', retryable: false, styles: {} })
   })
 })

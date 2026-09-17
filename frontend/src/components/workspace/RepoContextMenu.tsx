@@ -53,16 +53,24 @@ const CheckoutActions: Component<{
   const { providers } = useAvailableProviders(listWorkerId, menuOpen)
   const { shells, defaultShell } = useAvailableShells(listWorkerId, menuOpen)
 
+  // Spread-ready provider list, read ONCE: the accessor answers undefined
+  // until the worker's list lands, and the spread keeps the prop absent then
+  // -- a second `providers()` call beside the first could not be narrowed.
+  const providerProps = () => {
+    const list = providers()
+    return list !== undefined ? { availableProviders: list } : {}
+  }
+
   return (
     <>
       <Show when={props.actions}>
         {actions => (
           <>
             <NewTabMenuItems
-              availableProviders={providers()}
+              {...providerProps()}
               availableShells={shells()}
               defaultShell={defaultShell()}
-              disabledReason={props.disabledReason}
+              {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
               onNewAgent={provider => actions().onNewAgent(provider)}
               onNewAgentAdvanced={() => actions().onNewAgentAdvanced()}
               onNewTerminalWithShell={shell => actions().onNewTerminalWithShell(shell)}
@@ -107,7 +115,7 @@ export const RepoContextMenu: Component<RepoContextMenuProps> = (props) => {
   return (
     <DropdownMenu
       trigger={rowContextMenuTrigger({ 'data-testid': 'repo-row-menu-trigger' })}
-      contextMenuFor={props.contextMenuFor}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       onToggle={(open) => {
         setMenuOpen(open)
         props.onToggle?.(open)

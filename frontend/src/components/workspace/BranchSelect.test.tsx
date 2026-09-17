@@ -41,7 +41,7 @@ describe('partitionBranches', () => {
   })
 })
 
-describe('branchSelect', () => {
+describe('BranchSelect', () => {
   it('shows the loading sentinel while loading', () => {
     renderBranchSelect({ loading: true })
     expect(menuTrigger(MENU)).toBeDisabled()

@@ -11,9 +11,6 @@
  * `~/generated/contracts/zcode-protocol`.
  */
 
-/** This tool name is used only by the frontend. */
-export const ZCODE_WEB_FETCH = 'WebFetch'
-
 /** The display kinds that the app-server supplies with tool results. */
 export const ZCODE_DISPLAY = {
   FileDiff: 'file_diff',

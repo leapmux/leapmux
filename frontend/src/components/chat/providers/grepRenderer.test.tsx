@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 type RenderContext = import('../messageRenderers').RenderContext
 
 /** Construct a Grep tool_use assistant message. */
@@ -44,8 +44,7 @@ function makeGrepToolResult(
 /** Render a Grep tool_use message and return its text content. */
 function renderToolUseText(context?: RenderContext): string {
   const msg = makeGrepToolUse({ path: '/home/user/project/src' })
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = { kind: 'tool_use', toolName: 'Grep', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
@@ -90,7 +89,17 @@ describe('grep tool_result expanded view', () => {
     expect(text).toContain('No matches found')
   })
 
-  it('shows fallback content when numFiles and numLines are 0 with custom message', () => {
+  /**
+   * The STRUCTURED result decides, not the words beside it.
+   *
+   * This row drew the raw sentence instead of the marker while the renderer compared
+   * `fallbackContent` against its own summary prose and fell through whenever the two
+   * differed -- LeapMux's user-interface wording measured against a provider's bytes,
+   * in the layer that knows no provider. The extractor states the fact now: a
+   * `tool_use_result` whose every counter reads zero IS the tool reporting that it
+   * matched nothing, whatever sentence it printed above.
+   */
+  it('draws the kind marker over the raw sentence when the counters state nothing', () => {
     const text = renderToolResultText('No files found', {
       tool_name: 'Grep',
       numFiles: 0,
@@ -98,7 +107,17 @@ describe('grep tool_result expanded view', () => {
       content: '',
       numLines: 0,
     })
-    expect(text).toContain('No files found')
+    expect(text).toContain('No matches found')
+    expect(text).not.toContain('No files found')
+  })
+
+  // The other half of the same rule. A structured answer that stated NO counter did
+  // not report "nothing found" -- it reported nothing this build could read -- so the
+  // raw text is still the only answer the row has, and it draws.
+  it('keeps a body that no structured counter explains', () => {
+    const text = renderToolResultText('the daemon wrote something else', { tool_name: 'Grep' })
+    expect(text).toContain('the daemon wrote something else')
+    expect(text).not.toContain('No matches found')
   })
 
   it('shows content when numLines > 0', () => {

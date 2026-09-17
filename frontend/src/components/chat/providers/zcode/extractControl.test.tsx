@@ -1,0 +1,269 @@
+import type { ControlRequest } from '~/stores/control.store'
+import { fireEvent, render } from '@solidjs/testing-library'
+import { describe, expect, it, vi } from 'vitest'
+import { ZCODE_METHOD, ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { permissionPillGroup } from '~/test-support/controlRequests'
+import { createControlAnswerState } from '../../controls/types'
+import './plugin'
+
+/**
+ * A stored control request. `tool_name` is how the worker records WHICH of the three
+ * prompts arrived, and it is what the dispatchers switch on.
+ */
+function request(
+  toolName: string,
+  input: Record<string, unknown> = {},
+  params: Record<string, unknown> = {},
+): ControlRequest {
+  return {
+    requestId: 'req-1',
+    agentId: 'agent-1',
+    payload: {
+      method: toolName === ZCODE_TOOL.Bash ? 'interaction/requestPermission' : ZCODE_METHOD.RequestUserInput,
+      request: { tool_name: toolName, input },
+      params,
+    },
+  }
+}
+
+function decode(bytes: unknown): Record<string, unknown> {
+  return JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
+}
+
+describe('zcode plan approval control', () => {
+  // The transcript contains the full plan. The banner contains approval controls.
+  it('keeps the full plan out of the approval area', () => {
+    const { container } = render(() => (
+      <ControlRequestContent
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: '# Plan\n\nStep one' }] })}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(container.textContent ?? '').toContain('Plan Ready for Review')
+    expect(container.textContent ?? '').not.toContain('Step one')
+  })
+
+  it('falls back to a sentence when the request states no plan', () => {
+    const { container } = render(() => (
+      <ControlRequestContent agentProvider={AgentProvider.ZCODE} request={request(ZCODE_TOOL.ExitPlanMode)} answerState={createControlAnswerState()} />
+    ))
+    expect(container.textContent ?? '').toContain('requests approval to proceed')
+  })
+
+  // The shared plan row answers it, and the envelope it sends is the neutral one.
+  // The worker translates that into the app-server's accept/decline reply when it
+  // forwards it, so no ZCode frame is built in the browser at all.
+  it('approves through the shared plan actions with the neutral allow envelope', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    fireEvent.click(getByTestId('plan-approve-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      type: 'control_response',
+      response: { request_id: 'req-1', response: { behavior: 'allow' } },
+    })
+  })
+
+  // Reject routes through the composer so the user can type the reason first; the
+  // envelope is sent by the send path, not by the button.
+  it('rejects by handing the turn to the composer send path', () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const onTriggerSend = vi.fn()
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={onTriggerSend}
+      />
+    ))
+    fireEvent.click(getByTestId('plan-reject-btn'))
+    expect(onTriggerSend).toHaveBeenCalledOnce()
+    expect(onRespond).not.toHaveBeenCalled()
+  })
+})
+
+describe('zcode native questions', () => {
+  it('shows the option description through the shared question control', () => {
+    const control = request(ZCODE_TOOL.AskUserQuestion, {
+      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue' }] }],
+    }, {
+      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue', value: 'Blue', description: 'Choose the color blue.' }] }],
+    })
+    const { getByText, getByRole } = render(() => (
+      <ControlRequestContent agentProvider={AgentProvider.ZCODE} request={control} answerState={createControlAnswerState()} />
+    ))
+    expect(getByText('Choose the color blue.')).toBeInTheDocument()
+    expect(getByRole('radio')).toBeInTheDocument()
+  })
+})
+
+describe('zcode question control', () => {
+  const questionInput = {
+    questions: [{
+      question: 'Which database?',
+      options: [{ value: 'Postgres' }, { value: 'MySQL' }],
+    }],
+  }
+
+  it('renders the question and its options through the shared control', () => {
+    const { container, getByTestId } = render(() => (
+      <ControlRequestContent
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(container.textContent ?? '').toContain('Which database?')
+    expect(getByTestId('question-option-Postgres')).toBeInTheDocument()
+    expect(getByTestId('question-option-MySQL')).toBeInTheDocument()
+  })
+
+  it('ships the picked option in the shared allow envelope', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
+        answerState={createControlAnswerState({ selections: { 0: ['MySQL'] } })}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+        agentProvider={AgentProvider.ZCODE}
+      />
+    ))
+    fireEvent.click(getByTestId('control-submit-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      response: {
+        response: {
+          behavior: 'allow',
+          updatedInput: { answers: { 'Which database?': 'MySQL' } },
+        },
+      },
+    })
+  })
+})
+
+describe('zcode permission control', () => {
+  // ZCode's `reason` is its own explanation of why the call needs approval, and it is
+  // the most useful line in the banner.
+  it('shows the reason above the shared tool input', () => {
+    const { container } = render(() => (
+      <ControlRequestContent
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { reason: 'deletes files' })}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(container.textContent ?? '').toContain('deletes files')
+    expect(container.textContent ?? '').toContain('rm -rf build')
+  })
+
+  it('renders without a reason when the request states none', () => {
+    const { container } = render(() => (
+      <ControlRequestContent
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(container.textContent ?? '').toContain('ls')
+  })
+
+  it('allows with the neutral allow envelope', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    fireEvent.click(getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      response: { response: { behavior: 'allow' } },
+    })
+  })
+
+  it('rejects immediately when the editor is empty', () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const onTriggerSend = vi.fn()
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={onTriggerSend}
+      />
+    ))
+    fireEvent.click(getByTestId('control-deny-btn'))
+    expect(onTriggerSend).not.toHaveBeenCalled()
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      response: { response: { behavior: 'deny' } },
+    })
+  })
+
+  // ZCode declares `yolo` as its bypass mode, so the banner offers the permission
+  // pill group. It must allow FIRST and switch the mode after: applying a mode the
+  // provider cannot take live relaunches the agent, and a relaunch that won the race
+  // would kill the session before the allow arrived.
+  it('allows and then switches to the bypass mode', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const order: string[] = []
+    onRespond.mockImplementation(async () => {
+      order.push('allow')
+    })
+    const { getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+        presets={{
+          bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+          apply: (change) => {
+            order.push(`mode:${change.sets.permissionMode}`)
+          },
+        }}
+      />
+    ))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
+    fireEvent.click(getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(order).toEqual(['allow', `mode:${ZCODE_MODE.Yolo}`]))
+  })
+
+  // A tool name the dispatcher does not know is a permission, which is the fallback
+  // case. A tool that ZCode adds later still gets an actionable banner.
+  it('treats an unknown tool name as a permission', () => {
+    const { container } = render(() => (
+      <ControlRequestContent
+        agentProvider={AgentProvider.ZCODE}
+        request={request('SomeToolAddedLater', { arg: 1 }, { reason: 'unfamiliar' })}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(container.textContent ?? '').toContain('unfamiliar')
+  })
+})

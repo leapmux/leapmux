@@ -138,6 +138,15 @@ export function emitSetTabPosition(type: TabType, id: string, position: string):
 }
 
 /**
+ * Position-only view for the lexorank helpers, whose items take an optional
+ * `position` without explicit undefined. A tab may carry an explicit undefined
+ * (the proto convention), so omit the key rather than pass it through.
+ */
+function tabPositionView(tab: Tab): { position?: string } {
+  return tab.position === undefined ? {} : { position: tab.position }
+}
+
+/**
  * Move a tab to another tile.
  *
  * No-op when the tab is already there. Drops fire constantly on the tile a tab
@@ -176,7 +185,9 @@ export function emitReorderTabs(tabsInTile: Tab[], fromKey: string, toKey: strin
     return null
   const reordered = tabsInTile.map(t => ({ ...t }))
   const [moved] = reordered.splice(fromIdx, 1)
-  const newPosition = positionAtInsertIdx(reordered, toIdx)
+  if (moved === undefined)
+    return null
+  const newPosition = positionAtInsertIdx(reordered.map(tabPositionView), toIdx)
   return emitSetTabPosition(moved.type, moved.id, newPosition)
 }
 
@@ -248,7 +259,7 @@ export function emitMoveTabToWorkspace(
 
 /** Position for a tab appended to the end of a tile's existing tabs. */
 export function positionAtEnd(tabsInTile: Tab[]): string {
-  return positionAtInsertIdx(tabsInTile, tabsInTile.length)
+  return positionAtInsertIdx(tabsInTile.map(tabPositionView), tabsInTile.length)
 }
 
 /** Position for a tab inserted directly after `afterKey` within a tile. */
@@ -256,5 +267,5 @@ export function positionAfterKey(tabsInTile: Tab[], afterKey: string | undefined
   if (!afterKey)
     return positionAtEnd(tabsInTile)
   const idx = tabsInTile.findIndex(t => tabKey(t) === afterKey)
-  return positionAtInsertIdx(tabsInTile, idx >= 0 ? idx + 1 : tabsInTile.length)
+  return positionAtInsertIdx(tabsInTile.map(tabPositionView), idx >= 0 ? idx + 1 : tabsInTile.length)
 }

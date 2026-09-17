@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { input } from '../../testUtils'
-import { codexAgentCounterpart, codexAgentResults, resolveCodexAgentItem } from './agent'
+import { codexAgentCounterpart, codexAgentRequest, codexAgentResults, resolveCodexAgentItem } from './agent'
 
 const item = { id: 'call', type: 'collabAgentToolCall', tool: 'spawnAgent', status: 'completed' }
+
+// The registry knows what the subagent DOES. `codexAgentRequest.description` is the
+// tool's own label, so every spawn row read "Subagent" without this key.
+describe('codexAgentRequest registry key', () => {
+  it('states the one background task a spawn created', () => {
+    expect(codexAgentRequest({ ...item, receiverThreadIds: ['child-1'] }).registryKey).toBe('child-1')
+  })
+
+  it.each([
+    ['several targets', { tool: 'spawnAgent', receiverThreadIds: ['child-1', 'child-2'] }],
+    ['no target', { tool: 'spawnAgent', receiverThreadIds: [] }],
+    ['a tool that creates nothing', { tool: 'sendInput', receiverThreadIds: ['child-1'] }],
+  ])('states none for %s', (_name, fields) => {
+    expect(codexAgentRequest({ ...item, ...fields }).registryKey).toBeUndefined()
+  })
+})
 
 describe('codex agent counterpart validation', () => {
   it.each([

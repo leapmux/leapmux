@@ -1,13 +1,11 @@
-import type { ClassificationInput, ToolMessageInput } from './registry'
+import type { ClassificationInput } from './registry'
 import type { AvailableOption, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import {
   AgentProvider,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isObject } from '~/lib/jsonPick'
 
 /**
  * Build a ClassificationInput from a parent object and optional wrapper, for
@@ -32,12 +30,8 @@ export function input(
     parentObject: parent,
     wrapper: wrapper ?? null,
     agentProvider,
-    source,
+    ...(source !== undefined ? { source } : {}),
   }
-}
-
-export function toolMessageInput(parent: unknown, spanType?: string, request?: ParsedMessageContent): ToolMessageInput {
-  return { parsed: input(isObject(parent) ? parent : undefined), spanType, request }
 }
 
 interface ModelOpts {

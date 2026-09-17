@@ -651,7 +651,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     const editor = await buildEditor({
       editorRoot: editorRef,
       initialContent: seed,
-      ariaLabelledBy: props.ariaLabelledBy,
+      ...(props.ariaLabelledBy === undefined ? {} : { ariaLabelledBy: props.ariaLabelledBy }),
       pluginRefs: {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
@@ -805,12 +805,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     setupEditorRefHandlers({
       editor,
       onDocument: emitDocument,
-      sendRef: props.imperative?.sendRef,
+      ...(props.imperative?.sendRef === undefined ? {} : { sendRef: props.imperative.sendRef }),
       focusRef: focus => props.imperative?.focusRef?.(() => {
         if (!disabledRef)
           focus()
       }),
-      contentRef: props.imperative?.contentRef,
+      ...(props.imperative?.contentRef === undefined ? {} : { contentRef: props.imperative.contentRef }),
       insertRef: insert => props.imperative?.insertRef?.((text) => {
         if (!disabledRef)
           insert(text)

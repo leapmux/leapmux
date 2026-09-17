@@ -264,7 +264,7 @@ func TestToolTranscriptKeepsAPendingResultTheRowRefused(t *testing.T) {
 	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		MessageContent{Original: []byte(`{"toolCallId":"call"}`)}, SpanInfo{SpanID: "other", Closing: true}))
 	transcript.mu.Lock()
-	transcript.pending["call"] = MessageContent{Original: []byte(`{"toolCallId":"call"}`)}
+	transcript.pending["call"] = pendingToolRow{content: MessageContent{Original: []byte(`{"toolCallId":"call"}`)}}
 	transcript.mu.Unlock()
 	transcript.UpdateSessionID("session-1")
 	assert.Equal(t, []string{"call"}, pendingSpanIDs(transcript),

@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { formatCompactNumber, formatDuration, formatSecondsParts, formatTokenCount, joinMetaParts } from './rendererUtils'
+import { formatCompactNumber, formatDuration, formatSecondsParts, formatShortWait, formatTokenCount, joinMetaParts } from './rendererUtils'
+
+/**
+ * A countdown, not a measurement: whole seconds above one second, milliseconds
+ * below it. `Math.round(ms / 1000)` answered 0 for every delay under 500 ms, so a
+ * retry that waited 300 ms and a dialog that expired in 400 ms both read "in 0s".
+ */
+describe('formatShortWait', () => {
+  it('states a sub-second wait in milliseconds', () => {
+    expect(formatShortWait(1)).toBe('1ms')
+    expect(formatShortWait(300)).toBe('300ms')
+    expect(formatShortWait(499)).toBe('499ms')
+    expect(formatShortWait(999)).toBe('999ms')
+  })
+
+  it('states one second and above in whole seconds, with no decimal', () => {
+    expect(formatShortWait(1000)).toBe('1s')
+    expect(formatShortWait(2000)).toBe('2s')
+    expect(formatShortWait(2400)).toBe('2s')
+    expect(formatShortWait(45_000)).toBe('45s')
+  })
+
+  it('splits a longer wait into parts', () => {
+    expect(formatShortWait(90_000)).toBe('1m 30s')
+  })
+
+  it('states a zero wait honestly rather than as a second', () => {
+    expect(formatShortWait(0)).toBe('0ms')
+  })
+})
 
 describe('formatCompactNumber', () => {
   it('numbers below 1000 are returned as-is', () => {

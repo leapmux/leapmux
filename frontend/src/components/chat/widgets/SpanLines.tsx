@@ -20,7 +20,11 @@ export function spanColorKey(colorIndex: number): string {
 
 /** The palette class that sets --span-line-color for a 1-based color index (or '' for none). */
 export function spanColorClassFor(color: number | undefined): string {
-  return color !== undefined && color > 0 ? spanLineColors[spanColorKey(color)] : ''
+  if (color === undefined || color <= 0)
+    return ''
+  // `spanColorKey` always returns a `colorN` key the palette carries, so the
+  // `?? ''` is the type-level guard alone.
+  return spanLineColors[spanColorKey(color)] ?? ''
 }
 
 export interface SpanLine {
@@ -46,7 +50,11 @@ const TYPE_STYLES: Record<SpanLine['type'], string> = {
 function classFor(line: SpanLine | null): string {
   if (line === null)
     return spanLineEmpty
-  const baseClass = TYPE_STYLES[line.type] || spanLineActive
+  // `Object.hasOwn`, not a bare index: `line.type` comes off the worker's
+  // `span_lines` payload, and a value that spells an `Object.prototype` member resolves
+  // to that function -- a truthy value, so the `||` below never ran and the
+  // function's source text landed in the `class` attribute.
+  const baseClass = Object.hasOwn(TYPE_STYLES, line.type) ? TYPE_STYLES[line.type] : spanLineActive
   const colorClass = spanColorClassFor(line.color)
   const ptClass = line.passthrough_color != null && line.passthrough_color > 0
     ? spanPassthroughColors[spanColorKey(line.passthrough_color)]

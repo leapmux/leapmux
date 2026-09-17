@@ -97,13 +97,21 @@ export function layoutPermissionOptions(options: WirePermissionOption[]): Permis
     consumed.add(rejectAlways)
   }
 
-  return {
-    positive,
-    negative,
-    rememberReject: allowScope && rejectOnce && rejectAlways ? rejectAlways : undefined,
-    allowScope,
+  // The optional slots are set only when they hold an option: an explicit
+  // `undefined` is not assignable to an optional prop, and every reader treats
+  // absent the same.
+  const layout: PermissionOptionLayout = {
     additional: options.filter(option => !consumed.has(option)),
   }
+  if (positive)
+    layout.positive = positive
+  if (negative)
+    layout.negative = negative
+  if (allowScope && rejectOnce && rejectAlways)
+    layout.rememberReject = rejectAlways
+  if (allowScope)
+    layout.allowScope = allowScope
+  return layout
 }
 
 /**

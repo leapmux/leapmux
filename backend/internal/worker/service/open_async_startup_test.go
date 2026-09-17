@@ -161,14 +161,14 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	case <-time.After(5 * time.Second):
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
-	require.Equal(t, agent.CodexDefaultCollaborationMode, startedOpts.Options[agent.CodexOptionCollaborationMode])
+	require.Equal(t, contracts.CodexOptionDefaultCollaborationMode, startedOpts.Options[contracts.CodexOptionCollaborationMode])
 
 	wUpdate := newTestWriter()
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: agentID,
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{
-				agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+				contracts.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 			},
 		},
 	}, wUpdate)
@@ -176,7 +176,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[agent.CodexOptionCollaborationMode])
+	require.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -209,11 +209,11 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
 
 	require.NotNil(t, activeStatus)
-	assert.Equal(t, agent.CodexCollaborationPlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), agent.CodexOptionCollaborationMode))
+	assert.Equal(t, agent.CodexCollaborationPlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), contracts.CodexOptionCollaborationMode))
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[agent.CodexOptionCollaborationMode])
+	assert.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
 }
 
 func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {

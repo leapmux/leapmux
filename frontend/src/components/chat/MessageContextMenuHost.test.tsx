@@ -20,7 +20,9 @@ function dangerAction(id: MessageAction['id'], run = () => {}): MessageAction {
 
 /** Render the provider and hand back the host a descendant row would get. */
 function renderHost() {
-  const captured: { host?: MessageContextMenuHost } = {}
+  // `| undefined` on purpose: the bag records what the hook returned, and the
+  // no-provider case below asserts that reading is undefined.
+  const captured: { host?: MessageContextMenuHost | undefined } = {}
 
   function Row() {
     captured.host = useMessageContextMenu()
@@ -36,14 +38,14 @@ function renderHost() {
   return captured
 }
 
-describe('messageContextMenuHost', () => {
+describe('MessageContextMenuHost', () => {
   it('provides a host to its descendants', () => {
     const captured = renderHost()
     expect(captured.host).toBeDefined()
   })
 
   it('returns undefined with no provider, so a bare MessageBubble still renders', () => {
-    const captured: { host?: MessageContextMenuHost } = {}
+    const captured: { host?: MessageContextMenuHost | undefined } = {}
 
     function Row() {
       captured.host = useMessageContextMenu()

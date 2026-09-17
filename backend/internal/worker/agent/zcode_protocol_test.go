@@ -130,6 +130,23 @@ func TestZCodeIsPromptRunning_CoversBothCodes(t *testing.T) {
 	assert.False(t, zcodeIsPromptRunning(nil))
 }
 
+// A runtime-unavailable error is PERMANENT. A restoreWarning stays set on the
+// session, so the same code answers every later prompt and a retry can never clear
+// it. The send path must refuse it at once and carry the app-server's own sentence,
+// which is the only thing that says what went wrong.
+func TestZCodeRuntimeUnavailable_IsPermanentAndKeepsItsMessage(t *testing.T) {
+	t.Parallel()
+
+	wire := &zcodeError{Code: ZCodeErrRuntimeUnavailable, Message: "Session restore warning: the workspace moved"}
+	assert.False(t, zcodeIsPromptRunning(wire), "a permanent failure must never be retried")
+	assert.False(t, zcodeIsMethodNotFound(wire), "it states a runtime that cannot act, not an absent method")
+
+	classified := classifyZCodeInputDeliveryError(wire)
+	assert.ErrorIs(t, classified, error(wire), "the wire error must reach the caller unchanged")
+	assert.NotErrorIs(t, classified, ErrDeliveryUncertain, "the app-server answered, so the delivery is certain")
+	assert.Contains(t, classified.Error(), "the workspace moved")
+}
+
 func TestZCodeIsMethodNotFound(t *testing.T) {
 	t.Parallel()
 

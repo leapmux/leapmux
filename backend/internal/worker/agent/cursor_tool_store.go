@@ -9,7 +9,23 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
+
+// cursorToolContent is one block of Cursor's own transcript, plus the two fields the
+// worker keeps for itself.
+//
+// The shared half is the GENERATED contracts.CursorToolContent, whose json tags the
+// browser reads back out of the stored record. `Args` is Cursor's own arguments blob,
+// which the worker copies into that record under `toolArguments` and never spells to
+// the browser, and `raw` is the block's own bytes, which never leave this package --
+// so the contracts rule exempts both.
+type cursorToolContent struct {
+	contracts.CursorToolContent
+	Args json.RawMessage `json:"args"`
+	raw  json.RawMessage
+}
 
 type cursorBlobReference struct {
 	id       string
@@ -20,13 +36,6 @@ type cursorToolRecord struct {
 	arguments json.RawMessage
 	result    map[string]json.RawMessage
 	content   json.RawMessage
-}
-
-type cursorToolContent struct {
-	Type       string          `json:"type"`
-	ToolCallID string          `json:"toolCallId"`
-	Args       json.RawMessage `json:"args"`
-	raw        json.RawMessage
 }
 
 // cursorToolStore maps tool calls to the content hashes in one Cursor session.
@@ -191,9 +200,9 @@ func (s *cursorToolStore) scan(ctx context.Context, tx *sql.Tx) error {
 				continue
 			}
 			switch block.Type {
-			case "tool-call":
+			case contracts.CursorBlockTypeToolCall:
 				s.requests[block.ToolCallID] = cursorBlobReference{id: blob.id, position: index}
-			case "tool-result":
+			case contracts.CursorBlockTypeToolResult:
 				s.results[block.ToolCallID] = cursorBlobReference{id: blob.id, position: index}
 			}
 		}

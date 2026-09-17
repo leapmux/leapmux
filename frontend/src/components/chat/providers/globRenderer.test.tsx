@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 type RenderContext = import('../messageRenderers').RenderContext
 
 /** Construct a Glob tool_use assistant message. */
@@ -44,8 +44,7 @@ function makeGlobToolResult(
 /** Render a Glob tool_use message and return its text content. */
 function renderToolUseText(context?: RenderContext): string {
   const msg = makeGlobToolUse()
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = { kind: 'tool_use', toolName: 'Glob', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
@@ -115,14 +114,34 @@ describe('glob tool_result expanded view', () => {
     expect(text).toContain('No files found')
   })
 
-  it('shows fallback content when filenames is empty with custom message', () => {
+  /**
+   * The STRUCTURED result decides, not the words beside it.
+   *
+   * This row drew the raw sentence instead of the marker while the renderer compared
+   * `fallbackContent` against its own summary prose and fell through whenever the two
+   * differed -- LeapMux's user-interface wording measured against a provider's bytes,
+   * in the layer that knows no provider. The extractor states the fact now: a
+   * `tool_use_result` that STATED a file list and left it empty IS the tool reporting
+   * that nothing matched, whatever sentence it printed above.
+   */
+  it('draws the kind marker over the raw sentence when the file list is empty', () => {
     const text = renderToolResultText('No matching files in directory', {
       tool_name: 'Glob',
       filenames: [],
       numFiles: 0,
       truncated: false,
     })
-    expect(text).toContain('No matching files in directory')
+    expect(text).toContain('No files found')
+    expect(text).not.toContain('No matching files in directory')
+  })
+
+  // The other half of the same rule. A structured answer that stated NO file list did
+  // not report "nothing found" -- it reported nothing this build could read -- so the
+  // raw text is still the only answer the row has, and it draws.
+  it('keeps a body that no structured file list explains', () => {
+    const text = renderToolResultText('the daemon wrote something else', { tool_name: 'Glob' })
+    expect(text).toContain('the daemon wrote something else')
+    expect(text).not.toContain('No files found')
   })
 
   it('falls back to raw preformatted text when tool_use_result is missing', () => {

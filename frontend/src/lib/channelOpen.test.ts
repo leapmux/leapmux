@@ -39,8 +39,9 @@ function makeOpen(opts?: {
     }),
     pool: new ChannelPool(),
     expectedUserId: () => undefined,
-    testPayloadBudget: opts?.testPayloadBudget,
-    testReassembledCeiling: opts?.testReassembledCeiling,
+    // Optional knobs: omit rather than pass an explicit undefined.
+    ...(opts?.testPayloadBudget === undefined ? {} : { testPayloadBudget: opts.testPayloadBudget }),
+    ...(opts?.testReassembledCeiling === undefined ? {} : { testReassembledCeiling: opts.testReassembledCeiling }),
     verifySession: async () => {},
     evictGhost: () => {},
     notifyStateChange: () => {},

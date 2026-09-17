@@ -20,7 +20,7 @@ export type TabPayloadView
       agentId: string
       /** Per-agent message seq, the same addressing the scroll rail uses. */
       seq: bigint
-      /** Which image of that message, in `Provider.toolResultImages` order. */
+      /** Which image of that message, in `imagesForIR` order. */
       imageIndex: number
       /** Display name for the tab strip. */
       title: string

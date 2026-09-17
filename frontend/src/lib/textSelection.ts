@@ -209,6 +209,8 @@ export function wordBounds(text: string, index: number): TextBounds | null {
       hit = before
   }
   hit ??= segments[segments.length - 1]
+  if (!hit)
+    return null
   return { start: hit.index, end: hit.index + hit.segment.length }
 }
 
@@ -238,9 +240,9 @@ function paragraphBounds(run: InlineRun, index: number): TextBounds | null {
   }
 
   const preservedAt = (i: number) => run.pieces.some(p => p.preserves && i >= p.start && i < p.start + p.length)
-  while (start < end && /\s/.test(run.text[start]) && !preservedAt(start))
+  while (start < end && /\s/.test(run.text[start] ?? '') && !preservedAt(start))
     start++
-  while (end > start && /\s/.test(run.text[end - 1]) && !preservedAt(end - 1))
+  while (end > start && /\s/.test(run.text[end - 1] ?? '') && !preservedAt(end - 1))
     end--
   return start < end ? { start, end } : null
 }
@@ -369,6 +371,8 @@ export function pointIsInsideSelection(clientX: number, clientY: number, toleran
       continue
     for (let r = 0; r < rects.length; r++) {
       const rect = rects[r]
+      if (rect === undefined)
+        continue
       if (clientX >= rect.left - tolerancePx && clientX <= rect.right + tolerancePx
         && clientY >= rect.top - tolerancePx && clientY <= rect.bottom + tolerancePx) {
         return true

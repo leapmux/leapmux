@@ -254,7 +254,7 @@ async function chooseSwitchToAndConfirm(branch: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 }
 
-describe('appShellDialogs branch dialogs', () => {
+describe('AppShellDialogs branch dialogs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
@@ -373,7 +373,7 @@ describe('appShellDialogs branch dialogs', () => {
 
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
     expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w9', gitToplevel: '/second-repo' }), 'main')
-    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0][1]).toMatchObject({ path: '/second-repo' })
+    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0]?.[1]).toMatchObject({ path: '/second-repo' })
   })
 
   it('delete branch: the worktree path forwards the payload\'s tab snapshot', async () => {
@@ -399,7 +399,7 @@ describe('appShellDialogs branch dialogs', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 
     await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs, WorktreeAction.REMOVE, true))
-    expect(closeWorktreeTabs.mock.calls[0][0]).toBe(tabs)
+    expect(closeWorktreeTabs.mock.calls[0]?.[0]).toBe(tabs)
     // The worktree path removes the tabs outright. There is no branch to
     // stamp, so the dialog must not tell the parent that a branch changed.
     await waitFor(() => expect(dialogs.deleteBranch.value()).toBeNull())
@@ -502,8 +502,11 @@ describe('appShellDialogs branch dialogs', () => {
     expect(onSelectWorkspace).toHaveBeenCalledWith('ws1')
     // And the placement runs AFTER the switch, or it would resolve the tile
     // against the workspace the user is leaving.
-    expect(onSelectWorkspace.mock.invocationCallOrder[0])
-      .toBeLessThan(placementTileId.mock.invocationCallOrder[0])
+    const selectOrder = onSelectWorkspace.mock.invocationCallOrder[0]
+    const placeOrder = placementTileId.mock.invocationCallOrder[0]
+    if (selectOrder === undefined || placeOrder === undefined)
+      throw new Error('expected both the workspace switch and the tab placement to have run')
+    expect(selectOrder).toBeLessThan(placeOrder)
   })
 
   it('change branch: still selects when the dialog already targets the active workspace', async () => {
@@ -661,7 +664,7 @@ describe('appShellDialogs branch dialogs', () => {
  * actually places. It gets its own render helper rather than widening
  * `renderDialogs`, so the branch-dialog tests keep paying nothing for it.
  */
-describe('appShellDialogs agent creation', () => {
+describe('AppShellDialogs agent creation', () => {
   function renderForCreate() {
     const harness = installTestBridge({ workspaceId: 'ws1' })
     const stores = createTestTabStores('ws1')
@@ -786,7 +789,7 @@ describe('appShellDialogs agent creation', () => {
  * The two confirms whose COPY lives only here: one prompt for the whole
  * archive, and one that states where a deleted section's workspaces go.
  */
-describe('appShellDialogs section and bulk confirms', () => {
+describe('AppShellDialogs section and bulk confirms', () => {
   function renderConfirms() {
     const dialogs = makeDialogs()
     const props = {

@@ -214,7 +214,7 @@ describe('mergeStableOptionGroupRefs', () => {
     expect(out).not.toBe(prev)
     expect(out[0]).toBe(prev[0]) // unchanged model group keeps its reference
     expect(out[1]).toBe(next[1]) // changed effort group is the fresh one
-    expect(out[1].currentValue).toBe('xhigh')
+    expect(out[1]?.currentValue).toBe('xhigh')
   })
 
   it('keeps the new reference for an added group', () => {
@@ -255,7 +255,7 @@ describe('resolvedCurrent', () => {
   })
 })
 
-describe('optionGroupMenuItems', () => {
+describe('OptionGroupMenuItems', () => {
   const smallItems = [
     { label: 'Low', value: 'low' },
     { label: 'High', value: 'high' },
@@ -336,7 +336,10 @@ describe('optionGroupMenuItems', () => {
         .toBe('Controlled by the agent')
     }
 
-    await fireEvent.click(items[1])
+    // Two items rendered above; the guard is type-level alone.
+    const secondItem = items[1]
+    if (secondItem !== undefined)
+      await fireEvent.click(secondItem)
     expect(onChange).not.toHaveBeenCalled()
   })
 

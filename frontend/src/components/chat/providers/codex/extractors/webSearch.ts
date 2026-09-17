@@ -1,5 +1,17 @@
-import type { WebSearchAction } from '../../../results/webSearchAction'
 import { pickObject, pickString } from '~/lib/jsonPick'
+
+/**
+ * What the agent DID on the web, as Codex alone reports it.
+ *
+ * Codex sends one of these on a `webSearch` item; every other provider states the
+ * query and the results alone. The row build reads it twice: once for the KIND
+ * (`openPage` is a fetch, the rest are a web search), then for the typed request.
+ */
+export type WebSearchAction
+  = | { type: 'search', query: string, queries: string[] }
+    | { type: 'openPage', url: string }
+    | { type: 'findInPage', pattern: string, url?: string }
+    | { type: 'other', query: string }
 
 /**
  * Pull the action object from a Codex `webSearch` item. Returns null if the
@@ -23,14 +35,14 @@ export function codexWebSearchActionFromItem(
     return {
       type: 'findInPage',
       pattern: pickString(action, 'pattern'),
-      url: url || undefined,
+      ...(url ? { url } : {}),
     }
   }
 
   if (actionType === 'search') {
     const direct = pickString(action, 'query').trim()
     const listed = Array.isArray(action?.queries)
-      ? action.queries.filter(q => typeof q === 'string').map(q => (q as string).trim()).filter(Boolean)
+      ? action.queries.filter(q => typeof q === 'string').map(q => q.trim()).filter(Boolean)
       : []
     const merged = direct ? [direct, ...listed] : listed
     const queries = merged.filter((q, i) => merged.indexOf(q) === i)

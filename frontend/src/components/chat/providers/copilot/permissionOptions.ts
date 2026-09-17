@@ -48,17 +48,33 @@ const DECISION_KINDS: Record<string, string> = {
   [COPILOT_DECISION.Reject]: KIND_REJECT_ONCE,
 }
 
-/** The option a saved decision word identifies, or the kind alone when the request never offered it. */
+/**
+ * The option a saved decision word identifies, or the kind alone when the request never
+ * offered it.
+ *
+ * `Object.hasOwn` on BOTH tables, never a bare index read. `copilotToolKind` states the
+ * same reason at its own fallback in `./toolKinds`. The decision word is wire data off a
+ * PERSISTED row, so `toString`, `constructor`, `valueOf` and `__proto__` all reach here,
+ * and each one answers a FUNCTION from `Object.prototype`. A function is neither
+ * `undefined` nor null, so an index read passes both an `=== undefined` guard and a `??`
+ * fallback -- and `copilotControlResponseDisplay` then calls `startsWith` on that
+ * function, which throws the whole message to the error boundary.
+ */
 export function copilotDecisionOption(
   payload: Record<string, unknown> | undefined,
   decision: string,
 ): WirePermissionOption | undefined {
+  if (!Object.hasOwn(DECISION_OPTION_IDS, decision))
+    return undefined
+  // `hasOwn` proved the key is the table's own and every own value is a string; the
+  // guard is for the TYPE alone, which still types the read as possibly undefined.
   const optionId = DECISION_OPTION_IDS[decision]
   if (optionId === undefined)
     return undefined
+  const kind = Object.hasOwn(DECISION_KINDS, decision) ? DECISION_KINDS[decision] : ''
   const offered = payload ? copilotPermissionOptions(payload) : []
   return offered.find(option => option.optionId === optionId)
-    ?? { optionId, kind: DECISION_KINDS[decision] ?? '' }
+    ?? { optionId, kind: kind ?? '' }
 }
 
 /** The permission request one control payload carries, or undefined for another kind. */

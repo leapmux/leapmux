@@ -142,5 +142,5 @@ function shikiDualThemeColors(selector: string, opts?: { bg?: boolean }): void {
 export function codeSurface(surface: string, kind: CodeSurfaceKind, tokens: { suffix: string, bg?: boolean }[]): void {
   codeSurfaceTheme(surface, kind)
   for (const token of tokens)
-    shikiDualThemeColors(`${surface}${token.suffix}`, { bg: token.bg })
+    shikiDualThemeColors(`${surface}${token.suffix}`, ...(token.bg !== undefined ? [{ bg: token.bg }] : [{}]))
 }

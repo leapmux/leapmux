@@ -99,7 +99,7 @@ async function awaitFormReady() {
   await waitFor(() => expect(screen.getByText('Switch to branch')).toBeInTheDocument())
 }
 
-describe('changeBranchDialog', () => {
+describe('ChangeBranchDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupRpcMocks()
@@ -259,8 +259,8 @@ describe('changeBranchDialog', () => {
     fireEvent.click(apply)
 
     await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0][0]).toBe('w1')
-    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0]?.[0]).toBe('w1')
+    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0]?.[1]).toMatchObject({
       path: '/repo',
       branch: 'main',
       workerId: 'w1',
@@ -342,7 +342,7 @@ describe('changeBranchDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.createBranch).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(workerRpc.createBranch).mock.calls[0]?.[1]).toMatchObject({
       newBranch: 'shiny-new',
       baseBranch: 'feature',
       path: '/repo',
@@ -362,7 +362,7 @@ describe('changeBranchDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.createBranch).mock.calls[0][1]).toMatchObject({ newBranch: 'shiny-new', path: '/repo' })
+    expect(vi.mocked(workerRpc.createBranch).mock.calls[0]?.[1]).toMatchObject({ newBranch: 'shiny-new', path: '/repo' })
     expect(workerRpc.checkoutBranch).not.toHaveBeenCalled()
   })
 
@@ -393,7 +393,7 @@ describe('changeBranchDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openAgent).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1]).toMatchObject({
       createWorktree: true,
       workerId: 'w1',
       workingDir: '/repo',
@@ -458,7 +458,7 @@ describe('changeBranchDialog', () => {
 
     fireEvent.click(apply)
     await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[1]).toMatchObject({
       createWorktree: true,
       shell: '/bin/zsh',
     })
@@ -606,7 +606,7 @@ describe('changeBranchDialog', () => {
 // names the current branch for the switch picker alone, so a user with the same
 // branch name in a worktree and in the main repo could not tell two open
 // dialogs apart.
-describe('changeBranchDialog header', () => {
+describe('ChangeBranchDialog header', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupRpcMocks()
@@ -684,7 +684,7 @@ describe('changeBranchDialog header', () => {
 // The Title field belongs to create-worktree only, the one mode that opens a
 // tab. Its generator reads the Open-as toggle, which is what makes this more
 // than a copy of the other dialogs' field.
-describe('changeBranchDialog title', () => {
+describe('ChangeBranchDialog title', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupRpcMocks()
@@ -746,7 +746,7 @@ describe('changeBranchDialog title', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openAgent).mock.calls[0][1]).toMatchObject({ title: 'Auth fix' })
+    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1]).toMatchObject({ title: 'Auth fix' })
   })
 
   it('sends the cleaned title on the terminal path', async () => {
@@ -768,7 +768,7 @@ describe('changeBranchDialog title', () => {
 
     fireEvent.click(apply)
     await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0][1]).toMatchObject({ title: 'Build logs' })
+    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[1]).toMatchObject({ title: 'Build logs' })
   })
 
   it('disables Apply and fires no RPC when the title is emptied', async () => {

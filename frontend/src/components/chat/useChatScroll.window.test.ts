@@ -9,7 +9,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, virtu
 
 installScrollTestEnv()
 
-describe('usechatscroll render-ahead overscan', () => {
+describe('useChatScroll render-ahead overscan', () => {
   it('keeps the fling lead cap in screens of the pane, bounded against the mount-burst budget', () => {
     // A 1200px cap left only ~2.3k px of forward coverage on a 733px pane once base
     // overscan was included, which can still expose blank spacer under coalesced
@@ -201,7 +201,7 @@ describe('usechatscroll render-ahead overscan', () => {
     }))
 })
 
-describe('usechatscroll windowing trim', () => {
+describe('useChatScroll windowing trim', () => {
   const mkMsgs = (n: number): AgentChatMessage[] =>
     Array.from({ length: n }, (_, i) => ({ seq: BigInt(i + 1) } as AgentChatMessage))
 

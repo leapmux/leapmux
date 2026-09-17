@@ -103,7 +103,7 @@ function renderSelector(workingDir?: string | (() => string)) {
   return { ...view, state, tree, refreshTree, expandTreePath }
 }
 
-describe('directorySelector', () => {
+describe('DirectorySelector', () => {
   it('refreshFileTree invokes the current tree state refreshTree', () => {
     const { refreshTree } = renderSelector()
 
@@ -138,7 +138,7 @@ describe('directorySelector', () => {
   })
 })
 
-describe('directorySelector root derivation', () => {
+describe('DirectorySelector root derivation', () => {
   it('roots the tree at the filesystem root of the selected path', () => {
     renderSelector('/repo/sub')
 
@@ -259,7 +259,7 @@ describe('directorySelector root derivation', () => {
   })
 })
 
-describe('directorySelector drive menu', () => {
+describe('DirectorySelector drive menu', () => {
   it('shows the drive selector for a windows worker with more than one root', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
@@ -339,7 +339,7 @@ describe('directorySelector drive menu', () => {
   })
 })
 
-describe('directorySelector home button', () => {
+describe('DirectorySelector home button', () => {
   it('selects the home directory and opens it', () => {
     const { state, expandTreePath } = renderSelector()
 

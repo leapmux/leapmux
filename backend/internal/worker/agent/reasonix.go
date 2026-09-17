@@ -18,6 +18,16 @@ type ReasonixAgent struct {
 	acpBase
 	goalStatusMu       sync.Mutex
 	goalStatusRevision uint64
+	// lastStatusPhase is the phase the last status update reported. Reasonix
+	// restates its WHOLE status on every change, so the same phase arrives many
+	// times per turn and only a move to a new one says anything.
+	//
+	// No mutex guards it. The stdout reader goroutine owns it: handleOutput
+	// dispatches every notification, reportReasonixPhase is the one writer, and
+	// handleReasonixStatusUpdate is its one caller. The phase report runs outside
+	// goalStatusMu on purpose, because it writes a row and the lock protects the
+	// goal revision alone.
+	lastStatusPhase string
 }
 
 func (a *ReasonixAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {

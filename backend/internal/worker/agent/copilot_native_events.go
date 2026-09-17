@@ -41,13 +41,21 @@ func copilotMethodIsTelemetry(method string) bool {
 // copilotEventIsRuntimeTrace reports whether an event type identifies a family that
 // describes the RUNTIME rather than the work.
 //
-// Two families qualify. The `model.` family is the runtime's own model-call trace:
+// The families come from contracts.CopilotEventPrefixKeys, which both sides iterate.
+// The membership of that table crosses the boundary as much as the spellings do: the
+// browser hides every family the table lists, so a worker that tested a SUBSET stored
+// a row for each of the rest -- each one spending a message seq and a slot in the
+// chat-history page budget for a row nobody ever sees.
+//
+// The table holds six families today. `model.` is the runtime's own model-call trace:
 // the request, the response, a snapshot of the whole message list, and the call's
 // start and end. Every part of it repeats what the `assistant.` and `tool.` events
 // already deliver, so it is a second copy of the conversation rather than the
 // conversation. One trivial turn sent 71 kilobytes of it, and the reader saw ten
-// raw-JSON rows. The `hook.` family states that the runtime ran one of its own hooks;
-// a hook that changes the work changes a tool call, and that call has its own rows.
+// raw-JSON rows. `hook.` states that the runtime ran one of its own hooks; a hook that
+// changes the work changes a tool call, and that call has its own rows. The other four
+// -- `session.canvas.`, `factory.`, `assistant.fusion_` and `session.fusion_` -- are
+// the runtime's experiments, which no renderer draws.
 //
 // `model.call_failure` is the one exception. LeapMux surfaces it as a notification,
 // because a model call that failed is an answer the reader acts on.
@@ -55,8 +63,12 @@ func copilotEventIsRuntimeTrace(eventType string) bool {
 	if eventType == contracts.CopilotEventModelCallFailure {
 		return false
 	}
-	return strings.HasPrefix(eventType, contracts.CopilotEventPrefixModelTrace) ||
-		strings.HasPrefix(eventType, contracts.CopilotEventPrefixHook)
+	for _, prefix := range contracts.CopilotEventPrefixKeys {
+		if strings.HasPrefix(eventType, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // copilotNativeChild is one native subagent and the transcript that holds it.
@@ -93,6 +105,9 @@ type copilotOpenTool struct {
 	spawns     bool
 	startFrame []byte
 	order      uint64
+	// sawOutput records that this call already produced real output, so a later
+	// progress SENTENCE does not replace it. See reportNativeToolOutput.
+	sawOutput bool
 }
 
 // copilotToolStart is the part of `tool.execution_start` that LeapMux reads.
@@ -172,6 +187,17 @@ func (a *copilotAgent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.refreshNativeSettingsInBackground()
 	case contracts.CopilotEventSessionAutopilotObjectiveChanged:
 		a.refreshNativeGoalInBackground()
+	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult:
+		// The only text a running call reports. It was dropped UNREAD before, so the
+		// row stayed blank for the whole call.
+		//
+		// The drop is LeapMux's own decision rather than the runtime's `ephemeral`
+		// mark: the frame carries a window on output the finished row states in
+		// full, so a transcript row for one would repeat the result in pieces. The
+		// mark is set today, and a build that stopped setting it would otherwise
+		// write a row per progress tick.
+		a.reportNativeToolOutput(sink, event.Data)
+		return
 	}
 	// `Ephemeral` is the runtime's own "do not store" mark. The trace test is
 	// LeapMux's: the runtime stores its trace itself and marks none of it ephemeral.
@@ -179,6 +205,44 @@ func (a *copilotAgent) handleNativeEvent(raw []byte, event copilotEvent) {
 		return
 	}
 	a.persistNativeFrameTo(sink, raw, SpanInfo{})
+}
+
+// reportNativeToolOutput carries the live text of a running call to its own row.
+//
+// The two frames carry DIFFERENT things, and neither is cumulative: `partialOutput`
+// is the output the tool produced, and `progressMessage` is the runtime's own
+// sentence about what the tool does. Output outranks the sentence, because the
+// runtime interleaves them -- a `Running the tests...` between two output frames
+// replaced the lines the reader watched with one status line, and the next
+// output frame put them back. The sentence is what a call that produced NOTHING yet
+// has to show, so it shows until output arrives and never after.
+//
+// The caller holds outputMu, which guards openTools.
+func (a *copilotAgent) reportNativeToolOutput(sink ProviderServices, data json.RawMessage) {
+	var frame struct {
+		ToolCallID      string `json:"toolCallId"`
+		ProgressMessage string `json:"progressMessage"`
+		PartialOutput   string `json:"partialOutput"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" {
+		return
+	}
+	tool := a.openTools[frame.ToolCallID]
+	if frame.PartialOutput != "" {
+		if tool != nil {
+			tool.sawOutput = true
+		}
+		// A partial output is a WINDOW on more by definition.
+		sink.ReportProgress(OutputTailProgress(frame.ToolCallID, frame.PartialOutput, true))
+		return
+	}
+	// A call whose start this process never saw has no record to read, so its
+	// sentence still shows: it is the only thing there is.
+	if frame.ProgressMessage == "" || (tool != nil && tool.sawOutput) {
+		return
+	}
+	// A whole sentence the runtime wrote, so it states no loss.
+	sink.ReportProgress(OutputTailProgress(frame.ToolCallID, frame.ProgressMessage, false))
 }
 
 // copilotTurnWasAborted reports whether the reader stopped the turn that is ending.

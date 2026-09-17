@@ -79,6 +79,14 @@ interface UseTabOperationsOpts {
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
+/**
+ * The proto close responses carry `result` as present-but-undefined when the
+ * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
+ */
+function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
+  return resp.result === undefined ? {} : { result: resp.result }
+}
+
 export function useTabOperations(opts: UseTabOperationsOpts) {
   const {
     view,
@@ -289,7 +297,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       warnWorktreeUnreachable(worktreeAction)
       return Promise.resolve(undefined)
     }
-    return awaitCloseResult(workerRpc.revokeTabPayload(workerId, { tabId, worktreeAction }), 'Failed to close tab')
+    return awaitCloseResult(workerRpc.revokeTabPayload(workerId, { tabId, worktreeAction }).then(closeResultView), 'Failed to close tab')
   }
 
   /**

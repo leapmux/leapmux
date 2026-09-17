@@ -69,10 +69,10 @@ export const BranchSelect: Component<BranchSelectProps> = (props) => {
       ariaLabel="Branch"
       value={props.value}
       onChange={props.onChange}
-      loadingLabel={props.loading ? 'Loading branches...' : undefined}
+      {...(props.loading ? { loadingLabel: 'Loading branches...' } : {})}
       emptyLabel="No branches found"
       placeholder="Select a branch..."
-      disabled={props.disabled}
+      {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
       options={options()}
       // A repository's branch list is unbounded, and a native select gave
       // type-ahead over it for free. This is what buys that back.

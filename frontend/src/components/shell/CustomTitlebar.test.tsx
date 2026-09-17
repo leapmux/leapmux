@@ -108,7 +108,7 @@ function renderTitlebar(activeWorkingDir?: () => string | undefined) {
       onToggleRightSidebar={() => {}}
       leftSidebarVisible
       rightSidebarVisible
-      activeWorkingDir={activeWorkingDir}
+      {...(activeWorkingDir !== undefined ? { activeWorkingDir } : {})}
     />
   )))
 }
@@ -137,7 +137,7 @@ function clickMenuItem(labelPrefix: string, renderFn = renderTitlebar) {
   return container
 }
 
-describe('customTitlebar hamburger menu', () => {
+describe('CustomTitlebar hamburger menu', () => {
   it('renders the hamburger trigger on Linux desktop', () => {
     renderTitlebar()
     expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
@@ -220,7 +220,7 @@ describe('customTitlebar hamburger menu', () => {
   })
 })
 
-describe('customTitlebar minimal variant', () => {
+describe('CustomTitlebar minimal variant', () => {
   it('renders the minimal app and window menu', () => {
     const { container } = renderMinimalTitlebar()
     expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
@@ -275,7 +275,7 @@ describe('customTitlebar minimal variant', () => {
   })
 })
 
-describe('customTitlebar open-in-app slot', () => {
+describe('CustomTitlebar open-in-app slot', () => {
   beforeEach(() => {
     runtimeLocalSolo.value = false
     detectedApps.value = []

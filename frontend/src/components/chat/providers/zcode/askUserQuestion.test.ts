@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { zcodeQuestionsFromPayload } from './askUserQuestion'
+import { zcodeQuestionsFromPayload, zcodeQuestionsFromToolInput } from './askUserQuestion'
 
 /** A stored control-request payload, as the worker persists an interaction request. */
 function payload(input: Record<string, unknown>, toolName: string = ZCODE_TOOL.AskUserQuestion): Record<string, unknown> {
@@ -20,7 +20,7 @@ describe('zcodeQuestionsFromPayload', () => {
       params: { questions: [nativeQuestion], schema: { toolName: 'AskUserQuestion' } },
     }
     const before = JSON.stringify(original)
-    expect(zcodeQuestionsFromPayload(original)[0].options).toEqual([{ label: 'Blue', description: 'Choose the color blue.' }])
+    expect(zcodeQuestionsFromPayload(original)[0]?.options).toEqual([{ label: 'Blue', description: 'Choose the color blue.' }])
     expect(JSON.stringify(original)).toBe(before)
   })
 
@@ -61,13 +61,13 @@ describe('zcodeQuestionsFromPayload', () => {
   it('accepts either spelling of an option label', () => {
     expect(zcodeQuestionsFromPayload(payload({
       questions: [{ question: 'Q', options: [{ label: 'from label' }, { value: 'from value' }] }],
-    }))[0].options).toEqual([{ label: 'from label' }, { label: 'from value' }])
+    }))[0]?.options).toEqual([{ label: 'from label' }, { label: 'from value' }])
   })
 
   it('prefers label over value when the app-server sends both', () => {
     expect(zcodeQuestionsFromPayload(payload({
       questions: [{ question: 'Q', options: [{ label: 'shown', value: 'ignored' }] }],
-    }))[0].options).toEqual([{ label: 'shown' }])
+    }))[0]?.options).toEqual([{ label: 'shown' }])
   })
 
   // An option with neither field has nothing to send, so it is dropped rather than
@@ -75,13 +75,13 @@ describe('zcodeQuestionsFromPayload', () => {
   it('drops an option with no label and no value', () => {
     expect(zcodeQuestionsFromPayload(payload({
       questions: [{ question: 'Q', options: [{ description: 'orphan' }, {}, 'not an object', { value: 'keep' }] }],
-    }))[0].options).toEqual([{ label: 'keep' }])
+    }))[0]?.options).toEqual([{ label: 'keep' }])
   })
 
   it('omits an empty description rather than sending a blank one', () => {
     expect(zcodeQuestionsFromPayload(payload({
       questions: [{ question: 'Q', options: [{ value: 'A', description: '' }] }],
-    }))[0].options).toEqual([{ label: 'A' }])
+    }))[0]?.options).toEqual([{ label: 'A' }])
   })
 
   it('carries the header and the multiSelect flag when the request states them', () => {
@@ -100,7 +100,7 @@ describe('zcodeQuestionsFromPayload', () => {
       const [question] = zcodeQuestionsFromPayload(payload({
         questions: [{ question: 'Q', multiSelect, options: [{ value: 'A' }] }],
       }))
-      expect(question.multiSelect).toBeUndefined()
+      expect(question?.multiSelect).toBeUndefined()
     }
   })
 
@@ -134,5 +134,46 @@ describe('zcodeQuestionsFromPayload', () => {
     expect(zcodeQuestionsFromPayload(payload({}))).toEqual([])
     expect(zcodeQuestionsFromPayload(payload({ questions: 'not an array' }))).toEqual([])
     expect(zcodeQuestionsFromPayload({})).toEqual([])
+  })
+})
+
+/**
+ * The question list a tool ROW states, in ZCode's own key spellings.
+ *
+ * `questionsFromRecords` holds the control flow and the two invariants; the header
+ * standing in for an absent question, and `value` standing in for an absent label, are
+ * what stays here.
+ */
+describe('zcodeQuestionsFromToolInput', () => {
+  it('reads the question, the header and every detail one option carries', () => {
+    expect(zcodeQuestionsFromToolInput({
+      questions: [{ question: 'Pick a color.', header: 'Color', options: [{ label: 'Blue', value: 'Blue', description: 'The color blue.', preview: '#0000ff' }] }],
+    })).toStrictEqual([{
+      header: 'Color',
+      question: 'Pick a color.',
+      options: [{ label: 'Blue', description: 'The color blue.', preview: '#0000ff' }],
+    }])
+  })
+
+  // ZCode's wire form sets an option's `value` to its own label, so either field
+  // standing in for the other keeps the option readable.
+  it('labels an option with its value when it states no label', () => {
+    expect(zcodeQuestionsFromToolInput({ questions: [{ question: 'Pick a color.', options: [{ value: 'Blue' }] }] })[0]?.options)
+      .toStrictEqual([{ label: 'Blue' }])
+  })
+
+  // The shared control keys the answer by the text it shows, and a header alone is that
+  // text for a record the app-server sent without a question.
+  it('reads the header as the text of a question that states none', () => {
+    expect(zcodeQuestionsFromToolInput({ questions: [{ header: 'Color', options: [] }] })[0]?.question).toBe('Color')
+  })
+
+  it('drops a question that states neither a question nor a header', () => {
+    expect(zcodeQuestionsFromToolInput({ questions: [{ options: [{ label: 'Blue' }] }] })).toStrictEqual([])
+  })
+
+  it('drops an option that states neither a label nor a value', () => {
+    expect(zcodeQuestionsFromToolInput({ questions: [{ question: 'Pick a color.', options: [{ description: 'The color blue.' }] }] })[0]?.options)
+      .toStrictEqual([])
   })
 })

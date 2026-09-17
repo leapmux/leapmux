@@ -2,7 +2,7 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MarkdownPlanLayout } from '~/components/chat/widgets/MarkdownPlanLayout'
 
-describe('markdownPlanLayout', () => {
+describe('MarkdownPlanLayout', () => {
   it('renders the markdown body when planText is provided', () => {
     const { container } = render(() => (
       <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText="# Step 1" />

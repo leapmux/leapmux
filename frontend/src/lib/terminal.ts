@@ -359,7 +359,7 @@ export function applyTerminalData(instance: TerminalInstance, payload: TerminalD
     instance.suppressInput = true
     // reset() emptied the buffer, so nothing is parsed until the write below
     // completes — see `lastParsedOffset`.
-    instance.lastParsedOffset = undefined
+    delete instance.lastParsedOffset
     instance.terminal.write(payload.data, () => {
       instance.lastParsedOffset = payload.endOffset
       instance.suppressInput = false
@@ -539,7 +539,6 @@ export function createTerminalInstance(
     webglAllowed,
     transparentBackground,
     fontsReady,
-    webglAddon: undefined,
     setConfirmLink(confirm) {
       confirmLink = confirm
     },
@@ -576,7 +575,7 @@ export function attachWebgl(instance: TerminalInstance, onContextLoss: () => voi
       // then notify the pool so it can re-attach if the terminal is still on
       // screen and within budget.
       if (instance.webglAddon === addon)
-        instance.webglAddon = undefined
+        delete instance.webglAddon
       try {
         addon.dispose()
       }
@@ -602,7 +601,7 @@ export function detachWebgl(instance: TerminalInstance): void {
   const addon = instance.webglAddon
   if (!addon)
     return
-  instance.webglAddon = undefined
+  delete instance.webglAddon
   try {
     addon.dispose()
   }

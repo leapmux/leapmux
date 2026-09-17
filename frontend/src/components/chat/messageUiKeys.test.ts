@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { expandedUiKeyFor, MESSAGE_UI_DEFAULTS, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 
-describe('message_ui_defaults', () => {
+describe('MESSAGE_UI_DEFAULTS', () => {
   it('has a default entry for every MESSAGE_UI_KEY', () => {
     const keys = Object.values(MESSAGE_UI_KEY)
     for (const key of keys)
@@ -11,47 +10,50 @@ describe('message_ui_defaults', () => {
     expect(Object.keys(MESSAGE_UI_DEFAULTS).sort()).toEqual([...keys].sort())
   })
 
-  it('expands thinking and codex reasoning per the expandAgentThoughts pref', () => {
-    for (const key of [MESSAGE_UI_KEY.THINKING, MESSAGE_UI_KEY.CODEX_REASONING]) {
-      expect(messageUiDefault(key, { expandAgentThoughts: true })).toBe(true)
-      expect(messageUiDefault(key, { expandAgentThoughts: false })).toBe(false)
-      // Unknown pref (no context): thinking bubbles default expanded.
-      expect(messageUiDefault(key)).toBe(true)
-      expect(messageUiDefault(key, {})).toBe(true)
-    }
+  it('expands the thinking bubble per the expandAgentThoughts pref', () => {
+    const key = MESSAGE_UI_KEY.THINKING
+    expect(messageUiDefault(key, { expandAgentThoughts: true })).toBe(true)
+    expect(messageUiDefault(key, { expandAgentThoughts: false })).toBe(false)
+    // Unknown pref (no context): thinking bubbles default expanded.
+    expect(messageUiDefault(key)).toBe(true)
+    expect(messageUiDefault(key, {})).toBe(true)
   })
 
   it('defaults every non-thinking key collapsed regardless of the pref', () => {
-    const thinkingKeys = new Set<string>([MESSAGE_UI_KEY.THINKING, MESSAGE_UI_KEY.CODEX_REASONING])
     for (const key of Object.values(MESSAGE_UI_KEY)) {
-      if (thinkingKeys.has(key))
+      if (key === MESSAGE_UI_KEY.THINKING)
         continue
       expect(messageUiDefault(key, { expandAgentThoughts: true }), `${key} should default collapsed`).toBe(false)
       expect(messageUiDefault(key, { expandAgentThoughts: false })).toBe(false)
       expect(messageUiDefault(key)).toBe(false)
     }
   })
+
+  // Every key is kind-scoped and provider-neutral. Three keys used to belong to Codex
+  // alone, because it drew its own reasoning, command and web-search bubbles; those
+  // rows draw through the shared components now.
+  it('registers no provider-scoped key', () => {
+    for (const key of Object.values(MESSAGE_UI_KEY))
+      expect(key, `${key} identifies a provider`).not.toMatch(/^(?:codex|claude|pi|zcode|copilot|cursor|goose|kilo|opencode|reasonix)-/)
+  })
 })
 
-describe('expandeduikeyfor', () => {
-  it('maps plan_execution and agent_prompt by kind, regardless of provider', () => {
-    for (const provider of [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, undefined]) {
-      expect(expandedUiKeyFor('plan_execution', provider)).toBe(MESSAGE_UI_KEY.PLAN_EXECUTION)
-      expect(expandedUiKeyFor('agent_prompt', provider)).toBe(MESSAGE_UI_KEY.AGENT_PROMPT)
-    }
+describe('expandedUiKeyFor', () => {
+  it('maps plan_execution and agent_prompt by kind', () => {
+    expect(expandedUiKeyFor('plan_execution')).toBe(MESSAGE_UI_KEY.PLAN_EXECUTION)
+    expect(expandedUiKeyFor('agent_prompt')).toBe(MESSAGE_UI_KEY.AGENT_PROMPT)
   })
 
-  // No plugin is registered in this project, so every kind below takes the shared key.
-  // Codex's own key is asserted where its hook lives: providers/codex/plugin.test.ts.
-  it('takes the shared THINKING key when no plugin claims the kind', () => {
-    expect(expandedUiKeyFor('assistant_thinking', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
-    expect(expandedUiKeyFor('assistant_thinking', undefined)).toBe(MESSAGE_UI_KEY.THINKING)
+  // Every provider's thinking row draws through the shared bubble, so one key serves
+  // them all -- and the estimator no longer has to ask which provider a row came from.
+  it('takes the shared THINKING key for a thinking row', () => {
+    expect(expandedUiKeyFor('assistant_thinking')).toBe(MESSAGE_UI_KEY.THINKING)
   })
 
   it('returns a harmless THINKING default for non-expand kinds (the value is unused for them)', () => {
     // tool_result/assistant_text rows never read the expand key, but the mapper is
     // total -- it must not throw.
-    expect(expandedUiKeyFor('tool_result', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
-    expect(expandedUiKeyFor('assistant_text', AgentProvider.CLAUDE_CODE)).toBe(MESSAGE_UI_KEY.THINKING)
+    expect(expandedUiKeyFor('tool_result')).toBe(MESSAGE_UI_KEY.THINKING)
+    expect(expandedUiKeyFor('assistant_text')).toBe(MESSAGE_UI_KEY.THINKING)
   })
 })

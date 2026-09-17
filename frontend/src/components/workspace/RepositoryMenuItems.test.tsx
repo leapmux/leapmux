@@ -106,7 +106,7 @@ afterEach(() => {
   _resetExternalAppCacheForTests()
 })
 
-describe('repositoryMenuItems', () => {
+describe('RepositoryMenuItems', () => {
   it('offers every row for a local checkout with an origin', async () => {
     await renderItems(LOCAL, [editorApp('vscode', 'Visual Studio Code')], 'vscode')
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fnv1a32Hex } from './stringDigest'
 
-describe('fnv1a32hex', () => {
+describe('fnv1a32Hex', () => {
   it('matches the published FNV-1a 32-bit test vectors', () => {
     // Offset basis (empty input) and classic vectors from the FNV reference.
     expect(fnv1a32Hex('')).toBe('811c9dc5')

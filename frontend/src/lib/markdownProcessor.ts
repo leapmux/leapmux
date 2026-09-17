@@ -254,7 +254,10 @@ const FENCE_LANG_RE = /^[ \t>]*(?:`{3,}|~{3,})[ \t]*([^\s`~]+)/gm
  */
 export function extractFenceLanguages(text: string): string[] {
   const langs = new Set<string>()
-  for (const match of text.matchAll(FENCE_LANG_RE))
-    langs.add(match[1].toLowerCase())
+  for (const match of text.matchAll(FENCE_LANG_RE)) {
+    const lang = match[1]
+    if (lang !== undefined)
+      langs.add(lang.toLowerCase())
+  }
   return [...langs]
 }

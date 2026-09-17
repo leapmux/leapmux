@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { CollapsibleList } from '~/components/chat/controls/CollapsibleList'
 
-describe('collapsibleList', () => {
+describe('CollapsibleList', () => {
   it('renders all items when count is within maxVisible', () => {
     render(() => (
       <CollapsibleList

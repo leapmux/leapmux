@@ -81,7 +81,8 @@ export function planApprovalSwitches(state: PlanApprovalState): ControlRequestSw
       label: 'Clear Context',
       checked: state.clearContext(),
       onChange: state.setClearContext,
-      suffix: state.contextPct() !== null ? ` (${state.contextPct()}%)` : undefined,
+      // The suffix rides along only when there is a percentage to state.
+      ...(state.contextPct() !== null ? { suffix: ` (${state.contextPct()}%)` } : {}),
     },
   ]
 }

@@ -106,6 +106,13 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     const os = workerInfoStore.getOs(worker.workerId())
     return os ? flavorFromOs(os) : undefined
   }
+  // Spread-ready flavor, read ONCE: `workerFlavor()` answers undefined while
+  // the OS is unknown, and the spread keeps the prop absent then -- a second
+  // call beside the first could not be narrowed.
+  const flavorProps = () => {
+    const flavor = workerFlavor()
+    return flavor !== undefined ? { flavor } : {}
+  }
   // The dialog renders SwitchBranch / CreateBranch / CreateWorktree
   // (Current is intentionally excluded). Seed the parent intent so
   // GitOptions paints the caller's mode selected on first render.
@@ -156,26 +163,32 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   const worktreeBlockedReason = () =>
     gitMode.currentIntent().mode === GitMode.CreateWorktree ? props.blockedReason?.() : undefined
 
-  const submitDisabled = () => isChangeBranchSubmitDisabled({
-    submitting: submitting.loading(),
-    blockedReason: worktreeBlockedReason(),
-    // SwitchBranch intent now carries `checkoutBranchError` set by
-    // GitOptions when the destination resolves to the current branch
-    // (the path-info probe's currentBranch is the source of truth, and
-    // it lives in GitOptions where the branches-list lookup also lives).
-    // No extra plumbing needed here.
-    git: gitMode.currentIntent(),
-    workerId: props.workerId,
-    workingDir: props.gitToplevel,
-    worktreeTabType: worktreeTabType(),
-    // Only CreateWorktree RENDERS the Title field, and only its submit sends a
-    // title, so the other modes contribute none: an emptied title must not
-    // block a plain branch switch. Decided HERE, where the mode already decides
-    // what to render, which is the rule `blockedReason` above follows too.
-    titleError: gitMode.gitMode() === GitMode.CreateWorktree ? title.error() : null,
-    noProviders: noProviders(),
-    shell: shell(),
-  })
+  const submitDisabled = () => {
+    // Read ONCE: the guard reason is undefined for branch-only modes, and the
+    // spread keeps `blockedReason` absent then -- a second call beside the
+    // first could not be narrowed.
+    const blocked = worktreeBlockedReason()
+    return isChangeBranchSubmitDisabled({
+      submitting: submitting.loading(),
+      ...(blocked !== undefined ? { blockedReason: blocked } : {}),
+      // SwitchBranch intent now carries `checkoutBranchError` set by
+      // GitOptions when the destination resolves to the current branch
+      // (the path-info probe's currentBranch is the source of truth, and
+      // it lives in GitOptions where the branches-list lookup also lives).
+      // No extra plumbing needed here.
+      git: gitMode.currentIntent(),
+      workerId: props.workerId,
+      workingDir: props.gitToplevel,
+      worktreeTabType: worktreeTabType(),
+      // Only CreateWorktree RENDERS the Title field, and only its submit sends a
+      // title, so the other modes contribute none: an emptied title must not
+      // block a plain branch switch. Decided HERE, where the mode already decides
+      // what to render, which is the rule `blockedReason` above follows too.
+      titleError: gitMode.gitMode() === GitMode.CreateWorktree ? title.error() : null,
+      noProviders: noProviders(),
+      shell: shell(),
+    })
+  }
 
   // Parent callbacks (onBranchChanged / onAgentCreated /
   // onTerminalCreated) run AFTER the RPC has already mutated worker
@@ -329,8 +342,8 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         isWorktree={pathInfo.info().isWorktreeRoot}
         name={pathInfo.info().currentBranch}
         directory={props.gitToplevel}
-        homeDir={worker.getHomeDir()}
-        flavor={workerFlavor()}
+        {...(worker.getHomeDir() !== undefined ? { homeDir: worker.getHomeDir() } : {})}
+        {...flavorProps()}
       />
       <GitOptionsLoader gitInfo={pathInfo}>
         {() => (
@@ -376,8 +389,8 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
                   <AgentProviderSelector
                     value={agentProvider}
                     onChange={setAgentProvider}
-                    availableProviders={props.availableProviders}
-                    onRefresh={props.onRefreshProviders}
+                    {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
+                    {...(props.onRefreshProviders !== undefined ? { onRefresh: props.onRefreshProviders } : {})}
                   />
                 </Match>
                 <Match when={worktreeTabType() === TabType.TERMINAL}>

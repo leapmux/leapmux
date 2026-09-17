@@ -620,6 +620,8 @@ test.describe('Multi-Workspace', () => {
         const childrenWrapper = wsItem.nextElementSibling!
         const leaves = childrenWrapper.querySelectorAll<HTMLElement>('[data-testid="tab-tree-leaf"]')
         const secondLeaf = leaves[1]
+        if (!secondLeaf)
+          throw new Error('expected a second tab-tree leaf')
         const tabId = secondLeaf.getAttribute('data-tab-id')
         secondLeaf.click()
         return tabId

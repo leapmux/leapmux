@@ -56,7 +56,7 @@ package agent
 //   - GoalUpdated and GoalCleared: a session goal TRANSITION -- the objective
 //     changed, the status changed, or the goal went away. Carries `objective`,
 //     and for an update the neutral `goal_status` plus the provider's own
-//     `status_detail`. They are worker-authored and provider-NEUTRAL on purpose:
+//     `status_detail`. They are worker-written and provider-NEUTRAL on purpose:
 //     five CLIs report a goal in five different wire shapes, so persisting each
 //     verbatim would put five copies of goal parsing in five renderers. The
 //     worker normalizes once and the browser has one. A transition only -- the

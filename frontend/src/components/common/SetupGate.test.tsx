@@ -80,7 +80,7 @@ function renderGate(path: string, child: () => JSX.Element = () => <div data-tes
   return { ...result, history, navigations, currentPath: () => history.get() }
 }
 
-describe('setupGate', () => {
+describe('SetupGate', () => {
   beforeEach(() => {
     resetSystemInfoMock()
     setAuthLoading(false)

@@ -125,7 +125,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('deleteBranchDialog', () => {
+describe('DeleteBranchDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(workerRpc.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
@@ -602,9 +602,10 @@ describe('deleteBranchDialog', () => {
   it('non-worktree variant: closes even when no onBranchChanged is supplied', async () => {
     // `onBranchChanged` is optional, and the close now runs AFTER it. An
     // absent callback must therefore still reach `props.onClose()`. The
-    // optional call must not drop the close.
+    // optional call must not drop the close -- so this render supplies no
+    // callback at all rather than a present-undefined one.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
-    const props = renderDialog({ onBranchChanged: undefined })
+    const props = renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     pickMenuValue('branch-select-menu', 'main')
 
@@ -682,7 +683,10 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog({ branchName: 'doomed' })
     await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
-    const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    if (inspectCall === undefined)
+      throw new Error('expected the inspect call to have fired')
+    const [, req] = inspectCall
     expect(req).toMatchObject({ path: '/repo', branchNameHint: 'doomed' })
   })
 
@@ -694,7 +698,10 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog({ branchName: null })
     await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
-    const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    if (inspectCall === undefined)
+      throw new Error('expected the inspect call to have fired')
+    const [, req] = inspectCall
     expect(req).toMatchObject({ branchNameHint: '' })
   })
 
@@ -762,7 +769,7 @@ describe('deleteBranchDialog', () => {
     await clickDelete()
 
     await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0]?.[1]).toMatchObject({
       branchToDelete: 'doomed',
       switchToBranch: 'main',
       path: '/repo',
@@ -897,7 +904,7 @@ describe('deleteBranchDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('offers push for a group made only of FILE tabs', async () => {
@@ -913,7 +920,7 @@ describe('deleteBranchDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('hides the push button when no tab in the group holds a directory', async () => {
@@ -945,7 +952,7 @@ describe('deleteBranchDialog', () => {
     await clickDelete()
     await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledTimes(1))
     // Specifically: the FILE tab is NOT skipped by the dialog.
-    expect(closeWorktreeTabs.mock.calls[0][0].map((t: { id: string }) => t.id)).toEqual(['a1', 'f1', 't1'])
+    expect(closeWorktreeTabs.mock.calls[0]?.[0].map((t: { id: string }) => t.id)).toEqual(['a1', 'f1', 't1'])
   })
 
   it('push button sends the group\'s working dir to pushBranch', async () => {
@@ -958,7 +965,7 @@ describe('deleteBranchDialog', () => {
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
     // The worker always re-probes pushStatus to avoid acting on a
     // stale snapshot, so no hint rides the request.
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('cancel closes without firing any worker RPC', async () => {

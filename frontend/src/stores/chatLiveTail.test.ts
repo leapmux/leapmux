@@ -11,7 +11,7 @@ function withTracker(body: (t: ReturnType<typeof createLiveTailTracker>) => void
   })
 }
 
-describe('chatlivetail', () => {
+describe('chatLiveTail', () => {
   describe('get / bump', () => {
     it('defaults to 0n and raises only on a higher positive sequence', () => {
       withTracker((t) => {

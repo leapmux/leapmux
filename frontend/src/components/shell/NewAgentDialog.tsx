@@ -54,8 +54,8 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   const { submit: { submitting, error, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create agent' },
     worker: {
-      preselectedWorkerId: props.defaultWorkerId,
-      defaultWorkingDir: props.defaultWorkingDir,
+      ...(props.defaultWorkerId !== undefined ? { preselectedWorkerId: props.defaultWorkerId } : {}),
+      ...(props.defaultWorkingDir !== undefined ? { defaultWorkingDir: props.defaultWorkingDir } : {}),
     },
     pathInfo: { remapWorktreeRoot: true },
   })
@@ -73,16 +73,20 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   // keystroke — the memo keeps those walks to one per actual change.
   const blockedReason = createMemo(() => props.blockedReason?.())
 
-  const submitDisabled = () => isAgentCreateDisabled({
-    submitting: submitting.loading(),
-    blockedReason: blockedReason(),
-    workerId: worker.workerId(),
-    workingDir: worker.workingDir(),
-    noProviders: noProviders(),
-    sessionIdError: sessionId.error(),
-    titleError: title.error(),
-    git: gitMode.currentIntent(),
-  })
+  const submitDisabled = () => {
+    // Hoisted so the spread narrows; the state takes no explicit undefined.
+    const reason = blockedReason()
+    return isAgentCreateDisabled({
+      submitting: submitting.loading(),
+      ...(reason !== undefined ? { blockedReason: reason } : {}),
+      workerId: worker.workerId(),
+      workingDir: worker.workingDir(),
+      noProviders: noProviders(),
+      sessionIdError: sessionId.error(),
+      titleError: title.error(),
+      git: gitMode.currentIntent(),
+    })
+  }
 
   const handleSubmit = formHandler(submitDisabled, async () => {
     const provider = agentProvider()
@@ -140,8 +144,8 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           <AgentProviderSelector
             value={agentProvider}
             onChange={setAgentProvider}
-            availableProviders={props.availableProviders}
-            onRefresh={props.onRefreshProviders}
+            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
+            {...(props.onRefreshProviders !== undefined ? { onRefresh: props.onRefreshProviders } : {})}
           />
         </DialogTopRow>
         <TitleInput state={title} />

@@ -54,7 +54,7 @@ describe('installGlobalErrorSink', () => {
     t.fire('error', { error, message: 'handler blew up' })
 
     expect(report).toHaveBeenCalledTimes(1)
-    expect(report.mock.calls[0][1]).toBe(error)
+    expect(report.mock.calls[0]?.[1]).toBe(error)
   })
 
   // The whole reason this exists: a rejected promise touches no part of the
@@ -67,7 +67,7 @@ describe('installGlobalErrorSink', () => {
     t.fire('unhandledrejection', { reason })
 
     expect(report).toHaveBeenCalledTimes(1)
-    expect(report.mock.calls[0][1]).toBe(reason)
+    expect(report.mock.calls[0]?.[1]).toBe(reason)
   })
 
   it('reports a rejection carrying a non-Error value', () => {
@@ -77,7 +77,7 @@ describe('installGlobalErrorSink', () => {
     t.fire('unhandledrejection', { reason: 'just a string' })
 
     expect(report).toHaveBeenCalledTimes(1)
-    expect(report.mock.calls[0][1]).toBe('just a string')
+    expect(report.mock.calls[0]?.[1]).toBe('just a string')
   })
 
   // Chromium fires this once per frame while a long transcript settles. It is
@@ -124,7 +124,7 @@ describe('installGlobalErrorSink', () => {
     t.fire('error', { message: 'Script error.', filename: 'app.js', lineno: 12, error })
 
     expect(report).toHaveBeenCalledTimes(1)
-    expect(report.mock.calls[0][1]).toBe(error)
+    expect(report.mock.calls[0]?.[1]).toBe(error)
   })
 
   it('deduplicates a repeating fault', () => {
@@ -146,7 +146,7 @@ describe('installGlobalErrorSink', () => {
     t.fire('error', { error: new Error('second') })
 
     expect(report).toHaveBeenCalledTimes(2)
-    expect(report.mock.calls[1][1]).toHaveProperty('message', 'second')
+    expect(report.mock.calls[1]?.[1]).toHaveProperty('message', 'second')
   })
 
   // A message carrying a request id or timestamp differs every time, so the
@@ -179,7 +179,7 @@ describe('installGlobalErrorSink', () => {
   })
 
   it('is a no-op outside a DOM', () => {
-    expect(() => installGlobalErrorSink({ report: vi.fn(), target: undefined })()).not.toThrow()
+    expect(() => installGlobalErrorSink({ report: vi.fn() })()).not.toThrow()
   })
 
   // In dev the suppressor is registered first and in the capture phase, so it

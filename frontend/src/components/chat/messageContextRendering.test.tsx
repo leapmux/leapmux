@@ -1,4 +1,4 @@
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { diffAdded } from './diff/diffStyles.css'
 import { MessageBubble } from './MessageBubble'
+import { createMessageRenderCacheStore } from './messageRenderCache'
 import './providers'
 import './providers/testMocks'
 
@@ -41,6 +42,56 @@ describe('message context rendering', () => {
     await waitFor(() => expect(container.textContent).toContain('Revised task title'))
     expect(container.textContent).not.toContain('Original task title')
     expect(message.supplementalRevision).toBe(0n)
+  })
+
+  // The row cache is keyed by the message revisions, and the to-do store is the one
+  // extraction input that is not a message. A `TaskUpdate` states a task id and a
+  // status alone, so the SUBJECT comes from the store -- and a row drawn before its
+  // task arrived kept `Task #42` for the life of the tab.
+  it('repairs a cached task row when its to-do reaches the store', async () => {
+    const message = makeMessage({
+      id: 'task-update',
+      seq: 3n,
+      spanId: 'task-call',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'task-call', name: 'TaskUpdate', input: { taskId: '42', status: 'completed' } }] } }),
+    })
+    const [todo, setTodo] = createSignal<TodoItem | undefined>(undefined)
+    const context = testMessageContext({ messages: () => [message], todo: id => id === '42' ? todo() : undefined })
+    const renderCache = createMessageRenderCacheStore().forRow('task-update')
+    const { container } = render(() => (
+      <PreferencesProvider><MessageBubble message={message} host={{ messages: context, renderCache }} /></PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.textContent).toContain('Task #42'))
+    setTodo({ id: '42', rowKey: '42', content: 'Ship the release', status: 'completed', activeForm: '' })
+    await waitFor(() => expect(container.textContent).toContain('Ship the release'))
+    expect(container.textContent).not.toContain('Task #42')
+  })
+
+  // The repair goes ONE way. `TodoWrite` replaces the whole list the `Task*` family
+  // shares, a context clear empties it, and the cap evicts FINISHED rows first -- so a
+  // task leaving the store is ordinary, and a row that was right must not go back to
+  // `Task #42` when it happens.
+  it('keeps a repaired task row when its to-do leaves the store', async () => {
+    const message = makeMessage({
+      id: 'task-update',
+      seq: 3n,
+      spanId: 'task-call',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'task-call', name: 'TaskUpdate', input: { taskId: '42', status: 'completed' } }] } }),
+    })
+    const [todo, setTodo] = createSignal<TodoItem | undefined>({ id: '42', rowKey: '42', content: 'Ship the release', status: 'completed', activeForm: '' })
+    const context = testMessageContext({ messages: () => [message], todo: id => id === '42' ? todo() : undefined })
+    const renderCache = createMessageRenderCacheStore().forRow('task-update')
+    const { container } = render(() => (
+      <PreferencesProvider><MessageBubble message={message} host={{ messages: context, renderCache }} /></PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.textContent).toContain('Ship the release'))
+
+    setTodo(undefined)
+    await Promise.resolve()
+    expect(container.textContent).toContain('Ship the release')
+    expect(container.textContent).not.toContain('Task #42')
   })
 
   it('loads an edit request outside the visible history window', async () => {

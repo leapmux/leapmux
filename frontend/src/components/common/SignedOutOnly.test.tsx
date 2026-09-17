@@ -76,7 +76,7 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
   history.listen(value => navigations.push(value))
 
   const Restricted = () => (
-    <SignedOutOnly whenSignedIn={whenSignedIn}>
+    <SignedOutOnly {...(whenSignedIn !== undefined ? { whenSignedIn } : {})}>
       <div data-testid="credential-form" />
     </SignedOutOnly>
   )
@@ -97,7 +97,7 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
   return { ...result, navigations }
 }
 
-describe('signedOutOnly', () => {
+describe('SignedOutOnly', () => {
   beforeEach(() => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)

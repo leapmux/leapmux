@@ -892,6 +892,69 @@ func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
 	assert.Equal(t, "openai-codex", last.Options[PiOptionProvider])
 }
 
+// A set_model round trip is not a model report. Pi decides what the session
+// settles on, so the answer comes from Pi's own state and never from the
+// request LeapMux sent.
+//
+// get_state is the ONE route to that answer. Pi has no `model_changed` event,
+// and the `model_change` session entry it appends reaches no `entry_appended`
+// event either, so nothing else tells this worker what the session holds. A
+// LeapMux that recorded its own request kept a model the running agent had
+// already left, and the model segment then showed it for the rest of the
+// session.
+func TestPi_UpdateSettings_TakesTheModelFromPiOwnState(t *testing.T) {
+	t.Parallel()
+
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.model = "gpt-5.4"
+	rig.agent.provider = "openai"
+	rig.agent.thinkingLevel = "low"
+
+	// Pi accepts the switch and settles on a different pair, and it clamps the
+	// thinking level for the model it chose.
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == PiCommandGetState {
+			return json.RawMessage(`{"model":{"id":"gpt-5.5-turbo","provider":"openai-next"},"thinkingLevel":"medium"}`), true, ""
+		}
+		return nil, true, ""
+	})
+
+	ok := rig.agent.UpdateSettings(map[string]string{OptionIDModel: "gpt-5.5"})
+	require.True(t, ok.AppliedLive)
+
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, "gpt-5.5-turbo", rig.agent.model, "the model comes from Pi's state, not from the request")
+	assert.Equal(t, "openai-next", rig.agent.provider, "the provider comes from Pi's state too")
+	assert.Equal(t, "medium", rig.agent.thinkingLevel, "set_model clamps the thinking level, and the state read carries it back")
+}
+
+// A get_state that fails after an ACCEPTED set_model leaves the requested pair
+// in place. set_model succeeded, so the prior model is certainly wrong, and the
+// requested one is the best answer left.
+func TestPi_UpdateSettings_KeepsTheRequestedModelWhenTheStateReadFails(t *testing.T) {
+	t.Parallel()
+
+	rig := newPiTestRig(t, &testSink{})
+	rig.agent.model = "gpt-5.4"
+	rig.agent.provider = "openai"
+
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == PiCommandGetState {
+			return nil, false, "state unavailable"
+		}
+		return nil, true, ""
+	})
+
+	ok := rig.agent.UpdateSettings(map[string]string{OptionIDModel: "gpt-5.5"})
+	require.True(t, ok.AppliedLive, "set_model landed, so the change applied live")
+
+	rig.agent.mu.Lock()
+	defer rig.agent.mu.Unlock()
+	assert.Equal(t, "gpt-5.5", rig.agent.model)
+	assert.Equal(t, "openai", rig.agent.provider)
+}
+
 func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T) {
 	t.Parallel()
 

@@ -8,7 +8,7 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', className: 'sk-read-test' }]]),
 }))
 
-describe('readresultview syntax highlighting', () => {
+describe('ReadResultView syntax highlighting', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

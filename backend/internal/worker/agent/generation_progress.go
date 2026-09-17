@@ -17,6 +17,7 @@ const (
 	ProgressNativeTokens
 	ProgressOutputDelta
 	ProgressOutputTotal
+	ProgressOutputTail
 	ProgressModelComplete
 	ProgressOutputComplete
 	ProgressOutputReset
@@ -32,6 +33,10 @@ type ProgressUpdate struct {
 	Value     int64
 	Minimum   bool
 	Exact     bool
+	// Truncated states that the observation LOST earlier output. It belongs to
+	// ProgressOutputTail alone: a tail says what the tool printed last, and the
+	// reader must know when there was more before it.
+	Truncated bool
 }
 
 func ModelTextProgress(scopeID, text string) ProgressUpdate {
@@ -52,6 +57,22 @@ func OutputTotalProgress(scopeID string, bytes int64, minimum bool) ProgressUpda
 
 func OutputExactTotalProgress(scopeID string, bytes int64) ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressOutputTotal, ScopeID: scopeID, Value: bytes, Exact: true}
+}
+
+// OutputTailProgress carries the last text a RUNNING tool printed, so the card
+// can show the call's current output while it runs.
+//
+// It is not a counter. Every other operation here folds into one aggregate that
+// the agent broadcasts as a number; this one travels per SPAN and reaches the
+// span's own running-tool payload, because a tail belongs to one tool call and
+// says nothing about any other. `scopeID` is that call's id, which is also its
+// span id.
+//
+// Ephemeral, like every observation in this file: the worker never writes the
+// tail to the messages table, and the finished row carries the whole text
+// through the retained frame the provider sends at the end.
+func OutputTailProgress(scopeID, tail string, truncated bool) ProgressUpdate {
+	return ProgressUpdate{Operation: ProgressOutputTail, ScopeID: scopeID, Text: tail, Truncated: truncated}
 }
 
 func CompleteModelProgress(scopeID string) ProgressUpdate {
@@ -123,7 +144,10 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		c.last = next
 		return next, changed
 	}
-	if update.ScopeID == "" {
+	// A tail is per-span text rather than a counter, so it changes nothing here.
+	// The publisher reads it before it reaches this aggregate; see
+	// OutputTailProgress.
+	if update.Operation == ProgressOutputTail || update.ScopeID == "" {
 		return c.last, false
 	}
 	if c.scopes == nil {
@@ -191,6 +215,12 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		scope.outputMinimum = false
 		scope.outputRetainedMinimum = false
 	case ProgressModelReset, ProgressReset:
+		return c.last, false
+	case ProgressOutputTail:
+		// Unreachable: the guard above this switch returns for a tail before any
+		// scope is touched. The case is here because the switch is exhaustive over
+		// ProgressOperation, so a new operation is a compile-time failure rather than
+		// a value that silently falls through and moves no counter.
 		return c.last, false
 	}
 	var next ProgressSnapshot

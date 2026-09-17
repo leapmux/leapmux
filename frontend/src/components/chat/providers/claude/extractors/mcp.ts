@@ -1,10 +1,10 @@
-import type { McpContentItem, McpToolCallSource, McpToolCallStatus } from '../../../results/mcpToolCall'
-import type { ParsedMessageContent } from '~/lib/messageParser'
-import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
-import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { parseMcpContentItem, parseMcpToolName } from '../../../results/mcpToolCall'
-import { extractPairedToolUseInfo } from './assistantContent'
+import type { McpCallFacts, McpContentItem } from '../../../ir/mcpToolCall'
+import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { McpRequest } from '../../../ir/tools/mcp'
+import type { ClaudeToolRow } from './toolCommon'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { prettifyStructuredJson } from '~/lib/jsonFormat'
+import { parseMcpContentItem, parseMcpToolName } from '../../../ir/mcpToolCall'
 
 /** Tool name matches the shared `mcp__server__tool` convention. */
 export function isClaudeMcpTool(name: string): boolean {
@@ -22,20 +22,17 @@ interface ClaudeMcpFromToolResultArgs {
 }
 
 /**
- * Build an `McpToolCallSource` from a Claude MCP tool_result. Returns null
+ * Read the wire facts of a Claude MCP tool_result. Returns null
  * when the tool name isn't an `mcp__server__tool` call.
  *
  * Claude doesn't carry a structured "MCP item" — the MCP-ness comes from the
  * tool name. Arguments are the linked tool_use input; result content is
  * Claude's standard `tool_result.content` array (text/image content blocks).
  */
-export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpToolCallSource | null {
+export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpCallFacts | null {
   const parsed = parseMcpToolName(args.toolName)
   if (!parsed)
     return null
-
-  const status: McpToolCallStatus = args.isError ? 'failed' : 'completed'
-  const argsJson = prettifyArgsJson(args.toolInput)
 
   const content: McpContentItem[] = parseClaudeResultContent(args.resultContent)
 
@@ -50,43 +47,23 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpT
     error = flat || undefined
   }
 
+  const structuredJson = prettifyStructuredJson(args.toolUseResult?.structuredContent)
   return {
     server: parsed.server,
     tool: parsed.tool,
-    argsJson,
     // When the call is flagged as an error, drop the TEXT to avoid rendering
     // it twice -- the `error` string above is the joined text of these same
     // blocks. The images stay: nothing else carries them, so dropping them hid
     // the screenshot a failed MCP tool returned (Playwright returns one), and
-    // it left the row with fewer images than `Provider.toolResultImages`
+    // it left the row with fewer images than `imagesForIR`
     // numbers for the message -- which is the index an already-open image tab
     // addresses by, permanently.
     content: args.isError ? content.filter(item => item.type !== 'text') : content,
-    structuredJson: prettifyStructuredJson(args.toolUseResult?.structuredContent),
-    error,
-    status,
+    // Each optional half rides only when the wire stated it.
+    ...(structuredJson !== undefined ? { structuredJson } : {}),
+    ...(error !== undefined ? { error } : {}),
+    ...(args.isError ? { failed: true } : {}),
   }
-}
-
-/** Resolve the same MCP source for the result body and its toolbar. */
-export function claudeMcpFromMessage(parsed: unknown, spanType: string | undefined, request: ParsedMessageContent | undefined): McpToolCallSource | null {
-  if (!isObject(parsed))
-    return null
-  const requestInfo = extractPairedToolUseInfo(parsed, request)
-  const toolUseResult = pickObject(parsed, 'tool_use_result')
-  const toolName = spanType || pickString(toolUseResult, 'tool_name') || requestInfo?.toolName || ''
-  if (!isClaudeMcpTool(toolName))
-    return null
-  const result = getMessageContent(parsed)?.find(block => isObject(block) && block.type === 'tool_result')
-  if (!result)
-    return null
-  return claudeMcpFromToolResult({
-    toolName,
-    toolInput: requestInfo?.input,
-    toolUseResult,
-    resultContent: result.content,
-    isError: result.is_error === true,
-  })
 }
 
 function parseClaudeResultContent(raw: unknown): McpContentItem[] {
@@ -98,4 +75,33 @@ function parseClaudeResultContent(raw: unknown): McpContentItem[] {
   // Claude tool_result content blocks share the MCP shape (`{type, text}` /
   // `{type, ...}`), so the shared parser handles them.
   return raw.map(parseMcpContentItem)
+}
+
+/** The MCP pair: the server and tool the name spells, with the blocks it answered. */
+export function claudeMcpPayload(request: McpRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'mcp'> {
+  if (!result)
+    return { kind: 'mcp', request }
+  const source = claudeMcpFromToolResult({
+    toolName: args.toolName,
+    toolInput: args.input,
+    // Absent, not null: the arg type takes null as a stated "no structured
+    // payload", which a result row that carries no record does not state.
+    ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
+    resultContent: result.rawResultContent,
+    isError: result.isError === true,
+  })
+  const content = source?.content?.length
+    ? source.content
+    : result.images.map(image => ({ type: 'image' as const, source: image }))
+  return {
+    kind: 'mcp',
+    request,
+    result: {
+      content,
+      // Each optional half rides only when the facts carried one.
+      ...(source?.structuredJson !== undefined ? { structuredJson: source.structuredJson } : {}),
+      ...(source?.error !== undefined ? { error: source.error } : {}),
+      ...(source?.durationMs !== undefined ? { durationMs: source.durationMs } : {}),
+    },
+  }
 }

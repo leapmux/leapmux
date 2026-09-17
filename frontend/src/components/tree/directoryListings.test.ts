@@ -75,8 +75,8 @@ describe('loadListings', () => {
 
     const resp = await loadListings('w1', '/a', true)
 
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/a', dirsOnly: false })
-    expect(listDirectory.mock.calls[0][1].fromRoot).toBeUndefined()
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/a', dirsOnly: false })
+    expect(listDirectory.mock.calls[0]?.[1].fromRoot).toBeUndefined()
     expect(resp.listings.map(l => l.path)).toEqual(['/a'])
   })
 
@@ -85,7 +85,7 @@ describe('loadListings', () => {
 
     const resp = await loadListings('w1', '/a', false, '/')
 
-    expect(listDirectory.mock.calls[0][1]).toMatchObject({ path: '/a', fromRoot: '/', dirsOnly: true })
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/a', fromRoot: '/', dirsOnly: true })
     expect(resp.listings.map(l => l.path)).toEqual(['/', '/a'])
   })
 
@@ -112,7 +112,7 @@ describe('loadListings', () => {
 
     const [only] = (await loadListings('w1', '/a', true)).listings
 
-    expect(only.entries[0].size).toBe(42)
+    expect(only?.entries[0]?.size).toBe(42)
     expect(() => JSON.stringify(only)).not.toThrow()
   })
 })

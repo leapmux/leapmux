@@ -265,7 +265,10 @@ test.describe('Worktree Git Modes', () => {
 
     // Verify the agent's working dir is the worktree path.
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    expect(agents[0].workingDir).toBe(worktreeDir)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the opened agent to be listed')
+    expect(agent.workingDir).toBe(worktreeDir)
   })
 
   test('use-existing-worktree on managed worktree: tracks tab correctly', async ({
@@ -329,7 +332,10 @@ test.describe('Worktree Git Modes', () => {
 
     // Close the agent.
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the opened agent to be listed')
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
 
     // Unmanaged worktree should NOT be cleaned up.
     expect(existsSync(worktreeDir)).toBe(true)
@@ -442,7 +448,10 @@ test.describe('Worktree Git Modes', () => {
 
     // Close the agent.
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const agent = agents[0]
+    if (agent === undefined)
+      throw new Error('expected the opened agent to be listed')
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
 
     // No cleanup — unmanaged worktree should still exist.
     expect(existsSync(worktreeDir)).toBe(true)

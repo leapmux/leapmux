@@ -21,6 +21,7 @@ import { cutAtCodeUnit, PREVIEW_ELLIPSIS } from './markdownSafeCut'
 export function clipFirstLine(text: string, limit: number): string {
   // \r included: a CRLF payload would otherwise leave the carriage return on the
   // end of the line, where it renders as nothing and defeats a length check.
-  const line = text.trim().split(/\r?\n/, 1)[0].trim()
+  // split-with-limit always yields at least one element; `?? ''` is for the type only.
+  const line = (text.trim().split(/\r?\n/, 1)[0] ?? '').trim()
   return line.length > limit ? `${cutAtCodeUnit(line, limit)}${PREVIEW_ELLIPSIS}` : line
 }

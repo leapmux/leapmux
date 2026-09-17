@@ -1,4 +1,4 @@
-import type { ProtoSettingsSource } from './protoRegistry'
+import type { ProtoSettingRow, ProtoSettingsSource } from './protoRegistry'
 import type { CategoryId, SettingControl } from './types'
 import type { PreferencesState } from '~/context/PreferencesContext'
 import type { SettingDescriptor as ProtoSettingDescriptor, SettingField, SettingFieldCondition, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
@@ -99,6 +99,21 @@ function mustControl(...args: Parameters<typeof controlForField>): SettingContro
   return control!
 }
 
+/**
+ * `buildProtoRows` yields one row per renderable field, and every case below
+ * reads a row it just asked for. Indexing that array gives `| undefined`
+ * under noUncheckedIndexedAccess, so assert it here instead of spreading
+ * guards across the file: a regression that loses the row then identifies
+ * the line that lost it, the same bargain `mustControl` above makes.
+ */
+function mustRow(rows: readonly ProtoSettingRow[], index = 0): ProtoSettingRow {
+  const row = rows[index]
+  expect(row, 'the descriptor must yield a row').toBeDefined()
+  if (row === undefined)
+    throw new Error('unreachable: the assertion above fails first')
+  return row
+}
+
 describe('controlForField', () => {
   it('maps bool to toggle', () => {
     expect(mustControl(field({ kind: SettingFieldKind.BOOL })).kind).toBe('toggle')
@@ -161,19 +176,28 @@ describe('controlForField', () => {
   })
 
   it('maps enum to enum with options, stringList to stringList, custom by customId', () => {
-    expect(controlForField(field({
+    const enumControl = mustControl(field({
       kind: SettingFieldKind.ENUM,
       enumValues: [
         { value: 'starttls', label: 'STARTTLS', help: 'upgrade' },
         { value: 'implicit', label: 'Implicit', help: '' },
       ] as SettingField['enumValues'],
-    }))).toMatchObject({
+    }))
+    expect(enumControl).toMatchObject({
       kind: 'enum',
       options: [
         { value: 'starttls', label: 'STARTTLS', help: 'upgrade' },
-        { value: 'implicit', label: 'Implicit', help: undefined },
+        { value: 'implicit', label: 'Implicit' },
       ],
     })
+    // An empty help on the wire is NO help: the property is omitted, never
+    // the empty string and never an explicit undefined.
+    if (enumControl.kind === 'enum') {
+      const bare = enumControl.options[1]
+      if (bare === undefined)
+        throw new Error('missing second enum option')
+      expect(bare).toStrictEqual({ value: 'implicit', label: 'Implicit' })
+    }
     expect(mustControl(field({ kind: SettingFieldKind.STRING_LIST })).kind).toBe('stringList')
     expect(controlForField(field({ kind: SettingFieldKind.CUSTOM, customId: 'keybindings' })))
       .toMatchObject({ kind: 'custom', id: 'keybindings' })
@@ -199,8 +223,8 @@ describe('buildProtoRows', () => {
 
     expect(rows.map(r => r.descriptor.id)).toEqual(['timeouts.api_seconds', 'timeouts.agent_startup_seconds'])
     expect(rows.map(r => r.protoKey)).toEqual(['timeouts', 'timeouts'])
-    expect(rows[0].binding.value()).toBe(10)
-    await rows[0].binding.set(15)
+    expect(mustRow(rows).binding.value()).toBe(10)
+    await mustRow(rows).binding.set(15)
     expect(src.update).toHaveBeenCalledWith('timeouts', '{"api_seconds":15}')
   })
 
@@ -211,8 +235,8 @@ describe('buildProtoRows', () => {
       category: 'general',
       fields: [field({ label: 'Session duration', kind: SettingFieldKind.INT, unit: 'seconds', min: 300n })],
     })], src)
-    expect(rows[0].descriptor.id).toBe('session_duration_seconds')
-    await rows[0].binding.set(3600)
+    expect(mustRow(rows).descriptor.id).toBe('session_duration_seconds')
+    await mustRow(rows).binding.set(3600)
     expect(src.update).toHaveBeenCalledWith('session_duration_seconds', '3600')
   })
 
@@ -223,7 +247,7 @@ describe('buildProtoRows', () => {
       category: 'email',
       fields: [field({ name: 'password', label: 'Password', secret: true })],
     })], src)
-    await rows[0].binding.set('hunter2')
+    await mustRow(rows).binding.set('hunter2')
     expect(src.updateSecret).toHaveBeenCalledWith('smtp', '{"password":"hunter2"}')
     expect(src.update).not.toHaveBeenCalled()
   })
@@ -244,11 +268,11 @@ describe('buildProtoRows', () => {
       ],
     })], src)
 
-    expect(rows[0].descriptor.hidden?.() ?? false).toBe(false)
-    expect(rows[1].descriptor.hidden?.() ?? false).toBe(true)
+    expect(mustRow(rows).descriptor.hidden?.() ?? false).toBe(false)
+    expect(mustRow(rows, 1).descriptor.hidden?.() ?? false).toBe(true)
 
     values.set('smtp', value('smtp', '{"tls_mode":"starttls"}'))
-    expect(rows[1].descriptor.hidden?.() ?? false).toBe(false)
+    expect(mustRow(rows, 1).descriptor.hidden?.() ?? false).toBe(false)
   })
 
   it('depends_on can address another setting key', () => {
@@ -280,9 +304,9 @@ describe('buildProtoRows', () => {
   it('hiddenInSolo descriptors hide exactly in solo mode', () => {
     const rows = buildProtoRows([descriptor({ hiddenInSolo: true })], source())
     isSoloMode.mockReturnValue(false)
-    expect(rows[0].descriptor.hidden?.() ?? false).toBe(false)
+    expect(mustRow(rows).descriptor.hidden?.() ?? false).toBe(false)
     isSoloMode.mockReturnValue(true)
-    expect(rows[0].descriptor.hidden?.() ?? false).toBe(true)
+    expect(mustRow(rows).descriptor.hidden?.() ?? false).toBe(true)
     isSoloMode.mockReturnValue(false)
   })
 
@@ -305,14 +329,14 @@ describe('buildProtoRows', () => {
     })], src)
 
     isSoloMode.mockReturnValue(false)
-    expect(rows[0].descriptor.hidden?.()).toBe(true)
+    expect(mustRow(rows).descriptor.hidden?.()).toBe(true)
 
     values.set('captcha.selected', value('captcha.selected', '"turnstile"'))
-    expect(rows[0].descriptor.hidden?.()).toBe(false)
+    expect(mustRow(rows).descriptor.hidden?.()).toBe(false)
 
     // Solo still hides it, whatever the condition says.
     isSoloMode.mockReturnValue(true)
-    expect(rows[0].descriptor.hidden?.()).toBe(true)
+    expect(mustRow(rows).descriptor.hidden?.()).toBe(true)
     isSoloMode.mockReturnValue(false)
   })
 
@@ -337,9 +361,9 @@ describe('buildProtoRows', () => {
         field({ name: 'ratio', label: 'Ratio', kind: SettingFieldKind.FLOAT }),
       ],
     })], src)
-    expect(rows[0].binding.value()).toBe(0)
-    expect(rows[1].binding.value()).toBe(0)
-    expect(rows[2].binding.value()).toBe(0)
+    expect(mustRow(rows).binding.value()).toBe(0)
+    expect(mustRow(rows, 1).binding.value()).toBe(0)
+    expect(mustRow(rows, 2).binding.value()).toBe(0)
   })
 
   it('leaves an omitted non-numeric object field unset', () => {
@@ -349,7 +373,7 @@ describe('buildProtoRows', () => {
       category: 'email',
       fields: [field({ name: 'host', label: 'Host', kind: SettingFieldKind.STRING })],
     })], src)
-    expect(rows[0].binding.value()).toBeUndefined()
+    expect(mustRow(rows).binding.value()).toBeUndefined()
   })
 
   it('does not invent 0 when the setting itself is absent', () => {
@@ -358,7 +382,7 @@ describe('buildProtoRows', () => {
       category: 'advanced',
       fields: [field({ name: 'relay_bytes', kind: SettingFieldKind.INT })],
     })], source())
-    expect(rows[0].binding.value()).toBeUndefined()
+    expect(mustRow(rows).binding.value()).toBeUndefined()
   })
 
   /**
@@ -376,10 +400,10 @@ describe('buildProtoRows', () => {
     // Dev mode holds sign-up open while no row is stored, so the configured
     // value is the code default that an edit would replace.
     const scalar = new Map([['signup_enabled', value('signup_enabled', 'true', { mergedJson: 'false' })]])
-    const [signup] = buildProtoRows([descriptor({
+    const signup = mustRow(buildProtoRows([descriptor({
       key: 'signup_enabled',
       fields: [field({ kind: SettingFieldKind.BOOL })],
-    })], source(scalar))
+    })], source(scalar)))
     expect(signup.binding.value()).toBe(false)
     expect(signup.binding.effective?.()).toBe(true)
 
@@ -390,11 +414,11 @@ describe('buildProtoRows', () => {
       mergedJson: '{"relay_bytes":0}',
       customized: true,
     })]])
-    const [relay] = buildProtoRows([descriptor({
+    const relay = mustRow(buildProtoRows([descriptor({
       key: 'queue_budget',
       category: 'advanced',
       fields: [field({ name: 'relay_bytes', label: 'Relay', kind: SettingFieldKind.INT })],
-    })], source(object))
+    })], source(object)))
     expect(relay.binding.value()).toBe(0)
     expect(relay.binding.effective?.()).toBe(268435456)
   })
@@ -425,10 +449,10 @@ describe('buildProtoRows', () => {
     ])
     const src = source(values)
 
-    const [signup] = buildProtoRows([descriptor({
+    const signup = mustRow(buildProtoRows([descriptor({
       key: 'signup_enabled',
       fields: [field({ kind: SettingFieldKind.BOOL })],
-    })], src)
+    })], src))
     expect(signup.binding.effective?.()).toBeUndefined()
 
     const smtpRows = buildProtoRows([descriptor({
@@ -451,10 +475,10 @@ describe('buildProtoRows', () => {
       mergedJson: 'false',
       customized: true,
     })]])
-    const [row] = buildProtoRows([descriptor({
+    const row = mustRow(buildProtoRows([descriptor({
       key: 'signup_enabled',
       fields: [field({ kind: SettingFieldKind.BOOL })],
-    })], source(scalar))
+    })], source(scalar)))
     expect(row.binding.effective?.()).toBe(true)
 
     // Per field, and on a field the stored row never listed: email
@@ -484,11 +508,11 @@ describe('buildProtoRows', () => {
   // differs from it, and each one prints a note that never applies there.
   it('falls back to the effective document when the scope sends no merged one', () => {
     const values = new Map([['font_size', value('font_size', '14', { valueJson: '13', customized: true })]])
-    const [row] = buildProtoRows([descriptor({
+    const row = mustRow(buildProtoRows([descriptor({
       key: 'font_size',
       category: 'appearance',
       fields: [field({ kind: SettingFieldKind.INT })],
-    })], source(values))
+    })], source(values)))
     expect(row.binding.value()).toBe(14)
     expect(row.binding.effective?.()).toBeUndefined()
   })
@@ -500,8 +524,8 @@ describe('buildProtoRows', () => {
       descriptor({ key: 'weird', category: 'not-a-category' }),
     ], src)
     expect(rows).toHaveLength(1)
-    expect(rows[0].binding.customized?.()).toBe(true)
-    await rows[0].binding.reset!()
+    expect(mustRow(rows).binding.customized?.()).toBe(true)
+    await mustRow(rows).binding.reset!()
     expect(src.reset).toHaveBeenCalledWith('signup_enabled')
   })
 
@@ -652,7 +676,7 @@ describe('buildProtoRows per-field customized and reset', () => {
 
   it('leaves resetsWholeKey unset on a scalar row, whose reset is exact', () => {
     const scalar = descriptor({ key: 'public_url', fields: [field({ name: '' })] })
-    const [row] = buildProtoRows([scalar], source())
+    const row = mustRow(buildProtoRows([scalar], source()))
     expect(row.binding.resetsWholeKey).toBeUndefined()
   })
 })

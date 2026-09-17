@@ -39,7 +39,7 @@ import {
 import { KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 
-describe('channelManager openChannel', () => {
+describe('ChannelManager openChannel', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -593,7 +593,7 @@ describe('channelManager openChannel', () => {
   })
 })
 
-describe('channelManager encryption modes', () => {
+describe('ChannelManager encryption modes', () => {
   const h = new ChannelManagerTestHarness()
 
   it('should open a channel with classic encryption (X25519 only)', async () => {
@@ -679,7 +679,7 @@ describe('channelManager encryption modes', () => {
   })
 })
 
-describe('channelManager open-time verification', () => {
+describe('ChannelManager open-time verification', () => {
   // The whole point of the open-time Ping is that a session broken in either direction
   // never reaches a caller -- and channels are POOLED, so "a caller" includes everyone
   // who asks for this worker while the ping is still in flight. The channel has to be
@@ -806,7 +806,7 @@ describe('channelManager open-time verification', () => {
   })
 })
 
-describe('channelManager key pinning across concurrent opens', () => {
+describe('ChannelManager key pinning across concurrent opens', () => {
   beforeEach(() => {
     clearAllKeyPins()
   })

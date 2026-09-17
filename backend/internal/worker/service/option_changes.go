@@ -28,7 +28,8 @@ func (svc *Service) persistOptionChanges(current db.Agent, previous, values Opti
 	changes := svc.buildSettingsChanges(&current, previous, values, sortedOptionKeys(delta), notifyFirstSet)
 	if len(changes) > 0 {
 		svc.Output.PersistLeapMuxNotification(current.ID, current.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypeSettingsChanged, "changes": changes,
+			contracts.NotificationFieldType:    contracts.NotificationTypeSettingsChanged,
+			contracts.NotificationFieldChanges: changes,
 		})
 	}
 	return current, nil

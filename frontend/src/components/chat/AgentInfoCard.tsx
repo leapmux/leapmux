@@ -10,7 +10,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/WorkingTree'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
-import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
+import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, rateLimitPopoverLabel } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -18,10 +18,14 @@ import { OPTION_ID_MODEL, optionGroup, selectedModelContextWindow } from './sett
 import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
 
 export interface AgentInfoCardProps {
-  agent?: AgentInfo
-  agentSessionInfo?: AgentSessionInfo
+  // These three arrive as reactive getters that resolve through to undefined
+  // while the panel loads (agent not focused yet, session info not fetched yet);
+  // a getter cannot omit a key, so `undefined` is the live "absent for now"
+  // state here rather than an invalid construction.
+  agent?: AgentInfo | undefined
+  agentSessionInfo?: AgentSessionInfo | undefined
   /** Branch label from {@link repoGitView}. */
-  branchName?: string
+  branchName?: string | undefined
   /** Git flags and ahead/behind from {@link repoGitView}. */
   gitView?: RepoGitView
   /**
@@ -36,7 +40,7 @@ export interface AgentInfoCardProps {
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
-  if (!pluginFor(agentProvider)?.sessionIdIsFilePath)
+  if (!pluginFor(agentProvider)?.session?.sessionIdIsFilePath)
     return sessionId
 
   const tail = basename(sessionId) || sessionId
@@ -100,7 +104,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
     const sessionId = agent()?.agentSessionId
     return sessionId ? formatAgentSessionIdForDisplay(agent()?.agentProvider, sessionId) : undefined
   })
-  const sessionIdCopyTitle = () => pluginFor(agent()?.agentProvider)?.sessionIdIsFilePath ? 'Copy session file path' : 'Copy session ID'
+  const sessionIdCopyTitle = () => pluginFor(agent()?.agentProvider)?.session?.sessionIdIsFilePath ? 'Copy session file path' : 'Copy session ID'
 
   // 1-minute timer for countdown refresh
   const [now, setNow] = createSignal(Date.now())
@@ -318,7 +322,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={rateLimitList().length > 0}>
         <For each={rateLimitList()}>
           {(info) => {
-            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
+            // `rateLimitPopoverLabel` reads the table with `Object.hasOwn`, so a wire
+            // value that spells an `Object.prototype` member falls through to the generic
+            // heading instead of rendering that function's source.
+            const typeLabel = rateLimitPopoverLabel(info.rateLimitType)
               ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
 
             const status = info.status
@@ -346,7 +353,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
                   {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
                   <Show when={countdown}>
                     {', '}
-                    <Tooltip text={typeof resetsAt === 'number' ? formatResetTimestamp(resetsAt) : undefined}>
+                    <Tooltip {...(typeof resetsAt === 'number' ? { text: formatResetTimestamp(resetsAt) } : {})}>
                       <span>{`resets in ${countdown}`}</span>
                     </Tooltip>
                   </Show>

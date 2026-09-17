@@ -2,11 +2,12 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { renderMessageContent } from '../../messageRenderers'
+import { providerToolMeta } from '~/test-support/toolCallIr'
+import { renderMessageContent } from '../../rowRenderers'
 import { renderACPToolPair } from '../acp/testUtils'
 import { providerFor } from '../registry'
-import { input, toolMessageInput } from '../testUtils'
-import './index'
+import { input } from '../testUtils'
+import './plugin'
 import '../kilo/plugin'
 import '../testMocks'
 
@@ -79,7 +80,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
 
   function renderTool(fields: Record<string, unknown>) {
     const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'tool', ...fields }
-    return render(() => renderMessageContent(tool, { premeasureMode: true }, providerFor(provider)!.classify(input(tool)), provider))
+    return render(() => renderMessageContent(tool, { premeasureMode: true }, providerFor(provider)!.transcript.classify(input(tool)), provider))
   }
 
   it('renders directory entries from display metadata as a file list', () => {
@@ -102,6 +103,10 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     const { container } = renderTool({
       kind: 'edit',
       title: 'apply_patch',
+      // The patch the call ASKED for. A file change whose request names no file is
+      // refused by the IR and degrades to the uncategorized row, so a frame with no
+      // arguments at all would test that row rather than the metadata below.
+      rawInput: { filePath: '/project/old.ts', patch: first + second },
       rawOutput: { metadata: { diff: first + second, files: [
         { filePath: '/project/old.ts', movePath: '/project/new.ts', type: 'move', patch: first },
         { filePath: '/project/deleted.ts', type: 'delete', patch: second },
@@ -123,8 +128,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       content: [{ type: 'content', content: { type: 'text', text: '<file>model-facing wrapper</file>' } }],
       rawOutput: { metadata: { display: { type: 'file', path: '/project/code.ts', text: 'const value = 42\n', lineStart: 1 } } },
     }
-    const plugin = providerFor(provider)!
-    const meta = plugin.toolResultMeta?.(plugin.classify(input(tool)), toolMessageInput(tool))
+    const meta = providerToolMeta(provider, tool)
     expect(meta?.copyableContent()).toBe('const value = 42\n')
   })
 
@@ -173,8 +177,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       content: [{ type: 'content', content: { type: 'text', text: 'Found 2 matches\n/project/a:\n  Line 1: first\n\n/project/b:\n  Line 1: second\n' } }],
       rawOutput: { metadata: { matches: 2 } },
     }
-    const plugin = providerFor(provider)!
-    const meta = plugin.toolResultMeta?.(plugin.classify(input(tool)), toolMessageInput(tool))
+    const meta = providerToolMeta(provider, tool)
     expect(meta?.collapsible).toBe(false)
   })
 

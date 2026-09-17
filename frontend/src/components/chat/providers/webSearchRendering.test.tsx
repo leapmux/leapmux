@@ -3,8 +3,8 @@ import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import './claude'
-import './codex'
+import './claude/plugin'
+import './codex/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -15,7 +15,7 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
@@ -36,13 +36,7 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
 
 function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
-  const toolName = String(item.type ?? 'codex')
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName,
-    toolUse: parsed,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }

@@ -62,7 +62,10 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
   }
 
   return (
-    <DropdownMenu trigger={rowContextMenuTrigger()} contextMenuFor={props.contextMenuFor}>
+    <DropdownMenu
+      trigger={rowContextMenuTrigger()}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+    >
       <MenuInfoButton
         rows={infoRows()}
         copyText={infoJson}

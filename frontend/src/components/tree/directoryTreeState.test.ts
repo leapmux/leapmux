@@ -104,7 +104,11 @@ describe('serializeState and deserializeState', () => {
   it('discards a payload stamped with another version', () => {
     const stored = serializeState(state.expandedPaths, state.childrenCache, state.truncatedDirs)
     expect(deserializeState({ ...stored, v: DIRECTORY_TREE_STATE_VERSION + 1 })).toBeNull()
-    expect(deserializeState({ ...stored, v: undefined })).toBeNull()
+    // An absent `v` and an explicit `v: undefined` read the same in the version
+    // check, and the typed shape can only express the absent form.
+    const { v, ...unstamped } = stored
+    expect(v).toBe(DIRECTORY_TREE_STATE_VERSION)
+    expect(deserializeState(unstamped)).toBeNull()
     expect(deserializeState(undefined)).toBeNull()
   })
 

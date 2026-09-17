@@ -48,6 +48,16 @@ const (
 	PiCommandNewSession         = "new_session"
 )
 
+// Pi plan-extension fresh-implementation vocabulary — the follow-up dialog a
+// "Start fresh and implement" answer produces. Only the worker reads these: it
+// answers the dialog itself (see pi_fresh_implementation.go), so the browser
+// never dispatches on them and they stay out of contracts/pi-protocol.json,
+// whose planActions set the plan-approval detector treats as closed.
+const (
+	PiPlanDialogFreshSettingsTitle = "Fresh implementation settings"
+	PiPlanActionStartFresh         = "Start fresh implementation"
+)
+
 // piGoalDisplayKey is the status key and the widget key that pi-goal-x writes its
 // own display under. A set_status or a set_widget under that key is the only hint
 // LeapMux gets for a goal that changed with no tool result and no focus entry.

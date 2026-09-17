@@ -20,6 +20,19 @@ import { buildTree } from './workspaceTabTree.model'
 
 const repoGitStore = createRepoGitStore()
 
+/**
+ * The arguments of a spy's Nth call, as a value: every read site is
+ * preceded by an assertion that the call happened, and this guard turns
+ * that statement into arguments the assertions can take. Takes the
+ * `mock.calls` array itself, so the arguments keep the spy's own types.
+ */
+function callAt<T>(calls: readonly T[], index = 0): T {
+  const call = calls[index]
+  if (call === undefined)
+    throw new Error(`expected the spy's call at ${index} to exist`)
+  return call
+}
+
 beforeEach(() => {
   repoGitStore.clearAll()
 })
@@ -79,7 +92,9 @@ vi.mock('@thisbeyond/solid-dnd', () => ({
       },
     }
   },
-  maybeTransformStyle: () => undefined,
+  // A no-op transform, which is what the leaf's `{ x: 0, y: 0 }` produces; the
+  // real helper never answers undefined.
+  maybeTransformStyle: () => ({}),
 }))
 
 vi.mock('~/components/shell/TabDragContext', () => ({
@@ -132,7 +147,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('workspaceTabTree interactions', () => {
+describe('WorkspaceTabTree interactions', () => {
   it('uses a 24px close button with a 14px icon', () => {
     renderTree(() => (
       <WorkspaceTabTree
@@ -173,7 +188,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(screen.getByTestId('workspace-tab-close'))
 
     expect(onTabClose).toHaveBeenCalledTimes(1)
-    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' })
+    expect(callAt(onTabClose.mock.calls)[0]).toMatchObject({ type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' })
     expect(onTabClick).not.toHaveBeenCalled()
   })
 
@@ -195,7 +210,7 @@ describe('workspaceTabTree interactions', () => {
     leaf.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
 
     expect(onTabClose).toHaveBeenCalledTimes(1)
-    expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
+    expect(callAt(onTabClose.mock.calls)[0]).toMatchObject({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
   })
 
   it('hides close controls for every tab type in archived mode', () => {
@@ -331,7 +346,7 @@ describe('workspaceTabTree interactions', () => {
 
     await fireEvent.click(screen.getByText('Switch to branch...'))
     expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
-    expect(branchActions.onChangeBranch.mock.calls[0][0]).toMatchObject({
+    expect(callAt(branchActions.onChangeBranch.mock.calls)[0]).toMatchObject({
       workspaceId: 'ws-1',
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r',
@@ -395,7 +410,7 @@ describe('workspaceTabTree interactions', () => {
 
     for (const spy of [branchActions.onNewAgentAdvanced, branchActions.onNewTerminalAdvanced]) {
       expect(spy).toHaveBeenCalledTimes(1)
-      expect(spy.mock.calls[0][0]).toMatchObject({
+      expect(callAt(spy.mock.calls)[0]).toMatchObject({
         workspaceId: 'ws-1',
         workerId: 'w1',
         gitToplevel: '/home/user/Workspaces/r',
@@ -422,7 +437,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(screen.getByText('Delete branch...'))
 
     expect(branchActions.onDeleteBranch).toHaveBeenCalledTimes(1)
-    const ref = branchActions.onDeleteBranch.mock.calls[0][0]
+    const ref = callAt(branchActions.onDeleteBranch.mock.calls)[0]
     expect(ref).toMatchObject({
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r',
@@ -687,14 +702,14 @@ describe('workspaceTabTree interactions', () => {
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
     await fireEvent.click(screen.getByText('Switch to branch...'))
-    const changeRef = branchActions.onChangeBranch.mock.calls[0][0]
+    const changeRef = callAt(branchActions.onChangeBranch.mock.calls)[0]
     expect(changeRef.workspaceId).toBe('ws-1')
     expect(changeRef.tabs.map((t: Tab) => t.id).toSorted()).toEqual(['a1', 'a2'])
     expect(changeRef.isWorktree).toBe(false)
 
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
     await fireEvent.click(screen.getByText('Delete branch...'))
-    const deleteRef = branchActions.onDeleteBranch.mock.calls[0][0]
+    const deleteRef = callAt(branchActions.onDeleteBranch.mock.calls)[0]
     expect(deleteRef.workspaceId).toBe('ws-1')
     expect(deleteRef.tabs.map((t: Tab) => t.id).toSorted()).toEqual(['a1', 'a2'])
     expect(deleteRef.isWorktree).toBe(false)
@@ -751,7 +766,7 @@ describe('workspaceTabTree interactions', () => {
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
           workspaceId="ws-1"
-          workerInfoFn={opts.noWorkerInfo ? undefined : workerInfo}
+          {...(opts.noWorkerInfo ? {} : { workerInfoFn: workerInfo })}
         />
       ))
       return screen.getByTestId('tab-tree-branch-group')
@@ -974,7 +989,7 @@ describe('workspaceTabTree interactions', () => {
     // The menu names what it destroys, so a worktree row offers "Delete
     // worktree..." -- see BranchContextMenu.isWorktree.
     await fireEvent.click(screen.getByText('Delete worktree...'))
-    expect(branchActions.onDeleteBranch.mock.calls[0][0].isWorktree).toBe(true)
+    expect(callAt(branchActions.onDeleteBranch.mock.calls)[0].isWorktree).toBe(true)
   })
 
   // ----- Per-row DropdownMenu mount invariants --------------------------
@@ -1194,6 +1209,8 @@ describe('workspaceTabTree interactions', () => {
       />
     ))
     const [rowA, rowB] = screen.getAllByTestId('tab-tree-branch-group')
+    if (rowA === undefined || rowB === undefined)
+      throw new Error('expected two branch rows')
     const dropdownA = rowA.querySelector('ot-dropdown') as HTMLElement
     const dropdownB = rowB.querySelector('ot-dropdown') as HTMLElement
 
@@ -1201,7 +1218,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(within(dropdownB).getByText('Switch to branch...'))
 
     expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
-    expect(branchActions.onChangeBranch.mock.calls[0][0]).toMatchObject({
+    expect(callAt(branchActions.onChangeBranch.mock.calls)[0]).toMatchObject({
       workspaceId: 'ws-1',
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r-feature-2',
@@ -1212,7 +1229,7 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(within(dropdownA).getByRole('button'))
     await fireEvent.click(within(dropdownA).getByText('Switch to branch...'))
     expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(2)
-    expect(branchActions.onChangeBranch.mock.calls[1][0]).toMatchObject({
+    expect(callAt(branchActions.onChangeBranch.mock.calls, 1)[0]).toMatchObject({
       gitToplevel: '/home/user/Workspaces/r-feature-1',
       branchName: 'feature-1',
     })
@@ -1308,10 +1325,13 @@ describe('workspaceTabTree interactions', () => {
     // Push a fresh Tab object for the "main" branch with an updated diff
     // stat — this mimics a WatchEvents push that replaces one tab's
     // reference while every other tab keeps its identity.
-    setTabs(prev => [
-      gitTabWithBranch('a1', 'main', 5),
-      prev[1],
-    ])
+    setTabs((prev) => {
+      // The signal was seeded with two tabs and only this updater replaces them.
+      const feature = prev[1]
+      if (feature === undefined)
+        throw new Error('expected the feature tab to still be present')
+      return [gitTabWithBranch('a1', 'main', 5), feature]
+    })
 
     const branchRowsAfter = screen.getAllByTestId('tab-tree-branch-group')
     expect(branchRowsAfter).toHaveLength(2)
@@ -1377,8 +1397,13 @@ describe('workspaceTabTree interactions', () => {
     // Replace alpha's tab reference after its diff stats change; beta's tab
     // keeps its identity.
     setTabs((prev) => {
-      seedRepo('w1', `/repos/${prev[0].id}`, { branch: 'main', originUrl: 'https://github.com/o/alpha.git', diffAdded: 7 })
-      return [repoTab('a1', 'https://github.com/o/alpha.git'), prev[1]]
+      // The signal was seeded with two tabs and only this updater replaces them.
+      const alpha = prev[0]
+      const beta = prev[1]
+      if (alpha === undefined || beta === undefined)
+        throw new Error('expected both repo tabs to still be present')
+      seedRepo('w1', `/repos/${alpha.id}`, { branch: 'main', originUrl: 'https://github.com/o/alpha.git', diffAdded: 7 })
+      return [repoTab('a1', 'https://github.com/o/alpha.git'), beta]
     })
 
     const repoRowsAfter = screen.getAllByTestId('tab-tree-repo-group')
@@ -1477,8 +1502,8 @@ describe('workspaceTabTree interactions', () => {
       diffUntracked: 0,
     })
     const after = buildTree([base], repoGitStore)
-    expect(before.groups[0].branches[0].diffAdded).toBe(0)
-    expect(after.groups[0].branches[0].diffAdded).toBe(5)
+    expect(before.groups[0]?.branches[0]?.diffAdded).toBe(0)
+    expect(after.groups[0]?.branches[0]?.diffAdded).toBe(5)
   })
 
   // Regression: the inner / outer For row bodies used to do
@@ -1643,7 +1668,7 @@ describe('workspaceTabTree interactions', () => {
       setTabs([second])
       const leaves = screen.getAllByTestId('tab-tree-leaf')
       expect(leaves).toHaveLength(1)
-      expect(leaves[0].textContent).toContain('Agent Two')
+      expect(leaves[0]?.textContent).toContain('Agent Two')
     })
 
     /**
@@ -1656,11 +1681,11 @@ describe('workspaceTabTree interactions', () => {
       draggableData.length = 0
       const setTabs = renderTabs([bareAgent])
       expect(draggableData).toHaveLength(1)
-      expect(draggableData[0].title).toBe('Agent')
+      expect(draggableData[0]?.title).toBe('Agent')
 
       setTabs([{ ...bareAgent, title: 'Agent Kiwi' } as Tab])
       expect(draggableData, 'the row must not have remounted').toHaveLength(1)
-      expect(draggableData[0].title).toBe('Agent Kiwi')
+      expect(draggableData[0]?.title).toBe('Agent Kiwi')
     })
 
     /**
@@ -1689,7 +1714,7 @@ describe('workspaceTabTree interactions', () => {
       await fireEvent.click(screen.getByText('Delete branch...'))
 
       expect(branchActions.onDeleteBranch).toHaveBeenCalledTimes(1)
-      expect(branchActions.onDeleteBranch.mock.calls[0][0].tabs.map((t: Tab) => t.title)).toEqual(['Agent Kiwi'])
+      expect(callAt(branchActions.onDeleteBranch.mock.calls)[0].tabs.map((t: Tab) => t.title)).toEqual(['Agent Kiwi'])
     })
   })
 
@@ -1706,6 +1731,8 @@ describe('workspaceTabTree interactions', () => {
     ))
 
     const [rowA, rowB] = screen.getAllByTestId('tab-tree-branch-group')
+    if (rowA === undefined || rowB === undefined)
+      throw new Error('expected two branch rows')
     const chevronOf = (row: HTMLElement) => row.querySelector('svg')!
     const isExpanded = (row: HTMLElement) => chevronOf(row).getAttribute('class')!.includes('chevronExpanded')
 
@@ -1911,7 +1938,7 @@ describe('workspaceTabTree interactions', () => {
 // Subagent rows render as CHILDREN of their parent agent row, one indent level
 // deeper. Asserted through the rendered indent (TabLeaf's only expression of
 // depth) and through document order, so the test pins what the user sees.
-describe('workspaceTabTree subagent nesting', () => {
+describe('WorkspaceTabTree subagent nesting', () => {
   function subagentTab(id: string, parentAgentId: string): Tab {
     return { ...makeTab(TabType.AGENT, id, id), parentAgentId } as Tab
   }
@@ -1921,6 +1948,16 @@ describe('workspaceTabTree subagent nesting', () => {
       id: el.getAttribute('data-tab-id') ?? '',
       indent: Number.parseInt((el as HTMLElement).style.paddingLeft, 10),
     }))
+  }
+
+  // The indent a leaf row carries, as a value: the id-order assertion above
+  // each comparison states which row the index names, and the numeric
+  // matchers take a number, not a number-or-undefined.
+  function indentAt(rows: { id: string, indent: number }[], index: number): number {
+    const row = rows[index]
+    if (row === undefined)
+      throw new Error(`expected a leaf row at ${index}`)
+    return row.indent
   }
 
   it('indents a subagent row one level under its parent', () => {
@@ -1937,7 +1974,7 @@ describe('workspaceTabTree subagent nesting', () => {
 
     const rows = leafIndents()
     expect(rows.map(r => r.id)).toEqual(['root', 'kid'])
-    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+    expect(indentAt(rows, 1)).toBeGreaterThan(indentAt(rows, 0))
   })
 
   it('renders a subagent of a subagent two levels deep', () => {
@@ -1958,8 +1995,8 @@ describe('workspaceTabTree subagent nesting', () => {
 
     const rows = leafIndents()
     expect(rows.map(r => r.id)).toEqual(['root', 'kid', 'grandkid'])
-    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
-    expect(rows[2].indent).toBeGreaterThan(rows[1].indent)
+    expect(indentAt(rows, 1)).toBeGreaterThan(indentAt(rows, 0))
+    expect(indentAt(rows, 2)).toBeGreaterThan(indentAt(rows, 1))
   })
 
   it('keeps a subagent flush with the roots when its parent tab is closed', () => {
@@ -1977,7 +2014,7 @@ describe('workspaceTabTree subagent nesting', () => {
     // Both are roots, so the usual sort (position, then id) orders them.
     const rows = leafIndents()
     expect(rows.map(r => r.id)).toEqual(['kid', 'other'])
-    expect(rows[1].indent).toBe(rows[0].indent)
+    expect(indentAt(rows, 1)).toBe(indentAt(rows, 0))
   })
 
   it('re-nests a row when its parent link arrives after the first paint', () => {
@@ -1995,20 +2032,21 @@ describe('workspaceTabTree subagent nesting', () => {
         workspaceId="ws-1"
       />
     ))
-    expect(leafIndents()[1].indent).toBe(leafIndents()[0].indent)
+    const flat = leafIndents()
+    expect(indentAt(flat, 1)).toBe(indentAt(flat, 0))
 
     // Hydration fills in parentAgentId; the cached tree must rebuild.
     setTabs([makeTab(TabType.AGENT, 'root', 'Root'), subagentTab('kid', 'root')])
 
     const rows = leafIndents()
     expect(rows.map(r => r.id)).toEqual(['root', 'kid'])
-    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+    expect(indentAt(rows, 1)).toBeGreaterThan(indentAt(rows, 0))
   })
 })
 
 // The unseen-activity marker: on a tab row for its own notification, and on a
 // COLLAPSED group header for anything folded under it.
-describe('workspaceTabTree activity marker', () => {
+describe('WorkspaceTabTree activity marker', () => {
   const MARKER = 'sidebar-tab-notification'
   const TOPLEVEL = '/home/user/Workspaces/r'
 
@@ -2051,6 +2089,8 @@ describe('workspaceTabTree activity marker', () => {
     ], 'ws-marker-leaf')
 
     const [marked, quiet] = screen.getAllByTestId('tab-tree-leaf')
+    if (marked === undefined || quiet === undefined)
+      throw new Error('expected two leaf rows')
     expect(within(marked).getByTestId(MARKER)).toBeInTheDocument()
     expect(within(quiet).queryByTestId(MARKER)).not.toBeInTheDocument()
   })

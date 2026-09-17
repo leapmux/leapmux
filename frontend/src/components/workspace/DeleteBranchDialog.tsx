@@ -165,6 +165,19 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     const os = workerInfoStore.getOs(props.workerId)
     return os ? flavorFromOs(os) : undefined
   }
+  // Spread-ready `flavor` and `gitState`, each read ONCE: both answer
+  // undefined until the worker does, and the spreads keep the props absent
+  // then -- a second accessor call beside the first could not be narrowed.
+  // `info()` is what the guarding `<Show>` reads, so inside it these read
+  // the same snapshot the row renders.
+  const flavorProps = () => {
+    const value = flavor()
+    return value !== undefined ? { flavor: value } : {}
+  }
+  const gitStateProps = () => {
+    const value = info()?.gitState
+    return value !== undefined ? { gitState: value } : {}
+  }
 
   // Selectable branches exclude the one being deleted. The inspect RPC
   // returns the candidate list directly (only populated server-side when
@@ -437,7 +450,9 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
           <ConfirmButton
             data-variant="danger"
             disabled={!canSubmit()}
-            blocked={removalBlockedReason() ? { reason: removalBlockedReason()!, reasonId: blockedReasonId } : undefined}
+            {...(removalBlockedReason()
+              ? { blocked: { reason: removalBlockedReason(), reasonId: blockedReasonId } }
+              : {})}
             onClick={handleDelete}
           >
             <Show when={submitting.loading()} fallback={deleteLabel()}>
@@ -464,9 +479,9 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 // dialog is locked to otherwise. `worktreePath` is populated
                 // only on the worktree path, so it cannot serve both.
                 directory: isWorktree() ? i().worktreePath : props.gitToplevel,
-                homeDir: homeDir(),
-                flavor: flavor(),
-                gitState: i().gitState,
+                ...(homeDir() !== undefined ? { homeDir: homeDir() } : {}),
+                ...flavorProps(),
+                ...gitStateProps(),
               }}
               affectedTabs={{
                 agents: isOnlyBranch() ? 0 : tabCounts.agents,

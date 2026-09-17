@@ -24,25 +24,29 @@ import './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string
-  agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
-  controlRequests?: ControlRequest[]
-  messageContext?: MessageContextResolver
-  onControlResponse?: ControlResponseHandler
-  onSettingChange?: ProviderSettingChangeHandler
+  // The optional props below arrive as reactive getters that resolve through to
+  // undefined while the panel loads (no requests fetched yet, no session info);
+  // a getter cannot omit a key, so `undefined` is the live "absent for now"
+  // state here rather than an invalid construction.
+  agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider } | undefined
+  controlRequests?: ControlRequest[] | undefined
+  messageContext?: MessageContextResolver | undefined
+  onControlResponse?: ControlResponseHandler | undefined
+  onSettingChange?: ProviderSettingChangeHandler | undefined
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
-  onSendControlFeedback?: (content: string) => void | Promise<void>
-  settingsLoading?: boolean
+  onSendControlFeedback?: ((content: string) => void | Promise<void>) | undefined
+  settingsLoading?: boolean | undefined
   /**
    * The activity level the Worker last published for this agent. `showInterrupt`
    * reads it; see there for why the level and not a boolean.
    */
-  agentActivity?: AgentActivityState
+  agentActivity?: AgentActivityState | undefined
   /**
    * Whether Interrupt can target THIS agent alone. False for a subagent tab
    * whose provider cannot interrupt one subagent (the worker would answer
    * FailedPrecondition), so the button is not offered at all. Defaults to true.
    */
-  canInterrupt?: boolean
+  canInterrupt?: boolean | undefined
 }
 
 export interface ControlResponseHandlingResult {
@@ -93,7 +97,7 @@ export function useControlResponseHandling(
   onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void | Promise<void>,
 ): ControlResponseHandlingResult {
   let sendInFlight = false
-  const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.planMode
+  const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.configuration?.planMode
 
   // Track previous non-plan mode for Shift+Tab toggling.
   let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
@@ -184,7 +188,7 @@ export function useControlResponseHandling(
       case 'elicitation':
         return 'none'
       default:
-        return pluginFor(activeProvider())?.controlEditorPurpose?.(request.payload) ?? 'feedback'
+        return pluginFor(activeProvider())?.controls?.controlEditorPurpose?.(request.payload) ?? 'feedback'
     }
   })
   const editorPlaceholder = createMemo(() => {
@@ -500,18 +504,18 @@ export function useControlResponseHandling(
         content,
         sendAskResponse,
         editorContentRefAccessor(),
-        Boolean(plugin.preservesSelectionNotes),
+        Boolean(plugin.controls?.preservesSelectionNotes),
       )
       if (!submitted)
         return false
       return Promise.resolve(sending).then(() => completed)
     }
-    const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
+    const response = plugin.controls?.buildControlResponse?.(req.payload, content, req.requestId)
     if (!response)
       return false
     const bytes = new TextEncoder().encode(JSON.stringify(response))
     const sent = respond(bytes)
-    if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
+    if (content.trim() && plugin.controls?.controlFeedbackAsFollowUpMessage?.(req.payload)) {
       return sent.then(async () => {
         // The follow-up message repeats the composer text, so it goes only once
         // the request itself is answered. A recorded-but-open request keeps both.

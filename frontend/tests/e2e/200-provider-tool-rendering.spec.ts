@@ -985,7 +985,9 @@ test.describe('provider tool rendering', () => {
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expect(page.getByText('/project/missing-renderer-fixture.ts', { exact: true }).filter({ visible: true })).toBeVisible()
-    await expect(page.getByText('Failed', { exact: true }).filter({ visible: true })).toBeVisible()
+    // The outcome word is the shared one every provider draws ('Error'), not
+    // the word ZCode's own transcript used ('Failed').
+    await expect(page.getByText('Error', { exact: true }).filter({ visible: true })).toBeVisible()
     await expect(page.getByText('Renderer fixture does not exist', { exact: true }).filter({ visible: true })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Native page heading' }).filter({ visible: true })).toBeVisible()
   })
@@ -1122,7 +1124,7 @@ test.describe('provider tool rendering', () => {
         agentSessionId: 'new-session',
         spanId: 'reused-edit',
         spanType: 'edit',
-        content: { sessionUpdate: 'tool_call_update', toolCallId: 'reused-edit', status: 'failed', rawOutput: 'The edit was denied.' },
+        content: { sessionUpdate: 'tool_call_update', toolCallId: 'reused-edit', status: 'completed', rawOutput: 'No file changes occurred.' },
       },
     ])
     await page.reload()
@@ -1131,7 +1133,7 @@ test.describe('provider tool rendering', () => {
     await expect(chat.locator('[data-file-diff]')).toContainText('correctSessionBefore')
     await expect(chat.locator('[data-file-diff]')).toContainText('correctSessionAfter')
     await expect(chat).not.toContainText('wrongSession')
-    await expect(chat.getByText('The edit was denied.', { exact: true })).toBeVisible()
+    await expect(chat.getByText('No file changes occurred.', { exact: true })).toBeVisible()
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expect(chat.locator('[data-file-diff]')).toContainText('correctSessionAfter')
@@ -1159,7 +1161,9 @@ test.describe('provider tool rendering', () => {
       agentProvider: AgentProvider.CLAUDE_CODE,
       ...realAgentOpenOptions(realAgentSettings(AgentProvider.CLAUDE_CODE)),
     })
-    const pair = editFixture(AgentProvider.PI)
+    const [pairRequest, pairResult] = editFixture(AgentProvider.PI)
+    if (pairRequest === undefined || pairResult === undefined)
+      throw new Error('editFixture(PI) must return a request/result pair')
     const filler: FixtureMessage[] = Array.from({ length: 350 }, (_, index) => ({
       id: `filler-${index}`,
       provider: AgentProvider.CLAUDE_CODE,
@@ -1181,7 +1185,7 @@ test.describe('provider tool rendering', () => {
         },
       },
     }
-    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [pair[0], ...filler, pair[1], image])
+    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [pairRequest, ...filler, pairResult, image])
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expect(page.locator('[data-file-diff]:visible').filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()

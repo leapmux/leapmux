@@ -11,18 +11,15 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
 /**
- * A live surface: the goal, its verbs AND its handler, which travel together.
- *
- * `onAction` is part of `GoalSurface`, so a case that wants to observe the
- * handler overrides it here rather than passing a second prop. The menu takes
- * no separate handler, which is what makes a surface whose verbs and handler
- * come from different agents unrepresentable.
+ * A loose record, not `Partial<GoalSurface>`: a case below deliberately passes
+ * `onAction: undefined` -- the key EXISTS, with no handler -- which
+ * `exactOptionalPropertyTypes` keeps out of the typed shape.
  */
-function surface(over: Partial<GoalSurface> = {}): GoalSurface {
-  return { current: goal(), progress: {}, actions: ALL, onAction: vi.fn(), ...over }
+function surface(over: Record<string, unknown> = {}): GoalSurface {
+  return Object.assign({ current: goal(), progress: {}, actions: ALL, onAction: vi.fn() }, over)
 }
 
-describe('goalActionsMenu', () => {
+describe('GoalActionsMenu', () => {
   it('offers the verbs in the order they read', () => {
     const { getAllByRole } = render(() => (
       <GoalActionsMenu goal={surface()} />

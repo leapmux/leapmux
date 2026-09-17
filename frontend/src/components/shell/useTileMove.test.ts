@@ -29,6 +29,14 @@ describe('useTileMove.moveTabToTile', () => {
     return { ...stores, floatingWindowStore, ops }
   }
 
+  /**
+   * The seeded root leaf. The bridge installs it, so [0] exists; the
+   * fallback is the type-level guard alone.
+   */
+  function rootTile(layoutStore: ReturnType<typeof setup>['layoutStore']): string {
+    return layoutStore.getAllTileIds()[0] ?? 'root-leaf'
+  }
+
   /** Place a tab through the op path and read it back off the projection. */
   function place(view: ReturnType<typeof setup>['view'], id: string, tileId: string, position: string): AgentTab {
     emitAddTab({ type: TabType.AGENT, id, tileId, position, workerId: 'w-1' })
@@ -40,7 +48,7 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, selection, layoutStore, floatingWindowStore, ops } = setup()
       const win = floatingWindowStore.addWindow()!
       const { windowId, tileId: floatingTile } = win
-      const mainTile = layoutStore.getAllTileIds()[0]
+      const mainTile = rootTile(layoutStore)
       // One tab on the floating window's root tile — moving it out
       // empties the window.
       const tab = place(view, 'agent-1', floatingTile, 'a')
@@ -66,6 +74,9 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       const fromTile = tileB === toTile ? tileA : tileB
       const tab = place(view, 'a-bg', fromTile, 'a')
       place(view, 'a-active', fromTile, 'b')
@@ -95,6 +106,9 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       const fromTile = tileB === toTile ? tileA : tileB
       const dragged = place(view, 'a-bg', fromTile, 'a')
       const reading = place(view, 'a-active', fromTile, 'b')
@@ -117,6 +131,9 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       const fromTile = tileB === toTile ? tileA : tileB
       const dragged = place(view, 'a-bg', fromTile, 'a')
       place(view, 'a-active', fromTile, 'b')
@@ -134,7 +151,7 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, layoutStore, floatingWindowStore, ops } = setup()
       const win = floatingWindowStore.addWindow()!
       const { windowId, tileId: floatingTile } = win
-      const mainTile = layoutStore.getAllTileIds()[0]
+      const mainTile = rootTile(layoutStore)
       const tab = place(view, 'agent-1', floatingTile, 'a')
 
       // detach passes cleanupSource=false because its source is in
@@ -155,6 +172,9 @@ describe('useTileMove.moveTabToTile', () => {
       const { view, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
       const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split produced exactly two leaves; the throw is the type-level guard alone.
+      if (tileA === undefined || tileB === undefined)
+        throw new Error('expected two tiles after split')
       const fromTile = tileB === toTile ? tileA : tileB
       const tab = place(view, 'a-1', fromTile, 'a')
 
@@ -180,7 +200,7 @@ describe('useTileMove.moveTabToTile', () => {
   it('does not crash when the tab has no source tileId', () => {
     createRoot((dispose) => {
       const { view, selection, layoutStore, ops } = setup()
-      const mainTile = layoutStore.getAllTileIds()[0]
+      const mainTile = rootTile(layoutStore)
       const tab: AgentTab = { type: TabType.AGENT, id: 'orphan', workspaceId: 'ws-1', tileId: undefined, workerId: 'w-1' }
 
       ops.moveTabToTile(tab, mainTile, { takeFocus: true, cleanupSource: true })

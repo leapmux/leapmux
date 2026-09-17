@@ -2,13 +2,14 @@ import type { Component } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { MessageBubbleHost } from './MessageBubble'
 import type { MessageContextResolver } from './messageContextResolver'
+import type { MessageUiKey } from './messageUiKeys'
 import type { ChatScrollState, PaginationCallbacks } from './useChatScroll'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
-import type { TodoItem } from '~/stores/chatTodos'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from 'solid-js'
@@ -21,7 +22,7 @@ import { formatChatQuote } from '~/lib/quoteUtils'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
-import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
@@ -69,7 +70,7 @@ export const RAIL_VISIBLE_IDLE_MS = 1200
  * A flick's glide fires no touch or pointer event -- only `scroll` -- so the
  * rail has to relight from those, and only the hook can say which of them are
  * the reader's own momentum rather than our stick-to-bottom echoing back (see
- * `onMomentumScroll`). This bound is the belt to that classifier's braces:
+ * `onMomentumScroll`). This cap is the second safeguard behind that classifier:
  * echo detection can miss when the browser delivers an echo after the guard's
  * marker expires, and without a cap one missed echo during an active turn
  * would relight the rail commit after commit. Measured from the last INPUT and
@@ -271,10 +272,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onSyntaxThemeChange(() => renderCacheStore.clear())
   const [textSelectionActive, setTextSelectionActive] = createSignal(false)
 
+  // Each member is omitted (not undefined) when the agent scope holds none, so the
+  // host's plain -- non-getter -- members never carry a stray undefined.
   const hostLookups = createMemo(() => ({
-    messages: props.messageContext,
-    onOpenSubagent: props.agentLifecycle?.onOpenSubagent,
-    onOpenImage: props.agentLifecycle?.onOpenImage,
+    ...(props.messageContext !== undefined ? { messages: props.messageContext } : {}),
+    ...(props.agentLifecycle?.onOpenSubagent !== undefined ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent } : {}),
+    ...(props.agentLifecycle?.onOpenImage !== undefined ? { onOpenImage: props.agentLifecycle.onOpenImage } : {}),
   }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read
@@ -284,7 +287,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // passive listener + ResizeObserver in a createEffect keyed on it).
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement | undefined>()
 
-  // Classify + cache the window's messages by id so <For> receives stable object
+  // Prepare + cache the window's messages by id so <For> receives stable object
   // references for unchanged rows. createClassifiedEntryCache owns the cache, the
   // freshness rule and the incremental prune.
   const entries = createClassifiedEntryCache({
@@ -292,6 +295,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     requestRevision: identity => props.messageContext?.request(identity)?.revision,
     resultRevision: identity => props.messageContext?.result(identity)?.revision,
     contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
+    // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
+    // that draws it and the toolbar beside it all read one object for one row.
+    resolvedParsed: message => props.messageContext?.current(message).parsed,
     isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
@@ -355,8 +361,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // expandAgentThoughts default). Uses the SAME key + default resolvers the renderers use
   // (expandedUiKeyFor / messageUiDefault), so the cache key can't disagree with the render.
   const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean => {
-    const key = expandedUiKeyFor(entry.category.kind, entry.msg.agentProvider)
-    return getMessageUiBool(entry.msg.id, key) ?? messageUiDefault(key, { expandAgentThoughts: prefs.expandAgentThoughts() })
+    const key = expandedUiKeyFor(entry.category.kind)
+    return getMessageUiBool(entry.message.id, key) ?? messageUiDefault(key, { expandAgentThoughts: prefs.expandAgentThoughts() })
   }
 
   // Minimal per-row descriptors for the virtualizer. Unmeasured rows use only the
@@ -365,10 +371,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const virtualItems = createMemo<VirtualItem[]>(
     () =>
       visibleEntries().map(e => ({
-        id: e.msg.id,
+        id: e.message.id,
         // Recorded onto a captured anchor so a trimmed-away row can be ordered against
         // the survivors for the nearest-survivor restore (scrollTopNearAnchor).
-        seq: e.msg.seq,
+        seq: e.message.seq,
         hasSpanLines: e.parsedSpanLines.length > 0,
         // Buckets the unmeasured-row height estimate by rendering kind (per-kind median),
         // so a short user row isn't over-estimated by a mean inflated with tall tool/code
@@ -383,9 +389,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         // Reading getUiVersion HERE subscribes this memo to the row's per-message UI
         // toggle, so stale premeasured heights are ignored the moment visible state
         // changes.
-        heightKey: `${heightKeyForEntry(e, getUiVersion(e.msg.id))}|${globalEpochKey()}${kindScopedLayoutKey(
+        heightKey: `${heightKeyForEntry(e, getUiVersion(e.message.id))}|${globalEpochKey()}${kindScopedLayoutKey(
           e.category.kind,
-          () => effectiveDiffView(e.msg.id),
+          () => effectiveDiffView(e.message.id),
           () => effectiveThinkingExpanded(e),
         )}`,
       })),
@@ -461,9 +467,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     virt,
   })
 
-  const renderCacheKeyForEntry = (entry: ClassifiedEntry): string =>
-    `${entry.msg.id}|${heightKeyForEntry(entry, getUiVersion(entry.msg.id))}`
-
   /**
    * Whether a row currently intersects the viewport plus half a screen of
    * slack — the priority band for worker dispatch (RenderContext.rowOffscreen):
@@ -485,7 +488,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   }
 
   createEffect(() => {
-    renderCacheStore.prune(visibleEntries().map(renderCacheKeyForEntry))
+    // `renderKeyForEntry`, which is the CONTENT key rather than the measurement one
+    // `heightKeyForEntry` builds. It folds no `uiVersion`, so an expand or a
+    // diff-view toggle re-measures the row and KEEPS everything the cache holds for
+    // it -- its extracted IR, its normalized command body, its Myers diff and its
+    // rendered markdown, none of which the click changed.
+    renderCacheStore.prune(visibleEntries().map(renderKeyForEntry))
   })
 
   // Two scroll-activity windows over the SAME gesture stream, differing in length AND in
@@ -516,7 +524,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
    */
   const buildMessageHost = (entry: ClassifiedEntry): MessageBubbleHost => ({
     ...hostLookups(),
-    localDiffView: getLocalDiffView(entry.msg.id),
+    // A GETTER, for the reason `renderCache` below is one, and with a second effect
+    // that matters more: `diffViewOverrides` is ONE signal holding a map for every
+    // row, cloned on write, so an eager read here subscribed every consumer of
+    // `props.host` to it. Toggling one row's diff view then re-ran the span-retaining
+    // effect in EVERY mounted bubble, each disposing its lease, re-taking it and
+    // re-issuing `loadRelated`.
+    get localDiffView() {
+      return getLocalDiffView(entry.message.id)
+    },
+    // A GETTER, for the reason `localDiffView` above and `renderCache` below are
+    // getters, and for one more that a plain VALUE field does not have: this object is
+    // rebuilt on every `props.host?.X` read, and a plain field allocates its closure
+    // on each of those rebuilds. Every closure below was allocated on all nineteen
+    // reads. As a getter, the one field a reader asks for allocates the one closure.
+    //
     // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
     // being scrolled away by the geometry re-pin (which otherwise holds the viewport-
     // midpoint row). Both a diff-view switch and an expand/collapse resize the row.
@@ -524,22 +546,43 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // setIfChanged dedupe): a same-value write causes no resize, so arming would leave a
     // stale hold with nothing to release it until the next geometry commit yanks the
     // viewport back to the toggle-time line.
-    onSetLocalDiffView: (view) => {
-      if (getLocalDiffView(entry.msg.id) !== view)
-        anchorRowForResize(entry.msg.id)
-      setLocalDiffView(entry.msg.id, view)
+    get onSetLocalDiffView() {
+      return (view: 'unified' | 'split') => {
+        if (getLocalDiffView(entry.message.id) !== view)
+          anchorRowForResize(entry.message.id)
+        setLocalDiffView(entry.message.id, view)
+      }
     },
-    getMessageUiState: key => getMessageUiBool(entry.msg.id, key),
-    setMessageUiState: (key, value) => {
-      if (getMessageUiBool(entry.msg.id, key) !== value)
-        anchorRowForResize(entry.msg.id)
-      setMessageUiBool(entry.msg.id, key, value)
+    get getMessageUiState() {
+      return (key: MessageUiKey) => getMessageUiBool(entry.message.id, key)
     },
-    getHeightDebug: () => virt.heightDebugOfId(entry.msg.id),
-    renderCache: renderCacheStore.forRow(renderCacheKeyForEntry(entry)),
+    get setMessageUiState() {
+      return (key: MessageUiKey, value: boolean) => {
+        if (getMessageUiBool(entry.message.id, key) !== value)
+          anchorRowForResize(entry.message.id)
+        setMessageUiBool(entry.message.id, key, value)
+      }
+    },
+    get getHeightDebug() {
+      return () => virt.heightDebugOfId(entry.message.id)
+    },
+    // A GETTER, because `host={buildMessageHost(entry)}` is a call expression in a
+    // prop: Solid compiles that to a getter, so this object literal is rebuilt on
+    // EVERY `props.host.*` read in the bubble -- and there are twenty of them. As a
+    // plain field, each of those reads built the row's key (a ten-field template
+    // string) and ran an `lruGet` over the row-cache map, which re-fronts the entry
+    // with a delete and a set. Now that work happens when the cache itself is read.
+    get renderCache() {
+      return renderCacheStore.forRow(renderKeyForEntry(entry))
+    },
+    // These two are agent-scoped accessors that already exist, so reading them costs
+    // nothing and they stay plain fields. `rowOffscreen` closes over the row, so it is
+    // a getter like the five above.
     syntaxHighlightingPaused,
     textSelectionActive,
-    rowOffscreen: () => !isRowNearViewport(entry.msg.id),
+    get rowOffscreen() {
+      return () => !isRowNearViewport(entry.message.id)
+    },
   })
 
   // Derived lookups over the visible window, shared by the premeasure facade
@@ -547,7 +590,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const visibleEntryById = createMemo(() => {
     const result = new Map<string, ClassifiedEntry>()
     for (const entry of visibleEntries())
-      result.set(entry.msg.id, entry)
+      result.set(entry.message.id, entry)
     return result
   })
   // Premeasure bands: hidden-DOM premeasure of the ranged + look-ahead + idle warm-up
@@ -593,7 +636,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // first. Scoped to the tail cohort (see createOrderedTailReveal), so scrolling
   // back through already-loaded history is left untouched.
   const orderedRevealHeld = createOrderedTailReveal(
-    () => visibleSlice().map(entry => entry.msg.id),
+    () => visibleSlice().map(entry => entry.message.id),
     rowAwaitingMeasurement,
   )
 
@@ -624,14 +667,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   const renderMessageBubble = (entry: ClassifiedEntry, opts: { premeasureMode?: boolean } = {}) => (
     <MessageBubble
-      message={entry.msg}
-      parsed={entry.parsed}
-      category={entry.category}
-      workingDir={props.workingDir}
-      homeDir={props.homeDir}
-      onReply={props.onReply}
+      message={entry.message}
+      prepared={entry}
       host={buildMessageHost(entry)}
-      premeasureMode={opts.premeasureMode}
+      {...(props.workingDir !== undefined ? { workingDir: props.workingDir } : {})}
+      {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
+      {...(props.onReply !== undefined ? { onReply: props.onReply } : {})}
+      {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})}
     />
   )
 
@@ -639,7 +681,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // preserves the stable entry references, so downstream <For>s only mount/unmount
   // on membership changes.
   const pendingRevealSlice = createMemo(() =>
-    visibleSlice().filter(entry => rowHiddenPendingReveal(entry.msg.id)))
+    visibleSlice().filter(entry => rowHiddenPendingReveal(entry.message.id)))
 
   // Only rows still hidden after SKELETON_SHOW_DELAY_MS actually paint a skeleton (see
   // createDelayedSet): a fast premeasure / re-measure (expand-collapse, diff-view switch,
@@ -647,7 +689,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // still surfaces a skeleton as a loading affordance. The row itself is hidden
   // immediately regardless (rowHiddenUntilMeasured) so it can never overflow its slot.
   const { delayedIds: skeletonIds } = createDelayedSet(
-    () => pendingRevealSlice().map(entry => entry.msg.id),
+    () => pendingRevealSlice().map(entry => entry.message.id),
     SKELETON_SHOW_DELAY_MS,
     virt.fastScrollActive,
   )
@@ -660,7 +702,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // (not a separate bypass), a row shown mid-fling stays shown when the fling settles before
   // its delay would have fired, instead of flickering skeleton -> blank -> skeleton.
   const skeletonSlice = createMemo(() =>
-    pendingRevealSlice().filter(entry => skeletonIds().has(entry.msg.id)))
+    pendingRevealSlice().filter(entry => skeletonIds().has(entry.message.id)))
 
   // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its height
   // committed, the real row starts its opacity fade-in), its skeleton lingers for one
@@ -670,7 +712,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // createLingerSet. Only rows that actually showed a skeleton linger; a fast reveal
   // (never skeletonised) just fades in with nothing to fade out.
   const { lingeringIds: lingeringSkeletonIds } = createLingerSet(
-    () => skeletonSlice().map(entry => entry.msg.id),
+    () => skeletonSlice().map(entry => entry.message.id),
     SKELETON_CROSSFADE_MS,
   )
   // Lingering ids resolved back to entries (stable references, so the fade-out
@@ -879,10 +921,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       // would cover the revealed text for the length of the crossfade.
       class={closing
         ? `${styles.virtualRow} ${styles.rowSkeletonClosing}`
-        : messageRowChrome(styles.virtualRow, entry.category.kind, entry.msg.source).class}
-      style={{ transform: `translateY(${virt.offsetOfId(entry.msg.id) ?? 0}px)` }}
+        : messageRowChrome(styles.virtualRow, entry.category.kind, entry.message.source).class}
+      style={{ transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)` }}
     >
-      <ChatRowSkeleton height={virt.heightOfId(entry.msg.id)} seed={entry.msg.id} />
+      <ChatRowSkeleton height={virt.heightOfId(entry.message.id)} seed={entry.message.id} />
     </div>
   )
 
@@ -986,12 +1028,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     </For>
                     <For each={visibleSlice()}>
                       {(entry) => {
-                        const { msg, parsedSpanLines } = entry
+                        const { message, parsedSpanLines } = entry
                         // Offset is resolved by the row's own id, not by
                         // range().start + localIndex(): the id is the stable,
                         // unique key into the offset map, so it cannot disagree with
                         // the slice bounds during a scroll/measure flush.
-                        const top = () => virt.offsetOfId(msg.id) ?? 0
+                        const top = () => virt.offsetOfId(message.id) ?? 0
                         // Fling skeleton: a MEASURED row entering the window
                         // during a FAST user scroll mounts as line placeholders at
                         // its known height instead of paying full bubble
@@ -1002,7 +1044,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         // the crossfade copy). trackRow also registers this row's phase
                         // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
                         // this row's bridge while the skeleton shows.
-                        const upgradePhase = flingSkeletons.trackRow(msg.id)
+                        const upgradePhase = flingSkeletons.trackRow(message.id)
 
                         // An assistant message / thought paints a full-bleed band
                         // BEHIND the row: the band is the row's own background and
@@ -1011,7 +1053,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         // reclassifying a row replaces its entry, which remounts
                         // this row. data-band is the e2e hook, because every style
                         // class is a hashed name.
-                        const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, msg.source)
+                        const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, message.source)
 
                         return (
                           <div
@@ -1022,12 +1064,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               // Absolute rows do not reserve flow height for
                               // siblings — see rowHiddenUntilMeasured for why an
                               // unmeasured premeasuring row stays invisible.
-                              visibility: rowHiddenUntilMeasured(msg.id) ? 'hidden' : undefined,
-                              opacity: rowHiddenUntilMeasured(msg.id) ? '0' : '1',
+                              visibility: rowHiddenUntilMeasured(message.id) ? 'hidden' : undefined,
+                              opacity: rowHiddenUntilMeasured(message.id) ? '0' : '1',
                             }}
-                            data-seq={msg.seq.toString()}
+                            data-seq={message.seq.toString()}
                             ref={(el) => {
-                              virt.attachRow(msg.id, el)
+                              virt.attachRow(message.id, el)
                               onCleanup(() => virt.detachRow(el))
                             }}
                           >
@@ -1035,8 +1077,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               when={upgradePhase() !== 'skeleton'}
                               fallback={(
                                 <ChatRowSkeleton
-                                  height={virt.heightOfId(msg.id)}
-                                  seed={msg.id}
+                                  height={virt.heightOfId(message.id)}
+                                  seed={message.id}
                                 />
                               )}
                             >
@@ -1084,8 +1126,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     <Show when={upgradePhase() === 'crossfade'}>
                                       <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
                                         <ChatRowSkeleton
-                                          height={virt.heightOfId(msg.id)}
-                                          seed={msg.id}
+                                          height={virt.heightOfId(message.id)}
+                                          seed={message.id}
                                         />
                                       </div>
                                     </Show>
@@ -1105,17 +1147,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   them — the scroll-to-bottom button jumps back to the tail.
                 */}
                   <Show when={!props.pagination?.hasNewerMessages}>
+                    {/* Each optional indicator prop is omitted (not undefined) while the lifecycle scope holds none. */}
                     <ThinkingIndicator
-                      id={props.agentId}
+                      {...(props.agentId !== undefined ? { id: props.agentId } : {})}
                       visible={props.agentLifecycle?.agentWorking ?? false}
-                      thinkingTokens={props.agentLifecycle?.thinkingTokens}
-                      outputBytes={props.agentLifecycle?.outputBytes}
-                      outputBytesMinimum={props.agentLifecycle?.outputBytesMinimum}
+                      {...(props.agentLifecycle?.thinkingTokens !== undefined ? { thinkingTokens: props.agentLifecycle.thinkingTokens } : {})}
+                      {...(props.agentLifecycle?.outputBytes !== undefined ? { outputBytes: props.agentLifecycle.outputBytes } : {})}
+                      {...(props.agentLifecycle?.outputBytesMinimum !== undefined ? { outputBytesMinimum: props.agentLifecycle.outputBytesMinimum } : {})}
                       paused={props.tabActive === false}
-                      backgroundTasks={props.agentLifecycle?.backgroundTasks}
-                      onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
-                      todos={props.agentLifecycle?.todos}
-                      goal={props.agentLifecycle?.goal}
+                      {...(props.agentLifecycle?.backgroundTasks !== undefined ? { backgroundTasks: props.agentLifecycle.backgroundTasks } : {})}
+                      {...(props.agentLifecycle?.onOpenSubagent !== undefined ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent } : {})}
+                      {...(props.agentLifecycle?.todos !== undefined ? { todos: props.agentLifecycle.todos } : {})}
+                      {...(props.agentLifecycle?.goal !== undefined ? { goal: props.agentLifecycle.goal } : {})}
                       onExpandTick={() => {
                         if (scroll.isAtBottomFresh())
                           scroll.jumpToBottom()
@@ -1208,8 +1251,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               onJumpToSeq={seq => scroll.jumpToSeq(seq)}
               previewScrollTo={top => scroll.previewScrollTo(top)}
               onSeekInterrupt={() => scroll.cancelPendingSeek()}
-              previewFor={props.rail!.previewFor}
-              warmPreview={props.rail!.warmPreview}
+              {...(props.rail!.previewFor !== undefined ? { previewFor: props.rail!.previewFor } : {})}
+              {...(props.rail!.warmPreview !== undefined ? { warmPreview: props.rail!.warmPreview } : {})}
             />
           </Show>
         </div>

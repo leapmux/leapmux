@@ -48,7 +48,7 @@ export function pointerEvent(type: string, opts: PointerOpts = {}): PointerEvent
     pointerType: opts.pointerType ?? 'mouse',
     isPrimary: opts.isPrimary ?? true,
     button: opts.button ?? 0,
-    buttons: opts.buttons,
+    ...(opts.buttons !== undefined ? { buttons: opts.buttons } : {}),
     bubbles: true,
     cancelable: true,
   })

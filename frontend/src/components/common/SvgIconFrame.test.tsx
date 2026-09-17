@@ -16,7 +16,7 @@ function renderFrame(props: FrameProps = {}) {
   return container.querySelector('svg')!
 }
 
-describe('svgIconFrame (SvgIconFrame)', () => {
+describe('SvgIconFrame (SvgIconFrame)', () => {
   it('draws the caller paths inside a 24x24 lucide-shaped frame', () => {
     const svg = renderFrame()
 

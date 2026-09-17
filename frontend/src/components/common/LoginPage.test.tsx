@@ -80,7 +80,7 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
-describe('loginPage', () => {
+describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()

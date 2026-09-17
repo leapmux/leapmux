@@ -48,7 +48,7 @@ function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
   return { onAddTunnel, onDeleteAllTunnels, onDeregister }
 }
 
-describe('workerContextMenu', () => {
+describe('WorkerContextMenu', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     showInfoToast.mockClear()
@@ -99,7 +99,7 @@ describe('workerContextMenu', () => {
       screen.getByText('linux (amd64)').click()
 
       await waitFor(() => expect(copyTextToClipboard).toHaveBeenCalled())
-      expect(copyTextToClipboard.mock.calls[0][0]).toContain('linux')
+      expect(copyTextToClipboard.mock.calls[0]?.[0]).toContain('linux')
       expect(showInfoToast).toHaveBeenCalledWith('Worker info copied to clipboard')
     })
 

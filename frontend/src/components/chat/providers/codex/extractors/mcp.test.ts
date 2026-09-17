@@ -32,7 +32,6 @@ describe('codexMcpFromItem', () => {
       expect(source).toMatchObject({
         server: 'tavily',
         tool: 'tavily_search',
-        status: 'completed',
         durationMs: 350,
         content: [
           { type: 'text', text: 'Result A' },
@@ -53,7 +52,7 @@ describe('codexMcpFromItem', () => {
         result: null,
         error: { message: 'Permission denied' },
       })
-      expect(source?.status).toBe('failed')
+      expect(source?.failed).toBe(true)
       expect(source?.error).toBe('Permission denied')
       expect(source?.content).toEqual([])
     })
@@ -65,7 +64,7 @@ describe('codexMcpFromItem', () => {
         tool: 'tavily_search',
         arguments: { query: 'rust' },
       })
-      expect(source?.status).toBe('inProgress')
+      expect(source?.failed).toBeUndefined()
       expect(source?.content).toEqual([])
     })
 
@@ -96,7 +95,6 @@ describe('codexMcpFromItem', () => {
       expect(source).toMatchObject({
         server: 'openai',
         tool: 'browser',
-        status: 'completed',
         content: [{ type: 'text', text: 'Hello dynamic' }],
       })
     })
@@ -123,7 +121,7 @@ describe('codexMcpFromItem', () => {
         contentItems: [],
       })
       expect(source?.error).toBeUndefined()
-      expect(source?.status).toBe('failed')
+      expect(source?.failed).toBe(true)
       expect(source?.content).toEqual([])
     })
 

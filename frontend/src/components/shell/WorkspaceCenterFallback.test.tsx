@@ -27,7 +27,7 @@ function renderFallback(ui: () => JSX.Element) {
   return render(() => <PreferencesProvider>{ui()}</PreferencesProvider>)
 }
 
-describe('workspaceCenterFallback', () => {
+describe('WorkspaceCenterFallback', () => {
   it('shows the create-workspace affordance when there is no workspace', () => {
     const onNewWorkspace = vi.fn()
     renderFallback(() => (

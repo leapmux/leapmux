@@ -78,7 +78,11 @@ function crossFileCompositions(): { importer: string, owner: string, name: strin
     const source = readFileSync(importer, 'utf8')
 
     const owners = new Map<string, string>()
-    for (const [, names, spec] of source.matchAll(STYLE_IMPORT)) {
+    for (const match of source.matchAll(STYLE_IMPORT)) {
+      const names = match[1]
+      const spec = match[2]
+      if (names === undefined || spec === undefined)
+        continue
       const owner = resolveStyleModule(importer, spec)
       if (!owner)
         continue
@@ -86,7 +90,10 @@ function crossFileCompositions(): { importer: string, owner: string, name: strin
         owners.set(name, owner)
     }
 
-    for (const [, members] of source.matchAll(COMPOSITION)) {
+    for (const match of source.matchAll(COMPOSITION)) {
+      const members = match[1]
+      if (members === undefined)
+        continue
       for (const member of members.split(',').map(part => part.trim())) {
         const owner = owners.get(member)
         if (!owner)

@@ -30,7 +30,6 @@ export const toolUseHeader = style({
   display: 'flex',
   alignItems: 'baseline',
   gap: 'var(--space-1)',
-  color: 'var(--muted-foreground)',
 })
 
 // Icon styling — also used on the wrapper <span> so it acts as a line-height

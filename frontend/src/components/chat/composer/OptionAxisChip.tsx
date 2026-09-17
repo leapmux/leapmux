@@ -42,13 +42,13 @@ export function OptionAxisChip(props: OptionAxisChipProps): JSX.Element {
       groupId={props.groupId}
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
-      onChange={props.onChange}
-      disabledReason={props.disabledReason}
+      {...(props.onChange === undefined ? {} : { onChange: props.onChange })}
+      {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
       popoverClass={styles.axisPopover}
-      popoverTestId={props.testIdPrefix ? `${props.testIdPrefix}-popover` : undefined}
+      {...(props.testIdPrefix === undefined ? {} : { popoverTestId: `${props.testIdPrefix}-popover` })}
       // The `[+]` menu renders the same group and keeps the plain
       // `<groupId>-<value>` ids, so the chip's own items are namespaced.
-      itemTestIdPrefix={props.testIdPrefix}
+      {...(props.testIdPrefix === undefined ? {} : { itemTestIdPrefix: props.testIdPrefix })}
       trigger={(triggerProps, view) => (
         <Tooltip text={view.label}>
           <button

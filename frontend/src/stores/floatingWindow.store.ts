@@ -698,8 +698,11 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   const windowIdToIndex = createMemo(() => {
     const m = new Map<string, number>()
     const wins = projectedWindows()
-    for (let i = 0; i < wins.length; i++)
-      m.set(wins[i].id, i)
+    for (let i = 0; i < wins.length; i++) {
+      const w = wins[i]
+      if (w !== undefined)
+        m.set(w.id, i)
+    }
     return m
   })
 
@@ -709,7 +712,7 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
 
   function findWindow(id: string): FloatingWindowState | null {
     const idx = findWindowIndex(id)
-    return idx < 0 ? null : projectedWindows()[idx]
+    return idx < 0 ? null : projectedWindows()[idx] ?? null
   }
 
   // disposeWindowLocally is the teardown sequence shared by every

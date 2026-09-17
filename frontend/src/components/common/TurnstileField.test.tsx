@@ -60,7 +60,7 @@ function renderField(props: Partial<Parameters<typeof TurnstileField>[0]> = {}) 
   ))
 }
 
-describe('turnstileField', () => {
+describe('TurnstileField', () => {
   beforeEach(() => {
     mockLoadScript.mockReset()
     mockLoadScript.mockResolvedValue(undefined)

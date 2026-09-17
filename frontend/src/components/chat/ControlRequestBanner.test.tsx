@@ -45,9 +45,10 @@ it('copies native control JSON without rounding numeric literals or losing repea
     const { getByTestId } = render(() => <ControlRequestContent request={request} answerState={createControlAnswerState()} agentProvider={AgentProvider.CLAUDE_CODE} />)
     fireEvent.click(getByTestId('control-copy-json'))
     await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce())
-    expect(copy.mock.calls[0][0]).toContain('9007199254740993')
-    expect(copy.mock.calls[0][0]).toMatch(/"value"\s*:\s*1/)
-    expect(copy.mock.calls[0][0]).toMatch(/"value"\s*:\s*2/)
+    // The wait above guarantees the call; `?.` is the type-level guard alone.
+    expect(copy.mock.calls[0]?.[0]).toContain('9007199254740993')
+    expect(copy.mock.calls[0]?.[0]).toMatch(/"value"\s*:\s*1/)
+    expect(copy.mock.calls[0]?.[0]).toMatch(/"value"\s*:\s*2/)
   }
   finally {
     copy.mockRestore()
@@ -64,7 +65,8 @@ it.each([
     const { getByTestId } = render(() => <ControlRequestContent request={request} answerState={createControlAnswerState()} agentProvider={AgentProvider.CLAUDE_CODE} />)
     fireEvent.click(getByTestId('control-copy-json'))
     await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce())
-    expect(copy.mock.calls[0][0]).toContain(expected)
+    // The wait above guarantees the call; `?.` is the type-level guard alone.
+    expect(copy.mock.calls[0]?.[0]).toContain(expected)
   }
   finally {
     copy.mockRestore()
@@ -99,7 +101,7 @@ function questionRequest(): ControlRequest {
 // The banner classifies nothing. Its caller derives the surface and passes it,
 // so the SAME payload draws a different control when the surface says so. These
 // two cases are what prove the component reads the prop rather than the payload.
-describe('controlRequestBanner takes the surface from its caller', () => {
+describe('ControlRequestBanner takes the surface from its caller', () => {
   it('draws the question form when the surface says question', () => {
     const request = questionRequest()
     render(() => (
@@ -113,11 +115,14 @@ describe('controlRequestBanner takes the surface from its caller', () => {
     expect(screen.getByText('Which database?')).toBeVisible()
   })
 
-  it('draws the plugin content for the same payload when the surface says plugin', () => {
+  // The SURFACE decides, not the payload. The same bytes draw a question where the
+  // surface says question and a permission where it says permission, which is what
+  // keeps one derivation in charge of both halves of the banner.
+  it('draws the permission content for the same payload when the surface says permission', () => {
     render(() => (
       <banner.ControlRequestContent
         request={questionRequest()}
-        controlSurface={{ kind: 'plugin' }}
+        controlSurface={{ kind: 'permission', permission: { options: [] } }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
       />
@@ -126,11 +131,11 @@ describe('controlRequestBanner takes the surface from its caller', () => {
     expect(screen.queryByText('Which database?')).not.toBeInTheDocument()
   })
 
-  it('draws the plugin actions for the same payload when the surface says plugin', () => {
+  it('draws the plugin actions for the same payload when the surface says permission', () => {
     render(() => (
       <banner.ControlRequestActions
         request={questionRequest()}
-        controlSurface={{ kind: 'plugin' }}
+        controlSurface={{ kind: 'permission', permission: { options: [] } }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
@@ -139,6 +144,25 @@ describe('controlRequestBanner takes the surface from its caller', () => {
       />
     ))
     expect(screen.queryByTestId('control-submit-btn')).not.toBeInTheDocument()
+  })
+
+  // The agent's turn blocks until an answer reaches it. A surface the shared switch
+  // does not answer, and whose provider claims no actions of its own, therefore must
+  // still draw a way out -- a banner with no buttons blocks that turn forever.
+  it('offers the shared pair for a surface the switch does not answer', () => {
+    render(() => (
+      <banner.ControlRequestActions
+        request={questionRequest()}
+        controlSurface={{ kind: 'dialog', dialog: { title: 'Pick a branch', variant: 'confirm' } }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
   })
 })
 
@@ -158,7 +182,7 @@ describe('controlRequestBanner takes the surface from its caller', () => {
  * plugin takes keep the request non-null, because the banner renders a plugin
  * only inside a `<Show>` that already proved it.
  */
-describe('controlRequestBanner reactive request removal', () => {
+describe('ControlRequestBanner reactive request removal', () => {
   it('removes the content after its reactive request becomes null', () => {
     const [request, setRequest] = createSignal<ControlRequest | null>(planRequest())
     render(() => (
@@ -342,7 +366,8 @@ describe('a request whose payload LeapMux cannot read', () => {
     ))
     fireEvent.click(screen.getByTestId('control-copy-json'))
     await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce())
-    expect(copy.mock.calls[0][0]).toContain('{not json')
+    // The wait above guarantees the call; `?.` is the type-level guard alone.
+    expect(copy.mock.calls[0]?.[0]).toContain('{not json')
     copy.mockRestore()
   })
 })

@@ -127,3 +127,37 @@ func TestStatusIsFinished(t *testing.T) {
 	assert.True(t, StatusCompleted.IsFinished(), "a completed row is eligible for cap-eviction")
 	assert.True(t, StatusDeleted.IsFinished(), "so is a tombstone")
 }
+
+// A provider that CANCELS a task reports the end state StatusDeleted tombstones.
+// Cursor spells it `cancelled`; the American spelling is here because the word
+// travels as prose and no protocol fixes it.
+func TestStatusFromProviderWordReadsACancelledTaskAsDeleted(t *testing.T) {
+	assert.Equal(t, StatusDeleted, StatusFromProviderWord("cancelled"))
+	assert.Equal(t, StatusDeleted, StatusFromProviderWord("canceled"))
+}
+
+// KindMerge and KindSnapshot carry their rows in DIFFERENT fields on purpose. One
+// field for both would make "replace the list with these" and "upsert these, keep the
+// rest" the same value, and a reader that forgot to switch on Kind would delete rows.
+func TestMergeAndSnapshotCarryTheirRowsApart(t *testing.T) {
+	merge := Event{Kind: KindMerge, Items: []Item{{ID: "1", Content: "one"}}}
+	assert.Empty(t, merge.Snapshot)
+	snapshot := Event{Kind: KindSnapshot, Snapshot: []Item{{ID: "1", Content: "one"}}}
+	assert.Empty(t, snapshot.Items)
+}
+
+// --- EventKind membership --------------------------------------------
+
+// TestEventKind_HasNoVariantWithoutAProducer pins the two ordinals that a
+// re-added variant would move. Every member of EventKind must have a provider
+// that builds it; a member nothing builds adds a switch case to every consumer
+// and a branch no test can reach.
+//
+// KindDelete was that member. A tombstone now travels as a KindUpdate whose
+// Patch carries StatusDeleted, so one frame that cancels a task and renames it
+// keeps both halves. Re-adding a variant before KindDetail shifts these two
+// ordinals, and this test fails.
+func TestEventKind_HasNoVariantWithoutAProducer(t *testing.T) {
+	assert.Equal(t, EventKind(3), KindDetail)
+	assert.Equal(t, EventKind(4), KindMerge)
+}

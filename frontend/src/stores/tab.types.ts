@@ -14,6 +14,14 @@ export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
 
 /**
+ * Optional fields across these interfaces are `T | undefined` (the proto
+ * convention): a tab row is ASSEMBLED from a metadata record whose absent
+ * fields read as undefined and whose keys are all written present -- see
+ * `assemble` in tabView.ts and its `Complete<T>` -- so explicit undefined is
+ * a legitimate stored value, distinct from nothing.
+ */
+
+/**
  * Fields every tab carries regardless of kind. The AGENT/TERMINAL/FILE/IMAGE
  * variants extend BaseTab with their own kind-specific fields and
  * narrow `type` to a literal so consumers can `switch (tab.type)` or
@@ -28,11 +36,11 @@ export interface BaseTab {
    * lets a caller act on a tab without first asking which workspace it is in.
    */
   workspaceId: string
-  title?: string
-  hasNotification?: boolean
-  position?: string
-  tileId?: string
-  workerId?: string
+  title?: string | undefined
+  hasNotification?: boolean | undefined
+  position?: string | undefined
+  tileId?: string | undefined
+  workerId?: string | undefined
   /**
    * Local-only monotonic activation counter. Higher = more recently
    * activated. Stamped by `tabSelection.setActive`, which is the only
@@ -42,16 +50,16 @@ export interface BaseTab {
    * Not persisted in the CRDT and not part of the rendered-tab proto; it
    * orders MRU views within a single client session only.
    */
-  mru?: number
-  workingDir?: string
-  createdAt?: string
+  mru?: number | undefined
+  workingDir?: string | undefined
+  createdAt?: string | undefined
   /**
    * Absolute working-tree root of the tab's enclosing git repository
    * (from `git rev-parse --show-toplevel`). Used to group origin-less
-   * repos ("local" repos) in the sidebar tree; the same toplevel means
-   * the same repo, different toplevels mean different repos.
+   * repos ("local" repos) in the sidebar tree; the same toplevel means the
+   * same repo, different toplevels mean different repos.
    */
-  gitToplevel?: string
+  gitToplevel?: string | undefined
 }
 
 /**
@@ -61,58 +69,58 @@ export interface BaseTab {
  */
 export interface AgentTab extends BaseTab {
   type: TabType.AGENT
-  agentProvider?: AgentProvider
-  agentStatus?: AgentStatus
-  agentSessionId?: string
+  agentProvider?: AgentProvider | undefined
+  agentStatus?: AgentStatus | undefined
+  agentSessionId?: string | undefined
   // Current (optimistically-updated) selections, keyed by option-group id. Every
   // axis -- model, effort, permission mode, and provider-specific options alike --
   // lives here; there are no special-cased per-axis fields.
-  optionValues?: Record<string, string>
+  optionValues?: Record<string, string> | undefined
   // Full option-group catalog (model/effort/permission/provider axes) reported by the agent.
-  optionGroups?: AvailableOptionGroup[]
+  optionGroups?: AvailableOptionGroup[] | undefined
   /**
    * Error string carried while AgentStatus.STARTUP_FAILED so the chat
    * startup banner can render the agent's failure reason.
    */
-  startupError?: string
+  startupError?: string | undefined
   /** Phase label carried while AgentStatus.STARTING (e.g. "Starting Claude…"). */
-  startupMessage?: string
+  startupMessage?: string | undefined
   /**
    * Subagent linkage. parentAgentId is set only for virtual child agents
    * (subagent transcripts fed by the parent provider's process). A child tab
    * never owns a process; close is tab-only and the registry resolves through
    * the root.
    */
-  parentAgentId?: string
+  parentAgentId?: string | undefined
   /** Whether this agent accepts a message sent directly to it (composer gate). */
-  acceptsMessages?: boolean
+  acceptsMessages?: boolean | undefined
   /** Whether the live provider accepts an explicit queue-head steer. */
-  supportsSteering?: boolean
+  supportsSteering?: boolean | undefined
   /** Whether the live provider can only pre-empt: interrupt the turn, then send. */
-  supportsPreemption?: boolean
+  supportsPreemption?: boolean | undefined
   /**
    * The ROOT owner agent id (top of the parentAgentId chain). Equals the tab's
    * own id for a root. Set on hydration from AgentInfo.root_agent_id; the
    * background-task registry and the root's NOTIFY events key off it.
    */
-  rootAgentId?: string
+  rootAgentId?: string | undefined
 }
 
 /** TERMINAL tab. Worker-driven PTY + screen snapshot. */
 export interface TerminalTab extends BaseTab {
   type: TabType.TERMINAL
-  status?: TerminalStatus
+  status?: TerminalStatus | undefined
   /** Working directory the shell was originally spawned in. */
-  shellStartDir?: string
+  shellStartDir?: string | undefined
   /** Last-known screen snapshot for fast visual restore. */
-  screen?: Uint8Array
+  screen?: Uint8Array | undefined
   // `lastOffset` is deliberately NOT here -- see `TerminalMeta.lastOffset`.
-  cols?: number
-  rows?: number
+  cols?: number | undefined
+  rows?: number | undefined
   /** Error string from TerminalStatusChange when status is STARTUP_FAILED. */
-  startupError?: string
+  startupError?: string | undefined
   /** Phase label from TerminalStatusChange.startup_message while status is STARTING (e.g. "Starting zsh…"). */
-  startupMessage?: string
+  startupMessage?: string | undefined
   /**
    * True once the terminal has emitted any non-whitespace output to the
    * xterm buffer. Drives the "Starting terminal…" overlay — kept visible
@@ -120,11 +128,11 @@ export interface TerminalTab extends BaseTab {
    * prompt (not just the moment the PTY was spawned). Preseeded true on
    * reconnect when a screen snapshot is restored.
    */
-  contentReady?: boolean
+  contentReady?: boolean | undefined
   /** PTY-driven title from worker-side OSC parsing; tab strip falls back before generic label. */
-  ptyTitle?: string
-  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State
-  progressPercent?: number
+  ptyTitle?: string | undefined
+  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State | undefined
+  progressPercent?: number | undefined
 }
 
 /**
@@ -133,11 +141,11 @@ export interface TerminalTab extends BaseTab {
  */
 export interface FileTab extends BaseTab {
   type: TabType.FILE
-  filePath?: string
-  displayMode?: string
-  fileViewMode?: FileViewMode
-  fileDiffBase?: FileDiffBase
-  fileOpenSource?: FileOpenSource
+  filePath?: string | undefined
+  displayMode?: string | undefined
+  fileViewMode?: FileViewMode | undefined
+  fileDiffBase?: FileDiffBase | undefined
+  fileOpenSource?: FileOpenSource | undefined
 }
 
 /**
@@ -152,9 +160,9 @@ export interface FileTab extends BaseTab {
  */
 export interface ImageTab extends BaseTab {
   type: TabType.IMAGE
-  imageAgentId?: string
-  imageSeq?: bigint
-  imageIndex?: number
+  imageAgentId?: string | undefined
+  imageSeq?: bigint | undefined
+  imageIndex?: number | undefined
 }
 
 /**

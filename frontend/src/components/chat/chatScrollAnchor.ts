@@ -87,7 +87,9 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   const gap = geo.gapAfter(idx)
   const overflow = within - basisHeight
   const gapFraction = overflow > 0 && gap > 0 ? Math.min(1, overflow / gap) : 0
-  return { id: geo.list[idx].id, offsetWithinRow, basisHeight, gapFraction, seq: geo.list[idx].seq }
+  // `idx` came from indexAtOffset (clamped to [0, n-1]) and only walked back, and n > 0 above, so the row is present; `?? { id: '' }` is the type-level guard alone.
+  const row: AnchorRow = geo.list[idx] ?? { id: '' }
+  return { id: row.id, offsetWithinRow, basisHeight, gapFraction, ...(row.seq !== undefined ? { seq: row.seq } : {}) }
 }
 
 /**
@@ -132,7 +134,8 @@ export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], ta
   let bestIdx = -1
   let bestDelta = 0n
   for (let i = 0; i < rows.length; i++) {
-    const s = rows[i].seq
+    // The bound keeps `i` in range; `?.` is the type-level guard alone (and `s == null` skips it either way).
+    const s = rows[i]?.seq
     if (s == null)
       continue
     const delta = s > target ? s - target : target - s

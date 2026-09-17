@@ -97,12 +97,13 @@ describe('startPairRebalanceDrag', () => {
     dispatchPointerMove({ x: 9999 })
     const previewed = setDragRatios.mock.calls[0]?.[0] as number[]
     expect(previewed[1]).toBeCloseTo(MIN_SPLIT_RATIO, 12)
-    expect(previewed[0] + previewed[1]).toBeCloseTo(1, 9)
+    // The arrays always carry both entries; the ?? 0s are the type-level guard alone.
+    expect((previewed[0] ?? 0) + (previewed[1] ?? 0)).toBeCloseTo(1, 9)
     dispatchPointerUp({ x: 9999 })
     expect(commit).toHaveBeenCalledTimes(1)
     const committed = commit.mock.calls[0]?.[0] as number[]
     expect(committed[1]).toBeCloseTo(MIN_SPLIT_RATIO, 12)
-    expect(committed[0] + committed[1]).toBeCloseTo(1, 9)
+    expect((committed[0] ?? 0) + (committed[1] ?? 0)).toBeCloseTo(1, 9)
   })
 
   it('returns null when the pair sum is below 2× MIN_SPLIT_RATIO', () => {
@@ -129,7 +130,8 @@ describe('startPairRebalanceDrag', () => {
     // ratios[0] is left untouched.
     expect(c[0]).toBe(0.3)
     // (1, 2) rebalanced; sum preserved.
-    expect(c[1] + c[2]).toBeCloseTo(0.7, 9)
+    // c always carries all three ratios; the ?? 0s are the type-level guard alone.
+    expect((c[1] ?? 0) + (c[2] ?? 0)).toBeCloseTo(0.7, 9)
     expect(c[1]).toBeCloseTo(0.4, 9)
     expect(c[2]).toBeCloseTo(0.3, 9)
   })

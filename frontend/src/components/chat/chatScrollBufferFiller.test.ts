@@ -133,7 +133,7 @@ function harness(opts: {
   }
 }
 
-describe('chatscrollbufferfiller', () => {
+describe('chatScrollBufferFiller', () => {
   it('requires meaningful buffer depletion before fetching a full page', () => {
     const older = harness({ bufferTargetPx: 300, scrollTop: 260 })
     older.enable()

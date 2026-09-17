@@ -1,0 +1,189 @@
+{
+  "_readme": "The ZCode retained-tool supplement, pinned on BOTH sides of the language boundary. The worker reads ZCode's own store for a call whose result never reached the stream, and stores the native record with the artifact bodies it refers to; the browser plugin reads both back out. Neither side resolves this payload into the frame, so there is no shared resolve to replay -- the STORED BYTES are the contract instead. `TestZCodeToolSupplementConformance` asserts the worker writes `supplement` for `record`, and the browser's `zcodeToolSupplement` asserts it reads `expected` out of the same bytes. The key names come from contracts/zcode-protocol.json.",
+  "cases": [
+    {
+      "name": "a retained call keeps its native record and every artifact body",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "started",
+          "toolCallId": "call-1",
+          "toolName": "Read"
+        }
+      },
+      "record": {
+        "native": {
+          "id": "part-1",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-1",
+            "tool": "Read",
+            "state": {
+              "status": "completed",
+              "input": {
+                "file_path": "/project/main.go"
+              }
+            }
+          }
+        },
+        "artifacts": {
+          "artifact://out-1": "the whole output\n"
+        }
+      },
+      "supplement": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "started",
+          "toolCallId": "call-1"
+        },
+        "nativeTool": {
+          "id": "part-1",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-1",
+            "tool": "Read",
+            "state": {
+              "status": "completed",
+              "input": {
+                "file_path": "/project/main.go"
+              }
+            }
+          }
+        },
+        "artifacts": {
+          "artifact://out-1": "the whole output\n"
+        }
+      },
+      "expected": {
+        "nativeTool": {
+          "id": "part-1",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-1",
+            "tool": "Read",
+            "state": {
+              "status": "completed",
+              "input": {
+                "file_path": "/project/main.go"
+              }
+            }
+          }
+        },
+        "artifacts": {
+          "artifact://out-1": "the whole output\n"
+        }
+      }
+    },
+    {
+      "name": "a record that refers to no artifact stores an empty set",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call-2"
+        }
+      },
+      "record": {
+        "native": {
+          "id": "part-2",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-2",
+            "tool": "Bash",
+            "state": {
+              "status": "completed"
+            }
+          }
+        },
+        "artifacts": {}
+      },
+      "supplement": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "scheduled",
+          "toolCallId": "call-2"
+        },
+        "nativeTool": {
+          "id": "part-2",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-2",
+            "tool": "Bash",
+            "state": {
+              "status": "completed"
+            }
+          }
+        },
+        "artifacts": {}
+      },
+      "expected": {
+        "nativeTool": {
+          "id": "part-2",
+          "sessionId": "session-1",
+          "messageId": "message-1",
+          "data": {
+            "type": "tool",
+            "callID": "call-2",
+            "tool": "Bash",
+            "state": {
+              "status": "completed"
+            }
+          }
+        },
+        "artifacts": {}
+      }
+    },
+    {
+      "name": "a record with no data of its own still names the part it came from",
+      "original": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "result",
+          "toolCallId": "call-3"
+        }
+      },
+      "record": {
+        "native": {
+          "id": "part-3",
+          "sessionId": "session-2",
+          "messageId": "message-2",
+          "data": null
+        },
+        "artifacts": {}
+      },
+      "supplement": {
+        "type": "tool.updated",
+        "payload": {
+          "kind": "result",
+          "toolCallId": "call-3"
+        },
+        "nativeTool": {
+          "id": "part-3",
+          "sessionId": "session-2",
+          "messageId": "message-2",
+          "data": null
+        },
+        "artifacts": {}
+      },
+      "expected": {
+        "nativeTool": {
+          "id": "part-3",
+          "sessionId": "session-2",
+          "messageId": "message-2",
+          "data": null
+        },
+        "artifacts": {}
+      }
+    }
+  ]
+}

@@ -97,7 +97,7 @@ function codexSpan(id: string, spanId: string, seq: bigint, status: string) {
   })
 }
 
-describe('createspanindex', () => {
+describe('createSpanIndex', () => {
   it('routes by content-block role, not arrival order (result before opener)', () => {
     const idx = createSpanIndex()
     // Out-of-order: the result is indexed before its opener.

@@ -123,7 +123,10 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
         const preferred = options.preselectedWorkerId
           ? online.find(b => b.id === options.preselectedWorkerId)
           : undefined
-        setWorkerId((preferred ?? online[0]).id)
+        // `online.length > 0` above guarantees this fallback exists.
+        const chosen = preferred ?? online[0]
+        if (chosen !== undefined)
+          setWorkerId(chosen.id)
         // The worker and the directory are ONE choice. A caller that gives both
         // means "this directory ON THAT MACHINE"; when the machine turns out to
         // be offline and another is substituted, the directory does not carry

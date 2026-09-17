@@ -4,18 +4,7 @@ import {
   claudeCreateResultDiff,
   claudeFileEditFromToolUseInput,
   claudeFileEditFromToolUseResult,
-  isClaudeFileEditTool,
 } from './fileEdit'
-
-describe('isClaudeFileEditTool', () => {
-  it('recognizes Edit and Write only', () => {
-    expect(isClaudeFileEditTool('Edit')).toBe(true)
-    expect(isClaudeFileEditTool('Write')).toBe(true)
-    expect(isClaudeFileEditTool('MultiEdit')).toBe(false)
-    expect(isClaudeFileEditTool('Bash')).toBe(false)
-    expect(isClaudeFileEditTool('')).toBe(false)
-  })
-})
 
 describe('claudeFileEditFromToolUseInput', () => {
   it('extracts an Edit input', () => {
@@ -92,9 +81,9 @@ describe('claudeFileEditFromToolUseResult', () => {
       originalFile: 'full original\n',
     })).toEqual({
       filePath: '/tmp/a.ts',
+      // A source that states a PATCH states no sides: the two halves are a union, so
+      // the patch and an `oldString` the same result also carried cannot disagree.
       structuredPatch: PATCH,
-      oldStr: '',
-      newStr: '',
       originalFile: 'full original\n',
     })
   })
@@ -166,6 +155,7 @@ describe('claudeCreateResultDiff', () => {
     expect(claudeCreateResultDiff({ type: 'create', filePath: '/tmp/new.ts', content: 'a\nb\nc' }, false)).toEqual({
       filePath: '/tmp/new.ts',
       structuredPatch: null,
+      operation: 'add',
       oldStr: '',
       newStr: 'a\nb\nc',
     })

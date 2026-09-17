@@ -1,5 +1,6 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { positionAtInsertIdx } from '~/lib/lexorank'
@@ -8,6 +9,15 @@ import { emitReorderTabs, emitSetTabPosition } from '~/stores/tabOps'
 import { clippedText } from '~/styles/shared.css'
 import * as styles from './AppShell.css'
 import { useTileMove } from './useTileMove'
+
+/**
+ * Position-only view for the lexorank helpers, whose items take an optional
+ * `position` without explicit undefined. A tab may carry an explicit undefined
+ * (the proto convention), so omit the key rather than pass it through.
+ */
+function tabPositionView(tab: Tab): { position?: string } {
+  return tab.position === undefined ? {} : { position: tab.position }
+}
 
 interface UseTileDragDropOpts {
   view: TabView
@@ -64,7 +74,7 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     // `draggedTab`, not `draggedTabKey`: the tab is already resolved above
     // (with an early return), so re-parsing the key here only re-derived the
     // same `type`/`id` behind an `if (parsed)` guard that could never be false.
-    emitSetTabPosition(draggedTab.type, draggedTab.id, positionAtInsertIdx(targetTabs, insertIdx))
+    emitSetTabPosition(draggedTab.type, draggedTab.id, positionAtInsertIdx(targetTabs.map(tabPositionView), insertIdx))
   }
 
   const lookupTileIdForTab = (key: string): string | undefined => {

@@ -1497,7 +1497,7 @@ func TestTodos_AnAbsentRowStaysAMissWithNoRetention(t *testing.T) {
 	defer cache.Mu.Unlock()
 	require.Nil(t, cache.ops.retention, "agent_todos retains nothing past its cap")
 
-	_, idx, found, err := cache.findRowLocked(ctx, "agent-1", "todo-nope")
+	_, idx, found, err := cache.on(svc.Output.queries, "agent-1").findRowLocked(ctx, "todo-nope")
 	require.NoError(t, err)
 	assert.False(t, found, "no store fallback runs for a registry without retention")
 	assert.Equal(t, -1, idx, "an absent row has no display index")

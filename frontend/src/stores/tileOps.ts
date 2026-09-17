@@ -138,6 +138,8 @@ export function buildCloseTileOps(
   const sibTabs = liveTabsOnTile(state, siblingId)
   for (let i = 0; i < sibTabs.length; i++) {
     const t = sibTabs[i]
+    if (t === undefined)
+      continue
     ops.push(setTabTileId(ctx, t.tabType, t.tabId, destId))
     ops.push(setTabPosition(ctx, t.tabType, t.tabId, lexorankAt(i)))
   }

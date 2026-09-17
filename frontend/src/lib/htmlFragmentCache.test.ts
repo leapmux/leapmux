@@ -7,7 +7,7 @@ import {
   cachedInnerHtml,
 } from './htmlFragmentCache'
 
-describe('htmlfragmentcache', () => {
+describe('htmlFragmentCache', () => {
   beforeEach(() => {
     _resetFragmentCache()
   })

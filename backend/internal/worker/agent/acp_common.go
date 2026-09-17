@@ -61,16 +61,16 @@ const (
 
 // ACP session update type constants.
 const (
-	acpUpdateAgentMessageChunk       = "agent_message_chunk"
-	acpUpdateAgentThoughtChunk       = "agent_thought_chunk"
-	acpUpdateToolCall                = "tool_call"
-	acpUpdateToolCallUpdate          = "tool_call_update"
+	acpUpdateAgentMessageChunk       = contracts.ACPUpdateAgentMessageChunk
+	acpUpdateAgentThoughtChunk       = contracts.ACPUpdateAgentThoughtChunk
+	acpUpdateToolCall                = contracts.ACPUpdateToolCall
+	acpUpdateToolCallUpdate          = contracts.ACPUpdateToolCallUpdate
 	acpUpdatePlan                    = "plan"
-	acpUpdateUsageUpdate             = "usage_update"
-	acpUpdateUserMessageChunk        = "user_message_chunk"
-	acpUpdateAvailableCommandsUpdate = "available_commands_update"
-	acpUpdateConfigOptionUpdate      = "config_option_update"
-	acpUpdateSessionInfoUpdate       = "session_info_update"
+	acpUpdateUsageUpdate             = contracts.ACPUpdateUsageUpdate
+	acpUpdateUserMessageChunk        = contracts.ACPUpdateUserMessageChunk
+	acpUpdateAvailableCommandsUpdate = contracts.ACPUpdateAvailableCommandsUpdate
+	acpUpdateConfigOptionUpdate      = contracts.ACPUpdateConfigOptionUpdate
+	acpUpdateSessionInfoUpdate       = contracts.ACPUpdateSessionInfoUpdate
 )
 
 // acpModeChannel identifies how an ACP provider maps the configOptions `mode` select
@@ -105,8 +105,8 @@ type acpBase struct {
 	// tool result that arrives afterwards reports the stop rather than whatever
 	// status the provider put on it. Cursor and Reasonix send `failed` for a
 	// cancelled command and OpenCode and Kilo send an empty `completed`, so
-	// without this the row names a failure the reader caused by stopping, or
-	// names nothing. Guarded by b.mu. See noteACPInterruptRequested.
+	// without this the row reports a failure the reader caused by stopping, or
+	// reports nothing. Guarded by b.mu. See noteACPInterruptRequested.
 	interruptRequested bool
 	publishTurnActive  func(active bool, seq uint64)
 	steerMethod        string
@@ -148,15 +148,30 @@ type acpBase struct {
 	// from a backgrounded shell without what the spawn recorded.
 	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
 	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
-	toolOutputProgress         func(tcu acpToolCallUpdateEnvelope) (total int64, minimum bool, ok bool)
-	toolOutputComplete         func(toolCallID string)
-	sessionMetadataHandler     func(updateType string, metadata map[string]json.RawMessage) bool
-	advertisedSteerMethod      func(initializeResponse []byte) string
+	// toolOutput reads ONE live update into everything it states about a running
+	// call's output, for a provider whose output arrives OUTSIDE the update's own
+	// content. Goose is the one: its `live_output` chunks ride in
+	// `_meta.toolNotification`, so the content-bearing path never sees them.
+	//
+	// ONE hook for the count and the text, because they are one observation of one
+	// state. Two hooks read that state under two lock acquisitions, so another
+	// goroutine's chunk could land between them and the row then drew a byte count
+	// from before it beside a tail from after it.
+	toolOutput func(tcu acpToolCallUpdateEnvelope) (acpToolOutputObservation, bool)
+	// toolNotification reads a LIVE notification that rides one running call's update
+	// and is neither its output nor its byte count. Goose is the one provider that
+	// sends any: a `progress` sentence and an extension's `platform_event`. It returns
+	// true for an update it claimed, and the caller then skips the merge below --
+	// nothing in such an update changes the row.
+	toolNotification       func(tcu acpToolCallUpdateEnvelope) bool
+	toolOutputComplete     func(toolCallID string)
+	sessionMetadataHandler func(updateType string, metadata map[string]json.RawMessage) bool
+	advertisedSteerMethod  func(initializeResponse []byte) string
 	// subagentPrompts holds each spawn's prompt until the child transcript that
 	// should open with it exists (see acpSubagentObservation.Prompt). Keyed by
 	// the registry RowKey. Guarded by subagentPromptMu; entries are spent when
 	// the child is created and dropped when the row closes, so a provider that
-	// never links a child cannot grow it without bound.
+	// never links a child cannot grow it without limit.
 	subagentPrompts pendingPrompts
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
@@ -504,8 +519,8 @@ func (b *acpBase) handleACPUpdate(update json.RawMessage, extra acpSessionUpdate
 		// takes the sessionMetadataHandler above, which runs before this switch --
 		// Goose reads its steer run identifier there.
 		//
-		// The title is a real answer the runtime computes, and LeapMux names its tabs
-		// itself. Adopting it is a presentation decision, so it stays unread here.
+		// The title is a real answer the runtime computes, and LeapMux gives its tabs
+		// their own names. Adopting it is a presentation decision, so it stays unread here.
 	default:
 		if extra != nil && extra(header.SessionUpdate, update) {
 			return
@@ -730,7 +745,7 @@ func staticSecondaryGroup(modeChannel acpModeChannel, options []*leapmuxv1.Avail
 // registeredSecondaryFallback returns the secondary-axis fallback option list a provider
 // declared at registration -- the .Options of the static group staticSecondaryGroup stored in
 // the factory registry. acpStart seeds a running agent's b.secondaryFallback from this so each
-// provider names its fallback list exactly ONCE (in its registerXxx call) rather than also in
+// provider states its fallback list exactly ONCE (in its registerXxx call) rather than also in
 // configure. secondaryGroup stamps Options verbatim, so the unwrapped list is the same slice the
 // registration passed in. Returns nil for a provider with no mapped secondary axis (the unmapped
 // channel, e.g. Reasonix) or one whose registry entry carries no such group.
@@ -1523,6 +1538,24 @@ type acpToolCallEnvelope struct {
 	Meta       json.RawMessage `json:"_meta"`
 }
 
+// acpToolOutputObservation is everything ONE live update states about a running
+// call's output.
+//
+// One value rather than two hooks, because the two facts describe one state: the
+// count and the text come from the same accumulated buffer, and a reader shown one
+// from before a chunk and the other from after it sees a row that contradicts itself.
+type acpToolOutputObservation struct {
+	// Total is how many bytes the call produced.
+	Total int64
+	// TotalIsMinimum says Total is a floor: output was lost before this update.
+	TotalIsMinimum bool
+	// Tail is the text the running row draws. Empty for a provider whose output rides
+	// in the update's own content, which the shared content path reports instead.
+	Tail string
+	// TailLost says Tail is a SUFFIX, so the row states what is missing ahead of it.
+	TailLost bool
+}
+
 // acpToolCallUpdateEnvelope is the parsed shape of an ACP session/notification
 // tool_call_update. Meta carries provider-specific payloads like Goose's
 // tool-request notifications.
@@ -1687,9 +1720,28 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		return
 	}
 	b.enrichACPToolRequest(tcu.ToolCallID, incoming)
-	if b.toolOutputProgress != nil {
-		if total, minimum, ok := b.toolOutputProgress(tcu); ok {
-			b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, total, minimum))
+	// BEFORE the output hooks, because a claimed notification is not output: a
+	// progress sentence and a platform event carry no chunk to count, and letting
+	// them reach the merge below would fold an empty update into the stored row.
+	//
+	// A FINAL status still falls through. The hook claims an update by its
+	// notification type alone and never reads the status, so a frame that carried
+	// both would have returned before `completeTool`, `persistClosingACPTool` and
+	// `CloseSpan` -- leaving the row a spinning card for the rest of the session,
+	// with its result never stored and nothing logged. Goose's own protocol is not
+	// supposed to send that pair, but nothing here enforces it.
+	if b.toolNotification != nil && b.toolNotification(tcu) && !acpStatusIsFinal(tcu.Status) {
+		return
+	}
+	if b.toolOutput != nil {
+		if out, ok := b.toolOutput(tcu); ok {
+			b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, out.Total, out.TotalIsMinimum))
+			// The content-bearing path below reports the tail of a provider whose
+			// output rides in the update's own content, so an empty one here is a
+			// provider with nothing extra to say rather than a call with no output.
+			if out.Tail != "" {
+				b.sink.ReportProgress(OutputTailProgress(tcu.ToolCallID, out.Tail, out.TailLost))
+			}
 		}
 	}
 	originalUpdate := update
@@ -1700,7 +1752,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 
 	// Goose's tool-request meta rides content-less in_progress updates, so the
 	// subagent hook runs BEFORE the content-less early-return below. OpenCode/
-	// Kilo final updates close on the final-status arm below.
+	// Kilo final updates close on the final-status branch below.
 	if b.subagentFromToolCallUpdate != nil {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
 			b.rememberACPToolSubagentRow(tcu.ToolCallID, obs)
@@ -1710,10 +1762,10 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 			// spawn with `rawInput: {}` and fills the spawn shape only on the
 			// first in-progress update. CloseSpan frees the column although the
 			// subagent keeps running; the recorded span type survives it, so the
-			// closing arm below still persists the real kind.
+			// closing branch below still persists the real kind.
 			//
 			// Only before the final status. Freeing the column removes it from
-			// the active set, so the closing arm would find nothing to mark
+			// the active set, so the closing branch would find nothing to mark
 			// connector_end: the rail drawn for the whole call would stop
 			// mid-transcript instead of ending. A spawn learned that late keeps
 			// its span and closes it once, below.
@@ -1743,6 +1795,10 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		}
 		observed := b.observeCumulativeOutput(tcu.ToolCallID, full, limited)
 		b.sink.ReportProgress(OutputTotalProgress(tcu.ToolCallID, observed.Total, observed.Minimum))
+		// The Agent Client Protocol sends the whole output on every update, so the
+		// text above IS the tail. `limited` is the provider's own statement that it
+		// dropped earlier bytes.
+		b.sink.ReportProgress(OutputTailProgress(tcu.ToolCallID, full, limited))
 	case "completed", "failed", "cancelled":
 		b.completeTool(tcu.ToolCallID)
 		b.completeACPToolOutput(tcu.ToolCallID)
@@ -1750,8 +1806,8 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		content := b.acpMessageContent(originalUpdate, update)
 		// The reader stopped this turn, so the row reports the stop rather than the
 		// status a cancelled call happens to carry. Cursor and Reasonix send
-		// `failed` for a command the reader stopped, and `Error` names the wrong
-		// cause; OpenCode and Kilo send an empty `completed`, which names none.
+		// `failed` for a command the reader stopped, and `Error` states the wrong
+		// cause; OpenCode and Kilo send an empty `completed`, which states none.
 		if b.acpInterruptRequested() {
 			content.Completion = MessageCompletionInterrupted
 		}
@@ -1780,16 +1836,27 @@ func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage,
 	return fields, tcu, ok
 }
 
+// decodeACPToolCallUpdate reads the part of one `tool_call_update` that shared ACP
+// code acts on.
+//
+// Every key comes from contracts/acp-protocol.json, because acpToolSupplement builds
+// and matches the SAME map from the same tables. A hand-written copy here would keep
+// the old word after a rename moved the generated half, and the update would then
+// decode as an empty one: no status, no content, no title -- a row that stops
+// changing, with no build error and no log line.
+//
+// `_meta` is the one key with no constant. It is the protocol's own extension slot
+// rather than a field LeapMux stores, so no contract table holds it.
 func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (acpToolCallUpdateEnvelope, bool) {
 	var update acpToolCallUpdateEnvelope
-	if json.Unmarshal(fields["toolCallId"], &update.ToolCallID) != nil {
+	if json.Unmarshal(fields[contracts.ACPSupplementIdentityToolCallID], &update.ToolCallID) != nil {
 		return acpToolCallUpdateEnvelope{}, false
 	}
-	_ = json.Unmarshal(fields["status"], &update.Status)
-	_ = json.Unmarshal(fields["content"], &update.Content)
-	_ = json.Unmarshal(fields["title"], &update.Title)
-	update.RawInput = fields["rawInput"]
-	update.RawOutput = fields["rawOutput"]
+	_ = json.Unmarshal(fields[contracts.ACPSupplementIdentityStatus], &update.Status)
+	_ = json.Unmarshal(fields[contracts.ACPContentBlockContent], &update.Content)
+	_ = json.Unmarshal(fields[contracts.ACPSupplementRequestTitle], &update.Title)
+	update.RawInput = fields[contracts.ACPSupplementRequestRawInput]
+	update.RawOutput = fields[contracts.ACPSupplementRawOutput]
 	update.Meta = fields["_meta"]
 	return update, true
 }
@@ -1805,7 +1872,7 @@ func decodeACPToolCallUpdate(fields map[string]json.RawMessage) (acpToolCallUpda
 // a running row, and so read as a spawn -- which took the span away from the
 // tool call it rode on.
 //
-// The RowKey guard stays: an observation that names no row writes nothing, so
+// The RowKey guard stays: an observation that identifies no row writes nothing, so
 // it must not take a span either.
 func acpObservationIsSpawn(obs *acpSubagentObservation) bool {
 	return obs != nil && obs.RowKey != "" && obs.Spawns
@@ -2153,6 +2220,7 @@ type acpStartSpec[T any] struct {
 	binaryName     string                                     // CLI binary to launch
 	baseArgs       []string                                   // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see StartReasonix)
 	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
+	pinnedEnv      []string                                   // "KEY=value" assignments that REPLACE any inherited value (see PinEnv); nil for none
 	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
 	newAgent       func() *T                                  // construct a zero-value concrete agent
 	base           func(*T) *acpBase                          // accessor for the agent's embedded acpBase
@@ -2187,16 +2255,23 @@ func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, s
 
 	// A provider rc marker is stripped from the inherited env and re-added only for
 	// a login shell, so the child detects "launched by leapmux" without inheriting a
-	// stale parent value.
+	// stale parent value. The filter is WIDER than the assignment, which is why this
+	// composes FilterEnv with the pin below rather than routing wholly through PinEnv.
+	env := cmd.Environ()
 	if spec.rcMarkerEnvKey != "" {
-		cmd.Env = envutil.FilterEnv(cmd.Environ(), spec.rcMarkerEnvKey)
+		env = envutil.FilterEnv(env, spec.rcMarkerEnvKey)
 		if opts.LoginShell {
-			cmd.Env = append(cmd.Env, spec.rcMarkerEnvKey+"=1")
+			env = append(env, spec.rcMarkerEnvKey+"=1")
 		}
-		cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
-	} else {
-		cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 	}
+	// A pinned value REPLACES whatever the environment already holds, because the
+	// reason to pin one is that LeapMux needs that exact value: an inherited
+	// `OPENCODE_ENABLE_QUESTION_TOOL=0` would otherwise turn off the tool the
+	// question bridge exists to answer.
+	if len(spec.pinnedEnv) > 0 {
+		env = envutil.PinEnv(env, spec.pinnedEnv...)
+	}
+	cmd.Env = FinalizeAgentEnv(env, opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -2223,7 +2298,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink ProviderServices, s
 		spec.configure(a)
 	}
 	// Seed the secondary-axis fallback from the provider's registration (configure has set
-	// b.modeChannel by now) so each provider names its fallback list once -- in its registerXxx
+	// b.modeChannel by now) so each provider states its fallback list once -- in its registerXxx
 	// call -- instead of also in configure. A provider may still set b.secondaryFallback in
 	// configure to override; the unmapped channel (Reasonix) has none, so this leaves it nil.
 	if b.secondaryFallback == nil {
@@ -3465,7 +3540,7 @@ func (b *acpBase) cancelSession() error {
 // embedding chain, so a single implementation covers all five
 // providers.
 //
-// No-op when no session has been opened (sessionID still empty) so
+// No-op when no session is open (sessionID still empty) so
 // the worker InterruptAgent RPC can be called unconditionally without
 // the caller having to wait for the ACP handshake to complete.
 func (b *acpBase) Interrupt() error {

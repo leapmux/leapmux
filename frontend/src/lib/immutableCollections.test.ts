@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { mapWith, mapWithout, setWith, setWithout } from './immutableCollections'
 
-describe('immutablecollections', () => {
-  describe('setwith', () => {
+describe('immutableCollections', () => {
+  describe('setWith', () => {
     it('adds a missing value into a NEW set, leaving the original untouched', () => {
       const original = new Set([1, 2])
       const next = setWith(original, 3)
@@ -17,7 +17,7 @@ describe('immutablecollections', () => {
     })
   })
 
-  describe('setwithout', () => {
+  describe('setWithout', () => {
     it('removes a present value into a NEW set, leaving the original untouched', () => {
       const original = new Set([1, 2, 3])
       const next = setWithout(original, 2)
@@ -32,7 +32,7 @@ describe('immutablecollections', () => {
     })
   })
 
-  describe('mapwith', () => {
+  describe('mapWith', () => {
     it('sets a missing key into a NEW map, leaving the original untouched', () => {
       const original = new Map([['a', 1]])
       const next = mapWith(original, 'b', 2)
@@ -63,7 +63,7 @@ describe('immutablecollections', () => {
     })
   })
 
-  describe('mapwithout', () => {
+  describe('mapWithout', () => {
     it('removes a present key into a NEW map, leaving the original untouched', () => {
       const original = new Map([['a', 1], ['b', 2]])
       const next = mapWithout(original, 'a')

@@ -87,7 +87,7 @@ Every project-written JSON file must validate against a JSON Schema: run
 `task test-no-docker`, so every CI OS job enforces it). Scope and rules live
 in `scripts/validate-json.mjs`: `contracts/`, `testdata/` (root and package
 fixtures) resolve a SIBLING `<name>.schema.json`; the vendored syntax themes
-and license-override metadata use shared schemas named on their rule. An
+and license-override metadata use shared schemas stated on their rule. An
 in-scope file with no schema is a hard failure — a new fixture cannot appear
 without a schema stating its shape. Tool-owned JSON (package.json, tsconfig,
 tauri configs, lockfiles) is out of scope on purpose.
@@ -139,7 +139,7 @@ that and carries no message or RPC.
   migration, or a partial-index predicate (SQLite matches those syntactically,
   so a bound `?` makes the index ineligible). Every such literal needs a test
   that pins it — `enum_column_numbering_test.go` in `hub/store` and `worker/db`
-  are those tests, and a schema comment names the one that guards it.
+  are those tests, and a schema comment identifies the one that guards it.
 - **The Go domain type is a DEFINED type over the proto enum**
   (`type Status leapmuxv1.BackgroundTaskStatus`), not an independent iota and
   not an alias. The ordinals are then one numbering, the conversion each way is
@@ -159,8 +159,11 @@ an error.
 
 ### Provider-specific logic belongs in the provider, not shared code
 
-LeapMux supports many agent providers (Claude Code, Codex, Pi, and ACP-based
-providers: OpenCode, Cursor, Copilot, Kilo, Goose, Reasonix). Anything that depends
+LeapMux supports ten agent providers. Five read their own native protocol — Claude
+Code, Codex, Copilot, Pi and ZCode. Five speak the Agent Client Protocol — OpenCode,
+Cursor, Kilo, Goose and Reasonix — and reach the worker through `acpStart`. Copilot
+is NOT one of them: `copilot_connection_test.go` and `copilot_native_session_test.go`
+both assert its arguments hold no `--acp`. Anything that depends
 on a **single provider's wire format or message shapes** MUST live in that provider's
 plugin/implementation — never hardcoded into shared code (a package-level helper, a
 shared `default*` function, or a `switch` on provider). Shared code stays
@@ -187,7 +190,9 @@ an interface method.
 ### Tests
 
 - Backend: `testify/assert`, `testify/require`.
-- Frontend: `vitest`. `describe` names must not be Title Case — start them lowercase (`describe('parses empty input')`). Naming one after the symbol under test keeps that symbol's own casing: `describe('createStableContext')`, `describe('channelManager openChannel')`. Never start a `describe` or `it` name with a word that must keep its capital, because the lint autofix lowercases the first letter alone and misspells it (`dEFAULT_MONO_FONT_FAMILY`). Lead with a lowercase phrase instead: `describe('default mono font stack (DEFAULT_MONO_FONT_FAMILY)')` (see `src/test-support/noMangledTestTitles.test.ts`, which fails the suite on a mangled title).
+- Frontend: `vitest`. A `describe` identifies the symbol under test and **spells that symbol exactly**, whatever its case: `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`, `describe('createStableContext')`, `describe('ChannelManager openChannel')`. `test/prefer-lowercase-title` is configured with `ignore: ['describe']` for exactly this, so a capital is legal there and needs no workaround. A describe that identifies no single symbol still opens lowercase (`describe('parses empty input')`) — never Title Case prose.
+- An `it` or `test` title is a **sentence** that continues the word "it", so it starts lowercase: `it('returns null for an empty payload')`. The lint rule still enforces that half, and its `--fix` lowercases the first letter alone — so a case title must never open with a name that keeps its capital, or `--fix` misspells it (`dEFAULT_MONO_FONT_FAMILY`). Put the name later in the sentence instead.
+- **Never flatten a name's capitals** in any title: `describe('mcptoolcalldisplayname')` for `mcpToolCallDisplayName` spells an identifier nobody can search for. `src/test-support/noMangledTestTitles.test.ts` fails the suite on both faults — the autofix mangle, and a title that drops the capitals of a name its own file knows.
 - **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. This holds under `tests/e2e/` too — an E2E helper carries its own `.test.ts` beside it (`helpers/mail.ts` → `helpers/mail.test.ts`). Do **not** add a second test file for a module under `tests/unit/` — that mirror no longer exists (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`).
 - **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file is on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
 - E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.

@@ -31,9 +31,10 @@ describe('createAgentSessionStore', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 2.5 })
-      store.updateInfo('agent-1', {
-        totalCostUsd: undefined,
-      } as Partial<{ totalCostUsd: number }>)
+      // Wire-shaped data can surface an explicitly-undefined field; build the
+      // partial through fromEntries so the type stays honest about the store's
+      // runtime contract (a present-undefined key must not clobber the value).
+      store.updateInfo('agent-1', Object.fromEntries([['totalCostUsd', undefined]]))
       const info = store.getInfo('agent-1')
       expect(info.totalCostUsd).toBe(2.5)
       dispose()

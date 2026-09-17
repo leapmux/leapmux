@@ -1,10 +1,9 @@
-import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlAnswerState } from '../../controls/types'
-import { acpResultDivider } from '../acp/renderers'
-import { describeACPProviderBasics } from '../acp/testUtils'
-import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../opencode/OpenCodeControlRequest'
+import { acpResultDivider } from '../acp/extractors/resultDivider'
+import { describeACPProviderBasics, renderACPRow } from '../acp/testUtils'
+import { sendOpenCodeQuestionResponse } from '../opencode/askUserQuestion'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'
@@ -29,12 +28,7 @@ describe('kilo classify', () => {
       locations: [],
       rawInput: {},
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call without kind using fallback toolName', () => {
@@ -44,12 +38,7 @@ describe('kilo classify', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'tool_call',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call_update completed as tool_use', () => {
@@ -61,12 +50,7 @@ describe('kilo classify', () => {
       title: 'bash',
       content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies tool_call_update failed as tool_use', () => {
@@ -76,12 +60,7 @@ describe('kilo classify', () => {
       status: 'failed',
       kind: 'execute',
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'execute',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('hides tool_call_update in_progress', () => {
@@ -91,7 +70,7 @@ describe('kilo classify', () => {
       status: 'in_progress',
       kind: 'execute',
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies plan as tool_use', () => {
@@ -101,12 +80,7 @@ describe('kilo classify', () => {
         { priority: 'medium', status: 'pending', content: 'Step 1' },
       ],
     }
-    expect(plugin.classify(input(parent))).toEqual({
-      kind: 'tool_use',
-      toolName: 'plan',
-      toolUse: parent,
-      content: [],
-    })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
 
   it('hides usage_update', () => {
@@ -115,7 +89,7 @@ describe('kilo classify', () => {
       used: 1000,
       size: 128000,
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides available_commands_update', () => {
@@ -123,7 +97,7 @@ describe('kilo classify', () => {
       sessionUpdate: 'available_commands_update',
       availableCommands: [],
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   // The backend consumes config_option_update centrally for every ACP provider, so it
@@ -134,7 +108,7 @@ describe('kilo classify', () => {
       sessionUpdate: 'config_option_update',
       configOptions: [{ id: 'model', currentValue: 'm1', options: [{ value: 'm1' }] }],
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides user_message_chunk', () => {
@@ -142,7 +116,7 @@ describe('kilo classify', () => {
       sessionUpdate: 'user_message_chunk',
       content: { type: 'text', text: 'hello' },
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies result divider (stopReason)', () => {
@@ -150,47 +124,37 @@ describe('kilo classify', () => {
       stopReason: 'end_turn',
       usage: { totalTokens: 100 },
     }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
-  })
-
-  it('hides system init', () => {
-    const parent = { type: 'system', subtype: 'init' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('classifies system notification', () => {
-    const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies user content', () => {
     const parent = { content: 'Hello agent' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'user_content' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
   it('hides hidden user content', () => {
     const parent = { content: 'internal', hidden: true }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides JSON-RPC response envelope', () => {
     const parent = { id: 5, result: { outcome: { optionId: 'once' } } }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('returns unknown for unrecognized parent', () => {
     const parent = { something: 'weird' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'unknown' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('handles notification thread wrappers', () => {
@@ -198,7 +162,7 @@ describe('kilo classify', () => {
       old_seqs: [1],
       messages: [{ type: 'interrupted' }],
     }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({
+    expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
       messages: wrapper.messages,
     })
@@ -206,7 +170,30 @@ describe('kilo classify', () => {
 
   it('hides empty wrapper', () => {
     const wrapper = { old_seqs: [], messages: [] }
-    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+  })
+})
+
+/**
+ * KILO SENDS NO `system` FRAME, and neither does any other daemon of this family. The
+ * two objects below are hand-built, in Claude Code's stream-json shape, so a reader
+ * must not take them as evidence that the shape occurs. They pin the answer of a
+ * forward-compatibility guard: the worker persists one unrecognized stdout line byte
+ * for byte and never reads a top-level `type`, so the browser must still classify one.
+ * `isHiddenACPNotification` in `../acp/classification` holds the whole standing
+ * property.
+ */
+describe('the system-frame guard (kilo)', () => {
+  const plugin = providerFor(AgentProvider.KILO)!
+
+  it('hides the init lifecycle frame', () => {
+    const parent = { type: 'system', subtype: 'init' }
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
+  })
+
+  it('draws a system frame the hidden rules do not match', () => {
+    const parent = { type: 'system', subtype: 'compact_boundary' }
+    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', messages: [parent] })
   })
 })
 
@@ -231,7 +218,7 @@ describe('kilo result divider', () => {
   })
 
   it('is registered as the plugin resultDivider hook', () => {
-    expect(plugin.resultDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
+    expect(plugin?.transcript.extractDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
   })
 })
 
@@ -248,9 +235,9 @@ describe('kilo tool_call renderer', () => {
       locations: [],
       rawInput: {},
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.KILO, toolUse)
     // Title and kind label appear in the header.
     expect(container.textContent).toContain('bash')
   })
@@ -262,8 +249,7 @@ describe('kilo tool_call renderer', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.KILO, toolUse)
     expect(container.textContent).toContain('custom_tool')
   })
 })
@@ -272,15 +258,15 @@ describe('kilo plan mode', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
   it('reads the current mode from optionValues.primaryAgent', () => {
-    expect(plugin.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ optionValues: {} })).toBe('code')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: {} })).toBe('code')
   })
 
   it('declares primaryAgent as the plan-mode group with plan/code values', () => {
     // The generic settings panel renders the primaryAgent option group and
     // dispatches changes through the host; the provider only declares which
     // group + values drive plan mode.
-    expect(plugin.planMode).toMatchObject({
+    expect(plugin?.configuration?.planMode).toMatchObject({
       groupKey: 'primaryAgent',
       planValue: 'plan',
       defaultValue: 'code',
@@ -288,7 +274,7 @@ describe('kilo plan mode', () => {
   })
 
   it('renders the primaryAgent group as the trigger mode segment', () => {
-    expect(plugin.triggerModeGroupKey).toBe('primaryAgent')
+    expect(plugin?.configuration?.triggerModeGroupKey).toBe('primaryAgent')
   })
 })
 
@@ -313,9 +299,9 @@ describe('kilo tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.KILO, toolUse)
     // Title is rendered in the header; command appears in the body.
     expect(container.textContent).toContain('Shows recent commit messages')
     expect(container.textContent).toContain('git log --oneline -5')
@@ -332,8 +318,7 @@ describe('kilo tool_call_update renderer', () => {
       rawOutput: { error: 'command failed', metadata: { exit: 1 } },
       content: [],
     }
-    const category = plugin.classify(input(toolUse))
-    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    const { container } = renderACPRow(AgentProvider.KILO, toolUse)
     expect(container.textContent).toContain('Run failing command')
     expect(container.textContent).toContain('false')
   })
@@ -349,7 +334,7 @@ describe('kilo tool_call_update renderer', () => {
         { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
       ],
     }
-    const category = plugin.classify(input(toolUse))
+    const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
   })
 })
@@ -362,7 +347,7 @@ describe('kilo isAskUserQuestion', () => {
       type: 'question.asked',
       properties: { questions: [] },
     }
-    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(true)
+    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(true)
   })
 
   it('returns false for permission requests', () => {
@@ -370,15 +355,15 @@ describe('kilo isAskUserQuestion', () => {
       method: 'requestPermission',
       params: { toolCall: { toolCallId: 'tc-1' } },
     }
-    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(false)
   })
 
   it('returns false for regular messages', () => {
-    expect(plugin.askUserQuestion!.isRequest({})).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
 
-describe('kilo sendOpenCodePermissionResponse', () => {
+describe('the kilo permission sender', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
@@ -389,7 +374,7 @@ describe('kilo sendOpenCodePermissionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse(onRespond, '5', 'once')
+    await providerFor(AgentProvider.KILO)!.controls?.sendPermissionOption!(onRespond, '5', 'once')
 
     expect(onRespond).toHaveBeenCalledOnce()
     const parsed = decode(captured!)

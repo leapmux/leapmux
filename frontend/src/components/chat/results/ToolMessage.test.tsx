@@ -1,235 +1,247 @@
-import type { ToolMessageSource } from './toolPresentation'
-import { fireEvent, render } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
-import { toolOutcomeLabel } from '../toolOutcomeLabel'
-import { TRUNCATION_NOTICE } from '../truncationNotice'
-import { ToolMessage } from './ToolMessage'
-import '../providers/testMocks'
+import type { ToolCallIR } from '~/components/chat/ir/toolCall'
+import type { RenderContext } from '~/components/chat/messageRenderers'
+import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ToolProgressEntry } from '~/stores/chatToolProgress'
+import { render } from '@solidjs/testing-library'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { imagesForIR } from '~/components/chat/ir/derivations'
+import { failedResult } from '~/components/chat/ir/toolCall'
+import { ToolMessage } from '~/components/chat/results/ToolMessage'
+import { toolCallIr, toolRow } from '~/test-support/toolCallIr'
 
-function source(id: string, role: ToolMessageSource['role']): ToolMessageSource {
-  return {
-    id,
-    role,
-    status: role === 'result' ? 'completed' : 'pending',
-    images: [],
-    presentation: {
-      kind: 'read',
-      title: 'Read source',
-      input: { path: '/project/example.txt' },
-      output: role === 'result' ? 'Actual provider output' : '',
-      body: { type: 'text' },
-      unresolvedTerminals: [],
-    },
-  }
+// jsdom does not provide ResizeObserver, which the shared layouts observe with.
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+})
+
+function progress(outputTail: string | undefined) {
+  return (): ToolProgressEntry | undefined =>
+    outputTail === undefined ? undefined : { outputTail }
 }
 
-describe('shared tool message', () => {
-  it('uses distinct image indices across rich content and separate images', () => {
-    const onOpenImage = vi.fn()
-    const current = source('tool', 'result')
-    current.images = [{ mimeType: 'image/png', data: 'c2Vjb25k' }]
-    current.presentation.additionalContent = {
-      server: '',
-      tool: 'Tool',
-      argsJson: '',
-      status: 'completed',
-      content: [{ type: 'image', source: { mimeType: 'image/png', data: 'Zmlyc3Q=' } }],
-    }
-    const { container } = render(() => <ToolMessage source={current} context={{ onOpenImage }} />)
-    const images = container.querySelectorAll('img')
-    expect(images).toHaveLength(2)
-    fireEvent.click(images[0].closest('button')!)
-    fireEvent.click(images[1].closest('button')!)
-    expect(onOpenImage.mock.calls.map(([request]) => request.index)).toEqual([0, 1])
+describe('toolCallMessage', () => {
+  it('drops the header on a result row whose request row is beside it', () => {
+    const call = toolCallIr('read', { request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: 'body' } })
+    // The layout draws the body alone when the request row holds the header: the
+    // wrapper that carries the tool-message hook is the header's own.
+    const paired = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+    expect(paired.container.querySelector('[data-tool-message]')).toBeNull()
+    expect(paired.container.textContent).toContain('body')
+
+    const alone = render(() => <ToolMessage row={toolRow(call, 'result', { request: false })} />)
+    expect(alone.container.querySelector('[data-tool-message]')).not.toBeNull()
   })
 
-  // The MCP row draws through McpToolMessage, which took only the body source. The
-  // accompanying content never reached the reader, while `toolPresentationMeta` still
-  // counted it in the Copy text and in the collapsible answer.
-  it('draws the content that accompanies an MCP body', () => {
-    const onOpenImage = vi.fn()
-    const current = source('tool', 'result')
-    current.presentation.body = {
-      type: 'mcp',
-      source: {
-        server: 'files',
-        tool: 'read',
-        argsJson: '',
-        status: 'completed',
-        content: [
-          { type: 'text', text: 'the MCP result body' },
-          { type: 'image', source: { mimeType: 'image/png', data: 'c2Vjb25k' } },
-        ],
-      },
-    }
-    current.presentation.additionalContent = {
-      server: '',
-      tool: 'Tool',
-      argsJson: '',
-      status: 'completed',
-      content: [
-        { type: 'text', text: 'a note neither field carries' },
-        { type: 'image', source: { mimeType: 'image/png', data: 'Zmlyc3Q=' } },
-      ],
-    }
-    const { container } = render(() => <ToolMessage source={current} context={{ onOpenImage }} />)
-    expect(container.textContent).toContain('the MCP result body')
-    expect(container.textContent).toContain('a note neither field carries')
-    // `acpToolResultImages` lists the accompanying images first, so the two bodies
-    // must not both start numbering at zero.
-    const images = container.querySelectorAll('img')
-    expect(images).toHaveLength(2)
-    fireEvent.click(images[0].closest('button')!)
-    fireEvent.click(images[1].closest('button')!)
-    expect(onOpenImage.mock.calls.map(([request]) => request.index).sort()).toEqual([0, 1])
+  it('draws the live tail of a call that has not returned', () => {
+    const call = toolCallIr('execute', { status: 'in_progress' })
+    const liveTail = progress('streaming bytes')
+    const { container } = render(() => <ToolMessage row={toolRow(call)} progress={{ liveTail }} />)
+    expect(container.textContent).toContain('streaming bytes')
   })
 
-  it.each(['', 'another-tool'])('keeps a result header when its request has identity %j', (requestID) => {
-    const { container } = render(() => <ToolMessage source={source('tool', 'result')} request={source(requestID, 'request')} />)
-    expect(container.textContent).toContain('example.txt')
-    expect(container.textContent).toContain('Actual provider output')
+  it('states truncation when the provider kept only part of the output', () => {
+    // The call's own flag is RESULT-side, so the row that carries it has finished.
+    const finished = toolCallIr('execute', { truncated: true })
+    expect(render(() => <ToolMessage row={toolRow(finished)} />).container.textContent).toMatch(/truncated/i)
+
+    // A call still RUNNING says it through the live tail instead, which is the one
+    // route an unfinished row has to the notice.
+    const running = toolCallIr('execute', { status: 'in_progress' })
+    expect(render(() => <ToolMessage row={toolRow(running)} progress={{ liveTail: () => ({ outputTail: 'streaming bytes', outputTruncated: true }) }} />).container.textContent).toMatch(/truncated/i)
   })
 
-  it('removes the duplicate header when a matching request arrives', () => {
-    const [request, setRequest] = createSignal<ToolMessageSource>()
-    const { container } = render(() => <ToolMessage source={source('tool', 'result')} request={request()} />)
-    expect(container.textContent).toContain('example.txt')
-    setRequest(source('tool', 'request'))
-    expect(container.textContent).not.toContain('example.txt')
-    expect(container.textContent).toContain('Actual provider output')
-    setRequest(undefined)
-    expect(container.textContent).toContain('example.txt')
+  it('draws the outcome header above a prose body, and none above a status body', () => {
+    const failedFetch = toolCallIr('fetch', { status: 'failed', result: failedResult('boom') })
+    const fetch = render(() => <ToolMessage row={toolRow(failedFetch)} />)
+    expect(fetch.container.textContent).toContain('Error')
+
+    const stoppedTask = toolCallIr('task', { status: 'completed', result: { title: 'Stopped task-1', outcome: 'stopped', output: 'The task stopped.' } })
+    const task = render(() => <ToolMessage row={toolRow(stoppedTask)} />)
+    expect(task.container.textContent).toContain('Stopped task-1')
   })
 
-  it('keeps the result header when the matching source is already a result', () => {
-    const { container } = render(() => <ToolMessage source={source('tool', 'result')} request={source('tool', 'result')} />)
-    expect(container.textContent).toContain('example.txt')
-    expect(container.textContent).toContain('Actual provider output')
-  })
-})
+  it('states the outcome when a kind that draws its own outcome drew nothing', () => {
+    // Each of the three reads its outcome out of a LIST or an optional word, so an
+    // empty one leaves the row with a title and silence. The shared header is then
+    // the only thing that can say the call failed.
+    const agent = render(() => <ToolMessage row={toolRow(toolCallIr('agent', { status: 'failed', result: { agents: [] } }))} />)
+    expect(agent.container.textContent).toContain('Error')
 
-// Cursor's `ReadLints` declares ACP kind `read`, sends `title: "Read Lints"`, and
-// gives the WORKING DIRECTORY as its only location. Titling the row with that path
-// drew a row whose entire label was ".", and the title the provider sent never
-// reached the reader. See RL-042.
-describe('a read whose path is the working directory', () => {
-  const lintRow = (): ToolMessageSource => ({
-    id: 'lints',
-    role: 'request',
-    status: 'pending',
-    images: [],
-    presentation: {
-      kind: 'read',
-      title: 'Read Lints',
-      input: { path: '/project' },
-      output: '',
-      body: { type: 'text' },
-      unresolvedTerminals: [],
-    },
+    const execute = render(() => <ToolMessage row={toolRow(toolCallIr('execute', { status: 'failed', result: { commands: [], unresolvedTerminals: [] } }))} />)
+    expect(execute.container.textContent).toContain('Error')
+
+    const task = render(() => <ToolMessage row={toolRow(toolCallIr('task', { status: 'failed', result: { outcome: 'failed', output: '' } }))} />)
+    expect(task.container.textContent).toContain('Error')
   })
 
-  it('states the tool title rather than a bare dot', () => {
-    const { container } = render(() => (
-      <ToolMessage source={lintRow()} context={{ workingDir: '/project' }} />
-    ))
-    expect(container.textContent).toContain('Read Lints')
-    expect(container.textContent?.trim()).not.toBe('.')
+  // A card whose run has not ENDED draws the neutral glyph and the child's own word.
+  // It says what the subagent is, never how the call finished, so the shared header
+  // must still state that -- Codex reports a launch whose child state never arrived as
+  // `status unavailable`, and the row was then entirely about the child.
+  it('states the outcome when an agent card has not ended', () => {
+    const unknown = { description: '', agentId: 'thread-1', statusLabel: 'status unavailable', outcome: 'unknown' as const, metadata: [], body: '' }
+    const pending = render(() => <ToolMessage row={toolRow(toolCallIr('agent', { status: 'failed', result: { agents: [unknown] } }))} />)
+    expect(pending.container.textContent).toContain('status unavailable')
+    expect(pending.container.textContent).toContain('Error')
+
+    // ONE unended card among several leaves the row incomplete, so the header draws.
+    const ended = { description: '', agentId: 'thread-2', statusLabel: 'failed', outcome: 'failed' as const, metadata: [], body: 'it broke' }
+    const mixed = render(() => <ToolMessage row={toolRow(toolCallIr('agent', { status: 'failed', result: { agents: [ended, unknown] } }))} />)
+    expect(mixed.container.textContent).toContain('Error')
   })
 
-  // A read of a real file still names the file, which is what the row is for.
-  it('still names a file it actually read', () => {
-    const row = lintRow()
-    row.presentation.input = { path: '/project/src/main.ts' }
-    const { container } = render(() => (
-      <ToolMessage source={row} context={{ workingDir: '/project' }} />
-    ))
-    expect(container.textContent).toContain('src/main.ts')
+  it('keeps the shared outcome header away from a body that states the outcome', () => {
+    const agents = [{ description: 'Fix the build', agentId: 'a1', statusLabel: 'failed', outcome: 'failed' as const, metadata: [], body: 'it broke' }]
+    const { container } = render(() => <ToolMessage row={toolRow(toolCallIr('agent', { status: 'failed', result: { agents } }))} />)
+    expect(container.textContent).toContain('it broke')
+    expect(container.textContent).not.toContain('Error')
+  })
+
+  it('uses the agent prompt expand key on an agent request row', () => {
+    const call = toolCallIr('agent', { status: 'in_progress', request: { description: 'Fix the build', prompt: 'Run the tests.' } })
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'request', { result: false })} />)
+    expect(container.textContent).toContain('Fix the build')
+    expect(container.textContent).toContain('Run the tests.')
   })
 })
 
-// Reasonix reports ACP kind `move` for a rename, and three of the four shared
-// tables had no entry for it: the row drew the generic wrench and repeated its
-// input as raw JSON under the header. See DESIGN-FE-2.
-describe('a move that reaches the shared row', () => {
-  const moveRow = (input: Record<string, unknown>): ToolMessageSource => ({
-    id: 'move',
-    role: 'request',
-    status: 'pending',
-    images: [],
-    presentation: {
-      kind: 'move',
-      title: 'move_file',
-      input,
-      output: '',
-      body: { type: 'text' },
-      unresolvedTerminals: [],
-    },
-  })
+/**
+ * An image TAB addresses a picture by its index in `imagesForIR`, and the row hands
+ * that same index to `onOpenImage`. The two are one order or a tab opens the wrong
+ * picture, and it survives a reload, when the tab resolves its index against the
+ * message re-fetched from the worker.
+ *
+ * The row draws the RESULT body first, the call's extra content under it, then the
+ * call's own pictures. An offset of zero on the extra content gave two pictures the
+ * same number.
+ */
+const picture = (name: string): ImageResultSource => ({ mimeType: 'image/png', data: name })
 
-  // `move` states its paths under keys no other kind uses, so the shared title
-  // reads them by name. A row that only suppressed the JSON summary stated
-  // NEITHER file, which is less than the raw JSON said.
-  it('states both paths rather than dumping its input as JSON', () => {
-    const { container } = render(() => (
-      <ToolMessage source={moveRow({ source_path: '/project/a.ts', destination_path: '/project/b.ts' })} context={{ workingDir: '/project' }} />
-    ))
-    expect(container.textContent).toContain('a.ts')
-    expect(container.textContent).toContain('b.ts')
-    expect(container.textContent).not.toContain('destination_path')
+/**
+ * The RESULT side of one call: its extra content, its own pictures, and the notice
+ * that says the provider kept only part of the output.
+ *
+ * A span whose two rows are both drawn puts the result body on the result row alone,
+ * and `rowDrawsResult` is that rule. Everything the result side carries follows it, or
+ * a paired request row draws the answer a second time -- and `imagesForIR` reports NO
+ * picture for that row, so the index it handed `onOpenImage` addressed a picture the
+ * reader never saw.
+ */
+describe('the result side of a paired tool span (ToolMessage)', () => {
+  const call = toolCallIr('read', {
+    request: { path: '/p/a.ts' },
+    result: { lines: null, fallbackContent: 'the file body' },
+    extraContent: [{ type: 'text', text: 'rich extra content' }, { type: 'image', source: picture('EXTRA') }],
+    images: [picture('OWN')],
+    truncated: true,
   })
+  const requestRow = toolRow(call, 'request', { result: true })
+  const resultRow = toolRow(call, 'result', { request: true })
 
-  it('states the destination when the provider used a shared path key', () => {
-    const { container } = render(() => (
-      <ToolMessage source={moveRow({ filePath: '/project/src/b.ts' })} context={{ workingDir: '/project' }} />
-    ))
-    expect(container.textContent).toContain('src/b.ts')
-  })
-
-  it('draws its own icon rather than the unclassified one', () => {
-    const generic = render(() => <ToolMessage source={{ ...moveRow({}), presentation: { ...moveRow({}).presentation, kind: 'other' } }} />)
-    const move = render(() => <ToolMessage source={moveRow({})} />)
-    const pathsOf = (root: HTMLElement) => root.querySelector('svg')?.innerHTML
-    expect(pathsOf(move.container as HTMLElement)).toBeTruthy()
-    expect(pathsOf(move.container as HTMLElement)).not.toBe(pathsOf(generic.container as HTMLElement))
-  })
-})
-
-describe('shared tool message truncation notice', () => {
-  function row(presentation: Partial<ToolMessageSource['presentation']>): ToolMessageSource {
-    const base = source('tool', 'result')
-    return { ...base, presentation: { ...base.presentation, ...presentation } }
+  // `ImageResultView` draws a bare `<img>` without `onOpenImage`, so every case here
+  // renders with one: the index each picture reports is the whole point.
+  function drawRow(row: typeof requestRow): { container: HTMLElement, opened: number[], drawn: string[] } {
+    const opened: number[] = []
+    const context = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: (request: { index: number }) => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } } as unknown as RenderContext
+    const { container } = render(() => <ToolMessage row={row} context={context} />)
+    const buttons = [...container.querySelectorAll('button[aria-label="Open image"]')]
+    const drawn = buttons.map(button => button.querySelector('img')?.getAttribute('src') ?? '')
+    for (const button of buttons)
+      (button as HTMLButtonElement).click()
+    return { container, opened, drawn }
   }
 
-  it('states that the provider cut the output', () => {
-    const { container } = render(() => <ToolMessage source={row({ truncated: true })} />)
-    expect(container.textContent).toContain(TRUNCATION_NOTICE)
+  it('draws no result-side content on a request row whose result row is beside it', () => {
+    const { container, opened } = drawRow(requestRow)
+    expect(container.textContent).not.toContain('rich extra content')
+    expect(container.textContent).not.toContain('the file body')
+    expect(container.textContent).not.toMatch(/truncated/i)
+    expect(opened).toEqual([])
   })
 
-  it('stays quiet for a row the provider returned whole', () => {
-    const { container } = render(() => <ToolMessage source={row({})} />)
-    expect(container.textContent).not.toContain(TRUNCATION_NOTICE)
+  it('draws each result-side item exactly once on the result row', () => {
+    const { container, opened } = drawRow(resultRow)
+    expect(container.textContent?.match(/rich extra content/g)).toHaveLength(1)
+    expect(container.textContent?.match(/the file body/g)).toHaveLength(1)
+    expect(opened).toEqual([0, 1])
+  })
+
+  it('opens each picture at the index `imagesForIR` reports for the row that drew it', () => {
+    for (const row of [requestRow, resultRow]) {
+      const listed = imagesForIR(row)
+      const { opened, drawn } = drawRow(row)
+      expect(opened).toEqual(listed.map((_source, index) => index))
+      expect(drawn).toEqual(listed.map(source => `data:image/png;base64,${source.data}`))
+    }
+  })
+
+  it('reports only indexes that still address the same picture after a reload', () => {
+    // An image tab keeps (seq, index) and re-resolves it through
+    // `messageToolResultImages`, which reads the FINISHED side of the span. An index a
+    // row reported that the finished side does not hold resolves to a different
+    // picture, or to none, once the reader reloads the transcript.
+    const afterReload = imagesForIR(toolRow(call, 'result'))
+    for (const row of [requestRow, resultRow]) {
+      const { opened } = drawRow(row)
+      expect(opened.map(index => afterReload[index]?.data))
+        .toEqual(imagesForIR(row).map(source => source.data))
+    }
   })
 })
 
-describe('shared tool message status body', () => {
-  // The status body draws its OWN outcome header, so the row's Error header above it
-  // would state the same outcome a second time.
-  it('draws no outcome header of its own above a status body', () => {
-    const base = source('tool', 'result')
-    const current: ToolMessageSource = {
-      ...base,
-      status: 'failed',
-      presentation: { ...base.presentation, body: { type: 'status', source: { title: 'Failed to send', outcome: 'failed', output: 'Peer unavailable' } } },
-    }
-    const { container } = render(() => <ToolMessage source={current} />)
-    expect(container.textContent).toContain('Failed to send')
-    expect(container.textContent).not.toContain(toolOutcomeLabel('failed'))
-  })
+/**
+ * The three SOURCES a row draws pictures from, each at the index `imagesForIR`
+ * reports for it: the pictures a generic result holds in its own content blocks, the
+ * call's extra content under that, and the call's own pictures last.
+ *
+ * Two calls, because no single one reaches all three. Only a generic result carries
+ * content blocks, and a generic kind carries no pictures of its own -- invariant I6,
+ * which states that its pictures ride in those blocks instead. Between the pair every
+ * source is drawn, and each boundary between two of them is crossed.
+ */
+describe('the picture a tool row opens (ToolMessage)', () => {
+  it('opens the picture that `imagesForIR` holds at the index it reports', () => {
+    const cases: { call: ToolCallIR, expected: string[] }[] = [
+      {
+        call: toolCallIr('mcp', {
+          result: { content: [{ type: 'text', text: 'before' }, { type: 'image', source: picture('RESULT') }] },
+          extraContent: [{ type: 'image', source: picture('EXTRA') }],
+        }),
+        expected: ['RESULT', 'EXTRA'],
+      },
+      {
+        call: toolCallIr('read', {
+          result: { lines: null, fallbackContent: 'the file body' },
+          extraContent: [{ type: 'image', source: picture('EXTRA') }],
+          images: [picture('OWN')],
+        }),
+        expected: ['EXTRA', 'OWN'],
+      },
+    ]
 
-  it('draws its own outcome header above a plain text body', () => {
-    const base = source('tool', 'result')
-    const { container } = render(() => <ToolMessage source={{ ...base, status: 'failed' }} />)
-    expect(container.textContent).toContain(toolOutcomeLabel('failed'))
+    for (const { call, expected } of cases) {
+      const row = toolRow(call)
+      const listed = imagesForIR(row)
+      expect(listed.map(source => source.data)).toEqual(expected)
+
+      const opened: number[] = []
+      const context = { images: { loadFileImage: () => Promise.resolve(undefined), cachedFileImage: () => undefined, openImage: (request: { index: number }) => opened.push(request.index), deferLoad: () => false, premeasurePass: () => false } } as unknown as RenderContext
+      const { container } = render(() => <ToolMessage row={row} context={context} />)
+
+      const buttons = [...container.querySelectorAll('button[aria-label="Open image"]')]
+      expect(buttons).toHaveLength(expected.length)
+      const drawn = buttons.map(button => button.querySelector('img')?.getAttribute('src') ?? '')
+      for (const button of buttons)
+        (button as HTMLButtonElement).click()
+
+      // Each button reports its own place in the list, and the picture at that place is
+      // the one the button draws.
+      expect(opened).toEqual(listed.map((_source, index) => index))
+      expect(drawn).toEqual(listed.map(source => `data:image/png;base64,${source.data}`))
+    }
   })
 })

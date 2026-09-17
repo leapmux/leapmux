@@ -10,7 +10,10 @@ interface TunnelContextMenuProps extends ContextMenuTargetProps {
 
 export const TunnelContextMenu: Component<TunnelContextMenuProps> = (props) => {
   return (
-    <DropdownMenu trigger={rowContextMenuTrigger()} contextMenuFor={props.contextMenuFor}>
+    <DropdownMenu
+      trigger={rowContextMenuTrigger()}
+      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+    >
       <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDelete()}>
         Delete...
       </button>

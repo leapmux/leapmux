@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "worker-vocab.schema.json",
   "title": "worker wire vocabulary contract",
-  "description": "Notification-type tokens, the notification-thread wrapper discriminator, the Codex time-window rate-limit token, and the model sentinels. The generator checks workerAuthoredNotificationTypes names keys of notificationTypes and that the tokens are unique. It also holds the session goal's two payload vocabularies: goalStatusTokens (the neutral status the agents row stores, whose empty token means no goal) and goalTransitions (what a goal change did).",
+  "description": "Notification-type tokens, the notification-thread wrapper discriminator, the Codex time-window rate-limit token, and the model sentinels. The generator checks workerWrittenNotificationTypes names keys of notificationTypes and that the tokens are unique. It also holds the session goal's two payload vocabularies: goalStatusTokens (the neutral status the agents row stores, whose empty token means no goal) and goalTransitions (what a goal change did).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,7 @@
     "notificationTypes",
     "goalStatusTokens",
     "goalTransitions",
-    "workerAuthoredNotificationTypes",
+    "workerWrittenNotificationTypes",
     "assembledMessage",
     "toolOutcome",
     "notificationThreadWrapperType",
@@ -18,36 +18,76 @@
     "messageSupplementFields",
     "rpcMethods",
     "codexRateLimitReachedTimeWindow",
-    "modelSentinels"
+    "modelSentinels",
+    "notificationFields"
   ],
   "properties": {
     "messageSupplementFields": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["Provider", "Metadata"],
+      "required": [
+        "Provider",
+        "Metadata"
+      ],
       "properties": {
-        "Provider": { "type": "string", "minLength": 1 },
-        "Metadata": { "type": "string", "minLength": 1 }
+        "Provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "Metadata": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "messageMetadataFields": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["DurationMs", "ToolUses", "ControlRequestID", "ControlRequestClaimToken", "PlanApprovalSettings", "ToolOutcome"],
+      "required": [
+        "DurationMs",
+        "ToolUses",
+        "ControlRequestID",
+        "ControlRequestClaimToken",
+        "PlanApprovalSettings",
+        "ToolOutcome"
+      ],
       "properties": {
-        "DurationMs": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "ToolUses": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "ControlRequestID": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "ControlRequestClaimToken": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "PlanApprovalSettings": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "ToolOutcome": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        "DurationMs": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "ToolUses": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "ControlRequestID": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "ControlRequestClaimToken": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "PlanApprovalSettings": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "ToolOutcome": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        }
       }
     },
     "rpcMethods": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
-      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
     },
     "_readme": {
       "type": "string",
@@ -86,7 +126,7 @@
         "pattern": "^[a-z][a-z0-9_]*$"
       }
     },
-    "workerAuthoredNotificationTypes": {
+    "workerWrittenNotificationTypes": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -98,43 +138,98 @@
     "assembledMessage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "types", "kinds", "completions"],
+      "required": [
+        "fields",
+        "types",
+        "kinds",
+        "completions"
+      ],
       "properties": {
         "fields": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Type", "Kind", "Text", "Completion"],
+          "required": [
+            "Type",
+            "Kind",
+            "Text",
+            "Completion"
+          ],
           "properties": {
-            "Type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Text": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Completion": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+            "Type": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Kind": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Text": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Completion": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
           }
         },
         "types": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Assembled"],
-          "properties": { "Assembled": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } }
+          "required": [
+            "Assembled"
+          ],
+          "properties": {
+            "Assembled": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
+          }
         },
         "kinds": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Text", "Reasoning", "Plan"],
+          "required": [
+            "Text",
+            "Reasoning",
+            "Plan"
+          ],
           "properties": {
-            "Text": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Reasoning": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Plan": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+            "Text": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Reasoning": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Plan": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
           }
         },
         "completions": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Complete", "Interrupted", "Error"],
+          "required": [
+            "Complete",
+            "Interrupted",
+            "Error"
+          ],
           "properties": {
-            "Complete": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Interrupted": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Error": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+            "Complete": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Interrupted": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Error": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
           }
         }
       }
@@ -142,30 +237,59 @@
     "toolOutcome": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "sources", "outcomes"],
+      "required": [
+        "fields",
+        "sources",
+        "outcomes"
+      ],
       "properties": {
         "fields": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Source", "Outcome"],
+          "required": [
+            "Source",
+            "Outcome"
+          ],
           "properties": {
-            "Source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Outcome": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+            "Source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Outcome": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
           }
         },
         "sources": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["BatchSummary"],
-          "properties": { "BatchSummary": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } }
+          "required": [
+            "BatchSummary"
+          ],
+          "properties": {
+            "BatchSummary": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
+          }
         },
         "outcomes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["Succeeded", "Unknown"],
+          "required": [
+            "Succeeded",
+            "Unknown"
+          ],
           "properties": {
-            "Succeeded": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-            "Unknown": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+            "Succeeded": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Unknown": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
           }
         }
       }
@@ -194,6 +318,18 @@
           "type": "string",
           "minLength": 1
         }
+      }
+    },
+    "notificationFields": {
+      "description": "Payload keys the worker writes onto a notification and the browser reads back, keyed by the identifier both languages spell. The contract CHOOSES the wire key; the Go struct tags follow it, and TestOptionChangeEntryTagsComeFromTheContract holds them to it. The pattern is therefore snake_case only, the same one messageMetadataFields uses: a table that admitted two conventions let each new entry pick either, and a mixed payload made a reader guess which one a key takes.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
       }
     }
   }

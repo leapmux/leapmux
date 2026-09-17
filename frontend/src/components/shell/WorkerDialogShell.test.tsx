@@ -24,13 +24,13 @@ function renderShellWithFormFooter(overrides: Partial<{
       error={overrides.error ?? null}
       onSubmit={onSubmit}
       onClose={onClose}
-      compact={overrides.compact}
+      {...(overrides.compact !== undefined ? { compact: overrides.compact } : {})}
       footer={(
         <DialogFormFooter
           submitting={overrides.submitting ?? false}
-          submitDisabled={overrides.submitDisabled}
+          {...(overrides.submitDisabled !== undefined ? { submitDisabled: overrides.submitDisabled } : {})}
           submitLabel={overrides.submitLabel ?? 'Create'}
-          submittingLabel={overrides.submittingLabel}
+          {...(overrides.submittingLabel !== undefined ? { submittingLabel: overrides.submittingLabel } : {})}
           onClose={onClose}
         />
       )}
@@ -41,7 +41,7 @@ function renderShellWithFormFooter(overrides: Partial<{
   return { ...result, onSubmit, onClose }
 }
 
-describe('workerDialogShell', () => {
+describe('WorkerDialogShell', () => {
   it('renders the title and body content', () => {
     renderShellWithFormFooter({ title: 'New thingy' })
     expect(screen.getByText('New thingy')).toBeInTheDocument()
@@ -127,7 +127,7 @@ describe('workerDialogShell', () => {
   })
 })
 
-describe('dialogFormFooter', () => {
+describe('DialogFormFooter', () => {
   it('disables Submit when submitDisabled is true', () => {
     renderShellWithFormFooter({ submitDisabled: true })
     const submit = screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement

@@ -1,10 +1,85 @@
 import { lruGet, lruSet } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 
+// ---------------------------------------------------------------------------
+// The per-row render cache, keyed by VALUES the store cannot re-derive.
+//
+// A key is OPAQUE and TYPED: no caller spells a string and picks the value's type
+// at the read, which is the two-way guess the old `get<T>(key: string)` allowed --
+// a mistyped read answered whatever object sat at that string, and the wrong type
+// then travelled as far from the cache as the renderer that consumed it. Here the
+// key's own type states the entry it addresses, and the factories are the only way
+// to build one.
+// ---------------------------------------------------------------------------
+
+/**
+ * One cache entry's address: opaque, and typed by the value it holds.
+ *
+ * The phantom member carries `T` and nothing at runtime. Two keys built by two
+ * factories answer two different tokens, and a key of one entry type is not
+ * assignable where another's is expected -- so a `set` and the `get` that reads it
+ * back cannot disagree about what the entry is.
+ */
+declare const cacheKeyBrand: unique symbol
+export interface CacheKey<T> {
+  readonly token: string
+  readonly [cacheKeyBrand]: (value: T) => void
+}
+
+/** Build a key for an entry type only this module's factories name. The one assertion branding needs. */
+function brandedKey<T>(token: string): CacheKey<T> {
+  return { token } as CacheKey<T>
+}
+
+/** The entry one hashed string input addresses: the input itself, kept to verify the hash at read. */
+export interface StringRenderCacheEntry<T> {
+  input: string
+  value: T
+}
+
+/** The entry a tuple of hashed string inputs addresses: the inputs, kept to verify each hash at read. */
+export interface StringTupleRenderCacheEntry<T> {
+  inputs: readonly string[]
+  value: T
+}
+
+/**
+ * The key for one value under a FIXED name -- the row IR, per row-revision cache.
+ *
+ * The row cache is per-revision by construction (`forRow` hands each revision its
+ * own map), so its key needs no input folded in.
+ */
+export function fixedCacheKey<T>(name: string): CacheKey<T> {
+  return brandedKey<T>(name)
+}
+
+/**
+ * The key for one hashed string input, such as a markdown body or an ANSI block.
+ *
+ * The token carries the input's LENGTH and digest, never the input itself: a
+ * streaming row's bodies would otherwise sit in the key twice. The digest can
+ * collide, so the entry keeps the input and the read compares it -- see
+ * {@link getCachedRenderValueForString}.
+ */
+export function stringCacheKey<T>(namespace: string, input: string): CacheKey<StringRenderCacheEntry<T>> {
+  return brandedKey(`${namespace}:${input.length}:${fnv1a32Hex(input)}`)
+}
+
+/**
+ * The key for a tuple of hashed string inputs, such as a diff's two bodies and the
+ * file they belong to. Collision verification per part, as above.
+ */
+export function stringTupleCacheKey<T>(namespace: string, inputs: readonly string[]): CacheKey<StringTupleRenderCacheEntry<T>> {
+  return brandedKey([
+    namespace,
+    ...inputs.map(input => `${input.length}:${fnv1a32Hex(input)}`),
+  ].join(':'))
+}
+
 export interface MessageRenderCache {
-  get: <T>(key: string) => T | undefined
-  set: <T>(key: string, value: T) => T
-  getOrCreate: <T>(key: string, compute: () => T) => T
+  get: <T>(key: CacheKey<T>) => T | undefined
+  set: <T>(key: CacheKey<T>, value: T) => T
+  getOrCreate: <T>(key: CacheKey<T>, compute: () => T) => T
 }
 
 export interface MessageRenderCacheStore {
@@ -45,18 +120,20 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
     forRow(rowVersionKey) {
       const cache = touch(rowVersionKey)
       return {
-        get<T>(key: string): T | undefined {
-          return cache.get(key) as T | undefined
+        // The one unchecked lookup in the module: `set` writes an entry under a key
+        // of the same type, so the map's `unknown` holds what the key states.
+        get<T>(key: CacheKey<T>): T | undefined {
+          return cache.get(key.token) as T | undefined
         },
-        set<T>(key: string, value: T): T {
-          cache.set(key, value)
+        set<T>(key: CacheKey<T>, value: T): T {
+          cache.set(key.token, value)
           return value
         },
-        getOrCreate<T>(key: string, compute: () => T): T {
-          if (cache.has(key))
-            return cache.get(key) as T
+        getOrCreate<T>(key: CacheKey<T>, compute: () => T): T {
+          if (cache.has(key.token))
+            return cache.get(key.token) as T
           const value = compute()
-          cache.set(key, value)
+          cache.set(key.token, value)
           return value
         },
       }
@@ -75,14 +152,6 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
   }
 }
 
-export function cachedRenderValue<T>(
-  context: { renderCache?: MessageRenderCache } | undefined,
-  key: string,
-  compute: () => T,
-): T {
-  return context?.renderCache?.getOrCreate(key, compute) ?? compute()
-}
-
 export function cachedRenderValueForString<T>(
   context: { renderCache?: MessageRenderCache } | undefined,
   namespace: string,
@@ -95,17 +164,14 @@ export function cachedRenderValueForString<T>(
   return setCachedRenderValueForString(context, namespace, input, compute())
 }
 
-interface StringRenderCacheEntry<T> {
-  input: string
-  value: T
-}
-
 export function getCachedRenderValueForString<T>(
   context: { renderCache?: MessageRenderCache } | undefined,
   namespace: string,
   input: string,
 ): T | undefined {
-  const cached = context?.renderCache?.get<StringRenderCacheEntry<T>>(stableStringCacheKey(namespace, input))
+  // Collision verification: the digest can agree for two inputs, so the entry
+  // carries the input it was built from and the read compares it before answering.
+  const cached = context?.renderCache?.get(stringCacheKey<T>(namespace, input))
   return cached?.input === input ? cached.value : undefined
 }
 
@@ -115,13 +181,8 @@ export function setCachedRenderValueForString<T>(
   input: string,
   value: T,
 ): T {
-  context?.renderCache?.set<StringRenderCacheEntry<T>>(stableStringCacheKey(namespace, input), { input, value })
+  context?.renderCache?.set(stringCacheKey<T>(namespace, input), { input, value })
   return value
-}
-
-interface StringTupleRenderCacheEntry<T> {
-  inputs: readonly string[]
-  value: T
 }
 
 export function cachedRenderValueForStrings<T>(
@@ -130,18 +191,11 @@ export function cachedRenderValueForStrings<T>(
   inputs: readonly string[],
   compute: () => T,
 ): T {
-  const key = [
-    namespace,
-    ...inputs.map(input => stableStringCacheKey('part', input)),
-  ].join(':')
-  const cached = context?.renderCache?.get<StringTupleRenderCacheEntry<T>>(key)
+  // Collision verification per part, for the reason the single-input read gives.
+  const cached = context?.renderCache?.get(stringTupleCacheKey<T>(namespace, inputs))
   if (cached?.inputs.length === inputs.length && cached.inputs.every((input, index) => input === inputs[index]))
     return cached.value
   const value = compute()
-  context?.renderCache?.set<StringTupleRenderCacheEntry<T>>(key, { inputs: [...inputs], value })
+  context?.renderCache?.set(stringTupleCacheKey<T>(namespace, inputs), { inputs: [...inputs], value })
   return value
-}
-
-export function stableStringCacheKey(namespace: string, input: string): string {
-  return `${namespace}:${input.length}:${fnv1a32Hex(input)}`
 }

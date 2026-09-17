@@ -4,7 +4,7 @@ import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCa
 import { CollapsibleContent } from '~/components/chat/results/CollapsibleContent'
 import { toolResultContentAnsi, toolResultContentPre } from '~/components/chat/toolStyles.css'
 
-describe('collapsibleContent', () => {
+describe('CollapsibleContent', () => {
   it('renders pre body for kind="pre"', () => {
     const { container } = render(() => (
       <CollapsibleContent kind="pre" text="hello\nworld" display="hello\nworld" isCollapsed={false} />

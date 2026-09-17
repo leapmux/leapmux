@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { RenderContext } from '../messageRenderers'
+import type { ImageRenderActions } from '../renderContext'
 import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
@@ -77,7 +77,13 @@ export function ImageResultView(props: {
    * which the bubble fills in when this is absent.
    */
   title?: string
-  context?: RenderContext
+  /** Loading and opening, assembled where the message and the agent are in scope. */
+  actions?: ImageRenderActions
+  /**
+   * Hold the display geometry: a scroll-critical pass or an active text selection
+   * must not replace the shown picture mid-pass. Absent means never hold.
+   */
+  holdDisplay?: () => boolean
 }): JSX.Element {
   const [loaded, setLoaded] = createSignal<ImageResultSource>()
   const [loading, setLoading] = createSignal(false)
@@ -94,13 +100,12 @@ export function ImageResultView(props: {
    * for as long as `loading` holds -- so the row offered no way out.
    */
   const canLoad = (): boolean => Boolean(filePath())
-    && !!props.context?.sources?.fileImage
-    && !props.context?.premeasureMode
-    && !props.context?.rowOffscreen?.()
+    && !!props.actions?.loadFileImage
+    && !props.actions.deferLoad()
   let generation = 0
   const loadFile = (refresh = false): void => {
     const path = filePath()
-    const read = props.context?.sources?.fileImage
+    const read = props.actions?.loadFileImage
     if (!canLoad() || !path || !read)
       return
     const current = ++generation
@@ -122,7 +127,7 @@ export function ImageResultView(props: {
     })
   }
   createEffect(on(
-    () => [filePath(), props.context?.sources?.fileImage, props.context?.premeasureMode, props.context?.rowOffscreen?.()] as const,
+    () => [filePath(), props.actions?.loadFileImage, props.actions?.deferLoad()] as const,
     () => {
       generation++
       setLoaded(undefined)
@@ -136,15 +141,24 @@ export function ImageResultView(props: {
   ))
   const display = createMemo<FileImageDisplay>((previous) => {
     const path = filePath()
-    const paused = !props.context?.premeasureMode && (props.context?.syntaxHighlightingPaused?.() || props.context?.textSelectionActive?.())
+    const paused = !props.actions?.deferLoad() && (props.holdDisplay?.() ?? false)
     // Keep the current geometry while the virtualizer defers height changes.
     if (path && paused && previous?.path === path)
       return previous
-    const resolved = loaded() ?? (path ? props.context?.sources?.cachedFileImage(path) : undefined)
+    const resolved = loaded() ?? (path ? props.actions?.cachedFileImage(path) : undefined)
     const error = loadError()
+    // The resolved copy's description fills an absent one; absent stays absent
+    // rather than an explicitly undefined key.
+    const description = resolved ? props.source.description ?? resolved.description : undefined
     return {
       path,
-      source: resolved ? { ...props.source, ...resolved, description: props.source.description ?? resolved.description } : props.source,
+      source: resolved
+        ? {
+            ...props.source,
+            ...resolved,
+            ...(description !== undefined ? { description } : {}),
+          }
+        : props.source,
       loading: loading() || (canLoad() && !resolved && !error),
       error,
       decodeError: decodeError(),
@@ -186,12 +200,18 @@ export function ImageResultView(props: {
       setReservationBroken(true)
   }
 
-  const open = () => props.context?.onOpenImage?.({
-    index: props.index ?? 0,
-    filePath: source().filePath,
-    title: props.title,
-  })
-  const openable = () => Boolean(props.context?.onOpenImage)
+  const open = () => {
+    const opener = props.actions?.openImage
+    if (opener === undefined)
+      return
+    const src = source()
+    opener({
+      index: props.index ?? 0,
+      ...(src.filePath !== undefined ? { filePath: src.filePath } : {}),
+      ...(props.title !== undefined ? { title: props.title } : {}),
+    })
+  }
+  const openable = () => Boolean(props.actions?.openImage)
 
   const image = () => (
     <img
@@ -199,7 +219,7 @@ export function ImageResultView(props: {
       style={sizeStyle()}
       src={info().src}
       alt={source().description || source().mimeType || 'image'}
-      loading={props.context?.premeasureMode ? 'eager' : 'lazy'}
+      loading={props.actions?.premeasurePass() ? 'eager' : 'lazy'}
       decoding="async"
       referrerpolicy="no-referrer"
       data-size-reserved={reserved() ? '1' : undefined}
@@ -215,7 +235,7 @@ export function ImageResultView(props: {
     <Show
       when={info().src && !display().decodeError}
       fallback={(
-        <Show when={display().loading || display().error || display().decodeError} fallback={<ImageResultPlaceholder source={source()} reason={info().reason} />}>
+        <Show when={display().loading || display().error || display().decodeError} fallback={<ImageResultPlaceholder source={source()} {...(info().reason !== undefined ? { reason: info().reason } : {})} />}>
           <div class={toolImageRow}>
             <div class={toolInputSummary}>{display().loading ? 'Loading image…' : display().error || 'The image could not be decoded'}</div>
             <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
@@ -241,17 +261,18 @@ export function ImageResultView(props: {
 
 /** Every image a tool result carries, in wire order. */
 export function ImageResultList(props: {
-  sources: ImageResultSource[]
+  sources: readonly ImageResultSource[]
   /** Number of images that the message renders before this list. */
   indexOffset?: number
   /** See {@link ImageResultView}'s own `title`. */
   title?: string
-  context?: RenderContext
+  actions?: ImageRenderActions
+  holdDisplay?: () => boolean
 }): JSX.Element {
   return (
     <For each={props.sources}>
       {(source, index) => (
-        <ImageResultView source={source} index={(props.indexOffset ?? 0) + index()} title={props.title} context={props.context} />
+        <ImageResultView source={source} index={(props.indexOffset ?? 0) + index()} {...(props.title !== undefined ? { title: props.title } : {})} {...(props.actions !== undefined ? { actions: props.actions } : {})} {...(props.holdDisplay !== undefined ? { holdDisplay: props.holdDisplay } : {})} />
       )}
     </For>
   )

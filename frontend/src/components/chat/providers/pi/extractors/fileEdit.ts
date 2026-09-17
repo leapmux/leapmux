@@ -1,25 +1,14 @@
 import type { StructuredPatchHunk } from '../../../diff'
-import type { FileEditDiffSource } from '../../../results/fileEditDiff'
-import type { ReadFileResultSource } from '../../../results/readFileResult'
+import type { FileEditDiff } from '../../../ir/fileEditDiff'
+import type { ReadFileResult } from '../../../ir/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { parseUnifiedDiffCached } from '../../../diff'
-import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditHasDiff } from '../../../results/fileEditDiff'
-import { readFileSourceFromContent } from '../../../results/readFileResult'
+import { fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditHasDiff } from '../../../ir/fileEditDiff'
+import { readFileResultFromContent } from '../../../ir/readFileResult'
 import { parsePiNumberedDiff } from './piDiffParser'
 import { piExtractTool, piPairedRequest } from './toolCommon'
-
-/**
- * Pi `edit` tool — Pi may apply multiple substitutions in one call, so we
- * surface one `FileEditDiffSource` per substitution. The renderer renders
- * each diff in sequence, mirroring how Pi describes the operation.
- */
-export interface PiEditResult {
-  path: string
-  sources: FileEditDiffSource[]
-  isError: boolean
-}
 
 /** Match Pi's argument normalization without changing the provider message. */
 export function piEditsFromArgs(args: Record<string, unknown>): Array<{ oldText: string, newText: string }> {
@@ -40,19 +29,24 @@ export function piEditsFromArgs(args: Record<string, unknown>): Array<{ oldText:
     : [])
 }
 
-/** Extract a Pi edit tool execution. Returns null when not the edit tool. */
-export function extractPiEdit(payload: Record<string, unknown> | null | undefined): PiEditResult | null {
+/**
+ * The diff sources of one Pi `edit` call. Null when the payload states another tool.
+ *
+ * Pi may apply several substitutions in one call, so this states ONE
+ * `FileEditDiff` per substitution, in the order Pi describes them. The path
+ * and the error belong to the call's request and status, which the row already holds.
+ */
+export function extractPiEdit(payload: Record<string, unknown> | null | undefined): FileEditDiff[] | null {
   const tool = piExtractTool(payload ?? undefined)
   if (!tool || tool.toolName !== PI_TOOL.Edit)
     return null
-  const path = pickString(tool.args, 'path')
-  const sources: FileEditDiffSource[] = piEditsFromArgs(tool.args).map(edit => ({
-    filePath: path,
+  const filePath = pickString(tool.args, 'path')
+  return piEditsFromArgs(tool.args).map(edit => ({
+    filePath,
     structuredPatch: null,
     oldStr: edit.oldText,
     newStr: edit.newText,
   }))
-  return { path, sources, isError: tool.isError }
 }
 
 /**
@@ -61,28 +55,28 @@ export function extractPiEdit(payload: Record<string, unknown> | null | undefine
  * the new-file shape (empty old, full content as new) is what the diff view
  * renders — matches how other providers render fresh file writes.
  */
-export function extractPiWrite(payload: Record<string, unknown> | null | undefined): FileEditDiffSource | null {
+export function extractPiWrite(payload: Record<string, unknown> | null | undefined): FileEditDiff | null {
   const tool = piExtractTool(payload ?? undefined)
   if (!tool || tool.toolName !== PI_TOOL.Write)
     return null
-  return fileEditDiffFromNewFile(pickString(tool.args, 'path'), pickString(tool.args, 'content'))
+  return fileEditDiffFromWholeFile(pickString(tool.args, 'path'), pickString(tool.args, 'content'), 'add')
 }
 
 /**
  * Pi edit/write `tool_execution_end` carries the actually-applied diff in
  * `result.details.diff` (Pi's numbered-line format). Resolve it into a
- * `FileEditDiffSource` against the original `tool_execution_start` args.
+ * `FileEditDiff` against the original `tool_execution_start` args.
  * Returns the parsed source and the raw diff text; the source is null when
  * there is no diff or it fails to parse.
  *
- * Memoized by payload identity: `piToolResultMeta` and the result-body
- * renderer both call this for the same payload per render, so without a
- * cache `parsePiNumberedDiff` runs twice on the same diff text.
+ * Memoized by payload identity: the row build reads the same payload through
+ * `piResolveDiffSources` and again for the raw text an unparseable diff states,
+ * so without a cache `parsePiNumberedDiff` runs twice on the same diff text.
  */
 const diffCache = new WeakMap<Record<string, unknown>, { hunks: StructuredPatchHunk[] | null, rawDiff: string }>()
 
 interface ResolvedPiResultDiff {
-  source: FileEditDiffSource | null
+  source: FileEditDiff | null
   rawDiff: string
 }
 
@@ -107,20 +101,15 @@ export function resolvePiResultDiff(
 }
 
 /**
- * Pi `read` tool result + the original args (offset/limit) so the renderer
- * can show the requested range in the title.
+ * The file one Pi `read` call returned. Null when the payload states another tool.
+ *
+ * The requested range is NOT here: the call's request states the offset and the
+ * limit, and this reads the offset only to number the lines it returns.
  */
-export interface PiReadResult {
-  source: ReadFileResultSource
-  offset: number | null
-  limit: number | null
-}
-
-/** Extract a Pi read tool execution. Returns null when not the read tool. */
 export function extractPiRead(
   payload: Record<string, unknown> | null | undefined,
   fallbackArgs?: Record<string, unknown>,
-): PiReadResult | null {
+): ReadFileResult | null {
   const tool = piExtractTool(payload ?? undefined)
   if (!tool || tool.toolName !== PI_TOOL.Read)
     return null
@@ -130,32 +119,30 @@ export function extractPiRead(
   // still show the correct path and line numbers.
   const args = Object.keys(tool.args).length > 0 ? tool.args : (fallbackArgs ?? {})
   const resultText = tool.result?.text ?? tool.partialResult?.text ?? ''
-  return {
-    source: readFileSourceFromContent({
-      filePath: pickString(args, 'path'),
-      content: resultText,
-      startLine: pickNumber(args, 'offset', 1),
-    }),
-    offset: pickNumber(args, 'offset'),
-    limit: pickNumber(args, 'limit'),
-  }
+  return readFileResultFromContent({
+    content: resultText,
+    startLine: pickNumber(args, 'offset', 1),
+  })
 }
 
 /**
  * Fallback diff source(s) for a Pi edit/write whose `tool_execution_end` result
- * carried no `details.diff`: synthesize from the paired `tool_execution_start`
- * args (the original edit substitutions / write body), reached via
- * `toolUseParsed`. Returns only sources with a renderable diff.
+ * carried no `details.diff`: synthesize from the `tool_execution_start` frame
+ * (the original edit substitutions / write body). Returns only sources with a
+ * renderable diff.
+ *
+ * The FRAME, not the parsed message that holds it. A caller with no opening event
+ * states the row's own frame, and the caller that fabricated a `ParsedMessageContent`
+ * around it filled five more fields that nothing here reads.
  */
 export function piFallbackDiffSources(
   toolName: string,
-  toolUseParsed: ParsedMessageContent | undefined,
-): FileEditDiffSource[] {
-  const startPayload = toolUseParsed?.parentObject
+  startPayload: Record<string, unknown> | null | undefined,
+): FileEditDiff[] {
   if (!isObject(startPayload))
     return []
   if (toolName === PI_TOOL.Edit)
-    return extractPiEdit(startPayload)?.sources.filter(fileEditHasDiff) ?? []
+    return extractPiEdit(startPayload)?.filter(fileEditHasDiff) ?? []
   if (toolName === PI_TOOL.Write) {
     const source = extractPiWrite(startPayload)
     return fileEditHasDiff(source) ? [source] : []
@@ -164,9 +151,9 @@ export function piFallbackDiffSources(
 }
 
 /**
- * The diff source(s) a Pi edit/write `tool_execution_end` row renders, shared by
- * `piToolResultMeta` (toolbar copyable/hasDiff) so both format the same diff.
- * Prefers the inline result diff
+ * The diff source(s) a Pi edit/write `tool_execution_end` row renders. They land
+ * in the `edit`/`write` result, which the body and the toolbar both read, so the
+ * two cannot format the same diff differently. Prefers the inline result diff
  * (`resolvePiResultDiff`), else the tool_use-start fallback. Returns [] for a
  * non-edit/write tool, a failed execution (renders error text, not a diff), or
  * when no diff is present.
@@ -181,7 +168,7 @@ export function piFallbackDiffSources(
 export function piResolveDiffSources(
   parsed: Record<string, unknown> | null | undefined,
   toolUseParsed: ParsedMessageContent | undefined,
-): FileEditDiffSource[] {
+): FileEditDiff[] {
   if (!isObject(parsed))
     return []
   const tool = piExtractTool(parsed)
@@ -197,5 +184,5 @@ export function piResolveDiffSources(
   // Present-but-unparseable diff: the renderer shows raw text, not a diff body.
   if (resolved.rawDiff)
     return []
-  return piFallbackDiffSources(tool.toolName, request)
+  return piFallbackDiffSources(tool.toolName, request?.parentObject)
 }

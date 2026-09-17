@@ -1,0 +1,45 @@
+# `ir/` — the provider-neutral row intermediary representation
+
+Layer 2 of the chat render pipeline. A provider plugin (layer 1) reads its own
+wire format and produces these types; the shared renderers (layer 3) draw them.
+Nothing here knows a provider, and nothing here draws.
+
+**The tool pair.** A provider reads each tool call into ONE `ToolCallIR`
+(`toolCall.ts`): a kind from the closed `ToolKind` set, a typed request, one
+result slot, and the shared envelope. `tools/` holds the request/result type
+table, total over `ToolKind`; `row.ts` wraps a call with where its row sits in
+the span. There is no second, row-shaped tool IR -- the migration that ran
+beside it is finished, and these modules are what remains.
+
+**Where a shape lives.** `tools/<kind>.ts` is one kind's home, and
+`irLayering.test.ts` pins that one-to-one. A shape that SEVERAL kinds compose sits
+one directory up instead, at `ir/` top level, and the kind files alias it:
+`fileEditDiff.ts` under the four file-change kinds, `commandResult.ts` under
+`execute`, `searchResult.ts` under the three search kinds and `list`,
+`questionBody.ts` under `question`, `mcpToolCall.ts` under the generic trio. So does
+a shape that carries a PARSER rather than only a type, because a reader outside the
+tool pipeline needs it: `readFileResult.ts` is the file viewer's content parse as
+well as `ReadResult`, and `chartResult.ts` is a chart specification parser.
+
+A one-line `tools/<kind>.ts` that aliases such a shape is therefore the rule working,
+not an indirection to remove. `tools/index.ts`, `tools/generic.ts` and
+`tools/fileChange.ts` are the shared modules inside `tools/` itself, all three listed
+in that guard.
+
+**Dependency rule.** A module in this directory takes a VALUE import from
+`~/lib/*`, `~/generated/*`, `~/models/*`, anything `ir/` itself owns at any depth,
+and the three pure diff modules `../diff/diffBuilder`, `../diff/diffTypes` and
+`../diff/unifiedDiffParser`. It takes a TYPE import from the same roots.
+
+It imports a provider, a component, a store, a stylesheet and an icon library in
+NO form -- not even as a type. Two rules with two reasons, and
+`src/test-support/irLayering.test.ts` fails the suite for either:
+
+- A VALUE import of a component closes an import cycle, which the bundler reports
+  as an unrelated module failing to load.
+- A presentation or store TYPE costs nothing at run time and is still wrong: it
+  makes a render-layer decision part of what a row MEANS. `ReadReminder` carried
+  the `Alert` component's `AlertVariant`, and a tool call carried a `LucideIcon`.
+  Each is now a closed IR-owned union that `results/` maps onto the component --
+  `ReminderSeverity`, `ToolIconHint`, `NotificationIconHint`. A neutral model both
+  layers share lives in `~/models/` instead, which is where `TodoItem` went.

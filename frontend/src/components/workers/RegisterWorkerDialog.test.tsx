@@ -99,7 +99,7 @@ function renderDialog(onClose = vi.fn()) {
 
 // Tests ----------------------------------------------------------------
 
-describe('registerWorkerDialog', () => {
+describe('RegisterWorkerDialog', () => {
   it('mints a key on mount and renders the full command', async () => {
     renderDialog()
 

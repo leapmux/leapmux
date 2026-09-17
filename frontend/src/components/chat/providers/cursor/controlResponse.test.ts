@@ -20,7 +20,7 @@ function questionOutcome(outcome: Record<string, unknown>): Record<string, unkno
   return { result: { outcome } }
 }
 
-describe('cursorcontrolresponsedisplay', () => {
+describe('cursorControlResponseDisplay', () => {
   describe('ask_question', () => {
     it('maps selected option ids to labels in request order', () => {
       const response = questionOutcome({

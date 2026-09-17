@@ -16,29 +16,31 @@ const schema = { type: 'object', required: ['count', 'enabled', 'color'], proper
 const providers = [
   [AgentProvider.CLAUDE_CODE, { request: { subtype: 'elicitation', message: 'Choose the settings.', requested_schema: schema } }],
   [AgentProvider.CODEX, { method: 'mcpServer/elicitation/request', params: { mode: 'form', message: 'Choose the settings.', requestedSchema: schema } }],
-  [AgentProvider.REASONIX, { method: '_reasonix.io/mcp/request_interaction', params: { mode: 'form', message: 'Choose the settings.', requestedSchema: schema } }],
+  // Reasonix sends the STANDARD Agent Client Protocol elicitation, verified
+  // against its source tree -- no vendor method of its own exists.
+  [AgentProvider.REASONIX, { method: 'elicitation/create', params: { mode: 'form', message: 'Choose the settings.', requestedSchema: schema } }],
   [AgentProvider.GOOSE, { method: 'elicitation/create', params: { mode: 'form', message: 'Choose the settings.', requestedSchema: schema } }],
 ] as const
 
 describe('shared elicitation control', () => {
   it.each([undefined, AgentProvider.CLAUDE_CODE])('renders the request provider when separate metadata gives %s', async (agentProvider) => {
     const request = { requestId: 'early-form', agentId: 'agent', agentProvider: AgentProvider.REASONIX, payload: {
-      method: '_reasonix.io/mcp/request_interaction',
+      method: 'elicitation/create',
       params: { mode: 'form', requestedSchema: { type: 'object', properties: { count: { type: 'integer', title: 'Count' } } } },
     } }
     const answerState = createControlAnswerState()
     const onRespond = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <>
-        <ControlRequestContent request={request} answerState={answerState} agentProvider={agentProvider} />
-        <ControlRequestActions request={request} answerState={answerState} agentProvider={agentProvider} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
+        <ControlRequestContent request={request} answerState={answerState} {...(agentProvider === undefined ? {} : { agentProvider })} />
+        <ControlRequestActions request={request} answerState={answerState} {...(agentProvider === undefined ? {} : { agentProvider })} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
       </>
     ))
     expect(screen.getByTestId('elicitation-form')).toBeVisible()
     fireEvent.input(screen.getByLabelText('Count'), { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { action: 'accept', content: { count: 0 } } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { action: 'accept', content: { count: 0 } } } })
   })
 
   it('filters a long choice list and can clear an optional answer', async () => {
@@ -67,7 +69,7 @@ describe('shared elicitation control', () => {
     expect(trigger).toHaveTextContent('Select an option')
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { content: {} } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { content: {} } } })
   })
 
   it('shows a protected URL and sends approval without form values', async () => {
@@ -91,7 +93,7 @@ describe('shared elicitation control', () => {
     expect(screen.queryByTestId('elicitation-form')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toEqual({
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toEqual({
       type: 'control_response',
       response: { subtype: 'success', request_id: 'url', response: { action: 'accept' } },
     })
@@ -112,7 +114,7 @@ describe('shared elicitation control', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { action: 'decline' } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { action: 'decline' } } })
   })
 
   it('permits cancellation of an unknown interaction mode', async () => {
@@ -130,7 +132,7 @@ describe('shared elicitation control', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Cancel', hidden: true }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { action: 'cancel' } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { action: 'cancel' } } })
   })
 
   it('validates multiple choices and omits an untouched optional field', async () => {
@@ -159,8 +161,8 @@ describe('shared elicitation control', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'blue' }))
     fireEvent.click(approve)
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { action: 'accept', content: { colors: ['red'] } } } })
-    expect(new TextDecoder().decode(onRespond.mock.calls[0][0])).not.toContain('note')
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { action: 'accept', content: { colors: ['red'] } } } })
+    expect(new TextDecoder().decode(onRespond.mock.calls[0]?.[0])).not.toContain('note')
   })
 
   it('shows Codex tool arguments and honors the offered approval duration', async () => {
@@ -184,13 +186,13 @@ describe('shared elicitation control', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Session' }))
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toMatchObject({ response: { response: { action: 'accept', _meta: { persist: 'session' } } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({ response: { response: { action: 'accept', _meta: { persist: 'session' } } } })
   })
 
   it.each(providers)('renders the saved answer for provider %s with native field labels', (provider, payload) => {
     const result = { action: 'accept', content: { count: 0, enabled: false, color: 'b' } }
     const response = provider === AgentProvider.CLAUDE_CODE ? { response: { response: result } } : { result }
-    const display = pluginFor(provider)?.controlResponseDisplay?.({ claimToken: 'claim-1', requestId: 'form', request: payload, response })
+    const display = pluginFor(provider)?.controls?.controlResponseDisplay?.({ claimToken: 'claim-1', requestId: 'form', request: payload, response })
     expect(display).toEqual({ kind: 'label', text: 'Approved\nCount: 0\nEnabled: No\nColor: Blue' })
   })
 
@@ -214,7 +216,7 @@ describe('shared elicitation control', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: '001', response: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } } })
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: '001', response: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } } })
   })
 
   it('retains the form and permits retry after delivery fails', async () => {
@@ -226,7 +228,7 @@ describe('shared elicitation control', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(new TextDecoder().decode(onRespond.mock.calls[1][0])).not.toContain('content')
+    expect(new TextDecoder().decode(onRespond.mock.calls[1]?.[0])).not.toContain('content')
   })
 })
 

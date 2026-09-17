@@ -62,10 +62,10 @@ func (svc *Service) prepareApprovedPlanContext(item inputqueue.DispatchItem, inp
 	if !restarted {
 		svc.Output.ResetSpanTracker(item.AgentID)
 		svc.Output.PersistLeapMuxNotification(item.AgentID, current.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypeContextCleared,
+			contracts.NotificationFieldType: contracts.NotificationTypeContextCleared,
 		})
 		svc.Output.PersistLeapMuxNotification(item.AgentID, current.AgentProvider, map[string]interface{}{
-			"type": contracts.NotificationTypePlanExecution, "plan_file_path": current.PlanFilePath,
+			contracts.NotificationFieldType: contracts.NotificationTypePlanExecution, contracts.NotificationFieldPlanFilePath: current.PlanFilePath,
 		})
 	}
 	return err

@@ -404,15 +404,11 @@ describe('classifyMessage', () => {
   // -- assistant messages ---------------------------------------------------
 
   describe('assistant messages', () => {
+    // The classification states the KIND and nothing else: the tool block itself
+    // is the provider's own bytes, which the extractor reads from the payload.
     it('classifies tool_use', () => {
       const toolUseBlock = { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
-      const result = classifyMessage(input(assistantMsg([toolUseBlock])))
-      expect(result.kind).toBe('tool_use')
-      if (result.kind === 'tool_use') {
-        expect(result.toolName).toBe('Bash')
-        expect(result.toolUse).toBe(toolUseBlock)
-        expect(result.content).toEqual([toolUseBlock])
-      }
+      expect(classifyMessage(input(assistantMsg([toolUseBlock])))).toEqual({ kind: 'tool_use' })
     })
 
     it('tool_use takes priority over text', () => {
@@ -468,12 +464,8 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('unknown')
     })
 
-    it('tool_use with empty name defaults to empty string', () => {
-      const result = classifyMessage(input(assistantMsg([{ type: 'tool_use' }])))
-      expect(result.kind).toBe('tool_use')
-      if (result.kind === 'tool_use') {
-        expect(result.toolName).toBe('')
-      }
+    it('classifies a tool_use block that states no name', () => {
+      expect(classifyMessage(input(assistantMsg([{ type: 'tool_use' }])))).toEqual({ kind: 'tool_use' })
     })
   })
 
@@ -532,13 +524,13 @@ describe('classifyMessage', () => {
     expect(result.kind).toBe('unknown')
   })
 
-  // -- worker-authored notifications ----------------------------------------
+  // -- worker-written notifications ----------------------------------------
 
   // The worker writes the subagent-end divider itself, so no agent wire format
   // carries it and no provider plugin can classify it. These pin that it is
   // classified before dispatch, for every provider: a miss here renders the
   // divider as raw JSON in the subagent's own transcript.
-  describe('worker-authored notification', () => {
+  describe('worker-written notification', () => {
     const divider = { type: 'subagent_ended', status: 'completed' }
 
     it.each(ALL_PROVIDERS)('classifies subagent_ended as a notification for provider %s', (provider) => {
@@ -555,15 +547,35 @@ describe('classifyMessage', () => {
       }
     })
 
-    // The branch is scoped to the types the worker authors, never to the whole
+    // The branch is scoped to the types the the worker writes, never to the whole
     // NOTIFICATION_TYPE vocabulary: Codex suppresses its own `agent_error` for a
     // turn it already reported, and a blanket membership test placed ahead of
-    // plugin.classify would render that hidden row again.
+    // plugin?.transcript.classify would render that hidden row again.
     it('leaves an agent-emitted type to the provider plugin', () => {
       const result = classifyMessage(
         input({ type: 'agent_error', error: 'Codex turn failed' }, null, AgentProvider.CODEX),
       )
       expect(result.kind).toBe('hidden')
+    })
+
+    // Every notification the worker PERSISTS arrives wrapped: `wrapNotifContent`
+    // puts it in a `notification_thread` envelope, so `parseMessageContent` sets
+    // `wrapper` and the carve-out above -- which runs only for an unwrapped row --
+    // never sees one. The wrapper test each plugin applies is therefore the only
+    // thing that can recognize it, and it used to hold four provider-neutral types
+    // and none of the worker's own: a Goose or Reasonix `agent_status` matched
+    // nothing, fell through every branch to `unknown`, and drew the raw-frame card
+    // instead of its own row.
+    it.each(ALL_PROVIDERS)('classifies a wrapped worker notification for provider %s', (provider) => {
+      const status = { type: 'agent_status', text: 'Extension X announced Y' }
+      const result = classifyMessage(input(status, wrapper(status), provider))
+      expect(result.kind).toBe('notification')
+    })
+
+    it.each(['goal_updated', 'goal_cleared', 'stop_ignored'])('classifies a wrapped %s', (type) => {
+      const notification = { type, text: 'stated' }
+      const result = classifyMessage(input(notification, wrapper(notification)))
+      expect(result.kind).toBe('notification')
     })
 
     // A wrapper means a consolidated thread, and the plugins resolve those

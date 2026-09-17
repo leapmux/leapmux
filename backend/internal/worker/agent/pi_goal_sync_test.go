@@ -222,6 +222,113 @@ func TestPiGoalRefreshRepublishesASnapshotAfterAFailedRead(t *testing.T) {
 	assert.False(t, sink.Goals()[1].Snapshot)
 }
 
+// Pi delays the session file until an assistant message exists, and `get_state`
+// rescues the EMPTY session alone. A refresh that lands in the window between the
+// first message and the first flush reads nothing, and the intent it carried is
+// the only one the goal has: no hint follows a recovery pass. The refresh must
+// therefore read again rather than leave the panel on the state of an earlier
+// process.
+func TestPiGoalRefreshWaitsForAnUnwrittenTranscript(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	path := a.sessionFile
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	a.mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-pause": true}
+	a.goal.retryDelay = time.Millisecond
+	a.mu.Unlock()
+
+	var restored atomic.Bool
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		switch request.Type {
+		case PiCommandGetState:
+			// The session holds messages, so the empty-session rescue does not apply.
+			// Pi flushes the transcript at this point, the way the real CLI does once
+			// its first assistant message lands.
+			if os.WriteFile(path, contents, 0o600) == nil {
+				restored.Store(true)
+			}
+			return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+		case PiCommandGetEntries:
+			return json.RawMessage(`{"entries":[],"leafId":"focus"}`), true, ""
+		default:
+			return nil, false, "Unexpected command"
+		}
+	})
+
+	a.schedulePiGoalRefresh(true)
+	require.Eventually(t, func() bool { _, ok := sink.LastGoal(); return ok }, 2*time.Second, time.Millisecond,
+		"the refresh must read again once Pi writes the transcript, without a second hint")
+	require.True(t, restored.Load(), "the test must restore the transcript the retry reads")
+	goal, _ := sink.LastGoal()
+	assert.Equal(t, "Objective", goal.Objective)
+	assert.True(t, goal.Snapshot, "the recovery pass still carries the snapshot intent")
+}
+
+// The wait is bounded: a transcript that never lands must not hold the refresh
+// goroutine open for the life of the session.
+func TestPiGoalRefreshStopsWaitingForATranscriptThatNeverLands(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	require.NoError(t, os.Remove(a.sessionFile))
+	a.mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-pause": true}
+	a.goal.retryDelay, a.goal.retryLimit = time.Nanosecond, 2
+	a.mu.Unlock()
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != PiCommandGetState {
+			return nil, false, "Unexpected command"
+		}
+		return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+	})
+
+	a.schedulePiGoalRefresh(true)
+	require.Eventually(t, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Empty(t, sink.Goals(), "a transcript that never lands publishes nothing")
+	assert.Len(t, rig.requests(), 3, "the first read plus the two the limit allows")
+}
+
+// A stop ends the wait. Without it the goroutine would read again on a session
+// that shuts down, and hold itself open for the rest of the delay.
+func TestPiGoalRefreshEndsTheWaitWhenTheAgentStops(t *testing.T) {
+	t.Parallel()
+	rig, sink, _ := piGoalSyncRig(t)
+	a := rig.agent
+	require.NoError(t, os.Remove(a.sessionFile))
+	a.mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-pause": true}
+	// Only a stop can end a wait this long, so the case states one thing.
+	a.goal.retryDelay = time.Minute
+	a.mu.Unlock()
+	read := make(chan struct{}, 1)
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		select {
+		case read <- struct{}{}:
+		default:
+		}
+		return json.RawMessage(`{"sessionId":"session","messageCount":4}`), true, ""
+	})
+
+	a.schedulePiGoalRefresh(true)
+	<-read
+	a.cancel()
+	require.Eventually(t, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.goal.running
+	}, 2*time.Second, time.Millisecond)
+	assert.Len(t, rig.requests(), 1, "the wait ends on the stop, with no second command")
+	assert.Empty(t, sink.Goals())
+}
+
 func TestPiGoalActionReturnsBeforeTheConfirmationAnswer(t *testing.T) {
 	t.Parallel()
 	rig, sink, _ := piGoalSyncRig(t)

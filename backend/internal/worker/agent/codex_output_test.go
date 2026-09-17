@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -1483,6 +1484,61 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	require.Equal(t, int64(0), usage["cache_creation_input_tokens"])
 	require.Equal(t, int64(5), usage["cache_read_input_tokens"])
 	require.Equal(t, int64(4096), usage["context_window"])
+	// Codex's own total for the live request. The browser prefers it to the sum of
+	// the counts, so the gauge states what Codex measured.
+	require.Equal(t, int64(23), usage["context_tokens"])
+}
+
+// Codex reports a cache WRITE beside the cache read, and it reached nothing: the
+// breakdown showed a flat zero for it on every Codex turn while every other provider
+// reported one.
+func TestHandleCodexOutput_TokenUsageCarriesTheCacheWrite(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "thread-1"
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"last":{"totalTokens":140,"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":30,"outputTokens":40,"reasoningOutputTokens":12},"modelContextWindow":4096}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	usage := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	assert.Equal(t, int64(30), usage["cache_creation_input_tokens"], "the cache write Codex reported")
+	assert.Equal(t, int64(80), usage["input_tokens"], "the cached part alone comes off the input")
+	assert.Equal(t, int64(20), usage["cache_read_input_tokens"])
+	assert.Equal(t, int64(40), usage["output_tokens"], "reasoning is INSIDE the output, never a count beside it")
+	assert.Equal(t, int64(140), usage["context_tokens"])
+}
+
+// The session's CUMULATIVE spend grows past the context window and answers a
+// different question than the live occupancy, so the gauge must never read it.
+func TestHandleCodexOutput_TokenUsageIgnoresTheCumulativeTotal(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "thread-1"
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"total":{"totalTokens":999999,"inputTokens":900000,"outputTokens":99999},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7},"modelContextWindow":4096}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	usage := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	assert.Equal(t, int64(23), usage["context_tokens"], "the LIVE request, not the session total")
+	assert.Equal(t, int64(5), usage["input_tokens"])
+}
+
+// A frame with no total at all states no `context_tokens`, so the browser falls back
+// to summing the counts rather than reading a zero as an empty context.
+func TestHandleCodexOutput_TokenUsageOmitsAnAbsentTotal(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "thread-1"
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"last":{"inputTokens":10,"cachedInputTokens":5,"outputTokens":7},"modelContextWindow":4096}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	usage := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	_, stated := usage["context_tokens"]
+	assert.False(t, stated, "no total reported, so none is broadcast")
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
@@ -1673,7 +1729,7 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	})))
 }
 
-// A supplement that names another item cannot reach this row's output.
+// A supplement that identifies another item cannot reach this row's output.
 func TestCodexResolveProviderData_RefusesASupplementForAnotherItem(t *testing.T) {
 	t.Parallel()
 
@@ -2603,3 +2659,145 @@ func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
 type refusingWriter struct{}
 
 func (refusingWriter) Write([]byte) (int, error) { return 0, errors.New("stdin is closed") }
+
+// A running command's own output reaches the card while it runs. Codex sends
+// DELTAS, so the tail carries everything the call printed so far -- only this
+// agent knows where the earlier deltas ended.
+func TestHandleCodexOutput_OutputDeltaReportsTheAccumulatedTail(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	start := `{"method":"item/started","params":{"item":{"id":"cmd-1","type":"commandExecution","command":"ls","status":"inProgress"},"threadId":"main-thread","turnId":"turn1"}}`
+	handleCodexOutput(agent, parseLine([]byte(start)))
+	for _, delta := range []string{"first\n", "second\n"} {
+		line := fmt.Sprintf(`{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":%q,"threadId":"main-thread","turnId":"turn1"}}`, delta)
+		handleCodexOutput(agent, parseLine([]byte(line)))
+	}
+
+	var tails []ProgressUpdate
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == ProgressOutputTail {
+			tails = append(tails, update)
+		}
+	}
+	require.Len(t, tails, 2)
+	assert.Equal(t, OutputTailProgress("cmd-1", "first\n", false), tails[0])
+	assert.Equal(t, OutputTailProgress("cmd-1", "first\nsecond\n", false), tails[1])
+}
+
+// Codex moves a thread's own settings for reasons LeapMux never asked for: a
+// `/model` typed into the composer, a preset's collaboration mode, an effort the
+// model clamps. The picker used to go on showing what LeapMux last requested.
+func TestHandleCodexOutput_ThreadSettingsUpdatedRefreshesTheSettings(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", contracts.CodexOptionDefaultCollaborationMode
+
+	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4","effort":"high","collaborationMode":"pair"}}}`
+	handleCodexOutput(agent, parseLine([]byte(line)))
+
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "gpt-5.4", refresh.Model)
+	assert.Equal(t, "high", refresh.Effort)
+	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+	// The frame is a settings fact, never a transcript row.
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// An axis the frame omits keeps the value the reader chose. Writing "" for it
+// would clear a setting the app server said nothing about.
+func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", "pair"
+
+	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4"}}}`
+	handleCodexOutput(agent, parseLine([]byte(line)))
+
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "gpt-5.4", refresh.Model)
+	assert.Equal(t, "medium", refresh.Effort)
+	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+}
+
+// The live tail keeps advancing after the retention cap stops recording the output.
+//
+// The cap restricts what the FINISHED row keeps. The tail is what a reader watches
+// while the call runs, and the byte counter beside it keeps climbing on every delta,
+// so a tail that froze at the cap showed text from megabytes ago under a number that
+// still moved.
+func TestAppendCodexToolEventAdvancesTheTailPastTheRetentionCap(t *testing.T) {
+	t.Parallel()
+
+	a := newCodexAgentWithSink(&testSink{})
+	a.mu.Lock()
+	a.incompleteTools = map[string]*codexIncompleteTool{"cmd-1": {}}
+	a.appendCodexToolEventLocked("cmd-1", strings.Repeat("x", codexIncompleteOutputLimit), false)
+	a.mu.Unlock()
+	capped, _ := a.codexToolOutputSoFar("cmd-1")
+
+	a.mu.Lock()
+	a.appendCodexToolEventLocked("cmd-1", "the newest line\n", false)
+	a.mu.Unlock()
+
+	tail, truncated := a.codexToolOutputSoFar("cmd-1")
+	assert.NotEqual(t, capped, tail, "the tail moved with the output the cap refused")
+	assert.True(t, strings.HasSuffix(tail, "the newest line\n"),
+		"the tail carries the last bytes the call printed, whatever the cap decided")
+	assert.LessOrEqual(t, len(tail), codexLiveTailLimit)
+	assert.True(t, truncated, "output was lost, and the card states it")
+}
+
+// The retention cap cuts at a BYTE index into a UTF-8 stream, so it steps back to
+// the start of the rune it lands inside. A partial rune renders as a replacement
+// character in the row that Codex's own output writes.
+func TestAppendCodexToolEventCutsTheCapAtARuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	a := newCodexAgentWithSink(&testSink{})
+	a.mu.Lock()
+	// Four bytes of budget remain, and each Hangul syllable is three bytes, so the
+	// cap lands inside the second one.
+	a.incompleteTools = map[string]*codexIncompleteTool{
+		"cmd-1": {outputBytes: codexIncompleteOutputLimit - 4},
+	}
+	a.appendCodexToolEventLocked("cmd-1", "가나", false)
+	events := a.incompleteTools["cmd-1"].outputEvents
+	truncated := a.incompleteTools["cmd-1"].outputTruncated
+	a.mu.Unlock()
+
+	require.Len(t, events, 1)
+	assert.Equal(t, "가", events[0].text)
+	assert.True(t, utf8.ValidString(events[0].text), "the stored text holds no partial rune")
+	assert.True(t, truncated)
+
+	tail, _ := a.codexToolOutputSoFar("cmd-1")
+	assert.Equal(t, "가나", tail, "the tail precedes the cap, so it keeps both runes")
+	assert.True(t, utf8.ValidString(tail))
+}
+
+// A budget too small for even one rune records NO event, rather than an empty one.
+func TestAppendCodexToolEventRecordsNothingWhenNoRuneFits(t *testing.T) {
+	t.Parallel()
+
+	a := newCodexAgentWithSink(&testSink{})
+	a.mu.Lock()
+	a.incompleteTools = map[string]*codexIncompleteTool{
+		"cmd-1": {outputBytes: codexIncompleteOutputLimit - 2},
+	}
+	a.appendCodexToolEventLocked("cmd-1", "가", false)
+	tool := a.incompleteTools["cmd-1"]
+	events, bytes, truncated := tool.outputEvents, tool.outputBytes, tool.outputTruncated
+	a.mu.Unlock()
+
+	assert.Empty(t, events)
+	assert.Equal(t, codexIncompleteOutputLimit-2, bytes, "nothing was stored, so nothing was counted")
+	assert.True(t, truncated)
+}

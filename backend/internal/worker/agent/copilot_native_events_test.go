@@ -429,6 +429,34 @@ func TestNativeCopilotDropsItsOwnModelTraceAndHooks(t *testing.T) {
 	assert.Empty(t, sink.Messages(), "the runtime's own trace belongs in no transcript row")
 }
 
+// EVERY family the contract lists, not the two the worker used to test. The browser
+// hides all six, so a stored row for any of them is a row nobody ever sees -- and it
+// still spends a message seq and a slot in the chat-history page budget.
+//
+// The families come from the contract rather than from a list here, so a seventh one
+// added later fails this test until the worker drops it too.
+func TestNativeCopilotDropsEveryRuntimeTraceFamily(t *testing.T) {
+	t.Parallel()
+	// An empty table would pass every case below without running one.
+	require.NotEmpty(t, contracts.CopilotEventPrefixKeys)
+
+	for _, prefix := range contracts.CopilotEventPrefixKeys {
+		// A synthetic member, because the four experimental families state no member
+		// LeapMux draws a row for. The worker answers on the prefix alone, which is
+		// the whole point of a family.
+		eventType := prefix + "probe"
+		t.Run(eventType, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+
+			a.HandleOutput(nativeCopilotEvent(t, "", eventType, map[string]any{"kind": eventType}))
+
+			assert.True(t, copilotEventIsRuntimeTrace(eventType), "the family is runtime trace")
+			assert.Empty(t, sink.Messages(), "a member of this family belongs in no transcript row")
+		})
+	}
+}
+
 // The one model event LeapMux surfaces stays. A failed model call is a notification
 // the reader acts on, so the family rule cannot take it.
 func TestNativeCopilotKeepsTheModelCallFailure(t *testing.T) {
@@ -679,4 +707,60 @@ func TestNativeCopilotObjectiveChangeEventsShareOneRead(t *testing.T) {
 	}
 
 	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundReads.inFlight())
+}
+
+// The runtime marks both progress frames "do not store", and they carry the only
+// text a running call reports. Dropping them unread left the row blank for the
+// whole call.
+func TestCopilotNativeEvents_ProgressFramesFeedTheRunningRow(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress,
+		map[string]any{"toolCallId": "call-1", "progressMessage": "Searching the index"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolPartialResult,
+		map[string]any{"toolCallId": "call-1", "partialOutput": "match one\nmatch two"}))
+
+	updates := sink.ProgressUpdates()
+	// A progress MESSAGE is a whole sentence the runtime wrote, so it states no
+	// loss; a partial output is a window on more by definition.
+	assert.Contains(t, updates, OutputTailProgress("call-1", "Searching the index", false))
+	assert.Contains(t, updates, OutputTailProgress("call-1", "match one\nmatch two", true))
+	// Both frames are ephemeral: neither reaches the transcript.
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// The runtime interleaves the two frames, and they say different things. Once a call
+// produced output, a sentence about what it DOES must not replace it -- the
+// reader watched the lines disappear and a status line take their place.
+func TestCopilotNativeEvents_AProgressSentenceDoesNotReplaceOutput(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted,
+		map[string]any{"toolCallId": "call-1", "toolName": "bash"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress,
+		map[string]any{"toolCallId": "call-1", "progressMessage": "Starting the build"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolPartialResult,
+		map[string]any{"toolCallId": "call-1", "partialOutput": "compiling main.go"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress,
+		map[string]any{"toolCallId": "call-1", "progressMessage": "Still building"}))
+
+	updates := sink.ProgressUpdates()
+	// The FIRST sentence shows: the call had produced nothing, so it is all there is.
+	assert.Contains(t, updates, OutputTailProgress("call-1", "Starting the build", false))
+	assert.Contains(t, updates, OutputTailProgress("call-1", "compiling main.go", true))
+	assert.NotContains(t, updates, OutputTailProgress("call-1", "Still building", false))
+}
+
+// A call whose start this process never saw keeps its sentence: there is no record
+// that says output arrived, and a blank row states less than the sentence does.
+func TestCopilotNativeEvents_AnUnopenedCallKeepsItsProgressSentence(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress,
+		map[string]any{"toolCallId": "call-9", "progressMessage": "Searching"}))
+
+	assert.Contains(t, sink.ProgressUpdates(), OutputTailProgress("call-9", "Searching", false))
 }

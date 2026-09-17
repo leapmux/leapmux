@@ -1,4 +1,4 @@
-export const COLLAPSED_RESULT_ROWS = 3
+import { hasMoreLinesThan } from '../ir/collapse'
 
 /**
  * Default size caps above which a code surface skips syntax highlighting and
@@ -25,22 +25,4 @@ export interface HighlightSizeLimits {
 export function canHighlightBySize(text: string, limits: HighlightSizeLimits = {}): boolean {
   return text.length <= (limits.maxChars ?? HIGHLIGHT_CHAR_LIMIT)
     && !hasMoreLinesThan(text, limits.maxLines ?? HIGHLIGHT_LINE_LIMIT)
-}
-
-/**
- * Equivalent to `text.split('\n').length > threshold` but stops scanning as
- * soon as the threshold is exceeded, avoiding full-array allocation for large
- * tool outputs where only the count matters.
- */
-export function hasMoreLinesThan(text: string, threshold: number): boolean {
-  let needed = threshold
-  let idx = 0
-  while (needed > 0) {
-    const next = text.indexOf('\n', idx)
-    if (next === -1)
-      return false
-    needed--
-    idx = next + 1
-  }
-  return true
 }

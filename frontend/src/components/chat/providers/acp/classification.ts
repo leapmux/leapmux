@@ -1,15 +1,13 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { ACP_UPDATE } from '~/generated/contracts/acp-protocol'
-import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { isObject } from '~/lib/jsonPick'
+import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
-import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { unwrapACPResult } from './resultWrapper'
+import { ACP_SESSION_UPDATE } from './updateVocabulary'
 
 /**
  * Build the wire-format control-response for an ACP-style control request.
@@ -27,28 +25,54 @@ export function acpBuildControlResponse(
     : buildAllowResponse(requestId, getToolInput(payload))
 }
 
-const ACP_EXTRA_NOTIF_TYPES = new Set([NOTIFICATION_TYPE.AgentError])
-
+/**
+ * True when the wrapper holds a notification thread of this family.
+ *
+ * This family adds no type to the base set, which is what the `undefined` states. Every
+ * notification these five daemons write is LeapMux's own envelope, and
+ * `BASE_NOTIFICATION_TYPES` accepts each one -- `agent_error` included, because the
+ * worker writes that type for every provider.
+ *
+ * The `system` test is a forward-compatibility guard, not live coverage. See
+ * {@link isHiddenACPNotification} for the standing property that keeps it.
+ */
 export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boolean {
-  return isNotificationThreadWrapper(wrapper, ACP_EXTRA_NOTIF_TYPES, (t, st) =>
+  return isNotificationThreadWrapper(wrapper, undefined, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
 /**
- * Per-message hidden rules for an ACP notification, applied by both the
- * standalone `system` classifier and the consolidated-thread filter so a
- * notification hidden on its own stays hidden once Hub threads it into a
- * `notification_thread` wrapper -- the same standalone/thread parity Claude and
- * Codex enforce. Hides the `init` and `task_notification` system lifecycle
- * messages and a final (non-compacting) system status, none of which the
- * shared notification renderer draws; without the filter a thread of only such
- * messages surfaced as a `notification` that renders nothing and fell back to a
- * raw-JSON bubble.
+ * Per-message hidden rules for a `system` frame of this family, applied by both the
+ * standalone classifier and the consolidated-thread filter. A frame hidden on its own
+ * stays hidden once the worker threads it into a `notification_thread` wrapper, which
+ * is the standalone/thread parity Claude and Codex keep as well. The rules hide the
+ * `init` and `task_notification` lifecycle frames and a final (non-compacting)
+ * status. The shared notification renderer draws none of those, so a thread of only
+ * such frames would surface as a `notification` that holds no block, and the row would
+ * fall back to the raw-frame card.
+ *
+ * NO DAEMON OF THIS FAMILY SENDS A `system` FRAME. All five answer pure JSON-RPC, and
+ * no `sessionUpdate` vocabulary of theirs holds that word. The worker stores two
+ * shapes of theirs byte for byte -- a JSON-RPC envelope, tagged `jsonrpc`/`method`/
+ * `id`, and a session update, tagged `sessionUpdate` -- and neither shape carries a
+ * top-level `type`. The registration hook says the same thing from the other side: the
+ * five plugins of this family supply no `notificationEntry`, because every
+ * notification in those transcripts is LeapMux's own envelope.
+ *
+ * No transcript of this family holds such a frame today, and the guard stays because
+ * the worker admits one by construction. The default branch of `handleACPOutput`
+ * (backend/internal/worker/agent/acp_common.go) persists one stdout line byte for byte
+ * and never reads a top-level `type`. A line that carries neither `method` nor `id`
+ * reaches that branch, so a `{type:"system",...}` line on a daemon's stdout becomes an
+ * AGENT row that this classifier must then read. The shape is not hypothetical:
+ * Cursor's own bundle builds `{type:"system",subtype:"init"}`, behind a print-mode
+ * flag the worker does not pass. The cost of the guard is these few lines. The cost of
+ * its absence is a raw-frame card in the transcript.
  */
 function isHiddenACPNotification(m: unknown): boolean {
   if (!isObject(m) || m.type !== 'system')
     return false
-  const subtype = m.subtype as string | undefined
+  const subtype = pickString(m, 'subtype')
   if (subtype === 'init' || subtype === 'task_notification')
     return true
   return isFinalCompactingStatus(m)
@@ -66,7 +90,6 @@ export function isJsonRpcResponseObject(parent: Record<string, unknown>): boolea
 }
 
 export interface ACPClassifyConfig {
-  extraHiddenSessionUpdates?: Set<string>
   /**
    * Provider-specific classification of a `session/update` whose
    * `sessionUpdate` is `tool_call_update`. Returns a `tool_use` category when
@@ -78,28 +101,8 @@ export interface ACPClassifyConfig {
   classifyToolCallUpdate?: (parent: Record<string, unknown>) => MessageCategory | undefined
 }
 
-/**
- * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
- * Kilo, Goose, Reasonix). Reads the plain string `parent.content` of a
- * user_content / plan_execution row.
- *
- * Assistant text and reasoning are absent on purpose. Those rows carry the shared
- * assembled-message envelope, and MessageBubble quotes that envelope before it
- * consults any plugin.
- */
-export function acpExtractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
-  const obj = parsed.parentObject
-  if (!obj)
-    return null
-  if (category.kind === 'user_content' || category.kind === 'plan_execution') {
-    if (typeof obj.content === 'string')
-      return (obj.content as string).trim() || null
-  }
-  return null
-}
-
 export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: ClassificationInput, context?: ClassificationContext) => MessageCategory {
-  const baseHidden = new Set<string>([
+  const hiddenSessionUpdates = new Set<string>([
     ACP_UPDATE.CurrentMode,
     ACP_SESSION_UPDATE.USAGE_UPDATE,
     ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE,
@@ -108,10 +111,13 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     // never persists it), so hide it for all of them -- including historical rows that
     // predate the central handling and would otherwise render as an unknown message.
     ACP_SESSION_UPDATE.CONFIG_OPTION_UPDATE,
+    // The runtime's own session title and modified time, which LeapMux never shows:
+    // it gives its tabs their own names. One update arrives per turn, so a build that
+    // persisted it wrote a raw-JSON row into every transcript -- and those rows are
+    // still in the database, which is why hiding it here is not redundant with the
+    // worker's drop.
+    ACP_SESSION_UPDATE.SESSION_INFO_UPDATE,
   ])
-  const hiddenSessionUpdates = config.extraHiddenSessionUpdates
-    ? new Set([...baseHidden, ...config.extraHiddenSessionUpdates])
-    : baseHidden
   return (input: ClassificationInput, _context?: ClassificationContext): MessageCategory => {
     const parent = input.parentObject
     const wrapper = input.wrapper
@@ -134,11 +140,19 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'unknown' }
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
-    // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape covering
+    // classifyMessage, before any plugin?.transcript.classify runs, since it is a LeapMux-neutral shape covering
     // every ACP-based provider -- OpenCode/Kilo/Goose/Reasonix/Cursor -- at one site.)
 
-    const sessionUpdate = parent.sessionUpdate as string | undefined
-    const type = parent.type as string | undefined
+    // Two reads of one field, and the second is not redundant. `sessionUpdate` is the
+    // TOKEN every branch below compares against, so a non-string value is no token at
+    // all. The LAST branch asks a different question: a row that carries a truthy
+    // `sessionUpdate` is a session update of this family, malformed or not, and never
+    // LeapMux's own `{content}` envelope. One read for both questions answers that
+    // branch on the token, so a malformed update draws its `content` as the reader's
+    // own message and drops the rest of the frame.
+    const sessionUpdateValue = parent.sessionUpdate
+    const sessionUpdate = pickString(parent, 'sessionUpdate')
+    const type = pickString(parent, 'type')
 
     // agent_message_chunk and agent_thought_chunk have no case here. The worker
     // assembles a run of those chunks into ONE row that carries the shared
@@ -146,7 +160,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     // assistant_thinking before this plugin runs.
 
     if (sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
-      return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL, toolUse: parent, content: [] }
+      return { kind: 'tool_use' }
 
     if (sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE) {
       // A provider may recognize its own tool_call_update wire shape (Goose's
@@ -157,16 +171,16 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
         if (providerCategory)
           return providerCategory
       }
-      const status = parent.status as string | undefined
+      const status = pickString(parent, 'status')
       if (status === 'completed' || status === 'failed' || status === 'cancelled' || messageCompletionFromProto(input.completion))
-        return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL_UPDATE, toolUse: parent, content: [] }
+        return { kind: 'tool_use' }
       return { kind: 'hidden' }
     }
 
     if (sessionUpdate === ACP_SESSION_UPDATE.PLAN)
-      return { kind: 'tool_use', toolName: ACP_SESSION_UPDATE.PLAN, toolUse: parent, content: [] }
+      return { kind: 'tool_use' }
 
-    if (hiddenSessionUpdates.has(sessionUpdate!))
+    if (hiddenSessionUpdates.has(sessionUpdate))
       return { kind: 'hidden' }
 
     // Read stopReason through the shared unwrap, because a server may wrap the
@@ -178,6 +192,9 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (typeof unwrapACPResult(parent)?.stopReason === 'string')
       return { kind: 'result_divider' }
 
+    // The forward-compatibility guard. No daemon of this family sends a `system`
+    // frame, and the worker's verbatim persist admits one anyway -- see
+    // {@link isHiddenACPNotification} for the whole standing property.
     if (type === 'system') {
       if (isHiddenACPNotification(parent))
         return { kind: 'hidden' }
@@ -187,7 +204,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (isPlainNotificationType(type))
       return { kind: 'notification', messages: [parent] }
 
-    if (!sessionUpdate && typeof parent.content === 'string') {
+    if (!sessionUpdateValue && typeof parent.content === 'string') {
       if (parent.hidden === true)
         return { kind: 'hidden' }
       if (parent.planExecution === true)

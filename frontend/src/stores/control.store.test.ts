@@ -17,17 +17,17 @@ describe('createControlStore', () => {
     store.addRequest('agent', { ...request, responseState: ControlResponseState.DELIVERED })
     for (const responseState of [ControlResponseState.READY, ControlResponseState.PENDING, ControlResponseState.UNCERTAIN]) {
       store.addRequest('agent', { ...request, responseState })
-      expect(store.getRequests('agent')[0].responseState).toBe(ControlResponseState.DELIVERED)
+      expect(store.getRequests('agent')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
     }
     store.addRequest('agent', { ...request, claimToken: 'new', responseState: ControlResponseState.READY })
-    expect(store.getRequests('agent')[1].responseState).toBe(ControlResponseState.READY)
+    expect(store.getRequests('agent')[1]?.responseState).toBe(ControlResponseState.READY)
   })
   it('retains an owned copy of the original request bytes', () => {
     const store = createControlStore()
     const originalPayload = new TextEncoder().encode('{"n":9007199254740993}')
     store.addRequest('agent', { ...makeRequest('request', 'agent'), originalPayload })
     originalPayload.fill(0)
-    expect(new TextDecoder().decode(store.getRequests('agent')[0].originalPayload)).toBe('{"n":9007199254740993}')
+    expect(new TextDecoder().decode(store.getRequests('agent')[0]?.originalPayload)).toBe('{"n":9007199254740993}')
   })
 
   it('keeps the current request when an older cancellation arrives', () => {
@@ -67,7 +67,7 @@ describe('createControlStore', () => {
       const req = makeRequest('r1', 'agent-1')
       store.addRequest('agent-1', req)
       expect(store.getRequests('agent-1')).toHaveLength(1)
-      expect(store.getRequests('agent-1')[0].requestId).toBe('r1')
+      expect(store.getRequests('agent-1')[0]?.requestId).toBe('r1')
       dispose()
     })
   })
@@ -78,8 +78,8 @@ describe('createControlStore', () => {
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       store.addRequest('agent-1', makeRequest('r2', 'agent-1'))
       expect(store.getRequests('agent-1')).toHaveLength(2)
-      expect(store.getRequests('agent-1')[0].requestId).toBe('r1')
-      expect(store.getRequests('agent-1')[1].requestId).toBe('r2')
+      expect(store.getRequests('agent-1')[0]?.requestId).toBe('r1')
+      expect(store.getRequests('agent-1')[1]?.requestId).toBe('r2')
       dispose()
     })
   })
@@ -91,7 +91,7 @@ describe('createControlStore', () => {
       store.addRequest('agent-1', makeRequest('r2', 'agent-1'))
       store.removeRequest('agent-1', 'r1', 'tok-r1')
       expect(store.getRequests('agent-1')).toHaveLength(1)
-      expect(store.getRequests('agent-1')[0].requestId).toBe('r2')
+      expect(store.getRequests('agent-1')[0]?.requestId).toBe('r2')
       dispose()
     })
   })
@@ -157,7 +157,7 @@ describe('createControlStore', () => {
       // After clearAll, new additions should work correctly
       store.addRequest('agent-3', makeRequest('r3', 'agent-3'))
       expect(store.getRequests('agent-3')).toHaveLength(1)
-      expect(store.getRequests('agent-3')[0].requestId).toBe('r3')
+      expect(store.getRequests('agent-3')[0]?.requestId).toBe('r3')
 
       // Previously populated agents should not show new data
       // (a fresh store with only agent-3 added)
@@ -176,7 +176,7 @@ describe('createControlStore', () => {
 
       store.addRequest('agent-B', makeRequest('1', 'agent-B'))
       expect(store.getRequests('agent-B')).toHaveLength(1)
-      expect(store.getRequests('agent-B')[0].requestId).toBe('1')
+      expect(store.getRequests('agent-B')[0]?.requestId).toBe('1')
       dispose()
     })
   })
@@ -213,7 +213,7 @@ describe('createControlStore', () => {
         request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
       }, 'tok-r1-revised'))
       expect(store.getRequests('agent-1')).toHaveLength(1)
-      expect(store.getRequests('agent-1')[0].payload).toEqual({
+      expect(store.getRequests('agent-1')[0]?.payload).toEqual({
         request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
       })
       dispose()
@@ -239,7 +239,7 @@ describe('createControlStore', () => {
       // A genuine re-ask by a NEW instance (fresh token, identical payload) is shown.
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instB'))
       expect(store.getRequests('agent-1')).toHaveLength(1)
-      expect(store.getRequests('agent-1')[0].claimToken).toBe('instB')
+      expect(store.getRequests('agent-1')[0]?.claimToken).toBe('instB')
       dispose()
     })
   })
@@ -276,7 +276,7 @@ describe('createControlStore', () => {
 
       store.removeRequest('agent-1', 'r1', 'old-claim')
       expect(store.getRequests('agent-1')).toHaveLength(1)
-      expect(store.getRequests('agent-1')[0].payload).toEqual(revisedPayload)
+      expect(store.getRequests('agent-1')[0]?.payload).toEqual(revisedPayload)
       dispose()
     })
   })

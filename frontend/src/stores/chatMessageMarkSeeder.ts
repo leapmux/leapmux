@@ -117,7 +117,7 @@ export function createMessageMarkSeeder(deps: MessageMarkSeederDeps) {
     }
     try {
       for (let attempt = 0; attempt < MAX_MESSAGE_MARK_SEED_ATTEMPTS; attempt++) {
-        const resp = await listMessageMarks(workerId, { agentId }, { signal: watchSignal })
+        const resp = await listMessageMarks(workerId, { agentId }, watchSignal !== undefined ? { signal: watchSignal } : {})
         if (markSeedEpoch.get(agentId) !== epoch || watchSignal?.aborted)
           return
         const currentRevision = marks.liveRevision(agentId)

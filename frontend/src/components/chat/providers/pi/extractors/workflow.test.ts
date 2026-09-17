@@ -17,7 +17,7 @@ describe('pi workflow sources', () => {
   })
 
   it('keeps a successful launch running without repeating instructions', () => {
-    expect(piWorkflowResult(result, input(request))).toMatchObject({ description: 'Probe', status: 'running', outcome: 'running', body: '', agentId: 'wf_probe' })
+    expect(piWorkflowResult(result, input(request))).toMatchObject({ description: 'Probe', statusLabel: 'running', outcome: 'running', body: '', agentId: 'wf_probe' })
   })
 
   it('shows validation failures even when isError is false', () => {
@@ -27,7 +27,7 @@ describe('pi workflow sources', () => {
 
   it('preserves unexpected acknowledgement text and rejects an unrelated title', () => {
     const foreign = { ...result, result: { ...result.result, details: { taskId: 'wf_other' } } }
-    expect(piWorkflowResult(foreign, input(request))).toMatchObject({ description: 'Run workflow', body: result.result.content[0].text })
+    expect(piWorkflowResult(foreign, input(request))).toMatchObject({ description: 'Run workflow', body: result.result.content[0]?.text })
     expect(piWorkflowRequest({ ...request, toolCallId: 'other' }, undefined, input(result)).description).toBe('Run workflow')
   })
 

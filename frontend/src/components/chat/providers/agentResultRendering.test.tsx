@@ -1,13 +1,12 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { claudeToolResultMeta } from './claude/toolResult'
+import { providerToolMeta } from '~/test-support/toolCallIr'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 
 const PROMPT = 'You are the lead reviewer subagent. Read the code that it names.'
 const OUTPUT_FILE = '/private/tmp/claude-501/-Users-trustin/tasks/a7bcba10b2b861663.output'
@@ -243,9 +242,9 @@ describe('claude Agent tool_result rendering: a finished run', () => {
   })
 })
 
-describe('claudeToolResultMeta for Agent', () => {
+describe('claude toolbar actions for Agent', () => {
   const meta = (toolUseResult: Record<string, unknown>, resultContent = HARNESS_TEXT) =>
-    claudeToolResultMeta({ kind: 'tool_result' }, toolMessageInput(agentToolResult(resultContent, toolUseResult), 'Agent', undefined))
+    providerToolMeta(AgentProvider.CLAUDE_CODE, agentToolResult(resultContent, toolUseResult), { spanType: 'Agent' })
 
   // The toolbar must act on the text the card shows. Copying the harness
   // instructions gave the user the one thing on the row that is not about their

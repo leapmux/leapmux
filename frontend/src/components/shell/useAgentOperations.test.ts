@@ -459,7 +459,7 @@ describe('useAgentOperations', () => {
 
           expect(mockOpenAgent).not.toHaveBeenCalled()
           expect(newAgentDialog.open).toHaveBeenCalledTimes(1)
-          expect(newAgentDialog.open.mock.calls[0][0]).toEqual({ workingDir: '/other/worktree' })
+          expect(newAgentDialog.open.mock.calls[0]?.[0]).toEqual({ workingDir: '/other/worktree' })
         }
         finally {
           dispose()
@@ -1035,7 +1035,7 @@ describe('useAgentOperations', () => {
       new TextEncoder().encode(JSON.stringify({ response: { request_id: requestId, response: { behavior: 'allow' } } }))
 
     const request = (requestId: string, claimToken?: string): ControlRequest =>
-      ({ requestId, agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken })
+      ({ requestId, agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, ...(claimToken !== undefined ? { claimToken } : {}) })
 
     it('sends plan settings separately and retains explicit empty and false values', async () => {
       await createRoot(async (dispose) => {
@@ -1071,7 +1071,7 @@ describe('useAgentOperations', () => {
             error: 'storage unavailable',
           }))
           await expect(ops.handleControlResponse(pending, answer('r1'))).rejects.toThrow('Could not save the response: storage unavailable')
-          expect(controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.DELIVERED)
+          expect(controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
           await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(true)
           expect(workerRpc.sendControlResponse).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
             requestId: 'r1',
@@ -1095,7 +1095,7 @@ describe('useAgentOperations', () => {
           controlStore.addRequest('a1', pending)
           vi.mocked(workerRpc.sendControlResponse).mockResolvedValueOnce(create(SendControlResponseResponseSchema, { state: ControlResponseState.READY }))
           await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(false)
-          expect(controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.READY)
+          expect(controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.READY)
         }
         finally {
           dispose()
@@ -1337,7 +1337,7 @@ describe('useAgentOperations', () => {
           await flush()
           expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
 
-          const signal = mockListAvailableProviders.mock.calls[0][1].signal as AbortSignal
+          const signal = mockListAvailableProviders.mock.calls[0]?.[1].signal as AbortSignal
           expect(signal.aborted).toBe(true)
 
           first.resolve({ providers: [AgentProvider.CLAUDE_CODE] })
@@ -1361,7 +1361,7 @@ describe('useAgentOperations', () => {
           const { ops } = setup('ws-1', () => workerId)
           await flush()
 
-          const signal = mockListAvailableProviders.mock.calls[0][1].signal as AbortSignal
+          const signal = mockListAvailableProviders.mock.calls[0]?.[1].signal as AbortSignal
           expect(signal.aborted).toBe(false)
 
           // The tab moves to one with no worker. The effect re-runs on that

@@ -1,0 +1,587 @@
+{
+  "_readme": "The Agent Client Protocol supplement resolve, replayed by BOTH implementations: `resolveACPMessageContent` in the Go worker and `resolveACPMessage` in the browser plugin. Six providers share that resolve, so one divergence between the two copies shows a different row to the reader than the worker's own semantic extractors saw. Each case gives the frame the agent sent, the envelope the worker stored beside it, and the object both sides must produce. The key names come from contracts/acp-protocol.json; these cases pin the BEHAVIOUR the names carry.",
+  "cases": [
+    {
+      "name": "a later update fills every request field the opener omitted",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file",
+        "kind": "read",
+        "rawInput": {
+          "path": "/project/main.go"
+        },
+        "locations": [
+          {
+            "path": "/project/main.go"
+          }
+        ]
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file",
+        "kind": "read",
+        "rawInput": {
+          "path": "/project/main.go"
+        },
+        "locations": [
+          {
+            "path": "/project/main.go"
+          }
+        ]
+      }
+    },
+    {
+      "name": "rawInput merges into the opener's own arguments",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go",
+          "limit": 20
+        }
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "offset": 5
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go",
+          "limit": 20,
+          "offset": 5
+        }
+      }
+    },
+    {
+      "name": "a revised rawInput field wins over the opener's",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/old.go"
+        }
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/new.go"
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/new.go"
+        }
+      }
+    },
+    {
+      "name": "a rawInput the opener states as text is replaced outright",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": "path=/project/main.go"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go"
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go"
+        }
+      }
+    },
+    {
+      "name": "a rawInput the update states as text replaces the opener's object",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go"
+        }
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": "path=/project/main.go"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": "path=/project/main.go"
+      }
+    },
+    {
+      "name": "locations replace rather than merge",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "locations": [
+          {
+            "path": "/project/a.go"
+          }
+        ]
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "locations": [
+          {
+            "path": "/project/b.go"
+          },
+          {
+            "path": "/project/c.go"
+          }
+        ]
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "locations": [
+          {
+            "path": "/project/b.go"
+          },
+          {
+            "path": "/project/c.go"
+          }
+        ]
+      }
+    },
+    {
+      "name": "protocol fields fill only what the frame omitted",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "protocol": {
+          "content": [
+            {
+              "type": "content"
+            }
+          ],
+          "meta": {
+            "source": "state"
+          }
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "content"
+          }
+        ],
+        "meta": {
+          "source": "state"
+        }
+      }
+    },
+    {
+      "name": "a protocol field the frame already carries is left alone",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "from the frame"
+            }
+          }
+        ]
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "protocol": {
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "from the state"
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "from the frame"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a supplement that states nothing new leaves the frame alone",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file"
+      }
+    },
+    {
+      "name": "another call's supplement cannot reach the row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-2",
+        "status": "completed",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a supplement from before the status moved on cannot reach the row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "pending",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "another update kind cannot reach the row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a frame that states no status refuses a supplement that states one",
+      "original": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-1"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-1",
+        "status": "pending",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-1"
+      }
+    },
+    {
+      "name": "a frame that states a status refuses a supplement that states none",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a frame with no tool call id takes no supplement",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "status": "completed",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "the terminals payload stays in the supplement and never reaches the frame",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "terminal",
+            "terminalId": "term-1"
+          }
+        ]
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "terminals": {
+          "term-1": {
+            "output": "ok\n",
+            "truncated": false,
+            "exitCode": 0
+          }
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "terminal",
+            "terminalId": "term-1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the rawOutput payload stays in the supplement and never reaches the frame",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "tool-result"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a null request field replaces the opener's value",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": "Read file"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": null
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "title": null
+      }
+    },
+    {
+      "name": "a revised rawInput merges into the one the protocol payload supplied",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "protocol": {
+          "rawInput": {
+            "path": "/project/main.go",
+            "limit": 20
+          }
+        },
+        "rawInput": {
+          "offset": 5
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed",
+        "rawInput": {
+          "path": "/project/main.go",
+          "limit": 20,
+          "offset": 5
+        }
+      }
+    },
+    {
+      "name": "a supplement that names no call reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "title": "Read file",
+        "protocol": {
+          "content": []
+        }
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a supplement that names only the call reaches no row either",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      },
+      "supplemental": {
+        "toolCallId": "call-1",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": "completed"
+      }
+    },
+    {
+      "name": "an identity value that is not text reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": 5,
+        "status": "completed"
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": 5,
+        "status": "completed",
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": 5,
+        "status": "completed"
+      }
+    },
+    {
+      "name": "a status that is not text reaches no row",
+      "original": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": 7
+      },
+      "supplemental": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": 7,
+        "title": "Read file"
+      },
+      "expected": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-1",
+        "status": 7
+      }
+    }
+  ]
+}

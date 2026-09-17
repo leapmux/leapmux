@@ -2098,7 +2098,7 @@ func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, row.Kind, "local_bash maps to a Shell-kind row")
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Equal(t, "long build", row.Title)
-	// Claude names a background shell by its COMMAND (verified against 2.1.220:
+	// Claude identifies a background shell by its COMMAND (verified against 2.1.220:
 	// task_started ships description="sleep 2 && echo BG-MARKER"), so the command
 	// is already the title. Copying it into Description too rendered the row's
 	// secondary line as a verbatim echo of its own title.
@@ -2406,4 +2406,22 @@ func TestClaudeSpanForEnvelope(t *testing.T) {
 		assert.Empty(t, id, "a turn-end envelope is not a tool row")
 		assert.False(t, closing)
 	})
+}
+
+// `/clear` and the plan exit both start a new conversation and keep the session.
+// LeapMux states that boundary with the neutral `context_cleared` notice every
+// other provider writes, so one transcript rule draws it.
+func TestHandleOutput_ConversationResetPersistsContextCleared(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{"type":"conversation_reset","new_conversation_id":"conv-2"}`))
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notifications[0].Source)
+	assert.JSONEq(t, `{"type":"context_cleared"}`, string(notifications[0].Content))
+	// The frame is a notice, not a transcript row: nothing is persisted as a message.
+	assert.Empty(t, sink.Messages())
 }

@@ -1,6 +1,10 @@
 package service
 
 import (
+	"context"
+	"database/sql"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +16,43 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+// countingDBTX counts the single-row queries that run through it, by the sqlc name
+// that opens each statement (`-- name: GetAgentMessageBySpanIDAndSource :one`).
+//
+// Only QueryRowContext is wrapped, because the read this file counts is a `:one`
+// query. A test that needs another shape wraps the method that carries it.
+type countingDBTX struct {
+	db.DBTX
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (c *countingDBTX) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if name, found := strings.CutPrefix(query, "-- name: "); found {
+		if end := strings.IndexByte(name, ' '); end > 0 {
+			c.mu.Lock()
+			if c.counts == nil {
+				c.counts = make(map[string]int)
+			}
+			c.counts[name[:end]]++
+			c.mu.Unlock()
+		}
+	}
+	return c.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+func (c *countingDBTX) count(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[name]
+}
+
+func (c *countingDBTX) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.counts)
+}
 
 func TestPersistMessageStoresOriginalAndSupplementTogether(t *testing.T) {
 	t.Parallel()
@@ -242,4 +283,98 @@ func TestUnreadableSupplementRefusesTheEnrichment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, corrupted, after, "the row must stay exactly as it was, so a repair is still possible")
 	assert.Equal(t, broadcasts, writer.count(), "a refused enrichment broadcasts nothing")
+}
+
+// ReadToolRequest resolves the FIRST row of a span and ReadToolResult the LAST, so
+// the two answer different questions. A tool call writes an opener and then a result,
+// and a supplement built from the result belongs on the second of them -- reading the
+// opener there would enrich the row that states what the call ASKED for.
+func TestReadToolRequestAndReadToolResultAnswerTheTwoEndsOfASpan(t *testing.T) {
+	t.Parallel()
+	sink, _ := newGitStatusFixture(t)
+	sink.UpdateSessionID("provider-session")
+	opener := []byte(`{"sessionUpdate":"tool_call","toolCallId":"call","status":"pending"}`)
+	result := []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"call","status":"completed"}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: opener}, agent.SpanInfo{SpanID: "call"}))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: result}, agent.SpanInfo{SpanID: "call", Closing: true}))
+
+	request, err := sink.ReadToolRequest("call")
+	require.NoError(t, err)
+	require.NotNil(t, request)
+	assert.Equal(t, opener, request.Content.Original)
+
+	last, err := sink.ReadToolResult("call")
+	require.NoError(t, err)
+	require.NotNil(t, last)
+	assert.Equal(t, result, last.Content.Original)
+	assert.Greater(t, last.Seq, request.Seq, "the result is the later row")
+}
+
+// A span with one row is its own opener AND its own result. A tool call that arrives
+// already final is the reachable case: a `session/load` replay sends one frame.
+func TestReadToolResultAnswersTheOnlyRowOfASingleFrameSpan(t *testing.T) {
+	t.Parallel()
+	sink, _ := newGitStatusFixture(t)
+	sink.UpdateSessionID("provider-session")
+	only := []byte(`{"sessionUpdate":"tool_call","toolCallId":"solo","status":"completed"}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: only}, agent.SpanInfo{SpanID: "solo", Closing: true}))
+
+	last, err := sink.ReadToolResult("solo")
+	require.NoError(t, err)
+	require.NotNil(t, last)
+	assert.Equal(t, only, last.Content.Original)
+}
+
+// A span with no row and an empty id are the two answers that mean "nothing to read".
+// Neither is an error: the caller builds no supplement and moves on.
+func TestReadToolResultAnswersNothingForASpanWithNoRow(t *testing.T) {
+	t.Parallel()
+	sink, _ := newGitStatusFixture(t)
+	sink.UpdateSessionID("provider-session")
+
+	missing, err := sink.ReadToolResult("never-persisted")
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+
+	empty, err := sink.ReadToolResult("")
+	require.NoError(t, err)
+	assert.Nil(t, empty)
+}
+
+// ONE enrichment reads the paired tool_use ONCE.
+//
+// The enrichment path extracts twice on purpose: it compares what the new supplement
+// yields against what the row had ALREADY yielded. The paired tool_use behind those
+// extractions is a database read, so the two share one memo -- and the apply that
+// follows takes the event they produced rather than the bytes, which would build a
+// memo of its own and read the row a second time.
+func TestEnrichmentReadsThePairedToolUseOnce(t *testing.T) {
+	t.Parallel()
+	sink, _ := newGitStatusFixture(t)
+	counter := &countingDBTX{DBTX: sink.h.db}
+	sink.h.queries = db.New(counter)
+
+	span := agent.SpanInfo{SpanID: "task-1", SpanType: "TaskUpdate"}
+	use := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate",` +
+		`"input":{"taskId":"1","subject":"Renamed"}}]}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: use}, span))
+	result := []byte(`{"type":"user","message":{"content":[]},` +
+		`"tool_use_result":{"success":true,"taskId":"1","statusChange":{"from":"pending","to":"in_progress"}}}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: result}, span))
+	// The persist path extracts once of its own. This test is about the enrichment.
+	counter.reset()
+
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{
+		SpanID: "task-1", OriginalContent: result,
+		SupplementalContent: []byte(`{"recovered":true}`),
+	})
+	require.NoError(t, err)
+	require.True(t, written)
+	assert.Equal(t, 1, counter.count("GetAgentMessageBySpanIDAndSource"),
+		"both extractions of one enrichment share one paired read")
 }

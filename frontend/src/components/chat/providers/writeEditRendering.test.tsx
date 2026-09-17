@@ -6,10 +6,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import './claude'
-import './codex'
-import './opencode'
-import './pi'
+import './claude/plugin'
+import './codex/plugin'
+import './opencode/plugin'
+import './pi/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -21,7 +21,7 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -49,11 +49,6 @@ function makeClaudeToolUseMessage(name: string, input: Record<string, unknown>):
   }
 }
 
-function makeClaudeToolUseCategory(name: string, input: Record<string, unknown>): MessageCategory {
-  const toolUse = { type: 'tool_use' as const, id: 'toolu_x', name, input }
-  return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
-}
-
 function makeClaudeToolResultMessage(
   toolUseResult: Record<string, unknown> | undefined,
   content: string = 'OK',
@@ -75,7 +70,7 @@ function makeClaudeToolResultMessage(
 
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
-  const category = makeClaudeToolUseCategory(name, input)
+  const category = { kind: 'tool_use' } as MessageCategory
   return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
 }
 
@@ -105,7 +100,7 @@ function makePiToolEnd(toolName: string, result: Record<string, unknown>, isErro
 
 function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: RenderContext) {
   const toolUse = makePiToolStart(toolName, args)
-  const category: MessageCategory = { kind: 'tool_use', toolName, toolUse, content: [] }
+  const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(toolUse, context, category, AgentProvider.PI))
 }
 
@@ -117,11 +112,14 @@ function renderPiToolResult(toolName: string, resultPayload: Record<string, unkn
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code: tool_use never renders a diff
+// Claude Code: a tool_use states the change it REQUESTS
 // ---------------------------------------------------------------------------
 
-describe('claude Edit/Write tool_use renders header only (no diff body)', () => {
-  it('edit tool_use shows file path + stats but not the changed lines', () => {
+// The pending row draws the shared "Requested changes" card every provider uses
+// for a write that has not landed. It claims nothing about the file, and the
+// result row replaces it with the diff that did land.
+describe('claude Edit/Write tool_use states its requested change', () => {
+  it('edit tool_use shows file path, stats and the substitution it asks for', () => {
     const { container } = renderClaudeToolUse('Edit', {
       file_path: '/tmp/example.ts',
       old_string: 'oldLineMarkerABC',
@@ -129,18 +127,20 @@ describe('claude Edit/Write tool_use renders header only (no diff body)', () => 
     })
     const text = container.textContent ?? ''
     expect(text).toContain('example.ts')
-    expect(text).not.toContain('oldLineMarkerABC')
-    expect(text).not.toContain('newLineMarkerABC')
+    expect(text).toContain('Requested changes')
+    expect(text).toContain('oldLineMarkerABC')
+    expect(text).toContain('newLineMarkerABC')
   })
 
-  it('write tool_use shows file path + line count but not the file content', () => {
+  it('write tool_use shows file path, line count and the body it asks for', () => {
     const { container } = renderClaudeToolUse('Write', {
       file_path: '/tmp/new.ts',
       content: 'package main\n\nfunc main() {}\n',
     })
     const text = container.textContent ?? ''
     expect(text).toContain('new.ts')
-    expect(text).not.toContain('package main')
+    expect(text).toContain('Requested changes')
+    expect(text).toContain('package main')
   })
 })
 
@@ -295,11 +295,11 @@ describe('claude Write tool_result diff selection', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Pi: tool_use is header-only; tool_result owns diffs with tool_use fallback
+// Pi: the request states the change it asks for, which claims nothing about the file
 // ---------------------------------------------------------------------------
 
-describe('pi Edit/Write tool_use renders header only (no diff body)', () => {
-  it('edit tool_use shows file path and statistics without changed lines', () => {
+describe('pi Edit/Write tool_use states its requested change', () => {
+  it('edit tool_use shows the file, its statistics, and the change it asks for', () => {
     const { container } = renderPiToolUse('edit', {
       path: '/tmp/example.ts',
       edits: [{ oldText: 'piOldToolUseMarker', newText: 'piNewToolUseMarker' }],
@@ -308,18 +308,19 @@ describe('pi Edit/Write tool_use renders header only (no diff body)', () => {
     expect(text).toContain('example.ts')
     expect(text).toContain('+1')
     expect(text).toContain('-1')
-    expect(text).not.toContain('piOldToolUseMarker')
-    expect(text).not.toContain('piNewToolUseMarker')
+    // The requested diff IS what a pending edit row states under the pair IR.
+    expect(text).toContain('piOldToolUseMarker')
+    expect(text).toContain('piNewToolUseMarker')
   })
 
-  it('write tool_use shows file path but not file content', () => {
+  it('write tool_use shows the file and the content it proposes', () => {
     const { container } = renderPiToolUse('write', {
       path: '/tmp/new.ts',
       content: 'piWriteToolUseMarker\n',
     })
     const text = container.textContent ?? ''
     expect(text).toContain('new.ts')
-    expect(text).not.toContain('piWriteToolUseMarker')
+    expect(text).toContain('piWriteToolUseMarker')
   })
 })
 
@@ -408,12 +409,7 @@ describe('pi Write tool_result diff selection', () => {
 
 function renderCodexFileChange(item: Record<string, unknown>, context?: RenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'fileChange',
-    toolUse: parsed,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
@@ -456,7 +452,11 @@ describe('codex fileChange routes through the shared diff component', () => {
     expect(text).toContain('codexFileBNew')
   })
 
-  it('does not render failed fileChange diffs as completed edits', () => {
+  // A failed change never landed, so the row draws NO diff at all -- neither as a
+  // body, which would read as an edit the file received, nor as a request. The
+  // reason the call gives is the whole answer. `RequestedChangesBody` owns that rule
+  // for every provider, so Codex and Claude no longer disagree about the same row.
+  it('draws no diff for a failed fileChange', () => {
     const { container } = renderCodexFileChange({
       type: 'fileChange',
       status: 'failed',
@@ -469,8 +469,8 @@ describe('codex fileChange routes through the shared diff component', () => {
       ],
     })
     const text = container.textContent ?? ''
+    expect(text).not.toContain('Requested changes')
     expect(text).not.toContain('codexFailedOld')
-    expect(text).not.toContain('codexFailedNew')
   })
 })
 
@@ -479,23 +479,23 @@ describe('codex fileChange routes through the shared diff component', () => {
 // ---------------------------------------------------------------------------
 
 function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: (toolUse.kind as string) || 'tool_call_update',
-    toolUse,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
 
 describe('opencode tool_call_update diff selection', () => {
+  // `rawInput` states the file the call ASKED to change, which the row heads itself
+  // with at every state of the call (invariant I7). It carries no replacement text
+  // here, so it synthesizes no diff of its own and the content array stays the one
+  // source of the body below.
   it('renders the diff embedded in the update content array', () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
       status: 'completed',
       title: 'Edit /tmp/a.ts',
+      rawInput: { filePath: '/tmp/a.ts' },
       content: [
         { type: 'diff', path: '/tmp/a.ts', oldText: 'opencodeContentOldX', newText: 'opencodeContentNewX' },
       ],
@@ -538,7 +538,7 @@ describe('opencode tool_call_update diff selection', () => {
     expect(text).toContain('opencodePlainOutputZ')
   })
 
-  it('renders failure output and labels the requested diff when status is failed', () => {
+  it('renders failure output and draws no diff when status is failed', () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
@@ -555,9 +555,10 @@ describe('opencode tool_call_update diff selection', () => {
     })
     const text = container.textContent ?? ''
     expect(text).toContain('Could not apply patch')
-    expect(text).toContain('Requested changes')
-    expect(text).toContain('opencodeFailedRawOld')
-    expect(text).toContain('opencodeFailedRawNew')
+    // The patch never applied, so neither side of it draws.
+    expect(text).not.toContain('Requested changes')
+    expect(text).not.toContain('opencodeFailedRawOld')
+    expect(text).not.toContain('opencodeFailedRawNew')
   })
 
   // Regression: an earlier cleanup wrote `!effectiveDiff() !== null`, which
@@ -570,6 +571,7 @@ describe('opencode tool_call_update diff selection', () => {
       kind: 'edit',
       status: 'completed',
       title: 'Edit /tmp/c.ts',
+      rawInput: { filePath: '/tmp/c.ts' },
       content: [
         { type: 'diff', path: '/tmp/c.ts', oldText: 'duplicateGuardOldA', newText: 'duplicateGuardNewA' },
         { type: 'content', content: { text: 'duplicateGuardTextB' } },
@@ -579,5 +581,42 @@ describe('opencode tool_call_update diff selection', () => {
     expect(text).toContain('duplicateGuardOldA')
     expect(text).toContain('duplicateGuardNewA')
     expect(text).not.toContain('duplicateGuardTextB')
+  })
+
+  // Regression: the span merge once told the row's own result side from the
+  // current frame by OBJECT IDENTITY, but the resolver hands the result side
+  // back as a re-parse -- a distinct object for the same message. A finished
+  // row then folded the result frame in as its own opener, merging no request
+  // at all, and the edit fell to the uncategorized card: its words drew, the
+  // requested change beside them did not. The finished flag tells the sides
+  // apart, so this pair must draw both halves however many times the message
+  // was parsed.
+  it('keeps the requested edit beside reported words when the result side is a re-parse of the row', () => {
+    const parse = (content: Record<string, unknown>) => parseMessageContent(makeFakeMessage(content))
+    const opener = parse({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'unconfirmed-edit',
+      kind: 'edit',
+      status: 'pending',
+      title: 'edit',
+      rawInput: { filePath: '/project/example.ts', oldString: 'requestedBefore', newString: 'requestedAfter' },
+    })
+    const resultContent = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'unconfirmed-edit',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'No file changes occurred.' } }],
+    }
+    const { container } = render(() => renderMessageContent(
+      resultContent,
+      { sources: testMessageSources({ current: () => parse(resultContent), request: () => opener, result: () => parse(resultContent), role: () => 'result' }) },
+      { kind: 'tool_use' } as MessageCategory,
+      AgentProvider.OPENCODE,
+    ))
+    const text = container.textContent ?? ''
+    expect(text).toContain('No file changes occurred.')
+    expect(text).toContain('Requested changes')
+    expect(text).toContain('requestedBefore')
+    expect(text).toContain('requestedAfter')
   })
 })

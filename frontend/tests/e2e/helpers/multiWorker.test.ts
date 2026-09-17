@@ -66,6 +66,14 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
+/** The spawned child at `i`; every reader runs after the harness spawned it. */
+function childAt(i: number) {
+  const child = children[i]
+  if (!child)
+    throw new Error(`expected a spawned child process at index ${i}`)
+  return child
+}
+
 describe('multi-worker lifetime', () => {
   it.each(['readiness', 'SignUp', 'GetCurrentUser', 'CreateRegistrationKey', 'registration'])('closes partial startup after %s fails', async (stage) => {
     failure = stage
@@ -80,7 +88,7 @@ describe('multi-worker lifetime', () => {
 
   it('makes concurrent stop callers wait for the same cleanup', async () => {
     const harness = await startMultiWorkerHarness(0)
-    children[0].emitter.kill.mockImplementation(() => true)
+    childAt(0).emitter.kill.mockImplementation(() => true)
     const first = harness.stop()
     let secondFinished = false
     const second = harness.stop().then(() => {
@@ -92,11 +100,11 @@ describe('multi-worker lifetime', () => {
       expect(secondFinished).toBe(false)
     }
     finally {
-      children[0].emitter.exitCode = 0
-      children[0].emitter.emit('exit', 0, null)
+      childAt(0).emitter.exitCode = 0
+      childAt(0).emitter.emit('exit', 0, null)
       await Promise.all([first, second])
     }
-    expect(children[0].emitter.kill).toHaveBeenCalledTimes(1)
+    expect(childAt(0).emitter.kill).toHaveBeenCalledTimes(1)
   })
 
   it('assigns distinct worker identities to concurrent additions', async () => {
@@ -125,9 +133,9 @@ describe('multi-worker lifetime', () => {
       failure = 'new registration'
       await expect(harness.addWorker('failed')).rejects.toThrow('registration failed')
       expect(harness.workers).toHaveLength(1)
-      expect(children[0].emitter.kill).not.toHaveBeenCalled()
-      expect(children[1].emitter.kill).not.toHaveBeenCalled()
-      expect(children[2].emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
+      expect(childAt(0).emitter.kill).not.toHaveBeenCalled()
+      expect(childAt(1).emitter.kill).not.toHaveBeenCalled()
+      expect(childAt(2).emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
       expect(readdirSync(root)).toHaveLength(2)
       failure = ''
       const next = await harness.addWorker('next')

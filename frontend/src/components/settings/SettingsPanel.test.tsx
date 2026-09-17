@@ -133,7 +133,7 @@ function registryFor(category: string): SettingRowModel[] {
 // Two identically named text boxes and two identically named buttons in one
 // panel leave a screen-reader user unable to tell the UI stack from the
 // monospace one, so the DECLARATION carries the name and the join keeps it.
-describe('settingsPanel string-list accessible names', () => {
+describe('SettingsPanel string-list accessible names', () => {
   it('gives the two font-stack add affordances distinct names', () => {
     render(withPreferences(() => (
       <SettingsPanel rows={registryFor('appearance')} restartGroup={false} elevationGroup={false} writeErrors={[]} />
@@ -146,7 +146,7 @@ describe('settingsPanel string-list accessible names', () => {
   })
 })
 
-describe('settingsPanel claimed proto keys', () => {
+describe('SettingsPanel claimed proto keys', () => {
   it('does not render hub-scope duplicates of object-shaped keys the registry already owns', () => {
     const store = fakeStore([protoDescriptor()])
     render(withPreferences(() => (
@@ -295,7 +295,7 @@ describe('settingsPanel claimed proto keys', () => {
 // The DERIVATION moved to the dialog, which marks the same groups in the
 // nav from the same rule — see PreferencesDialog.test.tsx. What stays the
 // panel's business is obeying it.
-describe('settingsPanel restart warning', () => {
+describe('SettingsPanel restart warning', () => {
   const restartDescriptor = protoDescriptor({
     key: 'session_duration_seconds',
     category: 'general',
@@ -339,7 +339,7 @@ describe('settingsPanel restart warning', () => {
  * governs every hub-settings write. The panel is the layer that knows which
  * group is on screen.
  */
-describe('settingsPanel verified-session state', () => {
+describe('SettingsPanel verified-session state', () => {
   const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
 
   afterEach(() => elevationExpiresAt.mockReturnValue(undefined))

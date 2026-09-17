@@ -318,7 +318,8 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
 
     // Tamper with the ML-KEM ciphertext portion (after the 48-byte Noise message).
     const tampered = new Uint8Array(message1)
-    tampered[48] ^= 0xFF
+    // The copy is message1-sized and 48 is inside it; ?? 0 is the type-level guard alone.
+    tampered[48] = (tampered[48] ?? 0) ^ 0xFF
 
     // Responder processes tampered message — ML-KEM implicit rejection means
     // decapsulation succeeds with a random shared secret.

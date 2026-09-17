@@ -13,10 +13,14 @@ afterEach(() => setCRDTBridge(null))
 /**
  * Set up two sibling tiles under the seeded root and return both ids.
  * `splitTile` returns the NEW leaf; the other one keeps the source's tabs.
+ * The split produced exactly two leaves, so the throw is the type-level
+ * guard alone.
  */
 function twoTiles(layoutStore: ReturnType<typeof createTestTabStores>['layoutStore']) {
   const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
   const [tileA, tileB] = layoutStore.getAllTileIds()
+  if (tileA === undefined || tileB === undefined)
+    throw new Error('expected two tiles after split')
   return { fromTile: tileB === toTile ? tileA : tileB, toTile }
 }
 

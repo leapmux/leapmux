@@ -7,7 +7,7 @@ const NEW_TERMINAL_TEXT_RE = /new terminal tab/i
 const ARCHIVED_TEXT_RE = /workspace is archived/i
 const NO_TABS_TEXT_RE = /no tabs in this tile/i
 
-describe('emptyTilePlaceholder', () => {
+describe('EmptyTilePlaceholder', () => {
   it('renders agent and terminal action buttons when actions are shown', () => {
     render(() => (
       <EmptyTilePlaceholder

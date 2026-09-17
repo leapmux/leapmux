@@ -75,6 +75,10 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
   // Reserve space for the macOS native traffic lights, except in fullscreen
   // where they are hidden — otherwise the menu is stranded past an empty gap.
   const macPadding = () => (isMacDesktop && !isFullscreen() ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined)
+  // Hoisted so the detail spread narrows: a second call would read as
+  // `string | undefined` again, which `detail?: string` does not take.
+  const webInspectorHint = getShortcutHintsText('app.openWebInspector')
+  const quitHint = getShortcutHintsText('app.quit')
 
   return (
     <div
@@ -109,10 +113,16 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             <DropdownMenuItemContent label={maximizeLabel()} />
           </button>
           <button role="menuitem" onClick={() => openWebInspector()}>
-            <DropdownMenuItemContent label="Open Web Inspector" detail={getShortcutHintsText('app.openWebInspector')} />
+            <DropdownMenuItemContent
+              label="Open Web Inspector"
+              {...(webInspectorHint !== undefined ? { detail: webInspectorHint } : {})}
+            />
           </button>
           <button role="menuitem" onClick={() => quitApp()}>
-            <DropdownMenuItemContent label="Quit" detail={getShortcutHintsText('app.quit')} />
+            <DropdownMenuItemContent
+              label="Quit"
+              {...(quitHint !== undefined ? { detail: quitHint } : {})}
+            />
           </button>
         </Show>
       </DropdownMenu>

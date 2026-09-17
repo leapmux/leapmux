@@ -1,7 +1,7 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component, JSX } from 'solid-js'
 
-import type { EmailVerificationStatus, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { FinishPasskeySignUpResponse, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -119,7 +119,10 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     setSubmitting(true)
     setError(null)
     try {
-      let resp: { user?: User, emailVerification?: EmailVerificationStatus }
+      // The generated responses spell their optional fields `?: T | undefined`
+      // (a present-but-unset field), so the accumulator borrows that shape via
+      // Pick rather than restating a stricter one the RPC types cannot meet.
+      let resp: Pick<FinishPasskeySignUpResponse, 'user' | 'emailVerification'>
       if (effectiveMethod() === 'passkey') {
         const begin = await authClient.beginPasskeySignUp({
           username: fields.slug,
@@ -150,7 +153,9 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
       await props.onSuccess({
         user: resp.user,
         verificationRequired: resp.emailVerification?.verificationRequired ?? false,
-        nextResendAvailableAt: resp.emailVerification?.nextResendAvailableAt,
+        ...(resp.emailVerification?.nextResendAvailableAt !== undefined
+          ? { nextResendAvailableAt: resp.emailVerification.nextResendAvailableAt }
+          : {}),
       })
     }
     catch (err) {

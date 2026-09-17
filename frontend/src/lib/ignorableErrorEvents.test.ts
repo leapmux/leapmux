@@ -232,19 +232,19 @@ describe('installIgnorableErrorSuppressor', () => {
     dispatchError('ResizeObserver loop limit exceeded')
     dispatchError('ResizeObserver loop limit exceeded')
     expect(debug).toHaveBeenCalledTimes(1) // burst inside the window -> one line
-    expect(String(debug.mock.calls[0][0])).toContain('resize-observer-loop')
-    expect(String(debug.mock.calls[0][0])).toContain('x1')
+    expect(String(debug.mock.calls[0]?.[0])).toContain('resize-observer-loop')
+    expect(String(debug.mock.calls[0]?.[0])).toContain('x1')
 
     // A different reason inside the same window keeps its own tally and logs.
     dispatchError('Script error.')
     expect(debug).toHaveBeenCalledTimes(2)
-    expect(String(debug.mock.calls[1][0])).toContain('muted')
-    expect(String(debug.mock.calls[1][0])).toContain('x1')
+    expect(String(debug.mock.calls[1]?.[0])).toContain('muted')
+    expect(String(debug.mock.calls[1]?.[0])).toContain('x1')
 
     nowSpy.mockReturnValue(115_000) // past the 10s window
     dispatchError('ResizeObserver loop limit exceeded')
     expect(debug).toHaveBeenCalledTimes(3)
-    expect(String(debug.mock.calls[2][0])).toContain('x4') // count kept climbing
+    expect(String(debug.mock.calls[2]?.[0])).toContain('x4') // count kept climbing
 
     dispatchError('nope') // unrelated errors never log
     expect(debug).toHaveBeenCalledTimes(3)

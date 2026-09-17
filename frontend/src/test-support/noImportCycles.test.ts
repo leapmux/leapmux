@@ -60,25 +60,16 @@ const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx']
 const NOT_HAND_WRITTEN: ReadonlySet<string> = new Set(['generated', 'spinners'])
 
 /**
- * The ONE cycle this guard tolerates, as the single edge that closes it, in
+ * The cycles this guard tolerates, as the single edge that closes each one, in
  * repo-relative paths: `from` imports `to`, and `to` already reaches `from`.
  *
- * `CollapsibleContent` takes `JsonHighlightHtml` from `toolRenderers`, and
- * `toolRenderers` renders `CollapsibleContent`. Both bindings are Solid
- * components, read when a component renders and never during module
- * evaluation, so neither can capture the other unassigned. Exempting the edge
- * rather than the two cycle paths keeps the exemption at one line: a third
- * path through the same pair would otherwise need its own entry.
- *
- * It is accidental, not structural. `JsonHighlightHtml` is a 12-line wrapper
- * that sets `lang="json"` on the private `AsyncHighlightedCode`; moving that
- * pair into their own module deletes this entry. That move carries the token
- * gate and the render context with it, which is a chat-renderer change and
- * belongs in its own review.
+ * EMPTY, and it should stay that way. It held one entry while
+ * `CollapsibleContent` took `JsonHighlightHtml` from a module that rendered
+ * `CollapsibleContent` back; that module is now `syntaxHighlight.tsx` and holds
+ * the highlighting pair alone, so the cycle is gone rather than forgiven. Add an
+ * entry only for a cycle that no module split can remove, and say at it why.
  */
-const ALLOWED_EDGES: ReadonlySet<string> = new Set([
-  'src/components/chat/results/CollapsibleContent.tsx -> src/components/chat/toolRenderers.tsx',
-])
+const ALLOWED_EDGES: ReadonlySet<string> = new Set<string>([])
 
 function edgeKey(from: string, to: string): string {
   return `${from} -> ${to}`
@@ -123,14 +114,21 @@ function importsOf(file: string): string[] {
   const targets = new Set<string>()
 
   for (const match of text.matchAll(FROM_IMPORT)) {
-    if (TYPE_ONLY.test(match[1]))
+    const imported = match[1]
+    const specifier = match[2]
+    if (imported === undefined || specifier === undefined)
       continue
-    const resolved = resolveSpecifier(match[2], file)
+    if (TYPE_ONLY.test(imported))
+      continue
+    const resolved = resolveSpecifier(specifier, file)
     if (resolved)
       targets.add(posixRelative(frontendRoot, resolved))
   }
   for (const match of text.matchAll(BARE_IMPORT)) {
-    const resolved = resolveSpecifier(match[1], file)
+    const specifier = match[1]
+    if (specifier === undefined)
+      continue
+    const resolved = resolveSpecifier(specifier, file)
     if (resolved)
       targets.add(posixRelative(frontendRoot, resolved))
   }
@@ -282,6 +280,8 @@ describe('module graph', () => {
     const graph = buildGraph()
     for (const edge of ALLOWED_EDGES) {
       const [from, to] = edge.split(' -> ')
+      if (from === undefined || to === undefined)
+        throw new Error(`ALLOWED_EDGES entry is not "from -> to": ${edge}`)
       expect(graph.get(from), `${from} is listed in ALLOWED_EDGES but no longer exists`).toBeDefined()
       expect(
         graph.get(from),

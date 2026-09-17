@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 var (
@@ -98,8 +100,8 @@ func recoverPiToolArtifacts(ctx context.Context, original, existing []byte) ([]b
 	if outputRef.path == "" && mcpRef.path == "" {
 		return nil, true, nil
 	}
-	extra := piToolArtifactSupplement{ToolCallID: source.ToolCallID, ToolName: source.ToolName}
-	var previous piToolArtifactSupplement
+	extra := contracts.PiToolArtifactSupplement{ToolCallID: source.ToolCallID, ToolName: source.ToolName}
+	var previous contracts.PiToolArtifactSupplement
 	if json.Unmarshal(existing, &previous) == nil && previous.ToolCallID == source.ToolCallID && previous.ToolName == source.ToolName {
 		if source.outputArtifact(previous.OutputFile) != nil {
 			extra.OutputFile = previous.OutputFile
@@ -152,7 +154,7 @@ func recoverPiToolArtifacts(ctx context.Context, original, existing []byte) ([]b
 			if json.Unmarshal(data, &result) != nil || result == nil {
 				err = errors.New("the Pi MCP artifact is not a JSON object")
 			} else {
-				err = store(&extra.McpResultFile, piMcpResultArtifact{Path: ref.path, Result: data})
+				err = store(&extra.McpResultFile, contracts.PiMcpResultArtifact{Path: ref.path, Result: data})
 			}
 		}
 		if err != nil {
@@ -164,7 +166,7 @@ func recoverPiToolArtifacts(ctx context.Context, original, existing []byte) ([]b
 		data, err := readPiToolArtifact(ctx, ref, "output", maximum-used)
 		if err == nil {
 			text := string(data)
-			err = store(&extra.OutputFile, piOutputArtifact{Path: ref.path, Text: &text})
+			err = store(&extra.OutputFile, contracts.PiOutputArtifact{Path: ref.path, Text: &text})
 		}
 		if err != nil {
 			complete = false

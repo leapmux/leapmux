@@ -14,7 +14,7 @@ function makeJob(startedLog: string[], name: string) {
   return { work, release }
 }
 
-describe('workerprioritygate', () => {
+describe('workerPriorityGate', () => {
   it('dispatches immediately while slots are free, queueing the rest FIFO', async () => {
     const gate = createWorkerPriorityGate(2)
     const started: string[] = []

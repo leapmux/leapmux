@@ -74,4 +74,20 @@ describe('copilotControlResponseDisplay', () => {
 
     expect(display).toBeNull()
   })
+
+  // The decision word is wire data off a persisted row, so a member of
+  // `Object.prototype` reaches the two decision tables. An index read answers a
+  // FUNCTION for each of these four, which `option.kind.startsWith` then calls -- and
+  // the whole message goes to the error boundary rather than the row.
+  it.each(['toString', '__proto__', 'constructor', 'valueOf'])('answers null for the prototype member %s', (decision) => {
+    const read = () => copilotControlResponseDisplay({
+      claimToken: 'claim-1',
+      requestId: 'request-1',
+      request: permissionRequest({ kind: 'read' }),
+      response: answered(decision),
+    } satisfies PersistedControlResponse)
+
+    expect(read).not.toThrow()
+    expect(read()).toBeNull()
+  })
 })

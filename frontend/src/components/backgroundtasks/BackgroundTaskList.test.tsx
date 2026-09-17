@@ -61,8 +61,8 @@ function renderList(props: {
     <BackgroundTaskPanel
       variant="sidebar"
       tasks={props.tasks}
-      loadFailed={props.loadFailed}
-      onOpenSubagent={props.onOpenSubagent}
+      {...(props.loadFailed !== undefined ? { loadFailed: props.loadFailed } : {})}
+      {...(props.onOpenSubagent !== undefined ? { onOpenSubagent: props.onOpenSubagent } : {})}
     />
   ))
 }
@@ -87,7 +87,7 @@ function secondaries(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskSecondary))]
 }
 
-describe('backgroundTaskList', () => {
+describe('BackgroundTaskList', () => {
   it('renders a status glyph + title + activity for a running subagent', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity: 'running Bash', childAgentId: 'c1' })],
@@ -109,7 +109,7 @@ describe('backgroundTaskList', () => {
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
     })
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
-    const title = titles(container)[0]
+    const title = titles(container)[0]!
     expect(title.contains(dot)).toBe(false)
     // Both sit on the title line...
     const titleRow = container.querySelector(classSelector(styles.titleRow))!
@@ -118,7 +118,7 @@ describe('backgroundTaskList', () => {
     // ...and the dot follows the title, so it lands at the row's right end.
     expect(title.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // The secondary line is a separate block and never holds the dot.
-    expect(secondaries(container)[0].contains(dot)).toBe(false)
+    expect(secondaries(container)[0]?.contains(dot)).toBe(false)
   })
 
   // Code type follows the PROVIDER's claim, not the row's kind. A shell row
@@ -143,7 +143,7 @@ describe('backgroundTaskList', () => {
   // and a rewrite merges two providers' rows into one. So the reader is where
   // an unreadable key is cleaned, and this block is the guard on that split.
   describe('the label falls back to a CLEANED row key', () => {
-    const labelOf = (container: HTMLElement) => titles(container)[0].textContent
+    const labelOf = (container: HTMLElement) => titles(container)[0]?.textContent
 
     // Cursor's observed toolCallId shape. It reaches the browser with the
     // newline in it, and the label must not carry one.
@@ -276,7 +276,7 @@ describe('backgroundTaskList', () => {
     expect(agentRow.tagName).toBe('BUTTON')
     agentRow.click()
     expect(onOpen).toHaveBeenCalledOnce()
-    expect(onOpen.mock.calls[0][0].rowKey).toBe('agent')
+    expect(onOpen.mock.calls[0]?.[0]?.rowKey).toBe('agent')
 
     const shellRow = rows[1] as HTMLElement
     expect(shellRow.tagName).toBe('DIV')
@@ -324,8 +324,8 @@ describe('backgroundTaskList', () => {
     })
     const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
     const classesOf = (el: Element) => new Set(el.className.split(/\s+/).filter(Boolean))
-    const clickable = classesOf(rows[0])
-    const staticRow = classesOf(rows[1])
+    const clickable = classesOf(rows[0]!)
+    const staticRow = classesOf(rows[1]!)
     expect(clickable.size).toBeGreaterThan(0)
     // The static row carries every class the clickable one does...
     expect([...clickable].filter(c => !staticRow.has(c))).toEqual([])
@@ -362,7 +362,7 @@ describe('backgroundTaskList', () => {
     // like a failure. Queued differs from running because running's only extra
     // signal is the pulse, which is suppressed under reduced motion -- so
     // sharing one dot made the two identical for the readers who cannot see it.
-    const cls = (i: number) => dots[i].className
+    const cls = (i: number) => dots[i]?.className ?? ''
     expect(cls(0)).not.toBe(cls(1)) // pending differs from running
     expect(cls(2)).not.toBe(cls(0)) // completed differs from in-progress
     expect(cls(3)).not.toBe(cls(0)) // failed differs from in-progress
@@ -401,7 +401,7 @@ describe('backgroundTaskList', () => {
  * as one undifferentiated list, and the two are looked for separately: a
  * subagent row is a transcript to open, a shell row is a command to check on.
  */
-describe('backgroundTaskList kind tabs', () => {
+describe('BackgroundTaskList kind tabs', () => {
   const mixed = [
     row({ rowKey: 'agent', kind: 'subagent', title: 'Review the diff', childAgentId: 'c1' }),
     row({ rowKey: 'shell', kind: 'shell', title: 'npm test' }),
@@ -479,7 +479,7 @@ describe('backgroundTaskList kind tabs', () => {
  * label with no break opportunity escaped the box and `rows` computes its
  * horizontal overflow to `auto`.
  */
-describe('backgroundTaskList clipping', () => {
+describe('BackgroundTaskList clipping', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -497,8 +497,8 @@ describe('backgroundTaskList clipping', () => {
     })
     // Token membership, not a substring: a future class whose own name merely
     // CONTAINS "clippedText" would satisfy a regex and prove nothing.
-    expect(classes(titles(container)[0])).toContain(clippedText)
-    expect(classes(secondaries(container)[0])).toContain(clippedText)
+    expect(classes(titles(container)[0]!)).toContain(clippedText)
+    expect(classes(secondaries(container)[0]!)).toContain(clippedText)
   })
 
   it('clips a group header, which had no wrapping rule at all', () => {
@@ -527,14 +527,14 @@ describe('backgroundTaskList clipping', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 'cmd', kind: 'shell', title: long, titleIsCommand: true })],
     })
-    const title = titles(container)[0]
+    const title = titles(container)[0]!
     stubClipped(title)
     expect(hover(title)).toBe(long)
   })
 
   it('shows no title tooltip while the title fits', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', title: 'Short' })] })
-    const title = titles(container)[0]
+    const title = titles(container)[0]!
     stubFitting(title)
     expect(hover(title)).toBeNull()
   })
@@ -544,7 +544,7 @@ describe('backgroundTaskList clipping', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity })],
     })
-    const secondary = secondaries(container)[0]
+    const secondary = secondaries(container)[0]!
     stubClipped(secondary)
     expect(hover(secondary)).toBe(activity)
   })
@@ -556,7 +556,7 @@ describe('backgroundTaskList clipping', () => {
   // the label cannot.
   it('adds an explanation to a finished status without losing its label', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
-    const secondary = secondaries(container)[0]
+    const secondary = secondaries(container)[0]!
     expect(secondary.textContent).toBe('Interrupted')
     const tip = hover(secondary)
     expect(tip).toContain('Interrupted')
@@ -567,7 +567,7 @@ describe('backgroundTaskList clipping', () => {
   // label is too long for its box -- the case the previous shape lost.
   it('keeps a clipped label reachable beside its explanation', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
-    const secondary = secondaries(container)[0]
+    const secondary = secondaries(container)[0]!
     stubClipped(secondary)
     const tip = hover(secondary)
     expect(tip).toContain('Interrupted')
@@ -578,7 +578,7 @@ describe('backgroundTaskList clipping', () => {
   // behaviour, rather than losing its tooltip entirely.
   it('falls back to the label for a finished status with no explanation', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
-    const secondary = secondaries(container)[0]
+    const secondary = secondaries(container)[0]!
     expect(secondary.textContent).toBe('Failed')
     stubFitting(secondary)
     expect(hover(secondary)).toBeNull()
@@ -594,7 +594,7 @@ describe('backgroundTaskList clipping', () => {
  * rendering as "no tasks" removed the whole section from the screen. A worker
  * database missing a column did exactly that: the only trace was a warn log.
  */
-describe('backgroundTaskList load failure', () => {
+describe('BackgroundTaskList load failure', () => {
   function renderFailed(tasks: BackgroundTaskItem[]) {
     return render(() => (
       <BackgroundTaskPanel variant="sidebar" tasks={tasks} loadFailed />
@@ -668,7 +668,7 @@ describe('backgroundTaskList load failure', () => {
  * what keeps a row's identity across the broadcast. These cases hold the
  * component half: one field changing must update ONE binding.
  */
-describe('backgroundTaskList in-place updates', () => {
+describe('BackgroundTaskList in-place updates', () => {
   /** A store-backed list, which is the shape the sidebar actually renders. */
   function renderLiveList(initial: BackgroundTaskItem[]) {
     const [tasks, setTasks] = createStore<BackgroundTaskItem[]>(initial)

@@ -1,0 +1,90 @@
+{
+  "_readme": "Codex's item wire vocabulary, for the keys BOTH the Go provider and the TS renderer plugin spell. Codex streams a command's output as a run of `outputDelta` events and fills `aggregatedOutput` only on the COMPLETED item, so a turn that ends first leaves an item with no output at all. LeapMux joins the deltas and stores the join beside the frame; `supplement` lists the keys of that envelope and `item` lists the fields of the frame it joins onto. Both sides run the same resolve -- the worker for its semantic extractors, the browser for the row it draws -- so a drift between two hand copies puts a retained command row on screen with its output missing and nothing to say so. `collabItem` lists the two fields of a collab tool call that both sides read to list the subagents one launch created. OpenAI owns the `item` and `collabItem` field names; LeapMux owns the supplement keys. `options` and `optionDefaults` hold the four Codex option axes LeapMux surfaces -- the option-group id of each, and the value an agent starts at when the row stores none. The worker builds the option groups from them and applies the default at launch; the browser seeds a new agent with the collaboration mode and reads the same id for its plan mode and its trigger. A default that differed between the two started an agent at one value and drew another. LeapMux chose the option ids; OpenAI owns the values.",
+  "supplement": {
+    "ItemID": "itemId",
+    "ItemType": "itemType",
+    "AggregatedOutput": "aggregatedOutput"
+  },
+  "item": {
+    "Envelope": "item",
+    "ID": "id",
+    "Type": "type",
+    "AggregatedOutput": "aggregatedOutput"
+  },
+  "collabItem": {
+    "ReceiverThreadIDs": "receiverThreadIds",
+    "AgentsStates": "agentsStates"
+  },
+  "itemTypes": {
+    "AgentMessage": "agentMessage",
+    "CommandExecution": "commandExecution",
+    "FileChange": "fileChange",
+    "McpToolCall": "mcpToolCall",
+    "DynamicToolCall": "dynamicToolCall",
+    "CollabAgentToolCall": "collabAgentToolCall",
+    "SubAgentActivity": "subAgentActivity",
+    "WebSearch": "webSearch",
+    "ImageGeneration": "imageGeneration",
+    "ImageView": "imageView",
+    "Reasoning": "reasoning",
+    "Plan": "plan",
+    "UserMessage": "userMessage",
+    "ContextCompaction": "contextCompaction",
+    "Sleep": "sleep",
+    "EnteredReviewMode": "enteredReviewMode",
+    "ExitedReviewMode": "exitedReviewMode",
+    "HookPrompt": "hookPrompt",
+    "FunctionCallOutput": "functionCallOutput"
+  },
+  "methods": {
+    "ThreadStarted": "thread/started",
+    "TurnStarted": "turn/started",
+    "ThreadStatusChanged": "thread/status/changed",
+    "ThreadNameUpdated": "thread/name/updated",
+    "ThreadSettingsUpdated": "thread/settings/updated",
+    "TurnPlanUpdated": "turn/plan/updated",
+    "ThreadTokenUsageUpdated": "thread/tokenUsage/updated",
+    "McpServerStartupStatusUpdated": "mcpServer/startupStatus/updated",
+    "SkillsChanged": "skills/changed",
+    "RemoteControlStatusChanged": "remoteControl/status/changed",
+    "HookStarted": "hook/started",
+    "HookCompleted": "hook/completed",
+    "ItemStarted": "item/started",
+    "ItemCompleted": "item/completed",
+    "ThreadCompacted": "thread/compacted",
+    "Error": "error",
+    "Warning": "warning"
+  },
+  "options": {
+    "CollaborationMode": "collaboration_mode",
+    "SandboxPolicy": "sandbox_policy",
+    "NetworkAccess": "network_access",
+    "ServiceTier": "service_tier"
+  },
+  "optionDefaults": {
+    "CollaborationMode": "default",
+    "SandboxPolicy": "workspace-write",
+    "NetworkAccess": "restricted",
+    "ServiceTier": "default"
+  },
+  "structs": {
+    "CodexToolSupplement": {
+      "doc": "CodexToolSupplement is the output LeapMux joined for a tool call that reported\nno completed item of its own.\n\nCodex streams a command's output as a run of `outputDelta` events and puts the\nwhole text in `aggregatedOutput` only on the COMPLETED item. A turn that ends\nfirst leaves the started item, which has no output at all, so the join is the\nonly copy. It identifies the item it belongs to, so a row cannot take another call's\noutput.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "ItemID",
+          "type": "string"
+        },
+        {
+          "key": "ItemType",
+          "type": "string"
+        },
+        {
+          "key": "AggregatedOutput",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}

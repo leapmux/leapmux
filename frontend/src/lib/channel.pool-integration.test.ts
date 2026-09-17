@@ -22,7 +22,7 @@ import {
   waitForPendingChannel,
 } from './channel.test-support'
 
-describe('channelManager getOrOpenChannel', () => {
+describe('ChannelManager getOrOpenChannel', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -261,7 +261,7 @@ describe('channelManager getOrOpenChannel', () => {
     expect(errorFn).not.toHaveBeenCalled()
     await h.flushMicrotasks()
     expect(errorFn).toHaveBeenCalledTimes(1)
-    expect(errorFn.mock.calls[0][0].message).toMatch(/hard ceiling/)
+    expect(errorFn.mock.calls[0]?.[0].message).toMatch(/hard ceiling/)
     expect(endFn).not.toHaveBeenCalled()
     expect(h.mgr.isOpen(ch1)).toBe(false)
   })
@@ -390,7 +390,7 @@ describe('channelManager getOrOpenChannel', () => {
 // They use a self-contained identity-cipher setup so multiple channels can be
 // opened at once without real crypto.
 // ---------------------------------------------------------------------------
-describe('channelManager getOrOpenChannel deduplication', () => {
+describe('ChannelManager getOrOpenChannel deduplication', () => {
   it('should return the same channel for concurrent calls to the same worker', async () => {
     let ws: AutoOpenMockWebSocket | null = null
     let channelCounter = 0
@@ -476,7 +476,7 @@ describe('channelManager getOrOpenChannel deduplication', () => {
   })
 })
 
-describe('channelManager pooled channel identity', () => {
+describe('ChannelManager pooled channel identity', () => {
   // A pooled channel carries the identity the Hub authenticated its OPEN as, for up to
   // an hour. On a shared machine a tab logs out and back in as B; without this check
   // every worker RPC B's page issues would keep running on the worker AS A, because the

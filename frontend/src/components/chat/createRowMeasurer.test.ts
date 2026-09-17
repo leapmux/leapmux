@@ -45,7 +45,7 @@ function manualScheduler() {
   }
 }
 
-describe('createrowmeasurer', () => {
+describe('createRowMeasurer', () => {
   it('measures and observes a freshly-mounted row, marking it mounted', () => {
     const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()

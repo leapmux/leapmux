@@ -24,9 +24,19 @@ func (s *registryCancelSink) CancelControlRequest(id string) {
 }
 
 // newRegistryBase gives a jsonrpcBase whose stdin a test can read back.
-func newRegistryBase() (*jsonrpcBase, *bytes.Buffer) {
-	var stdin bytes.Buffer
-	return &jsonrpcBase{processBase: processBase{agentID: "agent", stdin: nopWriteCloser{&stdin}}}, &stdin
+func newRegistryBase() (*jsonrpcBase, *syncBuffer) {
+	stdin := &syncBuffer{}
+	return &jsonrpcBase{processBase: processBase{agentID: "agent", stdin: stdin}}, stdin
+}
+
+// drainStdin returns once every frame queued before it reached the fake stdin.
+//
+// One goroutine performs the writes in order, so a SYNCHRONOUS write that lands
+// proves that each detached frame ahead of it landed too. The frame carries no
+// JSON-RPC id, so it answers nothing and leaves the registry as it was.
+func drainStdin(t *testing.T, base *jsonrpcBase) {
+	t.Helper()
+	require.NoError(t, base.writeStdin([]byte("{}\n")))
 }
 
 func TestControlRegistryAnswersEachKindWithItsOwnCancelAnswer(t *testing.T) {
@@ -84,6 +94,11 @@ func TestControlRegistryDropsTheRecordWhenPublicationFails(t *testing.T) {
 	base, stdin := newRegistryBase()
 	sink := &registryCancelSink{recordingControlSink: recordingControlSink{publicationError: errors.New("storage unavailable")}}
 	base.publishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), acpPermissionCancelAnswer())
+	// The refusal answers the provider DETACHED, so that frame lands on the writer's
+	// own goroutine. Waiting for it is what makes the reset below take it: without
+	// the wait the frame could arrive after the reset and fail the assertion, or
+	// before it and pass one that proved nothing.
+	drainStdin(t, base)
 	stdin.Reset()
 	base.withdrawAllControlRequests(sink)
 	assert.Empty(t, stdin.String(), "a request that was never published must not receive a cancel answer")

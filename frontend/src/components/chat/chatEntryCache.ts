@@ -1,20 +1,24 @@
 import type { Accessor } from 'solid-js'
+import type { ContentKeyInputs } from './chatRowGeometry'
+import type { PreparedMessage } from './rowPreparation'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import type { SpanMessageRevision } from '~/stores/chatTypes'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { shallowEqual } from '~/lib/shallowEqual'
-import { buildHeightKey } from './chatRowGeometry'
-import { classifyParsedMessage } from './messageClassification'
+import { buildContentKey, buildHeightKey } from './chatRowGeometry'
+import { prepareMessage } from './rowPreparation'
 import { parseSpanLines } from './spanLinesParse'
 
 // ---------------------------------------------------------------------------
-// Classified-entry cache
+// Prepared-entry cache
 //
-// Classifies each window message for rendering and caches the result by message
-// id so <For> receives stable object references for unchanged rows (no full DOM
+// Prepares each window message for rendering -- parse, resolve the supplemental
+// content, classify the resolved payload -- and caches the result by message id so
+// <For> receives stable object references for unchanged rows (no full DOM
 // recreation). A self-contained unit -- extracted from ChatView so its freshness
 // rule (reuse only when all freshness inputs are unchanged) and its
 // incremental prune are testable in isolation, mirroring the scroll hook's
@@ -38,11 +42,23 @@ export interface EntryFreshness {
   /**
    * The message's content version at classify time. A same-seq in-place body
    * replacement (the store's updateExistingMessage same-seq path) keeps the id,
-   * seq, AND store-proxy reference, so neither seq nor `cached.msg` identity moves
+   * seq, AND store-proxy reference, so neither seq nor `cached.message` identity moves
    * -- only this counter does. Folding it into the freshness check rebuilds the row
    * on such an update instead of rendering the pre-update classification.
    */
   contentVersion: number
+  /**
+   * The message's supplemental revision at classify time.
+   *
+   * The preparation MERGES the supplemental content into the payload before it
+   * classifies, so a supplement that arrives late can change the category as well as
+   * the body -- a ZCode `result` frame whose recovered output lands afterwards is the
+   * case that named this rule. The store bumps `contentVersion` for such an arrival
+   * today, so this dimension is currently redundant with the one above; it is stated
+   * anyway, because the cache must not depend on the store keeping that discipline
+   * for a field the cache itself reads.
+   */
+  supplementalRevision: bigint
   /**
    * Whether the row's span had a paired tool_use (opener) parse available at
    * classify time. A tool_result's renderer reads its sibling opener (Claude's edit
@@ -96,17 +112,22 @@ export interface EntryFreshness {
 }
 
 /**
- * A message classified for rendering, plus the parsed span lines and the freshness
- * signature at classify time.
+ * A message PREPARED for rendering, plus the parsed span lines and the freshness
+ * signature at prepare time.
+ *
+ * It EXTENDS `PreparedMessage` rather than holding one, so the bubble takes the whole
+ * entry as its prepared message and the two cannot hold different answers for one
+ * row. The bubble used to receive the original parse and the category as separate
+ * props and resolve the payload itself, which is how the transcript came to classify
+ * the raw bytes and extract the merged ones.
  */
-export type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & {
-  msg: AgentChatMessage
+export type ClassifiedEntry = PreparedMessage & {
   parsedSpanLines: (SpanLine | null)[]
   /** The freshness signature this entry was built at (see EntryFreshness / isEntryFresh). */
   freshness: EntryFreshness
   /**
    * The `spanLines` string this entry's `parsedSpanLines` was parsed from. The
-   * store reuses the proxy on an in-place update, so `cached.msg.spanLines` reads
+   * store reuses the proxy on an in-place update, so `cached.message.spanLines` reads
    * the CURRENT (possibly new) value -- comparing the proxy to itself can't tell
    * whether the rail payload actually changed. Snapshotting the string lets a
    * rebuild reuse the parse only when the payload is byte-identical.
@@ -115,26 +136,51 @@ export type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & {
 }
 
 /**
- * The measured-height cache key for a classified entry at a given UI
- * version. Reads height-affecting freshness signals (sibling presence/content
- * versions and content version) off the entry's own
- * freshness signature, so a new freshness dimension that affects height is wired
- * in one place here -- not hand-copied into the ChatView call site, the same
- * drift hazard EntryFreshness itself guards against.
+ * The content signals of one classified entry, read off its own freshness
+ * signature.
+ *
+ * ONE reader of `EntryFreshness` for both keys below, so a new freshness dimension
+ * is wired in one place here -- not hand-copied into the ChatView call sites, the
+ * same drift hazard `EntryFreshness` itself guards against.
  */
-export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
-  return buildHeightKey({
-    seq: entry.msg.seq,
+function contentKeyInputsOf(entry: ClassifiedEntry): ContentKeyInputs {
+  return {
+    seq: entry.message.seq,
     hasToolUseSibling: entry.freshness.hasToolUseSibling,
     toolUseContentVersion: entry.freshness.toolUseSiblingContentVersion,
     toolUseRevisionKey: entry.freshness.toolUseSiblingRevisionKey,
     hasToolResultSibling: entry.freshness.hasToolResultSibling,
     toolResultContentVersion: entry.freshness.toolResultSiblingContentVersion,
     toolResultRevisionKey: entry.freshness.toolResultSiblingRevisionKey,
-    uiVersion,
     contentVersion: entry.freshness.contentVersion,
+    supplementalRevision: entry.freshness.supplementalRevision,
     isChildTranscript: entry.freshness.isChildTranscript,
-  })
+  }
+}
+
+/**
+ * The measured-height cache key for a classified entry at a given UI version.
+ *
+ * The VIRTUALIZER's key. A per-row expand or diff-view toggle bumps `uiVersion`,
+ * which changes the row's height and so must re-measure it.
+ */
+export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
+  return buildHeightKey({ ...contentKeyInputsOf(entry), uiVersion })
+}
+
+/**
+ * The render-cache key for a classified entry: its content signals, and NOT its UI
+ * state.
+ *
+ * The row CACHE's key, and it is deliberately a different key from the height one.
+ * The two answer different questions: an expand or a diff-view toggle changes what
+ * the row MEASURES and changes nothing that the cache holds. Deriving one key from
+ * the other threw away the row's extracted IR, its normalized command body, its
+ * Myers diff and its rendered markdown on every click of the expand control, and the
+ * row rebuilt all four to draw the same content at a new height.
+ */
+export function renderKeyForEntry(entry: ClassifiedEntry): string {
+  return `${entry.message.id}|${buildContentKey(contentKeyInputsOf(entry))}`
 }
 
 export interface ClassifiedEntryCacheDeps {
@@ -152,6 +198,15 @@ export interface ClassifiedEntryCacheDeps {
    * the bump wake the memo so it re-checks freshness and rebuilds the row.
    */
   contentVersionById?: (id: string) => number
+  /**
+   * The shared resolver's merged payload for one message, when it holds one.
+   *
+   * Preparation resolves the payload itself without this, which is correct but
+   * produces a SECOND object for the same bytes -- and the bubble, the toolbar and
+   * the image tab would then each read the row from a different one. Reading the
+   * resolver's copy here is what keeps them on one.
+   */
+  resolvedParsed?: (message: AgentChatMessage) => ParsedMessageContent | undefined
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
   /**
@@ -179,15 +234,15 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
 
   /**
-   * Build the freshness signature for `msg` classified as `kind`. The SINGLE place
+   * Build the freshness signature for `message` classified as `kind`. The SINGLE place
    * the freshness dimensions are enumerated: isEntryFresh compares against this and
    * buildEntry stores it, so neither can drift from a hand-synced field list. `kind`
    * is the row's classification (only a tool_result row tracks an opener's
    * revision); isEntryFresh passes the CACHED entry's kind, so the comparison reads
    * the same slots the entry was built with.
    */
-  const freshnessOf = (msg: AgentChatMessage, kind: string): EntryFreshness => {
-    const request = msg.spanId ? deps.requestRevision?.(messageSpanIdentity(msg)) : undefined
+  const freshnessOf = (message: AgentChatMessage, kind: string): EntryFreshness => {
+    const request = message.spanId ? deps.requestRevision?.(messageSpanIdentity(message)) : undefined
     // The opener's REVISION, for a tool_result row alone -- the only kind that
     // sizes itself from a sibling opener. A tool_use row's own span resolves to
     // ITSELF, so an ungated read records that row's own content version a second
@@ -195,10 +250,11 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     // flag below stays ungated: an opener that resolves to itself holds that flag
     // stable at true, which is what keeps an opener row from rebuilding.
     const opener = kind === 'tool_result' ? request : undefined
-    const result = msg.spanId && kind.startsWith('tool_use') ? deps.resultRevision?.(messageSpanIdentity(msg)) : undefined
+    const result = message.spanId && kind.startsWith('tool_use') ? deps.resultRevision?.(messageSpanIdentity(message)) : undefined
     return {
-      seq: msg.seq,
-      contentVersion: deps.contentVersionById?.(msg.id) ?? 0,
+      seq: message.seq,
+      contentVersion: deps.contentVersionById?.(message.id) ?? 0,
+      supplementalRevision: message.supplementalRevision,
       hasToolUseSibling: request !== undefined,
       toolUseSiblingContentVersion: opener?.contentVersion ?? 0,
       toolUseSiblingRevisionKey: revisionKeyOf(opener),
@@ -218,26 +274,31 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * row needs that folded in too. Compared STRUCTURALLY against a freshly-built
    * signature so the dimension list lives only in freshnessOf.
    */
-  const isEntryFresh = (cached: ClassifiedEntry | undefined, msg: AgentChatMessage): cached is ClassifiedEntry =>
-    !!cached && shallowEqual(cached.freshness, freshnessOf(msg, cached.category.kind))
-  const buildEntry = (msg: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
-    const classified = classifyParsedMessage(msg, {
+  const isEntryFresh = (cached: ClassifiedEntry | undefined, message: AgentChatMessage): cached is ClassifiedEntry =>
+    !!cached && shallowEqual(cached.freshness, freshnessOf(message, cached.category.kind))
+  const buildEntry = (message: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
+    // The shared resolver's own parse when it holds one, so the bubble, the toolbar
+    // and the image tab read the row from ONE resolved payload. The resolver is
+    // absent outside ChatView (a test, an isolated preview), and preparation then
+    // resolves the payload itself.
+    const resolved = deps.resolvedParsed?.(message)
+    const prepared = prepareMessage(message, {
+      ...(resolved === undefined ? {} : { resolved }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     })
     // Reuse the cached parse when the `spanLines` payload is byte-identical to the
-    // one it was parsed from -- compared against the snapshot, not `cached.msg`
+    // one it was parsed from -- compared against the snapshot, not `cached.message`
     // (the shared proxy reads the CURRENT value, so it can't detect an in-place
     // rail change). A string compare, so a window-replace new instance with an
     // identical payload still reuses while an in-place change re-parses.
-    const parsedSpanLines = cached && cached.spanLinesRef === msg.spanLines
+    const parsedSpanLines = cached && cached.spanLinesRef === message.spanLines
       ? cached.parsedSpanLines
-      : parseSpanLines(msg.spanLines)
+      : parseSpanLines(message.spanLines)
     return {
-      msg,
-      ...classified,
+      ...prepared,
       parsedSpanLines,
-      freshness: freshnessOf(msg, classified.category.kind),
-      spanLinesRef: msg.spanLines,
+      freshness: freshnessOf(message, prepared.category.kind),
+      spanLinesRef: message.spanLines,
     }
   }
   /**
@@ -247,16 +308,16 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * and the full materialization (visibleEntries) share, so populating the cache
    * for the visibleEntries memo can't drift from the freshness rule.
    */
-  const resolveEntry = (msg: AgentChatMessage): ClassifiedEntry => {
-    const cached = entryCache.get(msg.id)
-    if (isEntryFresh(cached, msg))
+  const resolveEntry = (message: AgentChatMessage): ClassifiedEntry => {
+    const cached = entryCache.get(message.id)
+    if (isEntryFresh(cached, message))
       return cached
-    const entry = buildEntry(msg, cached)
-    entryCache.set(msg.id, entry)
+    const entry = buildEntry(message, cached)
+    entryCache.set(message.id, entry)
     return entry
   }
-  const hasVisibleMessage = (msg: AgentChatMessage): boolean =>
-    resolveEntry(msg).category.kind !== 'hidden'
+  const hasVisibleMessage = (message: AgentChatMessage): boolean =>
+    resolveEntry(message).category.kind !== 'hidden'
   /**
    * Drop cached entries for ids no longer in the window, EVERY run (no size
    * guard): a window that swaps out and in the SAME number of ids leaves size
@@ -271,20 +332,20 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
         entryCache.delete(id)
     }
   }
-  const walkWindow = (visit: (msg: AgentChatMessage) => void) => {
+  const walkWindow = (visit: (message: AgentChatMessage) => void) => {
     const present = new Set<string>()
-    for (const msg of deps.messages()) {
-      present.add(msg.id)
-      visit(msg)
+    for (const message of deps.messages()) {
+      present.add(message.id)
+      visit(message)
     }
     pruneToWindow(present)
   }
   const visibleEntries = createMemo(() => {
     const showHidden = deps.showHiddenMessages()
     const result: ClassifiedEntry[] = []
-    walkWindow((msg) => {
+    walkWindow((message) => {
       // Reuse the cached entry when all freshness inputs match.
-      const entry = resolveEntry(msg)
+      const entry = resolveEntry(message)
       if (showHidden || entry.category.kind !== 'hidden')
         result.push(entry)
     })
@@ -302,10 +363,10 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   const hasVisibleEntries = createMemo(() => {
     const showHidden = deps.showHiddenMessages()
     let visible = false
-    walkWindow((msg) => {
+    walkWindow((message) => {
       // `showHidden ||` short-circuits hasVisibleMessage (no classify/cache-fill);
       // `!visible &&` stops classifying once any visible row is found.
-      if (!visible && (showHidden || hasVisibleMessage(msg)))
+      if (!visible && (showHidden || hasVisibleMessage(message)))
         visible = true
     })
     return visible

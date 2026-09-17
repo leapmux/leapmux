@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { HEIGHT_CACHE_MAX, useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
-describe('usechatvirtualizer geometry', () => {
-  describe('scrolltopnearanchor (trimmed-row recovery)', () => {
+describe('useChatVirtualizer geometry', () => {
+  describe('scrollTopNearAnchor (trimmed-row recovery)', () => {
     // Five plain rows use offsets 0, 120, 240, 360, and 480.
     function seqItems(): VirtualItem[] {
       const rows = [10, 20, 30, 40, 50].map(n => ({ id: `m${n}`, hasSpanLines: false, seq: BigInt(n) }))

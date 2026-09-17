@@ -22,7 +22,7 @@ function tab(container: HTMLElement, key: string): Element {
   return container.querySelector(`[data-testid="bg-task-filter-${key}"]`)!
 }
 
-describe('backgroundTaskPanel', () => {
+describe('BackgroundTaskPanel', () => {
   it('keeps the registry test ids', () => {
     const { container } = renderPanel()
     expect(container.querySelector('[data-testid="bg-task-list"]')).not.toBeNull()

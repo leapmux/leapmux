@@ -12,7 +12,7 @@ import {
   MockWebSocket,
 } from './channel.test-support'
 
-describe('channelManager closeChannel', () => {
+describe('ChannelManager closeChannel', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -88,7 +88,7 @@ describe('channelManager closeChannel', () => {
   })
 })
 
-describe('channelManager close notification', () => {
+describe('ChannelManager close notification', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -124,11 +124,11 @@ describe('channelManager close notification', () => {
     h.mockWs.simulateMessage(encodeCloseMessage(channelId))
 
     expect(errorFn).toHaveBeenCalledOnce()
-    expect(errorFn.mock.calls[0][0].message).toBe('channel closed by server')
+    expect(errorFn.mock.calls[0]?.[0].message).toBe('channel closed by server')
   })
 })
 
-describe('channelManager decrypt failure', () => {
+describe('ChannelManager decrypt failure', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -175,7 +175,7 @@ describe('channelManager decrypt failure', () => {
   })
 })
 
-describe('channelManager webSocket close', () => {
+describe('ChannelManager webSocket close', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -199,7 +199,7 @@ describe('channelManager webSocket close', () => {
     h.mockWs.simulateClose()
 
     expect(errorFn).toHaveBeenCalledOnce()
-    expect(errorFn.mock.calls[0][0].message).toBe('channel disconnected')
+    expect(errorFn.mock.calls[0]?.[0].message).toBe('channel disconnected')
   })
 
   it('should close all channels when WebSocket closes', async () => {
@@ -316,7 +316,7 @@ describe('channelManager webSocket close', () => {
   })
 })
 
-describe('channelManager closeAll', () => {
+describe('ChannelManager closeAll', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -350,7 +350,7 @@ describe('channelManager closeAll', () => {
   })
 })
 
-describe('channelManager webSocket connection failure', () => {
+describe('ChannelManager webSocket connection failure', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -382,7 +382,7 @@ describe('channelManager webSocket connection failure', () => {
   })
 })
 
-describe('channelManager observability hooks onStateChange', () => {
+describe('ChannelManager observability hooks onStateChange', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
@@ -428,7 +428,7 @@ describe('channelManager observability hooks onStateChange', () => {
   })
 })
 
-describe('channelManager observability hooks hasOpenChannel', () => {
+describe('ChannelManager observability hooks hasOpenChannel', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())

@@ -95,7 +95,7 @@ afterEach(() => {
 // desktop with no status-icon library shows no tray, and an operating system
 // can decline a login item. The dialog is what routes that message to a USER
 // group, where until now only an admin group carried an inline error.
-describe('preferencesDialog desktop shell refusal', () => {
+describe('PreferencesDialog desktop shell refusal', () => {
   it('shows the refusal on the row that owns it', async () => {
     desktop.mockReturnValue(true)
     reportDesktopShellRefusals([{
@@ -146,7 +146,7 @@ describe('preferencesDialog desktop shell refusal', () => {
 // also surfaces through SettingRow's own error signal, so a test here would
 // pass without proving which channel carried it.
 
-describe('preferencesDialog admin restriction', () => {
+describe('PreferencesDialog admin restriction', () => {
   // The hub-wide register row reaches the ADMINISTRATION side alone (see
   // ./registry/admin): an administrator gets it under Hub-wide Apps, and the
   // user-level Apps section never lists it -- which is the whole reason the
@@ -324,7 +324,7 @@ describe('preferencesDialog admin restriction', () => {
   })
 })
 
-describe('preferencesDialog deep link', () => {
+describe('PreferencesDialog deep link', () => {
   // The category lives in the ADDRESS, so the dialog holds no copy of it: it
   // shows what the prop says and reports every pick. A private copy needed a
   // request counter beside the category, because a caller that asked for the
@@ -395,7 +395,7 @@ describe('preferencesDialog deep link', () => {
   })
 })
 
-describe('preferencesDialog solo mode', () => {
+describe('PreferencesDialog solo mode', () => {
   // Solo hides MOST of Account, not all of it, and the survivor is the point.
   //
   // Password stays, because ChangePassword is the one account verb solo does
@@ -512,7 +512,7 @@ describe('preferencesDialog solo mode', () => {
   })
 })
 
-describe('preferencesDialog search', () => {
+describe('PreferencesDialog search', () => {
   it('focuses the search box on / when not already in an input', async () => {
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
@@ -561,7 +561,7 @@ describe('preferencesDialog search', () => {
   })
 })
 
-describe('preferencesDialog load failure', () => {
+describe('PreferencesDialog load failure', () => {
   // A failed admin load leaves zero descriptors, occupiedNavGroups then
   // drops every ADMINISTRATION group, and the dialog reads exactly like a
   // non-admin session. Saying so is the difference between "this hub is
@@ -666,7 +666,7 @@ describe('preferencesDialog load failure', () => {
   })
 })
 
-describe('preferencesDialog search index', () => {
+describe('PreferencesDialog search index', () => {
   const captchaDescriptor = {
     key: 'captcha.turnstile',
     category: 'captcha',
@@ -865,7 +865,7 @@ describe('a hub setting a read-time rule overrides', () => {
  * they are already here. Asserted as a POSITION rather than as "is present",
  * because the group was always present; it simply sat eighth.
  */
-describe('preferencesDialog section order', () => {
+describe('PreferencesDialog section order', () => {
   it('puts Account first under PREFERENCES', async () => {
     renderDialog('appearance')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
@@ -902,7 +902,7 @@ describe('preferencesDialog section order', () => {
  * every ADMINISTRATION panel without it, although the same window governs
  * every hub-settings write.
  */
-describe('preferencesDialog verified-session state', () => {
+describe('PreferencesDialog verified-session state', () => {
   const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
 
   function adminGeneralSettings() {

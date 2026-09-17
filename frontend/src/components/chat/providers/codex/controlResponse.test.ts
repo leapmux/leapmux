@@ -13,7 +13,7 @@ function decision(d: unknown): Record<string, unknown> {
   return { jsonrpc: '2.0', id: 7, result: { decision: d } }
 }
 
-describe('codexdecisionlabel', () => {
+describe('codexDecisionLabel', () => {
   it('maps the known string decisions', () => {
     expect(codexDecisionLabel('accept')).toBe('Allow')
     expect(codexDecisionLabel('acceptForSession')).toBe('Allow for Session')
@@ -36,7 +36,7 @@ describe('codexdecisionlabel', () => {
   })
 })
 
-describe('codexdecisionkey', () => {
+describe('codexDecisionKey', () => {
   it('returns the string decision or the first key of an amendment object', () => {
     expect(codexDecisionKey('accept')).toBe('accept')
     expect(codexDecisionKey('decline')).toBe('decline')
@@ -52,7 +52,7 @@ describe('codexdecisionkey', () => {
   })
 })
 
-describe('codexcontrolresponsedisplay', () => {
+describe('codexControlResponseDisplay', () => {
   it('labels string decisions', () => {
     expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('accept')))).toEqual({ kind: 'label', text: 'Allow' })
     expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })

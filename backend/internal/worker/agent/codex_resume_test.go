@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,7 +75,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 					return jsonrpcResponsePayload{Result: json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)}
 				})
 				a.model = test.storedModel
-				params := codexThreadParams(test.storedModel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+				params := codexThreadParams(test.storedModel, "/work", CodexDefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, contracts.CodexOptionDefaultServiceTier)
 
 				thread, err := a.startOrResumeThread(params, test.resumeID, timeout)
 				require.NoError(t, err)
@@ -299,7 +300,7 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 	a := &CodexAgent{
 		model:          "gpt-5.6-luna",
 		effort:         EffortAuto,
-		serviceTier:    CodexDefaultServiceTier,
+		serviceTier:    contracts.CodexOptionDefaultServiceTier,
 		approvalPolicy: "never",
 		sandboxPolicy:  CodexSandboxReadOnly,
 	}
@@ -395,7 +396,7 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 	a.applyThreadResult(result)
 
 	assert.Equal(t, EffortHigh, a.effort)
-	assert.Equal(t, CodexDefaultServiceTier, a.serviceTier)
+	assert.Equal(t, contracts.CodexOptionDefaultServiceTier, a.serviceTier)
 	assert.Equal(t, "", a.approvalPolicy)
 	assert.Equal(t, "", a.sandboxPolicy)
 }

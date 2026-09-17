@@ -35,7 +35,7 @@ function chooseProvider(label: string) {
   fireEvent.click(screen.getByRole('menuitemcheckbox', { name: new RegExp(label), hidden: true }))
 }
 
-describe('trustedProxiesControl', () => {
+describe('TrustedProxiesControl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -94,8 +94,12 @@ describe('trustedProxiesControl', () => {
 
     const inputs = screen.getAllByLabelText('Trusted proxy selector')
     expect(inputs).toHaveLength(2)
-    fireEvent.input(inputs[0], { target: { value: '192.0.2.10' } })
-    fireEvent.input(inputs[1], { target: { value: '2001:db8::/64' } })
+    const [first, second] = inputs
+    // The length assertion above keeps both reads in range; this guard is type-level only.
+    if (first === undefined || second === undefined)
+      throw new Error('missing selector input')
+    fireEvent.input(first, { target: { value: '192.0.2.10' } })
+    fireEvent.input(second, { target: { value: '2001:db8::/64' } })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(current.write).toHaveBeenCalledWith(['192.0.2.10', '2001:db8::/64'])

@@ -66,6 +66,8 @@ function renderTokenizedWordDiff(
 
     while (remaining > 0 && tokenIdx < tokens.length) {
       const token = tokens[tokenIdx]
+      if (token === undefined)
+        break
       const available = token.content.length - tokenOffset
       const take = Math.min(remaining, available)
 
@@ -187,13 +189,18 @@ function walkHunks(
 
   for (let hi = 0; hi < hunks.length; hi++) {
     const hunk = hunks[hi]
+    if (hunk === undefined)
+      continue
     let oldLine = hunk.oldStart
     let newLine = hunk.newStart
     const lines = hunk.lines
     let i = 0
 
     while (i < lines.length) {
-      const prefix = lines[i][0] || ' '
+      const current = lines[i]
+      if (current === undefined)
+        break
+      const prefix = current[0] || ' '
 
       if (prefix === '-' || prefix === '+') {
         // Collect consecutive removed lines, then consecutive added lines for
@@ -203,54 +210,74 @@ function walkHunks(
         // rows before the next context line.
         const removedLines: string[] = []
         const removedTokenIndices: number[] = []
-        while (i < lines.length && lines[i][0] === '-') {
-          removedLines.push(lines[i].slice(1))
+        while (i < lines.length) {
+          const line = lines[i]
+          if (line === undefined || line[0] !== '-')
+            break
+          removedLines.push(line.slice(1))
           removedTokenIndices.push(oldTokenLine++)
           i++
         }
         const addedLines: string[] = []
         const addedTokenIndices: number[] = []
-        while (i < lines.length && lines[i][0] === '+') {
-          addedLines.push(lines[i].slice(1))
+        while (i < lines.length) {
+          const line = lines[i]
+          if (line === undefined || line[0] !== '+')
+            break
+          addedLines.push(line.slice(1))
           addedTokenIndices.push(newTokenLine++)
           i++
         }
 
         const paired = Math.min(removedLines.length, addedLines.length)
         for (let j = 0; j < paired; j++) {
+          const removedContent = removedLines[j]
+          const addedContent = addedLines[j]
+          const oldTokenIndex = removedTokenIndices[j]
+          const newTokenIndex = addedTokenIndices[j]
+          if (removedContent === undefined || addedContent === undefined || oldTokenIndex === undefined || newTokenIndex === undefined)
+            continue
           emit({
             kind: 'paired',
             oldNum: oldLine++,
             newNum: newLine++,
-            removedContent: removedLines[j],
-            addedContent: addedLines[j],
-            oldTokens: oldTokens?.[removedTokenIndices[j]] ?? null,
-            newTokens: newTokens?.[addedTokenIndices[j]] ?? null,
+            removedContent,
+            addedContent,
+            oldTokens: oldTokens?.[oldTokenIndex] ?? null,
+            newTokens: newTokens?.[newTokenIndex] ?? null,
             hunkIndex: hi,
           })
         }
         for (let j = paired; j < removedLines.length; j++) {
+          const content = removedLines[j]
+          const tokenIndex = removedTokenIndices[j]
+          if (content === undefined || tokenIndex === undefined)
+            continue
           emit({
             kind: 'removed',
             oldNum: oldLine++,
-            content: removedLines[j],
-            tokens: oldTokens?.[removedTokenIndices[j]] ?? null,
+            content,
+            tokens: oldTokens?.[tokenIndex] ?? null,
             hunkIndex: hi,
           })
         }
         for (let j = paired; j < addedLines.length; j++) {
+          const content = addedLines[j]
+          const tokenIndex = addedTokenIndices[j]
+          if (content === undefined || tokenIndex === undefined)
+            continue
           emit({
             kind: 'added',
             newNum: newLine++,
-            content: addedLines[j],
-            tokens: newTokens?.[addedTokenIndices[j]] ?? null,
+            content,
+            tokens: newTokens?.[tokenIndex] ?? null,
             hunkIndex: hi,
           })
         }
         emit({ kind: 'blockEnd' })
       }
       else {
-        const text = lines[i].slice(1)
+        const text = current.slice(1)
         emit({
           kind: 'context',
           oldNum: oldLine++,

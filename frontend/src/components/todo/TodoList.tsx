@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
 import { createMemo, For } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
-import { isFinishedTodoStatus, sortTodos, todoDisplayLabel } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, sortTodos, todoDisplayLabel } from '~/models/todo'
 import { TaskCheckbox } from './TaskCheckbox'
 import * as styles from './TodoList.css'
 
@@ -58,7 +58,9 @@ export const TodoList: Component<TodoListProps> = (props) => {
               <ClippedText
                 text={label()}
                 class={styles.todoText}
-                detail={description()}
+                // '' rather than undefined: ClippedText counts an empty
+                // detail as absent.
+                detail={description() ?? ''}
               />
             </div>
           )

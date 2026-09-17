@@ -96,7 +96,7 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
       return g.options.map((o) => {
         const alsoSets = optionSideEffectText(props.optionGroups, o)
         const tooltip = [o.description || undefined, alsoSets].filter(Boolean).join(' ')
-        return { label: o.name || o.id, value: o.id, tooltip: tooltip || undefined }
+        return { label: o.name || o.id, value: o.id, ...(tooltip !== '' ? { tooltip } : {}) }
       })
     },
     [],
@@ -166,6 +166,13 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
       return props.disabledReason
     return group()?.mutable ? undefined : 'This setting is controlled by the agent'
   }
+  // Set only when there is a reason: exactOptionalPropertyTypes rejects an
+  // explicit `undefined` for the items' optional `disabledReason`. One read of
+  // `readOnlyReason`, so the branch keeps the narrowed type.
+  const readOnlyReasonProps = () => {
+    const reason = readOnlyReason()
+    return reason === undefined ? {} : { disabledReason: reason }
+  }
 
   return (
     <DropdownMenu
@@ -174,8 +181,8 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
         currentLabel: items().find(i => i.value === current())?.label ?? '',
         mutable: !readOnly(),
       })}
-      class={props.popoverClass}
-      data-testid={props.popoverTestId}
+      {...(props.popoverClass === undefined ? {} : { class: props.popoverClass })}
+      {...(props.popoverTestId === undefined ? {} : { 'data-testid': props.popoverTestId })}
       // The menu holds one named group of radio items, so it needs the group's
       // name. Without it assistive technology announces the values with nothing
       // that says which axis they set.
@@ -189,7 +196,7 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
         current={current()}
         onChange={value => applyIfStillOffered(value)}
         disabled={readOnly()}
-        disabledReason={readOnlyReason()}
+        {...readOnlyReasonProps()}
         openKey={open}
       />
     </DropdownMenu>

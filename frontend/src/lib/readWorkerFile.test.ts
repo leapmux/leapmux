@@ -29,7 +29,13 @@ function fileBytes(length: number): Uint8Array {
 }
 
 function readAll(bytes: Uint8Array, signal?: AbortSignal) {
-  return readWorkerFile({ workerId: 'worker', path: '/file.bin', maxBytes: bytes.length, signal })
+  return readWorkerFile({
+    workerId: 'worker',
+    path: '/file.bin',
+    maxBytes: bytes.length,
+    // The option rejects an explicit undefined; omit when no signal was given.
+    ...(signal === undefined ? {} : { signal }),
+  })
 }
 
 beforeEach(() => {

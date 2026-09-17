@@ -12,7 +12,7 @@ function pipsOf(container: HTMLElement): SVGRectElement[] {
   return [...container.querySelectorAll('rect')]
 }
 
-describe('pipGrid', () => {
+describe('PipGrid', () => {
   it('renders one rect per pip', () => {
     const { container } = render(() => <PipGrid fills={NUMBERED} />)
     expect(pipsOf(container)).toHaveLength(PIP_GRID_PIPS)

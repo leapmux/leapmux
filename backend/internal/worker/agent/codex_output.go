@@ -2,12 +2,14 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -25,11 +27,11 @@ var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected b
 // that this table omits falls to the default branch and lands in the transcript
 // as a raw JSON-RPC bubble.
 var codexSystemMetadataMethods = map[string]struct{}{
-	"thread/compacted":                {},
-	"thread/name/updated":             {},
-	"skills/changed":                  {},
-	"remoteControl/status/changed":    {},
-	"mcpServer/startupStatus/updated": {},
+	contracts.CodexMethodThreadCompacted:               {},
+	contracts.CodexMethodThreadNameUpdated:             {},
+	contracts.CodexMethodSkillsChanged:                 {},
+	contracts.CodexMethodRemoteControlStatusChanged:    {},
+	contracts.CodexMethodMcpServerStartupStatusUpdated: {},
 }
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
@@ -50,7 +52,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	}
 
 	switch line.Method {
-	case "turn/started":
+	case contracts.CodexMethodTurnStarted:
 		a.handleTurnStarted(line.Params)
 
 	case "item/agentMessage/delta":
@@ -77,17 +79,20 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	case "item/fileChange/outputDelta":
 		a.handleFileChangeOutputDelta(line.Params)
 
-	case "item/started":
+	case contracts.CodexMethodItemStarted:
 		a.handleItemStarted(line.Raw, line.Params)
 
-	case "item/completed":
+	case contracts.CodexMethodItemCompleted:
 		a.handleItemCompleted(line.Raw, line.Params)
 
 	case "turn/completed":
 		a.handleTurnCompleted(line.Params)
 
-	case "thread/tokenUsage/updated":
+	case contracts.CodexMethodThreadTokenUsageUpdated:
 		a.handleTokenUsageUpdated(line.Raw, line.Params)
+
+	case codexMethodThreadSettingsUpdated:
+		a.handleThreadSettingsUpdated(line.Params)
 
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
@@ -339,7 +344,13 @@ type codexIncompleteTool struct {
 	outputEvents    []codexToolOutputEvent
 	outputBytes     int
 	outputTruncated bool
-	order           uint64
+	// outputTail is the LAST bytes the call printed, kept beside the full event
+	// list. The live card shows a window, and rebuilding the whole buffer to take
+	// that window cost one copy of everything received so far on EVERY delta --
+	// quadratic over a streaming build log, under the agent's own mutex, and the
+	// publisher then clipped all but a couple of kilobytes of each copy.
+	outputTail string
+	order      uint64
 }
 
 type codexIncompleteToolSnapshot struct {
@@ -448,6 +459,54 @@ func (a *CodexAgent) markReasoningSummaryBreak(itemID, threadID string, summaryI
 	a.mu.Unlock()
 }
 
+// codexMethodThreadSettingsUpdated is the method of the frame the app server
+// sends when a thread's own settings move. Go reads it and the browser never
+// does -- the change reaches the browser through the shared settings pipeline --
+// so the token stays here rather than in a contract.
+const codexMethodThreadSettingsUpdated = contracts.CodexMethodThreadSettingsUpdated
+
+// handleThreadSettingsUpdated folds the settings the thread settled on back into
+// the agent.
+//
+// Codex changes a thread's own settings for reasons LeapMux never asked for: a
+// `/model` typed into the composer, a collaboration mode a preset carries, an
+// effort the model clamps. The picker went on showing what LeapMux last
+// requested, which the running thread had already left.
+//
+// `PersistSettingsRefresh` is the same pipeline every other axis uses, and it is
+// a no-op when nothing moved -- so a change LeapMux itself made, whose value the
+// agent already holds, announces nothing.
+func (a *CodexAgent) handleThreadSettingsUpdated(params json.RawMessage) {
+	var notif struct {
+		ThreadSettings *struct {
+			Model             string `json:"model"`
+			Effort            string `json:"effort"`
+			CollaborationMode string `json:"collaborationMode"`
+		} `json:"threadSettings"`
+	}
+	if err := json.Unmarshal(params, &notif); err != nil || notif.ThreadSettings == nil {
+		slog.Warn("codex thread/settings/updated unmarshal failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+	settings := notif.ThreadSettings
+	a.mu.Lock()
+	// Each axis moves ONLY when the frame states it. An absent field is the app
+	// server saying nothing about that axis, and writing "" would clear a value
+	// the reader chose.
+	if settings.Model != "" {
+		a.model = settings.Model
+	}
+	if settings.Effort != "" {
+		a.effort = settings.Effort
+	}
+	if settings.CollaborationMode != "" {
+		a.collaborationMode = settings.CollaborationMode
+	}
+	vals := a.codexAxisValuesLocked()
+	a.mu.Unlock()
+	a.sink.PersistSettingsRefresh(vals)
+}
+
 // handleAgentMessageDelta counts and buffers item/agentMessage/delta.
 func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
 	if delta, ok := parseCodexModelDelta(params); ok {
@@ -518,13 +577,24 @@ func (a *CodexAgent) handleCodexToolOutputDelta(params json.RawMessage) {
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
 		a.appendCodexToolOutput(notif.ItemID, notif.Delta)
+		// The ACCUMULATED output, not the delta that just landed: Codex sends
+		// deltas, and only this agent knows where the earlier ones ended. It is
+		// empty for a delta that arrived before its item did, and an empty tail
+		// says nothing a reader can use.
+		tail, truncated := a.codexToolOutputSoFar(notif.ItemID)
+		reportOutput := func(sink ProviderServices) {
+			sink.ReportProgress(OutputDeltaProgress(notif.ItemID, int64(len([]byte(notif.Delta)))))
+			if tail != "" {
+				sink.ReportProgress(OutputTailProgress(notif.ItemID, tail, truncated))
+			}
+		}
 		if childSink, childOwned := a.childSinkForItem(notif.ItemID); childOwned {
 			if childSink != nil {
-				childSink.ReportProgress(OutputDeltaProgress(notif.ItemID, int64(len([]byte(notif.Delta)))))
+				reportOutput(childSink)
 			}
 			return
 		}
-		a.sink.ReportProgress(OutputDeltaProgress(notif.ItemID, int64(len([]byte(notif.Delta)))))
+		reportOutput(a.sink)
 	}
 }
 
@@ -600,9 +670,9 @@ func (a *CodexAgent) handleCodexItemStartedForSink(
 		a.rememberCodexIncompleteTool(event.itemID, event.itemType, ownerThreadID, event.params)
 	}
 	switch event.itemType {
-	case "agentMessage":
+	case contracts.CodexItemTypeAgentMessage:
 		// Wait for the authoritative completed item.
-	case "contextCompaction":
+	case contracts.CodexItemTypeContextCompaction:
 		if mainThread {
 			a.mu.Lock()
 			if a.compactionStartAck != nil {
@@ -614,9 +684,9 @@ func (a *CodexAgent) handleCodexItemStartedForSink(
 		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView", "reasoning":
+	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView, contracts.CodexItemTypeReasoning:
 		persistSharedItemStarted(sink, event.params, event.itemType, event.itemID, agentID)
-	case "collabAgentToolCall":
+	case contracts.CodexItemTypeCollabAgentToolCall:
 		collab := parseCollabToolCall(event.item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
 		if err := openToolSpan(sink, MessageContent{Original: event.params}, event.itemID, event.itemType, spawns); err != nil {
@@ -673,9 +743,9 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 	}
 
 	switch event.itemType {
-	case "agentMessage":
+	case contracts.CodexItemTypeAgentMessage:
 		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
-	case "plan":
+	case contracts.CodexItemTypePlan:
 		if !mainThread {
 			persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
 			return
@@ -698,14 +768,14 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
+	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
 		if mainThread {
 			a.mu.Lock()
 			a.turnToolUses++
 			a.mu.Unlock()
 		}
 		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
-	case "collabAgentToolCall":
+	case contracts.CodexItemTypeCollabAgentToolCall:
 		collab := parseCollabToolCall(event.item)
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: event.params}, SpanInfo{
 			SpanID: event.itemID, SpanType: event.itemType, Closing: true,
@@ -717,9 +787,9 @@ func (a *CodexAgent) handleCodexItemCompletedForSink(
 			a.registerCollabReceivers(collab, event.itemID, event.threadID)
 			a.collabAgentsStatesToRegistry(collab)
 		}
-	case "reasoning":
+	case contracts.CodexItemTypeReasoning:
 		a.persistCompletedReasoningItem(sink, event.params, event.itemID, agentID)
-	case "contextCompaction":
+	case contracts.CodexItemTypeContextCompaction:
 		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
 		}
@@ -967,6 +1037,25 @@ func (a *CodexAgent) rememberCodexIncompleteTool(itemID, itemType, childThreadID
 	a.mu.Unlock()
 }
 
+// codexToolOutputSoFar is everything one running call has printed, and whether
+// the incomplete-output cap already dropped some of it.
+func (a *CodexAgent) codexToolOutputSoFar(itemID string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tool := a.incompleteTools[itemID]
+	if tool == nil {
+		return "", false
+	}
+	// The `truncated` flag travels beside the text rather than inside it: the
+	// browser draws its own notice, and the prefix `renderCodexToolOutput` writes
+	// belongs to the PERSISTED row, whose reader parses it back out.
+	//
+	// The retained TAIL, not a fresh join of every event: this runs once per output
+	// delta, and the sink keeps only the last bytes of what it returns anyway.
+	// `persistIncompleteCodexTools` still renders the full list, once, at the end.
+	return tool.outputTail, tool.outputTruncated || len(tool.outputTail) < tool.outputBytes
+}
+
 func (a *CodexAgent) appendCodexToolOutput(itemID, output string) {
 	a.mu.Lock()
 	a.appendCodexToolEventLocked(itemID, output, false)
@@ -981,18 +1070,40 @@ func (a *CodexAgent) appendCodexToolEventLocked(itemID, text string, stdin bool)
 	if stdin {
 		text = "> " + text
 	}
+	// The live tail advances BEFORE the retention cap below, and whatever that cap
+	// decides. The cap restricts what the finished row keeps; the tail is what a
+	// reader watches while the call still runs. Updating the tail after the cap's
+	// early return froze it at the megabyte where the cap hit, while the byte
+	// counter beside it kept climbing on every later delta.
+	tool.outputTail, _ = ClipTailBytes(tool.outputTail+text, codexLiveTailLimit)
 	remaining := codexIncompleteOutputLimit - tool.outputBytes
 	if remaining <= 0 {
 		tool.outputTruncated = true
 		return
 	}
 	if len(text) > remaining {
+		// remaining is a BYTE index into a UTF-8 stream, so step back to the start
+		// of the rune it lands inside. A cut in the middle of a rune stores a
+		// partial one in the finished row, which renders as a replacement
+		// character.
+		for remaining > 0 && !utf8.RuneStart(text[remaining]) {
+			remaining--
+		}
 		text = text[:remaining]
 		tool.outputTruncated = true
+		if text == "" {
+			return
+		}
 	}
 	tool.outputEvents = append(tool.outputEvents, codexToolOutputEvent{text: text})
 	tool.outputBytes += len(text)
 }
+
+// codexLiveTailLimit is the longest live tail one Codex call keeps between deltas.
+//
+// The sink caps the tail again before it broadcasts. This cap is here so the agent
+// never holds more than a window per running call, whatever the command prints.
+const codexLiveTailLimit = 8192
 
 func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool, completion MessageCompletion) int {
 	a.mu.Lock()
@@ -1060,19 +1171,6 @@ func (a *CodexAgent) persistIncompleteCodexTools(childThreadID string, all bool,
 	return len(itemIDs)
 }
 
-// codexToolSupplement is the output LeapMux joined for a tool call that reported no
-// completed item of its own.
-//
-// Codex streams a command's output as a run of `outputDelta` events and puts the
-// whole text in `aggregatedOutput` only on the COMPLETED item. A turn that ends
-// first leaves the started item, which has no output at all, so the join is the only
-// copy. It names the item it belongs to, so a row cannot take another call's output.
-type codexToolSupplement struct {
-	ItemID           string `json:"itemId"`
-	ItemType         string `json:"itemType"`
-	AggregatedOutput string `json:"aggregatedOutput"`
-}
-
 // buildIncompleteCodexToolSupplement encodes the joined output, or nothing when the
 // call produced none.
 //
@@ -1086,7 +1184,7 @@ func buildIncompleteCodexToolSupplement(itemID string, tool codexIncompleteToolS
 	if tool.output == "" {
 		return nil, nil
 	}
-	return json.Marshal(codexToolSupplement{
+	return json.Marshal(contracts.CodexToolSupplement{
 		ItemID:           itemID,
 		ItemType:         tool.itemType,
 		AggregatedOutput: tool.output,
@@ -1095,14 +1193,14 @@ func buildIncompleteCodexToolSupplement(itemID string, tool codexIncompleteToolS
 
 // ResolveProviderData puts the joined output back on the item it belongs to.
 //
-// The identity keys are checked first: a supplement that names another item, or
+// The identity keys are checked first: a supplement that identifies another item, or
 // another item type, cannot reach this row. The original bytes stay unchanged; this
 // returns a resolved COPY for the extractors.
 func (codexProvider) ResolveProviderData(content MessageContent) []byte {
 	if len(content.Supplemental) == 0 {
 		return content.Original
 	}
-	var extra codexToolSupplement
+	var extra contracts.CodexToolSupplement
 	if json.Unmarshal(content.Supplemental, &extra) != nil || extra.ItemID == "" || extra.AggregatedOutput == "" {
 		return content.Original
 	}
@@ -1111,26 +1209,26 @@ func (codexProvider) ResolveProviderData(content MessageContent) []byte {
 		return content.Original
 	}
 	var item map[string]json.RawMessage
-	if json.Unmarshal(params["item"], &item) != nil || item == nil {
+	if json.Unmarshal(params[contracts.CodexItemEnvelope], &item) != nil || item == nil {
 		return content.Original
 	}
 	var itemID, itemType string
-	if json.Unmarshal(item["id"], &itemID) != nil || itemID != extra.ItemID {
+	if json.Unmarshal(item[contracts.CodexItemID], &itemID) != nil || itemID != extra.ItemID {
 		return content.Original
 	}
-	if json.Unmarshal(item["type"], &itemType) != nil || itemType != extra.ItemType {
+	if json.Unmarshal(item[contracts.CodexItemType], &itemType) != nil || itemType != extra.ItemType {
 		return content.Original
 	}
 	encodedOutput, err := json.Marshal(extra.AggregatedOutput)
 	if err != nil {
 		return content.Original
 	}
-	item["aggregatedOutput"] = encodedOutput
+	item[contracts.CodexItemAggregatedOutput] = encodedOutput
 	encodedItem, err := json.Marshal(item)
 	if err != nil {
 		return content.Original
 	}
-	params["item"] = encodedItem
+	params[contracts.CodexItemEnvelope] = encodedItem
 	resolved, err := json.Marshal(params)
 	if err != nil {
 		return content.Original
@@ -1151,7 +1249,7 @@ func renderCodexToolOutput(events []codexToolOutputEvent, truncated bool) string
 
 func codexItemIsTool(itemType string) bool {
 	switch itemType {
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
+	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
 		return true
 	default:
 		return false
@@ -1168,10 +1266,17 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 		ThreadID   string `json:"threadId"`
 		TurnID     string `json:"turnId"`
 		TokenUsage struct {
+			// `last` is the LIVE context: what the most recent request carried.
+			// The sibling `total` bucket is the session's CUMULATIVE spend, which
+			// grows past the context window and answers a different question, so
+			// the context gauge never reads it.
 			Last struct {
-				InputTokens       int64 `json:"inputTokens"`
-				CachedInputTokens int64 `json:"cachedInputTokens"`
-				OutputTokens      int64 `json:"outputTokens"`
+				TotalTokens           int64 `json:"totalTokens"`
+				InputTokens           int64 `json:"inputTokens"`
+				CachedInputTokens     int64 `json:"cachedInputTokens"`
+				CacheWriteInputTokens int64 `json:"cacheWriteInputTokens"`
+				OutputTokens          int64 `json:"outputTokens"`
+				ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
 			} `json:"last"`
 			ModelContextWindow *int64 `json:"modelContextWindow"`
 		} `json:"tokenUsage"`
@@ -1192,11 +1297,31 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 
 	// Codex reports the cached part inside InputTokens, so the uncached remainder
 	// is the input the other providers report.
+	//
+	// CacheWrite is reported as Codex states it, with nothing subtracted from the
+	// input beside it. Whether `cacheWriteInputTokens` is a subset of `inputTokens`
+	// -- as `cachedInputTokens` is -- is not stated anywhere in the protocol, and a
+	// probe of the installed 0.154.0 could not settle it. Subtracting on a guess
+	// would under-report the input on one reading and the gauge does not depend on
+	// the answer, because ContextTokens below is authoritative for it.
+	//
+	// ReasoningOutputTokens is deliberately NOT a fifth count. The struct mirrors
+	// the OpenAI Responses shape, where the reasoning tokens are a DETAIL OF the
+	// output tokens rather than a bucket beside them, so a count of its own would
+	// add the same tokens twice.
 	usage := contextUsageMap(contextTokenCounts{
-		Input:     max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
-		CacheRead: notif.TokenUsage.Last.CachedInputTokens,
-		Output:    notif.TokenUsage.Last.OutputTokens,
+		Input:      max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
+		CacheWrite: notif.TokenUsage.Last.CacheWriteInputTokens,
+		CacheRead:  notif.TokenUsage.Last.CachedInputTokens,
+		Output:     notif.TokenUsage.Last.OutputTokens,
 	})
+	// Codex's OWN total for the live request. The browser prefers a provider-reported
+	// total to the sum of the four counts (`contextSize`), so the gauge states what
+	// Codex measured rather than a total LeapMux derived -- which is what makes the
+	// unanswered subset question above harmless.
+	if notif.TokenUsage.Last.TotalTokens > 0 {
+		usage[contracts.ContextUsageFieldContextTokens] = notif.TokenUsage.Last.TotalTokens
+	}
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage[contracts.ContextUsageFieldContextWindow] = *notif.TokenUsage.ModelContextWindow
 	} else if cw := modelContextWindow(a.availableModels, a.model); cw > 0 {
@@ -1259,8 +1384,8 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Message != "" {
 		a.sink.PersistLeapMuxNotification(map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": notif.Message,
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: notif.Message,
 		})
 	}
 }
@@ -1519,18 +1644,38 @@ type codexCollabAgentToolCall struct {
 	// Prompt is the instruction the spawned agent was given. Codex declares it
 	// `prompt: string | null` on the collabAgentToolCall thread item, so it is
 	// absent for the non-spawn collab tools (send/wait).
-	Prompt            string                           `json:"prompt"`
+	Prompt string `json:"prompt"`
+	// Both tags are contract constants the browser plugin reads off the same frame
+	// (contracts/codex-protocol.json `collabItem`), pinned by
+	// TestSupplementTagsMatchTheContract.
 	ReceiverThreadIds []string                         `json:"receiverThreadIds"`
 	AgentsStates      map[string]codexCollabAgentState `json:"agentsStates"`
 }
 
 func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 	var collab codexCollabAgentToolCall
-	if err := json.Unmarshal(item, &collab); err != nil {
-		slog.Warn("codex collab tool call unmarshal failed", "error", err)
-		return nil
+	err := json.Unmarshal(item, &collab)
+	if err == nil {
+		return &collab
 	}
-	return &collab
+	// A WRONGLY TYPED field is not a broken item. encoding/json fills every field it
+	// could read and reports the one it could not, so the id and the receiver list are
+	// already correct here. Discarding the value dropped the whole spawn -- no
+	// background-task row and no child transcript route -- because one agent state
+	// carried a number where a word belongs. The browser reads the same frame field by
+	// field and still draws the run card, so the two sides disagreed about whether a
+	// subagent exists. Keep what decoded; a SYNTAX error is different, because then no
+	// field was read at all.
+	// `Field` identifies the field that failed, and it is EMPTY when the whole value
+	// is the wrong type -- an array where the object belongs. Nothing decoded in that
+	// case, so the empty name separates "one field is missing" from "there is no item".
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) && typeErr.Field != "" {
+		slog.Warn("codex collab tool call field skipped", "field", typeErr.Field, "error", err)
+		return &collab
+	}
+	slog.Warn("codex collab tool call unmarshal failed", "error", err)
+	return nil
 }
 
 // registerCollabReceiver records one legacy spawn route. Multi-Agent V2 later
@@ -1745,8 +1890,8 @@ func (a *CodexAgent) replayPendingCodexChildEvents(threadID string, route codexC
 
 	if dropped {
 		route.childSink.PersistLeapMuxNotification(map[string]interface{}{
-			"type":  contracts.NotificationTypeAgentError,
-			"error": "Some Codex subagent events exceeded the pending-route limit.",
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: "Some Codex subagent events exceeded the pending-route limit.",
 		})
 	}
 	for _, event := range events {
@@ -1779,9 +1924,9 @@ func (a *CodexAgent) replayPendingCodexChildEvents(threadID string, route codexC
 func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID string) {
 	buffer.Discard(itemID)
 	switch itemType {
-	case "agentMessage":
+	case contracts.CodexItemTypeAgentMessage:
 		buffer.Discard(codexAssistantFallbackScope)
-	case "plan":
+	case contracts.CodexItemTypePlan:
 		buffer.Discard(codexPlanFallbackScope)
 	}
 }
@@ -1789,11 +1934,11 @@ func discardCompletedCodexGeneration(buffer *GenerationBuffer, itemType, itemID 
 // persistSharedItemStarted applies item starts that share parent and child behavior.
 func persistSharedItemStarted(sink ToolSpanServices, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
+	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
 		if err := openToolSpan(sink, MessageContent{Original: params}, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
-	case "reasoning":
+	case contracts.CodexItemTypeReasoning:
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
@@ -1807,13 +1952,13 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 	sink.ReportProgress(CompleteModelProgress(itemID))
 	sink.ReportProgress(CompleteOutputProgress(itemID))
 	switch itemType {
-	case "agentMessage", "plan":
+	case contracts.CodexItemTypeAgentMessage, contracts.CodexItemTypePlan:
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage/plan", "agent_id", agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
+	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
@@ -1827,7 +1972,7 @@ func persistSharedItemCompleted(sink toolLifecycleServices, params json.RawMessa
 func (a *CodexAgent) persistCompletedReasoningItem(sink generationServices, params json.RawMessage, itemID, agentID string) {
 	sink.ReportProgress(CompleteModelProgress(itemID))
 	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, MessageContent{Original: params}, SpanInfo{
-		SpanID: itemID, SpanType: "reasoning",
+		SpanID: itemID, SpanType: contracts.CodexItemTypeReasoning,
 	})
 	a.mu.Lock()
 	suffix := "\x00" + itemID

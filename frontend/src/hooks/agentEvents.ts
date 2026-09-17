@@ -9,8 +9,9 @@
 import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { RateLimitInfo } from '~/models/agentSession'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
-import type { createAgentSessionStore, LiveGenerationProgress, RateLimitInfo } from '~/stores/agentSession.store'
+import type { createAgentSessionStore, LiveGenerationProgress } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
@@ -21,6 +22,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
+import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { parsedMessageForRendering, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
@@ -30,7 +32,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
-import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
+import { extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
@@ -179,6 +181,12 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
     if (retry !== undefined)
       update.retry = retry
   }
+  // The live output of the call. An EMPTY string is a real value -- a command
+  // that has printed nothing yet -- so the key's presence decides, not its text.
+  if (RUNNING_TOOL_FIELD.OutputTail in value && typeof value[RUNNING_TOOL_FIELD.OutputTail] === 'string') {
+    update.outputTail = value[RUNNING_TOOL_FIELD.OutputTail] as string
+    update.outputTruncated = value[RUNNING_TOOL_FIELD.OutputTruncated] === true
+  }
   return update
 }
 
@@ -298,8 +306,11 @@ export function handleAgentSessionInfo(
  * unrelated message (e.g. a Pi assistant message) falls through cheaply: the
  * context_cleared / settings_changed / plan branches match on the inner type, the
  * provider usage/rate-limit hooks return null for a frame they don't recognize, the
- * compaction scan self-filters by shape (isCompactBoundary), and usage folding
- * additionally requires an AGENT-source row.
+ * compaction scan dispatches through the row's own provider
+ * (`compactionBoundaryFromMessage` via `compactionContextTokens`), returning
+ * undefined for a provider that supplies none -- four of the ten plugins supply it
+ * (Claude, Codex, Pi and Copilot), so the scan answers nothing for the other six -- and
+ * usage folding additionally requires an AGENT-source row.
  */
 /**
  * Whether an agent event is being delivered LIVE or replayed during catch-up.
@@ -333,7 +344,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
   // frame they don't recognize), so no rate_limit_event / account-rateLimits / tokenUsage wire
   // token is matched here.
-  const rls = plugin?.rateLimitsFromMessage?.(parsed)
+  const rls = plugin?.session?.rateLimitsFromMessage?.(parsed)
   if (rls && rls.length > 0) {
     const rateLimits: Record<string, RateLimitInfo> = {}
     for (const rl of rls)
@@ -351,7 +362,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
   if (msg.source === MessageSource.AGENT) {
     const resolved = parsedMessageForRendering(parsed, msg.agentProvider)
-    const usage = extractContextUsage(resolved, p => plugin?.contextUsageFromMessage?.(p) ?? null)
+    const usage = extractContextUsage(resolved, p => plugin?.session?.contextUsageFromMessage?.(p) ?? null)
     if (usage)
       agentSessionStore.updateInfo(agentId, usage)
   }
@@ -362,9 +373,9 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // token count (post_tokens, or pre - tokens_saved), and reset the component fields
   // since the boundary carries no input/cache breakdown -- contextTokens is
   // authoritative for the grid. Preserve the known context window so the percentage
-  // denominator survives. isCompactBoundary is a neutral shape-based scan; it returns
-  // undefined (a no-op) for the common assistant message that carries no boundary.
-  const postTokens = extractCompactionContextTokens(parsed)
+  // denominator survives. The scan asks the row's OWN provider what a boundary is, and
+  // returns undefined (a no-op) for the common assistant message that carries none.
+  const postTokens = compactionContextTokens(parsed, msg.agentProvider)
   if (postTokens !== undefined) {
     const existing = agentSessionStore.getInfo(agentId).contextUsage
     agentSessionStore.updateInfo(agentId, {
@@ -419,7 +430,6 @@ export function handleResultDivider(
   msg: AgentChatMessage,
   parsed: ParsedMessageContent,
   stores: AgentMessageStores,
-  catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, view } = stores
   // Clear every live indicator on the turn-end divider itself, not just via the
@@ -435,16 +445,13 @@ export function handleResultDivider(
   // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
   // not-yet-relaunched id) would mis-key the primary-model lookup. The confirmed
   // currentValue is the model the completed turn actually used.
-  const plugin = providerFor(msg.agentProvider)
   const modelId = optionGroup(view.getAgentTab(agentId)?.optionGroups, OPTION_ID_MODEL)?.currentValue
-  const meta = extractResultMetadata(parsed, modelId, p => plugin?.resultSubtype?.(p))
+  // No alert is raised from here, whatever the turn-end frame says. The Worker owns
+  // that, from its busy -> idle edge (handleAgentSettled): a divider is a turn
+  // boundary, and a turn that leaves a subagent running has not settled the agent.
+  const meta = extractResultMetadata(parsed, modelId)
   if (!meta)
     return
-  if (meta.subtype && catchUpPhase === 'live') {
-    // No alert here. The Worker owns it, from its busy -> idle edge
-    // (handleAgentSettled) -- a divider is a turn boundary, and a turn that
-    // leaves a subagent running has not settled the agent.
-  }
   if (meta.contextUsage) {
     agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage })
   }
@@ -487,7 +494,7 @@ export function dropFinishedToolProgress(
   // messageSpanIdentity, not the bare span id: the store keys an entry by the
   // session and the span together, so this path must key it the same way the
   // apply path and the read path do.
-  if (providerFor(msg.agentProvider)?.spanRole?.(parsed) === 'result')
+  if (providerFor(msg.agentProvider)?.transcript.spanRole?.(parsed) === 'result')
     chatStore.dropToolProgress(agentId, messageSpanIdentity(msg))
 }
 
@@ -552,12 +559,13 @@ export function handleAgentMessage(
   // Classify once and reuse across the per-message gates below.
   const category = classifyAgentMessage(msg)
 
-  // Play turn-end sound when a result divider (with subtype) arrives, and
-  // rehydrate contextWindow / total_cost_usd. Each provider plugin classifies its
-  // final envelope (Claude type:"result", Codex turn/completed, ACP stopReason,
-  // Pi agent_end) as `result_divider`, so this gate is provider-agnostic.
+  // Rehydrate contextWindow / total_cost_usd from a result divider. Turn-end sound
+  // and tab badging are handled elsewhere, by the worker's busy -> idle edge. Each
+  // provider plugin classifies its final envelope (Claude type:"result", Codex
+  // turn/completed, ACP stopReason, Pi agent_end) as `result_divider`, so this
+  // branch is provider-agnostic.
   if (category.kind === 'result_divider')
-    handleResultDivider(agentId, msg, parsed, stores, catchUpPhase)
+    handleResultDivider(agentId, msg, parsed, stores)
 }
 
 /**
@@ -653,7 +661,7 @@ export function buildAgentStatusTabUpdate(
     ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
     ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
     // Carry startupMessage while STARTING so the startup panel shows the current phase;
-    // clear it on any terminal transition; ignore status-less events (catch-up
+    // clear it on any final transition; ignore status-less events (catch-up
     // sentinels, git-only updates) so an unrelated event doesn't wipe a live label.
     ...(sc.status === AgentStatus.STARTING
       ? { startupMessage: sc.startupMessage }
@@ -783,7 +791,8 @@ export function isAgentTabOnScreen(
  */
 export function handleActivityChanged(
   agentId: string,
-  value: { state: AgentActivityState, numToolUses?: number },
+  // `numToolUses | undefined` mirrors the proto message this is fed from.
+  value: { state: AgentActivityState, numToolUses?: number | undefined },
   stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
     agentActivityStore: AgentActivityStore
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
@@ -894,11 +903,12 @@ function applyAgentStatusTabUpdate(
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
   const workerId = prev?.workerId || streamWorkerId || ''
-  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
-    migrateErrorHintFrom: prev
-      ? migrateErrorHintFromForResolvedRepo(workerId, prev, sc.gitStatus)
-      : undefined,
-  })
+  const migrateHint = prev
+    ? migrateErrorHintFromForResolvedRepo(workerId, prev, sc.gitStatus)
+    : undefined
+  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, migrateHint !== undefined
+    ? { migrateErrorHintFrom: migrateHint }
+    : {})
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.
   metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, sc.status !== AgentStatus.UNSPECIFIED, settingsFields))

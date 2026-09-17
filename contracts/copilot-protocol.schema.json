@@ -15,7 +15,8 @@
     "permissionModes",
     "approvalScopes",
     "decisions",
-    "supplement"
+    "permissionOutcomes",
+    "permissionDecisionSources"
   ],
   "$defs": {
     "table": {
@@ -28,12 +29,52 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "unread": {
+      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
     }
   },
   "properties": {
     "_readme": {
       "type": "string",
       "minLength": 1
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
     },
     "methods": {
       "$ref": "#/$defs/table"
@@ -56,13 +97,16 @@
     "permissionModes": {
       "$ref": "#/$defs/table"
     },
-    "supplement": {
-      "$ref": "#/$defs/table"
-    },
     "approvalScopes": {
       "$ref": "#/$defs/table"
     },
     "decisions": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionDecisionSources": {
       "$ref": "#/$defs/table"
     }
   }

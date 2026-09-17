@@ -88,7 +88,7 @@ async function aimAt(page: Page, row: Locator, word: string): Promise<TouchPoint
     if (!el)
       return 'nothing'
     return el.closest('[data-testid]')?.getAttribute('data-testid') ?? el.tagName
-  }, [point.x, point.y])
+  }, [point.x, point.y] as const)
   const where = `what a tap for "${word}" lands on at (${Math.round(point.x)}, ${Math.round(point.y)})`
   expect(landing, where).toBe('message-content')
   return point

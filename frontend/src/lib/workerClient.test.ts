@@ -19,6 +19,15 @@ class FakeWorker {
 
 interface Req { id: number, payload: string }
 
+// Worker/message lookup: each test creates exactly the workers and messages it
+// expects, so a missing entry is a harness failure, not a case to guard.
+function captured<T>(list: readonly T[], index: number): T {
+  const value = list[index]
+  if (value === undefined)
+    throw new Error(`expected a captured entry at index ${index}`)
+  return value
+}
+
 /** Build a client over a fresh FakeWorker list; `extract` maps `{id, value}` verbatim. */
 function makeClient(spawn: () => Worker) {
   return createWorkerClient<Req, string | null>({
@@ -35,7 +44,7 @@ describe('createWorkerClient', () => {
 
     const p = client.request(id => ({ id, payload: 'a' }))
     expect(worker.messages).toHaveLength(1)
-    worker.reply(worker.messages[0].id, 'RESULT')
+    worker.reply(captured(worker.messages, 0).id, 'RESULT')
     await expect(p).resolves.toBe('RESULT')
   })
 
@@ -51,8 +60,8 @@ describe('createWorkerClient', () => {
     expect(worker.messages).toHaveLength(2)
 
     // Replies routed by id, even out of order.
-    worker.reply(worker.messages[1].id, 'B')
-    worker.reply(worker.messages[0].id, 'A')
+    worker.reply(captured(worker.messages, 1).id, 'B')
+    worker.reply(captured(worker.messages, 0).id, 'A')
     await expect(p1).resolves.toBe('A')
     await expect(p2).resolves.toBe('B')
   })
@@ -91,14 +100,14 @@ describe('createWorkerClient', () => {
     })
 
     const first = client.request(id => ({ id, payload: 'a' }))
-    workers[0].onerror?.() // crash
+    captured(workers, 0).onerror?.() // crash
     await expect(first).resolves.toBeNull()
-    expect(workers[0].terminate).toHaveBeenCalledTimes(1)
+    expect(captured(workers, 0).terminate).toHaveBeenCalledTimes(1)
 
     // Next request respawns a fresh worker and works normally.
     const second = client.request(id => ({ id, payload: 'b' }))
     expect(workers).toHaveLength(2)
-    workers[1].reply(workers[1].messages[0].id, 'B')
+    captured(workers, 1).reply(captured(captured(workers, 1).messages, 0).id, 'B')
     await expect(second).resolves.toBe('B')
   })
 
@@ -111,7 +120,7 @@ describe('createWorkerClient', () => {
     })
 
     const first = client.request(id => ({ id, payload: 'a' }))
-    workers[0].onerror?.() // crash worker0 -> first resolves null, worker0 replaced
+    captured(workers, 0).onerror?.() // crash worker0 -> first resolves null, worker0 replaced
     await expect(first).resolves.toBeNull()
 
     const second = client.request(id => ({ id, payload: 'b' })) // spawns worker1
@@ -119,11 +128,11 @@ describe('createWorkerClient', () => {
     void second.then(() => {
       settled = true
     })
-    workers[0].onerror?.() // STALE crash from the dead worker0: must not touch worker1's pending
+    captured(workers, 0).onerror?.() // STALE crash from the dead worker0: must not touch worker1's pending
     await Promise.resolve()
     expect(settled).toBe(false)
 
-    workers[1].reply(workers[1].messages[0].id, 'B')
+    captured(workers, 1).reply(captured(captured(workers, 1).messages, 0).id, 'B')
     await expect(second).resolves.toBe('B')
   })
 
@@ -136,7 +145,7 @@ describe('createWorkerClient', () => {
     expect(() => worker.reply(9999, 'STALE')).not.toThrow()
 
     // The real reply still resolves the pending request.
-    worker.reply(worker.messages[0].id, 'REAL')
+    worker.reply(captured(worker.messages, 0).id, 'REAL')
     await expect(p).resolves.toBe('REAL')
   })
 })

@@ -110,8 +110,9 @@ for (const provider of [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvid
       await expect(banner).toHaveCount(0)
       await expect.poll(() => readAnswers().length).toBe(index + 1)
       const answer = readAnswers()[index]
+      expect(answer).toBeDefined()
       expect(answer).toContain(`"id":${identity.wire}`)
-      const response = JSON.parse(answer)
+      const response = JSON.parse(answer!)
       expect(response.result).toEqual(provider === AgentProvider.CODEX
         ? { answers: Object.fromEntries(questionIds.map(id => [id, { answers: ['Keep'] }])) }
         : provider === AgentProvider.CURSOR

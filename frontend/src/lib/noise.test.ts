@@ -244,7 +244,7 @@ describe('noise_NK handshake', () => {
   })
 })
 
-describe('cipherState limits', () => {
+describe('CipherState limits', () => {
   it('should reject plaintext exceeding MAX_PLAINTEXT_SIZE', () => {
     const key = new Uint8Array(32)
     key[0] = 1

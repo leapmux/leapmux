@@ -85,7 +85,7 @@ export function openTabInFocusedTile(
     id: tab.id,
     tileId,
     position: positionAfterKey(deps.view.forTile(tileId), afterKey ?? undefined),
-    workerId: tab.workerId,
+    ...(tab.workerId !== undefined ? { workerId: tab.workerId } : {}),
   })
   deps.selection.setActiveById(tab.type, tab.id)
   return tileId

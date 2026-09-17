@@ -56,7 +56,8 @@ export function createWorkerPriorityGate(maxInFlight = 2): WorkerPriorityGate {
 
   const pickNextIndex = (): number => {
     for (let i = 0; i < queue.length; i++) {
-      if (!isLowSafe(queue[i]))
+      const job = queue[i]
+      if (job === undefined || !isLowSafe(job))
         return i
     }
     return 0
@@ -65,6 +66,8 @@ export function createWorkerPriorityGate(maxInFlight = 2): WorkerPriorityGate {
   const pump = (): void => {
     while (inFlight < maxInFlight && queue.length > 0) {
       const [job] = queue.splice(pickNextIndex(), 1)
+      if (job === undefined)
+        break
       inFlight += 1
       job.start()
     }

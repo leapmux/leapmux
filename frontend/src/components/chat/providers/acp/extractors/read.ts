@@ -1,11 +1,12 @@
-import type { ReadFileResultSource } from '../../../results/readFileResult'
-import { TOOL_FILE_PATH_KEYS } from '~/components/chat/results/toolInputs'
+import type { ReadFileResult } from '../../../ir/readFileResult'
+import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { pickFirstString, pickObject } from '~/lib/jsonPick'
-import { parseReadContent } from '../../../results/ReadResultView'
+import { parseReadContent } from '../../../ir/readFileResult'
+import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { collectAcpToolText } from '../content'
 
 /**
- * Build a ReadFileResultSource from an ACP `tool_call_update` of kind `read`.
+ * Build a ReadFileResult from an ACP `tool_call_update` of kind `read`.
  * Returns null when neither a filePath nor parseable cat-n output is present —
  * letting the caller fall back to the generic text branch.
  *
@@ -13,11 +14,11 @@ import { collectAcpToolText } from '../content'
  * shared body renders the syntax-highlighted view. Otherwise `lines` is null
  * and the body shows the raw text via `fallbackContent`.
  */
-export function acpReadFromToolCall(toolUse: Record<string, unknown> | null | undefined): ReadFileResultSource | null {
+export function acpReadFromToolCall(toolUse: Record<string, unknown> | null | undefined): ReadFileResult | null {
   if (!toolUse)
     return null
 
-  const rawInput = pickObject(toolUse, 'rawInput')
+  const rawInput = pickObject(toolUse, ACP_SUPPLEMENT_REQUEST.RawInput)
   const filePath = pickFirstString(rawInput, TOOL_FILE_PATH_KEYS) ?? ''
 
   const text = collectAcpToolText(toolUse, { rawObjects: false })
@@ -27,10 +28,7 @@ export function acpReadFromToolCall(toolUse: Record<string, unknown> | null | un
     return null
 
   return {
-    filePath,
     lines,
-    totalLines: 0,
-    numLines: 0,
     fallbackContent: text,
     leading,
     trailing,

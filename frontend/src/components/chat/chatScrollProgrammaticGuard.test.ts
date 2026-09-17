@@ -16,7 +16,7 @@ function fakeClock() {
   return { now, advance }
 }
 
-describe('createprogrammaticscrollguard', () => {
+describe('createProgrammaticScrollGuard', () => {
   it('recognizes the echoing scroll event at the written position', () => {
     const el = fakeEl(0)
     const clock = fakeClock()

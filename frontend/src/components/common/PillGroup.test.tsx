@@ -588,7 +588,7 @@ describe('pill group small variant', () => {
         options={[first, second]}
         selectedKey="first"
         onSelect={vi.fn()}
-        small={small}
+        {...(small !== undefined ? { small } : {})}
       />
     ))
     const group = screen.getByRole('radiogroup', { name: 'Sized options' })
@@ -596,8 +596,11 @@ describe('pill group small variant', () => {
       screen.getByRole('radio', { name: first.label }),
       screen.getByRole('radio', { name: second.label }),
     ]
-    stubSelectionGeometry(group, radios[0], { groupWidth: 220, left: 0, width: 70 })
-    stubSelectionGeometry(group, radios[1], { groupWidth: 220, left: 70, width: 150 })
+    const [firstRadio, secondRadio] = radios
+    if (firstRadio === undefined || secondRadio === undefined)
+      throw new Error('expected one radio per option')
+    stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
+    stubSelectionGeometry(group, secondRadio, { groupWidth: 220, left: 70, width: 150 })
     triggerResizeObserversSync()
     return { copies: [...group.querySelectorAll('[data-label]')], radios }
   }
@@ -641,8 +644,11 @@ describe('pill group icon option', () => {
       screen.getByRole('radio', { name: icon.label }),
       screen.getByRole('radio', { name: text.label }),
     ]
-    stubSelectionGeometry(group, radios[0], { groupWidth: 220, left: 0, width: 70 })
-    stubSelectionGeometry(group, radios[1], { groupWidth: 220, left: 70, width: 150 })
+    const [firstRadio, secondRadio] = radios
+    if (firstRadio === undefined || secondRadio === undefined)
+      throw new Error('expected one radio per option')
+    stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
+    stubSelectionGeometry(group, secondRadio, { groupWidth: 220, left: 70, width: 150 })
     triggerResizeObserversSync()
     return { copies: [...group.querySelectorAll('[data-label]')], group, radios }
   }

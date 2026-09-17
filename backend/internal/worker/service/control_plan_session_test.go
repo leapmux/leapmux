@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -16,8 +17,8 @@ func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.A
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDPermissionMode: "on-request", agent.CodexOptionSandboxPolicy: agent.CodexSandboxWorkspaceWrite,
-			agent.CodexOptionNetworkAccess: agent.CodexNetworkRestricted, agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+			agent.OptionIDPermissionMode: "on-request", contracts.CodexOptionSandboxPolicy: agent.CodexSandboxWorkspaceWrite,
+			contracts.CodexOptionNetworkAccess: agent.CodexNetworkRestricted, contracts.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 		}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "original"}))
@@ -73,8 +74,8 @@ func TestRestrictivePlanModeDoesNotEnableBypassOptions(t *testing.T) {
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	options := parseOptions(current.Options)
-	require.Equal(t, agent.CodexSandboxWorkspaceWrite, options[agent.CodexOptionSandboxPolicy])
-	require.Equal(t, agent.CodexNetworkRestricted, options[agent.CodexOptionNetworkAccess])
+	require.Equal(t, agent.CodexSandboxWorkspaceWrite, options[contracts.CodexOptionSandboxPolicy])
+	require.Equal(t, agent.CodexNetworkRestricted, options[contracts.CodexOptionNetworkAccess])
 }
 
 func TestPlanApprovalRequiresConfirmedLiveSettings(t *testing.T) {

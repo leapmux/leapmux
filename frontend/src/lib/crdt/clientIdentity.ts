@@ -119,7 +119,12 @@ export function createClientIdentity(): ClientIdentity {
 
   const post = (type: ClaimMessage['type'], replyTo?: string): void => {
     try {
-      channel?.postMessage({ type, clientId: clientId(), instance, replyTo } satisfies ClaimMessage)
+      channel?.postMessage({
+        type,
+        clientId: clientId(),
+        instance,
+        ...(replyTo !== undefined ? { replyTo } : {}),
+      } satisfies ClaimMessage)
     }
     catch {
       // A closed channel or a structured-clone failure: the id stays as-is,

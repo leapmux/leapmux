@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput } from './fileEdit'
+import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput, acpFileEditsFromToolCallRawInput } from './fileEdit'
 
 describe('acpFileEditFromToolCallContent', () => {
   it('returns null for non-array input', () => {
@@ -69,7 +69,87 @@ describe('acpFileEditFromToolCallContent', () => {
   })
 })
 
+// One call can ask for several substitutions in one file, and no single pair describes
+// a list of them. Three agents in this repository send that list under `edits`, and the
+// reader that took one root pair alone stated NOTHING for it -- so a `multi_edit` opened
+// with an empty change list and a header that could name no file.
+describe('acpFileEditsFromToolCallRawInput', () => {
+  it('states one change for each entry of an `edits` list', () => {
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      path: '/p/file.ts',
+      edits: [{ old_string: 'firstBefore', new_string: 'firstAfter' }, { old_string: 'secondBefore', new_string: 'secondAfter' }],
+    })).toStrictEqual([
+      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'firstBefore', newStr: 'firstAfter' },
+      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'secondBefore', newStr: 'secondAfter' },
+    ])
+  })
+
+  // The FILE stays at the root in every agent that sends the list, and a listed entry
+  // spells its two sides under the same keys a root pair uses.
+  it.each([
+    ['oldText', 'newText'],
+    ['oldString', 'newString'],
+    ['old_string', 'new_string'],
+  ])('reads a listed entry spelled %s and %s', (from, to) => {
+    expect(acpFileEditsFromToolCallRawInput('edit', { filePath: '/p/a.ts', edits: [{ [from]: 'before', [to]: 'after' }] }))
+      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+  })
+
+  it('states half a listed entry when the entry states one side alone', () => {
+    expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', edits: [{ newText: 'only the new side' }] }))
+      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: '', newStr: 'only the new side' }])
+  })
+
+  // An entry that states neither side describes no change at all, and a non-object
+  // entry describes nothing this reader can read.
+  it('skips a listed entry that states neither side', () => {
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      path: '/p/a.ts',
+      edits: ['a string', null, { note: 'no sides here' }, { oldText: 'kept', newText: 'also kept' }],
+    })).toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'kept', newStr: 'also kept' }])
+  })
+
+  // Pi normalizes its own arguments into exactly this order, so a call that sends both
+  // draws them in it.
+  it('states the listed substitutions before a root pair', () => {
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      path: '/p/a.ts',
+      edits: [{ oldText: 'in the list', newText: 'first' }],
+      oldText: 'at the root',
+      newText: 'second',
+    }).map(change => change.oldStr)).toStrictEqual(['in the list', 'at the root'])
+  })
+
+  // The write body answers only where neither the list nor the root pair stated a
+  // change, so a call that carries both is read as the edit it is.
+  it('reads the write body only when nothing else stated a change', () => {
+    expect(acpFileEditsFromToolCallRawInput('write', { path: '/p/a.ts', content: 'package main\n' }))
+      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: '', newStr: 'package main\n' }])
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      path: '/p/a.ts',
+      edits: [{ oldText: 'before', newText: 'after' }],
+      content: 'never read',
+    })).toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+  })
+
+  it('states nothing for an input that carries no file, no list and no shape', () => {
+    expect(acpFileEditsFromToolCallRawInput('edit', null)).toStrictEqual([])
+    expect(acpFileEditsFromToolCallRawInput('edit', { edits: [{ oldText: 'a', newText: 'b' }] })).toStrictEqual([])
+    expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', edits: 'not a list' })).toStrictEqual([])
+    expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', somethingElse: 'value' })).toStrictEqual([])
+  })
+})
+
 describe('acpFileEditFromToolCallRawInput', () => {
+  // The single reader is the list reader's first entry, so a caller that draws one
+  // change draws the first substitution rather than nothing.
+  it('answers the first entry of an `edits` list', () => {
+    expect(acpFileEditFromToolCallRawInput('edit', {
+      path: '/p/a.ts',
+      edits: [{ oldText: 'first', newText: 'one' }, { oldText: 'second', newText: 'two' }],
+    })).toStrictEqual({ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'first', newStr: 'one' })
+  })
+
   it('returns null for null/undefined input', () => {
     expect(acpFileEditFromToolCallRawInput('edit', null)).toBeNull()
     expect(acpFileEditFromToolCallRawInput('edit', undefined)).toBeNull()

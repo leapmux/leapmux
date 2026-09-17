@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
+import type { ParsedCatLine } from '../chat/ir/readFileResult'
 import type { ViewMode } from './ViewToggle'
-import type { ParsedCatLine } from '~/components/chat/results/ReadResultView'
 import { createMemo, Show } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
@@ -84,7 +84,7 @@ export function MarkdownFileView(props: {
           content={props.content}
           filePath={props.filePath}
           totalSize={props.totalSize}
-          onQuote={props.onQuote}
+          {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
         />
       </Show>
     </div>

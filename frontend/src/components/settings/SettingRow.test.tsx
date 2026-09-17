@@ -42,7 +42,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('settingRow control kinds', () => {
+describe('SettingRow control kinds', () => {
   it('renders a radiogroup for enum controls and commits the choice', async () => {
     const set = vi.fn()
     render(() => (
@@ -273,7 +273,7 @@ describe('settingRow control kinds', () => {
   })
 })
 
-describe('settingRow status area', () => {
+describe('SettingRow status area', () => {
   it('shows Customized + Reset on customized rows and calls reset', async () => {
     const reset = vi.fn(async () => {})
     render(() => (
@@ -439,7 +439,7 @@ describe('settingRow status area', () => {
   })
 })
 
-describe('settingRow scope chip', () => {
+describe('SettingRow scope chip', () => {
   it('dual rows open the tier menu and switch tiers', async () => {
     const clearOverride = vi.fn()
     const beginOverride = vi.fn()
@@ -491,7 +491,7 @@ describe('settingRow scope chip', () => {
   })
 })
 
-describe('settingRow write sequencing', () => {
+describe('SettingRow write sequencing', () => {
   // This row must not report a superseded rejection. The store and the account
   // path both already skip their own bookkeeping for one, but both still
   // reject — so without a row-level guard the row shows the value the LATER
@@ -721,7 +721,7 @@ describe('formatEffectiveValue', () => {
  * behaviour before the latch existed. Without the stub this suite could never
  * observe the deferred state.
  */
-describe('settingRow custom editors', () => {
+describe('SettingRow custom editors', () => {
   beforeAll(() => {
     installControllableIntersectionObserver()
   })

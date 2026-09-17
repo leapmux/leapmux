@@ -584,9 +584,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // The mapper writes the repo entry itself, from the same status it
         // reads `gitToplevel` from, so the two halves cannot be written apart.
         // This caller holds a LIVE tab, so it is the one that can compute the
-        // orphan-migration tip.
+        // orphan-migration tip. Hoisted so the spread narrows: the option
+        // takes no explicit undefined.
+        const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, agent.gitStatus)
         const fields = protoToAgentTabFields(opts.repoGitStore, workerId, agent, {
-          migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(workerId, tab, agent.gitStatus),
+          ...(migrateFrom === undefined ? {} : { migrateErrorHintFrom: migrateFrom }),
         })
         const settingsFields = resolveSettingsTabFields(
           opts.view.getAgentTab(tab.id),
@@ -656,8 +658,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         const term = byId.get(tab.id)
         if (term) {
           opts.metadata.patch(tab.id, terminalMetadata(workerId, term))
+          // Hoisted so the spread narrows: the option takes no explicit undefined.
+          const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus)
           upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus, {
-            migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus),
+            ...(migrateFrom === undefined ? {} : { migrateErrorHintFrom: migrateFrom }),
           })
           resolved.add(tab.id)
         }

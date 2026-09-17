@@ -31,7 +31,7 @@ function renderShellSelector(overrides: Overrides = {}) {
 }
 
 // The menu half, carried over from the ShellSelect component this absorbed.
-describe('shellSelector menu', () => {
+describe('ShellSelector menu', () => {
   it('shows the loading sentinel while loading', () => {
     // The sentinel lives on the trigger's own label: a menu has no list to
     // hold it while the list is what has not arrived.
@@ -78,7 +78,7 @@ describe('shellSelector menu', () => {
 // The label row is what this component added. The Shell field used to be a
 // bare `<label>` wrapping the menu, so it had no slot for a button and took
 // different typography from "Worker" beside it.
-describe('shellSelector label row', () => {
+describe('ShellSelector label row', () => {
   it('labels the field and offers a refresh button', () => {
     renderShellSelector({ shells: ['/bin/zsh'] })
     expect(screen.getByTestId(REFRESH)).toBeInTheDocument()

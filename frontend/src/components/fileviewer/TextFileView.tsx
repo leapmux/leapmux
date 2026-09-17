@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ParsedCatLine } from '~/components/chat/results/ReadResultView'
+import type { ParsedCatLine } from '../chat/ir/readFileResult'
 import { createMemo } from 'solid-js'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'

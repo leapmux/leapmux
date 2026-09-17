@@ -534,7 +534,7 @@ export const AuthProvider: ParentComponent = (props) => {
   const loginResultFromResponse = (status: EmailVerificationStatus | undefined): AuthLoginResult => ({
     verificationRequired: status?.verificationRequired ?? false,
     verificationEmailSent: status?.verificationEmailSent ?? false,
-    nextResendAvailableAt: status?.nextResendAvailableAt,
+    ...(status?.nextResendAvailableAt !== undefined ? { nextResendAvailableAt: status.nextResendAvailableAt } : {}),
   })
 
   /**
@@ -550,7 +550,9 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const runSignIn = async (
     fallback: string,
-    attempt: () => Promise<{ user?: User, emailVerification?: EmailVerificationStatus }>,
+    // Proto responses carry their optional fields as explicitly-undefined
+    // keys, so the attempt result allows undefined alongside absence.
+    attempt: () => Promise<{ user?: User | undefined, emailVerification?: EmailVerificationStatus | undefined }>,
   ): Promise<AuthLoginResult> => {
     setError(null)
     setLoading(true)

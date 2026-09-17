@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // Init / buffer helpers run on all platforms (no process spawn).
@@ -38,7 +40,7 @@ func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
 
 	exitCode := 0
 	b := &acpBase{acpTerminalHost: acpTerminalHost{
-		completedTerminals: map[string]acpTerminalResult{
+		completedTerminals: map[string]contracts.ACPTerminalResult{
 			"term-1": {Output: "stdout\nstderr\n", ExitCode: &exitCode},
 		},
 	}}
@@ -53,7 +55,7 @@ func TestExpandACPTerminalResultPersistsReleasedOutput(t *testing.T) {
 	assert.False(t, present)
 }
 
-// A row that names a terminal still RUNNING carried NO output, and said so in a word
+// A row that identifies a terminal still RUNNING carried NO output, and said so in a word
 // that means something else.
 //
 // Goose runs its commands in a host terminal. A stop cuts the turn, the agent sends its
@@ -134,18 +136,46 @@ func TestCopyTerminalOutputCountsRawBytesBeforeRetention(t *testing.T) {
 	assert.Equal(t, int64(3), sink.ProgressUpdates()[0].Value)
 }
 
-func TestTruncateACPTerminalOutput_AllGOOS(t *testing.T) {
-	// "xy" + "é" (2-byte UTF-8) + "abc". Keeping the last 4 bytes starts on
-	// the trailing byte of "é"; truncation must advance to the next rune
-	// start, retaining "abc" rather than a broken leading byte.
-	in := append([]byte("xy"), []byte("éabc")...)
-	out := truncateACPTerminalOutput(in, 4)
-	assert.Equal(t, "abc", string(out))
-	assert.True(t, utf8.Valid(out))
+// The ring buffer drops the oldest bytes, so its first retained byte can be the
+// continuation byte of a rune whose leading byte is already gone. ACP requires a
+// cut at a character boundary, so snapshot discards that partial rune.
+func TestSnapshotCutsTheRetainedTailAtARuneBoundary_AllGOOS(t *testing.T) {
+	t.Parallel()
 
-	hello := []byte("hello")
-	assert.Equal(t, hello, truncateACPTerminalOutput(hello, 10))
-	assert.Nil(t, truncateACPTerminalOutput(hello, 0), "limit 0 retains nothing")
+	// "xy" + "é" (2-byte UTF-8) + "abc", retained 4 bytes. The oldest retained
+	// byte is the trailing byte of "é", so the snapshot advances to the next rune
+	// start and keeps "abc" rather than a broken leading byte.
+	sess := &acpTerminalSession{byteLimit: 4}
+	sess.appendOutput([]byte("xyéabc"))
+
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "abc", output)
+	assert.True(t, utf8.ValidString(output))
+	assert.True(t, truncated, "bytes were dropped, so the result states the loss")
+
+	// A tail that fits the limit is returned whole and reports no loss.
+	short := &acpTerminalSession{byteLimit: 10}
+	short.appendOutput([]byte("hello"))
+	output, truncated, _, _, _ = short.snapshot()
+	assert.Equal(t, "hello", output)
+	assert.False(t, truncated)
+}
+
+// The snapshot must not hand out the ring buffer itself: appendOutput overwrites
+// those bytes on the next read, which would rewrite a result the caller already
+// stored.
+func TestSnapshotCopiesOutOfTheRingBuffer_AllGOOS(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 8}
+	sess.appendOutput([]byte("abcdefgh"))
+	first, _, _, _, _ := sess.snapshot()
+	require.Equal(t, "abcdefgh", first)
+
+	sess.appendOutput([]byte("12345678"))
+	second, _, _, _, _ := sess.snapshot()
+	assert.Equal(t, "12345678", second)
+	assert.Equal(t, "abcdefgh", first, "the earlier snapshot keeps its own bytes")
 }
 
 func TestMergeACPTerminalEnv_AllGOOS(t *testing.T) {
@@ -191,10 +221,15 @@ func TestExitStatusFromProcessState_Nil(t *testing.T) {
 	assert.Nil(t, sig)
 }
 
-func TestTruncateACPTerminalOutput_DropsIncompleteTrailingStart(t *testing.T) {
-	// A lone continuation byte at the cut point advances past the whole
-	// buffer when nothing remains that starts a rune.
-	in := []byte{0x80, 0x80, 0x80}
-	out := truncateACPTerminalOutput(in, 2)
-	assert.Nil(t, out)
+// A retained tail that holds continuation bytes alone starts no rune at all, so
+// the snapshot keeps none of it and reports the loss.
+func TestSnapshotDropsARetainedTailThatStartsNoRune_AllGOOS(t *testing.T) {
+	t.Parallel()
+
+	sess := &acpTerminalSession{byteLimit: 2}
+	sess.appendOutput([]byte{0x80, 0x80, 0x80})
+
+	output, truncated, _, _, _ := sess.snapshot()
+	assert.Empty(t, output)
+	assert.True(t, truncated)
 }

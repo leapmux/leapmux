@@ -122,8 +122,9 @@ function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id:
         metadata: stores.metadata,
         repoGitStore,
         agentActivityStore,
-        onlineWorkerIds,
-        settingsPendingAxes,
+        // The optional hooks stay omitted when the harness passed none.
+        ...(onlineWorkerIds !== undefined ? { onlineWorkerIds } : {}),
+        ...(settingsPendingAxes !== undefined ? { settingsPendingAxes } : {}),
       }),
     add(type: TabType, id: string, workerId = 'w1', tileId = harness.rootTileId) {
       seq += 1
@@ -145,8 +146,8 @@ describe('useTabHydrators', () => {
       await flush()
 
       expect(mockListAgents).toHaveBeenCalledTimes(1)
-      expect(mockListAgents.mock.calls[0][0]).toBe('w1')
-      expect(mockListAgents.mock.calls[0][1]).toEqual({ tabIds: ['a1'] })
+      expect(mockListAgents.mock.calls[0]?.[0]).toBe('w1')
+      expect(mockListAgents.mock.calls[0]?.[1]).toEqual({ tabIds: ['a1'] })
       d()
     })
 
@@ -269,7 +270,7 @@ describe('useTabHydrators', () => {
       await flush()
 
       expect(mockListAgents).toHaveBeenCalledTimes(1)
-      expect(mockListAgents.mock.calls[0][1].tabIds.sort()).toEqual(['a1', 'a2'])
+      expect(mockListAgents.mock.calls[0]?.[1].tabIds.sort()).toEqual(['a1', 'a2'])
       d()
     })
 
@@ -515,7 +516,7 @@ describe('useTabHydrators', () => {
     // made, so a regression that drops the mid-flight tab entirely would
     // satisfy a "not.toContain" loop by never running its body.
     expect(mockListAgents.mock.calls.length, 'a2 must have gone out').toBe(2)
-    expect(mockListAgents.mock.calls[1][1].tabIds).toEqual(['a2'])
+    expect(mockListAgents.mock.calls[1]?.[1].tabIds).toEqual(['a2'])
 
     resolveIt({ agents: [], verdicts: [] })
     d()
@@ -584,7 +585,7 @@ describe('useTabHydrators', () => {
       await flush()
 
       expect(mockListTerminals, 'the disconnected tab is asked about again').toHaveBeenCalledTimes(2)
-      expect(mockListTerminals.mock.calls[1][1].tabIds).toEqual(['t1'])
+      expect(mockListTerminals.mock.calls[1]?.[1].tabIds).toEqual(['t1'])
       d()
     })
 
@@ -679,7 +680,7 @@ describe('useTabHydrators', () => {
         await vi.advanceTimersByTimeAsync(1000)
         const retried = mockListTerminals.mock.calls.slice(1)
         expect(retried.length, 'a retry went out').toBeGreaterThan(0)
-        expect(retried[0][1].tabIds).toEqual(['t2'])
+        expect(retried[0]?.[1].tabIds).toEqual(['t2'])
         d()
       }
       finally {
@@ -943,7 +944,7 @@ describe('useTabHydrators', () => {
         await vi.advanceTimersByTimeAsync(1_000)
         const retried = mockListTerminals.mock.calls.slice(1)
         expect(retried.length, 'transient omissions must be re-asked').toBeGreaterThan(0)
-        expect(retried[0][1].tabIds, 'and only the unresolved one').toEqual(['t2'])
+        expect(retried[0]?.[1].tabIds, 'and only the unresolved one').toEqual(['t2'])
         d()
       }
       finally {

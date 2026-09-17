@@ -17,31 +17,46 @@ import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUs
 import { actionButtonClass, ControlActionRow } from './controls/ControlActionRow'
 import { invokeControlAction } from './controls/controlResponseError'
 import { canAnswerControlRequest, controlPayloadFaultNotice, controlResponseStateNotice } from './controls/controlResponseState'
+import { DialogRequestContent } from './controls/DialogRequestControl'
 import { ElicitationActions, ElicitationContent } from './controls/ElicitationControl'
+import { ExitPlanModeActions } from './controls/ExitPlanModeControl'
+import { GenericToolActions } from './controls/GenericToolControl'
+import { PermissionDecisionActions } from './controls/PermissionDecisionActions'
+import { PermissionRequestContent } from './controls/PermissionRequestContent'
+import { PlanApprovalContent } from './controls/PlanApprovalContent'
 import { pluginFor } from './providers/registry'
+import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
 
 // The banner classifies nothing. It reads the surface that its caller derived,
 // which keeps ONE graph for a request that mounts a content half and an actions
 // half in two different slots. That derivation must stay OUTSIDE the
 // `<Show when={props.request}>` of each half. `createControlSurface` states
 // why, and the composer holds it beside the active request.
-function questionOf(surface: ControlSurface | undefined) {
-  return surface?.kind === 'question' ? surface.question : undefined
+/**
+ * The surface, when it is of ONE kind.
+ *
+ * It returns the surface itself rather than its payload, because a `<Match>` treats
+ * a falsy accessor value as no match -- and `plan` carries two OPTIONAL fields, so
+ * its payload can legitimately be empty. Returning the variant keeps a plan with no
+ * permissions and no details a match.
+ */
+function surfaceOf<K extends ControlSurface['kind']>(
+  surface: ControlSurface | undefined,
+  kind: K,
+): Extract<ControlSurface, { kind: K }> | undefined {
+  return surface?.kind === kind ? surface as Extract<ControlSurface, { kind: K }> : undefined
 }
 
-function elicitationOf(surface: ControlSurface | undefined) {
-  return surface?.kind === 'elicitation' ? surface.elicitation : undefined
+function questionOf(surface: ControlSurface | undefined) {
+  return surfaceOf(surface, 'question')?.question
 }
 
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<BannerContentProps> = (props) => {
-  const question = () => questionOf(props.controlSurface)
-  const elicitation = () => elicitationOf(props.controlSurface)
   // Every content surface disables its options for the same three reasons, so
   // the reasons are spelled once.
   const optionsDisabledFor = (request: ControlRequest) =>
     props.optionsDisabled || props.answerState.responsePending() || !canAnswerControlRequest(request)
-  const pluginContent = () => pluginFor(props.agentProvider)?.ControlContent
   const { copied, copy } = useCopyButton(() => {
     const original = props.request?.originalPayload
     if (original === undefined)
@@ -100,26 +115,74 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
             when={!controlPayloadFaultNotice(request().payloadFault)}
             fallback={<p role="alert">{controlPayloadFaultNotice(request().payloadFault)}</p>}
           >
-            <Switch fallback={<Dynamic component={pluginContent()} {...props} optionsDisabled={optionsDisabledFor(request())} request={request()} />}>
-              <Match when={question()}>
+            {/*
+              ONE switch over the shared control IR. Every provider used to ship a
+              `ControlContent` component that dispatched to the same five bodies,
+              and the five drifted apart in which fields each provider bothered to
+              pass -- so a permission on one agent showed its reason and the same
+              permission on the next did not.
+            */}
+            <Switch>
+              <Match when={surfaceOf(props.controlSurface, 'question')}>
                 {question => (
                   <AskUserQuestionContent
                     {...props}
                     optionsDisabled={optionsDisabledFor(request())}
                     request={request()}
-                    questions={question().questions}
+                    questions={question().question.questions}
                   />
                 )}
               </Match>
-              <Match when={elicitation()}>
+              <Match when={surfaceOf(props.controlSurface, 'elicitation')}>
                 {elicitation => (
                   <ElicitationContent
                     {...props}
                     optionsDisabled={optionsDisabledFor(request())}
                     request={request()}
-                    elicitation={elicitation()}
+                    elicitation={elicitation().elicitation}
                   />
                 )}
+              </Match>
+              <Match when={surfaceOf(props.controlSurface, 'plan')}>
+                {plan => (
+                  <Show
+                    when={plan().text}
+                    fallback={(
+                      <PlanApprovalContent
+                        request={request()}
+                        {...(plan().permissions !== undefined ? { permissions: plan().permissions } : {})}
+                        {...(plan().details !== undefined ? { details: plan().details } : {})}
+                      />
+                    )}
+                  >
+                    {/*
+                      A request that CARRIES its plan draws it. The approval body
+                      below states what the plan asks for and points at a transcript
+                      row for the plan itself, which is right for every provider that
+                      sends one -- and wrong for the one that does not.
+                    */}
+                    {text => (
+                      <MarkdownPlanLayout
+                        toolName="Plan"
+                        title="Proposed Plan"
+                        planText={text()}
+                      />
+                    )}
+                  </Show>
+                )}
+              </Match>
+              <Match when={surfaceOf(props.controlSurface, 'dialog')}>
+                {dialog => (
+                  <DialogRequestContent
+                    {...props}
+                    optionsDisabled={optionsDisabledFor(request())}
+                    request={request()}
+                    dialog={dialog().dialog}
+                  />
+                )}
+              </Match>
+              <Match when={surfaceOf(props.controlSurface, 'permission')}>
+                {permission => <PermissionRequestContent request={request()} source={permission().permission} />}
               </Match>
             </Switch>
           </Show>
@@ -132,8 +195,18 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
 /** Renders control request action buttons only, for the footer slot. */
 export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   const question = () => questionOf(props.controlSurface)
-  const elicitation = () => elicitationOf(props.controlSurface)
-  const pluginActions = () => pluginFor(props.agentProvider)?.ControlActions
+  const elicitation = () => surfaceOf(props.controlSurface, 'elicitation')?.elicitation
+  // The actions a provider answers THIS request with, or undefined when the shared
+  // switch below answers it from the IR.
+  const pluginActions = () => props.request
+    ? pluginFor(props.agentProvider)?.controls?.controlActionsFor?.(props.request.payload)
+    : undefined
+  // How this provider sends ONE chosen option. Every provider whose `extractControl`
+  // states options states a sender beside them, so the rejection is unreachable -- it
+  // is here so a provider that adds options without one fails where the mistake is,
+  // rather than drawing buttons that answer nothing.
+  const sendPermissionOption = () => pluginFor(props.agentProvider)?.controls?.sendPermissionOption
+    ?? (() => Promise.reject(new Error('This provider offers permission options but no way to send one.')))
   return (
     <Show when={props.request}>
       {request => (
@@ -181,7 +254,25 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 />
               )}
             >
-              <Switch fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
+              {/*
+                ONE switch over the shared control IR, beside the content half's,
+                and the order is what decides who answers. The question and the
+                elicitation are cross-provider surfaces and come first. Then a
+                provider answers its OWN request wherever `controlActionsFor`
+                claims it -- Codex's decision words, Pi's dialog envelopes,
+                Cursor's create-plan verdict. Everything left is answered from
+                the IR.
+
+                The FALLBACK is the shared Allow/Deny pair, and it is what keeps the
+                invariant this banner exists for: the agent's turn blocks until an
+                answer reaches it, so a surface with no buttons blocks it forever. The
+                content half switches over all five kinds of the closed IR and this
+                one answers four -- `dialog` reaches the fallback, because the one
+                provider that sends a dialog claims it above with its own envelopes,
+                and a second one would otherwise draw a dialog nobody could dismiss.
+                The pair is a way OUT of such a request, not the right words for it.
+              */}
+              <Switch fallback={<GenericToolActions {...props} request={request()} />}>
                 <Match when={question()}>
                   {question => (
                     <AskUserQuestionActions
@@ -205,6 +296,33 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                       request={request()}
                       elicitation={elicitation()}
                     />
+                  )}
+                </Match>
+                <Match when={pluginActions()}>
+                  {ownActions => <Dynamic component={ownActions()} {...props} request={request()} />}
+                </Match>
+                <Match when={surfaceOf(props.controlSurface, 'plan')}>
+                  <ExitPlanModeActions {...props} request={request()} />
+                </Match>
+                <Match when={surfaceOf(props.controlSurface, 'permission')}>
+                  {permission => (
+                    <Show
+                      when={permission().permission.options.length > 0}
+                      fallback={<GenericToolActions {...props} request={request()} />}
+                    >
+                      {/*
+                        The runtime stated its own answers, so the reader picks one of
+                        THOSE rather than the shared Allow/Deny pair -- and the layout
+                        reads their KINDS, because the option-id vocabulary is each
+                        agent's own.
+                      */}
+                      <PermissionDecisionActions
+                        {...props}
+                        request={request()}
+                        options={() => permission().permission.options}
+                        send={sendPermissionOption()}
+                      />
+                    </Show>
                   )}
                 </Match>
               </Switch>

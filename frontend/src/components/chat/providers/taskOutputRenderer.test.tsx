@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 const { formatTaskStatus, firstNonEmptyLine } = await import('../rendererUtils')
 type RenderContext = import('../messageRenderers').RenderContext
 
@@ -26,8 +26,7 @@ function makeTaskOutputMessage() {
 /** Render a TaskOutput message with the given context and return the text content. */
 function renderText(context?: RenderContext): string {
   const msg = makeTaskOutputMessage()
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = { kind: 'tool_use', toolName: 'TaskOutput', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''

@@ -139,21 +139,24 @@ function decodeBase64Prefix(base64: string, maxBytes: number): Uint8Array | null
   }
 }
 
+// The readers below use `?? 0`: callers bounds-check every read, and 0 is what
+// ToInt32 coercion already produced for an out-of-range read (undefined → NaN
+// → 0), so the fallback only satisfies noUncheckedIndexedAccess.
 function readU16BE(b: Uint8Array, at: number): number {
-  return (b[at] << 8) | b[at + 1]
+  return ((b[at] ?? 0) << 8) | (b[at + 1] ?? 0)
 }
 
 function readU16LE(b: Uint8Array, at: number): number {
-  return b[at] | (b[at + 1] << 8)
+  return (b[at] ?? 0) | ((b[at + 1] ?? 0) << 8)
 }
 
 function readU32LE(b: Uint8Array, at: number): number {
-  return (b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)) >>> 0
+  return ((b[at] ?? 0) | ((b[at + 1] ?? 0) << 8) | ((b[at + 2] ?? 0) << 16) | ((b[at + 3] ?? 0) << 24)) >>> 0
 }
 
 function readU32BE(b: Uint8Array, at: number): number {
   // >>> 0 keeps the top bit unsigned.
-  return ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
+  return (((b[at] ?? 0) << 24) | ((b[at + 1] ?? 0) << 16) | ((b[at + 2] ?? 0) << 8) | (b[at + 3] ?? 0)) >>> 0
 }
 
 /** PNG: 8-byte signature, then the IHDR chunk holds width/height at 16/20. */
@@ -198,7 +201,7 @@ function parseWebp(b: Uint8Array): ImageDimensions | null {
     return null
   if (b[8] !== 0x57 || b[9] !== 0x45 || b[10] !== 0x42 || b[11] !== 0x50)
     return null
-  const chunk = String.fromCharCode(b[12], b[13], b[14], b[15])
+  const chunk = String.fromCharCode(b[12] ?? 0, b[13] ?? 0, b[14] ?? 0, b[15] ?? 0)
   const chunkPayloadStart = 20
   const chunkPayloadEnd = chunkPayloadStart + readU32LE(b, 16)
   const canReadChunkBytes = (at: number, len: number) =>
@@ -206,8 +209,8 @@ function parseWebp(b: Uint8Array): ImageDimensions | null {
   if (chunk === 'VP8X') {
     if (!canReadChunkBytes(24, 6))
       return null
-    const width = 1 + (b[24] | (b[25] << 8) | (b[26] << 16))
-    const height = 1 + (b[27] | (b[28] << 8) | (b[29] << 16))
+    const width = 1 + ((b[24] ?? 0) | ((b[25] ?? 0) << 8) | ((b[26] ?? 0) << 16))
+    const height = 1 + ((b[27] ?? 0) | ((b[28] ?? 0) << 8) | ((b[29] ?? 0) << 16))
     return { width, height }
   }
   if (chunk === 'VP8 ') {
@@ -222,7 +225,7 @@ function parseWebp(b: Uint8Array): ImageDimensions | null {
       return null
     if (b[20] !== 0x2F)
       return null
-    const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24)
+    const bits = (b[21] ?? 0) | ((b[22] ?? 0) << 8) | ((b[23] ?? 0) << 16) | ((b[24] ?? 0) << 24)
     return { width: 1 + (bits & 0x3FFF), height: 1 + ((bits >> 14) & 0x3FFF) }
   }
   return null
@@ -250,6 +253,8 @@ function parseJpeg(b: Uint8Array): ImageDimensions | null {
     if (markerAt + 1 >= b.length)
       return null
     const marker = b[markerAt + 1]
+    if (marker === undefined)
+      return null
     // Standalone markers with no length field.
     if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
       pos = markerAt + 2
@@ -308,7 +313,7 @@ function walkBoxes(b: Uint8Array, start: number, end: number): IsobmffBox[] {
   let pos = start
   while (pos + 8 <= limit) {
     const size = readU32BE(b, pos)
-    const type = String.fromCharCode(b[pos + 4], b[pos + 5], b[pos + 6], b[pos + 7])
+    const type = String.fromCharCode(b[pos + 4] ?? 0, b[pos + 5] ?? 0, b[pos + 6] ?? 0, b[pos + 7] ?? 0)
     let headerLen = 8
     let boxEnd: number
     if (size === 0) {
@@ -354,7 +359,7 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
   for (let at = ftyp.payload; at + 4 <= Math.min(ftyp.end, b.length); at += 4) {
     if (at === ftyp.payload + 4)
       continue // minor_version, not a brand
-    brands.push(String.fromCharCode(b[at], b[at + 1], b[at + 2], b[at + 3]))
+    brands.push(String.fromCharCode(b[at] ?? 0, b[at + 1] ?? 0, b[at + 2] ?? 0, b[at + 3] ?? 0))
   }
   if (!brands.some(brand => ISOBMFF_IMAGE_BRANDS.has(brand)))
     return null
@@ -385,7 +390,7 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
   const irotSwaps = (box: IsobmffBox): boolean | null => {
     if (box.payload + 1 > Math.min(box.end, b.length))
       return null
-    return ((b[box.payload] & 0x03) & 1) === 1
+    return (((b[box.payload] ?? 0) & 0x03) & 1) === 1
   }
 
   const associated = resolvePrimaryItemProperties(b, metaChildren, iprp, properties)
@@ -428,6 +433,8 @@ function resolvePrimaryItemProperties(
   if (!pitm || pitm.payload + 6 > Math.min(pitm.end, b.length))
     return null
   const pitmVersion = b[pitm.payload]
+  if (pitmVersion === undefined)
+    return null
   if (pitmVersion >= 1 && pitm.payload + 8 > Math.min(pitm.end, b.length))
     return null
   const primaryId = pitmVersion === 0 ? readU16BE(b, pitm.payload + 4) : readU32BE(b, pitm.payload + 4)
@@ -439,7 +446,9 @@ function resolvePrimaryItemProperties(
     if (ipma.payload + 8 > ipmaEnd)
       return null
     const version = b[ipma.payload]
-    const flags = (b[ipma.payload + 1] << 16) | (b[ipma.payload + 2] << 8) | b[ipma.payload + 3]
+    if (version === undefined)
+      return null
+    const flags = ((b[ipma.payload + 1] ?? 0) << 16) | ((b[ipma.payload + 2] ?? 0) << 8) | (b[ipma.payload + 3] ?? 0)
     const wideIndices = (flags & 1) === 1
     const entryCount = readU32BE(b, ipma.payload + 4)
     let at = ipma.payload + 8
@@ -450,13 +459,15 @@ function resolvePrimaryItemProperties(
       const itemId = version < 1 ? readU16BE(b, at) : readU32BE(b, at)
       at += idLen
       const associationCount = b[at]
+      if (associationCount === undefined)
+        return null
       at += 1
       const indices: number[] = []
       for (let assoc = 0; assoc < associationCount; assoc++) {
         const assocLen = wideIndices ? 2 : 1
         if (at + assocLen > ipmaEnd)
           return null
-        indices.push(wideIndices ? readU16BE(b, at) & 0x7FFF : b[at] & 0x7F)
+        indices.push(wideIndices ? readU16BE(b, at) & 0x7FFF : (b[at] ?? 0) & 0x7F)
         at += assocLen
       }
       if (itemId === primaryId) {
@@ -467,7 +478,10 @@ function resolvePrimaryItemProperties(
             continue
           if (index > properties.length)
             return null
-          resolved.push(properties[index - 1])
+          const prop = properties[index - 1]
+          if (prop === undefined)
+            return null
+          resolved.push(prop)
         }
         return resolved
       }
@@ -496,9 +510,7 @@ function parseExifOrientation(b: Uint8Array, start: number, end: number): number
   if (!little && !big)
     return null
   const u16 = (at: number) => little ? readU16LE(b, at) : readU16BE(b, at)
-  const u32 = (at: number) => little
-    ? (b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)) >>> 0
-    : readU32BE(b, at)
+  const u32 = (at: number) => (little ? readU32LE(b, at) : readU32BE(b, at))
   if (u16(tiff + 2) !== 42)
     return null
   const ifdOffset = u32(tiff + 4)

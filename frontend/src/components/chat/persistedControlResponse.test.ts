@@ -22,7 +22,7 @@ function crWith(response: Record<string, unknown> | undefined): PersistedControl
   return { requestId: '', claimToken: '', request: undefined, response }
 }
 
-describe('parsepersistedcontrolresponse', () => {
+describe('parsePersistedControlResponse', () => {
   it('resolves a raw response and its separate request and worker metadata', () => {
     const request = { jsonrpc: '2.0', id: '001', method: 'session/request_permission', params: { unknown: { count: 0, enabled: false, text: '' } } }
     const response = { jsonrpc: '2.0', id: '001', result: { outcome: { optionId: 'once' } } }
@@ -52,7 +52,7 @@ describe('parsepersistedcontrolresponse', () => {
   })
 })
 
-describe('controlbehaviordisplay', () => {
+describe('controlBehaviorDisplay', () => {
   it('maps allow to the words the Allow button carried', () => {
     expect(controlBehaviorDisplay({ response: { response: { behavior: 'allow' } } })).toEqual({ kind: 'label', text: 'Allow' })
   })
@@ -70,7 +70,7 @@ describe('controlbehaviordisplay', () => {
   })
 })
 
-describe('fallbackcontrolresponsedisplay', () => {
+describe('fallbackControlResponseDisplay', () => {
   it('uses the behavior envelope when present', () => {
     expect(fallbackControlResponseDisplay({ claimToken: 'claim-1', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
       .toEqual({ kind: 'label', text: 'Allow' })
@@ -91,7 +91,7 @@ describe('label', () => {
   })
 })
 
-describe('labelornull', () => {
+describe('labelOrNull', () => {
   it('lifts a non-empty string to a label, and maps null OR empty to null', () => {
     expect(labelOrNull('Allow')).toEqual({ kind: 'label', text: 'Allow' })
     expect(labelOrNull(null)).toBeNull()
@@ -107,7 +107,7 @@ describe('feedback', () => {
   })
 })
 
-describe('feedbackorlabel', () => {
+describe('feedbackOrLabel', () => {
   it('renders a non-empty reason as feedback and a blank reason as the fallback label', () => {
     expect(feedbackOrLabel('too risky', 'Deny')).toEqual({ kind: 'feedback', message: 'too risky' })
     expect(feedbackOrLabel('', 'Deny')).toEqual({ kind: 'label', text: 'Deny' })
@@ -115,7 +115,7 @@ describe('feedbackorlabel', () => {
   })
 })
 
-describe('resolvecontrolresponsedisplay', () => {
+describe('resolveControlResponseDisplay', () => {
   it('returns the plugin derivation when it yields one', () => {
     expect(resolveControlResponseDisplay(crWith({ anything: 1 }), () => ({ kind: 'label', text: 'X' })))
       .toEqual({ kind: 'label', text: 'X' })
@@ -163,14 +163,14 @@ describe('resolvecontrolresponsedisplay', () => {
   })
 })
 
-describe('controlresponsepreviewtext', () => {
+describe('controlResponsePreviewText', () => {
   it('renders a label verbatim and feedback under the lead', () => {
     expect(controlResponsePreviewText({ kind: 'label', text: 'Allow' })).toBe('Allow')
     expect(controlResponsePreviewText({ kind: 'feedback', message: 'do X' })).toBe('Sent feedback:\ndo X')
   })
 })
 
-describe('labeledanswerline', () => {
+describe('labeledAnswerLine', () => {
   it('joins trimmed non-empty values under the label', () => {
     expect(labeledAnswerLine('Task', ['  Build ', 'Test'])).toBe('Task: Build, Test')
   })
@@ -182,7 +182,7 @@ describe('labeledanswerline', () => {
   })
 })
 
-describe('firstnonempty', () => {
+describe('firstNonEmpty', () => {
   it('returns the first non-empty trimmed value', () => {
     expect(firstNonEmpty('', '  ', ' x ')).toBe('x')
     expect(firstNonEmpty(undefined, 'header')).toBe('header')
@@ -190,7 +190,7 @@ describe('firstnonempty', () => {
   })
 })
 
-describe('joinanswerlines', () => {
+describe('joinAnswerLines', () => {
   it('newline-joins the lines, or null when there are none', () => {
     expect(joinAnswerLines(['Task: Build', 'Env: Dev'])).toBe('Task: Build\nEnv: Dev')
     expect(joinAnswerLines(['Task: Build'])).toBe('Task: Build')

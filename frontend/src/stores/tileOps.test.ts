@@ -292,8 +292,8 @@ describe('buildCloseTileOps', () => {
     expect(tabX!.tileId).toBe(ws.mainTree.nodeId)
     // The grandparent SPLIT collapsed in the same batch; its kind is
     // now LEAF and the intermediate SPLIT is tombstoned.
-    expect(state.nodes.A.kind?.value).toBe(NodeKind.LEAF)
-    expect(state.nodes.A_top.tombstoneAt?.physical).toBeTruthy()
+    expect(state.nodes.A?.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.A_top?.tombstoneAt?.physical).toBeTruthy()
   })
 
   it('collapses an arbitrarily deep single-child SPLIT chain in one batch', () => {
@@ -321,7 +321,7 @@ describe('buildCloseTileOps', () => {
 
     // Tab X now lives on L (split migration moves tabs to childA at
     // every level: R→M, M→P, P→L).
-    expect(state.tabs.X.tileId?.value).toBe('L')
+    expect(state.tabs.X?.tileId?.value).toBe('L')
 
     // Close K (the empty sibling). Sibling L holds X — undo-split
     // fires with L's tabs migrating up, and the single-child chain
@@ -332,9 +332,9 @@ describe('buildCloseTileOps', () => {
     const ws = proj.workspaces.get('w1')!
     expect(ws.mainTree.nodeId).toBe('R')
     expect(ws.mainTree.kind).toBe(NodeKind.LEAF)
-    expect(state.nodes.R.kind?.value).toBe(NodeKind.LEAF)
-    expect(state.nodes.M.tombstoneAt?.physical).toBeTruthy()
-    expect(state.nodes.P.tombstoneAt?.physical).toBeTruthy()
+    expect(state.nodes.R?.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.M?.tombstoneAt?.physical).toBeTruthy()
+    expect(state.nodes.P?.tombstoneAt?.physical).toBeTruthy()
     const tabX = proj.renderedTabs.find(t => t.tabId === 'X')
     expect(tabX?.tileId).toBe('R')
   })
@@ -348,13 +348,13 @@ describe('buildCloseTileOps', () => {
     const { state, ctx } = seedWorkspaceWithTab('user-1', 'w1', 'R', 'X')
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'R', SplitDirection.HORIZONTAL, 'P', 'R_other'))
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'P', SplitDirection.HORIZONTAL, 'L', 'K'))
-    expect(state.tabs.X.tileId?.value).toBe('L')
+    expect(state.tabs.X?.tileId?.value).toBe('L')
 
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'K'))
 
-    expect(state.nodes.P.kind?.value).toBe(NodeKind.LEAF)
-    expect(state.nodes.R.kind?.value).toBe(NodeKind.SPLIT)
-    expect(state.nodes.P.tombstoneAt?.physical).toBeFalsy()
+    expect(state.nodes.P?.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.R?.kind?.value).toBe(NodeKind.SPLIT)
+    expect(state.nodes.P?.tombstoneAt?.physical).toBeFalsy()
     const proj = project(state)
     const ws = proj.workspaces.get('w1')!
     // Rendered tree: SPLIT R → [P (leaf), R_other (leaf)].
@@ -385,16 +385,16 @@ describe('buildCloseTileOps', () => {
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'F_top', SplitDirection.VERTICAL, 'F_TL', 'F_TR'))
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'F_bot'))
 
-    expect(state.tabs.X.tileId?.value).toBe('F_TL')
+    expect(state.tabs.X?.tileId?.value).toBe('F_TL')
 
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'F_TR'))
 
     // Floating-window root must remain alive (never tombstoned, only
     // kind-flipped), and the tab must land on the surviving rendered
     // leaf id.
-    expect(state.nodes.F.tombstoneAt?.physical).toBeFalsy()
-    expect(state.nodes.F.kind?.value).toBe(NodeKind.LEAF)
-    expect(state.tabs.X.tileId?.value).toBe('F')
+    expect(state.nodes.F?.tombstoneAt?.physical).toBeFalsy()
+    expect(state.nodes.F?.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.tabs.X?.tileId?.value).toBe('F')
 
     const proj = project(state)
     const tabX = proj.renderedTabs.find(t => t.tabId === 'X')
@@ -430,8 +430,9 @@ describe('buildCloseTileOps', () => {
     for (const t of tabs) expect(t.tileId).toBe(ws.mainTree.nodeId)
     // Lexorank positions are strictly ascending in the order X1<X2<X3.
     const positions = tabs.map(t => t.position)
-    expect(positions[0] < positions[1]).toBe(true)
-    expect(positions[1] < positions[2]).toBe(true)
+    // The tab list above proves all three slots; ?? '' is the type-level guard alone.
+    expect((positions[0] ?? '') < (positions[1] ?? '')).toBe(true)
+    expect((positions[1] ?? '') < (positions[2] ?? '')).toBe(true)
   })
 
   it('stops the upward walk at a GRID ancestor', () => {
@@ -455,15 +456,15 @@ describe('buildCloseTileOps', () => {
       setTabPosition(ctx, TabType.AGENT, 'X', 'pos-0'),
     ])
     applyBuiltOps(state, buildSplitTileOps(ctx, state, 'P', SplitDirection.HORIZONTAL, 'L', 'K'))
-    expect(state.tabs.X.tileId?.value).toBe('L')
+    expect(state.tabs.X?.tileId?.value).toBe('L')
 
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'K'))
 
     // P flips to LEAF; G stays a GRID; no propagation.
-    expect(state.nodes.P.kind?.value).toBe(NodeKind.LEAF)
-    expect(state.nodes.G.kind?.value).toBe(NodeKind.GRID)
-    expect(state.nodes.P.tombstoneAt?.physical).toBeFalsy()
-    expect(state.tabs.X.tileId?.value).toBe('P')
+    expect(state.nodes.P?.kind?.value).toBe(NodeKind.LEAF)
+    expect(state.nodes.G?.kind?.value).toBe(NodeKind.GRID)
+    expect(state.nodes.P?.tombstoneAt?.physical).toBeFalsy()
+    expect(state.tabs.X?.tileId?.value).toBe('P')
   })
 
   it('tombstones the closing tile\'s own tabs while migrating sibling tabs up the chain', () => {
@@ -491,7 +492,7 @@ describe('buildCloseTileOps', () => {
     applyBuiltOps(state, buildCloseTileOps(ctx, state, 'A_TR'))
 
     // Y is tombstoned (closing tile's tabs always die in the close).
-    expect(state.tabs.Y.tombstoneAt?.physical).toBeTruthy()
+    expect(state.tabs.Y?.tombstoneAt?.physical).toBeTruthy()
     // X migrates up the full chain and the rendered leaf carries it.
     const proj = project(state)
     const ws = proj.workspaces.get('w1')!

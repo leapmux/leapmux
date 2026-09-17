@@ -69,7 +69,7 @@ async function fillPassword(pw = 'correct-horse-battery-staple') {
   fireEvent.input(confirm, { target: { value: pw } })
 }
 
-describe('networkAccessControl', () => {
+describe('NetworkAccessControl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setSystemInfoMock({ soloMode: true, soloPasswordSet: false })

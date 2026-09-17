@@ -6,29 +6,22 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
-type piToolArtifactSupplement struct {
-	ToolCallID    string          `json:"toolCallId"`
-	ToolName      string          `json:"toolName"`
-	OutputFile    json.RawMessage `json:"outputFile,omitempty"`
-	McpResultFile json.RawMessage `json:"mcpResultFile,omitempty"`
-}
-
-type piOutputArtifact struct {
-	Path string  `json:"path"`
-	Text *string `json:"text"`
-}
-
-type piMcpResultArtifact struct {
-	Path   string          `json:"path"`
-	Result json.RawMessage `json:"result"`
-}
-
+// piToolArtifactSource is the part of one tool_execution_end frame that an artifact
+// resolve reads.
+//
+// It embeds contracts.PiToolCallIdentity for the two identity words, which
+// piToolExecutionEnvelope (pi_output.go) reads as well. A Go struct tag cannot hold
+// a constant, so each decoder spelled them by hand and a rename of either word in
+// `resultFields` moved one decoder and left the other.
+//
+// `result` stays a tag here: this reader takes its MEMBERS and
+// piToolExecutionEnvelope takes the whole value, so the two give it different Go
+// types and one shared field cannot serve both.
 type piToolArtifactSource struct {
-	Type       string                     `json:"type"`
-	ToolCallID string                     `json:"toolCallId"`
-	ToolName   string                     `json:"toolName"`
-	Result     map[string]json.RawMessage `json:"result"`
-	details    map[string]json.RawMessage
+	contracts.PiToolCallIdentity
+	Type    string                     `json:"type"`
+	Result  map[string]json.RawMessage `json:"result"`
+	details map[string]json.RawMessage
 }
 
 type piArtifactReference struct {
@@ -51,41 +44,41 @@ func parsePiToolArtifactSource(raw []byte) *piToolArtifactSource {
 	var source piToolArtifactSource
 	if json.Unmarshal(raw, &source) != nil || source.Type != contracts.PiEventToolExecutionEnd ||
 		source.ToolCallID == "" || source.ToolName == "" || source.Result == nil ||
-		json.Unmarshal(source.Result["details"], &source.details) != nil || source.details == nil {
+		json.Unmarshal(source.Result[contracts.PiResultFieldDetails], &source.details) != nil || source.details == nil {
 		return nil
 	}
 	return &source
 }
 
 func (source *piToolArtifactSource) outputReference() piArtifactReference {
+	// `originalBytes` stays a tag here: Go alone reads it, so it crosses no language
+	// boundary and the contract holds no entry for it.
 	var guard struct {
-		Truncated      bool            `json:"truncated"`
-		FullOutputPath string          `json:"fullOutputPath"`
-		OriginalBytes  json.RawMessage `json:"originalBytes"`
+		contracts.PiOutputGuard
+		OriginalBytes json.RawMessage `json:"originalBytes"`
 	}
-	if json.Unmarshal(source.details["outputGuard"], &guard) != nil || !guard.Truncated {
+	if json.Unmarshal(source.details[contracts.PiResultFieldOutputGuard], &guard) != nil || !guard.Truncated {
 		return piArtifactReference{}
 	}
 	return piArtifactReference{path: guard.FullOutputPath, bytes: guard.OriginalBytes}
 }
 
 func (source *piToolArtifactSource) mcpResultReference() piArtifactReference {
+	// `rawResultBytes` stays a tag, for the reason `outputReference` gives for
+	// `originalBytes`.
 	var omission struct {
-		Omitted        bool            `json:"omitted"`
-		FullResultPath string          `json:"fullResultPath"`
+		contracts.PiMcpResultOmission
 		RawResultBytes json.RawMessage `json:"rawResultBytes"`
-		Content        json.RawMessage `json:"content"`
-		Contents       json.RawMessage `json:"contents"`
 	}
-	if json.Unmarshal(source.details["mcpResult"], &omission) != nil || !omission.Omitted ||
+	if json.Unmarshal(source.details[contracts.PiResultFieldMcpResult], &omission) != nil || !omission.Omitted ||
 		len(omission.Content) > 0 || len(omission.Contents) > 0 {
 		return piArtifactReference{}
 	}
 	return piArtifactReference{path: omission.FullResultPath, bytes: omission.RawResultBytes}
 }
 
-func (source *piToolArtifactSource) outputArtifact(raw json.RawMessage) *piOutputArtifact {
-	var artifact piOutputArtifact
+func (source *piToolArtifactSource) outputArtifact(raw json.RawMessage) *contracts.PiOutputArtifact {
+	var artifact contracts.PiOutputArtifact
 	path := source.outputReference().path
 	if path == "" || json.Unmarshal(raw, &artifact) != nil || artifact.Text == nil || artifact.Path != path {
 		return nil
@@ -93,8 +86,8 @@ func (source *piToolArtifactSource) outputArtifact(raw json.RawMessage) *piOutpu
 	return &artifact
 }
 
-func (source *piToolArtifactSource) mcpResultArtifact(raw json.RawMessage) *piMcpResultArtifact {
-	var artifact piMcpResultArtifact
+func (source *piToolArtifactSource) mcpResultArtifact(raw json.RawMessage) *contracts.PiMcpResultArtifact {
+	var artifact contracts.PiMcpResultArtifact
 	var result map[string]json.RawMessage
 	path := source.mcpResultReference().path
 	if path == "" || json.Unmarshal(raw, &artifact) != nil || artifact.Path != path ||
@@ -105,16 +98,17 @@ func (source *piToolArtifactSource) mcpResultArtifact(raw json.RawMessage) *piMc
 }
 
 // Restore the provider's truncated text without changing its image order or block metadata.
-func (source *piToolArtifactSource) restoreOutput(artifact *piOutputArtifact) bool {
+func (source *piToolArtifactSource) restoreOutput(artifact *contracts.PiOutputArtifact) bool {
 	var blocks []json.RawMessage
-	if artifact == nil || artifact.Text == nil || json.Unmarshal(source.Result["content"], &blocks) != nil || len(blocks) == 0 {
+	if artifact == nil || artifact.Text == nil || json.Unmarshal(source.Result[contracts.PiResultFieldContent], &blocks) != nil || len(blocks) == 0 {
 		return false
 	}
 	var first map[string]json.RawMessage
 	var kind string
 	var text *string
 	if json.Unmarshal(blocks[0], &first) != nil || first == nil ||
-		json.Unmarshal(first["type"], &kind) != nil || kind != "text" || json.Unmarshal(first["text"], &text) != nil || text == nil {
+		json.Unmarshal(first[contracts.PiContentBlockType], &kind) != nil || kind != contracts.PiBlockTypeText ||
+		json.Unmarshal(first[contracts.PiContentBlockText], &text) != nil || text == nil {
 		return false
 	}
 	if *text == *artifact.Text {
@@ -124,7 +118,7 @@ func (source *piToolArtifactSource) restoreOutput(artifact *piOutputArtifact) bo
 	if err != nil {
 		return false
 	}
-	first["text"] = encodedText
+	first[contracts.PiContentBlockText] = encodedText
 	encodedBlock, err := json.Marshal(first)
 	if err != nil {
 		return false
@@ -134,21 +128,8 @@ func (source *piToolArtifactSource) restoreOutput(artifact *piOutputArtifact) bo
 	if err != nil {
 		return false
 	}
-	source.Result["content"] = encodedContent
+	source.Result[contracts.PiResultFieldContent] = encodedContent
 	return true
-}
-
-// piIncompleteToolSupplement is the partial result a tool call reported before its
-// turn ended.
-//
-// Pi puts a call's result on its tool_execution_end event and sends none when the
-// turn ends first, so the last tool_execution_update is the only copy. The
-// supplement names the call it belongs to, so a row cannot take another call's
-// result.
-type piIncompleteToolSupplement struct {
-	ToolCallID    string          `json:"toolCallId"`
-	ToolName      string          `json:"toolName"`
-	PartialResult json.RawMessage `json:"partialResult,omitempty"`
 }
 
 // buildPiIncompleteToolSupplement encodes the partial result, or nothing when the
@@ -157,7 +138,7 @@ func buildPiIncompleteToolSupplement(toolCallID string, tool piToolState) ([]byt
 	if len(tool.PartialResult) == 0 {
 		return nil, nil
 	}
-	return json.Marshal(piIncompleteToolSupplement{
+	return json.Marshal(contracts.PiIncompleteToolSupplement{
 		ToolCallID:    toolCallID,
 		ToolName:      tool.ToolName,
 		PartialResult: tool.PartialResult,
@@ -166,10 +147,17 @@ func buildPiIncompleteToolSupplement(toolCallID string, tool piToolState) ([]byt
 
 // resolvePiIncompleteTool puts a retained call's partial result on its start frame.
 //
-// The identity keys are checked first: a supplement that names another call, or
+// The identity keys are checked first: a supplement that states another call, or
 // another tool, cannot reach this row.
+//
+// The keys that index PI'S OWN frame -- here and in ResolveProviderData below -- come
+// from the `resultFields` table, which holds the words Pi spells. The sibling
+// PiSupplement* and PiArtifact* tables hold the words LEAPMUX chose for the envelope
+// it stores beside that frame. The tables agree on the spelling today, and they answer
+// to different owners: a rename of a key LeapMux picked must not change how Pi's own
+// message is read.
 func resolvePiIncompleteTool(content MessageContent) []byte {
-	var extra piIncompleteToolSupplement
+	var extra contracts.PiIncompleteToolSupplement
 	if json.Unmarshal(content.Supplemental, &extra) != nil ||
 		extra.ToolCallID == "" || len(extra.PartialResult) == 0 {
 		return content.Original
@@ -179,18 +167,18 @@ func resolvePiIncompleteTool(content MessageContent) []byte {
 		return content.Original
 	}
 	var toolCallID, toolName string
-	if json.Unmarshal(original["toolCallId"], &toolCallID) != nil || toolCallID != extra.ToolCallID {
+	if json.Unmarshal(original[contracts.PiResultFieldToolCallID], &toolCallID) != nil || toolCallID != extra.ToolCallID {
 		return content.Original
 	}
-	if json.Unmarshal(original["toolName"], &toolName) != nil || toolName != extra.ToolName {
+	if json.Unmarshal(original[contracts.PiResultFieldToolName], &toolName) != nil || toolName != extra.ToolName {
 		return content.Original
 	}
 	// Resolving an already-resolved frame must return the SAME bytes, so a caller
 	// that resolves twice does not allocate a second copy of the row.
-	if jsonEqual(original["result"], extra.PartialResult) {
+	if jsonEqual(original[contracts.PiResultFieldResult], extra.PartialResult) {
 		return content.Original
 	}
-	original["result"] = extra.PartialResult
+	original[contracts.PiResultFieldResult] = extra.PartialResult
 	resolved, err := json.Marshal(original)
 	if err != nil {
 		return content.Original
@@ -209,14 +197,14 @@ func (piProvider) ResolveProviderData(content MessageContent) []byte {
 		return resolvePiIncompleteTool(content)
 	}
 	source := parsePiToolArtifactSource(content.Original)
-	var extra piToolArtifactSupplement
+	var extra contracts.PiToolArtifactSupplement
 	if source == nil || json.Unmarshal(content.Supplemental, &extra) != nil ||
 		extra.ToolCallID != source.ToolCallID || extra.ToolName != source.ToolName {
 		return content.Original
 	}
 	changed := source.restoreOutput(source.outputArtifact(extra.OutputFile))
 	if artifact := source.mcpResultArtifact(extra.McpResultFile); artifact != nil {
-		source.details["mcpResult"] = artifact.Result
+		source.details[contracts.PiResultFieldMcpResult] = artifact.Result
 		changed = true
 	}
 	if !changed {
@@ -226,7 +214,7 @@ func (piProvider) ResolveProviderData(content MessageContent) []byte {
 	if err != nil {
 		return content.Original
 	}
-	source.Result["details"] = details
+	source.Result[contracts.PiResultFieldDetails] = details
 	result, err := json.Marshal(source.Result)
 	if err != nil {
 		return content.Original
@@ -235,7 +223,7 @@ func (piProvider) ResolveProviderData(content MessageContent) []byte {
 	if json.Unmarshal(content.Original, &original) != nil {
 		return content.Original
 	}
-	original["result"] = result
+	original[contracts.PiResultFieldResult] = result
 	resolved, err := json.Marshal(original)
 	if err != nil {
 		return content.Original

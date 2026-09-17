@@ -19,6 +19,8 @@ export const AppAboutMenuItem: Component = () => (
 export const UserMenuItems: Component = () => {
   const auth = useAuth()
   const navigate = useNavigate()
+  // Hoisted so the spread narrows; `detail?: string` takes no undefined.
+  const preferencesHint = getShortcutHintsText('app.openPreferences')
 
   const handleLogout = async () => {
     await auth.logout()
@@ -54,7 +56,7 @@ export const UserMenuItems: Component = () => {
     <>
       <AppAboutMenuItem />
       <button role="menuitem" onClick={() => openPreferences()}>
-        <DropdownMenuItemContent label="Preferences..." detail={getShortcutHintsText('app.openPreferences')} />
+        <DropdownMenuItemContent label="Preferences..." {...(preferencesHint !== undefined ? { detail: preferencesHint } : {})} />
       </button>
 
       {/*

@@ -135,7 +135,8 @@ describe('server readiness deadline', () => {
     await vi.advanceTimersByTimeAsync(100)
     expect(outcome).toBeInstanceOf(Error)
     expect(String(outcome)).toContain('did not start within 100ms')
-    expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    const init = request.mock.calls[0]?.[1]
+    expect(init?.signal?.aborted).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
   })
 })

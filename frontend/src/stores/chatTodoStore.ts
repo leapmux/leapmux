@@ -1,15 +1,15 @@
-import type { TodoItem } from './chatTodos'
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/models/todo'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
+import { protoTodoToItem } from '~/models/todo'
 import { createPerAgentListStore } from './chatPerAgentStore'
-import { protoTodoToStore } from './chatTodos'
 
 // ---------------------------------------------------------------------------
 // To-do list slice
 //
 // The latest server-authoritative to-do list per agent (delivered via the
 // cold-start ListAgentMessages page and AgentTodosChanged broadcasts). Wraps the
-// provider-neutral chatTodos model in a reactive slice; independent of the
+// provider-neutral to-do model in a reactive slice; independent of the
 // windowing invariants.
 // ---------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ export function createTodoStore() {
      * not the empty array `get` would report.
      */
     replace(agentId: string, protoTodos: ProtoTodoItem[]) {
-      const next = protoTodos.map(protoTodoToStore)
+      const next = protoTodos.map(protoTodoToItem)
       const prev = base.byAgent[agentId]
       if (prev && shallowEqualArraysDeep(prev, next))
         return

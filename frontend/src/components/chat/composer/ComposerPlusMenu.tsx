@@ -166,7 +166,7 @@ function permissionActionsFor(
 ): PermissionAction[] {
   // The same `usablePresets` rule the control-request pill group follows, so the
   // menu and a banner's pills cannot offer different preset sets.
-  const usable = usablePresets(pluginFor(provider)?.permissionPresets, groups)
+  const usable = usablePresets(pluginFor(provider)?.controls?.permissionPresets, groups)
   const actions: PermissionAction[] = []
   for (const spec of PERMISSION_PRESET_SPECS) {
     const preset = usable[spec.kind]
@@ -238,18 +238,27 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const structure = createMemo<MenuStructure>((prev) => {
     if (open() && prev !== undefined && hasMenuRows(prev))
       return prev
+    // Built by assignment rather than one literal: the optional fields are set
+    // only when they hold a value, which exactOptionalPropertyTypes demands and
+    // `hasMenuRows`/`heldBranch` read the same either way.
+    const next: MenuStructure = {
+      groupIds: liveGroupIds(),
+      permissionActions: livePermissionActions(),
+      isWorktree: props.workingTree.isWorktree,
+    }
     // The submenu needs BOTH a name to show and actions to run, so the two
     // travel as one fact: `branchName` is set only when the bundle is there,
     // and `hasMenuRows` below then fences the region correctly either way.
     const branchActions = props.branchActions
-    return {
-      groupIds: liveGroupIds(),
-      permissionActions: livePermissionActions(),
-      branchName: branchActions ? props.workingTree.name || undefined : undefined,
-      isWorktree: props.workingTree.isWorktree,
-      branchActions,
-      agentInfo: props.agentInfo,
+    if (branchActions) {
+      next.branchActions = branchActions
+      const name = props.workingTree.name
+      if (name !== '')
+        next.branchName = name
     }
+    if (props.agentInfo !== undefined)
+      next.agentInfo = props.agentInfo
+    return next
   })
 
   const groupIds = () => structure().groupIds
@@ -281,7 +290,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   }
 
   const permissionActionAvailable = (action: PermissionAction) => {
-    const currentPreset = pluginFor(props.agentProvider)?.permissionPresets?.[action.kind]
+    const currentPreset = pluginFor(props.agentProvider)?.controls?.permissionPresets?.[action.kind]
     return currentPreset === action.preset && permissionPresetAvailable(currentPreset, props.optionGroups)
   }
 
@@ -331,8 +340,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             groupId={id}
             optionGroups={props.optionGroups}
             optionValues={props.optionValues}
-            onChange={props.onSettingChange}
-            disabledReason={props.disabledReason}
+            {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}
+            {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
           />
         )}
       </For>
@@ -356,7 +365,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             isWorktree={branch().isWorktree}
             workerId={props.branchWorkerId ?? ''}
             actions={branch().actions}
-            disabledReason={props.branchDisabledReason}
+            {...(props.branchDisabledReason === undefined ? {} : { disabledReason: props.branchDisabledReason })}
             data-testid="composer-plus-branch-popover"
             trigger={triggerProps => (
               // The trigger stays enabled — the items inside it are what the
@@ -370,7 +379,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               // item below them while the menu is open; the directory and the
               // badge stay live.
               <WorkingTreeTooltip
-                disabledReason={props.branchDisabledReason}
+                {...(props.branchDisabledReason === undefined ? {} : { disabledReason: props.branchDisabledReason })}
                 info={{ ...props.workingTree, isWorktree: branch().isWorktree, name: branch().name }}
               >
                 <button
@@ -471,8 +480,8 @@ function PlusGroupSubmenu(props: {
       groupId={props.groupId}
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
-      onChange={props.onChange}
-      disabledReason={props.disabledReason}
+      {...(props.onChange === undefined ? {} : { onChange: props.onChange })}
+      {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
       popoverClass={styles.subPopover}
       // The status-bar chip renders the SAME group with the same per-option
       // test ids, so a locator for an option matches twice. A name on this popover

@@ -9,8 +9,7 @@ describe('registerACPProvider', () => {
   it('rejects a registration with neither settingsConfig nor defaultPermissionMode', () => {
     expect(() => registerACPProvider({
       provider: AgentProvider.REASONIX,
-      ControlContent: () => null,
-      ControlActions: () => null,
+      controlActionsFor: () => () => null,
     })).toThrow(/settingsConfig or defaultPermissionMode/)
   })
 })

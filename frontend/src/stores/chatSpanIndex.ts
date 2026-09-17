@@ -90,7 +90,7 @@ export function createSpanIndex(): ChatSpanIndex {
       // The shared message parser caches this parse for later renderer lookups.
       // Each provider identifies its request and result roles from the protocol.
       // Unknown roles use sequence order. Known results must never depend on arrival order.
-      const role = pluginFor(msg.agentProvider)?.spanRole?.(parseMessageContent(msg)) ?? 'other'
+      const role = pluginFor(msg.agentProvider)?.transcript.spanRole?.(parseMessageContent(msg)) ?? 'other'
       if (role === 'result') {
         // Always the result side, regardless of arrival order.
         fileInto(results, openers, msg)

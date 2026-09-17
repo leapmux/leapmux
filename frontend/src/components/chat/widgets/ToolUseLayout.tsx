@@ -43,6 +43,11 @@ export function ToolUseLayout(props: {
   const body = children(() => props.children)
   const showBody = () => (props.alwaysVisible || expanded()) && hasContent(body.toArray())
   const actions = () => props.headerActions
+  /** The caller props, set only when the row supplies any. One read of `actions`, so the branch keeps the narrowed type. */
+  const callerProps = () => {
+    const caller = actions()
+    return caller === undefined ? {} : { caller }
+  }
   const hasActions = () =>
     props.showHeaderActions !== false && (!!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply)
   return (
@@ -61,22 +66,27 @@ export function ToolUseLayout(props: {
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
         <ToolRunningBadge
-          toolProgress={props.context?.sources?.progress}
-          textSelectionActive={props.context?.textSelectionActive}
+          {...(props.context?.toolProgress?.liveTail === undefined ? {} : { toolProgress: props.context.toolProgress.liveTail })}
+          {...(props.context?.textSelectionActive === undefined ? {} : { textSelectionActive: props.context.textSelectionActive })}
         />
         <Show when={hasActions()}>
           <ToolHeaderActions
-            caller={actions()}
+            {...callerProps()}
             layout={{
-              createdAt: props.context?.createdAt,
+              // Optional members ride along only when they hold a value: an
+              // explicit `undefined` is not assignable under
+              // exactOptionalPropertyTypes, and the actions read absent the same.
+              ...(props.context?.createdAt === undefined ? {} : { createdAt: props.context.createdAt }),
               expanded: expanded(),
-              onToggleExpand: props.onToggleExpand,
-              expandLabel: props.expandLabel,
-              onCopyJson: props.context?.onCopyJson,
+              ...(props.onToggleExpand === undefined ? {} : { onToggleExpand: props.onToggleExpand }),
+              ...(props.expandLabel === undefined ? {} : { expandLabel: props.expandLabel }),
+              ...(props.context?.onCopyJson === undefined ? {} : { onCopyJson: props.context.onCopyJson }),
               jsonCopied: props.context?.jsonCopied?.() ?? false,
-              hasDiff: props.hasDiff,
-              diffView: props.diffView,
-              onToggleDiffView: props.onDiffViewChange ? () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') : undefined,
+              ...(props.hasDiff === undefined ? {} : { hasDiff: props.hasDiff }),
+              ...(props.diffView === undefined ? {} : { diffView: props.diffView }),
+              ...(props.onDiffViewChange === undefined
+                ? {}
+                : { onToggleDiffView: () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') }),
             }}
           />
         </Show>

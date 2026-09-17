@@ -77,4 +77,12 @@ describe('copilotDecisionOption', () => {
   it('answers undefined for a decision word this build does not know', () => {
     expect(copilotDecisionOption(permission({ kind: 'read' }), 'a-word-a-later-runtime-adds')).toBeUndefined()
   })
+
+  // The decision word arrives off a persisted row, so a member of `Object.prototype`
+  // reaches the two lookup tables. Each answers a FUNCTION there, which an index read
+  // hands back as a real option -- and the caller then calls `startsWith` on it.
+  it.each(['toString', '__proto__', 'constructor', 'valueOf'])('answers undefined for the prototype member %s', (decision) => {
+    expect(() => copilotDecisionOption(permission({ kind: 'read' }), decision)).not.toThrow()
+    expect(copilotDecisionOption(permission({ kind: 'read' }), decision)).toBeUndefined()
+  })
 })

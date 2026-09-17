@@ -24,7 +24,7 @@ function renderBadge(initial?: ToolProgressEntry) {
   return { ...result, setProgress, setSelecting }
 }
 
-describe('toolRunningBadge', () => {
+describe('ToolRunningBadge', () => {
   it('renders nothing when no tool is running', () => {
     const { container } = renderBadge(undefined)
     expect(container.textContent).toBe('')

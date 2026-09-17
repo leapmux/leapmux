@@ -113,7 +113,7 @@ function renderWithAuthCapture(): { auth: () => AuthState } {
   return { auth: () => captured! }
 }
 
-describe('authContext', () => {
+describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadSystemInfo.mockResolvedValue(undefined)
@@ -838,7 +838,7 @@ describe('authContext', () => {
 // writer of both. What matters is the ORDER: `AuthGuard`'s `Show` is a render
 // effect and runs ahead of a user effect in the same flush, so an effect-based
 // move would let `AppShell` mount and read the PREVIOUS account's keys.
-describe('authContext storage namespace', () => {
+describe('AuthContext storage namespace', () => {
   beforeEach(() => {
     resetStorageAccountForTests()
   })

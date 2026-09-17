@@ -13,7 +13,7 @@ function mount(props: { initialObjective?: string, onSubmit?: () => Promise<void
   const result = render(() => (
     <PreferencesProvider>
       <SetGoalDialog
-        initialObjective={props.initialObjective}
+        {...(props.initialObjective !== undefined ? { initialObjective: props.initialObjective } : {})}
         onSubmit={onSubmit}
         onClose={onClose}
       />
@@ -40,7 +40,7 @@ async function editorReady(seeded?: string): Promise<HTMLElement> {
   return el as unknown as HTMLElement
 }
 
-describe('setGoalDialog', () => {
+describe('SetGoalDialog', () => {
   it('blocks every close path while the goal request is pending', async () => {
     let refuse!: (reason: Error) => void
     const pending = new Promise<void>((_, reject) => refuse = reject)

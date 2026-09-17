@@ -32,11 +32,21 @@ const OPTION_ID_KINDS: Record<string, string> = {
  * vocabulary of its own answers with them directly, which Goose and Reasonix both do. The
  * id then names its own kind, and reading it is not a guess about the agent's intent --
  * it is the protocol's own word for that intent.
+ *
+ * Exported for its OWN test. `permissionOptionLabel` is the one caller today, and its
+ * own `Object.hasOwn` hides a bad answer here: a kind that is a function matches no
+ * fallback, so the label falls through to the raw id and the row reads the same either
+ * way. A second caller that reads the kind directly has no such cover, so the contract
+ * is pinned here rather than through a reader that cannot see it break.
  */
-function optionIdKind(optionId: string): string {
+export function acpOptionIdKind(optionId: string): string {
   if (CANONICAL_KINDS.includes(optionId))
     return optionId
-  return OPTION_ID_KINDS[optionId] ?? ''
+  // `Object.hasOwn`, not `??`: the id comes straight off the wire, and one that spells
+  // an `Object.prototype` member resolves to that function. A function is truthy, so
+  // `??` returned it as the KIND and the next caller that reads a kind without
+  // `Object.hasOwn` of its own draws the function's source text, or calls it.
+  return Object.hasOwn(OPTION_ID_KINDS, optionId) ? OPTION_ID_KINDS[optionId] ?? '' : ''
 }
 
 /**
@@ -47,7 +57,7 @@ function optionIdKind(optionId: string): string {
  * `permissionOptionLabel`, which prefers the agent's display name and reads the option
  * `kind` when the agent named the option after its own id. Without the request, the
  * optionId still states a kind whenever it is one LeapMux can read (see
- * {@link optionIdKind}); anything else keeps the raw id, which states what the user sent
+ * {@link acpOptionIdKind}); anything else keeps the raw id, which states what the user sent
  * and invents nothing. Null when no optionId was selected.
  */
 export function acpPermissionResponseText(
@@ -67,14 +77,17 @@ export function acpPermissionResponseText(
       continue
     if (pickString(option, 'optionId', '').trim() !== optionId)
       continue
+    // An empty name is no name: `permissionOptionLabel` would draw it as the button's
+    // words, and its kind fallback is the truthful answer instead.
+    const name = pickString(option, 'name', '').trim()
     return permissionOptionLabel({
       optionId,
       kind: pickString(option, 'kind', '').trim(),
-      name: pickString(option, 'name', '').trim() || undefined,
+      ...(name !== '' ? { name } : {}),
     })
   }
 
-  return permissionOptionLabel({ optionId, kind: optionIdKind(optionId) })
+  return permissionOptionLabel({ optionId, kind: acpOptionIdKind(optionId) })
 }
 
 /**

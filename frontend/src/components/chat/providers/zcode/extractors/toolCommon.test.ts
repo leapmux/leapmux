@@ -241,7 +241,7 @@ describe('zcodeTodoItemsFromInput', () => {
       ],
     })
     expect(items!.map(t => [t.content, t.status])).toEqual([['A', 'in_progress'], ['B', 'completed']])
-    expect(items![0].activeForm).toBe('Doing A')
+    expect(items![0]?.activeForm).toBe('Doing A')
   })
 
   // An emptied list is a real snapshot -- the renderer draws the cleared state for it.
@@ -295,5 +295,39 @@ describe('zcodeRow', () => {
   it('prefers the input the row itself carries over the sibling', () => {
     const own = toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'pwd' } })
     expect(zcodeToolInput(zcodeRow(own, undefined, scheduledSibling))).toEqual({ command: 'pwd' })
+  })
+})
+
+describe('zcodeToolInput stored state', () => {
+  /** The stored record the worker keeps beside one row, with the input it holds. */
+  function stored(kind: string, storedInput: Record<string, unknown>): Record<string, unknown> {
+    return {
+      type: ZCODE_EVENT.ToolUpdated,
+      payload: { kind, toolCallId: 'call-1' },
+      nativeTool: {
+        id: 'part',
+        sessionId: 'session',
+        messageId: 'message',
+        data: { type: 'tool', callID: 'call-1', tool: ZCODE_TOOL.Bash, state: { status: 'completed', input: storedInput } },
+      },
+    }
+  }
+
+  // An EMPTY record is not an answer, exactly as it is not one for the two lookups
+  // above it. It used to short-circuit the result-row lookup that exists for this
+  // case, so a Bash row drew `command: ''` while the arguments sat in the store the
+  // next lookup reads.
+  it('keeps looking when the stored state carries an empty input', () => {
+    const scheduled = toolEvent(ZCODE_TOOL_KIND.Scheduled)
+    const completed = toolEvent(ZCODE_TOOL_KIND.Result, { result: { success: true } })
+    const row = zcodeRow(scheduled, ZCODE_TOOL.Bash, undefined, stored(ZCODE_TOOL_KIND.Scheduled, {}))
+    const result = { ...parsedOf(completed), supplementalContent: stored(ZCODE_TOOL_KIND.Result, { command: 'ls -la' }) }
+    expect(zcodeToolInput({ ...row, result })).toEqual({ command: 'ls -la' })
+  })
+
+  it('takes the stored input when it states one', () => {
+    const scheduled = toolEvent(ZCODE_TOOL_KIND.Scheduled)
+    const row = zcodeRow(scheduled, ZCODE_TOOL.Bash, undefined, stored(ZCODE_TOOL_KIND.Scheduled, { command: 'echo hi' }))
+    expect(zcodeToolInput(row)).toEqual({ command: 'echo hi' })
   })
 })

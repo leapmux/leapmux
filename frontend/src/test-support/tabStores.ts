@@ -65,7 +65,12 @@ export function createTestTabStores(
 ): TestTabStores {
   const { state, projection } = projectionMemo()
   const metadata = createTabMetadataStore()
-  const view = createTabView({ projection, state, metadata, detachedTerminals })
+  const view = createTabView({
+    projection,
+    state,
+    metadata,
+    ...(detachedTerminals !== undefined ? { detachedTerminals } : {}),
+  })
   const selection = createTabSelectionStore(view, metadata)
   const layoutStore = createLayoutStore({ getWorkspaceId: () => workspaceId, projection })
   const floatingWindowStore = createFloatingWindowStore({ getWorkspaceId: () => workspaceId, projection })

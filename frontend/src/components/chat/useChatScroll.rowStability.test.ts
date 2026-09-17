@@ -7,7 +7,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVi
 
 installScrollTestEnv()
 
-describe('usechatscroll toggle row stability', () => {
+describe('useChatScroll toggle row stability', () => {
   // The reported bug: expanding/collapsing a message row above the viewport midpoint
   // scrolled the row out of position. Root cause -- the geometry re-pin holds whatever
   // row sits at the viewport MIDPOINT, so a height change ABOVE the midpoint pushes the
@@ -589,7 +589,7 @@ describe('usechatscroll toggle row stability', () => {
     }))
 })
 
-describe('usechatscroll edge-aware bottom anchoring', () => {
+describe('useChatScroll edge-aware bottom anchoring', () => {
   it('keeps the loaded-window bottom stationary when a below-midpoint row grows (windowed away from the tail)', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -641,7 +641,7 @@ describe('usechatscroll edge-aware bottom anchoring', () => {
     }))
 })
 
-describe('usechatscroll explicit edge-intent tolerance', () => {
+describe('useChatScroll explicit edge-intent tolerance', () => {
   function setupEdge(scrollTop: number) {
     const div = makeFakeScrollDiv()
     div.setScrollHeight(5000)
@@ -695,7 +695,7 @@ describe('usechatscroll explicit edge-intent tolerance', () => {
     }))
 })
 
-describe('usechatscroll overscroll-at-top drag', () => {
+describe('useChatScroll overscroll-at-top drag', () => {
   function setupHook(scrollTop: number) {
     const div = makeFakeScrollDiv()
     div.setScrollHeight(5000)

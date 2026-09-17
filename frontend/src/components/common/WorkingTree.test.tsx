@@ -1,4 +1,5 @@
 import type { DiffStats } from '~/stores/repoGit'
+import type { WorkingTreeInfo } from './WorkingTree'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hoverForTooltip } from '~/test-support/clipStub'
@@ -7,16 +8,22 @@ import { workingTreeBranchRowLabel, workingTreeDeleteLabel, WorkingTreeIcon, wor
 const HOME = '/Users/trustin'
 const WORKTREE_DIR = '/Users/trustin/Workspaces/leapmux-worktrees/blushing-slow-wolf'
 
-function renderRows(overrides: Partial<Parameters<typeof WorkingTreeRows>[0]> = {}) {
+// The optional facts take an explicit `undefined`: several fixtures mean
+// "the worker's report has not landed" (no home dir, no stats), which the
+// component reads by value, so the props below drop the key for those and it
+// reaches the component identically.
+type RowsOverrides = Partial<{ [K in keyof WorkingTreeInfo]: WorkingTreeInfo[K] | undefined }>
+
+function renderRows(overrides: RowsOverrides = {}) {
   return render(() => (
     <WorkingTreeRows
       isWorktree={overrides.isWorktree ?? true}
       name={overrides.name ?? 'blushing-slow-wolf'}
       directory={overrides.directory ?? WORKTREE_DIR}
-      homeDir={overrides.homeDir}
-      flavor={overrides.flavor}
-      worker={overrides.worker}
-      stats={overrides.stats}
+      {...(overrides.homeDir !== undefined ? { homeDir: overrides.homeDir } : {})}
+      {...(overrides.flavor !== undefined ? { flavor: overrides.flavor } : {})}
+      {...(overrides.worker !== undefined ? { worker: overrides.worker } : {})}
+      {...(overrides.stats !== undefined ? { stats: overrides.stats } : {})}
     />
   ))
 }
@@ -57,7 +64,7 @@ describe('workingTreeDeleteLabel', () => {
   })
 })
 
-describe('workingTreeIcon (WorkingTreeIcon)', () => {
+describe('WorkingTreeIcon (WorkingTreeIcon)', () => {
   // The whole point of the component: two glyphs a user can tell apart at a
   // glance. A single shared icon is the defect it exists to remove, so the two
   // renders must not resolve to the same element.
@@ -144,7 +151,7 @@ describe('workingTreeIcon (WorkingTreeIcon)', () => {
   })
 })
 
-describe('workingTreeRows (WorkingTreeRows)', () => {
+describe('WorkingTreeRows (WorkingTreeRows)', () => {
   // The label says the value is a BRANCH, because it is: a linked worktree has
   // one checked out like any other checkout, and `blushing-slow-wolf` here is
   // a branch name that happens to match its directory's basename.
@@ -262,7 +269,7 @@ describe('workingTreeRows (WorkingTreeRows)', () => {
 // One owner of the precedence rule `Tooltip` imposes: `content` replaces
 // `text`, so a reason and the rows can never both show. Two call sites that
 // each spelled it out could start answering differently.
-describe('workingTreeTooltip (WorkingTreeTooltip)', () => {
+describe('WorkingTreeTooltip (WorkingTreeTooltip)', () => {
   const INFO = { isWorktree: true, name: 'feature', directory: WORKTREE_DIR, homeDir: HOME }
 
   beforeAll(() => {

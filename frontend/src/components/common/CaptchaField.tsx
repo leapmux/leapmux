@@ -54,16 +54,20 @@ export interface CaptchaFieldProps {
 // mounted across Password/Passkey toggles and keeps the user's solved
 // challenge.
 export const CaptchaField: Component<CaptchaFieldProps> = (props) => {
+  // `ref` forwards conditionally so an absent callback stays absent from the
+  // child props; the fields treat a present-but-undefined ref as a ref that
+  // exists under exactOptionalPropertyTypes.
+  const refProps = () => (props.ref !== undefined ? { ref: props.ref } : {})
   return (
-    <Switch fallback={<AltchaField onPayload={props.onPayload} onUnavailable={props.onUnavailable} ref={props.ref} />}>
+    <Switch fallback={<AltchaField onPayload={props.onPayload} onUnavailable={props.onUnavailable} {...refProps()} />}>
       <Match when={getCaptchaProvider() === CaptchaProvider.TURNSTILE}>
         <Show when={props.action} keyed>
-          {action => <TurnstileField action={action} onPayload={props.onPayload} ref={props.ref} />}
+          {action => <TurnstileField action={action} onPayload={props.onPayload} {...refProps()} />}
         </Show>
       </Match>
       <Match when={getCaptchaProvider() === CaptchaProvider.RECAPTCHA_V3}>
         <Show when={props.action} keyed>
-          {action => <RecaptchaV3Field action={action} onPayload={props.onPayload} ref={props.ref} />}
+          {action => <RecaptchaV3Field action={action} onPayload={props.onPayload} {...refProps()} />}
         </Show>
       </Match>
     </Switch>

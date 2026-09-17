@@ -36,7 +36,8 @@ describe('compassPhysics', () => {
     sim.start()
 
     expect(states.length).toBe(1)
-    expect(Number.isFinite(states[0].angle)).toBe(true)
+    // `?.` is the type-level guard alone; isFinite fails just as hard on an absent state.
+    expect(Number.isFinite(states[0]?.angle)).toBe(true)
 
     sim.stop()
   })

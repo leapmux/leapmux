@@ -794,6 +794,9 @@ export async function readSessionCookie(page: Page, step: string): Promise<strin
  */
 export async function loginViaToken(page: Page, token: string) {
   const [name, ...rest] = token.split('=')
+  // split('=') always yields a first element, so this guard is type-level only.
+  if (name === undefined)
+    throw new Error(`loginViaToken: token is not a "<name>=<value>" cookie string: ${token}`)
   const value = rest.join('=')
   await page.context().addCookies([{
     name,

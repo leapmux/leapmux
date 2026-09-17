@@ -319,8 +319,8 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
         */}
         <DragHandle
           activators={() => (dnd.canDrag() ? dnd.dragRow.gripActivators() : undefined)}
-          class={dnd.canDrag() ? undefined : styles.dragHandleInert}
           testId={`queue-drag-handle-${item().id}`}
+          {...(dnd.canDrag() ? {} : { class: styles.dragHandleInert })}
         />
         <div class={styles.body}>
           <div class={styles.preview}>{item().text || '(attachments only)'}</div>
@@ -350,8 +350,8 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
           <RowAction
             icon={editAction().icon}
             label={editAction().label}
-            disabled={editAction().disabled}
             onClick={() => editAction().onClick()}
+            {...(editAction().disabled !== undefined ? { disabled: editAction().disabled } : {})}
           />
           {/*
             Delete takes a second click, because an icon carries no word to read

@@ -1,11 +1,11 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { toolMessageInput } from '~/components/chat/providers/testUtils'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { renderMessageContent } from '../messageRenderers'
+import { providerRowImages } from '~/test-support/toolCallIr'
+import { renderMessageContent } from '../rowRenderers'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -74,17 +74,17 @@ describe.each([
     const start = input(request)
     const end = result
     const plugin = providerFor(provider)!
-    const row = toolMessageInput(end, undefined, start)
-    row.parsed.supplementalContent = supplemental ? { sessionUpdate: end.sessionUpdate, status: end.status, toolCallId: end.toolCallId, ...supplemental } : undefined
-    const category = plugin.classify(input(end))
+    const parsed = input(end)
+    parsed.supplementalContent = supplemental ? { sessionUpdate: end.sessionUpdate, status: end.status, toolCallId: end.toolCallId, ...supplemental } : undefined
+    const category = plugin?.transcript.classify(input(end))
     const { container } = render(() => [
-      renderMessageContent(start.parentObject, { sources: testMessageSources({ current: () => start, result: () => row.parsed }) }, plugin.classify(start), provider),
-      renderMessageContent(end, { sources: testMessageSources({ current: () => row.parsed, request: () => start }) }, category, provider),
+      renderMessageContent(start.parentObject, { sources: testMessageSources({ current: () => start, result: () => parsed }) }, plugin?.transcript.classify(start), provider),
+      renderMessageContent(end, { sources: testMessageSources({ current: () => parsed, request: () => start }) }, category, provider),
     ])
     expect(container.querySelector('strong')?.textContent).toBe('body')
     expect(container.textContent).toContain('native args')
     expect(container.querySelector('img')?.getAttribute('src')).toContain(imageData)
-    expect(plugin.toolResultImages?.(row)?.map(image => image.data)).toEqual([imageData])
+    expect(providerRowImages(provider, end, { category, request: start, sides: { current: parsed, request: start, result: undefined, role: 'result' } }).map(item => item.data)).toEqual([imageData])
     if (provider === AgentProvider.CURSOR)
       expect(container.textContent).toContain('probe / echo')
     if (provider === AgentProvider.GITHUB_COPILOT)

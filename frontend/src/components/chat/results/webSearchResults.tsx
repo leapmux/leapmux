@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
+import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../ir/tools/webSearch'
 import type { RenderContext } from '../messageRenderers'
-import type { WebSearchLink } from './webSearchExtract'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
@@ -10,6 +10,7 @@ import { extractDomain } from '~/lib/url'
 import { clippedText } from '~/styles/shared.css'
 import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
 import {
+  toolInputSummary,
   toolMessage,
   toolMetaRow,
   toolResultCollapsed,
@@ -18,27 +19,42 @@ import {
   webSearchLinkDomain,
   webSearchLinkList,
 } from '../toolStyles.css'
+import { renderQueryTitle } from './tools/titleParts'
 import { useCollapsedItems } from './useCollapsedLines'
 
-export interface WebSearchResultsSource {
-  links: WebSearchLink[]
-  summary: string
-  /** Echoed query (Claude tool_use_result.query). */
-  query?: string
-  /** Claude tool_use_result.durationSeconds (note: seconds, not ms). */
-  durationSeconds?: number
+/**
+ * The queries a search ran BEYOND the first.
+ *
+ * The request states the first one, so listing it again in the body would repeat it.
+ */
+export function extraQueries(request: Pick<WebSearchRequest, 'queries'> | undefined): string[] {
+  return request?.queries?.slice(1) ?? []
 }
 
 export function WebSearchResultsBody(props: {
-  source: WebSearchResultsSource
+  source: WebSearchResult
+  /**
+   * What the call asked for. The row's title states the action itself; this body
+   * reads it for the QUERIES the title has no room for.
+   */
+  request?: WebSearchRequest
   context?: RenderContext
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const links = () => props.source.links
   const { isCollapsed, displayItems: displayLinks } = useCollapsedItems<WebSearchLink>({ items: links, expanded })
+  const queries = () => extraQueries(props.request)
 
   return (
     <div class={toolMessage}>
+      {/* One search often runs several queries, and the row's TITLE states the
+          first. The rest are what the expand control is for on a row that returned
+          no links of its own. */}
+      <Show when={expanded()}>
+        <For each={queries()}>
+          {query => <div class={toolInputSummary}>{renderQueryTitle(query) || query}</div>}
+        </For>
+      </Show>
       <Show when={links().length > 0}>
         <div class={toolResultPrompt}>
           {pluralize(links().length, 'result')}

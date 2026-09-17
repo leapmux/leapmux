@@ -71,7 +71,7 @@ describe('lexorank', () => {
 
       // All ranks should be strictly ordered.
       for (let i = 1; i < ranks.length; i++) {
-        expect(ranks[i] > ranks[i - 1]).toBe(true)
+        expect((ranks[i] ?? '') > (ranks[i - 1] ?? '')).toBe(true)
       }
     })
 
@@ -117,9 +117,10 @@ describe('lexorank', () => {
     })
 
     it('treats missing positions as empty (head/tail edges)', () => {
-      const itemsHead = [{ position: undefined }, { position: 'n' }]
+      // The head item carries no `position` key at all: missing, not undefined.
+      const itemsHead = [{}, { position: 'n' }]
       const headResult = positionAtInsertIdx(itemsHead, 1)
-      // prevPos is empty (undefined → ''), nextPos is 'n', so this is mid('', 'n').
+      // prevPos is empty (missing → ''), nextPos is 'n', so this is mid('', 'n').
       expect(headResult < 'n').toBe(true)
       expect(headResult.length).toBeGreaterThan(0)
     })

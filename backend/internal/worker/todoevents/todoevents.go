@@ -40,11 +40,13 @@ type Item struct {
 // StatusPending; the column's CHECK now refuses 0, so a write that
 // never set a status fails rather than recording a pending row.
 //
-// StatusDeleted is a tombstone: KindDelete events set it instead of
-// removing the row, so the chat thread can keep rendering the deletion
-// event and the sidebar can show the deleted row with a distinct
-// visual. Cap eviction treats StatusCompleted and StatusDeleted as a
-// single "finished" pool.
+// StatusDeleted is a tombstone: a KindUpdate whose Patch sets it marks
+// the row deleted instead of removing it, so the chat thread can keep
+// rendering the deletion event and the sidebar can show the deleted row
+// with a distinct visual. A tombstone travels on the patch like every
+// other status, so one frame that deletes a task and renames it keeps
+// both halves. Cap eviction treats StatusCompleted and StatusDeleted as
+// a single "finished" pool.
 type Status leapmuxv1.TodoStatus
 
 const (
@@ -55,13 +57,14 @@ const (
 	StatusDeleted     = Status(leapmuxv1.TodoStatus_TODO_STATUS_DELETED)
 )
 
-// String names the status with the proto enum's own generated name, for logs.
+// String states the status with the proto enum's own generated name, for logs.
 func (s Status) String() string { return leapmuxv1.TodoStatus(s).String() }
 
 // IsFinished reports whether s is a final status — one that makes a
 // row eligible for cap-eviction (Completed | Deleted). Pending and
-// InProgress rows are never evicted; they only leave the list through
-// an explicit Delete event.
+// InProgress rows are never evicted. They leave the list only when a
+// KindUpdate patches them to a final status, or when a KindSnapshot
+// replaces the whole list.
 func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusDeleted
 }
@@ -87,15 +90,27 @@ const (
 	// KindCreate appends one row, or replaces the row that already
 	// carries its ID, so a replayed create is idempotent.
 	KindCreate
-	// KindUpdate merges the Patch into the row identified by ID.
+	// KindUpdate merges the Patch into the row identified by ID. It
+	// carries a deletion too: a Patch that sets StatusDeleted tombstones
+	// the row, and the same frame's text fields land with it.
 	KindUpdate
-	// KindDelete tombstones the row identified by ID.
-	KindDelete
 	// KindDetail merges a full row into the row identified by ID, and
 	// appends it when that ID is unseen. It is what a read-only query
 	// of one row produces, so it never downgrades a status; see
 	// MergeDetail.
 	KindDetail
+	// KindMerge upserts EVERY row in Items and leaves every row it does
+	// not list alone. It is KindCreate applied N times, so each listed
+	// row REPLACES the row that carries its ID, and a row whose ID is
+	// unseen is appended.
+	//
+	// It is what a provider produces when one message states the rows
+	// that changed rather than the whole list. Cursor's
+	// `cursor/update_todos` is that provider: it sends the full list
+	// once with `merge:false`, and every later frame carries the
+	// changed subset with `merge:true`. Reading such a subset as a
+	// KindSnapshot would delete every row the frame stayed silent about.
+	KindMerge
 )
 
 // Event is the discriminated union of mutation variants. Fields are
@@ -103,8 +118,9 @@ const (
 type Event struct {
 	Kind     EventKind
 	Snapshot []Item // KindSnapshot
+	Items    []Item // KindMerge (the rows that changed)
 	Item     Item   // KindCreate / KindDetail (full row)
-	ID       string // KindUpdate / KindDelete (target id)
+	ID       string // KindUpdate (target id)
 	Patch    Patch  // KindUpdate
 }
 
@@ -193,7 +209,12 @@ func StatusFromProviderWord(word string) Status {
 		return StatusInProgress
 	case "completed":
 		return StatusCompleted
-	case "deleted":
+	case "deleted", "cancelled", "canceled":
+		// A provider that CANCELS a task reports the same end state that
+		// StatusDeleted tombstones: the row stays visible and stops being work.
+		// Cursor and OpenCode both spell it `cancelled`, so it is shared rather than
+		// one provider's word; the American spelling is here because the word travels
+		// as prose and no protocol fixes it.
 		return StatusDeleted
 	case "":
 		return StatusUnspecified

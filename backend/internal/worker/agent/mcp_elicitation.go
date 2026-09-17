@@ -23,7 +23,7 @@ func resolveMCPElicitationResponse(ctx ControlResponseContext) (ControlResponseR
 		return ControlResponseResolution{}, false
 	}
 	switch request.Method {
-	case contracts.MCPElicitationMethodACP, contracts.MCPElicitationMethodReasonix, contracts.MCPElicitationMethodCodex:
+	case contracts.MCPElicitationMethodACP, contracts.MCPElicitationMethodCodex:
 	default:
 		return ControlResponseResolution{}, false
 	}

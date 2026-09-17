@@ -436,8 +436,11 @@ export function createChatStore() {
    * and reinserts it so the visible order follows the sequence.
    */
   function updateExistingMessage(agentId: string, prev: AgentChatMessage[], existingIdx: number, message: AgentChatMessage): boolean {
-    if (prev[existingIdx].seq === message.seq) {
-      const proxy = prev[existingIdx]
+    const existing = prev[existingIdx]
+    if (existing === undefined)
+      return false
+    if (existing.seq === message.seq) {
+      const proxy = existing
       if (preferNewerSupplement(proxy, message) === proxy)
         return false
       // A duplicate/replayed broadcast can re-deliver a byte-identical row (same id,
@@ -493,6 +496,8 @@ export function createChatStore() {
    */
   function handleReseqMovedBeyondWindow(agentId: string, prev: AgentChatMessage[], existingIdx: number) {
     const dropped = prev[existingIdx]
+    if (dropped === undefined)
+      return
     setState('messagesByAgent', agentId, prev.filter((_, i) => i !== existingIdx))
     // Reclaim the content version when the row leaves the window. A notification
     // can receive an in-place update before it moves to a new sequence.

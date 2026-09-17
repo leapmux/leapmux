@@ -82,7 +82,9 @@ export async function loadListings(
   })
   return {
     listings: resp.listings.map(toListingData),
-    unreadable: resp.unreadable && { path: resp.unreadable.path, reason: resp.unreadable.reason },
+    ...(resp.unreadable
+      ? { unreadable: { path: resp.unreadable.path, reason: resp.unreadable.reason } }
+      : {}),
   }
 }
 
@@ -312,6 +314,8 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
     if (chain.length < 2)
       return chain
     const parent = chain[chain.length - 2]
+    if (parent === undefined)
+      return chain
     const known = opts.getChildren(parent)?.find(c => samePath(c.path, target, flavor))
     return known && !known.isDir ? chain.slice(0, -1) : chain
   }
@@ -370,13 +374,16 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
     // a target it already knows is a file, and sending the file anyway makes
     // the worker repeat that rule -- two implementations of one decision.
     const deepest = chain[chain.length - 1]
+    if (deepest === undefined)
+      return
     const work = loadListings(workerId, deepest, opts.showFiles(), chained ? root : undefined)
 
       .then((resp) => {
         if (version !== loadVersion)
           return
         const { listings } = resp
-        if (listings.length === 0)
+        const [first, ...rest] = listings
+        if (first === undefined)
           throw new Error(`ListDirectory returned no listings for ${root}`)
         // Re-key the FIRST listing to the root we asked for. The worker
         // canonicalizes what it lists, so a root that is a symlink answers
@@ -395,7 +402,7 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
         // reaches the target: the per-node cascade re-lists each such level
         // under the path it asked for, at one round trip per level. The chain
         // is an optimization, and this is the case where it does not apply.
-        opts.setListings([{ ...listings[0], path: root }, ...listings.slice(1)])
+        opts.setListings([{ ...first, path: root }, ...rest])
         // The worker names the directory its chain stopped at, and why. Set it
         // AFTER the listings, because writing a listing clears the reason for
         // that path and the unreadable one carries no listing.

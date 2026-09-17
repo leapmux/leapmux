@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-describe('pushBranchButton', () => {
+describe('PushBranchButton', () => {
   it('labels "Push" when gitState has no uncommitted changes', () => {
     render(() => (
       <PushBranchButton
@@ -108,7 +108,7 @@ describe('pushBranchButton', () => {
     ))
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('shows the success toast when push resolves', async () => {
@@ -202,7 +202,10 @@ describe('pushBranchButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(showWarnToast).toHaveBeenCalledTimes(1))
     // Second arg MUST be the original Error instance, not a string.
-    const [msg, errArg] = vi.mocked(showWarnToast).mock.calls[0]
+    const call = vi.mocked(showWarnToast).mock.calls[0]
+    if (call === undefined)
+      throw new Error('expected the warning toast to have fired')
+    const [msg, errArg] = call
     expect(msg).toBe('Failed to push branch')
     expect(errArg).toBe(failure)
   })

@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import './claude'
+import './claude/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -11,9 +11,10 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
 
 vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
+  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 
 /** Build a Claude-style Edit tool_use message. */
 function makeEditToolUse(input: Record<string, unknown>) {
@@ -32,13 +33,7 @@ function makeEditToolUse(input: Record<string, unknown>) {
 
 function renderEditToolUse(input: Record<string, unknown>) {
   const msg = makeEditToolUse(input)
-  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'Edit',
-    toolUse,
-    content: msg.message.content as Array<Record<string, unknown>>,
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
@@ -56,7 +51,10 @@ describe('claude Edit tool_use rendering', () => {
     expect(text).toContain('(replace all)')
   })
 
-  it('does not render the diff body — diffs live on the result message', () => {
+  // The pending row draws the shared "Requested changes" card, which states the
+  // substitution the call ASKS for and claims nothing about the file. The result
+  // row replaces it with the diff that landed.
+  it('states the substitution it requests, under the shared request heading', () => {
     const { container } = renderEditToolUse({
       file_path: '/tmp/example.ts',
       old_string: 'const beforeExpansion = true;\n',
@@ -67,8 +65,8 @@ describe('claude Edit tool_use rendering', () => {
     const text = container.textContent ?? ''
     // Header surfaces the file path.
     expect(text).toContain('example.ts')
-    // The old/new contents are not rendered on the tool_use side.
-    expect(text).not.toContain('beforeExpansion')
-    expect(text).not.toContain('afterExpansion')
+    expect(text).toContain('Requested changes')
+    expect(text).toContain('beforeExpansion')
+    expect(text).toContain('afterExpansion')
   })
 })

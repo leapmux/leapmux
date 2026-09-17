@@ -1,12 +1,33 @@
 {
-  "_readme": "These ZCode app-server values are shared by the Go provider and the TypeScript renderer. The protocol uses line-delimited JSON without a jsonrpc field. Both implementations dispatch on the envelope type and the payload kind. Go-only methods and fields stay in Go. Frontend-only display kinds stay in TypeScript. Z.ai owns these values, so changes must follow the installed provider protocol.",
-  "toolPrefixes": { "Subagent": "tool_subagent_" },
-  "methods": { "RequestUserInput": "interaction/requestUserInput", "RequestPermission": "interaction/requestPermission" },
-  "actions": { "Accept": "accept", "Decline": "decline", "Cancel": "cancel" },
-  "replyFields": { "Action": "action", "Content": "content" },
-  "answerFields": { "Map": "answers", "Single": "answer", "IndexedPrefix": "answer_" },
-  "planControls": { "Approve": "approve", "Question": "Review this implementation plan." },
-  "interactions": { "PlanApproval": "plan_approval" },
+  "_readme": "These ZCode app-server values are shared by the Go provider and the TypeScript renderer. The protocol uses line-delimited JSON without a jsonrpc field. Both implementations dispatch on the envelope type and the payload kind. Go-only methods and fields stay in Go. Frontend-only display kinds stay in TypeScript. Z.ai owns these values, so changes must follow the installed provider protocol. `toolKinds` holds `raw` because a retained closing row can BE a raw frame: the app server records it as the call's last frame, and a reader that did not know the word drew nothing for the row. `resultTypes` holds the four `error_*` variants beside success and cancelled, because the turn-end rule states a failure in the danger colour and a word it does not know read as a plain end. LeapMux owns the two `supplement` payload names: a retained tool row keeps its native record and the artifact bodies it refers to beside a `tool.updated` envelope, and the browser plugin reads both back out. `storedTool` and `storedPart` hold the fields of the record ZCode's own store keeps, which the worker copies whole and the browser plugin then reads field by field -- the same split Reasonix's `toolRecord` states. The envelope's own keys (`type`, `payload`, and `supplementPayload`'s `kind`, `toolCallId` and `input`) are ZCode's, and they are here because the worker WRITES that envelope and the browser matches it against the row's own frame before it reads either payload. `storedAttachment` covers one stored attachment at all three levels it appears: `attachments` is the list on the part's `state`, `artifactUri` sits inside the attachment's nested `metadata`, and the rest are the attachment record's own fields. One table, because the browser reads all three levels off one object graph and a rename anywhere in it must move both sides together. Its `sessionID` and `messageID` differ in CASE from `storedTool`'s `sessionId` and `messageId`; that is ZCode's own spelling, and holding both here is what stops one side correcting it and the other not. The worker keys the artifact bodies it stores by `artifactUri`, and the browser looks each one up by the same key.",
+  "toolPrefixes": {
+    "Subagent": "tool_subagent_"
+  },
+  "methods": {
+    "RequestUserInput": "interaction/requestUserInput",
+    "RequestPermission": "interaction/requestPermission"
+  },
+  "actions": {
+    "Accept": "accept",
+    "Decline": "decline",
+    "Cancel": "cancel"
+  },
+  "replyFields": {
+    "Action": "action",
+    "Content": "content"
+  },
+  "answerFields": {
+    "Map": "answers",
+    "Single": "answer",
+    "IndexedPrefix": "answer_"
+  },
+  "planControls": {
+    "Approve": "approve",
+    "Question": "Review this implementation plan."
+  },
+  "interactions": {
+    "PlanApproval": "plan_approval"
+  },
   "events": {
     "SessionCreated": "session.created",
     "SessionResumed": "session.resumed",
@@ -40,7 +61,8 @@
     "Progress": "progress",
     "Result": "result",
     "Error": "error",
-    "Batch": "batch"
+    "Batch": "batch",
+    "Raw": "raw"
   },
   "toolNames": {
     "Bash": "Bash",
@@ -54,7 +76,26 @@
     "Write": "Write",
     "Edit": "Edit",
     "Glob": "Glob",
-    "Grep": "Grep"
+    "Grep": "Grep",
+    "ApplyPatch": "ApplyPatch",
+    "WebFetch": "WebFetch",
+    "WebSearch": "WebSearch",
+    "ServerWebSearch": "web_search",
+    "TodoRead": "TodoRead",
+    "GoalRead": "GoalRead",
+    "ReadSessionContext": "ReadSessionContext",
+    "SendMessage": "SendMessage",
+    "RespondToCoordinator": "RespondToCoordinator",
+    "TaskStop": "TaskStop",
+    "Js": "js",
+    "JsReset": "js_reset",
+    "JsAddNodeModuleDir": "js_add_node_module_dir",
+    "Task": "Task",
+    "Skill": "Skill",
+    "CronCreate": "CronCreate",
+    "CronList": "CronList",
+    "CronUpdate": "CronUpdate",
+    "CronDelete": "CronDelete"
   },
   "modes": {
     "Plan": "plan",
@@ -64,7 +105,11 @@
   },
   "resultTypes": {
     "Success": "success",
-    "Cancelled": "cancelled"
+    "Cancelled": "cancelled",
+    "ErrorMaxTurns": "error_max_turns",
+    "ErrorMaxBudget": "error_max_budget",
+    "ErrorDuringExecution": "error_during_execution",
+    "ErrorMaxToolCalls": "error_max_tool_calls"
   },
   "decisions": {
     "Allow": "allow",
@@ -72,5 +117,219 @@
     "Escalate": "escalate",
     "Modify": "modify"
   },
-  "defaultMode": "Build"
+  "supplement": {
+    "Type": "type",
+    "Payload": "payload",
+    "NativeTool": "nativeTool",
+    "Artifacts": "artifacts"
+  },
+  "supplementPayload": {
+    "Kind": "kind",
+    "ToolCallID": "toolCallId",
+    "Input": "input"
+  },
+  "storedTool": {
+    "ID": "id",
+    "SessionID": "sessionId",
+    "MessageID": "messageId",
+    "Data": "data"
+  },
+  "storedPart": {
+    "Type": "type",
+    "CallID": "callID",
+    "Tool": "tool",
+    "State": "state",
+    "Status": "status"
+  },
+  "storedPartTypes": {
+    "Tool": "tool"
+  },
+  "storedAttachment": {
+    "Attachments": "attachments",
+    "Type": "type",
+    "SessionID": "sessionID",
+    "MessageID": "messageID",
+    "Mime": "mime",
+    "URL": "url",
+    "Metadata": "metadata",
+    "ArtifactURI": "artifactUri"
+  },
+  "storedAttachmentTypes": {
+    "File": "file"
+  },
+  "storedPartStatuses": {
+    "Completed": "completed",
+    "Error": "error"
+  },
+  "defaultMode": "Build",
+  "_unread": {
+    "storedTool": {
+      "ID": {
+        "sides": ["ts"],
+        "why": "the worker matches a stored record to a row by this id; the browser reads the record off the row that already matched, so it reads the session and message ids to check the owner and never the id itself"
+      }
+    },
+    "resultTypes": {
+      "Success": {
+        "sides": ["ts"],
+        "why": "the browser words the turn-end row for the failures and for cancelled alone -- success is the row's default wording, so the browser matches no word for it, and the key is here because the table is the whole closed set"
+      }
+    }
+  },
+  "structs": {
+    "ZCodeStoredTool": {
+      "doc": "ZCodeStoredTool is one tool record as ZCode's own store holds it.\n\nThe worker copies it WHOLE into a retained row's supplement and the browser\nplugin reads it back field by field.",
+      "table": "storedTool",
+      "fields": [
+        {
+          "key": "ID",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "MessageID",
+          "type": "string"
+        },
+        {
+          "key": "Data",
+          "type": "json.RawMessage"
+        }
+      ]
+    },
+    "ZCodeSupplementRef": {
+      "doc": "ZCodeSupplementRef identifies the one call a retained-tool supplement belongs to.\n\n`Input` carries the arguments a request frame omitted; a result supplement\nleaves it out.",
+      "table": "supplementPayload",
+      "fields": [
+        {
+          "key": "Kind",
+          "type": "string"
+        },
+        {
+          "key": "ToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "Input",
+          "type": "map[string]json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "ZCodePartState": {
+      "doc": "ZCodePartState is how one stored part ended, and what it attached.",
+      "table": "storedPart",
+      "fields": [
+        {
+          "key": "Status",
+          "type": "string"
+        },
+        {
+          "key": "Attachments",
+          "type": "[]json.RawMessage",
+          "table": "storedAttachment"
+        }
+      ]
+    },
+    "ZCodeStoredPart": {
+      "doc": "ZCodeStoredPart is the `data` of one stored record: what the call was, and how it\nended. The browser reads the same fields off the same bytes.",
+      "table": "storedPart",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "CallID",
+          "type": "string"
+        },
+        {
+          "key": "Tool",
+          "type": "string"
+        },
+        {
+          "key": "State",
+          "type": "#ZCodePartState"
+        }
+      ]
+    },
+    "ZCodeAttachmentMetadata": {
+      "doc": "ZCodeAttachmentMetadata points at the artifact body an attachment refers to.\n\nThe worker keys the artifact bodies it stores by this URI, and the browser looks\neach one up by the same key out of the same stored bytes.",
+      "table": "storedAttachment",
+      "fields": [
+        {
+          "key": "ArtifactURI",
+          "type": "string"
+        }
+      ]
+    },
+    "ZCodeStoredAttachment": {
+      "doc": "ZCodeStoredAttachment is one attachment nested in a stored part's state.\n\n`SessionID` and `MessageID` differ in CASE from ZCodeStoredTool's, which is ZCode's\nown spelling -- holding both in the contract is what stops one side correcting it\nand the other not.",
+      "table": "storedAttachment",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "MessageID",
+          "type": "string"
+        },
+        {
+          "key": "Mime",
+          "type": "string"
+        },
+        {
+          "key": "URL",
+          "type": "string"
+        },
+        {
+          "key": "Metadata",
+          "type": "#ZCodeAttachmentMetadata"
+        }
+      ]
+    },
+    "ZCodeToolInputEnvelope": {
+      "doc": "ZCodeToolInputEnvelope is what a row keeps when the stream stated a tool call with\narguments the request frame omitted.\n\nIt is shaped like a `tool.updated` event, because the resolve matches it against\nthe row's own envelope before it joins: a supplement that identifies another call, or\nanother kind, cannot reach the row.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "Payload",
+          "type": "#ZCodeSupplementRef"
+        }
+      ]
+    },
+    "ZCodeToolResultEnvelope": {
+      "doc": "ZCodeToolResultEnvelope is what a retained tool row keeps beside the agent's frame.\n\nSame envelope as the input one, two payloads: the native record LeapMux read out\nof ZCode's own store, and the artifact bodies it refers to.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "Payload",
+          "type": "#ZCodeSupplementRef"
+        },
+        {
+          "key": "NativeTool",
+          "type": "#ZCodeStoredTool"
+        },
+        {
+          "key": "Artifacts",
+          "type": "map[string]string"
+        }
+      ]
+    }
+  }
 }

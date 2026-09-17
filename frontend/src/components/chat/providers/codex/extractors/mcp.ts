@@ -1,13 +1,12 @@
-import type { McpContentItem, McpToolCallSource } from '../../../results/mcpToolCall'
+import type { McpCallFacts, McpContentItem } from '../../../ir/mcpToolCall'
+import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_ITEM } from '~/types/toolMessages'
-import { parseMcpContentItem } from '../../../results/mcpToolCall'
-import { parseCodexStatus } from '../status'
+import { parseMcpContentItem } from '../../../ir/mcpToolCall'
 
 /**
- * Build an `McpToolCallSource` from a Codex item. Handles both `mcpToolCall`
+ * Read the wire facts of a Codex MCP item. Handles both `mcpToolCall`
  * (server-bound MCP tools) and `dynamicToolCall` (function-style dynamic
  * tools). Returns null otherwise.
  *
@@ -17,64 +16,65 @@ import { parseCodexStatus } from '../status'
  * - dynamicToolCall: { namespace?, tool, status, arguments, contentItems?, success?, durationMs? }
  *   where contentItems is { type: 'inputText'|'inputImage', ... }[]
  */
-export function codexMcpFromItem(item: Record<string, unknown> | null | undefined): McpToolCallSource | null {
+export function codexMcpFromItem(item: Record<string, unknown> | null | undefined): McpCallFacts | null {
   if (!item)
     return null
-  if (item.type === CODEX_ITEM.MCP_TOOL_CALL)
+  if (item.type === CODEX_ITEM.McpToolCall)
     return fromMcpToolCall(item)
-  if (item.type === CODEX_ITEM.DYNAMIC_TOOL_CALL)
+  if (item.type === CODEX_ITEM.DynamicToolCall)
     return fromDynamicToolCall(item)
   return null
 }
 
-function fromMcpToolCall(item: Record<string, unknown>): McpToolCallSource {
-  const status = parseCodexStatus(item.status)
+function fromMcpToolCall(item: Record<string, unknown>): McpCallFacts {
+  const failed = item.status === 'failed' || item.status === 'cancelled' || item.status === 'declined' || undefined
   const argsJson = prettifyArgsJson(item.arguments)
 
   const result = pickObject(item, 'result')
-  const rawContent = result && Array.isArray(result.content) ? result.content as unknown[] : []
+  const rawContent: unknown[] = result && Array.isArray(result.content) ? result.content : []
   const content: McpContentItem[] = rawContent.map(parseMcpContentItem)
   const structuredJson = prettifyStructuredJson(result?.structuredContent)
 
   const errorObj = pickObject(item, 'error')
   const errorMessage = pickString(errorObj, 'message')
   const error = errorMessage.length > 0 ? errorMessage : undefined
+  const durationMs = pickNumber(item, 'durationMs', undefined)
 
   return {
     server: pickString(item, 'server'),
     tool: pickString(item, 'tool', 'Tool'),
     argsJson,
     content,
-    structuredJson,
-    error,
-    status,
-    durationMs: pickNumber(item, 'durationMs', undefined),
+    ...(structuredJson !== undefined ? { structuredJson } : {}),
+    ...(error !== undefined ? { error } : {}),
+    ...(failed ? { failed } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
   }
 }
 
-function fromDynamicToolCall(item: Record<string, unknown>): McpToolCallSource {
-  const status = parseCodexStatus(item.status)
+function fromDynamicToolCall(item: Record<string, unknown>): McpCallFacts {
+  const failed = item.status === 'failed' || item.status === 'cancelled' || item.status === 'declined' || undefined
   const argsJson = prettifyArgsJson(item.arguments)
 
-  const items = Array.isArray(item.contentItems) ? item.contentItems as unknown[] : []
+  const items: unknown[] = Array.isArray(item.contentItems) ? item.contentItems : []
   const content: McpContentItem[] = items.flatMap((entry): McpContentItem[] => {
     if (!isObject(entry))
       return []
-    const obj = entry as Record<string, unknown>
-    if (obj.type === 'inputText' && typeof obj.text === 'string')
-      return [{ type: 'text', text: obj.text as string }]
-    const image = parseImageBlock(obj)
+    if (entry.type === 'inputText' && typeof entry.text === 'string')
+      return [{ type: 'text', text: entry.text }]
+    const image = parseImageBlock(entry)
     if (image)
       return [{ type: 'image', source: image }]
     return [{ type: 'unknown', raw: entry }]
   })
 
+  const durationMs = pickNumber(item, 'durationMs', undefined)
   return {
     server: pickString(item, 'namespace'),
     tool: pickString(item, 'tool', 'Tool'),
     argsJson,
     content,
-    status,
-    durationMs: pickNumber(item, 'durationMs', undefined),
+    ...(failed ? { failed } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
   }
 }

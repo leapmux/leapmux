@@ -86,7 +86,7 @@ function renderSection(opts?: {
   return { onAddTunnel, onDeregister, container }
 }
 
-describe('workerSectionContent', () => {
+describe('WorkerSectionContent', () => {
   it('no tunnels shown when list empty', () => {
     renderSection()
     expect(screen.queryByText(/\u2192/)).not.toBeInTheDocument()

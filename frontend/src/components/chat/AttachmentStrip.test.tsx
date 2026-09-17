@@ -19,7 +19,7 @@ function makeAttachment(overrides: Partial<FileAttachment> = {}): FileAttachment
   }
 }
 
-describe('attachmentStrip', () => {
+describe('AttachmentStrip', () => {
   it('renders nothing when attachments is empty', () => {
     const [attachments] = createSignal<FileAttachment[]>([])
     const { container } = render(() => (

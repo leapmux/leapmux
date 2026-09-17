@@ -1,7 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import type { TodoItem } from '~/stores/chatTodos'
+import type { TodoItem } from '~/models/todo'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,10 +9,12 @@ import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSourc
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createMessageContextResolver } from './messageContextResolver'
-import './providers/opencode'
+import './providers/opencode/plugin'
 
 const cleanups: Array<() => void> = []
 afterEach(() => cleanups.splice(0).forEach(dispose => dispose()))
+
+const waitForRenderPrune = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra: MessageInitShape<typeof AgentChatMessageSchema> = {}): AgentChatMessage {
   const content = {
@@ -155,7 +157,8 @@ describe('message context resolver', () => {
     fetchMessage.mockImplementationOnce(() => new Promise(resolve => finish = resolve))
     const pending = resolver.message(9n)
     dispose()
-    expect(fetchMessage.mock.calls[0][1].aborted).toBe(true)
+    // The call was made above; `?.` is the type-level guard alone.
+    expect(fetchMessage.mock.calls[0]?.[1].aborted).toBe(true)
     finish(toolMessage('late', 9n, 'result'))
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
@@ -166,15 +169,20 @@ describe('message context resolver', () => {
     const { resolver, fetchSpan, dispose } = fixture()
     fetchSpan.mockResolvedValue([toolMessage('request', 8n, 'request')])
     const releaseSpan = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
+    const releaseRenderSpan = resolver.retainRenderSpan({ spanId: 'render-span', agentSessionId: '' })
     const releaseMessage = resolver.retainMessage(8n)
     await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     expect(resolver.peek(8n)?.message.id).toBe('request')
+    releaseRenderSpan()
     dispose()
+    await waitForRenderPrune()
     expect(resolver.peek(8n)).toBeUndefined()
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
     expect(releaseSpan).not.toThrow()
+    expect(releaseRenderSpan).not.toThrow()
     expect(releaseMessage).not.toThrow()
     expect(resolver.retainSpan({ spanId: 'span', agentSessionId: '' })).not.toThrow()
+    expect(resolver.retainRenderSpan({ spanId: 'span', agentSessionId: '' })).not.toThrow()
     expect(resolver.retainMessage(8n)).not.toThrow()
     expect(resolver.peek(8n)).toBeUndefined()
   })
@@ -346,6 +354,29 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeDefined()
     release()
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+  })
+
+  it('keeps fetched data through a same-turn span lease transfer', async () => {
+    const identity = { spanId: 'span', agentSessionId: '' }
+    const { resolver, fetchSpan, replaceMessages } = fixture([toolMessage('result', 2n, 'result')])
+    fetchSpan.mockResolvedValueOnce([toolMessage('request', 1n, 'request')])
+    const releaseFirst = resolver.retainRenderSpan(identity)
+    await resolver.loadSpan(identity)
+    replaceMessages([])
+
+    releaseFirst()
+    // Another consumer can prune the same span before Solid mounts the replacement
+    // row. The render grace must protect the fetched request from that prune.
+    const releaseImmediate = resolver.retainSpan(identity)
+    releaseImmediate()
+    await Promise.resolve()
+    const releaseSecond = resolver.retainRenderSpan(identity)
+    await waitForRenderPrune()
+    expect(resolver.request(identity)).toBeDefined()
+
+    releaseSecond()
+    await waitForRenderPrune()
+    expect(resolver.request(identity)).toBeUndefined()
   })
 
   it('walks the window for a membership change, and not for an in-place body replacement', () => {

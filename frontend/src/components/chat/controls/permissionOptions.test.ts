@@ -163,12 +163,9 @@ describe('layoutPermissionOptions', () => {
   })
 
   it('classifies an empty payload as no buttons', () => {
-    expect(layoutPermissionOptions([])).toMatchObject({
-      positive: undefined,
-      negative: undefined,
-      allowScope: undefined,
-      additional: [],
-    })
+    // The optional slots are absent rather than explicitly undefined (see
+    // `layoutPermissionOptions`), so the exact shape states "no buttons".
+    expect(layoutPermissionOptions([])).toEqual({ additional: [] })
   })
 })
 

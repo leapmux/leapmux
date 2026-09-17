@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -292,9 +293,9 @@ func TestRecoverPiToolArtifactsRefusesAMessageThatFillsTheFrame(t *testing.T) {
 	// A snapshot that an earlier boundary already recovered costs no new bytes, so an
 	// exhausted budget must not discard it. Only a NEW read is refused.
 	text := "full"
-	artifact, err := json.Marshal(piOutputArtifact{Path: path, Text: &text})
+	artifact, err := json.Marshal(contracts.PiOutputArtifact{Path: path, Text: &text})
 	require.NoError(t, err)
-	existing, err := json.Marshal(piToolArtifactSupplement{ToolCallID: "call", ToolName: "mcp", OutputFile: artifact})
+	existing, err := json.Marshal(contracts.PiToolArtifactSupplement{ToolCallID: "call", ToolName: "mcp", OutputFile: artifact})
 	require.NoError(t, err)
 	extra, complete, err = recoverPiToolArtifacts(t.Context(), raw, existing)
 	require.ErrorContains(t, err, "no room for a supplement")

@@ -281,7 +281,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       return { label: props.emptyLabel }
     const match = selected()
     if (match)
-      return { label: match.label, detail: match.detail }
+      return { label: match.label, ...(match.detail !== undefined ? { detail: match.detail } : {}) }
     if (props.value === '')
       return { label: props.placeholder ?? props.emptyLabel }
     return { label: props.value }
@@ -323,42 +323,57 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       </Match>
       <Match when={visible().length > 0}>
         <For each={visible()}>
-          {(option, i) => (
-            <>
-              {/* A heading whenever the group changes, so Local and Remote read
-                  apart the way `<optgroup>` used to render them. */}
-              <Show when={option.group && option.group !== visible()[i() - 1]?.group}>
-                <div class={styles.groupHeading}>{option.group}</div>
-              </Show>
-              <DropdownMenuCheckableItem
-                kind="radio"
-                label={option.label}
-                // This menu wraps no tooltip of its own around an item, so the
-                // label may own one -- and it must, because the rows hold
-                // whatever the user's data is long enough to be: a branch name,
-                // a session title. Clipped with no route back is the state a
-                // tooltip exists to prevent.
-                //
-                // Deferred to the first OPEN, and that is the whole reason this
-                // is a prop rather than always-on. `DropdownMenu` renders its
-                // children on MOUNT, and `ClippedText` wraps every instance in
-                // a `Tooltip` -- a MutationObserver and listeners on two
-                // elements, per row. Paid eagerly that is one such allocation
-                // per option of every menu on screen, open or not: fifty for a
-                // full session list, and `BranchSelect`'s list has no upper
-                // limit at all. A row nobody has seen needs no route back.
-                revealClippedLabel={everOpened()}
-                // Same deferral, same reason: `SessionSelect`'s detail is a live
-                // `RelativeTime` that subscribes to the shared ticker, so an
-                // unopened picker held one subscriber per session. The text form
-                // renders until then, so the row reads the same either way.
-                detail={detailRenderer(option.detail, everOpened())}
-                checked={option.value === props.value}
-                data-testid={`loading-menu-option-${option.value}`}
-                onSelect={() => select(option.value)}
-              />
-            </>
-          )}
+          {(option, i) => {
+            // Spread-ready detail, as a GETTER called in spread position: the
+            // read stays where the original expression evaluated, so the
+            // deferral contract below is unchanged. One read per evaluation
+            // keeps presence and value decided together -- a second
+            // `detailRenderer(...)` call beside the first could not be
+            // narrowed, and the spread keeps the key absent exactly when the
+            // renderer answers undefined -- an option with no detail.
+            const detailProps = () => {
+              const detail = detailRenderer(option.detail, everOpened())
+              return detail !== undefined ? { detail } : {}
+            }
+            return (
+              <>
+                {/* A heading whenever the group changes, so Local and Remote read
+                    apart the way `<optgroup>` used to render them. */}
+                <Show when={option.group && option.group !== visible()[i() - 1]?.group}>
+                  <div class={styles.groupHeading}>{option.group}</div>
+                </Show>
+                <DropdownMenuCheckableItem
+                  kind="radio"
+                  label={option.label}
+                  // This menu wraps no tooltip of its own around an item, so the
+                  // label may own one -- and it must, because the rows hold
+                  // whatever the user's data is long enough to be: a branch name,
+                  // a session title. Clipped with no route back is the state a
+                  // tooltip exists to prevent.
+                  //
+                  // Deferred to the first OPEN, and that is the whole reason this
+                  // is a prop rather than always-on. `DropdownMenu` renders its
+                  // children on MOUNT, and `ClippedText` wraps every instance in
+                  // a `Tooltip` -- a MutationObserver and listeners on two
+                  // elements, per row. Paid eagerly that is one such allocation
+                  // per option of every menu on screen, open or not: fifty for a
+                  // full session list, and `BranchSelect`'s list has no upper
+                  // limit at all. A row nobody has seen needs no route back.
+                  revealClippedLabel={everOpened()}
+                  // Same deferral, same reason: `SessionSelect`'s detail is a live
+                  // `RelativeTime` that subscribes to the shared ticker, so an
+                  // unopened picker held one subscriber per session. The text form
+                  // renders until then, so the row reads the same either way.
+                  // `detailRenderer` returns undefined exactly when the option has
+                  // no detail, so the spread keeps the key absent for those rows.
+                  {...detailProps()}
+                  checked={option.value === props.value}
+                  data-testid={`loading-menu-option-${option.value}`}
+                  onSelect={() => select(option.value)}
+                />
+              </>
+            )
+          }}
         </For>
       </Match>
     </Switch>

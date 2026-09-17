@@ -38,10 +38,13 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
       title={props.title}
       alwaysVisible={true}
       bordered={false}
-      context={props.context}
+      {...(props.context === undefined ? {} : { context: props.context })}
       headerActions={{
-        onReply: props.planText && props.context?.onReply ? handleReply : undefined,
-        onCopyMarkdown: props.planText ? copy : undefined,
+        // Set only when the plan draws them: an explicit `undefined` is not
+        // assignable to an optional prop, and the actions row reads absent
+        // the same.
+        ...(props.planText && props.context?.onReply ? { onReply: handleReply } : {}),
+        ...(props.planText ? { onCopyMarkdown: copy } : {}),
         markdownCopied: copied(),
       }}
     >

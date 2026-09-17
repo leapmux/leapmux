@@ -179,8 +179,9 @@ export async function getWorkerId(hubUrl: string, cookie: string): Promise<strin
     }
     const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
     // Wait until the worker is registered in the DB and its bidi-stream is connected.
-    if (data.workers?.length && data.workers[0].online) {
-      return data.workers[0].id
+    const firstWorker = data.workers?.[0]
+    if (firstWorker?.online) {
+      return firstWorker.id
     }
     if (Date.now() >= deadline) {
       throw new Error('Worker never came online within 30s')

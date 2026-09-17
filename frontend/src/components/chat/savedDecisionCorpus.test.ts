@@ -21,7 +21,7 @@ describe('saved decision corpus', () => {
   it.each(SAVED_DECISION_CORPUS)('reads $name back as its own words', (entry) => {
     const display = resolveControlResponseDisplay(
       storedResponse(entry.request, entry.response),
-      pluginFor(entry.provider)?.controlResponseDisplay,
+      pluginFor(entry.provider)?.controls?.controlResponseDisplay,
     )
     expect(display).toEqual({ kind: 'label', text: entry.label })
   })
@@ -34,7 +34,7 @@ describe('saved decision corpus', () => {
   it.each(SAVED_DECISION_CORPUS)('shows no wire token for $name when the request is absent', (entry) => {
     const display = resolveControlResponseDisplay(
       storedResponse(undefined, entry.response),
-      pluginFor(entry.provider)?.controlResponseDisplay,
+      pluginFor(entry.provider)?.controls?.controlResponseDisplay,
     )
     expect(display.kind).toBe('label')
     if (display.kind === 'label') {

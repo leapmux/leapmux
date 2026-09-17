@@ -1,27 +1,7 @@
+import type { ContextUsageInfo, RateLimitInfo } from '~/models/agentSession'
 import { createStore, reconcile } from 'solid-js/store'
 import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
 import { shallowEqual } from '~/lib/shallowEqual'
-
-export interface ContextUsageInfo {
-  inputTokens: number
-  cacheCreationInputTokens: number
-  cacheReadInputTokens: number
-  outputTokens?: number
-  /** Authoritative provider-reported current context size, when available. */
-  contextTokens?: number
-  contextWindow?: number
-}
-
-export interface RateLimitInfo {
-  status?: string // "allowed" | "allowed_warning" | "exceeded" etc.
-  resetsAt?: number // Unix timestamp (seconds)
-  rateLimitType?: string // "five_hour" | "seven_day" etc.
-  utilization?: number // 0.0–1.0, current usage fraction
-  surpassedThreshold?: number // threshold that triggered warning (e.g. 0.75)
-  overageStatus?: string // "allowed" etc.
-  overageResetsAt?: number // Unix timestamp (seconds)
-  isUsingOverage?: boolean
-}
 
 export interface AgentSessionInfo {
   totalCostUsd?: number

@@ -178,17 +178,55 @@ func TestClaudeExtractTodoEvent_TaskUpdateClearsAField(t *testing.T) {
 	assert.Nil(t, ev.Patch.Status, "no status change was reported")
 }
 
+// Every word the shared table reads as the tombstone reaches the store as the SAME
+// status patch. A literal `deleted` here answered for one of the three spellings
+// while the patch path answered for all three, so one end state arrived as two
+// different events.
 func TestClaudeExtractTodoEvent_TaskUpdateDeleted(t *testing.T) {
+	t.Parallel()
+
+	for _, word := range []string{"deleted", "cancelled", "canceled"} {
+		t.Run(word, func(t *testing.T) {
+			t.Parallel()
+			ev, ok := claudeExtract(t, "TaskUpdate", `{
+				"type": "user",
+				"message": {"content": []},
+				"tool_use_result": {"success": true, "taskId": "5", "updatedFields": ["status"], "statusChange": {"from": "completed", "to": "`+word+`"}}
+			}`, nil)
+			require.True(t, ok)
+			require.Equal(t, todoevents.KindUpdate, ev.Kind)
+			assert.Equal(t, "5", ev.ID)
+			require.NotNil(t, ev.Patch.Status)
+			assert.Equal(t, todoevents.StatusDeleted, *ev.Patch.Status)
+		})
+	}
+}
+
+// One frame cancels a task AND renames it, and both halves must survive. The
+// tombstone used to leave on an event that carried the id and the status and
+// nothing else: the subject, the active form and the description of the same frame
+// were discarded, and a row already tombstoned took no write at all -- so the
+// checklist and the sidebar kept the OLD text for the rest of the session.
+func TestClaudeExtractTodoEvent_TaskUpdateCancelledKeepsTheNewText(t *testing.T) {
 	t.Parallel()
 
 	ev, ok := claudeExtract(t, "TaskUpdate", `{
 		"type": "user",
 		"message": {"content": []},
-		"tool_use_result": {"success": true, "taskId": "5", "updatedFields": ["status"], "statusChange": {"from": "completed", "to": "deleted"}}
-	}`, nil)
+		"tool_use_result": {"success": true, "taskId": "7", "updatedFields": ["status", "subject"], "statusChange": {"from": "in_progress", "to": "cancelled"}}
+	}`, pairedToolUse(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskUpdate",
+	  "input":{"taskId":"7","subject":"Drop the legacy path","activeForm":"Dropping the legacy path","description":"superseded"}}]}}`))
 	require.True(t, ok)
-	require.Equal(t, todoevents.KindDelete, ev.Kind)
-	assert.Equal(t, "5", ev.ID)
+	require.Equal(t, todoevents.KindUpdate, ev.Kind)
+	assert.Equal(t, "7", ev.ID)
+	require.NotNil(t, ev.Patch.Status)
+	assert.Equal(t, todoevents.StatusDeleted, *ev.Patch.Status)
+	require.NotNil(t, ev.Patch.Content)
+	assert.Equal(t, "Drop the legacy path", *ev.Patch.Content)
+	require.NotNil(t, ev.Patch.ActiveForm)
+	assert.Equal(t, "Dropping the legacy path", *ev.Patch.ActiveForm)
+	require.NotNil(t, ev.Patch.Description)
+	assert.Equal(t, "superseded", *ev.Patch.Description)
 }
 
 func TestClaudeExtractTodoEvent_TaskUpdateFailureNoEvent(t *testing.T) {

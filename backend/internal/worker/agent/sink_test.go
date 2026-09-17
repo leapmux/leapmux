@@ -227,7 +227,9 @@ func (s *testSink) EnrichMessage(change MessageEnrichment) (bool, error) {
 		}
 		message := &s.messages[index]
 		if message.SpanID == change.SpanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-			if bytes.Equal(message.SupplementalContent, change.SupplementalContent) {
+			// The real sink asks whether the supplement SAYS anything new, not
+			// whether its bytes differ. See JSONCanonicalEqual.
+			if JSONCanonicalEqual(message.SupplementalContent, change.SupplementalContent) {
 				return false, nil
 			}
 			if bytes.Equal(message.Content, change.OriginalContent) && message.SupplementalRevision == change.PreviousRevision {
@@ -245,13 +247,35 @@ func (s *testSink) ReadToolRequest(spanID string) (*StoredMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for index, message := range s.messages {
-		if spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-			return &StoredMessage{Seq: int64(index + 1), Revision: message.SupplementalRevision, Content: MessageContent{
-				Original: append([]byte(nil), message.Content...), Supplemental: append([]byte(nil), message.SupplementalContent...), Metadata: append([]byte(nil), message.Metadata...),
-			}}, nil
+		if s.spanRowMatches(message, spanID) {
+			return s.storedSpanRow(index), nil
 		}
 	}
 	return nil, nil
+}
+
+func (s *testSink) ReadToolResult(spanID string) (*StoredMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := len(s.messages) - 1; index >= 0; index-- {
+		if s.spanRowMatches(s.messages[index], spanID) {
+			return s.storedSpanRow(index), nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *testSink) spanRowMatches(message testSinkMessage, spanID string) bool {
+	return spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
+}
+
+// storedSpanRow copies one row out. The seq is the 1-based index, which is what the
+// real store allocates for a transcript that no reseq touched. The caller holds mu.
+func (s *testSink) storedSpanRow(index int) *StoredMessage {
+	message := s.messages[index]
+	return &StoredMessage{Seq: int64(index + 1), Revision: message.SupplementalRevision, Content: MessageContent{
+		Original: append([]byte(nil), message.Content...), Supplemental: append([]byte(nil), message.SupplementalContent...), Metadata: append([]byte(nil), message.Metadata...),
+	}}
 }
 
 func (s *testSink) PersistTurnEnd(content MessageContent, span SpanInfo) error {
@@ -506,7 +530,7 @@ func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.sessionInfos = append(s.sessionInfos, cp)
 }
 
-// PersistLeapMuxNotification records the worker-authored notification payload.
+// PersistLeapMuxNotification records the worker-written notification payload.
 // It keeps a copy, because the caller reuses its map.
 func (s *testSink) PersistLeapMuxNotification(info map[string]interface{}) {
 	s.mu.Lock()
@@ -1261,6 +1285,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageSource, MessageContent, SpanInfo
 }
 func (noopSink) EnrichMessage(MessageEnrichment) (bool, error)                     { return false, nil }
 func (noopSink) ReadToolRequest(string) (*StoredMessage, error)                    { return nil, nil }
+func (noopSink) ReadToolResult(string) (*StoredMessage, error)                     { return nil, nil }
 func (noopSink) PersistTurnEnd(MessageContent, SpanInfo) error                     { return nil }
 func (noopSink) SetTurnState(TurnState, uint64)                                    {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }

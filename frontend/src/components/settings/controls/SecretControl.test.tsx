@@ -6,7 +6,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('secretControl', () => {
+describe('SecretControl', () => {
   it('does not submit whitespace-only drafts', () => {
     const onSet = vi.fn(async () => {})
     render(() => <SecretControl isSet={false} ariaLabel="SMTP password" onSet={onSet} />)

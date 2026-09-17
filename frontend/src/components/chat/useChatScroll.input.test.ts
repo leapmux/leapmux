@@ -9,7 +9,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVi
 
 installScrollTestEnv()
 
-describe('usechatscroll non-wheel scroll direction', () => {
+describe('useChatScroll non-wheel scroll direction', () => {
   // A window barely taller than the viewport reads "near" at BOTH edges, so
   // handleScroll dispatches a SINGLE direction from lastScrollDir. handleWheel/
   // handleKeyDown set that for wheel/keys, but a scrollbar drag or touch scroll
@@ -64,7 +64,7 @@ describe('usechatscroll non-wheel scroll direction', () => {
     }))
 })
 
-describe('usechatscroll keyboard navigation', () => {
+describe('useChatScroll keyboard navigation', () => {
   function setupHook(opts: {
     hasNewer?: boolean
     hasOlder?: boolean
@@ -83,10 +83,11 @@ describe('usechatscroll keyboard navigation', () => {
       messages,
       hasNewerMessages: () => opts.hasNewer ?? false,
       hasOlderMessages: () => opts.hasOlder ?? false,
-      onJumpToLatest: opts.onJumpToLatest,
-      onJumpToOldest: opts.onJumpToOldest,
-      onLoadOlderMessages: opts.onLoadOlderMessages,
-      onLoadNewerMessages: opts.onLoadNewerMessages,
+      // Each callback is omitted (not undefined) when the case states none.
+      ...(opts.onJumpToLatest !== undefined ? { onJumpToLatest: opts.onJumpToLatest } : {}),
+      ...(opts.onJumpToOldest !== undefined ? { onJumpToOldest: opts.onJumpToOldest } : {}),
+      ...(opts.onLoadOlderMessages !== undefined ? { onLoadOlderMessages: opts.onLoadOlderMessages } : {}),
+      ...(opts.onLoadNewerMessages !== undefined ? { onLoadNewerMessages: opts.onLoadNewerMessages } : {}),
     })
     hook.attachListRef(div.el)
     return { div, hook }
@@ -412,7 +413,7 @@ describe('usechatscroll keyboard navigation', () => {
     }))
 })
 
-describe('usechatscroll down-jump on a small scroll-down', () => {
+describe('useChatScroll down-jump on a small scroll-down', () => {
   // Controllable virtualizer with a single anchored row at `rowOffset`; `prepend`
   // grows the content above it (and the total height) like older history landing.
   function makeAnchorVirt(rowOffset0: number, total0: number) {
@@ -555,7 +556,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
     }))
 })
 
-describe('usechatscroll momentum reporting', () => {
+describe('useChatScroll momentum reporting', () => {
   /**
    * `onMomentumScroll` is what keeps the floating scroll rail lit through a
    * flick: no touch or pointer event fires while the content glides, so the

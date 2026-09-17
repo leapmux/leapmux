@@ -183,6 +183,16 @@ type reasonixStatusUpdate struct {
 	Mode      string `json:"mode"`
 	Status    *struct {
 		Goal *reasonixGoal `json:"goal"`
+		// Phase is the live state of the turn (`implementing`, `waiting_permission`,
+		// `review_ready`, ...). It is one word, not a sentence, so the row reads it
+		// through a table rather than printing the token.
+		Phase string `json:"phase"`
+		// Usage carries the turn's own totals and the session's cumulative ones.
+		// The meter reads the CUMULATIVE half: the turn half restarts, and a gauge
+		// that restarted with it would report a context that shrank.
+		Usage *struct {
+			Cumulative *reasonixUsage `json:"cumulative"`
+		} `json:"usage"`
 	} `json:"status"`
 	// Goal is the HOISTED shape, and it belongs to a different call: the
 	// `_reasonix.io/session/status` request answers with the status object
@@ -191,6 +201,19 @@ type reasonixStatusUpdate struct {
 	// observed shape of the same message -- it costs one struct field and
 	// removes a whole class of silent "no goal" if the two shapes ever converge.
 	Goal *reasonixGoal `json:"goal"`
+}
+
+// reasonixUsage is the subset of one Reasonix usage report the meter reads.
+//
+// `totalTokens` is INCLUSIVE of the prompt and completion halves, so the context
+// gauge reads it directly rather than adding the parts and counting twice.
+type reasonixUsage struct {
+	TotalTokens      int64    `json:"totalTokens"`
+	PromptTokens     int64    `json:"promptTokens"`
+	CompletionTokens int64    `json:"completionTokens"`
+	CacheHitTokens   int64    `json:"cacheHitTokens"`
+	CacheMissTokens  int64    `json:"cacheMissTokens"`
+	EstimatedCost    *float64 `json:"estimatedCost"`
 }
 
 type reasonixGoal struct {
@@ -239,13 +262,28 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 		slog.Warn("reasonix status_update unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
+	// The lock covers the DECISION and the goal write that follows it.
+	// goalStatusRevision is a completion mark, not a statistic: confirmReasonixGoal
+	// samples the counter, runs a status round trip, and stores the user's objective
+	// only when the counter did not move. An apply outside the section that bumps the
+	// counter makes that mark lie. This handler bumps 5 to 6, the scheduler stops it,
+	// confirmReasonixGoal samples 6, round-trips, reads 6 again and reports success --
+	// and then this handler resumes and ClearGoal removes the objective it just
+	// confirmed.
+	//
+	// The two reports below stay OUTSIDE the lock. Each one reaches the sink -- a
+	// fan-out to every watcher in reportReasonixUsage, an INSERT in
+	// reportReasonixPhase -- and Reasonix restates its whole status on every turn
+	// tick, so holding the mutex across them made each other reader of goalStatusMu
+	// wait on a database write and a broadcast to every connected tab. Neither one
+	// takes part in the revision protocol, which guards the goal alone.
 	a.goalStatusMu.Lock()
-	defer a.goalStatusMu.Unlock()
 	// The status bus is not per-connection by construction, and ClearContext
 	// mints a NEW sessionId. Without this check a notification still in flight
 	// for the old session would be applied to the new one, and a goal the user
 	// just cleared would come back.
 	if update.SessionID != "" && !a.isCurrentACPSession(update.SessionID) {
+		a.goalStatusMu.Unlock()
 		return
 	}
 	goal := update.Goal
@@ -253,7 +291,81 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 		goal = update.Status.Goal
 	}
 	a.goalStatusRevision++
+	status := update.Status
 	a.applyReasonixGoal(goal)
+	a.goalStatusMu.Unlock()
+
+	if status != nil {
+		a.reportReasonixUsage(status.Usage)
+		a.reportReasonixPhase(status.Phase)
+	}
+}
+
+// The phase words Reasonix reports that a reader must see, and the sentence each
+// one becomes.
+//
+// A phase is one wire token, so a row that printed it would show
+// `waiting_permission`. Only the phases that state something a reader can ACT on
+// are here: the working phases (`starting`, `implementing`) say what every other
+// surface in the app already says, and repeating them would put a row in the
+// transcript for each step of every turn.
+var reasonixPhaseLabels = map[string]string{
+	"waiting_permission": "Waiting for permission",
+	"waiting_input":      "Waiting for input",
+	"checking_readiness": "Checking whether the work is ready",
+	"readiness_paused":   "Paused: the work is not ready",
+	"review_ready":       "Ready for review",
+	"paused":             "Paused",
+}
+
+// reportReasonixPhase states one phase change, once.
+//
+// Reasonix restates its WHOLE status on every change, so the same phase arrives
+// many times per turn. Only a move to a new phase says anything.
+func (a *ReasonixAgent) reportReasonixPhase(phase string) {
+	if phase == "" || phase == a.lastStatusPhase {
+		return
+	}
+	a.lastStatusPhase = phase
+	label, ok := reasonixPhaseLabels[phase]
+	if !ok {
+		return
+	}
+	a.sink.PersistLeapMuxNotification(map[string]interface{}{
+		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
+		contracts.NotificationFieldText: label,
+	})
+}
+
+// reportReasonixUsage broadcasts the session's cumulative token and cost totals.
+//
+// Ephemeral, like every other provider's usage report: the meter reads it live
+// and the transcript holds no row for it.
+func (a *ReasonixAgent) reportReasonixUsage(usage *struct {
+	Cumulative *reasonixUsage `json:"cumulative"`
+}) {
+	if usage == nil || usage.Cumulative == nil {
+		return
+	}
+	total := usage.Cumulative
+	info := map[string]interface{}{}
+	if total.TotalTokens > 0 || total.PromptTokens > 0 || total.CompletionTokens > 0 {
+		info[contracts.SessionInfoKeyContextUsage] = map[string]interface{}{
+			contracts.ContextUsageFieldInputTokens:              total.PromptTokens,
+			contracts.ContextUsageFieldOutputTokens:             total.CompletionTokens,
+			contracts.ContextUsageFieldCacheReadInputTokens:     total.CacheHitTokens,
+			contracts.ContextUsageFieldCacheCreationInputTokens: total.CacheMissTokens,
+			contracts.ContextUsageFieldContextTokens:            total.TotalTokens,
+		}
+	}
+	// The CUMULATIVE cost, which is a total rather than a delta: a restatement
+	// carries the same number and cannot double it.
+	if total.EstimatedCost != nil {
+		info[contracts.SessionInfoKeyTotalCostUsd] = *total.EstimatedCost
+	}
+	if len(info) > 0 {
+		a.sink.BroadcastSessionInfo(info)
+	}
 }
 
 func (a *ReasonixAgent) applyReasonixGoal(goal *reasonixGoal) {

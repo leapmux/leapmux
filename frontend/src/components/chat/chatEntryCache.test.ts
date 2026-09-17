@@ -2,9 +2,48 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
-import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+
+/**
+ * A ZCode `scheduled` ExitPlanMode call whose own frame carries no arguments: the
+ * plan arrives through the SUPPLEMENTAL stream, so the raw bytes and the resolved
+ * payload are two different rows -- `tool_use` before the supplement lands,
+ * `assistant_plan` after it. The freshest case a cache dimension can name: the
+ * category itself moves, not just the body.
+ */
+function zcodeScheduledExitPlanMode(supplementalPlan?: string): AgentChatMessage {
+  const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
+  return create(AgentChatMessageSchema, {
+    id: 'z1',
+    source: MessageSource.AGENT,
+    content: encode({
+      type: ZCODE_EVENT.ToolUpdated,
+      payload: { kind: ZCODE_TOOL_KIND.Scheduled, toolCallId: 'call-1', toolName: ZCODE_TOOL.ExitPlanMode, input: {} },
+      sessionId: 's-1',
+      seq: 1,
+    }),
+    contentCompression: ContentCompression.NONE,
+    supplementalContentCompression: ContentCompression.NONE,
+    // Omitted (not undefined) while no supplement has landed; `create` rejects an explicit undefined.
+    ...(supplementalPlan === undefined
+      ? {}
+      : {
+          supplementalContent: encode({
+            provider: {
+              type: ZCODE_EVENT.ToolUpdated,
+              payload: { kind: ZCODE_TOOL_KIND.Scheduled, toolCallId: 'call-1', input: { plan: supplementalPlan } },
+            },
+          }),
+        }),
+    supplementalRevision: supplementalPlan === undefined ? 0n : 1n,
+    seq: 4n,
+    agentProvider: AgentProvider.ZCODE,
+    spanId: 'call-1',
+  })
+}
 
 /** A Claude assistant text row (classifies visible). */
 function assistantText(id: string, seq: bigint, text: string): AgentChatMessage {
@@ -87,7 +126,7 @@ function forwardedUserText(id: string, seq: bigint, parentToolUseId: string): Ag
   })
 }
 
-describe('createclassifiedentrycache', () => {
+describe('createClassifiedEntryCache', () => {
   it('rebuilds a span row\'s entry when its paired tool_use sibling becomes available', () => {
     createRoot((dispose) => {
       const [hasSibling, setHasSibling] = createSignal(false)
@@ -246,14 +285,72 @@ describe('createclassifiedentrycache', () => {
     })
   })
 
+  // The preparation MERGES the supplemental content before it classifies, so a
+  // supplement that arrives late can move the CATEGORY, not just the body -- a ZCode
+  // `scheduled` ExitPlanMode call is the case: its plan rides the supplemental stream,
+  // and the row is a tool call until the plan lands and an assistant plan after. The
+  // cached entry must follow the resolved classification, not freeze on the raw one.
+  it('rebuilds an entry when the resolved classification changes', () => {
+    createRoot((dispose) => {
+      // A signal, because the swap must WAKE the memo: the supplement arrives as a
+      // store write, and a plain array mutation is invisible to a tracked read.
+      const [messages, setMessages] = createSignal([zcodeScheduledExitPlanMode()])
+      const cache = createClassifiedEntryCache({
+        messages: () => messages(),
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const before = cache.getEntry('z1')!
+      expect(before.category.kind).toBe('tool_use')
+      expect(before.freshness.supplementalRevision).toBe(0n)
+      const beforeHeightKey = heightKeyForEntry(before, 0)
+
+      // The supplement lands: same id, same seq, a bumped supplemental revision. The
+      // freshness check rebuilds the entry, and the rebuilt entry classifies the
+      // MERGED payload -- tool_use before, assistant_plan after.
+      setMessages([zcodeScheduledExitPlanMode('Ship it')])
+      cache.visibleEntries()
+      const after = cache.getEntry('z1')!
+      expect(after.category.kind).toBe('assistant_plan')
+      expect(after.freshness.supplementalRevision).toBe(1n)
+      expect(after).not.toBe(before)
+      expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
+      dispose()
+    })
+  })
+
+  // The Raw JSON view reads `original` and every display reads `resolved`, and the
+  // two are load-bearing APART: the merge that turns this row into a plan card must
+  // never leak back into the bytes the worker stored.
+  it('keeps the raw JSON parse on the original message beside the resolved one', () => {
+    createRoot((dispose) => {
+      const messages = [zcodeScheduledExitPlanMode('Ship it')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const entry = cache.getEntry('z1')!
+      expect(entry.category.kind).toBe('assistant_plan')
+      // The resolved payload carries the supplement-merged arguments...
+      const resolved = entry.resolved.parentObject as { payload: { input: { plan?: string } } }
+      expect(resolved.payload.input.plan).toBe('Ship it')
+      // ...and the original keeps the stored bytes, with the arguments still absent.
+      const original = entry.original.parentObject as { payload: { input: Record<string, unknown> } }
+      expect(original.payload.input).toEqual({})
+      expect(original.payload.input.plan).toBeUndefined()
+      dispose()
+    })
+  })
+
   it('rebuilds a forwarded row when the tab\'s parent link hydrates', () => {
     createRoot((dispose) => {
-      // A subagent tab is placed BEFORE listAgents hydrates its parentAgentId, and
-      // the child's own messages are subscribed immediately -- so a forwarded row
-      // can be classified while isChildTranscript still reads false. Inside the
-      // child's transcript that row is an ordinary user message; in the parent's it
-      // is the prompt SENT to the subagent. Without this dimension the row froze on
-      // the pre-hydration answer and rendered as a collapsed "Prompt" card forever.
+    // A subagent tab is placed BEFORE listAgents hydrates its parentAgentId, and
+    // the child's own messages are subscribed immediately -- so a forwarded row
+    // can be classified while isChildTranscript still reads false. Inside the
+    // child's transcript that row is an ordinary user message; in the parent's it
+    // is the prompt SENT to the subagent. Without this dimension the row froze on
+    // the pre-hydration answer and rendered as a collapsed "Prompt" card forever.
       const [isChild, setIsChild] = createSignal(false)
       const messages = [forwardedUserText('fu1', 3n, 'toolu_spawn')]
       const cache = createClassifiedEntryCache({
@@ -437,14 +534,14 @@ describe('createclassifiedentrycache', () => {
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()
-      expect(first.map(e => e.msg.id)).toEqual(['a1', 'a2'])
+      expect(first.map(e => e.message.id)).toEqual(['a1', 'a2'])
       const a1Entry = first[0]
       expect(cache.getEntry('a1')).toBe(a1Entry)
 
       // Drop a2 from the window; a1 is a new instance with the same id+seq.
       setMessages([assistantText('a1', 1n, 'hi')])
       const second = cache.visibleEntries()
-      expect(second.map(e => e.msg.id)).toEqual(['a1'])
+      expect(second.map(e => e.message.id)).toEqual(['a1'])
       expect(second[0]).toBe(a1Entry) // reused cached ref (no re-classification)
       expect(cache.getEntry('a2')).toBeUndefined() // pruned
       dispose()
@@ -462,11 +559,12 @@ describe('createclassifiedentrycache', () => {
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()[0]
-      expect(first.freshness.seq).toBe(1n)
+      // `?.` is the type-level guard alone; the toBe below fails just as hard without an entry.
+      expect(first?.freshness.seq).toBe(1n)
       setMessages([assistantText('a1', 7n, 'hi')]) // same id, new seq
       const second = cache.visibleEntries()[0]
       expect(second).not.toBe(first) // rebuilt off the seq change
-      expect(second.freshness.seq).toBe(7n)
+      expect(second?.freshness.seq).toBe(7n)
       dispose()
     })
   })
@@ -485,7 +583,8 @@ describe('createclassifiedentrycache', () => {
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()[0]
-      const firstText = JSON.stringify(first.parsed.parentObject)
+      // `?.` is the type-level guard alone; an absent entry fails the compares below.
+      const firstText = JSON.stringify(first?.original.parentObject)
 
       // Re-trigger the memo WITHOUT a version bump (a new array carrying the same
       // proxy): the entry must be reused, proving the version -- not the array
@@ -506,7 +605,7 @@ describe('createclassifiedentrycache', () => {
 
       const second = cache.visibleEntries()[0]
       expect(second).not.toBe(first) // rebuilt, not the stale cached ref
-      expect(JSON.stringify(second.parsed.parentObject)).not.toBe(firstText) // reflects the new body
+      expect(JSON.stringify(second?.original.parentObject)).not.toBe(firstText) // reflects the new body
       dispose()
     })
   })
@@ -519,9 +618,9 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         showHiddenMessages: showHidden,
       })
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1']) // r1 hidden
+      expect(cache.visibleEntries().map(e => e.message.id)).toEqual(['a1']) // r1 hidden
       setShowHidden(true)
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1', 'r1'])
+      expect(cache.visibleEntries().map(e => e.message.id)).toEqual(['a1', 'r1'])
       dispose()
     })
   })
@@ -590,5 +689,67 @@ describe('createclassifiedentrycache', () => {
       expect(cache.getEntry('badtype')?.parsedSpanLines).toEqual([{ type: 'add' }])
       dispose()
     })
+  })
+})
+
+/**
+ * Two keys, two questions.
+ *
+ * The virtualizer asks "must this row be re-measured", which a per-row expand or
+ * diff-view toggle answers yes to. The render cache asks "must this row be read
+ * again", which the same toggle answers no to. Deriving the second key from the
+ * first threw away the row's extracted IR, its normalized command body, its Myers
+ * diff and its rendered markdown on every click of the expand control.
+ */
+describe('renderKeyForEntry', () => {
+  function entryOf(id: string, seq: bigint, text: string) {
+    return createRoot((dispose) => {
+      const cache = createClassifiedEntryCache({
+        messages: () => [assistantText(id, seq, text)],
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const entry = cache.getEntry(id)!
+      dispose()
+      return entry
+    })
+  }
+
+  it('answers the same key across a UI-version bump, which the height key does not', () => {
+    const entry = entryOf('m1', 1n, 'hello')
+    expect(renderKeyForEntry(entry)).toBe(renderKeyForEntry(entry))
+    expect(heightKeyForEntry(entry, 0)).not.toBe(heightKeyForEntry(entry, 1))
+  })
+
+  it('separates two rows by message id, so one row cannot read another\'s cache', () => {
+    // Both rows carry the same seq and the same content signals, so the content key
+    // alone would collide. The id is what keeps the two caches apart.
+    const first = entryOf('m1', 1n, 'hello')
+    const second = entryOf('m2', 1n, 'hello')
+    expect(renderKeyForEntry(first)).not.toBe(renderKeyForEntry(second))
+  })
+
+  it('answers a new key when the row\'s own content version moves', () => {
+    const before = entryOf('m1', 1n, 'hello')
+    const after = { ...before, freshness: { ...before.freshness, contentVersion: before.freshness.contentVersion + 1 } }
+    expect(renderKeyForEntry(after)).not.toBe(renderKeyForEntry(before))
+  })
+
+  it.each([
+    ['toolUseSiblingContentVersion', { toolUseSiblingContentVersion: 9 }],
+    ['toolUseSiblingRevisionKey', { toolUseSiblingRevisionKey: 'opener-b' }],
+    ['toolResultSiblingContentVersion', { toolResultSiblingContentVersion: 9 }],
+    ['toolResultSiblingRevisionKey', { toolResultSiblingRevisionKey: 'result-b' }],
+    ['isChildTranscript', { isChildTranscript: true }],
+  ] as const)('answers a new key when %s moves', (_field, patch) => {
+    const before = entryOf('m1', 1n, 'hello')
+    const after = { ...before, freshness: { ...before.freshness, ...patch } }
+    expect(renderKeyForEntry(after)).not.toBe(renderKeyForEntry(before))
+  })
+
+  // A new seq under a stable id is a different message instance -- a reseq, or a
+  // notification consolidation -- so the row must be read again.
+  it('answers a new key when the message seq moves', () => {
+    expect(renderKeyForEntry(entryOf('m1', 2n, 'hello'))).not.toBe(renderKeyForEntry(entryOf('m1', 1n, 'hello')))
   })
 })

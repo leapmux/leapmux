@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
+import type { ParsedCatLine, ReadFileResult, ReminderSeverity } from '../ir/readFileResult'
 import type { RenderContext } from '../messageRenderers'
-import type { ParsedCatLine, ReadReminder } from './ReadResultView'
+import type { AlertVariant } from '~/components/common/Alert'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from '../messageRenderers'
@@ -9,79 +10,39 @@ import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { ReadResultView } from './ReadResultView'
 import { useCollapsedItems } from './useCollapsedLines'
 
-/**
- * Provider-neutral source for a Read tool result. `lines` is null for raw
- * text that doesn't parse as cat-n format (or non-text Read variants on
- * Claude — image/notebook/pdf/parts/file_unchanged); the body falls back to
- * `fallbackContent` in that case.
- */
-export interface ReadFileResultSource {
-  filePath: string
-  /** Pre-parsed cat-n lines, synthesized file lines, or null when unparseable / non-text. */
-  lines: ParsedCatLine[] | null
-  /** Total file lines (Claude tool_use_result.file.totalLines). 0 when unknown. */
-  totalLines: number
-  /** Returned lines count from Claude tool_use_result.file. 0 when unknown. */
-  numLines: number
-  /** Raw fallback content used when `lines` is null. */
-  fallbackContent: string
-  /** `<tag>...</tag>` blocks before the body (e.g. a partial-view notice), shown as alerts when expanded. */
-  leading?: ReadReminder[]
-  /** `<tag>...</tag>` blocks after the body (e.g. usage reminders), shown as alerts when expanded. */
-  trailing?: ReadReminder[]
-}
-
-/**
- * Build a shared ReadFileResultSource from raw file content plus a starting
- * line number. Claude's structured Read payloads and Pi's plain-text Read
- * results both carry real file content rather than cat-n output; normalizing
- * them here lets both providers use the same line-numbered/highlighted body.
- */
-export function readFileSourceFromContent(args: {
-  filePath: string
-  content: string
-  startLine?: number
-  totalLines?: number
-  numLines?: number
-  fallbackContent?: string
-}): ReadFileResultSource {
-  const startLine = args.startLine ?? 1
-  const lines = args.content
-    ? args.content.split('\n').map((text, i) => ({ num: startLine + i, text }))
-    : []
-  return {
-    filePath: args.filePath,
-    lines,
-    totalLines: args.totalLines ?? 0,
-    numLines: args.numLines ?? 0,
-    fallbackContent: args.fallbackContent ?? args.content,
-  }
-}
-
-/**
- * The file text a read body DRAWS.
- *
- * The parsed lines win, because a provider that returns its file already numbered
- * (`1\tfirst`) keeps those prefixes in `fallbackContent`, and the body strips them.
- * A presentation sets its `output` from this, so the Copy button hands over the text
- * on screen rather than the wire form of it.
- */
-export function readFileBodyText(source: ReadFileResultSource): string {
-  return source.lines ? source.lines.map(line => line.text).join('\n') : source.fallbackContent
-}
-
-// Stable empty fallback so memo equality holds when `lines` is null —
+// Stable empty fallback so memo equality holds when `lines` is null --
 // otherwise every read re-allocates `[]` and downstream `displayItems`
 // trips its equality check on every render.
 const EMPTY_LINES: readonly ParsedCatLine[] = []
 
+/**
+ * Draw one reminder severity as an alert style.
+ *
+ * The one place the IR's severity vocabulary meets the `Alert` component's.
+ * The two spell the same words today, so the map reads as identity -- it earns
+ * its place by being the only edit an alert-style rename needs.
+ */
+const REMINDER_ALERT_VARIANT: Record<ReminderSeverity, AlertVariant> = {
+  success: 'success',
+  warning: 'warning',
+  danger: 'danger',
+  error: 'error',
+}
+
+function reminderVariant(severity: ReminderSeverity | undefined): AlertVariant | undefined {
+  return severity === undefined ? undefined : REMINDER_ALERT_VARIANT[severity]
+}
+
 export function ReadFileResultBody(props: {
-  source: ReadFileResultSource
+  source: ReadFileResult
+  path?: string
   context?: RenderContext
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const items = createMemo<ParsedCatLine[]>(() => props.source.lines ?? (EMPTY_LINES as ParsedCatLine[]))
-  const hasParsedLines = () => props.source.lines !== null
+  // An empty list draws the fallback the same way an absent one does, so the body
+  // states a refused read's reason instead of nothing.
+  const hasParsedLines = () => props.source.lines !== null && props.source.lines.length > 0
   const { isCollapsed, displayItems } = useCollapsedItems<ParsedCatLine>({ items, expanded })
   const collapsedClass = () => hasParsedLines() && isCollapsed() ? ` ${toolResultCollapsed}` : ''
 
@@ -91,7 +52,10 @@ export function ReadFileResultBody(props: {
           stays the body-only height the off-screen estimator assumes. */}
       <Show when={expanded()}>
         <For each={props.source.leading ?? []}>
-          {r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}
+          {(r) => {
+            const variant = reminderVariant(r.severity)
+            return <Alert {...(variant !== undefined ? { variant } : {})} label={r.label}>{r.text}</Alert>
+          }}
         </For>
       </Show>
       <Show
@@ -100,15 +64,18 @@ export function ReadFileResultBody(props: {
       >
         <ReadResultView
           lines={displayItems()}
-          filePath={props.source.filePath}
-          premeasureMode={props.context?.premeasureMode}
+          {...(props.path !== undefined ? { filePath: props.path } : {})}
+          {...(props.context?.premeasureMode !== undefined ? { premeasureMode: props.context?.premeasureMode } : {})}
           syntaxHighlightingPaused={shouldPauseSyntaxHighlighting(props.context)}
-          textSelectionActive={props.context?.textSelectionActive}
+          {...(props.context?.textSelectionActive !== undefined ? { textSelectionActive: props.context?.textSelectionActive } : {})}
         />
       </Show>
       <Show when={expanded()}>
         <For each={props.source.trailing ?? []}>
-          {r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}
+          {(r) => {
+            const variant = reminderVariant(r.severity)
+            return <Alert {...(variant !== undefined ? { variant } : {})} label={r.label}>{r.text}</Alert>
+          }}
         </For>
       </Show>
     </div>

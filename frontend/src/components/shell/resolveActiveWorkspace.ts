@@ -73,5 +73,8 @@ export function resolveActiveWorkspace(args: ResolveActiveWorkspaceArgs): Active
   const saved = args.savedWorkspaceId
   if (saved && has(saved))
     return { kind: 'adopt', workspaceId: saved }
-  return { kind: 'adopt', workspaceId: workspaces[0].id }
+  // The empty case returned above, so index 0 exists; the default is the
+  // type-level guard alone.
+  const first = workspaces[0]?.id ?? ''
+  return { kind: 'adopt', workspaceId: first }
 }

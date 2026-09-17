@@ -91,7 +91,7 @@ export default antfu({
     }],
   },
 }, {
-  // The gateway pair IS the browser-storage layer, so it names the raw globals
+  // The gateway pair IS the browser-storage layer, so it spells the raw globals
   // the rule above confines. It still may not construct a Dexie: that is
   // `~/lib/idb`'s job, and only there is an open paired with the shape check.
   files: ['src/lib/browserStorage.ts', 'src/lib/browserStorageDb.ts'],
@@ -101,7 +101,7 @@ export default antfu({
   },
 }, {
   // `~/lib/idb` is where Dexie is constructed, so it is the one module that may
-  // import it -- and it wraps the raw `indexedDB` global, so it names that too.
+  // import it -- and it wraps the raw `indexedDB` global, so it spells that too.
   files: ['src/lib/idb.ts'],
   rules: {
     'no-restricted-globals': 'off',
@@ -139,6 +139,26 @@ export default antfu({
       selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
       message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
     }],
+  },
+}, {
+  // A `describe` identifies the SYMBOL under test, so it must be free to spell that
+  // symbol: `describe('DirectoryTree')`, `describe('MESSAGE_UI_DEFAULTS')`. The
+  // rule rejects any title opening with a capital, and its `--fix` lowercases
+  // character 0 alone -- so a name that keeps its capital came back misspelled
+  // (`DEFAULT_MONO_FONT_FAMILY` -> `dEFAULT_MONO_FONT_FAMILY`). Three hundred
+  // titles worked around it instead, either by flattening the name to
+  // `directorytree` or by dropping its leading capital to `directoryTree`, and
+  // both spell an identifier that does not exist.
+  //
+  // `it` and `test` keep the rule, because those titles are SENTENCES that
+  // continue the word `it`: `it('returns null for an empty payload')`. A capital
+  // there is Title Case prose, which is what this rule is for.
+  //
+  // `src/test-support/noMangledTestTitles.test.ts` carries the other half: a
+  // title may not spell a name the file knows with its capitals removed.
+  files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx'],
+  rules: {
+    'test/prefer-lowercase-title': ['error', { ignore: ['describe'] }],
   },
 }, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured

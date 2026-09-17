@@ -61,8 +61,7 @@ import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createTabTaskScope, shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
-import { hasGoalSurface } from '~/stores/chatGoal'
-import { shouldShowGoalsAndTodosSection } from '~/stores/chatTodos'
+import { hasGoalSurface, shouldShowGoalsAndTodosSection } from '~/stores/chatGoal'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
@@ -465,7 +464,10 @@ export const AppShell: Component = () => {
     if (searchParams.newWorkspace === 'true') {
       newWorkspaceDialog.open({
         // A worker and no directory: the URL identifies a machine, not a repository.
-        startPoint: { kind: 'directory', workerId: searchParams.workerId as string | undefined },
+        startPoint: {
+          kind: 'directory',
+          ...(searchParams.workerId !== undefined ? { workerId: searchParams.workerId as string } : {}),
+        },
       })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
     }
@@ -753,7 +755,7 @@ export const AppShell: Component = () => {
     const path = gitStatusProbePath(ctx)
     const key = focusedRepoKeyFromTab(tab, ctx, repoGitStore)
     if (ctx.workerId && path)
-      void repoGitStore.refresh(ctx.workerId, path, { repoKey: key })
+      void repoGitStore.refresh(ctx.workerId, path, key !== undefined ? { repoKey: key } : {})
   }
 
   // Refresh git file status when a turn ends.
@@ -1217,8 +1219,9 @@ export const AppShell: Component = () => {
     const rootId = activeRootAgentId()
     if (!rootId)
       return undefined
+    const current = chatStore.goal.get(rootId)
     const surface: GoalSurface = {
-      current: chatStore.goal.get(rootId),
+      ...(current !== undefined ? { current } : {}),
       progress: chatStore.goal.progress(rootId),
       actions: chatStore.goal.supportedActions(rootId),
       // The sidebar acts on the ACTIVE root, so it resolves the agent at CLICK
@@ -1820,7 +1823,12 @@ export const AppShell: Component = () => {
           focusEditor={focusEditor}
           loadWorkspaces={loadWorkspaces}
           onSelectWorkspace={id => handleSelectWorkspace(id)}
-          availableProviders={agentOps.availableProviders()}
+          {...(() => {
+            // Omitted until the provider scan answers: the prop takes no
+            // explicit undefined, and the hoist lets the spread narrow.
+            const providers = agentOps.availableProviders()
+            return providers !== undefined ? { availableProviders: providers } : {}
+          })()}
           onRefreshProviders={agentOps.loadAvailableProviders}
           repoGitStore={repoGitStore}
         />

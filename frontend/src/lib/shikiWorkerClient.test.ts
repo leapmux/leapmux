@@ -18,7 +18,16 @@ async function importClient() {
   return await import('./shikiWorkerClient')
 }
 
-describe('shikiworkerclient', () => {
+// Captured-worker/message lookup: each test pushes exactly the entries it
+// expects, so a missing entry is a harness failure, not a case to guard.
+function captured<T>(list: readonly T[], index: number): T {
+  const value = list[index]
+  if (value === undefined)
+    throw new Error(`expected a captured entry at index ${index}`)
+  return value
+}
+
+describe('shikiWorkerClient', () => {
   afterEach(() => {
     restoreWorker()
   })
@@ -136,11 +145,11 @@ describe('shikiworkerclient', () => {
     // Two concurrent requests for the SAME (lang, code) must dispatch ONCE.
     const a = tokenizeAsync('bash', 'echo dedup')
     const b = tokenizeAsync('bash', 'echo dedup')
-    expect(workers[0].messages).toHaveLength(1)
+    expect(captured(workers, 0).messages).toHaveLength(1)
 
     // Resolving the single dispatch resolves BOTH callers with the same tokens.
-    const { id } = workers[0].messages[0]
-    workers[0].onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
+    const { id } = captured(captured(workers, 0).messages, 0)
+    captured(workers, 0).onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
     await expect(a).resolves.toEqual(tokens)
     await expect(b).resolves.toEqual(tokens)
 
@@ -150,13 +159,13 @@ describe('shikiworkerclient', () => {
     // forever. (A successful result would be served from the token cache without
     // re-dispatching, so null is what actually exercises the cleanup.)
     const p1 = tokenizeAsync('bash', 'echo uncacheable')
-    expect(workers[0].messages).toHaveLength(2)
-    workers[0].onmessage?.({ data: { id: workers[0].messages[1].id, tokens: null } } as MessageEvent)
+    expect(captured(workers, 0).messages).toHaveLength(2)
+    captured(workers, 0).onmessage?.({ data: { id: captured(captured(workers, 0).messages, 1).id, tokens: null } } as MessageEvent)
     await expect(p1).resolves.toBeNull()
 
     const p2 = tokenizeAsync('bash', 'echo uncacheable')
-    expect(workers[0].messages).toHaveLength(3) // re-dispatched, not coalesced onto the settled null
-    workers[0].onmessage?.({ data: { id: workers[0].messages[2].id, tokens: null } } as MessageEvent)
+    expect(captured(workers, 0).messages).toHaveLength(3) // re-dispatched, not coalesced onto the settled null
+    captured(workers, 0).onmessage?.({ data: { id: captured(captured(workers, 0).messages, 2).id, tokens: null } } as MessageEvent)
     await expect(p2).resolves.toBeNull()
   })
 
@@ -190,7 +199,7 @@ describe('shikiworkerclient', () => {
     const { tokenizeAsync } = await importClient()
 
     const first = tokenizeAsync('bash', 'echo first')
-    workers[0].onerror?.()
+    captured(workers, 0).onerror?.()
     await expect(first).resolves.toBeNull()
 
     const second = tokenizeAsync('bash', 'echo second')
@@ -198,12 +207,12 @@ describe('shikiworkerclient', () => {
     second.then(() => {
       settled = true
     })
-    workers[0].onerror?.()
+    captured(workers, 0).onerror?.()
     await Promise.resolve()
     expect(settled).toBe(false)
 
-    const { id } = workers[1].messages[0]
-    workers[1].onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
+    const { id } = captured(captured(workers, 1).messages, 0)
+    captured(workers, 1).onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
     await expect(second).resolves.toEqual(tokens)
   })
 
@@ -280,7 +289,8 @@ describe('shikiworkerclient', () => {
       const pending = tokenizeAsync('bash', 'echo fallback')
       await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
       const wire = { styles: [], lines: [[[-1, 'echo fallback']]] }
-      workers[0].onmessage?.({ data: { id: workers[0].messages[0].id, tokens: wire } } as MessageEvent)
+      const worker = captured(workers, 0)
+      worker.onmessage?.({ data: { id: captured(worker.messages, 0).id, tokens: wire } } as MessageEvent)
       await expect(pending).resolves.toEqual([[{ content: 'echo fallback' }]])
     }
     finally {
@@ -321,7 +331,8 @@ describe('shikiworkerclient', () => {
       // The dispatch sits behind the store miss, so wait for the message.
       await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
       const wire = { styles: [], lines: [[[-1, 'echo save-me']]] }
-      workers[0].onmessage?.({ data: { id: workers[0].messages[0].id, tokens: wire } } as MessageEvent)
+      const worker = captured(workers, 0)
+      worker.onmessage?.({ data: { id: captured(worker.messages, 0).id, tokens: wire } } as MessageEvent)
       await expect(pending).resolves.toEqual([[{ content: 'echo save-me' }]])
 
       // The result landed in the persistent store VERBATIM in the wire shape —

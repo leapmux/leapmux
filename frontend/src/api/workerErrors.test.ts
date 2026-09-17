@@ -11,7 +11,7 @@ import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 // ChannelError half is browser-only (the CLI has no E2EE channel of its own
 // on that path) and has no CLI counterpart.
 
-describe('isworkerunreachable', () => {
+describe('isWorkerUnreachable', () => {
   it('matches NotFound on its own, since only the hub produces it about a worker', () => {
     // The Hub is answering about THIS worker id and no transport fault yields
     // NotFound, so it needs no corroboration.
@@ -104,7 +104,7 @@ describe('isworkerunreachable', () => {
 // isDisconnectError decides whether a BACKGROUND failure is worth a toast.
 // A false negative costs one redundant toast; a false positive silences a real
 // failure that nothing is retrying, so the predicate stays narrow.
-describe('isdisconnecterror', () => {
+describe('isDisconnectError', () => {
   it('matches every transport ChannelError, whichever leg produced it', () => {
     expect(isDisconnectError(new ChannelError('transport', 'channel disconnected'))).toBe(true)
     expect(isDisconnectError(new ChannelError('transport', 'channel closed by server'))).toBe(true)

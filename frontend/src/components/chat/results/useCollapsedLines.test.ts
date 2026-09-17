@@ -2,7 +2,7 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { COLLAPSED_LINE_CHAR_CAP, useCollapsedLines } from './useCollapsedLines'
 
-describe('usecollapsedlines', () => {
+describe('useCollapsedLines', () => {
   it('keeps the body uncollapsed when the line count is at or below the threshold', () => {
     createRoot((dispose) => {
       const { display, isCollapsed } = useCollapsedLines({

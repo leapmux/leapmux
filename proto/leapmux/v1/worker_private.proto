@@ -155,7 +155,7 @@ message ImageTabPayload {
   // Per-agent message seq -- the same addressing the scroll rail's mark
   // previews use.
   int64 seq = 2;
-  // Which image of that message, as the provider's `toolResultImages` orders
+  // Which image of that message, as the browser's `imagesForIR` orders
   // them. Both the row that rendered the image and this tab run that one
   // function, so the index cannot mean two things.
   int32 image_index = 3;

@@ -226,13 +226,11 @@ func readReasonixToolSupplements(ctx context.Context, path string, pending map[s
 			readErr = errors.Join(readErr, err)
 			continue
 		}
-		supplement := acpToolSupplement(originalFields)
-		output, err := json.Marshal(map[string]json.RawMessage{contracts.ReasonixToolRecordEnvelope: raw})
-		if err != nil {
+		supplement := newACPToolSupplement(originalFields)
+		if err := supplement.setRawOutput(map[string]json.RawMessage{contracts.ReasonixToolRecordEnvelope: raw}); err != nil {
 			readErr = errors.Join(readErr, err)
 			continue
 		}
-		supplement["rawOutput"] = output
 		encoded, err := json.Marshal(supplement)
 		if err != nil {
 			readErr = errors.Join(readErr, err)

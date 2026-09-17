@@ -129,8 +129,9 @@ export const StringListControl: Component<StringListControlProps> = (props) => {
     const items = [...currentValue()]
     if (from === to || from < 0 || to < 0 || from >= items.length || to >= items.length)
       return
+    // The bound above puts `from` inside the list, so splice returns one entry; `?? ''` is the type-level guard alone.
     const [moved] = items.splice(from, 1)
-    items.splice(to, 0, moved)
+    items.splice(to, 0, moved ?? '')
     write(items)
   }
 

@@ -24,7 +24,7 @@ import { questionOptionValue } from './types'
 // ---------------------------------------------------------------------------
 
 function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
-  return pluginFor(agentProvider)?.preservesSelectionNotes ?? false
+  return pluginFor(agentProvider)?.controls?.preservesSelectionNotes ?? false
 }
 
 function toggleSelection(state: ControlAnswerState, qIdx: number, value: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
@@ -92,7 +92,9 @@ export function submitBlockedReason(questions: Question[], isAnswered: (index: n
   const waiting = questions.findIndex((_, index) => !isAnswered(index))
   if (waiting < 0)
     return ''
-  const reason = questions[waiting].options?.length
+  // `findIndex` yields a valid index when non-negative; `?.` is the type-level
+  // guard alone.
+  const reason = questions[waiting]?.options?.length
     ? 'Choose an option, or type a custom answer below.'
     : 'Type a custom answer below.'
   return questions.length > 1 ? `Every question needs an answer. ${reason}` : reason
@@ -106,19 +108,20 @@ export function buildAskAnswers(
 ): Record<string, unknown> {
   const answers: Record<string, string> = {}
   for (let i = 0; i < questions.length; i++) {
+    // The loop bound keeps `i` in range; `question` is never undefined at
+    // runtime, and `?.` is the type-level guard alone.
+    const question = questions[i]
+    const key = question?.question || question?.header || `q${i}`
     const sel = state.selections()[i] ?? []
     const customText = state.customTexts()[i]?.trim()
 
     if (sel.length > 0) {
-      const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = sel.join(', ')
     }
     else if (customText) {
-      const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = customText
     }
-    else if (questions[i].allowEmpty) {
-      const key = questions[i].question || questions[i].header || `q${i}`
+    else if (question?.allowEmpty) {
       answers[key] = ''
     }
   }
@@ -154,7 +157,7 @@ export function controlQuestion(
 ): ControlQuestion | undefined {
   if (!request)
     return undefined
-  const capability = pluginFor(controlRequestProvider(request, agentProvider))?.askUserQuestion
+  const capability = pluginFor(controlRequestProvider(request, agentProvider))?.controls?.askUserQuestion
   return capability?.isRequest(request.payload)
     ? { capability, questions: capability.extractQuestions(request.payload, source) }
     : undefined
@@ -272,7 +275,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                               name={radioName}
                               checked={(props.answerState.selections()[qIdx()] ?? [])[0] === questionOptionValue(opt)}
                               onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), false, questions().length, preservesSelectionNotes(props.agentProvider))}
-                              disabled={props.optionsDisabled}
+                              {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
                             />
                           )}
                         />
@@ -290,7 +293,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                         type="checkbox"
                         checked={isSelected(props.answerState, qIdx(), questionOptionValue(opt))}
                         onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), true, questions().length, preservesSelectionNotes(props.agentProvider))}
-                        disabled={props.optionsDisabled}
+                        {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
                       />
                     )}
                   />

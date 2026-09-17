@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../messageRenderers'
+import { renderMessageContent } from '../rowRenderers'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
@@ -24,8 +24,8 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do la
     const sources = testMessageSources({ request: () => parsed(request), result: () => parsed(result) })
     const { container } = render(() => (
       <>
-        <div data-row="request">{renderMessageContent(request, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin.classify(parsed(request)), provider)}</div>
-        <div data-row="result">{renderMessageContent(result, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin.classify(parsed(result)), provider)}</div>
+        <div data-row="request">{renderMessageContent(request, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin?.transcript.classify(parsed(request)), provider)}</div>
+        <div data-row="result">{renderMessageContent(result, { premeasureMode: true, spanType: 'TodoWrite', sources }, plugin?.transcript.classify(parsed(result)), provider)}</div>
       </>
     ))
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)

@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"log/slog"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // acpMessageContent keeps the incoming event intact and retains missing protocol fields separately.
@@ -13,10 +15,11 @@ func (b *acpBase) acpMessageContent(original, state json.RawMessage) MessageCont
 		return content
 	}
 	var originalID, stateID string
-	if json.Unmarshal(originalFields["toolCallId"], &originalID) != nil || originalID == "" || json.Unmarshal(stateFields["toolCallId"], &stateID) != nil || originalID != stateID {
+	if json.Unmarshal(originalFields[contracts.ACPSupplementIdentityToolCallID], &originalID) != nil || originalID == "" ||
+		json.Unmarshal(stateFields[contracts.ACPSupplementIdentityToolCallID], &stateID) != nil || originalID != stateID {
 		return content
 	}
-	supplement := acpToolSupplement(originalFields)
+	supplement := newACPToolSupplement(originalFields)
 	protocol := make(map[string]json.RawMessage)
 	for key, value := range stateFields {
 		if _, present := originalFields[key]; !present {
@@ -24,27 +27,19 @@ func (b *acpBase) acpMessageContent(original, state json.RawMessage) MessageCont
 		}
 	}
 	if len(protocol) > 0 {
-		supplement["protocol"], _ = json.Marshal(protocol)
-	}
-	var blocks []struct {
-		Type       string `json:"type"`
-		TerminalID string `json:"terminalId"`
-	}
-	if json.Unmarshal(stateFields["content"], &blocks) == nil {
-		terminals := make(map[string]acpTerminalResult)
-		for _, block := range blocks {
-			if block.Type != "terminal" || block.TerminalID == "" {
-				continue
-			}
-			if result, present := b.terminalResultFor(block.TerminalID); present {
-				terminals[block.TerminalID] = result
-			}
-		}
-		if len(terminals) > 0 {
-			supplement["terminals"], _ = json.Marshal(terminals)
+		if err := supplement.setProtocol(protocol); err != nil {
+			slog.Warn("Encode ACP tool supplement", "agent_id", b.agentID, "error", err)
+			return content
 		}
 	}
-	if len(protocol) == 0 && len(supplement["terminals"]) == 0 {
+	terminals := b.acpToolTerminals(stateFields[contracts.ACPContentBlockContent])
+	if len(terminals) > 0 {
+		if err := supplement.setTerminals(terminals); err != nil {
+			slog.Warn("Encode ACP tool supplement", "agent_id", b.agentID, "error", err)
+			return content
+		}
+	}
+	if len(protocol) == 0 && len(terminals) == 0 {
 		return content
 	}
 	encoded, err := json.Marshal(supplement)
@@ -56,6 +51,27 @@ func (b *acpBase) acpMessageContent(original, state json.RawMessage) MessageCont
 	return content
 }
 
+// acpToolTerminals reads the output of every terminal this tool call refers to.
+//
+// A terminal LeapMux no longer holds is left out rather than stored empty, so the row
+// states that nothing can be read for it instead of showing an empty stream.
+func (b *acpBase) acpToolTerminals(content json.RawMessage) map[string]contracts.ACPTerminalResult {
+	var blocks []contracts.ACPToolContentBlock
+	if json.Unmarshal(content, &blocks) != nil {
+		return nil
+	}
+	terminals := make(map[string]contracts.ACPTerminalResult)
+	for _, block := range blocks {
+		if block.Type != contracts.ACPBlockTypeTerminal || block.TerminalID == "" {
+			continue
+		}
+		if result, present := b.terminalResultFor(block.TerminalID); present {
+			terminals[block.TerminalID] = result
+		}
+	}
+	return terminals
+}
+
 // ResolveProviderData gives semantic extractors the same retained provider fields as the frontend.
 func (acpProvider) ResolveProviderData(content MessageContent) []byte {
 	return resolveACPMessageContent(content)
@@ -65,26 +81,16 @@ func resolveACPMessageContent(content MessageContent) []byte {
 	if len(content.Supplemental) == 0 {
 		return content.Original
 	}
-	var original, supplement map[string]json.RawMessage
+	var original map[string]json.RawMessage
+	var supplement acpToolSupplement
 	if json.Unmarshal(content.Original, &original) != nil || original == nil || json.Unmarshal(content.Supplemental, &supplement) != nil || supplement == nil {
 		return content.Original
 	}
-	for _, key := range []string{"sessionUpdate", "toolCallId", "status"} {
-		before, present := original[key]
-		after, supplied := supplement[key]
-		if present != supplied {
-			return content.Original
-		}
-		if !present {
-			continue
-		}
-		var first, second string
-		if json.Unmarshal(before, &first) != nil || json.Unmarshal(after, &second) != nil || first != second {
-			return content.Original
-		}
+	if !supplement.identityMatches(original) {
+		return content.Original
 	}
 	var protocol map[string]json.RawMessage
-	_ = json.Unmarshal(supplement["protocol"], &protocol)
+	_ = json.Unmarshal(supplement[contracts.ACPSupplementProtocol], &protocol)
 	changed := false
 	for key, value := range protocol {
 		if _, exists := original[key]; !exists {
@@ -92,9 +98,9 @@ func resolveACPMessageContent(content MessageContent) []byte {
 			changed = true
 		}
 	}
-	for _, key := range []string{"title", "kind", "rawInput", "locations"} {
+	for _, key := range contracts.ACPSupplementRequestKeys {
 		if value, exists := supplement[key]; exists {
-			if key == "rawInput" {
+			if key == contracts.ACPSupplementRequestRawInput {
 				var before, after map[string]json.RawMessage
 				if json.Unmarshal(original[key], &before) == nil && before != nil && json.Unmarshal(value, &after) == nil && after != nil {
 					for name, field := range after {

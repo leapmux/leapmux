@@ -58,7 +58,7 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
                 </Show>
                 <DisabledReasonMenuItem
                   reason={reason()}
-                  class={item.danger ? dangerMenuItem : undefined}
+                  {...(item.danger ? { class: dangerMenuItem } : {})}
                   data-testid={`goal-action-${item.action}`}
                   onClick={() => props.goal.onAction?.(item.action)}
                 >

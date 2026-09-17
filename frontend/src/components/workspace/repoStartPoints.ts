@@ -215,7 +215,7 @@ function labelCheckouts(
         workerId: c.workerId,
         gitToplevel: c.gitToplevel,
         isWorktree: c.isWorktree,
-        currentBranch: c.currentBranch || undefined,
+        ...(c.currentBranch ? { currentBranch: c.currentBranch } : {}),
       },
     }
   })

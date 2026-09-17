@@ -11,7 +11,7 @@ const TRAILING_SEP_RE = /[\\/]+$/
 const FWD_SLASH_G = /\//g
 const BACK_SLASH_G = /\\/g
 
-function isSep(ch: string): boolean {
+function isSep(ch: string | undefined): boolean {
   return ch === '\\' || ch === '/'
 }
 
@@ -218,9 +218,10 @@ export function fileUriToPath(uri: string): string | undefined {
 
 export function join(parts: string[], flavor?: PathFlavor): string {
   const filtered = parts.filter(p => p !== undefined && p !== null && p !== '')
-  if (filtered.length === 0)
+  const first = filtered[0]
+  if (first === undefined)
     return ''
-  const f = flavorOf(filtered[0], flavor)
+  const f = flavorOf(first, flavor)
   const s = sep(f)
   // A first element that is NOTHING BUT separators is a filesystem root: `/`,
   // and win32's volume-less `\`. It becomes a prefix rather than an element,
@@ -230,10 +231,12 @@ export function join(parts: string[], flavor?: PathFlavor): string {
   // RELATIVE, which is how a tree rooted at `/` lost its git decorations.
   // Win32 hides the defect: `C:\` strips to `C:`, which still identifies the
   // drive.
-  const rooted = stripTrailingSep(filtered[0]) === ''
+  const rooted = stripTrailingSep(first) === ''
   const out: string[] = []
   for (let i = rooted ? 1 : 0; i < filtered.length; i++) {
     let piece = filtered[i]
+    if (piece === undefined)
+      continue
     if (i > 0)
       piece = piece.replace(LEADING_SEP_RE, '')
     if (i < filtered.length - 1)
@@ -304,7 +307,7 @@ export function basename(p: string, flavor?: PathFlavor): string {
   // No tail after the last separator: fall back to segment-aware split so
   // `basename('C:\\')` returns the volume, `basename('/')` returns ''.
   const parts = split(p, f)
-  return parts.length === 0 ? '' : parts[parts.length - 1]
+  return parts.length === 0 ? '' : (parts[parts.length - 1] ?? '')
 }
 
 /**
@@ -453,8 +456,13 @@ export function relativizePath(
     const baseParts = split(wdNorm, f)
     const absParts = split(absNorm, f)
     let common = 0
-    while (common < baseParts.length && common < absParts.length && pathEq(baseParts[common], absParts[common], f))
+    while (common < baseParts.length && common < absParts.length) {
+      const basePart = baseParts[common]
+      const absPart = absParts[common]
+      if (basePart === undefined || absPart === undefined || !pathEq(basePart, absPart, f))
+        break
       common++
+    }
     const ups = baseParts.length - common
     const dotRel = `${'..'.concat(s).repeat(ups)}${absParts.slice(common).join(s)}`
     if (dotRel.length < best.length)

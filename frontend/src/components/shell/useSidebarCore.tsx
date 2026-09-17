@@ -9,9 +9,9 @@ import type { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { GoalSurface } from '~/stores/chatGoal'
-import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
@@ -69,10 +69,15 @@ export interface SidebarCommonProps {
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
-  onFileMention?: (path: string) => void
-  onOpenTerminal?: (dirPath: string) => void
+  // Required-with-undefined rather than optional: both arrive through the
+  // always-present reactive getters that `buildCommonSidebarProps` mints, whose
+  // undefined case (an archived workspace exposes no mention/terminal
+  // affordance) cannot be expressed as an omitted key.
+  onFileMention: ((path: string) => void) | undefined
+  onOpenTerminal: ((dirPath: string) => void) | undefined
   gitStatusStore: ReturnType<typeof createRepoGitStore>
-  activeFilePath?: string
+  /** Always provided via a reactive getter; undefined when no file tab is active. */
+  activeFilePath: string | undefined
   hasActiveFileTab?: boolean
   showGoalsAndTodos: boolean
   activeTodos: TodoItem[]
@@ -152,7 +157,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
         const path = gitStatusProbePath(probeCtx)
         const key = focusedRepoKeyFromTab(tab, probeCtx, props.gitStatusStore)
         if (props.workerId && path)
-          void props.gitStatusStore.refresh(props.workerId, path, { repoKey: key })
+          void props.gitStatusStore.refresh(props.workerId, path, key !== undefined ? { repoKey: key } : {})
         handle.refresh()
       },
       toggleHiddenFiles: () => handle.toggleShowHiddenFiles(),
@@ -169,9 +174,9 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     onSelectWorkspace: props.onSelectWorkspace,
     onRefreshWorkspaces: props.onRefreshWorkspaces,
     onDeleteWorkspace: props.onDeleteWorkspace,
-    onConfirmDelete: props.onConfirmDelete,
-    onConfirmArchive: props.onConfirmArchive,
-    onConfirmEmptyArchive: props.onConfirmEmptyArchive,
+    ...(props.onConfirmDelete !== undefined ? { onConfirmDelete: props.onConfirmDelete } : {}),
+    ...(props.onConfirmArchive !== undefined ? { onConfirmArchive: props.onConfirmArchive } : {}),
+    ...(props.onConfirmEmptyArchive !== undefined ? { onConfirmEmptyArchive: props.onConfirmEmptyArchive } : {}),
     // The `recent` sort ranks a workspace by its most recently activated tab.
     getTabsForWorkspace: (wsId: string) => props.view?.forWorkspace(wsId) ?? [],
     onPostArchiveWorkspace: (workspaceId) => {

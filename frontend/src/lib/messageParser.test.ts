@@ -1,11 +1,10 @@
 import type { ParsedMessageContent } from './messageParser'
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo } from '~/models/agentSession'
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
 import { ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import {
-  extractCompactionContextTokens,
   extractContextUsage,
   extractPlanFilePath,
   extractPlanUpdated,
@@ -13,7 +12,6 @@ import {
   extractSettingsChanges,
   getInnerMessage,
   getInnerMessageType,
-  isCompactBoundary,
   messageUsage,
   parseMessageContent,
 } from './messageParser'
@@ -23,9 +21,10 @@ function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint,
   return makeMessage({
     source,
     content: rawContent(content),
-    seq: opts?.seq,
-    spanId: opts?.spanId,
-    spanType: opts?.spanType,
+    // The factory's Partial<> optionals reject an explicit undefined; omit when absent.
+    ...(opts?.seq === undefined ? {} : { seq: opts.seq }),
+    ...(opts?.spanId === undefined ? {} : { spanId: opts.spanId }),
+    ...(opts?.spanType === undefined ? {} : { spanType: opts.spanType }),
   })
 }
 
@@ -366,157 +365,17 @@ describe('extractContextUsage', () => {
 })
 
 // ---------------------------------------------------------------------------
-// isCompactBoundary
-// ---------------------------------------------------------------------------
-
-describe('isCompactBoundary', () => {
-  it('recognizes the Claude compact_boundary system message', () => {
-    expect(isCompactBoundary({ type: 'system', subtype: 'compact_boundary' })).toBe(true)
-  })
-
-  it('recognizes a completed Codex contextCompaction item at the top level', () => {
-    expect(isCompactBoundary({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1' })).toBe(true)
-  })
-
-  it('recognizes a completed Codex contextCompaction item inside an item/completed notification', () => {
-    expect(isCompactBoundary({
-      method: 'item/completed',
-      params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-    })).toBe(true)
-  })
-
-  it('refuses an item/completed notification for any other item type', () => {
-    expect(isCompactBoundary({
-      method: 'item/completed',
-      params: { item: { type: 'agentMessage', id: 'msg-1' } },
-    })).toBe(false)
-  })
-
-  it('refuses the item/started notification that only opens the compaction', () => {
-    expect(isCompactBoundary({
-      method: 'item/started',
-      params: { item: { type: 'contextCompaction', id: 'compact-1' } },
-    })).toBe(false)
-  })
-
-  it('refuses an item/completed notification with no params', () => {
-    expect(isCompactBoundary({ method: 'item/completed' })).toBe(false)
-  })
-
-  it('refuses the thread/compacted notification, which carries no boundary', () => {
-    expect(isCompactBoundary({ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } })).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// extractCompactionContextTokens
-// ---------------------------------------------------------------------------
-
-describe('extractCompactionContextTokens', () => {
-  /** Wrap compaction metadata in the Claude `compact_boundary` system shape. */
-  function boundary(compactMetadata: Record<string, unknown>) {
-    return { type: 'system', subtype: 'compact_boundary', compact_metadata: compactMetadata }
-  }
-  const parse = (content: unknown) => parseMessageContent(makeMsg(MessageSource.AGENT, content))
-  const extractPost = (parsed: ReturnType<typeof parse>) => extractCompactionContextTokens(parsed)
-
-  it('returns post_tokens when the boundary carries it directly', () => {
-    expect(extractPost(parse(boundary({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 })))).toBe(8476)
-  })
-
-  it('derives post from pre_tokens minus tokens_saved when post_tokens is absent', () => {
-    expect(extractPost(parse(boundary({ trigger: 'auto', pre_tokens: 100000, tokens_saved: 40000 })))).toBe(60000)
-  })
-
-  it('prefers explicit post_tokens over deriving from tokens_saved', () => {
-    expect(extractPost(parse(boundary({ pre_tokens: 100000, post_tokens: 8000, tokens_saved: 1 })))).toBe(8000)
-  })
-
-  it('reads camelCase keys (compactMetadata / postTokens)', () => {
-    const content = { type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, postTokens: 8000 } }
-    expect(extractPost(parse(content))).toBe(8000)
-  })
-
-  it('derives from camelCase preTokens minus tokensSaved', () => {
-    const content = { type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, tokensSaved: 25000 } }
-    expect(extractPost(parse(content))).toBe(75000)
-  })
-
-  it('returns undefined when only pre_tokens is present (nothing to resolve post from)', () => {
-    expect(extractPost(parse(boundary({ trigger: 'auto', pre_tokens: 100000 })))).toBeUndefined()
-  })
-
-  it('returns undefined when tokens_saved has no pre_tokens to anchor it', () => {
-    expect(extractPost(parse(boundary({ tokens_saved: 5000 })))).toBeUndefined()
-  })
-
-  it('returns undefined when the boundary carries no metadata object', () => {
-    expect(extractPost(parse({ type: 'system', subtype: 'compact_boundary' }))).toBeUndefined()
-  })
-
-  it('returns 0 for an explicit post_tokens of 0 (fully cleared context)', () => {
-    expect(extractPost(parse(boundary({ pre_tokens: 100000, post_tokens: 0 })))).toBe(0)
-  })
-
-  it('clamps a derived negative post to 0 when tokens_saved exceeds pre_tokens', () => {
-    expect(extractPost(parse(boundary({ pre_tokens: 30000, tokens_saved: 50000 })))).toBe(0)
-  })
-
-  it('clamps an explicit negative post_tokens to 0', () => {
-    expect(extractPost(parse(boundary({ pre_tokens: 100000, post_tokens: -5 })))).toBe(0)
-  })
-
-  it('returns undefined for a completed Codex contextCompaction item without metadata', () => {
-    expect(extractPost(parse({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' }))).toBeUndefined()
-  })
-
-  it('returns undefined for a microcompact boundary (Claude emits no metadata)', () => {
-    const content = { type: 'system', subtype: 'microcompact_boundary', microcompactMetadata: { preTokens: 200000, tokensSaved: 50000 } }
-    expect(extractPost(parse(content))).toBeUndefined()
-  })
-
-  it('returns undefined for non-boundary messages', () => {
-    expect(extractPost(parse({ type: 'assistant', message: { usage: { input_tokens: 10 } } }))).toBeUndefined()
-  })
-
-  it('finds a compact_boundary consolidated after another notification in a thread', () => {
-    const msg = makeMsg(MessageSource.AGENT, wrap(
-      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
-      boundary({ pre_tokens: 100000, post_tokens: 8000 }),
-    ))
-    expect(extractPost(parseMessageContent(msg))).toBe(8000)
-  })
-
-  it('uses the most recent boundary when a thread carries more than one', () => {
-    const msg = makeMsg(MessageSource.AGENT, wrap(
-      boundary({ pre_tokens: 100000, post_tokens: 8000 }),
-      boundary({ pre_tokens: 50000, post_tokens: 3000 }),
-    ))
-    expect(extractPost(parseMessageContent(msg))).toBe(3000)
-  })
-
-  it('skips a most-recent boundary with no resolvable post and uses the earlier one that has it', () => {
-    // The reverse scan must not bail out on the first boundary it meets when that
-    // boundary carries no post (here only pre_tokens); it falls through to the
-    // earlier boundary whose post_tokens can still refresh the grid.
-    const msg = makeMsg(MessageSource.AGENT, wrap(
-      boundary({ pre_tokens: 50000, post_tokens: 3000 }),
-      boundary({ trigger: 'auto', pre_tokens: 100000 }),
-    ))
-    expect(extractPost(parseMessageContent(msg))).toBe(3000)
-  })
-})
-
-// ---------------------------------------------------------------------------
 // extractResultMetadata
 // ---------------------------------------------------------------------------
 
+/*
+ * This reads the SESSION metadata a turn end carries -- the context window, the
+ * normalized usage and the running cost -- and nothing else. The turn's own totals
+ * (`num_tool_uses`, `total_cost_usd`, `duration_ms`) belong to the row the reader
+ * sees, and `dividerMetaFromMessage` states them there.
+ */
 describe('extractResultMetadata', () => {
-  // The neutral path with no provider subtype derivation. The subtypeFallback is required, so a
-  // caller with no provider fallback passes this explicitly.
-  const noSubtype = (): string | undefined => undefined
-
-  it('extracts subtype, contextWindow, and cost', () => {
+  it('extracts contextWindow and cost', () => {
     const content = {
       type: 'result',
       subtype: 'turn_end',
@@ -526,10 +385,9 @@ describe('extractResultMetadata', () => {
       },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)
+    const result = extractResultMetadata(parseMessageContent(msg), undefined)
 
     expect(result).toEqual({
-      subtype: 'turn_end',
       contextWindow: 200000,
       totalCostUsd: 0.10,
     })
@@ -550,7 +408,7 @@ describe('extractResultMetadata', () => {
       messages: [],
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)
+    const result = extractResultMetadata(parseMessageContent(msg), undefined)
 
     expect(result).toEqual({
       contextUsage: {
@@ -575,10 +433,9 @@ describe('extractResultMetadata', () => {
       },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), 'opus[1m]', noSubtype)
+    const result = extractResultMetadata(parseMessageContent(msg), 'opus[1m]')
 
     expect(result).toEqual({
-      subtype: 'turn_end',
       contextWindow: 1000000,
     })
   })
@@ -593,10 +450,9 @@ describe('extractResultMetadata', () => {
       },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), 'opus', noSubtype)
+    const result = extractResultMetadata(parseMessageContent(msg), 'opus')
 
     expect(result).toEqual({
-      subtype: 'turn_end',
       contextWindow: 200000,
     })
   })
@@ -611,23 +467,22 @@ describe('extractResultMetadata', () => {
       },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), 'sonnet', noSubtype)
+    const result = extractResultMetadata(parseMessageContent(msg), 'sonnet')
 
     expect(result).toEqual({
-      subtype: 'turn_end',
       contextWindow: 1000000,
     })
   })
 
   it('returns null for empty inner message', () => {
     const msg = makeMsg(MessageSource.AGENT, {})
-    expect(extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)).toBeNull()
+    expect(extractResultMetadata(parseMessageContent(msg), undefined)).toBeNull()
   })
 
-  it('extracts only subtype when no modelUsage or cost', () => {
+  it('answers null when the frame carries no session metadata', () => {
     const content = { type: 'result', subtype: 'turn_end' }
     const msg = makeMsg(MessageSource.AGENT, content)
-    expect(extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)).toEqual({ subtype: 'turn_end' })
+    expect(extractResultMetadata(parseMessageContent(msg), undefined)).toBeNull()
   })
 
   it('returns null for subagent results with parent_tool_use_id', () => {
@@ -641,46 +496,7 @@ describe('extractResultMetadata', () => {
       },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
-    expect(extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)).toBeNull()
-  })
-
-  it('extracts numToolUses from Claude Code result message', () => {
-    const content = {
-      type: 'result',
-      subtype: 'turn_end',
-      num_tool_uses: 5,
-    }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)
-    expect(result).toEqual({ subtype: 'turn_end', numToolUses: 5 })
-  })
-
-  it('extracts numToolUses=0 from Claude Code simple exchange', () => {
-    const content = {
-      type: 'result',
-      subtype: 'turn_end',
-      num_tool_uses: 0,
-    }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, noSubtype)
-    expect(result).toEqual({ subtype: 'turn_end', numToolUses: 0 })
-  })
-
-  it('takes the subtype from the provider fallback when inner.subtype is absent (with neutral numToolUses)', () => {
-    // A provider whose terminal envelope carries no `subtype` derives it via the fallback (Codex
-    // maps turn.status -> turn_completed; that derivation is tested in the codex plugin). Here a
-    // stub fallback stands in, and num_tool_uses is read by the neutral extractor.
-    const content = { turn: { status: 'completed' }, num_tool_uses: 3 }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, p => (getInnerMessage(p)?.turn ? 'turn_completed' : undefined))
-    expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 3 })
-  })
-
-  it('ignores the subtype fallback when inner.subtype is already present', () => {
-    const content = { type: 'result', subtype: 'turn_end', num_tool_uses: 1 }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const result = extractResultMetadata(parseMessageContent(msg), undefined, () => 'SHOULD_NOT_BE_USED')
-    expect(result).toEqual({ subtype: 'turn_end', numToolUses: 1 })
+    expect(extractResultMetadata(parseMessageContent(msg), undefined)).toBeNull()
   })
 })
 

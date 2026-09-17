@@ -8,6 +8,7 @@ import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/cha
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { assignDefined } from '~/lib/jsonPick'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { repoKey, repoKeyFromTab, upsertRepoGitFromProtoStatus } from './repoGit'
@@ -68,7 +69,7 @@ export interface RepoRef {
  * caller applies is a guard the next caller does not have.
  */
 export function isSameRepo(
-  tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
+  tabLike: { workerId?: string | undefined, gitToplevel?: string | undefined } | null | undefined,
   repo: RepoRef,
 ): boolean {
   if (!tabLike || !repo.workerId || !repo.gitToplevel)
@@ -84,24 +85,29 @@ export function isSameRepo(
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> {
   const status: TerminalStatus
     = term.status === TerminalStatus.READY && term.exited ? TerminalStatus.EXITED : term.status
-  return {
-    title: term.title || undefined,
+  const fields: Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> = {
     workerId,
-    workingDir: term.workingDir || undefined,
-    shellStartDir: term.shellStartDir || undefined,
-    screen: term.screen.length > 0 ? term.screen : undefined,
-    lastOffset: term.screen.length > 0 ? Number(term.screenEndOffset) : undefined,
-    cols: term.cols || undefined,
-    rows: term.rows || undefined,
-    ...(term.gitStatus?.toplevel ? { gitToplevel: term.gitStatus.toplevel } : {}),
     status,
     startupError: term.startupError,
     startupMessage: term.startupMessage,
-    // Any persisted screen means the shell already painted content; an
-    // exited DB-only terminal has no future data source, so it must not
-    // remain covered by the startup overlay either.
-    contentReady: term.screen.length > 0 || term.exited ? true : undefined,
   }
+  // Empty proto optionals map to ABSENCE, not a present-undefined key: patch()
+  // skips undefined either way, but a present-undefined key would count in
+  // shallowEqual's key-count comparison when these fields join a tab row.
+  assignDefined(fields, 'title', term.title || undefined)
+  assignDefined(fields, 'workingDir', term.workingDir || undefined)
+  assignDefined(fields, 'shellStartDir', term.shellStartDir || undefined)
+  assignDefined(fields, 'screen', term.screen.length > 0 ? term.screen : undefined)
+  assignDefined(fields, 'lastOffset', term.screen.length > 0 ? Number(term.screenEndOffset) : undefined)
+  assignDefined(fields, 'cols', term.cols || undefined)
+  assignDefined(fields, 'rows', term.rows || undefined)
+  // Any persisted screen means the shell already painted content; an
+  // exited DB-only terminal has no future data source, so it must not
+  // remain covered by the startup overlay either.
+  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.exited ? true : undefined)
+  if (term.gitStatus?.toplevel)
+    fields.gitToplevel = term.gitStatus.toplevel
+  return fields
 }
 
 /**
@@ -199,24 +205,27 @@ export function protoToAgentTabFields(
   // takes the other half. Both halves read the same status, so both are
   // skipped together when it carries no toplevel.
   upsertRepoGitFromProtoStatus(store, workerId, agent.gitStatus, opts)
-  return {
-    title: agent.title || undefined,
+  const fields: Partial<AgentTab> = {
     workerId,
     workingDir: agent.workingDir,
     agentProvider: agent.agentProvider,
     agentStatus: agent.status,
-    agentSessionId: agent.agentSessionId || undefined,
-    ...deriveOptionGroupTabFields(agent.optionGroups),
-    createdAt: agent.createdAt || undefined,
-    startupError: agent.startupError || undefined,
-    startupMessage: agent.startupMessage || undefined,
-    parentAgentId: agent.parentAgentId || undefined,
     acceptsMessages: agent.acceptsMessages,
     supportsSteering: agent.supportsSteering,
     supportsPreemption: agent.supportsPreemption,
-    rootAgentId: agent.rootAgentId || undefined,
-    ...(agent.gitStatus?.toplevel ? { gitToplevel: agent.gitStatus.toplevel } : {}),
+    ...deriveOptionGroupTabFields(agent.optionGroups),
   }
+  // Same absence-not-undefined rule as protoToTerminalTabFields.
+  assignDefined(fields, 'title', agent.title || undefined)
+  assignDefined(fields, 'agentSessionId', agent.agentSessionId || undefined)
+  assignDefined(fields, 'createdAt', agent.createdAt || undefined)
+  assignDefined(fields, 'startupError', agent.startupError || undefined)
+  assignDefined(fields, 'startupMessage', agent.startupMessage || undefined)
+  assignDefined(fields, 'parentAgentId', agent.parentAgentId || undefined)
+  assignDefined(fields, 'rootAgentId', agent.rootAgentId || undefined)
+  if (agent.gitStatus?.toplevel)
+    fields.gitToplevel = agent.gitStatus.toplevel
+  return fields
 }
 
 /**
@@ -316,7 +325,10 @@ export function descendantAgentTabs(tabs: readonly Tab[], agentId: string): Agen
  * harmful must ask whether the tab is hydrated as well -- see `isSubagent` in
  * UseAgentSettledOpts, which distinguishes "root" from "not known yet".
  */
-export function isSubagentTab(tab: { type: TabType, parentAgentId?: string } | undefined): boolean {
+// Tab-shaped inputs keep `| undefined` optionals: tab rows are assembled from
+// metadata records whose absent fields read as undefined (see tab.types.ts), so
+// these params admit a whole Tab without rebuilding it per call site.
+export function isSubagentTab(tab: { type: TabType, parentAgentId?: string | undefined } | undefined): boolean {
   return tab?.type === TabType.AGENT && !!tab.parentAgentId
 }
 
@@ -333,7 +345,7 @@ export function isSubagentTab(tab: { type: TabType, parentAgentId?: string } | u
  * actually refuses a write, because the mounted editor is the one that knows and
  * every route to a composer goes through that registry.
  */
-export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string, acceptsMessages?: boolean, agentProvider?: AgentProvider }): boolean {
+export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string | undefined, acceptsMessages?: boolean | undefined, agentProvider?: AgentProvider | undefined }): boolean {
   if (tab.type !== TabType.AGENT)
     return false
   if (!tab.parentAgentId)
@@ -343,16 +355,16 @@ export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string
   // "which providers can steer a subagent" has a single source of truth.
   if (tab.acceptsMessages !== undefined)
     return tab.acceptsMessages
-  return pluginFor(tab.agentProvider)?.supportsSubagentSend ?? false
+  return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentSend ?? false
 }
 
 /** Whether an agent tab can send a direct interrupt to its process owner. */
-export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string, agentProvider?: AgentProvider } | undefined): boolean {
+export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string | undefined, agentProvider?: AgentProvider | undefined } | undefined): boolean {
   if (tab?.type !== TabType.AGENT)
     return false
   if (!tab.parentAgentId)
     return true
-  return pluginFor(tab.agentProvider)?.supportsSubagentInterrupt ?? false
+  return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentInterrupt ?? false
 }
 
 /**
@@ -508,7 +520,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
  * Agent tabs never carry a shellStartDir so this collapses to workingDir
  * for them.
  */
-function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): string {
+function effectiveGitDir(tab: { shellStartDir?: string | undefined, workingDir?: string | undefined }): string {
   return tab.shellStartDir || tab.workingDir || ''
 }
 
@@ -616,7 +628,7 @@ export function planOptimisticRepoGit(
         branch: from.branch,
         originUrl: from.originUrl,
         isWorktree: from.isWorktree,
-        gitStatusSeen: from.gitStatusSeen,
+        ...(from.gitStatusSeen !== undefined ? { gitStatusSeen: from.gitStatusSeen } : {}),
       })
     },
   }

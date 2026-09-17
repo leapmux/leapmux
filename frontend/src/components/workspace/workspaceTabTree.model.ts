@@ -122,15 +122,17 @@ export function workerProjectionsEqual(
   if (a.length !== b.length)
     return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id)
+    const x = a[i]
+    const y = b[i]
+    if (x === undefined || y === undefined)
       return false
-    const x = a[i].info
-    const y = b[i].info
-    if (x === y)
+    if (x.id !== y.id)
+      return false
+    if (x.info === y.info)
       continue
-    if (!x || !y)
+    if (!x.info || !y.info)
       return false
-    if (!shallowEqualExcept(x, y, ['updatedAt']))
+    if (!shallowEqualExcept(x.info, y.info, ['updatedAt']))
       return false
   }
   return true
@@ -401,8 +403,11 @@ export function buildTree(
   // here and reuse for every branch / the ungrouped bucket.
   const tileIndex = new Map<string, number>()
   if (tileOrder) {
-    for (let i = 0; i < tileOrder.length; i++)
-      tileIndex.set(tileOrder[i], i)
+    for (let i = 0; i < tileOrder.length; i++) {
+      const tile = tileOrder[i]
+      if (tile !== undefined)
+        tileIndex.set(tile, i)
+    }
   }
   const sort = (xs: Tab[]) => sortTabs(xs, tileIndex)
 

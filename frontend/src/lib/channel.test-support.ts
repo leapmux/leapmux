@@ -89,7 +89,7 @@ class TestCipherState {
   rekeyWithSecret(_dhSecret: Uint8Array, _pqSecret: Uint8Array | null, _retainPrev: boolean): void {
     const next = new Uint8Array(this.k)
     for (let i = 0; i < next.length; i++)
-      next[i] = (next[i] + 1) & 0xFF
+      next[i] = ((next[i] ?? 0) + 1) & 0xFF
     this.k = next
     this.n = 0
   }

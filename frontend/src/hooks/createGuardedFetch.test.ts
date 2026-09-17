@@ -35,7 +35,12 @@ describe('createGuardedFetch', () => {
       createRoot(async (dispose) => {
         const apply = vi.fn()
         const fetcher = createGuardedFetch<number, string>({
-          fetch: i => fetches[i](),
+          fetch: (i) => {
+            const f = fetches[i]
+            if (f === undefined)
+              throw new Error(`no fetch stub for run ${i}`)
+            return f()
+          },
           applySuccess: apply,
         })
         const p1 = fetcher.run(0)
@@ -86,7 +91,12 @@ describe('createGuardedFetch', () => {
       createRoot(async (dispose) => {
         const onError = vi.fn()
         const fetcher = createGuardedFetch<number, string>({
-          fetch: i => fetches[i](),
+          fetch: (i) => {
+            const f = fetches[i]
+            if (f === undefined)
+              throw new Error(`no fetch stub for run ${i}`)
+            return f()
+          },
           applySuccess: vi.fn(),
           onError,
         })
@@ -101,7 +111,7 @@ describe('createGuardedFetch', () => {
         second.reject(new Error('second-boom'))
         await p2
         expect(onError).toHaveBeenCalledTimes(1)
-        expect(onError.mock.calls[0][1]).toBe(1)
+        expect(onError.mock.calls[0]?.[1]).toBe(1)
         expect(fetcher.loading()).toBe(false)
         dispose()
         done()
@@ -240,8 +250,8 @@ describe('createGuardedFetch', () => {
         expect(signals).toHaveLength(2)
         // Each run got its own (distinct) signal; both completed without abort.
         expect(signals[0]).not.toBe(signals[1])
-        expect(signals[0].aborted).toBe(false)
-        expect(signals[1].aborted).toBe(false)
+        expect(signals[0]?.aborted).toBe(false)
+        expect(signals[1]?.aborted).toBe(false)
         dispose()
         done()
       })
@@ -258,17 +268,20 @@ describe('createGuardedFetch', () => {
         const fetcher = createGuardedFetch<number, string>({
           fetch: (i, signal) => {
             signals.push(signal)
-            return fetches[i]()
+            const f = fetches[i]
+            if (f === undefined)
+              throw new Error(`no fetch stub for run ${i}`)
+            return f()
           },
           applySuccess: vi.fn(),
         })
         const p1 = fetcher.run(0)
         await flush()
-        expect(signals[0].aborted).toBe(false)
+        expect(signals[0]?.aborted).toBe(false)
         const p2 = fetcher.run(1)
         // The first run's signal must be aborted as soon as the second starts.
-        expect(signals[0].aborted).toBe(true)
-        expect(signals[1].aborted).toBe(false)
+        expect(signals[0]?.aborted).toBe(true)
+        expect(signals[1]?.aborted).toBe(false)
         fast.resolve('fast')
         await p2
         slow.resolve('slow')
@@ -291,16 +304,19 @@ describe('createGuardedFetch', () => {
         const fetcher = createGuardedFetch<number, string>({
           fetch: (i, signal) => {
             signals.push(signal)
-            return deferreds[i].promise
+            const df = deferreds[i]
+            if (df === undefined)
+              throw new Error(`no deferred for run ${i}`)
+            return df.promise
           },
           applySuccess: vi.fn(),
         })
         const promises = [fetcher.run(0), fetcher.run(1), fetcher.run(2)]
         await flush()
         expect(signals).toHaveLength(3)
-        expect(signals[0].aborted).toBe(true)
-        expect(signals[1].aborted).toBe(true)
-        expect(signals[2].aborted).toBe(false)
+        expect(signals[0]?.aborted).toBe(true)
+        expect(signals[1]?.aborted).toBe(true)
+        expect(signals[2]?.aborted).toBe(false)
         deferreds.forEach(d => d.resolve('x'))
         await Promise.allSettled(promises)
         dispose()

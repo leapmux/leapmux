@@ -1,6 +1,6 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { acpControlResponseDisplay, acpPermissionResponseText } from './controlResponse'
+import { acpControlResponseDisplay, acpOptionIdKind, acpPermissionResponseText } from './controlResponse'
 
 // Mirrors what the backend persists as the request context. The worker stores the
 // request whole, so an option keeps whatever fields its agent sent. This agent sends
@@ -33,7 +33,7 @@ function selected(optionId: string): Record<string, unknown> {
   return { result: { outcome: { outcome: 'selected', optionId } } }
 }
 
-describe('acppermissionresponsetext', () => {
+describe('acpPermissionResponseText', () => {
   it('resolves the selected optionId to its request option name', () => {
     expect(acpPermissionResponseText(REQUEST, selected('proceed_once'))).toBe('Allow once')
     expect(acpPermissionResponseText(REQUEST, selected('reject'))).toBe('Reject')
@@ -68,9 +68,38 @@ describe('acppermissionresponsetext', () => {
     expect(acpPermissionResponseText(REQUEST, { result: { outcome: {} } })).toBeNull()
     expect(acpPermissionResponseText(REQUEST, {})).toBeNull()
   })
+
+  // The label reads the same either way today, because `permissionOptionLabel` has an
+  // `Object.hasOwn` of its own. `acpOptionIdKind` below is where the answer differs.
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])('passes the raw optionId %s through', (optionId) => {
+    expect(acpPermissionResponseText(undefined, selected(optionId))).toBe(optionId)
+  })
 })
 
-describe('acpcontrolresponsedisplay', () => {
+describe('acpOptionIdKind', () => {
+  it('reads the ids the table holds and the protocol kind tokens', () => {
+    expect(acpOptionIdKind('proceed_once')).toBe('allow_once')
+    expect(acpOptionIdKind('cancel')).toBe('reject_once')
+    expect(acpOptionIdKind('allow_always')).toBe('allow_always')
+  })
+
+  /*
+   * The optionId is wire data, and a bare index on a wire key reaches
+   * `Object.prototype`. A member that resolves to a function is truthy, so `??` never
+   * fired and the function itself became the option's KIND. The one caller today has
+   * an `Object.hasOwn` of its own, so nothing on the screen moved -- the next caller
+   * that reads the kind has no such cover.
+   */
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', '__proto__'])('states no kind for the optionId %s', (optionId) => {
+    expect(acpOptionIdKind(optionId)).toBe('')
+  })
+
+  it('states no kind for an id no agent LeapMux saw sends', () => {
+    expect(acpOptionIdKind('mystery_opt')).toBe('')
+  })
+})
+
+describe('acpControlResponseDisplay', () => {
   it('wraps the permission text as a label', () => {
     const cr: PersistedControlResponse = { claimToken: 'claim-1', requestId: '7', request: REQUEST, response: selected('proceed_once') }
     expect(acpControlResponseDisplay(cr)).toEqual({ kind: 'label', text: 'Allow once' })

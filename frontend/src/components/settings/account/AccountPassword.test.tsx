@@ -39,7 +39,7 @@ const withPassword = {
 
 const withoutPassword = { ...withPassword, passwordSet: false }
 
-describe('accountPassword', () => {
+describe('AccountPassword', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()

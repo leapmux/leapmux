@@ -38,19 +38,31 @@ function canonicalize(state: UserCrdtState): string {
 
   parts.push('01:')
   for (const k of Object.keys(state.nodes).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(NodeRecordSchema, state.nodes[k]))};`)
+    const rec = state.nodes[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(NodeRecordSchema, rec))};`)
   }
   parts.push('|02:')
   for (const k of Object.keys(state.tabs).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(TabRecordSchema, state.tabs[k]))};`)
+    const rec = state.tabs[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(TabRecordSchema, rec))};`)
   }
   parts.push('|03:')
   for (const k of Object.keys(state.floatingWindows).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(FloatingWindowRecordSchema, state.floatingWindows[k]))};`)
+    const rec = state.floatingWindows[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(FloatingWindowRecordSchema, rec))};`)
   }
   parts.push('|04:')
   for (const k of Object.keys(state.workspaces).sort()) {
-    parts.push(`${k}=${bytesToHex(toBinary(WorkspaceContentsRecordSchema, state.workspaces[k]))};`)
+    const rec = state.workspaces[k]
+    if (rec === undefined)
+      continue
+    parts.push(`${k}=${bytesToHex(toBinary(WorkspaceContentsRecordSchema, rec))};`)
   }
   return parts.join('')
 }
@@ -58,7 +70,7 @@ function canonicalize(state: UserCrdtState): string {
 function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i].toString(16)
+    const b = bytes[i]?.toString(16) ?? ''
     out += b.length === 1 ? `0${b}` : b
   }
   return out
@@ -85,7 +97,12 @@ function shuffle<T>(items: T[], seed: number): T[] {
   const out = items.slice()
   for (let i = out.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1))
-    ;[out[i], out[j]] = [out[j], out[i]]
+    const a = out[i]
+    const b = out[j]
+    if (a === undefined || b === undefined)
+      continue
+    out[i] = b
+    out[j] = a
   }
   return out
 }

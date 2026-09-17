@@ -65,7 +65,8 @@ export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Qu
   const selections = answerState.selections()[0] ?? []
   if (selections.length) {
     const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === '1,3')
-    return multiSelect ? selections.join(',') : selections[0]
+    // The length test above pinned the first selection; `?? ''` is the type-level guard alone.
+    return multiSelect ? selections.join(',') : selections[0] ?? ''
   }
   return answerState.customTexts()[0] ?? ''
 }

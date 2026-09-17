@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // codexPlanMethod is the notification that carries Codex's turn plan.
-const codexPlanMethod = "turn/plan/updated"
+const codexPlanMethod = contracts.CodexMethodTurnPlanUpdated
 
 // codexPlanNotification is the shape of that notification:
-// `{method:"turn/plan/updated", params:{plan:[{step,status}]}}`.
+// `{method:contracts.CodexMethodTurnPlanUpdated, params:{plan:[{step,status}]}}`.
 type codexPlanNotification struct {
 	Method string `json:"method"`
 	Params struct {

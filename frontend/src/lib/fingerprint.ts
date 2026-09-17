@@ -300,7 +300,13 @@ export function keyFingerprint(publicKey: Uint8Array): string {
   const hash = blake2b(publicKey, { dkLen: 32 })
   const words: string[] = []
   for (let i = 0; i < 4; i++) {
-    words.push(WORDLIST[hash[i]])
+    const byte = hash[i]
+    if (byte === undefined)
+      break
+    const word = WORDLIST[byte]
+    if (word === undefined)
+      break
+    words.push(word)
   }
   return words.join('-')
 }

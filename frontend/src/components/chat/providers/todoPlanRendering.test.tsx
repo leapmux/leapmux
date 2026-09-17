@@ -4,9 +4,9 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import './claude'
-import './codex'
-import './opencode'
+import './claude/plugin'
+import './codex/plugin'
+import './opencode/plugin'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -17,7 +17,7 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => null,
 }))
 
-const { renderMessageContent } = await import('../messageRenderers')
+const { renderMessageContent } = await import('../rowRenderers')
 const { classifyMessage } = await import('../messageClassification')
 
 interface ToolUsePayload {
@@ -35,49 +35,42 @@ function makeClaudeToolUseMessage(name: string, input: Record<string, unknown>):
   }
 }
 
-function makeClaudeToolUseCategory(name: string, input: Record<string, unknown>): MessageCategory {
-  const toolUse = { type: 'tool_use' as const, id: `toolu_${name}_1`, name, input }
-  return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
-}
-
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
-  const category = makeClaudeToolUseCategory(name, input)
+  const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
+/**
+ * Render one Codex item through the CLASSIFIER, not through a hardcoded category.
+ *
+ * A plan item is the reason: `classify` answers `assistant_plan` for one and
+ * `tool_use` for every other item, and a test that stated the category itself would
+ * pass while the two layers disagreed -- which is exactly the defect this file now
+ * covers end to end.
+ */
 function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
-  const toolName = String(item.type ?? 'codex')
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName,
-    toolUse: parsed,
-    content: [],
-  }
+  const category = classifyMessage({
+    rawText: '',
+    topLevel: parsed,
+    parentObject: parsed,
+    wrapper: null,
+    agentProvider: AgentProvider.CODEX,
+  })
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
 
 function renderCodexTurnPlan(parsed: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'turnPlan',
-    toolUse: parsed,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
 
 function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: RenderContext) {
-  const category: MessageCategory = {
-    kind: 'tool_use',
-    toolName: 'plan',
-    toolUse,
-    content: [],
-  }
+  const category: MessageCategory = { kind: 'tool_use' }
   const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
@@ -86,7 +79,7 @@ function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: RenderCo
 // Claude Code TodoWrite
 // ---------------------------------------------------------------------------
 
-describe('claude TodoWrite renders via shared TodoListMessage', () => {
+describe('claude TodoWrite renders via the shared TodoListBody', () => {
   it('renders the pluralized title and todo content', () => {
     const { container } = renderClaudeToolUse('TodoWrite', {
       todos: [
@@ -193,15 +186,27 @@ describe('claude TaskUpdate renders a single-row card', () => {
 })
 
 describe('claude TaskGet renders a single-row card from the paired tool_result', () => {
-  it('renders subject + description from tool_use_result.task', () => {
-    const toolUseResult = {
+  /**
+   * The result side of a `TaskGet` span, in the shape Claude sends it.
+   *
+   * The `tool_result` block and its `tool_use_id` are not decoration: a sibling
+   * belongs to THIS call only when its id says so, and the row reads the paired
+   * payload through that test. A fixture that carried `tool_use_result` alone stated
+   * a side no envelope of Claude's ever has.
+   */
+  function taskResult(name: string, task: Record<string, unknown>): Record<string, unknown> {
+    return {
       parentObject: {
-        tool_use_result: {
-          task: { id: '9', subject: 'Get me', description: 'A long task', status: 'completed' },
-        },
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${name}_1`, content: 'ok' }] },
+        tool_use_result: { task },
       },
-    } as Record<string, unknown>
-    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (toolUseResult as never) }) })
+    }
+  }
+
+  it('renders subject + description from tool_use_result.task', () => {
+    const result = taskResult('TaskGet', { id: '9', subject: 'Get me', description: 'A long task', status: 'completed' })
+    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (result as never) }) })
     const text = container.textContent ?? ''
     expect(text).toContain('Get me')
     expect(text).toContain('A long task')
@@ -209,16 +214,18 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
   })
 
   it('renders the deleted checkbox when the looked-up task is a tombstone', () => {
-    const toolUseResult = {
-      parentObject: {
-        tool_use_result: {
-          task: { id: '11', subject: 'Already gone', status: 'deleted' },
-        },
-      },
-    } as Record<string, unknown>
-    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (toolUseResult as never) }) })
+    const result = taskResult('TaskGet', { id: '11', subject: 'Already gone', status: 'deleted' })
+    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (result as never) }) })
     expect(container.textContent ?? '').toContain('Already gone')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
+  })
+
+  // `TaskGet` carries no input of its own, so an unresolved one has nothing to draw.
+  // Its empty checklist drew the to-do body's "To-do list cleared" under a bare
+  // "Task" header -- a sentence about a list the call never touched.
+  it('draws nothing at all before its result lands', () => {
+    const { container } = renderClaudeToolUse('TaskGet', {})
+    expect(container.textContent ?? '').toBe('')
   })
 })
 
@@ -249,7 +256,7 @@ describe('claude classifies TaskList tool_use as hidden', () => {
 // Codex turn/plan/updated
 // ---------------------------------------------------------------------------
 
-describe('codex turn/plan/updated renders via shared TodoListMessage', () => {
+describe('codex turn/plan/updated renders via the shared TodoListBody', () => {
   it('renders the pluralized title with explanation', () => {
     const parsed = {
       method: 'turn/plan/updated',
@@ -329,7 +336,7 @@ describe('claude classifies Task* tool_result messages as hidden', () => {
   }
 })
 
-describe('opencode plan renders via shared TodoListMessage', () => {
+describe('opencode plan renders via the shared TodoListBody', () => {
   it('renders the entries as todos', () => {
     const { container } = renderOpenCodePlan({
       sessionUpdate: 'plan',

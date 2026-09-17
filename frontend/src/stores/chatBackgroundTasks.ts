@@ -1,6 +1,7 @@
 import type { AgentTab } from './tab.types'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { assignDefined } from '~/lib/jsonPick'
 import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 
 // ---------------------------------------------------------------------------
@@ -52,24 +53,26 @@ export interface GroupedBackgroundTasks {
 }
 
 // protoBackgroundTaskToStore converts a wire item to the store shape, collapsing
-// empty optionals to undefined so shallow-equal comparisons are stable.
+// empty optionals to ABSENCE (not a present-undefined key) so shallow-equal
+// comparisons, which compare key counts first, stay stable.
 export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): BackgroundTaskItem {
-  return {
+  const item: BackgroundTaskItem = {
     rowKey: t.id,
     kind: t.kind === BackgroundTaskKind.SHELL ? 'shell' : 'subagent',
-    childAgentId: t.childAgentId || undefined,
-    parentAgentId: t.parentAgentId || undefined,
-    groupKey: t.groupKey || undefined,
-    groupLabel: t.groupLabel || undefined,
     title: t.title,
-    titleIsCommand: t.titleIsCommand || undefined,
-    description: t.description || undefined,
     activity: t.activeForm,
     status: normalizeBackgroundTaskStatus(t.status),
-    createdAt: t.createdAt || undefined,
-    updatedAt: t.updatedAt || undefined,
-    endedAt: t.endedAt || undefined,
   }
+  assignDefined(item, 'childAgentId', t.childAgentId || undefined)
+  assignDefined(item, 'parentAgentId', t.parentAgentId || undefined)
+  assignDefined(item, 'groupKey', t.groupKey || undefined)
+  assignDefined(item, 'groupLabel', t.groupLabel || undefined)
+  assignDefined(item, 'titleIsCommand', t.titleIsCommand || undefined)
+  assignDefined(item, 'description', t.description || undefined)
+  assignDefined(item, 'createdAt', t.createdAt || undefined)
+  assignDefined(item, 'updatedAt', t.updatedAt || undefined)
+  assignDefined(item, 'endedAt', t.endedAt || undefined)
+  return item
 }
 
 function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskItem['status'] {
@@ -310,7 +313,7 @@ export function groupBackgroundTasks(items: BackgroundTaskItem[]): GroupedBackgr
       indexByKey.set(it.groupKey, gi)
       groups.push({ key: it.groupKey, label: it.groupLabel || it.groupKey, items: [] })
     }
-    groups[gi].items.push(it)
+    groups[gi]?.items.push(it)
   }
   return { ungrouped, groups }
 }

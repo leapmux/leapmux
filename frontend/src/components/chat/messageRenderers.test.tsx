@@ -7,8 +7,8 @@ import { AgentProvider, ContentCompression, MessageCompletion } from '~/generate
 import { parseMessageContent } from '~/lib/messageParser'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { renderMessageContent } from './rowRenderers'
 import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
@@ -27,16 +27,10 @@ function makeToolUseMessage(name: string, input: Record<string, unknown>) {
   }
 }
 
-/** Build a tool_use category for dispatch. */
-function makeToolUseCategory(name: string, input: Record<string, unknown>): MessageCategory {
-  const toolUse = { type: 'tool_use' as const, id: 'test-id', name, input }
-  return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
-}
-
 /** Render a tool_use message and return the trimmed text content. */
 function renderToolUseText(name: string, input: Record<string, unknown>, context?: RenderContext): string {
   const parsed = makeToolUseMessage(name, input)
-  const category = makeToolUseCategory(name, input)
+  const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
@@ -72,9 +66,14 @@ describe('agent/task renderer', () => {
       .toBe('Search (Explore)')
   })
 
-  it('falls back to tool name when description is missing', () => {
-    expect(renderToolUseText('Agent', {})).toBe('Agent')
-    expect(renderToolUseText('Task', {})).toBe('Task')
+  // `Task` is the older name of the same tool, and `canonicalClaudeToolName`
+  // folds it at the extraction boundary -- so both spellings state the one name
+  // every table below keys on.
+  it('falls back to the shared launch word when description is missing', () => {
+    // `Task` folds to the canonical `Agent` name first; the description is what
+    // titles the row, and the one fallback word every provider shares is `Task`.
+    expect(renderToolUseText('Agent', {})).toContain('Task')
+    expect(renderToolUseText('Task', {})).toContain('Task')
   })
 
   it('shows no status (child data fields removed)', () => {
@@ -118,24 +117,28 @@ function makeFakeMessage(content: Record<string, unknown>): AgentChatMessage {
   } as unknown as AgentChatMessage
 }
 
-describe('write/edit tool_use messages never render the diff body', () => {
+// A pending write states the change it ASKS for, under the shared "Requested
+// changes" heading every provider draws for one. That claims nothing about the
+// file: the diff itself replaces it the moment the result lands, which is the
+// case below that pairs the two rows.
+describe('write/edit tool_use messages state the change they request', () => {
   const writeInput = { file_path: '/tmp/test.go', content: 'package main\n\nfunc main() {}\n' }
 
-  it('does not render Write file content (no linked tool_result)', () => {
-    const category = makeToolUseCategory('Write', writeInput)
+  it('states a Write as a request while no result has landed', () => {
+    const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
-    // The diff body lives on the tool_result; tool_use only shows the header.
-    expect(container.textContent).not.toContain('package main')
+    expect(container.textContent).toContain('Requested changes')
+    expect(container.textContent).toContain('package main')
     // The header still surfaces the file path.
     expect(container.textContent).toContain('test.go')
   })
 
-  it('does not render Write file content even when linked tool_result is "update" type', () => {
+  it('drops the request once the paired tool_result lands', () => {
     const toolResultParsed = parseMessageContent(makeFakeMessage({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'Updated successfully.' }] },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'test-id', content: 'Updated successfully.' }] },
       tool_use_result: {
         type: 'update',
         filePath: '/tmp/test.go',
@@ -143,26 +146,29 @@ describe('write/edit tool_use messages never render the diff body', () => {
       },
     }))
     const context: RenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
-    const category = makeToolUseCategory('Write', writeInput)
+    const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
     )
-    // Same outcome as the no-linked-result case: never renders content.
+    // The result row draws the diff that landed, so the request must not repeat
+    // the content it asked for.
+    expect(container.textContent).not.toContain('Requested changes')
     expect(container.textContent).not.toContain('package main')
   })
 
-  it('does not render Edit old/new strings on the tool_use side', () => {
+  it('states an Edit as the substitution it requests', () => {
     const editInput = {
       file_path: '/tmp/test.go',
       old_string: 'beforeMarkerXYZ',
       new_string: 'afterMarkerXYZ',
     }
-    const category = makeToolUseCategory('Edit', editInput)
+    const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Edit', editInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
-    expect(container.textContent).not.toContain('beforeMarkerXYZ')
-    expect(container.textContent).not.toContain('afterMarkerXYZ')
+    expect(container.textContent).toContain('Requested changes')
+    expect(container.textContent).toContain('beforeMarkerXYZ')
+    expect(container.textContent).toContain('afterMarkerXYZ')
     // Header still shows the file path.
     expect(container.textContent).toContain('test.go')
   })
@@ -292,35 +298,36 @@ describe('thinking renderer honors context.expandUiKey', () => {
     const category = { kind: 'assistant_thinking' } as MessageCategory
     const getMessageUiState = vi.fn().mockReturnValue(false)
     const setMessageUiState = vi.fn()
-    // The classification mapper resolved this row's expand key to CODEX_REASONING;
-    // the renderer must look its shared UI-state up under THAT key, not the
-    // hand-typed THINKING literal it falls back to only without a context.
+    // The classification mapper resolved this row's expand key; the renderer must
+    // look its shared UI-state up under THAT key, not the hand-typed THINKING literal
+    // it falls back to only without a context. PLAN_EXECUTION stands in for "a key
+    // that is not the fallback" -- what the case proves is the lookup, not the key.
     const context: RenderContext = {
-      expandUiKey: MESSAGE_UI_KEY.CODEX_REASONING,
+      expandUiKey: MESSAGE_UI_KEY.PLAN_EXECUTION,
       getMessageUiState,
       setMessageUiState,
     }
     render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
-    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.PLAN_EXECUTION)
     expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
   })
 
   it('reads an assembled reasoning row under the context-supplied key too', () => {
     // Codex, ZCode, Pi and every Agent Client Protocol provider store reasoning as
     // one assembled row, which renderMessageContent draws before any plugin runs.
-    // ChatView premeasures that row under expandedUiKeyFor(kind, provider), so the
-    // bubble must read the same key. Under a different key the stored expansion and
-    // the measured height disagree as soon as the reader collapses the row.
+    // ChatView premeasures that row under expandedUiKeyFor(kind), so the bubble must
+    // read the same key. Under a different key the stored expansion and the measured
+    // height disagree as soon as the reader collapses the row.
     const parsed = assembledMessageRow('reasoning', 'a long private thought')
     const getMessageUiState = vi.fn().mockReturnValue(false)
     const setMessageUiState = vi.fn()
     const context: RenderContext = {
-      expandUiKey: MESSAGE_UI_KEY.CODEX_REASONING,
+      expandUiKey: MESSAGE_UI_KEY.PLAN_EXECUTION,
       getMessageUiState,
       setMessageUiState,
     }
     render(() => renderMessageContent(parsed, context, { kind: 'assistant_thinking' }, AgentProvider.CODEX))
-    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.PLAN_EXECUTION)
     expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
   })
 })
@@ -379,7 +386,7 @@ describe('a user row whose provider has no plugin', () => {
 describe('provider completion fields', () => {
   it('does not interpret a provider field as LeapMux completion', () => {
     const message = { ...makeToolUseMessage('Read', { file_path: '/a.ts' }), _leapmux: { completion: 'error' } }
-    const { container } = render(() => renderMessageContent(message, undefined, makeToolUseCategory('Read', { file_path: '/a.ts' }), AgentProvider.CLAUDE_CODE))
+    const { container } = render(() => renderMessageContent(message, undefined, { kind: 'tool_use' } as MessageCategory, AgentProvider.CLAUDE_CODE))
     expect(container.querySelector('[role="note"]')).toBeNull()
     expect(container.textContent).toContain('/a.ts')
   })

@@ -3,7 +3,7 @@ import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
 import { flingOverscanCapPx } from './useChatScroll'
 import { makeFakeScrollDiv } from './useChatScroll.testkit'
 
-describe('chatscrollstalenative translator', () => {
+describe('chatScrollStaleNative translator', () => {
   function setup(opts: { inputActive?: boolean, echo?: boolean, clientHeight?: number } = {}) {
     const div = makeFakeScrollDiv()
     div.setScrollHeight(50000)

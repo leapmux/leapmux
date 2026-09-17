@@ -366,7 +366,8 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
         continue
       const items = store.getItemsForSection(section.id)
       if (items.length > 0) {
-        const ws = props.workspaces().find(w => w.id === items[0].workspaceId)
+        // items is non-empty here; the ?. is the type-level guard alone.
+        const ws = props.workspaces().find(w => w.id === items[0]?.workspaceId)
         if (ws)
           return ws.id
       }
@@ -516,8 +517,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const doomed = workspaceIds.filter(id => stillArchived.has(id))
     for (const workspaceId of doomed)
       await performDelete(workspaceId, false)
-    if (doomed.length > 0)
-      await finishDelete(doomed[doomed.length - 1])
+    if (doomed.length > 0) {
+      // The length check keeps the index in range; ?? '' is the type-level guard alone.
+      await finishDelete(doomed[doomed.length - 1] ?? '')
+    }
   }
 
   const deleteWorkspace = async (workspaceId: string) => {
@@ -551,12 +554,16 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       return appendPosition(items)
     }
     if (direction === 'after') {
-      const prevPos = items[targetIdx].position
-      const nextPos = targetIdx + 1 < items.length ? items[targetIdx + 1].position : ''
+      // findIndex proved targetIdx valid and the ternary bounds targetIdx + 1;
+      // the '' defaults are the type-level guard alone.
+      const prevPos = items[targetIdx]?.position ?? ''
+      const nextPos = targetIdx + 1 < items.length ? items[targetIdx + 1]?.position ?? '' : ''
       return mid(prevPos, nextPos)
     }
-    const prevPos = targetIdx > 0 ? items[targetIdx - 1].position : ''
-    const nextPos = items[targetIdx].position
+    // findIndex proved targetIdx valid and the ternary bounds targetIdx - 1;
+    // the '' defaults are the type-level guard alone.
+    const prevPos = targetIdx > 0 ? items[targetIdx - 1]?.position ?? '' : ''
+    const nextPos = items[targetIdx]?.position ?? ''
     return mid(prevPos, nextPos)
   }
 

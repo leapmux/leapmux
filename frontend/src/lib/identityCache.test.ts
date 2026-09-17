@@ -22,7 +22,7 @@ describe('createIdentityCache', () => {
     const [first] = cache.stabilize([{ id: '1', name: 'a' }])
     const [second] = cache.stabilize([{ id: '1', name: 'b' }])
     expect(second).not.toBe(first)
-    expect(second.name).toBe('b')
+    expect(second?.name).toBe('b')
   })
 
   it('returns a new reference when the key changes even if content matches', () => {
@@ -30,7 +30,7 @@ describe('createIdentityCache', () => {
     const [first] = cache.stabilize([{ id: '1', name: 'a' }])
     const [second] = cache.stabilize([{ id: '2', name: 'a' }])
     expect(second).not.toBe(first)
-    expect(second.id).toBe('2')
+    expect(second?.id).toBe('2')
   })
 
   it('preserves input order', () => {
@@ -66,8 +66,8 @@ describe('createIdentityCache', () => {
     ])
     expect(out[0]).toBe(a1) // unchanged
     expect(out[1]).not.toBe(b1) // content changed
-    expect(out[1].name).toBe('b-changed')
-    expect(out[2].id).toBe('c') // brand new
+    expect(out[1]?.name).toBe('b-changed')
+    expect(out[2]?.id).toBe('c') // brand new
   })
 
   it('handles an empty list by evicting everything', () => {

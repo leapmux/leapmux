@@ -15,7 +15,7 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   }
 }
 
-describe('exitPlanModeActions', () => {
+describe('ExitPlanModeActions', () => {
   it('shows Reject, Approve, the Clear Context switch, and the permission pills when no editor content', () => {
     render(() => (
       <ExitPlanModeActions

@@ -1,17 +1,15 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { MessageCategory } from './messageClassification'
 import type { MessageRenderSources } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
-import type { ControlResponseDeriver, PersistedControlResponse } from './persistedControlResponse'
+import type { ControlResponseDisplay } from './persistedControlResponse'
+import type { ImageRenderActions, MarkdownRenderContext, SubagentNavigation, ToolProgressSource } from './renderContext'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Braces from 'lucide-solid/icons/braces'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
@@ -21,29 +19,20 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject } from '~/lib/jsonPick'
-import { createLogger } from '~/lib/logger'
 import { inlineFlex } from '~/styles/shared.css'
-import { appendCompletionMarker, completionMarker, messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { renderMarkdownForContext } from './markdownRendering'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
-import { CONTROL_RESPONSE_FEEDBACK_LEAD, resolveControlResponseDisplay } from './persistedControlResponse'
-import { pluginFor } from './providers/registry'
-import { ToolStatusHeader } from './results/ToolStatusHeader'
-import { toolOutcomeNote } from './toolOutcome'
-import { toolOutcomeLabel } from './toolOutcomeLabel'
+import { CONTROL_RESPONSE_FEEDBACK_LEAD } from './persistedControlResponse'
 import {
   toolInputText,
   toolResultContentPre,
   toolUseIcon,
 } from './toolStyles.css'
-import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
 import { ToolUseLayout } from './widgets/ToolUseLayout'
 
 export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHighlighting } from './markdownRendering'
-
-const logger = createLogger('messageRenderers')
 
 /**
  * Context passed to renderers from MessageBubble.
@@ -53,6 +42,11 @@ const logger = createLogger('messageRenderers')
  * That lets the renderer functions called from MessageBubble skip re-running
  * on UI toggles — only the body components that actually read the getters
  * re-evaluate.
+ *
+ * Members marked `| undefined` below are assigned by reactive getters that
+ * resolve through to undefined while the host is absent/loading; a getter
+ * cannot omit a key, so `undefined` is the live "absent for now" state rather
+ * than an invalid construction.
  */
 export interface RenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
@@ -61,19 +55,13 @@ export interface RenderContext {
   sources?: MessageRenderSources
   /** The enclosing renderer displays the retained tool completion. */
   completionHeader?: boolean
-  /**
-   * The agent sent no result for this tool call, and LeapMux says so in a note of
-   * its own. A result renderer must draw NO body: an empty body reads as "the tool
-   * returned nothing", which asserts something the agent never reported.
-   */
-  resultAbsent?: boolean
-  workingDir?: string
+  workingDir?: string | undefined
   /** Worker's home directory for tilde (~) path simplification. */
-  homeDir?: string
+  homeDir?: string | undefined
   /** User's preferred diff view. */
   diffView?: () => DiffViewPreference
   /** Reply/quote callback — inserts quoted text into the editor. */
-  onReply?: (quotedText: string) => void
+  onReply?: ((quotedText: string) => void) | undefined
   /** Copy raw JSON to clipboard. */
   onCopyJson?: () => void
   /** Whether JSON was just copied (for feedback). */
@@ -90,19 +78,19 @@ export interface RenderContext {
    */
   expandUiKey?: MessageUiKey
   /** Per-row/content-version pure render-derivation cache shared by visible + premeasure mounts. */
-  renderCache?: MessageRenderCache
+  renderCache?: MessageRenderCache | undefined
   /** Color index assigned to this message's span (−1 = no color). */
   spanColor?: number
   /** Tool name or item type from span_type column (reliable, always set for span messages). */
-  spanType?: string
+  spanType?: string | undefined
   /** Current message span id. */
-  spanId?: string
+  spanId?: string | undefined
   /** Stable per-message UI state getter for remount-sensitive renderers. */
-  getMessageUiState?: (key: MessageUiKey) => boolean | undefined
+  getMessageUiState?: ((key: MessageUiKey) => boolean | undefined) | undefined
   /** The message host supplies an outer toolbar with shared result actions. */
   hasOuterToolbar?: boolean
   /** Stable per-message UI state setter for remount-sensitive renderers. */
-  setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  setMessageUiState?: ((key: MessageUiKey, value: boolean) => void) | undefined
   /**
    * Hidden premeasurement render pass. Renderers should keep layout-relevant
    * structure but skip non-geometry work such as timers, copy chrome, worker
@@ -126,14 +114,32 @@ export interface RenderContext {
    * preempt offscreen ones and an offscreen row upgrades automatically once
    * scrolled in (see createWorkerPriorityGate).
    */
-  rowOffscreen?: () => boolean
+  rowOffscreen?: (() => boolean) | undefined
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
-  onOpenSubagent?: (item: BackgroundTaskItem) => void
+  onOpenSubagent?: ((item: BackgroundTaskItem) => void) | undefined
+  /**
+   * Resolving a subagent row and opening its transcript, without the registry
+   * store. Assembled where the row's own navigation is in scope; the shared
+   * result components read THIS rather than `sources.backgroundTask`.
+   */
+  subagents?: SubagentNavigation
+  /**
+   * Loading and opening the images this row drew, assembled once where the
+   * message and the agent are both in scope. The image bodies read this rather
+   * than the resolver's file-image channel.
+   */
+  images?: ImageRenderActions
+  /**
+   * The live output of a call that has not returned, for the row drawing its
+   * tail. `ToolMessage` takes this as an explicit prop; the context member is
+   * the assembly point its mount reads.
+   */
+  toolProgress?: ToolProgressSource
   /**
    * Open an image this row rendered in its own tab.
    *
-   * `index` addresses the image within its message -- the position the
-   * provider's `toolResultImages` gives it. The handler is assembled where the
+   * `index` addresses the image within its message -- the position
+   * `imagesForIR` gives it over the row's one call. The handler is assembled where the
    * message and the agent are both in scope (MessageBubble over ChatView), so
    * this context carries neither; a renderer only says WHICH image.
    *
@@ -147,7 +153,7 @@ export interface RenderContext {
    * instead of restating the raw tool name. Omit it and the bubble falls back
    * to the span type.
    */
-  onOpenImage?: (image: { index: number, filePath?: string, title?: string }) => void
+  onOpenImage?: ((image: { index: number, filePath?: string, title?: string }) => void) | undefined
 }
 
 export interface MessageContentRenderer {
@@ -160,8 +166,9 @@ export interface MessageContentRenderer {
  * Centralizes the `?.() ?? false` boilerplate every shared result body needs.
  */
 export function getExpandedForKey(context: RenderContext | undefined, key: MessageUiKey): boolean {
+  const expandAgentThoughts = context?.expandAgentThoughts
   return context?.getMessageUiState?.(key)
-    ?? messageUiDefault(key, { expandAgentThoughts: context?.expandAgentThoughts })
+    ?? messageUiDefault(key, expandAgentThoughts !== undefined ? { expandAgentThoughts } : {})
 }
 
 export function getToolResultExpanded(context: RenderContext | undefined): boolean {
@@ -174,7 +181,10 @@ export function useSharedExpandedState(
   // Defaults to the key's shared MESSAGE_UI_DEFAULTS entry (resolved against the
   // context's expandAgentThoughts pref); a renderer with a per-row default passes
   // its own thunk to override it.
-  initial: () => boolean = () => messageUiDefault(key, { expandAgentThoughts: getContext()?.expandAgentThoughts }),
+  initial: () => boolean = () => {
+    const expandAgentThoughts = getContext()?.expandAgentThoughts
+    return messageUiDefault(key, expandAgentThoughts !== undefined ? { expandAgentThoughts } : {})
+  },
 ): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
   const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? initial()
@@ -198,7 +208,7 @@ export function useSharedExpandedState(
  * `innerHTML` binding, so a re-mounting row clones the already-parsed
  * template instead of making the browser re-parse the same markup.
  */
-export function MarkdownText(props: { text: string, context?: RenderContext }): JSX.Element {
+export function MarkdownText(props: { text: string, context?: MarkdownRenderContext }): JSX.Element {
   const html = createMemo(() => renderMarkdownForContext(props.text, props.context))
   return <div class={markdownContent} ref={cachedInnerHtml(html)} />
 }
@@ -217,13 +227,18 @@ type ThinkingBubbleProps = {
 export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
   const stateKey = untrack(() => props.stateKey)
   // The default-expanded value comes from the stateKey's MESSAGE_UI_DEFAULTS entry
-  // (THINKING / CODEX_REASONING follow expandAgentThoughts; PLAN_EXECUTION collapses)
-  // via useSharedExpandedState, so renderer defaults stay centralized.
+  // (THINKING follows expandAgentThoughts; PLAN_EXECUTION collapses) via
+  // useSharedExpandedState, so renderer defaults stay centralized.
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
   const body = (): JSX.Element => {
     if (props.renderBody)
       return props.renderBody()
-    return <MarkdownText text={props.text} context={props.context} />
+    // The props union pairs `text` with an absent `renderBody`, so the body has
+    // its text whenever this line runs.
+    const text = props.text
+    return text !== undefined
+      ? <MarkdownText text={text} {...(props.context !== undefined ? { context: props.context } : {})} />
+      : null
   }
 
   return (
@@ -251,11 +266,11 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
   // Key from the shared classification mapper (context.expandUiKey) so it matches
   // the estimator's pre-mount assumption; the literal is the context-less fallback.
-  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING} context={props.context} />
+  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING} {...(props.context !== undefined ? { context: props.context } : {})} />
 }
 
 export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION} context={props.context} />
+  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION} {...(props.context !== undefined ? { context: props.context } : {})} />
 }
 
 /**
@@ -302,38 +317,42 @@ export function UserContentMessage(props: { parsed: unknown, context?: RenderCon
         </div>
       </Show>
       <Show when={hasText()}>
-        <MarkdownText text={content()} context={props.context} />
+        <MarkdownText text={content()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </Show>
   )
 }
 
 /**
- * Render a persisted control-response row (issue #258). The provider plugin's
- * `controlResponseDisplay` owns the native-payload -> label/feedback derivation (one source of
- * truth with the scroll-rail preview); this is the shared markup for the two display kinds. A
- * feedback block renders the user's typed reason as markdown under the "Sent feedback:" lead; a
- * label renders line-broken plain text (a multi-question answer joins its lines with `\n`). Returns
- * null when `parsed` isn't a control-response envelope, so `renderMessageContent` falls through to
- * its raw-JSON safety net.
+ * Render a persisted control-response row (issue #258).
+ *
+ * The shared markup for the two display kinds, and nothing else: a feedback block
+ * renders the user's typed reason as markdown under the "Sent feedback:" lead, and a
+ * label renders line-broken plain text (a multi-question answer joins its lines with
+ * `\n`).
+ *
+ * The native-payload -> label/feedback derivation happens in LAYER 1, where the
+ * provider's `controlResponseDisplay` runs once for every reader of the row
+ * (~/components/chat/rowExtraction.ts). This renderer therefore takes the display and
+ * cannot reach a provider payload at all -- it used to run the derivation itself, so
+ * the transcript row and the scroll-rail dot each dispatched through the plugin for
+ * one answer, and each carried its own copy of the fallback.
  */
 export function renderControlResponseRow(
-  cr: PersistedControlResponse,
+  display: ControlResponseDisplay,
   context: RenderContext | undefined,
-  display: ControlResponseDeriver | undefined,
 ): JSX.Element {
-  const d = resolveControlResponseDisplay(cr, display)
-  if (d.kind === 'feedback') {
+  if (display.kind === 'feedback') {
     return (
       <div class={controlResponseMessage}>
         <div>
           <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
-          <MarkdownText text={d.message} context={context} />
+          <MarkdownText text={display.message} {...(context !== undefined ? { context } : {})} />
         </div>
       </div>
     )
   }
-  return <div class={`${controlResponseMessage} ${controlResponseLabel}`} data-testid="control-response-text">{d.text}</div>
+  return <div class={`${controlResponseMessage} ${controlResponseLabel}`} data-testid="control-response-text">{display.text}</div>
 }
 
 /**
@@ -391,131 +410,4 @@ export function UnrecognizedMessage(props: {
       <div class={toolResultContentPre}>{text()}</div>
     </ToolUseLayout>
   )
-}
-
-/**
- * Render a message's content.
- *
- * All rendering goes through the message's own provider plugin's `renderMessage`.
- * The plugin is responsible for handling every kind it can render, including
- * `'unknown'` (where it runs its own type-detection chain on the parsed object).
- * Dispatch is strictly by `agentProvider` with no Claude fallback — an
- * UNSPECIFIED/unregistered provider yields no plugin (matching
- * `classifyMessage`, which routes such a message to `unsupported_provider`).
- *
- * Returns an `UnrecognizedMessage` card when no plugin handles the message at all,
- * when JSON parsing fails, or when a renderer throws — the last-resort safety net.
- */
-export function renderMessageContent(
-  parsedOrRawJson: unknown,
-  context?: RenderContext,
-  category?: MessageCategory,
-  agentProvider?: AgentProvider,
-  messageCompletion?: MessageCompletion,
-): JSX.Element {
-  let renderFailed = false
-  try {
-    if (category?.kind === 'control_response')
-      return renderControlResponseRow(category.response, context, pluginFor(agentProvider)?.controlResponseDisplay)
-
-    const parsed = typeof parsedOrRawJson === 'string'
-      ? JSON.parse(parsedOrRawJson)
-      : parsedOrRawJson
-
-    const assembled = parseAssembledMessage(parsed)
-    if (assembled) {
-      const text = appendCompletionMarker(assembled.text, messageCompletionFromProto(messageCompletion) ?? assembled.completion)
-      switch (assembled.kind) {
-        case 'reasoning':
-          // ThinkingMessage, not a ThinkingBubble of its own: it already resolves the
-          // expand key from the shared classification mapper, which is the key
-          // ChatView premeasures the row under. A second spelling here drifted from
-          // that once already, and Codex resolves to CODEX_REASONING, not THINKING.
-          return <ThinkingMessage text={text} context={context} />
-        case 'plan':
-          return <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText={text} context={context} />
-        case 'text':
-          return <MarkdownText text={text} context={context} />
-      }
-    }
-
-    // Dispatch strictly by the message's own provider -- no Claude fallback. An
-    // unregistered/UNSPECIFIED provider yields no plugin, so we drop to the
-    // raw-JSON span below rather than rendering another provider's bytes through
-    // Claude's renderers (classifyMessage routes such messages to
-    // `unsupported_provider`, which MessageBubble surfaces explicitly).
-    const plugin = pluginFor(agentProvider)
-    const completion = messageCompletionFromProto(messageCompletion) ?? messageCompletionFromProto(context?.sources?.current()?.completion)
-    const toolCompletion = (category?.kind === 'tool_use' || category?.kind === 'tool_result')
-      && (completion === 'interrupted' || completion === 'error')
-    // The outcome note is LeapMux's own statement about a tool row, so it is drawn
-    // here rather than by any plugin, and the plugin is told to draw no result body
-    // of its own.
-    const note = toolOutcomeNote(context?.sources?.current()?.messageMetadata)
-    const contextOverrides: PropertyDescriptorMap = {}
-    if (toolCompletion)
-      contextOverrides.completionHeader = { value: true }
-    if (note !== null)
-      contextOverrides.resultAbsent = { value: true }
-    const providerContext = Object.keys(contextOverrides).length === 0
-      ? context
-      : Object.create(context ?? null, contextOverrides) as RenderContext
-    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, providerContext) ?? null
-    if (result !== null) {
-      // A tool row that is interrupted or failed already says so in its header, so
-      // only the note rides inside that header -- the truncation marker would repeat
-      // what the header states.
-      const withNote = note === null
-        ? result
-        : (
-            <>
-              {result}
-              <div role="note">{note}</div>
-            </>
-          )
-      if (toolCompletion) {
-        return (
-          <ToolStatusHeader icon={CircleAlert} title={toolOutcomeLabel(completion === 'interrupted' ? 'interrupted' : 'failed')} dataToolMessage>
-            {withNote}
-          </ToolStatusHeader>
-        )
-      }
-      const marker = completionMarker(completion)
-      if (marker) {
-        return (
-          <>
-            {withNote}
-            <div role="note">{marker}</div>
-          </>
-        )
-      }
-      return withNote
-    }
-
-    // A user row is provider-neutral in the renderer layer for the same reason it
-    // is in `classifyMessage`: LeapMux writes it, in its own flat
-    // `{content, attachments?}` shape. Every plugin that names this kind already
-    // draws it with UserContentMessage. A message whose provider metadata has not
-    // loaded gets the same card here instead of the raw JSON span
-    // below. Reached only when no plugin claimed the row above.
-    if (category?.kind === 'user_content')
-      return <UserContentMessage parsed={parsed} context={context} />
-  }
-  catch (err) {
-    logger.warn('Failed to render message content:', err)
-    renderFailed = true
-  }
-  // The row reached no renderer, so it says so and keeps its frame in a collapsed body.
-  // It used to print the frame itself as a paragraph of text, which is the raw-JSON row
-  // the shared standard forbids -- a live census caught one on GitHub Copilot.
-  const fallback = <UnrecognizedMessage payload={parsedOrRawJson} renderFailed={renderFailed} context={context} />
-  const marker = completionMarker(messageCompletionFromProto(messageCompletion))
-  return marker
-    ? (
-        <>
-          {fallback}
-          <div role="note">{marker}</div>
-        </>
-      )
-    : fallback
 }

@@ -109,8 +109,9 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
     if (!menuOpen() || !props.canCreate)
       return []
     const rows = listRepoStartPoints(props.getTabs(), props.repoGitStore, {
-      workerInfoFn: props.workerInfoFn,
-      isWorkerOnline: props.isWorkerOnline,
+      // Omitted when absent: the option type takes no explicit undefined.
+      ...(props.workerInfoFn === undefined ? {} : { workerInfoFn: props.workerInfoFn }),
+      ...(props.isWorkerOnline === undefined ? {} : { isWorkerOnline: props.isWorkerOnline }),
       limit: MAX_REPO_ROWS,
     })
     // The remembered mode is resolved HERE, inside the gate, so each row is a
@@ -148,6 +149,9 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
    */
   const hasWorkspaces = createMemo(() => props.getWorkspaceIds().length > 0)
 
+  // Hoisted so the spread narrows; `detail?: string` takes no undefined.
+  const newWorkspaceHint = getShortcutHintsText('app.newWorkspaceDialog')
+
   return (
     <DropdownMenu
       onToggle={setMenuOpen}
@@ -174,7 +178,7 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
         >
           <DropdownMenuItemContent
             label="New workspace..."
-            detail={getShortcutHintsText('app.newWorkspaceDialog')}
+            {...(newWorkspaceHint !== undefined ? { detail: newWorkspaceHint } : {})}
           />
         </button>
 
@@ -196,7 +200,12 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                   data-testid="sidebar-new-workspace-repo"
                   onClick={() => props.onNewWorkspace(repo.startPoint)}
                 >
-                  <DropdownMenuItemContent label={repo.label} detail={repo.detail} />
+                  // `detail` is omitted when no git mode is remembered, which
+                  // renders the same as the undefined the memo computes.
+                  <DropdownMenuItemContent
+                    label={repo.label}
+                    {...(repo.detail === undefined ? {} : { detail: repo.detail })}
+                  />
                 </button>
               )}
             </For>

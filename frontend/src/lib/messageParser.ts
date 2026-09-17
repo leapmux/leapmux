@@ -1,9 +1,9 @@
 import type { AgentChatMessage, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo } from '~/models/agentSession'
 import { CONTEXT_USAGE_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
-import { MESSAGE_SUPPLEMENT_FIELD, NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { MESSAGE_SUPPLEMENT_FIELD, NOTIFICATION_FIELD, NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContent } from '~/lib/decompress'
-import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickFirstNumber, pickNumber, pickString } from '~/lib/jsonPick'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -299,143 +299,6 @@ export function extractContextUsage(
   return Object.keys(result).length > 0 ? result : null
 }
 
-// ---------------------------------------------------------------------------
-// Context compaction metadata
-// ---------------------------------------------------------------------------
-
-// compact_boundary carries its metadata under a snake_case key in the SDK
-// stream-json output (compact_metadata) or a camelCase key in the .jsonl
-// transcript form (compactMetadata); resolve against both from one definition
-// so the accepted key list lives in one place. The order is immaterial -- a
-// message carries one casing, and pickFirstObject returns the first present.
-// Internal: callers resolve metadata through parseBoundaryMeta, not this list.
-const COMPACT_META_KEYS = ['compact_metadata', 'compactMetadata'] as const
-
-/**
- * Normalized, provider-agnostic compaction detail. The shared parser turns raw
- * wire metadata into this (see {@link parseCompactionMeta}); a provider that
- * surfaces its own compaction event (e.g. Pi) constructs it directly. The
- * notification-thread formatter and the context-usage grid both consume this
- * typed shape, so they never touch raw snake/camelCase wire keys and a provider
- * can't accidentally couple to them.
- */
-export interface CompactionDetail {
-  /** Trigger word shown first in the parenthetical, e.g. "manual"/"auto". */
-  trigger?: string
-  /** Pre-compaction context size, in tokens. */
-  pre?: number
-  /** Post-compaction context size, in tokens. */
-  post?: number
-}
-
-/**
- * Coerce a raw numeric token count to a usable value: finite and non-negative.
- * Non-finite inputs (NaN/Infinity -- which JSON can't carry but a synthesized
- * payload could) degrade to undefined; negatives clamp to 0, so a provider
- * reporting an explicit negative count (or a derived `pre - saved` where
- * saved > pre) yields 0 instead of a negative size.
- */
-export function toTokenCount(n: number | undefined): number | undefined {
-  if (n === undefined || !Number.isFinite(n))
-    return undefined
-  return Math.max(0, n)
-}
-
-/**
- * Resolve the post-compaction token count from raw metadata. `post_tokens`
- * (Claude's `compact_boundary` carries it directly) wins; as a fallback, when
- * only a `tokens_saved` delta is present alongside `pre`, post is derived as
- * `pre - saved` (which {@link toTokenCount} later clamps to >= 0). Returns
- * undefined when post cannot be resolved. Field names appear in both snake_case
- * (SDK stream) and camelCase (transcript) forms.
- */
-function resolvePostTokens(meta: Record<string, unknown> | undefined, pre: number | undefined): number | undefined {
-  const post = pickFirstNumber(meta, ['post_tokens', 'postTokens'])
-  if (typeof post === 'number')
-    return post
-  const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
-  if (typeof pre === 'number' && typeof saved === 'number')
-    return pre - saved
-  return undefined
-}
-
-/**
- * Parse a raw compaction-metadata object (snake_case SDK stream or camelCase
- * transcript keys) into the provider-neutral {@link CompactionDetail}. Token
- * sanitization is deferred to the consumer (both the label formatter and the
- * grid extractor clamp via {@link toTokenCount}), so every caller -- wire-derived
- * or provider-synthesized -- gets the same treatment. Internal: external callers
- * resolve a raw boundary via {@link parseBoundaryMeta}.
- */
-function parseCompactionMeta(meta: Record<string, unknown> | undefined): CompactionDetail {
-  const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
-  return {
-    trigger: pickString(meta, 'trigger', undefined),
-    pre,
-    post: resolvePostTokens(meta, pre),
-  }
-}
-
-/**
- * A completed compaction boundary: Claude's `compact_boundary` system message or Codex's
- * completed `contextCompaction` item, either at the top level or inside an
- * `item/completed` JSON-RPC notification. Deliberately NEUTRAL and
- * shape-based (not a per-provider hook): the notification-thread renderer and the context-usage
- * grid recognize a boundary by SHAPE regardless of the row's provider, so legacy Codex rows still
- * carrying the `compact_boundary` shape, and any cross-provider row, render correctly. This is the
- * shared renderer's cross-provider boundary vocabulary, a sibling of {@link parseBoundaryMeta}'s
- * shared metadata-key knowledge, not one provider's wire parsing.
- */
-export function isCompactBoundary(m: Record<string, unknown>): boolean {
-  return (m.type === 'system' && m.subtype === 'compact_boundary')
-    || pickObject(m, 'item')?.type === 'contextCompaction'
-    // The completed `contextCompaction` item arrives as a raw JSON-RPC
-    // notification, so the item sits under `params` rather than at the top.
-    || (m.method === 'item/completed' && pickObject(pickObject(m, 'params'), 'item')?.type === 'contextCompaction')
-}
-
-/**
- * Resolve a raw boundary message's compaction metadata (under the snake_case
- * `compact_metadata` or camelCase `compactMetadata` key) into a
- * {@link CompactionDetail}. The single place that knows where a boundary carries
- * its metadata, shared by the grid extractor here and the notification-thread
- * label formatter, so the key resolution can't drift between them.
- */
-export function parseBoundaryMeta(m: Record<string, unknown>): CompactionDetail {
-  return parseCompactionMeta(pickFirstObject(m, COMPACT_META_KEYS))
-}
-
-/**
- * Resolve the post-compaction context size (in tokens) from a notification, for
- * refreshing the context-usage grid the instant a boundary lands -- rather than
- * leaving the now-stale pre-compaction usage on screen until the next
- * assistant/result message overwrites it. Scans the wrapper's messages (or the
- * lone top-level message) in reverse so the most recent boundary in a
- * consolidated thread wins, and returns the sanitized post count of the most
- * recent boundary that carries a resolvable one (skipping boundaries that don't).
- *
- * Returns undefined when there is no boundary, or no boundary carries a
- * resolvable post (`post_tokens` absent and no `pre - tokens_saved` to derive it
- * from) -- for example, a Codex contextCompaction item with no metadata.
- * The caller leaves the grid untouched in that case.
- */
-export function extractCompactionContextTokens(parsed: ParsedMessageContent): number | undefined {
-  const messages = messagesOf(parsed)
-  // Reverse so the most recent boundary wins. Skip a boundary whose post is
-  // unresolvable (for example, a Codex item with no metadata) and keep scanning
-  // so an earlier boundary that does carry a post can still refresh the grid,
-  // rather than bailing out on the first boundary encountered.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (!isObject(msg) || !isCompactBoundary(msg))
-      continue
-    const post = toTokenCount(parseBoundaryMeta(msg).post)
-    if (post !== undefined)
-      return post
-  }
-  return undefined
-}
-
 function modelContextWindow(modelData: unknown): number {
   if (!modelData || typeof modelData !== 'object')
     return 0
@@ -482,23 +345,23 @@ function findPrimaryContextWindow(modelUsage: Record<string, unknown>, primaryMo
 }
 
 /**
- * Extract result-message metadata: subtype, context usage/window, totalCostUsd, numToolUses. The
- * neutral fields are read here; `subtypeFallback` is the provider's derivation
- * (Provider.resultSubtype) for a subtype that isn't on `inner.subtype` (Codex's `turn.status`), so
- * no provider wire shape is matched in shared code. `subtypeFallback` takes the whole parsed message
- * (like the sibling provider hooks) and is required so a caller can't silently drop the provider's
- * subtype derivation; pass `() => undefined` when the caller has no provider fallback.
+ * The SESSION metadata a turn-end message carries: the context window, the normalized
+ * context usage, and the running cost. Every field is provider-neutral, injected by the
+ * worker, so no provider wire shape is matched here.
+ *
+ * The turn's OWN totals are not this function's business. `num_tool_uses`,
+ * `total_cost_usd` and `duration_ms` describe the turn a reader looks at, and
+ * `dividerMetaFromMessage` states them on that row. This used to return the tool count
+ * as well, which no caller read, and a `subtype` whose one branch had a comment for a
+ * body.
  */
 export function extractResultMetadata(
   parsed: ParsedMessageContent,
   primaryModelId: string | undefined,
-  subtypeFallback: (parsed: ParsedMessageContent) => string | undefined,
 ): {
-  subtype?: string
   contextWindow?: number
   contextUsage?: ContextUsageInfo
   totalCostUsd?: number
-  numToolUses?: number
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -507,21 +370,7 @@ export function extractResultMetadata(
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, contextUsage?: ContextUsageInfo, totalCostUsd?: number, numToolUses?: number } = {}
-
-  if (inner.subtype)
-    result.subtype = inner.subtype as string
-
-  // A provider whose terminal envelope carries no `subtype` (Codex maps turn.status) derives it.
-  if (!result.subtype) {
-    const fallback = subtypeFallback(parsed)
-    if (fallback)
-      result.subtype = fallback
-  }
-
-  // num_tool_uses is injected by the backend for all providers.
-  if (typeof inner.num_tool_uses === 'number')
-    result.numToolUses = inner.num_tool_uses as number
+  const result: { contextWindow?: number, contextUsage?: ContextUsageInfo, totalCostUsd?: number } = {}
 
   if (inner.modelUsage && typeof inner.modelUsage === 'object') {
     const cw = findPrimaryContextWindow(inner.modelUsage as Record<string, unknown>, primaryModelId)
@@ -578,8 +427,8 @@ export function extractPlanUpdated(parsed: ParsedMessageContent): PlanUpdatedInf
       const m = msg as Record<string, unknown>
       if (m.type === NOTIFICATION_TYPE.PlanUpdated) {
         return {
-          planTitle: typeof m.plan_title === 'string' ? m.plan_title : '',
-          planFilePath: typeof m.plan_file_path === 'string' ? m.plan_file_path : '',
+          planTitle: pickString(m, NOTIFICATION_FIELD.PlanTitle),
+          planFilePath: pickString(m, NOTIFICATION_FIELD.PlanFilePath),
           updateAgentTitle: m.update_agent_title === true,
         }
       }
@@ -594,8 +443,8 @@ export function extractPlanFilePath(parsed: ParsedMessageContent): string | unde
   for (const msg of messagesOf(parsed)) {
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
-      if (m.type === NOTIFICATION_TYPE.PlanExecution && typeof m.plan_file_path === 'string' && m.plan_file_path !== '') {
-        return m.plan_file_path as string
+      if (m.type === NOTIFICATION_TYPE.PlanExecution && pickString(m, NOTIFICATION_FIELD.PlanFilePath) !== '') {
+        return pickString(m, NOTIFICATION_FIELD.PlanFilePath)
       }
     }
   }

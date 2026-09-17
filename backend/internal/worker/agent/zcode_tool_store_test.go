@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,7 +160,7 @@ func TestZCodeToolStoreDoesNotCreateAnAbsentDatabase(t *testing.T) {
 
 func TestZCodeStoredToolMarshalsWithoutChangingProviderNumbers(t *testing.T) {
 	t.Parallel()
-	encoded, err := json.Marshal(zcodeStoredTool{Data: json.RawMessage(zcodeNativeToolFixture("completed"))})
+	encoded, err := json.Marshal(contracts.ZCodeStoredTool{Data: json.RawMessage(zcodeNativeToolFixture("completed"))})
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"futureCounter":9007199254740993`)
 }

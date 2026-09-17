@@ -1,4 +1,4 @@
-import type { AgentResultSource } from '../../../results/agentResult'
+import type { AgentRun } from '../../../ir/tools/agent'
 import type { ZCodeRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
@@ -17,18 +17,20 @@ function launchedAgent(content: string): { agentId: string, outputFile?: string 
   if (!content.startsWith('Async agent launched successfully.\n'))
     return null
   const lines = content.split('\n', 7)
-  const identity = /^agentId: ([^'\r\n]+) \(internal ID - do not mention to user\. Use SendMessage with to: '\1' to continue this agent\.\)$/.exec(lines[1])
+  const identity = /^agentId: ([^'\r\n]+) \(internal ID - do not mention to user\. Use SendMessage with to: '\1' to continue this agent\.\)$/.exec(lines[1] ?? '')
   if (!identity || lines[2] !== LAUNCH_BACKGROUND)
     return null
+  // The pattern's group is the whole id, which a match always carries.
+  const agentId = identity[1] ?? ''
   if (lines.length === 4 && lines[3] === LAUNCH_WAIT)
-    return { agentId: identity[1] }
-  if (lines.length === 6 && lines[3] === LAUNCH_WORK && lines[4].startsWith('output_file: ') && lines[5] === LAUNCH_OUTPUT)
-    return { agentId: identity[1], outputFile: lines[4].slice('output_file: '.length) }
+    return { agentId }
+  if (lines.length === 6 && lines[3] === LAUNCH_WORK && lines[4]?.startsWith('output_file: ') && lines[5] === LAUNCH_OUTPUT)
+    return { agentId, outputFile: lines[4]?.slice('output_file: '.length) ?? '' }
   return null
 }
 
 /** Preserve unrecognized text. Remove a footer only when its full native grammar matches. */
-export function zcodeAgentResult(row: ZCodeRow): AgentResultSource | null {
+export function zcodeAgentResult(row: ZCodeRow): AgentRun | null {
   const update = zcodeExtractTool(row.parsed)
   if (!update || (!update.result && !update.isError))
     return null
@@ -36,14 +38,16 @@ export function zcodeAgentResult(row: ZCodeRow): AgentResultSource | null {
   const content = update.isError ? zcodeErrorText(update) || 'Tool call failed' : update.result?.content ?? ''
   const footer = !update.isError ? RESULT_FOOTER.exec(content) : null
   const launch = !update.isError && !footer ? launchedAgent(content) : null
-  const metadata: AgentResultSource['metadata'] = []
+  const metadata: AgentRun['metadata'] = []
   const agentId = footer?.[1] ?? launch?.agentId ?? ''
   if (agentId)
     metadata.push({ label: 'Agent ID', value: agentId })
   if (launch?.outputFile)
     metadata.push({ label: 'Output', value: launch.outputFile })
   if (footer) {
-    for (const [label, value] of [['Tokens', footer[2]], ['Tool uses', footer[3]], ['Duration', footer[4]]]) {
+    // Tuple-typed, so the label destructures as the string it is spelled as.
+    const counters: Array<[string, string | undefined]> = [['Tokens', footer[2]], ['Tool uses', footer[3]], ['Duration', footer[4]]]
+    for (const [label, value] of counters) {
       if (value === undefined)
         continue
       const number = Number(value)
@@ -53,10 +57,10 @@ export function zcodeAgentResult(row: ZCodeRow): AgentResultSource | null {
   return {
     description: pickString(input, 'description').trim(),
     agentId,
-    status: update.isError ? 'failed' : launch ? 'launched asynchronously' : footer ? 'completed' : 'returned a result',
+    statusLabel: update.isError ? 'failed' : launch ? 'launched asynchronously' : footer ? 'completed' : 'returned a result',
     outcome: update.isError ? 'failed' : launch ? 'running' : footer ? 'completed' : 'unknown',
     metadata,
     body: footer ? content.slice(0, footer.index) : launch ? pickString(input, 'prompt') : content,
-    bodyLabel: launch ? 'Prompt' : undefined,
+    ...(launch ? { bodyLabel: 'Prompt' as const } : {}),
   }
 }

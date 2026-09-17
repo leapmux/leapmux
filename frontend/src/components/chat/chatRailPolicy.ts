@@ -181,6 +181,8 @@ export function clusterMarks(
   const start = lowerBoundBySeq(marks, range.minSeq)
   for (let i = start; i < marks.length; i++) {
     const mark = marks[i]
+    if (mark === undefined)
+      continue
     if (mark.seq > range.maxSeq)
       break
     const frac = dotFractionForSpan(mark.seq, range.minSeq, metrics.span)
@@ -224,7 +226,10 @@ export function dotClusterEqual(a: DotCluster, b: DotCluster): boolean {
  * hand `<For>` a fresh array each frame for no visual change.
  */
 export function dotClustersEqual(a: readonly DotCluster[], b: readonly DotCluster[]): boolean {
-  return a.length === b.length && a.every((d, i) => dotClusterEqual(d, b[i]))
+  return a.length === b.length && a.every((d, i) => {
+    const other = b[i]
+    return other !== undefined && dotClusterEqual(d, other)
+  })
 }
 
 /**
@@ -237,7 +242,7 @@ export function dotClustersEqual(a: readonly DotCluster[], b: readonly DotCluste
  * component, alongside clusterMarks / resolveScrollbarOwner.
  */
 export function nearestDotWithin(dots: readonly DotCluster[], y: number, rangePx: number): DotCluster | null {
-  const idx = smallestIndexWhere(dots.length, i => dots[i].topPx >= y, dots.length)
+  const idx = smallestIndexWhere(dots.length, i => (dots[i]?.topPx ?? Number.POSITIVE_INFINITY) >= y, dots.length)
   let best: DotCluster | null = null
   let bestDist = rangePx
   // Check the predecessor first, then the dot at/after y, WITHOUT allocating a candidate array

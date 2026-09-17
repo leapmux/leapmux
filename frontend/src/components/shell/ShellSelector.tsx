@@ -54,7 +54,7 @@ export const ShellSelector: Component<ShellSelectorProps> = props => (
       ariaLabel="Shell"
       value={props.state.shell()}
       onChange={props.state.setShell}
-      loadingLabel={props.state.loading() ? 'Loading shells...' : undefined}
+      {...(props.state.loading() ? { loadingLabel: 'Loading shells...' } : {})}
       emptyLabel="No shells available"
       options={props.state.shells().map(s => ({
         value: s,

@@ -171,9 +171,12 @@ function forEachContentBlock(
       continue
     const type = block.type as string
     if (Object.hasOwn(kinds, type)) {
-      const value = block[kinds[type]]
-      if (typeof value === 'string')
-        onText(value)
+      const field = kinds[type]
+      if (field !== undefined) {
+        const value = block[field]
+        if (typeof value === 'string')
+          onText(value)
+      }
       continue
     }
     onOther(block)

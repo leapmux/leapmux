@@ -8,7 +8,7 @@ import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer } from './
 
 installScrollTestEnv()
 
-describe('usechatscroll auto-scroll signature', () => {
+describe('useChatScroll auto-scroll signature', () => {
   it('scrolls to bottom when agentStatus transitions from ACTIVE to STARTING', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -79,7 +79,7 @@ describe('usechatscroll auto-scroll signature', () => {
   })
 })
 
-describe('usechatscroll scroll-to-bottom animation', () => {
+describe('useChatScroll scroll-to-bottom animation', () => {
   it('hands off to sticky-bottom instead of chasing a target that grows every frame', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {

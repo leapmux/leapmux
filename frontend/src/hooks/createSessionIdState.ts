@@ -47,14 +47,14 @@ export interface SessionIdState {
 export function createSessionIdState(provider: Accessor<AgentProvider | undefined>): SessionIdState {
   const [value, setValue] = createSignal('')
   const trimmed = createMemo(() => value().trim())
-  const isFilePath = createMemo(() => !!pluginFor(provider())?.sessionIdIsFilePath)
+  const isFilePath = createMemo(() => !!pluginFor(provider())?.session?.sessionIdIsFilePath)
   const error = createMemo(() => {
     const v = trimmed()
     if (!v)
       return null
     // A provider that says nothing takes the shared TOKEN rule, which is what
     // every provider but Pi issues.
-    const rule = pluginFor(provider())?.validateResumeHandle ?? validateSessionId
+    const rule = pluginFor(provider())?.session?.validateResumeHandle ?? validateSessionId
     return rule(v)
   })
   return { value, setValue, error, trimmed, isFilePath }

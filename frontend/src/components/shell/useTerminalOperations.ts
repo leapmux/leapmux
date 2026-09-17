@@ -28,6 +28,14 @@ import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
 
+/**
+ * The proto close responses carry `result` as present-but-undefined when the
+ * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
+ */
+function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
+  return resp.result === undefined ? {} : { result: resp.result }
+}
+
 // xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
 // keystroke (or the autorepeat from a held key) doesn't fire a restart.
@@ -98,7 +106,9 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const t = view.getTerminalTab(id)
       if (!t || t.status === TerminalStatus.EXITED)
         return undefined
-      return { workerId: t.workerId }
+      // `send` falls back to '' for a missing workerId, so the key can stay
+      // absent rather than carry an explicit undefined.
+      return t.workerId === undefined ? {} : { workerId: t.workerId }
     },
     send: async (id, t, batch) => {
       await workerRpc.sendInput(t.workerId ?? '', { terminalId: id, data: batch })
@@ -175,7 +185,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const meta = openedTerminalMetadata({
         title: resp.title,
         workingDir: ctx.workingDir,
-        shellStartDir: args.shellStartDir,
+        ...(args.shellStartDir === undefined ? {} : { shellStartDir: args.shellStartDir }),
       })
       const activeTab = props.selection.activeTabForWorkspace(ws.id)
       // `shellStartDir` has to reach the seed resolver: `effectiveGitDir` is
@@ -191,7 +201,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // to agree.
       const seed = planOptimisticRepoGit(props.repoGitStore, activeTab, {
         workerId: ctx.workerId,
-        shellStartDir: args.shellStartDir,
+        ...(args.shellStartDir === undefined ? {} : { shellStartDir: args.shellStartDir }),
         workingDir: ctx.workingDir,
       })
       const placedTileId = openTabInFocusedTile(
@@ -219,7 +229,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     openTerminalCore({ shell: '', shellStartDir: shellStartDir ?? '', setLoading: props.setNewTerminalLoading })
 
   const handleOpenTerminalWithShell = (shell: string, target?: NewTabTarget) =>
-    openTerminalCore({ shell, target, setLoading: props.setNewShellLoading })
+    openTerminalCore({ shell, ...(target === undefined ? {} : { target }), setLoading: props.setNewShellLoading })
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     if (!props.isActiveWorkspaceMutatable())
@@ -334,7 +344,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       workerRpc.closeTerminal(workerId, {
         terminalId,
         worktreeAction,
-      }),
+      }).then(closeResultView),
       'Failed to close terminal',
     )
   }

@@ -94,7 +94,7 @@ export function computeGapMap(
 
   // Gap before the first hunk (lines 1..firstHunk.oldStart-1)
   const firstHunk = hunks[0]
-  if (firstHunk.oldStart > 1) {
+  if (firstHunk !== undefined && firstHunk.oldStart > 1) {
     const endLine = firstHunk.oldStart - 1 // 1-based inclusive
     gaps.set(0, {
       lines: originalFileLines.slice(0, endLine),
@@ -106,6 +106,8 @@ export function computeGapMap(
   for (let i = 1; i < hunks.length; i++) {
     const prev = hunks[i - 1]
     const curr = hunks[i]
+    if (prev === undefined || curr === undefined)
+      continue
     const gapStart = prev.oldStart + prev.oldLines // 1-based, first line after prev hunk
     const gapEnd = curr.oldStart - 1 // 1-based inclusive
     if (gapEnd >= gapStart) {
@@ -148,6 +150,8 @@ export function computeSyntheticGapMap(hunks: StructuredPatchHunk[]): Map<number
   for (let i = 1; i < hunks.length; i++) {
     const prev = hunks[i - 1]
     const curr = hunks[i]
+    if (prev === undefined || curr === undefined)
+      continue
     const gapStart = prev.oldStart + prev.oldLines
     const gapEnd = curr.oldStart - 1
     if (gapEnd >= gapStart) {
@@ -166,11 +170,12 @@ export function computeSyntheticGapMap(hunks: StructuredPatchHunk[]): Map<number
  * Returns an array of groups in hunk-index order.
  */
 export function groupByHunk<T extends { hunkIndex: number }>(entries: T[]): T[][] {
-  if (entries.length === 0)
+  const first = entries[0]
+  if (first === undefined)
     return []
 
   const groups: T[][] = []
-  let currentIndex = entries[0].hunkIndex
+  let currentIndex = first.hunkIndex
   let currentGroup: T[] = []
 
   for (const entry of entries) {

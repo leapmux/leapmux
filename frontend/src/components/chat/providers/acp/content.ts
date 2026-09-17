@@ -1,11 +1,12 @@
 import type { ContentBlock } from '~/lib/contentBlocks'
+import { ACP_SUPPLEMENT } from '~/generated/contracts/acp-protocol'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /** Extract the nested metadata that command, search, and fetch results share. */
 export function pickAcpRawOutputMetadata(toolUse: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
-  return pickObject(pickObject(toolUse, 'rawOutput'), 'metadata')
+  return pickObject(pickObject(toolUse, ACP_SUPPLEMENT.RawOutput), 'metadata')
 }
 
 /**
@@ -16,12 +17,11 @@ export function pickAcpRawOutputMetadata(toolUse: Record<string, unknown> | null
 export function flattenAcpContent(content: unknown): ContentBlock[] {
   if (!Array.isArray(content))
     return []
-  return content.flatMap((item): ContentBlock[] => {
-    if (!isObject(item))
+  return content.flatMap((entry): ContentBlock[] => {
+    if (!isObject(entry))
       return []
-    const entry = item as Record<string, unknown>
     if (entry.type === 'content' && isObject(entry.content)) {
-      const inner = entry.content as Record<string, unknown>
+      const inner = entry.content
       // Some providers omit the type from text blocks. Preserve their command output.
       const text = pickString(inner, 'text')
       return text && (inner.type === undefined || inner.type === 'text') ? [{ type: 'text', text }] : [inner]

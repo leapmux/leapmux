@@ -7,7 +7,7 @@ beforeEach(() => {
   _resetShikiStyleClassesForTest()
 })
 
-describe('makekey', () => {
+describe('makeKey', () => {
   // The NUL separator, built via fromCharCode so this source file stays plain ASCII.
   const NUL = String.fromCharCode(0)
 
@@ -31,7 +31,7 @@ describe('makekey', () => {
   })
 })
 
-describe('tocachedtokens', () => {
+describe('toCachedTokens', () => {
   it('projects each token to content + a shared style class, dropping other fields', () => {
     // Shiki ThemedTokens carry extra fields (offset, color, fontStyle, ...) the
     // renderer never reads. The projection keeps ONLY content + the minted
@@ -52,7 +52,7 @@ describe('tocachedtokens', () => {
       [],
     ])
     // The extra fields are gone, not merely undefined.
-    expect(Object.keys(result[0][0])).toEqual(['content', 'className'])
+    expect(Object.keys(result[0]?.[0] ?? {})).toEqual(['content', 'className'])
   })
 
   it('mints identical class names for canonically equal string and object styles', () => {
@@ -60,7 +60,10 @@ describe('tocachedtokens', () => {
       { content: 'a', htmlStyle: { '--shiki-light': '#abc' } },
       { content: 'b', htmlStyle: '--shiki-light:#abc' },
     ]])
-    expect(result[0][0].className).toBe(result[0][1].className)
+    const [styledObj, styledStr] = result[0] ?? []
+    if (styledObj === undefined || styledStr === undefined)
+      throw new Error('expected two projected tokens')
+    expect(styledObj.className).toBe(styledStr.className)
   })
 
   it('injects one CSS rule per distinct style into the shared style element', () => {
@@ -79,8 +82,8 @@ describe('tocachedtokens', () => {
   it('leaves unstyled and empty-style tokens class-free', () => {
     const result = toCachedTokens([[{ content: 'x' }, { content: 'y', htmlStyle: {} }]])
     expect(result).toEqual([[{ content: 'x' }, { content: 'y' }]])
-    expect(result[0][0].className).toBeUndefined()
-    expect(result[0][1].className).toBeUndefined()
+    expect(result[0]?.[0]?.className).toBeUndefined()
+    expect(result[0]?.[1]?.className).toBeUndefined()
   })
 
   it('round-trips through the LRU cache', () => {
@@ -91,7 +94,7 @@ describe('tocachedtokens', () => {
   })
 })
 
-describe('mergelinetokens', () => {
+describe('mergeLineTokens', () => {
   const light = (color: string) => ({ '--shiki-light': color })
 
   it('folds a leading whitespace-only token into the next token', () => {
@@ -120,7 +123,7 @@ describe('mergelinetokens', () => {
     ]
     const merged = mergeLineTokens(lines)
     merged.forEach((line, i) => {
-      const original = lines[i].map(t => t.content).join('')
+      const original = (lines[i] ?? []).map(t => t.content).join('')
       expect(line.map(t => t.content).join('')).toBe(original)
     })
   })
@@ -131,7 +134,7 @@ describe('mergelinetokens', () => {
       { content: '   ', htmlStyle: light('#b') },
     ]])
     // Total content preserved; the trailing whitespace survives in some token.
-    expect(merged[0].map(t => t.content).join('')).toBe('x   ')
+    expect((merged[0] ?? []).map(t => t.content).join('')).toBe('x   ')
   })
 
   it('does NOT fold whitespace that paints its own background (ANSI color bar)', () => {
@@ -282,8 +285,11 @@ describe('interned token wire shape', () => {
     expect(interned.styles).toHaveLength(2)
     const expanded = expandInternedTokenLines(interned)
     // The two equal-style tokens share ONE class-name string after expansion.
-    expect(expanded[0][0].className).toBe(expanded[0][1].className)
-    expect(expanded[0][0].className).not.toBe(expanded[0][2].className)
+    const [shared0, shared1, distinct] = expanded[0] ?? []
+    if (shared0 === undefined || shared1 === undefined || distinct === undefined)
+      throw new Error('expected three expanded tokens')
+    expect(shared0.className).toBe(shared1.className)
+    expect(shared0.className).not.toBe(distinct.className)
   })
 
   it('keeps a string style distinct from an object style with the same JSON text in the wire shape', () => {
@@ -308,7 +314,10 @@ describe('interned token wire shape', () => {
     // Class names derive from the declaration TEXT, so these differ -- harmless
     // duplication (both rules are correct), never a wrong style.
     const expanded = expandInternedTokenLines(interned)
-    expect(expanded[0][0].className).not.toBe(expanded[0][1].className)
+    const [objToken, strToken] = expanded[0] ?? []
+    if (objToken === undefined || strToken === undefined)
+      throw new Error('expected two expanded tokens')
+    expect(objToken.className).not.toBe(strToken.className)
   })
 
   it('handles empty lines and unstyled tokens (-1 index)', () => {

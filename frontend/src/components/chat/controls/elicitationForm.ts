@@ -94,8 +94,11 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
   return {
     fields,
     read(values) {
-      if (!validator)
-        return { error: schemaError }
+      if (!validator) {
+        // Every path that leaves the validator unset has set `schemaError`;
+        // `?? ''` is the type-level guard alone.
+        return { error: schemaError ?? '' }
+      }
       try {
         const entries: [string, unknown][] = []
         for (const field of fields) {

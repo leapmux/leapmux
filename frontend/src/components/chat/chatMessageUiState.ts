@@ -44,7 +44,7 @@ const MAX_UI_STATE_ENTRIES = 1024
  * don't repeat the eviction loop. Mutates and returns the same Map.
  */
 export function capInsertionOrder<V>(map: Map<string, V>, protect?: ReadonlySet<string>): Map<string, V> {
-  return capMapInsertionOrder(map, MAX_UI_STATE_ENTRIES, { protect })
+  return capMapInsertionOrder(map, MAX_UI_STATE_ENTRIES, ...(protect === undefined ? [{}] : [{ protect }]))
 }
 
 /**

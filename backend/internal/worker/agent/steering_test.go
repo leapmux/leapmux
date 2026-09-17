@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,7 @@ func TestManagerSupportsSteeringAsksTheProvider(t *testing.T) {
 	m.agents["refuses"] = &steeringStub{}
 	m.agents["accepts"] = &steeringStub{supports: true}
 	m.agents["opencode"] = &OpenCodeAgent{}
+	m.agents["kilo"] = &KiloAgent{}
 	m.agents["goose"] = &GooseCLIAgent{}
 	m.agents["plain"] = idleAgent{}
 	m.mu.Unlock()
@@ -61,6 +63,11 @@ func TestManagerSupportsSteeringAsksTheProvider(t *testing.T) {
 	assert.True(t, m.SupportsSteering("accepts"))
 	assert.True(t, m.SupportsSteering("opencode"),
 		"OpenCode steers with a second session/prompt and advertises no steer method")
+	// The SAME mechanism, on the same daemon: the answer lives on the family base, so
+	// a fork cannot lose the capability by not restating it. Kilo's Steer control was
+	// dead while this answer sat one type lower.
+	assert.True(t, m.SupportsSteering("kilo"),
+		"every OpenCode-family provider steers with a second session/prompt")
 	assert.False(t, m.SupportsSteering("goose"),
 		"Goose steers only through the method that its handshake advertises")
 	assert.False(t, m.SupportsSteering("plain"),
@@ -201,6 +208,33 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 	assert.Equal(t, "session-1", requests()[0].Params["sessionId"])
 }
 
+// A steer is words the reader typed and watched for. A daemon that declines a
+// concurrent prompt -- which the protocol does not oblige it to accept -- otherwise
+// swallowed them with nothing anywhere the reader could see.
+func TestOpenCodeFamilySteerFailureReachesTheReader(t *testing.T) {
+	t.Parallel()
+
+	agent, _ := newACPAgentForRPCWithResponder(t,
+		func() *KiloAgent { return &KiloAgent{} },
+		func(agent *KiloAgent) *acpBase { return &agent.acpBase },
+		func(method string) jsonrpcResponsePayload {
+			if method != acpMethodSessionPrompt {
+				return jsonrpcResponsePayload{Result: json.RawMessage(`{}`)}
+			}
+			return jsonrpcResponsePayload{Error: json.RawMessage(`{"code":-32600,"message":"a turn is already running"}`)}
+		},
+	)
+	sink := &recordingControlSink{}
+	agent.sink = sink
+	agent.promptActive = true
+
+	require.NoError(t, agent.SteerInput("guide the turn", nil))
+	require.Eventually(t, func() bool { return len(sink.Notifications()) == 1 }, time.Second, time.Millisecond)
+	notice := sink.Notifications()[0]
+	assert.Equal(t, contracts.NotificationTypeAgentError, notice["type"])
+	assert.Contains(t, notice["error"], "a turn is already running")
+}
+
 func TestAdvertisedACPSteeringCapability(t *testing.T) {
 	t.Parallel()
 
@@ -248,6 +282,36 @@ func TestGooseSessionUpdateTracksActiveRunForSteering(t *testing.T) {
 	assert.Equal(t, "run-7", agent.steerRunID)
 	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":null}`)})
 	assert.Empty(t, agent.steerRunID)
+}
+
+// Goose ACKNOWLEDGES a steer on an update of its own, in the shape a live `goose acp`
+// probe recorded: `{"messageId":"steer_...","runId":"run_..."}`, with no `activeRunId`
+// beside it. The update must be CLAIMED -- an unclaimed one falls through and is
+// persisted as a row the browser then hides -- and it must leave the tracked run
+// alone, because the run it identifies is the one the steer already targets.
+func TestGooseQueuedSteerIsClaimedAndKeepsTheActiveRun(t *testing.T) {
+	t.Parallel()
+
+	agent := &GooseCLIAgent{}
+	agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{"goose": json.RawMessage(`{"activeRunId":"run-7"}`)})
+
+	claimed := agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{
+		"goose": json.RawMessage(`{"queuedSteer":{"messageId":"steer_1","runId":"run-7"}}`),
+	})
+	assert.True(t, claimed, "the acknowledgement is read here, not persisted as a row")
+	assert.Equal(t, "run-7", agent.steerRunID, "a queued steer does not end the run it belongs to")
+}
+
+// An update whose `_meta.goose` holds neither field is NOT this handler's, so it must
+// fall through to the dispatcher rather than being swallowed.
+func TestGooseSessionUpdateLeavesAnUnrelatedMetaAlone(t *testing.T) {
+	t.Parallel()
+
+	agent := &GooseCLIAgent{}
+	claimed := agent.captureSteerRunID("session_info_update", map[string]json.RawMessage{
+		"goose": json.RawMessage(`{"messageCount":3,"userSetName":"a session"}`),
+	})
+	assert.False(t, claimed)
 }
 
 func TestAdvertisedACPSteerMapsEndedTurnResponse(t *testing.T) {
@@ -302,13 +366,19 @@ func TestProvidersWithoutSteeringDoNotImplementIt(t *testing.T) {
 	// Copilot is deliberately absent: its native protocol steers with
 	// `session.send` mode:"immediate", which copilotAgent.SteerInput sends.
 	// TestNativeCopilotSteerSendsImmediateMode covers that path.
+	//
+	// So is Kilo, and that is the change: the second-session/prompt steer is the
+	// Agent Client Protocol's own mechanism and now sits on `openCodeFamilyBase`,
+	// which Kilo embeds. A fork of OpenCode running the same daemon cannot lose the
+	// capability by not restating it.
 	for provider, candidate := range map[string]any{
-		"Kilo":   &KiloAgent{},
 		"Cursor": &CursorCLIAgent{},
 	} {
 		_, supports := candidate.(InputSteerer)
 		assert.False(t, supports, provider)
 	}
+	_, kiloSteers := any(&KiloAgent{}).(InputSteerer)
+	assert.True(t, kiloSteers, "Kilo steers through the family's second session/prompt")
 }
 
 func TestCodexSteerUsesExpectedActiveTurn(t *testing.T) {

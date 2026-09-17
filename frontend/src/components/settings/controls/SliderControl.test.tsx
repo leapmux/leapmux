@@ -6,7 +6,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('sliderControl', () => {
+describe('SliderControl', () => {
   it('updates the readout while dragging and commits only on release', () => {
     const onChange = vi.fn()
     render(() => (

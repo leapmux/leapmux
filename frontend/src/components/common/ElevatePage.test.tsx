@@ -77,7 +77,7 @@ function renderElevate(path: string) {
   return { history, navigations }
 }
 
-describe('elevatePage', () => {
+describe('ElevatePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // The passkey-availability tests below patch the snapshot, and it is

@@ -50,8 +50,8 @@ describe('workspace deletion cleanup', () => {
       .toEqual(['DeleteWorkspace', 'ListWorkers'])
     expect(callWorker).toHaveBeenCalledTimes(2)
     expect(callWorker.mock.calls.map(call => call[0])).toEqual(['worker-a', 'worker-b'])
-    expect(callWorker.mock.calls[0][4]).toMatchObject({ tabs: [{ tabType: TabType.AGENT, tabId: 'agent-a' }] })
-    expect(callWorker.mock.calls[1][4]).toMatchObject({ tabs: [
+    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({ tabs: [{ tabType: TabType.AGENT, tabId: 'agent-a' }] })
+    expect(callWorker.mock.calls[1]?.[4]).toMatchObject({ tabs: [
       { tabType: TabType.TERMINAL, tabId: 'terminal-b' },
       { tabType: TabType.IMAGE, tabId: 'image-b' },
       { tabType: TabType.FILE, tabId: 'file-b' },

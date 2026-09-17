@@ -1,5 +1,6 @@
 import type { GoalSurface } from './chatGoal'
 import type { AgentGoal as ProtoAgentGoal } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/models/todo'
 import { describe, expect, it } from 'vitest'
 import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
@@ -9,6 +10,7 @@ import {
   goalStatusFromWire,
   goalStatusLabel,
   protoGoalToStore,
+  shouldShowGoalsAndTodosSection,
 } from './chatGoal'
 
 function protoGoal(over: Partial<ProtoAgentGoal> = {}): ProtoAgentGoal {
@@ -84,7 +86,9 @@ describe('goalActionState', () => {
   // would never light up and is better absent than dead.
   it('hides an action the agent does not support', () => {
     expect(goalActionState({ current: active, actions: ['set', 'clear'] }, 'pause')).toEqual({ kind: 'hidden' })
-    expect(goalActionState({ current: undefined, actions: [] }, 'set')).toEqual({ kind: 'hidden' })
+    // Omitting `current` is how a surface with no goal reads; the key absent
+    // and the key undefined are the same read here.
+    expect(goalActionState({ actions: [] }, 'set')).toEqual({ kind: 'hidden' })
   })
 
   // Pause and resume are opposites: offering both would leave one that does
@@ -102,8 +106,8 @@ describe('goalActionState', () => {
   // The one action that does not need a goal to exist -- it is how the first one
   // arrives, and the empty state's button depends on exactly this.
   it('enables set when there is no goal at all', () => {
-    expect(goalActionState({ current: undefined, actions: ['set'] }, 'set')).toEqual({ kind: 'enabled' })
-    expect(goalActionState({ current: undefined, actions: ['set', 'clear'] }, 'clear'))
+    expect(goalActionState({ actions: ['set'] }, 'set')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({ actions: ['set', 'clear'] }, 'clear'))
       .toEqual({ kind: 'disabled', reason: 'This session has no goal' })
   })
 
@@ -160,5 +164,33 @@ describe('goalStatusLabel', () => {
     // A dormant goal is WAITING, not failing. Labelling it "Needs attention"
     // would report a fault every time a worker restarts.
     expect(goalStatusLabel('dormant')).toBe('Not running')
+  })
+})
+
+describe('shouldShowGoalsAndTodosSection', () => {
+  const oneTodo: TodoItem = { rowKey: '1', content: 'Ship', status: 'pending', activeForm: '' }
+  const settable: GoalSurface = { progress: {}, actions: ['set'] }
+
+  it('shows the section for a to-do', () => {
+    expect(shouldShowGoalsAndTodosSection([oneTodo], undefined)).toBe(true)
+  })
+
+  it('shows the section for a goal surface without any to-dos', () => {
+    expect(shouldShowGoalsAndTodosSection([], settable)).toBe(true)
+  })
+
+  it('hides the section when both parts are absent', () => {
+    expect(shouldShowGoalsAndTodosSection([], undefined)).toBe(false)
+  })
+
+  // The surface is what the section renders, so a surface it can show keeps
+  // the section visible whatever the goal's own state is.
+  it('shows the section for a goal that exists but cannot be changed', () => {
+    const readOnly: GoalSurface = {
+      current: { objective: 'Ship the release', status: 'active' },
+      progress: {},
+      actions: [],
+    }
+    expect(shouldShowGoalsAndTodosSection([], readOnly)).toBe(true)
   })
 })

@@ -14,8 +14,11 @@
  */
 
 import type { Question } from '../../controls/types'
+import type { QuestionIR } from '../../ir/questionBody'
+import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { getToolInput } from '~/utils/controlResponse'
+import { getToolInput, getToolName } from '~/utils/controlResponse'
+import { questionsFromRecords } from '../questionRecords'
 
 /**
  * The options of one question, with the value/label pair repaired.
@@ -83,6 +86,40 @@ export function zcodeQuestionText(question: Record<string, unknown>): string {
 }
 
 /**
+ * The questions of an `AskUserQuestion` TOOL CALL, for the row that draws it.
+ *
+ * The control surface reads the stored control REQUEST, which carries the same
+ * questions under `params`. This reads the tool call's own input instead, because a
+ * transcript row is built from the tool frame and the control request is a separate
+ * message that a replay may not have beside it.
+ *
+ * ZCode's option sets `value` to the label, so either field standing in for the
+ * other keeps the option readable -- the same repair `zcodeOptions` makes for the
+ * answerable list.
+ */
+export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): QuestionIR[] {
+  return questionsFromRecords(
+    input.questions,
+    (question) => {
+      const header = pickString(question, 'header')
+      return { ...(header ? { header } : {}), question: zcodeQuestionText(question) }
+    },
+    (option) => {
+      const label = pickString(option, 'label') || pickString(option, 'value')
+      if (!label)
+        return null
+      const description = pickString(option, 'description')
+      const preview = pickString(option, 'preview')
+      return {
+        label,
+        ...(description ? { description } : {}),
+        ...(preview ? { preview } : {}),
+      }
+    },
+  )
+}
+
+/**
  * Build the `Question[]` for a stored ZCode user-input control request.
  *
  * Returns an empty array for a request that declares no question -- a plan approval
@@ -106,4 +143,16 @@ export function zcodeQuestionsFromPayload(payload: Record<string, unknown>): Que
       built.multiSelect = true
     return [built]
   })
+}
+
+/**
+ * Whether a stored ZCode control payload is the AskUserQuestion prompt.
+ *
+ * ZCode multiplexes three prompts over two RPCs, and the worker records which one
+ * arrived as the request's TOOL NAME. `zcodeExtractControl` switches on the same
+ * name; this one answers the shared question capability, which the composer reads
+ * to pick its editor.
+ */
+export function zcodeIsAskUserQuestion(payload: Record<string, unknown>): boolean {
+  return getToolName(payload) === ZCODE_TOOL.AskUserQuestion
 }

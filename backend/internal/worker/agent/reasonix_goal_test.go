@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReasonixGoalClearsAnAbsentObjectiveAfterCancellation(t *testing.T) {
@@ -64,4 +66,39 @@ func TestReasonixGoalKeepsAnObjectiveWithAnUnprojectedStoppedStatus(t *testing.T
 	assert.Equal(t, GoalStatusBlocked, goal.Status)
 	assert.Equal(t, "budget_spend", goal.StatusDetail)
 	assert.Zero(t, sink.GoalClears())
+}
+
+// Reasonix reports its whole status on every change, so the same phase and the
+// same totals arrive many times per turn. Only what MOVED says anything.
+func TestReasonixStatusUpdateReportsUsageAndPhaseChanges(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := &ReasonixAgent{}
+	a.sink = sink
+	a.sessionID = "session"
+
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{
+		"phase":"implementing",
+		"usage":{"cumulative":{"totalTokens":1500,"promptTokens":1200,"completionTokens":300,
+		"cacheHitTokens":800,"cacheMissTokens":400,"estimatedCost":0.0042}}}}`))
+
+	// The CUMULATIVE half. The turn half restarts, and a gauge that restarted
+	// with it would report a context that shrank.
+	last := sink.LastSessionInfo()
+	usage, ok := last[contracts.SessionInfoKeyContextUsage].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(1500), usage[contracts.ContextUsageFieldContextTokens])
+	assert.Equal(t, int64(1200), usage[contracts.ContextUsageFieldInputTokens])
+	assert.Equal(t, int64(800), usage[contracts.ContextUsageFieldCacheReadInputTokens])
+	assert.Equal(t, 0.0042, last[contracts.SessionInfoKeyTotalCostUsd])
+	// A working phase says what every other surface already says.
+	assert.Empty(t, sink.Notifications())
+
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
+	notifications := sink.Notifications()
+	require.Len(t, notifications, 1, "a restated phase states nothing new")
+	assert.Equal(t, contracts.NotificationTypeAgentStatus, notifications[0]["type"])
+	assert.Equal(t, "Waiting for permission", notifications[0]["text"])
 }

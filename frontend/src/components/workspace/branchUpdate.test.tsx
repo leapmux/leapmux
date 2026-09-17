@@ -47,6 +47,15 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
     return repoGitView(tab, store).branchLabel
   }
 
+  // The tab a test means by position, as a value: each list is built inline
+  // just above the read, and this guard turns that statement into a value.
+  function tabAt(tabs: readonly Tab[], index = 0): Tab {
+    const tab = tabs[index]
+    if (tab === undefined)
+      throw new Error(`expected a tab at ${index}`)
+    return tab
+  }
+
   it('restamps the branch in the repo-keyed store for the repo group', () => {
     const store = createRepoGitStore()
     const tabs = [
@@ -59,9 +68,9 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
 
     expect(stampBranchOnRepo(store, { workerId: 'w1', gitToplevel: '/repo' }, 'B')).toBe(true)
 
-    expect(branchLabel(store, tabs[0])).toBe('B')
-    expect(branchLabel(store, tabs[1])).toBe('B')
-    expect(branchLabel(store, tabs[2])).toBe('A')
+    expect(branchLabel(store, tabAt(tabs))).toBe('B')
+    expect(branchLabel(store, tabAt(tabs, 1))).toBe('B')
+    expect(branchLabel(store, tabAt(tabs, 2))).toBe('A')
   })
 
   it('seeds repo identity when stamping before hydration', () => {
@@ -101,16 +110,16 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       const tree = createMemo(() => buildTree(tabs, store))
 
       expect(tree().groups).toHaveLength(1)
-      expect(tree().groups[0].branches).toHaveLength(1)
-      expect(tree().groups[0].branches[0].branchName).toBe('A')
-      expect(tree().groups[0].branches[0].tabs.map(t => t.id).toSorted()).toEqual(['a1', 'a2'])
+      expect(tree().groups[0]?.branches).toHaveLength(1)
+      expect(tree().groups[0]?.branches[0]?.branchName).toBe('A')
+      expect(tree().groups[0]?.branches[0]?.tabs.map(t => t.id).toSorted()).toEqual(['a1', 'a2'])
 
       stampBranchOnRepo(store, { workerId: 'w1', gitToplevel: '/repo' }, 'B')
 
       expect(tree().groups).toHaveLength(1)
-      expect(tree().groups[0].branches).toHaveLength(1)
-      expect(tree().groups[0].branches[0].branchName).toBe('B')
-      expect(tree().groups[0].branches[0].tabs.map(t => t.id).toSorted()).toEqual(['a1', 'a2'])
+      expect(tree().groups[0]?.branches).toHaveLength(1)
+      expect(tree().groups[0]?.branches[0]?.branchName).toBe('B')
+      expect(tree().groups[0]?.branches[0]?.tabs.map(t => t.id).toSorted()).toEqual(['a1', 'a2'])
 
       dispose()
     })

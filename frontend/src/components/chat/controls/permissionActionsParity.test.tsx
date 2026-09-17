@@ -36,7 +36,7 @@ describe('permission action parity', () => {
     expect(getByRole('button', { name: CONTROL_DECISION_WORDS.permission.allow })).toBeVisible()
     fireEvent.click(getByRole('button', { name: CONTROL_DECISION_WORDS.permission.deny }))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const response = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0][0]))
+    const response = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))
     if (provider === AgentProvider.CODEX)
       expect(response.result).toEqual({ decision: 'decline' })
     else if (provider === AgentProvider.PI)

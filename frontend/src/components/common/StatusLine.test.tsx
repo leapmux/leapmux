@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { errorText, successText } from '~/styles/shared.css'
 import { StatusLine } from './StatusLine'
 
-describe('statusLine', () => {
+describe('StatusLine', () => {
   it('renders nothing when there is no message', () => {
     const { container } = render(() => <StatusLine message={null} />)
     expect(container.textContent).toBe('')

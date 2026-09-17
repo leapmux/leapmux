@@ -3,7 +3,7 @@ import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { registerProvider } from '~/components/chat/providers/registry'
+import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -926,7 +926,7 @@ describe('descendantAgentTabs', () => {
     ]
     const result = descendantAgentTabs(tabs, 'root')
     expect(result).toHaveLength(1)
-    expect(result[0].type).toBe(TabType.AGENT)
+    expect(result[0]?.type).toBe(TabType.AGENT)
   })
 
   // The worker cannot produce a cycle (parent_agent_id is a DAG rooted at a main
@@ -1008,7 +1008,8 @@ describe('isSteerableAgentTab', () => {
     // acceptsMessages is unset (optimistic state before hydration). The fallback
     // routes through the provider plugin's supportsSubagentSend so the single
     // source of truth is the plugin, not a hardcoded provider check.
-    registerProvider(AgentProvider.CODEX, { classify: () => ({} as never), supportsSubagentSend: true })
+    __resetProviderRegistryForTest()
+    registerProvider(AgentProvider.CODEX, { transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null }, configuration: { supportsSubagentSend: true } })
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CODEX }),
     ).toBe(true)
@@ -1017,7 +1018,8 @@ describe('isSteerableAgentTab', () => {
   it('returns false for an unhydrated child of a provider without supportsSubagentSend', () => {
     // Claude/ACP children do not steer; before hydration they are treated as
     // read-only rather than optimistically enabling a composer that may not work.
-    registerProvider(AgentProvider.CLAUDE_CODE, { classify: () => ({} as never) })
+    __resetProviderRegistryForTest()
+    registerProvider(AgentProvider.CLAUDE_CODE, { transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null } })
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CLAUDE_CODE }),
     ).toBe(false)
@@ -1043,10 +1045,10 @@ describe('agentTabSupportsInterrupt', () => {
   })
 
   it('uses the child provider interrupt capability independently of input', () => {
+    __resetProviderRegistryForTest()
     registerProvider(AgentProvider.CODEX, {
-      classify: () => ({} as never),
-      supportsSubagentSend: false,
-      supportsSubagentInterrupt: true,
+      transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null },
+      configuration: { supportsSubagentSend: false, supportsSubagentInterrupt: true },
     })
     expect(agentTabSupportsInterrupt({
       type: TabType.AGENT,

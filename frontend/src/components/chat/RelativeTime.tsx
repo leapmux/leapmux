@@ -64,7 +64,8 @@ export function RelativeTime(props: RelativeTimeProps) {
   sharedTick.subscribe()
 
   const ClockIcon = () => {
-    const ClockFace = clockIcons[hour12()]
+    // `getHours() % 12` is always a valid index into the 12-entry table; `?? Clock12` is the type-level guard alone.
+    const ClockFace = clockIcons[hour12()] ?? Clock12
     return <Icon icon={ClockFace} size="xs" />
   }
 

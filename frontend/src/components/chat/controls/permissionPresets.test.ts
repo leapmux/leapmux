@@ -18,8 +18,34 @@ import { createControlAnswerState } from './types'
 const SMART = { sets: { permissionMode: 'auto' } }
 const BYPASS = { sets: { permissionMode: 'bypassPermissions' } }
 
-function controller(partial: Partial<PermissionPresetController> = {}): PermissionPresetController {
-  return { smart: SMART, bypass: BYPASS, apply: vi.fn(), ...partial }
+/**
+ * The controller double. An override passed as `undefined` DROPS the member:
+ * `PermissionPresetController` spells "not carried" as an absent key, which
+ * `Partial` can no longer state explicitly, and every reader treats the two
+ * the same.
+ */
+function controller(overrides: {
+  smart?: PermissionPresetController['smart']
+  bypass?: PermissionPresetController['bypass']
+  apply?: PermissionPresetController['apply']
+  active?: PermissionPresetController['active']
+} = {}): PermissionPresetController {
+  const controller: PermissionPresetController = { smart: SMART, bypass: BYPASS, apply: vi.fn() }
+  if (overrides.smart === undefined)
+    delete controller.smart
+  else
+    controller.smart = overrides.smart
+  if (overrides.bypass === undefined)
+    delete controller.bypass
+  else
+    controller.bypass = overrides.bypass
+  if (overrides.apply === undefined)
+    delete controller.apply
+  else
+    controller.apply = overrides.apply
+  if (overrides.active !== undefined)
+    controller.active = overrides.active
+  return controller
 }
 
 /** A choice state with nothing stored, so it reports the opening choice alone. */

@@ -93,6 +93,12 @@ func (a *PiAgent) SendRawInput(data []byte) error {
 	if json.Unmarshal(data, &response) != nil || response.Type != contracts.PiEventExtensionUIResponse {
 		return a.processBase.SendRawInput(data)
 	}
+	// Both forwarding paths below carry the value unchanged, and only a plan
+	// menu ever offers it, so the mark is set before the dialog lookup rather
+	// than duplicated in each branch.
+	if response.Value != nil && *response.Value == contracts.PiPlanActionImplementFresh {
+		a.notePiPlanFreshApproval()
+	}
 	a.mu.Lock()
 	dialog := a.questionDialogs[response.ID]
 	delete(a.questionDialogs, response.ID)

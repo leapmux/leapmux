@@ -15,6 +15,8 @@ describe('acpWebFetchFromToolCall', () => {
     expect(acpWebFetchFromToolCall({ rawOutput: { code: 'oops' } })).toBeNull()
   })
 
+  // The payload's `url` stays out of the result: the call's request states the
+  // address, and no body draws a second copy of it.
   it('extracts the structured payload when present', () => {
     expect(acpWebFetchFromToolCall({
       rawOutput: {
@@ -31,7 +33,6 @@ describe('acpWebFetchFromToolCall', () => {
       bytes: 1024,
       durationMs: 50,
       result: '# Body',
-      url: 'https://example.com',
     })
   })
 

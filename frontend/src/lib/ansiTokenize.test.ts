@@ -14,6 +14,8 @@ describe('ansiSyncTokenize', () => {
     // One line; the escape sequences are consumed and become per-token colors.
     expect(tokens).toHaveLength(1)
     const line = tokens![0]
+    if (line === undefined)
+      throw new Error('expected one tokenized line')
     expect(line.map(t => t.content).join('')).toBe('green plain')
     // The colored segment carries a shared style class whose rule defines the
     // dual-theme CSS variables the wrapper themes (see shikiStyleClass).

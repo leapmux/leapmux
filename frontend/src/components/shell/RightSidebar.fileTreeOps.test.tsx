@@ -89,7 +89,7 @@ function makeProps() {
   }
 }
 
-describe('rightSidebar file tree shortcut registration', () => {
+describe('RightSidebar file tree shortcut registration', () => {
   it('refreshes git status and the files handle, and toggles hidden files', () => {
     const props = makeProps()
     const handle = {

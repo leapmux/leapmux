@@ -853,8 +853,8 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         expect(bgRuns, 'ten drag frames in another workspace notify this one zero times').toBe(baseline)
         expect(bgStore.state.windows[0]).toBe(bgBefore)
         expect(bgStore.getWindowTileIdSet(background.windowId)).toBe(bgTilesBefore)
-        expect(bgStore.state.windows[0].x, 'and its geometry is its own').toBeCloseTo(0.6, 6)
-        expect(store.state.windows[0].x, 'while the dragged one moved').toBeCloseTo(0.19, 6)
+        expect(bgStore.state.windows[0]?.x, 'and its geometry is its own').toBeCloseTo(0.6, 6)
+        expect(store.state.windows[0]?.x, 'while the dragged one moved').toBeCloseTo(0.19, 6)
       }, { workspaceId: 'ws-active', rootTileId: 'main' })
     })
 

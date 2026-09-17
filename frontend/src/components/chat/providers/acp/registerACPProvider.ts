@@ -1,24 +1,21 @@
-import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
 import type { ProviderPermissionPresets } from '../../providerSettings'
-import type { AttachmentCapabilities, Provider, ProviderAskUserQuestion } from '../registry'
-import type { ACPToolAdapter } from './toolPresentation'
+import type { AttachmentCapabilities, ProviderAskUserQuestion, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin } from '../capabilities'
+import type { ACPToolCallAdapter } from './extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
-import { defaultMarkPreview } from '../../markPreviewShared'
+import { sendSelectedOptionResponse } from '../../controls/types'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
-import { ACPControlActions, ACPControlContent } from './ACPControlRequest'
-import { acpBuildControlResponse, acpExtractQuotableText, classifyACPMessage } from './classification'
+import { acpBuildControlResponse, classifyACPMessage } from './classification'
 import { acpControlResponseDisplay } from './controlResponse'
 import { acpElicitation } from './elicitation'
-import { acpToolResultImages } from './extractors/image'
-import { acpResultDivider } from './renderers'
-import { renderACPMessage } from './rendering'
-import { acpToolFinished, acpToolNeedsResult, resolveACPMessage } from './toolPresentation'
-import { acpToolResultMeta } from './toolResult'
+import { acpExtractControl, acpPermissionSpanId } from './extractControl'
+import { acpResultDivider } from './extractors/resultDivider'
+import { acpExtractRow } from './extractors/row'
+import { acpToolCallNeedsResult, acpToolFinished, resolveACPMessage } from './extractors/toolCall'
+import { ACP_SESSION_UPDATE } from './updateVocabulary'
 
 /**
  * Per-provider settings configuration for an ACP provider. The discriminator
@@ -55,16 +52,28 @@ export type ACPQuestionHandling = ProviderAskUserQuestion
  */
 export interface ACPProviderOptions {
   provider: AgentProvider
-  /** Extract native tool fields for the shared renderer. */
-  toolAdapter?: ACPToolAdapter
+  /** The provider's own reading of one call, for the kind-discriminated pair. */
+  toolCallAdapter?: ACPToolCallAdapter
   /** Explicit settings config (optionGroup or an explicit permissionMode). */
   settingsConfig?: ACPSettingsPanelConfig
   /** Sugar for `settingsConfig: { kind: 'permissionMode', defaultMode }`. */
   defaultPermissionMode?: PermissionMode
-  /** Control-request content component. Defaults to the shared {@link ACPControlContent}. */
-  ControlContent?: Component<ContentProps>
-  /** Control-request actions component. Defaults to the shared {@link ACPControlActions}. */
-  ControlActions?: Component<ActionsProps>
+  /**
+   * Control reader. Defaults to the shared {@link acpExtractControl}; a provider
+   * whose payload is shaped differently (Cursor) passes its own.
+   */
+  extractControl?: ProviderControlCapability['extractControl']
+  /**
+   * The requests this provider answers ITSELF. Omit it for the whole family, which
+   * answers every permission through the shared decision row.
+   */
+  controlActionsFor?: ProviderControlCapability['controlActionsFor']
+  /**
+   * How this provider sends one chosen option. Defaults to the selected-option
+   * outcome, which is the Agent Client Protocol's own reply and which OpenCode and
+   * Kilo answer with unchanged.
+   */
+  sendPermissionOption?: ProviderControlCapability['sendPermissionOption']
   /**
    * Mode value that represents "plan" for this provider's plan-mode toggle.
    * Omit to disable plan-mode wiring (e.g. Goose has no plan mode).
@@ -79,9 +88,7 @@ export interface ACPProviderOptions {
    * (the permission-selection path); OpenCode/Kilo and Cursor pass their own, which dispatch on the
    * request shape and delegate back to the ACP default for the permission case.
    */
-  controlResponseDisplay?: Provider['controlResponseDisplay']
-  /** Extra `session/update` types that should be hidden from the chat. */
-  extraHiddenSessionUpdates?: Set<string>
+  controlResponseDisplay?: ProviderControlCapability['controlResponseDisplay']
   /**
    * Provider-specific classification of a `tool_call_update` session update.
    * Returns a `tool_use` category when the provider recognizes its own wire
@@ -115,7 +122,7 @@ function triggerModeGroupKeyForConfig(config: ACPSettingsPanelConfig): string {
 function planModeFromConfig(
   config: ACPSettingsPanelConfig,
   planValue: string,
-): NonNullable<Provider['planMode']> {
+): NonNullable<ProviderConfigurationCapability['planMode']> {
   const { groupKey, defaultValue } = config.kind === 'permissionMode'
     ? { groupKey: OPTION_ID_PERMISSION_MODE, defaultValue: config.defaultMode }
     : { groupKey: config.optionGroupKey, defaultValue: config.defaultValue }
@@ -133,58 +140,58 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       throw new Error('registerACPProvider requires settingsConfig or defaultPermissionMode')
     sc = { kind: 'permissionMode', defaultMode: opts.defaultPermissionMode }
   }
-  const plugin: Provider = {
-    resolveMessage: resolveACPMessage,
-    attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
-
-    classify: classifyACPMessage({
-      ...(opts.extraHiddenSessionUpdates ? { extraHiddenSessionUpdates: opts.extraHiddenSessionUpdates } : {}),
-      ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
-    }),
-    spanRole: (parsed) => {
-      const tool = parsed.parentObject
-      if (tool?.sessionUpdate === 'tool_call')
-        return acpToolFinished(tool, parsed.completion) ? 'result' : 'opener'
-      if (tool?.sessionUpdate === 'tool_call_update' && acpToolFinished(tool, parsed.completion))
-        return 'result'
-      return 'other'
-    },
-    relatedMessages: (parsed) => {
-      const tool = parsed.parentObject
-      if (!tool)
-        return []
-      if (acpToolFinished(tool, parsed.completion))
-        return ['request']
-      return tool.sessionUpdate === 'tool_call' && acpToolNeedsResult(tool, opts.toolAdapter, parsed.supplementalContent) ? ['result'] : []
-    },
-    renderMessage: (category, parsed, context) => renderACPMessage(category, parsed, context, opts.toolAdapter),
-    toolResultMeta: (category, input) => acpToolResultMeta(category, input, opts.toolAdapter),
-    toolResultImages: input => acpToolResultImages(input, opts.toolAdapter),
-    resultDivider: acpResultDivider,
-    extractQuotableText: acpExtractQuotableText,
-    // ACP-based providers (OpenCode, Cursor, Goose, ...) mark only user sends and control-response
-    // answers. A user send is the LeapMux-neutral `{content}` shape the shared extractor handles; a
-    // control answer is the structured `{controlResponse}` row, which classifies as
-    // `control_response` and resolves through controlResponseDisplay (below), not here.
-    previewText: defaultMarkPreview,
+  const controls: ProviderControlCapability = {
     controlResponseDisplay: withElicitationResponse(acpElicitation, opts.controlResponseDisplay ?? acpControlResponseDisplay),
     elicitation: acpElicitation,
     buildControlResponse: acpBuildControlResponse,
+    // The shared Agent Client Protocol reader; a provider whose payload is shaped
+    // differently (Cursor) passes its own, which delegates back for the rest.
+    extractControl: opts.extractControl ?? acpExtractControl,
+    controlToolSpanId: acpPermissionSpanId,
 
-    // Default to the shared ACP control UI; a provider whose payload is shaped
-    // differently (Cursor) passes its own dispatching components.
-    ControlContent: opts.ControlContent ?? ACPControlContent,
-    ControlActions: opts.ControlActions ?? ACPControlActions,
+    // Neither half of the banner needs a component from this family now. The reader
+    // above fills the IR, the shared row draws it, and the decision travels back as
+    // the protocol's own selected-option outcome.
+    sendPermissionOption: opts.sendPermissionOption ?? sendSelectedOptionResponse,
+
+    ...(opts.controlActionsFor !== undefined ? { controlActionsFor: opts.controlActionsFor } : {}),
+    ...(opts.permissionPresets !== undefined ? { permissionPresets: opts.permissionPresets } : {}),
+    ...(opts.questionHandling ? { askUserQuestion: opts.questionHandling } : {}),
   }
-
-  if (opts.permissionPresets !== undefined)
-    plugin.permissionPresets = opts.permissionPresets
-  if (opts.planValue !== undefined)
-    plugin.planMode = planModeFromConfig(sc, opts.planValue)
-  plugin.triggerModeGroupKey = triggerModeGroupKeyForConfig(sc)
-
-  if (opts.questionHandling) {
-    plugin.askUserQuestion = opts.questionHandling
+  const configuration: ProviderConfigurationCapability = {
+    attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
+    ...(opts.planValue !== undefined ? { planMode: planModeFromConfig(sc, opts.planValue) } : {}),
+    triggerModeGroupKey: triggerModeGroupKeyForConfig(sc),
+  }
+  const plugin: ProviderPlugin = {
+    transcript: {
+      resolveMessage: resolveACPMessage,
+      classify: classifyACPMessage(
+        opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {},
+      ),
+      spanRole: (parsed) => {
+        const tool = parsed.parentObject
+        if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
+          return acpToolFinished(tool, parsed.completion) ? 'result' : 'opener'
+        if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE && acpToolFinished(tool, parsed.completion))
+          return 'result'
+        return 'other'
+      },
+      relatedMessages: (parsed) => {
+        const tool = parsed.parentObject
+        if (!tool)
+          return []
+        if (acpToolFinished(tool, parsed.completion))
+          return ['request']
+        return (tool.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL && acpToolCallNeedsResult(tool, opts.toolCallAdapter, parsed.supplementalContent))
+          ? ['result']
+          : []
+      },
+      extractRow: input => acpExtractRow(input, opts.toolCallAdapter),
+      extractDivider: acpResultDivider,
+    },
+    controls,
+    configuration,
   }
 
   registerProvider(opts.provider, plugin)

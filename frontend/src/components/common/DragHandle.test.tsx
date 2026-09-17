@@ -4,7 +4,7 @@ import { DragHandle } from '~/components/common/DragHandle'
 import { flush } from '~/test-support/async'
 import { pointerEvent } from '~/test-support/pointer'
 
-describe('dragHandle', () => {
+describe('DragHandle', () => {
   it('renders the grip as a pointer-only affordance', () => {
     const { getByTestId } = render(() => (
       <DragHandle visibility="always" activators={() => undefined} testId="grip" />

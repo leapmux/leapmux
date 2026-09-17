@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentInputQueuePauseReason } from '~/generated/proto/leapmux/v1/agent_pb'
 import { AgentInputQueuePauseBanner, pauseSentence } from './AgentInputQueuePauseBanner'
 
-describe('agentInputQueuePauseBanner', () => {
+describe('AgentInputQueuePauseBanner', () => {
   it('renders nothing while the queue runs', () => {
     render(() => (
       <AgentInputQueuePauseBanner paused={false} reason={AgentInputQueuePauseReason.MANUAL} />

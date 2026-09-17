@@ -35,7 +35,7 @@ describe('extractZCodeFileDiff', () => {
   // The app-server hands over a READY structured patch in the same hunk shape the
   // shared diff view consumes, so there is no diff text to parse.
   it('takes the structured patch the display carries', () => {
-    expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'Edited.', display: fileDiffDisplay() } }), ZCODE_TOOL.Edit, undefined))).toEqual({ filePath: '/tmp/a.ts', structuredPatch: [HUNK], oldStr: '', newStr: '' })
+    expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'Edited.', display: fileDiffDisplay() } }), ZCODE_TOOL.Edit, undefined))).toEqual({ filePath: '/tmp/a.ts', structuredPatch: [HUNK] })
   })
 
   it('falls back to the input path when the display states none', () => {
@@ -64,6 +64,7 @@ describe('extractZCodeFileDiff', () => {
     expect(extractZCodeFileDiff(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'Created.' } }), undefined, scheduled(ZCODE_TOOL.Write, { file_path: '/tmp/new.ts', content: 'const a = 1\n' })))).toEqual({
       filePath: '/tmp/new.ts',
       structuredPatch: null,
+      operation: 'add',
       oldStr: '',
       newStr: 'const a = 1\n',
     })
@@ -131,31 +132,26 @@ describe('extractZCodeRead', () => {
   // parser owns the body.
   it('parses the numbered body into lines', () => {
     const read = extractZCodeRead(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: '1\talpha\n2\tbeta' } }), undefined, scheduled(ZCODE_TOOL.Read, { file_path: '/tmp/a.ts' })))
-    expect(read?.source.filePath).toBe('/tmp/a.ts')
-    expect(read?.source.numLines).toBe(2)
-    expect(read?.source.lines?.map(l => l.text)).toEqual(['alpha', 'beta'])
+    expect(read?.lines?.map(l => l.text)).toEqual(['alpha', 'beta'])
   })
 
-  it('carries the requested offset and limit through', () => {
+  // The numbers come from the BODY here, so the requested offset changes nothing.
+  // The call's own request is what states the range a reader asked for.
+  it('keeps the numbers the body states when the input asked for a range', () => {
     const read = extractZCodeRead(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: '10\tten' } }), undefined, scheduled(ZCODE_TOOL.Read, { file_path: '/tmp/a.ts', offset: 10, limit: 5 })))
-    expect(read).toMatchObject({ offset: 10, limit: 5 })
-  })
-
-  it('reports null offset and limit when the input asked for neither', () => {
-    const read = extractZCodeRead(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: '1\ta' } }), ZCODE_TOOL.Read, undefined))
-    expect(read).toMatchObject({ offset: null, limit: null })
+    expect(read?.lines).toEqual([{ num: 10, text: 'ten' }])
   })
 
   // A binary read, or a build that stops numbering, falls back to plain text starting
   // at the requested offset.
   it('falls back to plain text when the body is not numbered', () => {
     const read = extractZCodeRead(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'plain body\nsecond line' } }), undefined, scheduled(ZCODE_TOOL.Read, { file_path: '/tmp/a.bin', offset: 7 })))
-    expect(read?.source.lines?.[0]).toMatchObject({ num: 7, text: 'plain body' })
+    expect(read?.lines?.[0]).toMatchObject({ num: 7, text: 'plain body' })
   })
 
   it('starts the fallback at line 1 when no offset was requested', () => {
     const read = extractZCodeRead(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'plain body' } }), ZCODE_TOOL.Read, undefined))
-    expect(read?.source.lines?.[0]).toMatchObject({ num: 1 })
+    expect(read?.lines?.[0]).toMatchObject({ num: 1 })
   })
 
   it('handles an empty result body without throwing', () => {

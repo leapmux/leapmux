@@ -38,6 +38,14 @@ type CursorCLIAgent struct {
 	// one keeps its entry -- one bool and one id -- for the life of the agent,
 	// which matches how acpBase's subagentPrompts holds a spawn's prompt.
 	taskToolCalls map[string]bool
+
+	// transcript is the sink that configure installed, held under its own type so
+	// the extension handler can reach EnrichToolSpan. The transcript is the single
+	// writer of a row's supplemental content, and the `cursor/*` frames land on a
+	// row that its store pass also enriches -- see EnrichToolSpan for what a second
+	// writer would destroy. It is written once, in configure, before the reader
+	// goroutine starts.
+	transcript *toolTranscript
 }
 
 // clearTaskToolCalls drops every note. ClearContext calls it: the notes are
@@ -112,6 +120,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink ProviderServices) (A
 			storeQuery := StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
 			transcript := newCursorToolTranscript(ctx, a.sink, func() string { return cursorACPStorePath(storeQuery, a.currentSessionID()) })
 			a.sink = transcript
+			a.transcript = transcript
 			// Cursor stores the normalized (display) model id, not the wire form. The
 			// live normalizer is sourced from the registry (the same one NormalizeModelID
 			// uses) so the offline-label and live paths can't diverge.
@@ -410,7 +419,7 @@ func cursorToolCallRanInBackground(rawOutput json.RawMessage) bool {
 // tools are not subagents, and the neutral layer defaults a blank kind to
 // Subagent -- so leaving the kind blank here put a shell in the sidebar under a
 // Bot icon, in the subagent filter tab, labelled with its raw toolCallId. The
-// task-tool arm leaves BOTH the kind and the title blank on purpose: the spawn
+// task-tool branch leaves BOTH the kind and the title blank on purpose: the spawn
 // observation already set them, and Item.PreservingBlanksFrom keeps an existing
 // value only for a blank incoming one. Writing them here would flip a real
 // subagent row to a shell and overwrite its trimmed title with the raw
@@ -419,7 +428,7 @@ func cursorToolCallRanInBackground(rawOutput json.RawMessage) bool {
 // wasTaskTool comes from the caller, not from tcu, because this update does not
 // always carry rawInput. Reading the identity off tcu alone made an absent
 // rawInput mean "not the task tool", so a backgrounded task whose final update
-// omitted its input took the shell arm and flipped its own live row.
+// omitted its input took the shell branch and flipped its own live row.
 func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope, wasTaskTool bool) *acpSubagentObservation {
 	if !acpStatusIsFinal(tcu.Status) {
 		return nil

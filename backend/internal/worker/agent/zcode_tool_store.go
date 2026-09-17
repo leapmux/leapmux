@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 type zcodeToolStoreLocation struct {
@@ -28,28 +30,10 @@ type zcodeToolLookup struct {
 	callID    string
 }
 
-type zcodeStoredTool struct {
-	ID        string          `json:"id"`
-	SessionID string          `json:"sessionId"`
-	MessageID string          `json:"messageId"`
-	Data      json.RawMessage `json:"data"`
-}
-
 type zcodeToolRecord struct {
-	native    zcodeStoredTool
+	native    contracts.ZCodeStoredTool
 	artifacts map[string]string
 	ready     bool
-}
-
-type zcodeStoredAttachment struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionID"`
-	MessageID string `json:"messageID"`
-	Mime      string `json:"mime"`
-	URL       string `json:"url"`
-	Metadata  struct {
-		ArtifactURI string `json:"artifactUri"`
-	} `json:"metadata"`
 }
 
 type zcodeArtifactReference struct {
@@ -228,9 +212,9 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts 
 		if err != nil {
 			return out, err
 		}
-		var candidates []zcodeStoredTool
+		var candidates []contracts.ZCodeStoredTool
 		for rows.Next() {
-			var stored zcodeStoredTool
+			var stored contracts.ZCodeStoredTool
 			var data []byte
 			if err := rows.Scan(&stored.ID, &stored.SessionID, &stored.MessageID, &data); err != nil {
 				return out, errors.Join(err, rows.Close())
@@ -246,26 +230,19 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, artifacts 
 			continue
 		}
 		native := candidates[0]
-		var part struct {
-			Type   string `json:"type"`
-			CallID string `json:"callID"`
-			Tool   string `json:"tool"`
-			State  struct {
-				Status      string            `json:"status"`
-				Attachments []json.RawMessage `json:"attachments"`
-			} `json:"state"`
-		}
-		if json.Unmarshal(native.Data, &part) != nil || part.Type != "tool" || part.CallID != callID || part.Tool == "" ||
+		var part contracts.ZCodeStoredPart
+		if json.Unmarshal(native.Data, &part) != nil || part.Type != contracts.ZCodeStoredPartTypeTool ||
+			part.CallID != callID || part.Tool == "" ||
 			(request.toolName != "" && part.Tool != request.toolName) ||
-			(part.State.Status != "completed" && part.State.Status != "error") {
+			(part.State.Status != contracts.ZCodeStoredPartStatusCompleted && part.State.Status != contracts.ZCodeStoredPartStatusError) {
 			continue
 		}
 		for _, rawAttachment := range part.State.Attachments {
-			var attachment zcodeStoredAttachment
+			var attachment contracts.ZCodeStoredAttachment
 			if json.Unmarshal(rawAttachment, &attachment) != nil {
 				continue
 			}
-			if attachment.Type != "file" || attachment.SessionID != native.SessionID || attachment.MessageID != native.MessageID {
+			if attachment.Type != contracts.ZCodeStoredAttachmentTypeFile || attachment.SessionID != native.SessionID || attachment.MessageID != native.MessageID {
 				continue
 			}
 			uri := attachment.Metadata.ArtifactURI

@@ -71,8 +71,13 @@ type PiAgent struct {
 	questionDialogs       map[string]*piQuestionSource
 	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
 	questionGeneration    uint64
-	goal                  piGoalSync
-	extensionCommands     map[string]bool
+	// freshImplementationPending records that a plan menu was answered with
+	// the fresh-implementation choice, so the settings dialog that follows is
+	// answered by the worker rather than published. Guarded by a.mu. See
+	// pi_fresh_implementation.go.
+	freshImplementationPending bool
+	goal                       piGoalSync
+	extensionCommands          map[string]bool
 
 	availableModels []*ModelInfo
 	// modelProviders maps modelID -> underlying provider (e.g.
@@ -469,8 +474,8 @@ func (a *PiAgent) handlePiPromptFailure(err error, steer bool) {
 	}
 	slog.Error("pi prompt failed", "agent_id", a.agentID, "steer", steer, "error", err)
 	a.sink.PersistLeapMuxNotification(map[string]any{
-		"type":  contracts.NotificationTypeAgentError,
-		"error": err.Error(),
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: err.Error(),
 	})
 }
 
@@ -615,6 +620,8 @@ func (a *PiAgent) ClearContext() (string, error) {
 	// acpBase.ClearContext).
 	clear(a.toolStates)
 	a.clearPiQuestionStateLocked()
+	// The plan menu this mark refers to died with the replaced session.
+	a.freshImplementationPending = false
 	a.nextToolOrder = 0
 	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()

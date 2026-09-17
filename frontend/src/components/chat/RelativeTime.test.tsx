@@ -3,7 +3,7 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RelativeTime, RelativeTimeAgo } from './RelativeTime'
 
-describe('relativeTime', () => {
+describe('RelativeTime', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-01T12:00:00Z'))

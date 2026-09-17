@@ -1,10 +1,11 @@
 import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
-import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
+import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
+import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentActivityState, AgentControlCancelRequestSchema, AgentProvider, AgentStatus, ContentCompression, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -14,7 +15,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
-import { extractCompactionContextTokens, parseMessageContent } from '~/lib/messageParser'
+import { parseMessageContent } from '~/lib/messageParser'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
@@ -360,7 +361,7 @@ describe('background agent history trimming', () => {
 
       const messages = stores.chatStore.getMessages('background-agent')
       expect(messages, 'the cap must actually bound the backlog').toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES)
-      expect(messages[0].seq).toBe(2n)
+      expect(messages[0]?.seq).toBe(2n)
       expect(messages.at(-1)?.seq).toBe(BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1))
       expect(stores.chatStore.hasOlderMessages('background-agent')).toBe(true)
       dispose()
@@ -377,7 +378,7 @@ describe('background agent history trimming', () => {
 
       const messages = stores.chatStore.getMessages('active-agent')
       expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 1)
-      expect(messages[0].seq).toBe(1n)
+      expect(messages[0]?.seq).toBe(1n)
       dispose()
     })
   })
@@ -397,7 +398,7 @@ describe('background agent history trimming', () => {
 
       const messages = stores.chatStore.getMessages('visible-agent')
       expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 1)
-      expect(messages[0].seq).toBe(1n)
+      expect(messages[0]?.seq).toBe(1n)
       dispose()
     })
   })
@@ -503,7 +504,7 @@ describe('context usage refresh on compaction boundary', () => {
       agentProvider: AgentProvider.CLAUDE_CODE,
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
 
-    const postTokens = extractCompactionContextTokens(parseMessageContent(msg))
+    const postTokens = compactionContextTokens(parseMessageContent(msg), AgentProvider.CLAUDE_CODE)
     if (postTokens === undefined)
       return
     const existing = sessionStore.getInfo(agentId).contextUsage
@@ -1167,7 +1168,7 @@ describe('startupMessage handling in terminal statusChange', () => {
     if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
       tabs.metadata.patch(terminalId, {
         terminalStatus: TerminalStatus.STARTING,
-        startupMessage: msg || undefined,
+        ...(msg ? { startupMessage: msg } : {}),
       })
     }
     else if (existing?.status === TerminalStatus.STARTING && msg && msg !== existing.startupMessage) {
@@ -1470,12 +1471,12 @@ describe('agentMessage sub-handlers', () => {
       const msg = agentMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.25 })
       const parsed = parseMessageContent(msg)
 
-      handleResultDivider('a1', msg, parsed, stores, 'catchingUp')
-      handleResultDivider('a1', msg, parsed, stores, 'live')
+      handleResultDivider('a1', msg, parsed, stores)
 
-      // The divider carries no alert of its own. `stores` has no onAgentSettled
-      // field at all, which is the point: the only route to the sound and the
-      // badge is handleActivityChanged's busy -> idle edge.
+      // The divider carries no alert of its own, in any catch-up phase -- it does
+      // not read the phase at all now. `stores` has no onAgentSettled field, which
+      // is the point: the only route to the sound and the badge is
+      // handleActivityChanged's busy -> idle edge.
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
       dispose()
     })
@@ -1718,7 +1719,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       getActiveWorkspaceId: () => WS,
       view: tabs.view,
       agentActivityStore,
-      onAgentSettled,
+      ...(onAgentSettled !== undefined ? { onAgentSettled } : {}),
     })
 
     it('stores what the worker says, and rings only on the busy -> idle edge', () => {
@@ -1728,7 +1729,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
         tabs.addAgent('a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         const activity = createAgentActivityStore()
-        const ended: Array<{ id: string, uses?: number }> = []
+        // `uses` is `number | undefined`: the callback is invoked with
+        // undefined whenever the settle carried no tool count.
+        const ended: Array<{ id: string, uses: number | undefined }> = []
         const stores = activityStores(tabs, activity, (id, uses) => ended.push({ id, uses }))
 
         handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
@@ -1829,7 +1832,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       view: tabs.view,
-      onAgentSettled,
+      ...(onAgentSettled !== undefined ? { onAgentSettled } : {}),
     })
 
     it('alerts with and without a tool count, and badges only an off-screen tab', () => {
@@ -1838,8 +1841,10 @@ describe('extracted handleAgentEvent branch handlers', () => {
         tabs.addAgent('a1')
         tabs.addAgent('a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
-        const ended: Array<{ id: string, uses?: number }> = []
-        const push = (id: string, uses?: number) => ended.push({ id, uses })
+        // Records `uses: undefined` explicitly: a settle without a tool count
+        // must be distinguishable from one that never fired.
+        const ended: Array<{ id: string, uses: number | undefined }> = []
+        const push = (id: string, uses: number | undefined) => ended.push({ id, uses })
         handleAgentSettled('a1', undefined, settledStores(tabs, push))
         handleAgentSettled('a2', 3, settledStores(tabs, push))
         // undefined is not zero: a settle that no turn end caused carries no
@@ -1883,7 +1888,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([2]), isSnapshot: false, endOffset: 2n })
       enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([9]), isSnapshot: true, endOffset: 9n })
       expect(pending.get('t1')).toHaveLength(1)
-      expect(pending.get('t1')![0].endOffset).toBe(9n)
+      expect(pending.get('t1')![0]?.endOffset).toBe(9n)
     })
 
     it('caps the queue so a never-mounting terminal cannot grow it without bound', () => {
@@ -2010,7 +2015,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const request = { ...req('a1'), responseState: ControlResponseState.DELIVERED }
         handleControlRequest('a1', request, 'catchingUp', s)
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
-        expect(s.controlStore.getRequests('a1')[0].responseState).toBe(ControlResponseState.DELIVERED)
+        expect(s.controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
         expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
         dispose()
       })
@@ -2021,7 +2026,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const original = '{"method":"item/commandExecution/requestApproval","large":9007199254740993,"value":1,"value":2}'
         const request = { requestId: 'raw', agentId: 'a1', payload: enc(original) } as unknown as AgentControlRequest
         handleControlRequest('a1', request, 'live', s)
-        expect(new TextDecoder().decode(s.controlStore.getRequests('a1')[0].originalPayload)).toBe(original)
+        expect(new TextDecoder().decode(s.controlStore.getRequests('a1')[0]?.originalPayload)).toBe(original)
         dispose()
       })
     })
@@ -2048,11 +2053,11 @@ describe('extracted handleAgentEvent branch handlers', () => {
         handleControlRequest('a1', request, 'live', s)
         const [kept] = s.controlStore.getRequests('a1')
         expect(kept).toBeDefined()
-        expect(kept.payloadFault).toBe(fault)
+        expect(kept?.payloadFault).toBe(fault)
         // The payload stays EMPTY rather than guessing a shape a plugin would then read.
-        expect(kept.payload).toEqual({})
+        expect(kept?.payload).toEqual({})
         // The bytes that arrived are still there, so Copy JSON shows what the agent sent.
-        expect(new TextDecoder().decode(kept.originalPayload)).toBe(bytes)
+        expect(new TextDecoder().decode(kept?.originalPayload)).toBe(bytes)
         dispose()
       })
     })
@@ -2062,7 +2067,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         handleControlRequest('a1', req('a1'), 'live', s)
-        expect(s.controlStore.getRequests('a1')[0].payloadFault).toBeUndefined()
+        expect(s.controlStore.getRequests('a1')[0]?.payloadFault).toBeUndefined()
         dispose()
       })
     })
@@ -2127,7 +2132,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const malformed = { requestId: 'r1', agentId: 'a1', payload: enc('{not json') } as unknown as AgentControlRequest
         expect(() => handleControlRequest('a1', malformed, 'live', s)).not.toThrow()
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
-        expect(s.controlStore.getRequests('a1')[0].payloadFault).toBe('malformed')
+        expect(s.controlStore.getRequests('a1')[0]?.payloadFault).toBe('malformed')
         dispose()
       })
     })
@@ -2295,12 +2300,17 @@ describe('wireSessionInfoToUpdates', () => {
       rate_limits: { five_hour: { status: 'allowed', is_using_overage: false } },
     })
     const tier = (updates.rateLimits as Record<string, Record<string, unknown>>).five_hour
+    if (tier === undefined)
+      throw new Error('expected the five_hour tier to be present')
     expect(Object.keys(tier).sort()).toEqual(['isUsingOverage', 'status'])
     // A real `false` still lands -- only an ABSENT key is dropped.
     expect(tier.isUsingOverage).toBe(false)
 
     const sparse = wireSessionInfoToUpdates({ rate_limits: { five_hour: { status: 'allowed' } } })
-    expect(Object.keys((sparse.rateLimits as Record<string, object>).five_hour)).toEqual(['status'])
+    const sparseTier = (sparse.rateLimits as Record<string, object>).five_hour
+    if (sparseTier === undefined)
+      throw new Error('expected the five_hour tier to be present')
+    expect(Object.keys(sparseTier)).toEqual(['status'])
   })
 
   it('drops a tier field whose wire value is the wrong type', () => {
@@ -2315,7 +2325,7 @@ describe('wireSessionInfoToUpdates', () => {
         },
       },
     })
-    expect(Object.keys((updates.rateLimits as Record<string, object>).five_hour)).toEqual(['status'])
+    expect(Object.keys((updates.rateLimits as Record<string, Record<string, unknown>>).five_hour ?? {})).toEqual(['status'])
   })
 
   it('skips a tier that is not an object at all', () => {
@@ -2341,7 +2351,10 @@ describe('wireSessionInfoToUpdates', () => {
  * was a one-workspace bug; the widening made it account-wide.
  */
 describe('collectWorkerOfflineTargets', () => {
-  const tab = (over: Partial<Tab>): Tab => ({
+  // `undefined` in overrides CLEARs a defaulted field; absence keeps it. The
+  // per-variant partials keep kind-specific fields (e.g. a terminal's `status`)
+  // available to the spread below.
+  const tab = (over: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>): Tab => ({
     type: TabType.AGENT,
     id: 'a1',
     workspaceId: 'ws-1',
