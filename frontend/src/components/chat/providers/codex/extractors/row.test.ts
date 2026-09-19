@@ -326,6 +326,17 @@ describe('CODEX_TOOL_READERS', () => {
     expect(payloadOf(kind, CODEX_PROBE[kind])).not.toEqual({ kind, request: DEFAULT_TOOL_REQUESTS[kind](CODEX_PROBE[kind]) })
   })
 
+  // The matrix's own no-degradation assertion: every probe is a frame this build
+  // reads by design, so the full row extraction must answer the TYPED kind with no
+  // degrade behind it. A reader that broke an invariant would still draw -- the
+  // generic row is the degrade's answer -- and only the metadata names it.
+  it.each(CODEX_READ_KINDS)('extracts the %s probe without a degrade', (kind) => {
+    const row = toolRow(CODEX_PROBE[kind])
+    expect(row, kind).not.toBeNull()
+    expect(row!.call.degradation, kind).toBeUndefined()
+    expect(row!.call.kind, kind).toBe(kind)
+  })
+
   // The ITEM is Codex's argument record: it states a call's fields at the top level
   // rather than under an `arguments` object. A delegated kind that read anything else
   // would answer an empty request for every item.

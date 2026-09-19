@@ -93,6 +93,17 @@ export function describeToolResultCorpus(kinds: ToolVocabularyCheck, check: Tool
         expect(invariantViolations(call!), name).toStrictEqual([])
       }
     })
+
+    // A successful fixture that degraded still DRAWS -- the generic row is the
+    // degrade's own answer -- so the invariant walk above passes for it. The
+    // degradation metadata is what names it, and a corpus fixture is a frame this
+    // build reads by design: it must carry none.
+    it('extracts no degraded call for any fixture', () => {
+      for (const name of Object.keys(check.fixtures)) {
+        const call = callOf(name)
+        expect(call?.degradation, name).toBeUndefined()
+      }
+    })
   })
 }
 
@@ -156,6 +167,15 @@ export function describeToolFailureLadder(check: ToolResultCheck, readers: Failu
       }
     })
 
+    // The failure half of the same rule as the corpus's: a failed frame the build
+    // reads by design degrades nowhere.
+    it('extracts no degraded call for any failed frame', () => {
+      for (const fixture of check.failures) {
+        const call = failureCallOf(fixture)
+        expect(call?.degradation, fixture.name).toBeUndefined()
+      }
+    })
+
     // The OPENING frame of each fixture, which the corpus cases never read alone.
     // Invariant I1 states that a result implies a final status, and `ToolMessage`
     // draws the live output the worker broadcasts only while the row is in flight AND
@@ -174,6 +194,15 @@ export function describeToolFailureLadder(check: ToolResultCheck, readers: Failu
         openersThatAnswerEarly(check, openerCallOf),
         'The call has not answered yet, so a result on its opening frame is one the tool never sent.',
       ).toStrictEqual([])
+    })
+
+    // The opening half of the same rule: a frame still in flight that this build
+    // reads by design degrades nowhere.
+    it('extracts no degraded call for the opening frame of any fixture', () => {
+      for (const name of Object.keys(check.fixtures)) {
+        const call = openerCallOf(name)
+        expect(call?.degradation, name).toBeUndefined()
+      }
     })
   })
 }

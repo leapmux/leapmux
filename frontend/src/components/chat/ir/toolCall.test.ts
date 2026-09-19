@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { failedResult, isFailedResult, isUnparsedResult, proseResult, toolCall, typedResult, unparsedResult } from './toolCall'
+import type { ToolCallFault } from './toolCall'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { __resetToolCallWarningsForTest, failedResult, isFailedResult, isUnparsedResult, proseResult, toolCall, typedResult, unparsedResult } from './toolCall'
 import { TOOL_KINDS } from './toolKind'
 import { NO_PAYLOAD_RESERVES_A_BRAND, REQUESTS_COVER_TOOL_KINDS, RESULTS_COVER_TOOL_KINDS } from './tools'
 
@@ -90,6 +91,71 @@ describe('the kind-discriminated tool call IR', () => {
     )
     expect(call).not.toHaveProperty('statusOverride')
     expect(Object.keys(call)).not.toContain('statusOverride')
+  })
+})
+
+// A malformed draft remains renderable -- the degrade is the row that draws --
+// but the degrade is OBSERVABLE: the call states which invariant broke and which
+// kind it was reading, and the reporter warns once per fault code for the operator
+// watching a live session. The census tests read the METADATA, never the warnings.
+describe('an observable degradation', () => {
+  afterEach(() => {
+    __resetToolCallWarningsForTest()
+    vi.restoreAllMocks()
+  })
+
+  /** One draft per fault code, each named by the invariant it breaks. */
+  const FAULT_DRAFTS: Array<[ToolCallFault, Parameters<typeof toolCall>]> = [
+    ['result-before-the-call-finished', [{ id: 'f1', name: 'Think', status: 'pending' }, { kind: 'think', request: { text: 't' }, result: proseResult('early') }]],
+    ['pictures-before-the-call-finished', [{ id: 'f2', name: 'Read', status: 'in_progress' }, { kind: 'read', request: { path: '/a' }, images: [{ mimeType: 'image/png', data: 'aGk=' }] }]],
+    ['completed-with-no-result', [{ id: 'f3', name: 'Bash', status: 'completed' }, { kind: 'execute', request: { command: 'ls' } }]],
+    ['completed-with-a-failure-result', [{ id: 'f4', name: 'Think', status: 'completed' }, { kind: 'think', request: { text: 't' }, result: failedResult('boom') }]],
+    ['failed-with-an-unparsed-result', [{ id: 'f5', name: 'Read', status: 'failed' }, { kind: 'read', request: { path: '/a' }, result: unparsedResult('raw') }]],
+    ['declined-with-a-typed-payload', [{ id: 'f6', name: 'Read', status: 'declined' }, { kind: 'read', request: { path: '/a' }, result: { lines: null, fallbackContent: 'body' } }]],
+    ['a-generic-kind-carries-its-own-images', [{ id: 'f7', name: 'Tool', status: 'completed' }, { kind: 'mcp', request: { server: 's', tool: 't', args: {} }, images: [{ mimeType: 'image/png', data: 'aGk=' }], result: { content: [] } }]],
+    ['a-file-change-states-no-file', [{ id: 'f8', name: 'Edit', status: 'completed' }, { kind: 'edit', request: { changes: [] }, result: { changes: [] } }]],
+  ]
+
+  it('preserves the fault and the original kind on the degraded call', () => {
+    for (const [fault, [envelope, payload]] of FAULT_DRAFTS) {
+      const call = toolCall(envelope, payload)
+      expect(call.kind, fault).toBe('other')
+      expect(call.degradation, fault).toEqual({ fault, originalKind: payload.kind })
+    }
+  })
+
+  it('warns once per fault code, however many frames break it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (let i = 0; i < 3; i++) {
+      toolCall({ id: 'f3', name: 'Bash', status: 'completed' }, { kind: 'execute', request: { command: 'ls' } })
+    }
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({ fault: 'completed-with-no-result', callId: 'f3', toolName: 'Bash', originalKind: 'execute', status: 'completed' })
+  })
+
+  it('warns separately for each fault code', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const [fault, [envelope, payload]] of FAULT_DRAFTS) {
+      toolCall(envelope, payload)
+      expect(warn, fault).toHaveBeenCalledTimes([...FAULT_DRAFTS].findIndex(([code]) => code === fault) + 1)
+    }
+    // The cap is the closed fault union: one report per member and no more.
+    expect(warn).toHaveBeenCalledTimes(FAULT_DRAFTS.length)
+  })
+
+  it('restores the warnings after a reset', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    toolCall({ id: 'f3', name: 'Bash', status: 'completed' }, { kind: 'execute', request: { command: 'ls' } })
+    expect(warn).toHaveBeenCalledTimes(1)
+    __resetToolCallWarningsForTest()
+    toolCall({ id: 'f3', name: 'Bash', status: 'completed' }, { kind: 'execute', request: { command: 'ls' } })
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  it('states no degradation on a valid generic call', () => {
+    const call = toolCall({ id: 'g', name: 'Tool', status: 'completed' }, { kind: 'other', request: { args: { a: 1 } }, result: { content: [{ type: 'text', text: 'ok' }] } })
+    expect(call.kind).toBe('other')
+    expect(call.degradation).toBeUndefined()
   })
 })
 

@@ -132,9 +132,12 @@ describe('one request/result pair per protocol', () => {
       expect(requestRow.hasResultRow).toBe(true)
       expect(resultRow.hasRequestRow).toBe(true)
       // No degradation: the degrade answers the generic row, so a typed kind on
-      // both sides states the draft held every invariant.
+      // both sides states the draft held every invariant -- and the metadata a
+      // degrade would leave states none.
       expect(requestRow.call.kind, `the request call keeps the ${testCase.kind} kind`).toBe(testCase.kind)
       expect(resultRow.call.kind, `the result call keeps the ${testCase.kind} kind`).toBe(testCase.kind)
+      expect(requestRow.call.degradation).toBeUndefined()
+      expect(resultRow.call.degradation).toBeUndefined()
       // The merged call reads every side the span resolved, so both rows carry
       // the one status the protocol's own outcome words derive.
       expect(resultRow.call.status, `the protocol's own status words derive ${testCase.status}`).toBe(testCase.status)

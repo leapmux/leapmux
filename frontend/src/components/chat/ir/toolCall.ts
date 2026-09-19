@@ -188,6 +188,26 @@ export interface ToolCallCommon {
    * that kind's own result shape, never here.
    */
   metadata?: ToolMetadataItem[]
+  /**
+   * Why this call drew as the generic row: the draft broke an invariant, and the
+   * degrade is what still renders. Only {@link toolCall} supplies it, so a call that
+   * carries none is either valid or a generic kind read legitimately -- never a
+   * degrade nobody noticed.
+   */
+  degradation?: ToolCallDegradation
+}
+
+/**
+ * What a degraded call gave up: the invariant it broke, and the kind it was
+ * reading before the degrade answered the uncategorized row.
+ *
+ * An OBSERVABLE diagnostic, not a control input: the row stays renderable either
+ * way, and tests, the dev overlay and the warning census read this to tell a
+ * deliberate `other` from a frame this build read wrongly.
+ */
+export interface ToolCallDegradation {
+  fault: ToolCallFault
+  originalKind: ToolKind
 }
 
 export type ToolCallOf<K extends ToolKind> = ToolCallCommon & { kind: K, request: ToolRequests[K] } & ToolCallLifecycle<K>
@@ -279,10 +299,35 @@ export type ToolCallFault
     | 'a-generic-kind-carries-its-own-images'
     | 'a-file-change-states-no-file'
 
-/** The built call, or the reason the draft broke an invariant. */
+/**
+ * One draft after the envelope and the payload have joined and every default has
+ * landed: the normalized shape both the invariants and the degrade read.
+ *
+ * The CHECK and the DEGRADE share it, which is why it is a named type: the degrade
+ * used to re-derive the status and re-apply the defaults from the raw payload, so
+ * the two could disagree about what the frame said. Deriving the draft once and
+ * handing it to both is the rule.
+ */
+export interface NormalizedToolCallDraft<K extends ToolKind> {
+  id: string
+  name: string
+  kind: K
+  status: ToolRowStatus
+  request: ToolRequests[K]
+  result?: unknown
+  images: readonly ImageResultSource[]
+  extraContent?: readonly McpContentItem[]
+  truncated?: boolean
+  title?: string | undefined
+  label?: string | undefined
+  icon?: ToolIconHint | undefined
+  metadata?: ToolMetadataItem[] | undefined
+}
+
+/** The built call, or the reason and the normalized draft behind the refusal. */
 export type ToolCallBuild<K extends ToolKind>
   = { ok: true, call: ToolCallOfKinds<K> }
-    | { ok: false, fault: ToolCallFault }
+    | { ok: false, fault: ToolCallFault, draft: NormalizedToolCallDraft<K> }
 
 /**
  * Join the provider's envelope with a kind's payload, and check the invariants.
@@ -293,7 +338,9 @@ export type ToolCallBuild<K extends ToolKind>
  *
  * This is the only function that produces a {@link ToolCallIR}, and it produces one
  * only for a draft that holds every invariant. A provider that wants the reason calls
- * it; {@link toolCall} degrades instead and is what the extractors use.
+ * it; {@link toolCall} degrades instead and is what the extractors use. The refused
+ * member carries the NORMALIZED draft, so the degrade reads exactly what the check
+ * read and repeats none of the joining.
  */
 export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadOf<K>): ToolCallBuild<K> {
   const { statusOverride, name, images, extraContent, truncated, ...rest } = payload
@@ -307,7 +354,7 @@ export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, pa
   // nine payload builders to remember the strip. `extraContent` and `truncated` are
   // re-applied only when the payload states them, so a stated undefined lands as an
   // ABSENT key, which is the one spelling `toolCallFault` reads either way.
-  const draft = {
+  const draft: NormalizedToolCallDraft<K> = {
     ...envelope,
     ...rest,
     name: name ?? envelope.name,
@@ -318,7 +365,7 @@ export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, pa
   }
   const fault = toolCallFault(draft)
   if (fault !== null)
-    return { ok: false, fault }
+    return { ok: false, fault, draft }
   // The invariants the check just walked ARE the lifecycle union's own rules, one for
   // one, and no narrowing carries a runtime answer back into the type system. This is
   // the single assertion the IR needs, and it stands on the check above it.
@@ -469,7 +516,38 @@ function statesAFile(request: ToolRequests[ToolKind]): boolean {
  */
 export function toolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadOf<K>): ToolCallOfKinds<K> | ToolCallOf<'other'> {
   const built = buildToolCall(envelope, payload)
-  return built.ok ? built.call : degradedToolCall(envelope, payload, built.fault)
+  return built.ok ? built.call : degradedToolCall(built)
+}
+
+/**
+ * The faults already reported, so one broken invariant warns ONCE per session
+ * however many frames hit it.
+ *
+ * The set is capped by construction at the closed {@link ToolCallFault} union -- a
+ * key per member and no more -- so a run away with malformed frames cannot flood the
+ * console either. The CENSUS does not read this: tests count the
+ * {@link ToolCallCommon.degradation} metadata, which every degraded call carries,
+ * while the warning exists for the operator who is watching a live session.
+ */
+const reportedFaults = new Set<ToolCallFault>()
+
+/** Report one degraded call, once per fault code. */
+function warnDegraded(built: { fault: ToolCallFault, draft: { id: string, name: string, kind: ToolKind, status: ToolRowStatus } }): void {
+  if (reportedFaults.has(built.fault))
+    return
+  reportedFaults.add(built.fault)
+  console.warn('ToolCall degraded to the uncategorized row', {
+    fault: built.fault,
+    callId: built.draft.id,
+    toolName: built.draft.name,
+    originalKind: built.draft.kind,
+    status: built.draft.status,
+  })
+}
+
+/** Reset the degradation warning census. Test-only: a suite counts warnings per fault code. */
+export function __resetToolCallWarningsForTest(): void {
+  reportedFaults.clear()
 }
 
 /**
@@ -478,29 +556,33 @@ export function toolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload
  * It keeps the envelope, the arguments and the words, and drops what the fault says
  * cannot be true: the result of an unfinished call, and the pictures of a generic
  * kind. The status stays, because the reader must still see that the call ended.
+ * Everything comes from the NORMALIZED draft the check refused, so the degrade
+ * repeats none of the joining and cannot disagree with what was checked.
  */
-function degradedToolCall(envelope: ToolCallEnvelope, payload: DegradableDraft, fault: ToolCallFault): ToolCallOf<'other'> {
-  const status = payload.statusOverride ?? envelope.status
+function degradedToolCall<K extends ToolKind>(built: { fault: ToolCallFault, draft: NormalizedToolCallDraft<K> }): ToolCallOf<'other'> {
+  warnDegraded(built)
+  const { draft } = built
+  const status = draft.status
   const finished = status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'declined'
   // The generic trio's three results ARE the `other` kind's result, so a refused
   // draft of one keeps everything the tool produced. The generic-images fault is the
   // case: only the pictures broke the rule, and dropping the content blocks with them
   // would throw away the tool's whole answer.
-  const kept = isGenericResult(payload.result) ? payload.result : undefined
-  const text = faultText(payload, fault)
-  // The envelope's optional dressings ride along only when the payload stated one,
-  // so an absent `title` stays absent on the degraded row rather than arriving as
-  // an explicitly undefined key.
+  const kept = isGenericResult(draft.result) ? draft.result : undefined
+  const text = faultText(draft, built.fault)
+  // The draft's optional dressings ride along only when the payload stated one,
+  // which the normalization already spelled as an absent key.
   const common = {
-    ...envelope,
+    id: draft.id,
+    name: draft.name,
     status,
     kind: 'other' as const,
-    request: { args: requestArgs(payload.request) },
-    name: payload.name ?? envelope.name,
-    ...(payload.title !== undefined ? { title: payload.title } : {}),
-    ...(payload.label !== undefined ? { label: payload.label } : {}),
-    ...(payload.icon !== undefined ? { icon: payload.icon } : {}),
-    ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
+    request: { args: requestArgs(draft.request) },
+    ...(draft.title !== undefined ? { title: draft.title } : {}),
+    ...(draft.label !== undefined ? { label: draft.label } : {}),
+    ...(draft.icon !== undefined ? { icon: draft.icon } : {}),
+    ...(draft.metadata !== undefined ? { metadata: draft.metadata } : {}),
+    degradation: { fault: built.fault, originalKind: draft.kind },
   }
   // An unfinished status keeps NO result: that is invariant I1, and the degrade
   // cannot restate the very rule it exists to enforce. `completed` needs one, so the
@@ -518,27 +600,9 @@ function degradedToolCall(envelope: ToolCallEnvelope, payload: DegradableDraft, 
   return { ...common, status, result: kept ?? failedResult(text), images: [] }
 }
 
-/**
- * The fields the degrade reads, stated structurally.
- *
- * `ToolCallPayloadIR` cannot serve: it is the union over every kind, and TypeScript
- * does not prove that the distributed `ToolCallPayloadOf<K>` of a still-generic `K`
- * is one of its members. Reading the fields the degrade actually touches keeps the
- * call assignable without an assertion.
- */
-interface DegradableDraft extends Partial<Pick<ToolCallCommon, 'name' | 'label' | 'icon' | 'metadata'>> {
-  // Mirrors the payload's own `title` slot, explicit undefined and all: the read below
-  // already spells the absent word as a key that does not ride.
-  title?: string | undefined
-  kind: ToolKind
-  request: ToolRequests[ToolKind]
-  result?: unknown
-  statusOverride?: Exclude<ToolRowStatus, ''>
-}
-
 /** The words a degraded row states: the draft's own result text, or the fault. */
-function faultText(payload: DegradableDraft, fault: ToolCallFault): string {
-  const result = payload.result
+function faultText(draft: { result?: unknown }, fault: ToolCallFault): string {
+  const result = draft.result
   if (result !== undefined && typeof (result as { text?: unknown }).text === 'string')
     return (result as { text: string }).text
   return `This build could not read the call: ${fault.replaceAll('-', ' ')}.`
