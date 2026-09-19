@@ -47,6 +47,54 @@ const CHAT_SCOPED_FILES: Array<{ file: string, marker: string }> = [
   { file: 'src/components/chat/providers/pi/PiControlActions.tsx', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
 ]
 
+interface LintSample {
+  file: string
+  label: string
+  source: string
+}
+
+const RESTRICTED_IMPORT_SAMPLES: LintSample[] = [
+  { label: 'IR static type import', file: 'src/components/chat/ir/auditProbe.ts', source: 'import type { Provider } from \'../providers/registry\'' },
+  { label: 'IR re-export', file: 'src/components/chat/ir/auditProbe.ts', source: 'export * from \'../providers/registry\'' },
+  { label: 'IR side-effect import', file: 'src/components/chat/ir/auditProbe.ts', source: 'import \'../providers/registry\'' },
+  { label: 'IR dynamic import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(\'../providers/registry\')' },
+  { label: 'IR computed dynamic import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(modulePath)' },
+  { label: 'IR require call', file: 'src/components/chat/ir/auditProbe.ts', source: 'require(\'../results/tools\')' },
+  { label: 'IR import-equals declaration', file: 'src/components/chat/ir/auditProbe.ts', source: 'import tools = require(\'../results/tools\')' },
+  { label: 'IR import type', file: 'src/components/chat/ir/auditProbe.ts', source: 'type ProviderModule = typeof import(\'../providers/registry\')' },
+  { label: 'provider side-effect import', file: 'src/components/chat/providers/auditProbe.ts', source: 'import \'../results/tools\'' },
+  { label: 'provider dynamic import', file: 'src/components/chat/providers/auditProbe.ts', source: 'void import(\'../results/tools\')' },
+  { label: 'provider require call', file: 'src/components/chat/providers/auditProbe.ts', source: 'require(\'../results/tools\')' },
+  { label: 'provider computed require call', file: 'src/components/chat/providers/auditProbe.ts', source: 'require(modulePath)' },
+  { label: 'provider import-equals declaration', file: 'src/components/chat/providers/auditProbe.ts', source: 'import tools = require(\'../results/tools\')' },
+  { label: 'provider import type', file: 'src/components/chat/providers/auditProbe.ts', source: 'type ResultModule = typeof import(\'../results/tools\')' },
+  { label: 'result type re-export', file: 'src/components/chat/results/auditProbe.ts', source: 'export type { Provider } from \'../providers/registry\'' },
+  { label: 'result dynamic import', file: 'src/components/chat/results/auditProbe.ts', source: 'void import(\'../providers/registry\')' },
+  { label: 'result require call', file: 'src/components/chat/results/auditProbe.ts', source: 'require(\'../providers/registry\')' },
+  { label: 'result import-equals declaration', file: 'src/components/chat/results/auditProbe.ts', source: 'import registry = require(\'../providers/registry\')' },
+  { label: 'result import type', file: 'src/components/chat/results/auditProbe.ts', source: 'type ProviderModule = typeof import(\'../providers/registry\')' },
+]
+
+const RESTRICTED_ASSERTION_SAMPLES: LintSample[] = [
+  { label: 'tool call as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallIR' },
+  { label: 'tool call angle-bracket assertion', file: 'src/components/chat/results/auditProbe.ts', source: '<ToolCallIR>value' },
+  { label: 'tool call helper assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallForKind<\'read\'>' },
+  { label: 'tool payload helper assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as ToolCallPayloadForKind<\'read\'>' },
+  { label: 'tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolRequests[\'read\']' },
+  { label: 'tool result indexed angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ToolResults[\'read\']>value' },
+  { label: 'resolved content as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ResolvedMessageContent' },
+  { label: 'resolved content angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ResolvedMessageContent>value' },
+]
+
+const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
+  { label: 'IR allowed dynamic diff import', file: 'src/components/chat/ir/auditProbe.ts', source: 'void import(\'../diff/diffTypes\')' },
+  { label: 'IR allowed sibling import type', file: 'src/components/chat/ir/auditProbe.ts', source: 'type ControlModule = typeof import(\'../controls/types\')' },
+  { label: 'registry resolved content assertion', file: 'src/components/chat/providers/registry.ts', source: 'value as ResolvedMessageContent' },
+  { label: 'checked builder tool call assertion', file: 'src/components/chat/ir/toolCall.ts', source: 'value as ToolCallIR' },
+]
+
+const ARCHITECTURE_RULE_IDS = new Set(['no-restricted-syntax', 'ts/no-restricted-imports'])
+
 /** The DOM-`title` ban, which must survive beside the base selectors. */
 const TITLE_SELECTOR = 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]'
 
@@ -66,21 +114,39 @@ const TITLE_SELECTOR = 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/
  * what the LINTER sees, and the linter is a Node process with no jsdom and no
  * Vite. `process.execPath` is the node binary already running vitest.
  */
-function resolveRestrictedSyntax(files: readonly string[]): Record<string, unknown> {
+function inspectEslint(files: readonly string[], samples: readonly LintSample[]): {
+  restrictedSyntax: Record<string, unknown>
+  ruleIds: Record<string, Array<string | null>>
+} {
   const script = `
     import { ESLint } from 'eslint'
+    import { readFileSync } from 'node:fs'
     const eslint = new ESLint({ cwd: process.cwd() })
-    const out = {}
+    const input = JSON.parse(readFileSync(0, 'utf8'))
+    const restrictedSyntax = {}
     for (const file of process.argv.slice(1))
-      out[file] = (await eslint.calculateConfigForFile(file)).rules?.['no-restricted-syntax'] ?? null
-    process.stdout.write(JSON.stringify(out))
+      restrictedSyntax[file] = (await eslint.calculateConfigForFile(file)).rules?.['no-restricted-syntax'] ?? null
+    const ruleIds = {}
+    for (const sample of input.samples) {
+      const [result] = await eslint.lintText(sample.source, { filePath: sample.file })
+      ruleIds[sample.label] = result.messages.map(message => message.ruleId)
+    }
+    process.stdout.write(JSON.stringify({ restrictedSyntax, ruleIds }))
   `
   const stdout = execFileSync(
     process.execPath,
     ['--input-type=module', '-e', script, ...files],
-    { cwd: frontendRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    {
+      cwd: frontendRoot,
+      encoding: 'utf8',
+      input: JSON.stringify({ samples }),
+      maxBuffer: 32 * 1024 * 1024,
+    },
   )
-  return JSON.parse(stdout) as Record<string, unknown>
+  return JSON.parse(stdout) as {
+    restrictedSyntax: Record<string, unknown>
+    ruleIds: Record<string, Array<string | null>>
+  }
 }
 
 /**
@@ -100,6 +166,7 @@ function selectorsFor(entry: unknown): string[] {
 
 describe('no-restricted-syntax keeps the base selectors', () => {
   let resolved: Record<string, unknown>
+  let ruleIds: Record<string, Array<string | null>>
   let baseline: string[]
 
   // The timeout is explicit because the DEFAULT one does not fit the work.
@@ -116,7 +183,10 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   // trips it.
   beforeAll(() => {
     const chatFiles = CHAT_SCOPED_FILES.map(entry => entry.file)
-    resolved = resolveRestrictedSyntax([BASELINE_FILE, ...SCOPED_FILES, ...chatFiles])
+    const samples = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
+    const inspection = inspectEslint([BASELINE_FILE, ...SCOPED_FILES, ...chatFiles], samples)
+    resolved = inspection.restrictedSyntax
+    ruleIds = inspection.ruleIds
     baseline = selectorsFor(resolved[BASELINE_FILE])
   }, 60_000)
 
@@ -175,5 +245,17 @@ describe('no-restricted-syntax keeps the base selectors', () => {
       'A control surface must keep its JSX: the ban is for transcript rows, and this file answers a request.',
     ).toBe(false)
     expect(scoped.some(selector => selector.includes(TITLE_SELECTOR))).toBe(true)
+  })
+
+  it.each(RESTRICTED_IMPORT_SAMPLES)('rejects every layer import form: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContainEqual(expect.stringMatching(/^(?:no-restricted-syntax|ts\/no-restricted-imports)$/))
+  })
+
+  it.each(RESTRICTED_ASSERTION_SAMPLES)('rejects an unsafe assertion: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('no-restricted-syntax')
+  })
+
+  it.each(ALLOWED_ARCHITECTURE_SAMPLES)('keeps the intentional exception: $label', ({ label }) => {
+    expect((ruleIds[label] ?? []).filter(ruleId => ruleId !== null && ARCHITECTURE_RULE_IDS.has(ruleId))).toEqual([])
   })
 })

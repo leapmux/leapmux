@@ -127,16 +127,81 @@ const WIRE_TOKEN_SYNTAX = WIRE_TOKEN_REGEXPS.flatMap(pattern => [
  * narrowing carries a runtime answer back into the type system. The assertion
  * there stands on the check immediately above it.
  */
-const TOOL_CALL_ASSERTION_SYNTAX = [
+const TYPE_ASSERTION_NODES = ['TSAsExpression', 'TSTypeAssertion'] as const
+const TOOL_CALL_TYPE_NAMES = '^(ToolCallIR|ToolCallPayloadIR|ToolCallPayloadOf|ToolCallPayload|ToolCallForKind|ToolCallPayloadForKind|ToolCallOf|ToolCallOfKinds|ToolResultOf|ParsedCall|ResolvedCall)$'
+
+const TOOL_CALL_ASSERTION_SYNTAX = TYPE_ASSERTION_NODES.flatMap(node => [
   {
-    selector: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR|ToolCallPayloadIR|ToolCallPayloadOf|ToolCallPayload|ToolCallOf|ToolCallOfKinds|ToolResultOf|ParsedCall|ResolvedCall)$/]',
+    selector: `${node}[typeAnnotation.typeName.name=/${TOOL_CALL_TYPE_NAMES}/]`,
     message: 'An assertion to a tool-call type re-pairs a kind with a request or a result the kind does not declare. Build the payload at a LITERAL kind instead: narrow with `if (kind === ...)` and return inside the branch, or answer from a mapped table. Hand the finished payload to `toolCall`, which is the one function allowed to state the pairing.',
   },
   {
-    selector: 'TSAsExpression[typeAnnotation.objectType.typeName.name=/^(ToolRequests|ToolResults)$/]',
+    selector: `${node}[typeAnnotation.objectType.typeName.name=/^(ToolRequests|ToolResults)$/]`,
     message: 'An assertion to `ToolRequests[...]`/`ToolResults[...]` re-pairs a kind with a payload the kind does not declare. Build the payload at a LITERAL kind instead and hand it to `toolCall`.',
   },
+])
+
+/** Only the provider registry can apply the brand after it resolves a message. */
+const RESOLVED_CONTENT_ASSERTION_SYNTAX = TYPE_ASSERTION_NODES.map(node => ({
+  selector: `${node}[typeAnnotation.typeName.name='ResolvedMessageContent']`,
+  message: 'Only `providers/registry.ts` can assert `ResolvedMessageContent`. Call `resolveMessageContent`, then pass the returned value through the pipeline.',
+}))
+
+interface RestrictedModuleSyntaxOptions {
+  includeImportType?: boolean
+}
+
+/** Cover module edges that `ts/no-restricted-imports` does not inspect. */
+function restrictedModuleSyntax(pattern: string, message: string, options: RestrictedModuleSyntaxOptions = {}) {
+  const selectors = [
+    `ImportExpression[source.value=/${pattern}/]`,
+    `CallExpression[callee.type='Identifier'][callee.name='require'][arguments.0.value=/${pattern}/]`,
+    `TSImportEqualsDeclaration[moduleReference.expression.value=/${pattern}/]`,
+  ]
+  if (options.includeImportType)
+    selectors.push(`TSImportType[source.value=/${pattern}/]`)
+  return selectors.map(selector => ({ selector, message }))
+}
+
+const COMPUTED_MODULE_SYNTAX = [
+  {
+    selector: 'ImportExpression:not([source.type=\'Literal\'])',
+    message: 'A computed dynamic import can hide a dependency across chat layers. Use a string literal so the architecture rule can inspect it.',
+  },
+  {
+    selector: 'CallExpression[callee.type=\'Identifier\'][callee.name=\'require\']:not([arguments.0.type=\'Literal\'])',
+    message: 'A computed require call can hide a dependency across chat layers. Use a string literal so the architecture rule can inspect it.',
+  },
 ] as const
+
+const IR_FORBIDDEN_MODULE_PATTERN = String.raw`(?:^|\/)(?:components|providers|results|stores)(?:\/|$)|^lucide-solid(?:\/|$)|\.(?:tsx|css|css\.ts)$`
+const IR_FORBIDDEN_MODULE_SYNTAX = restrictedModuleSyntax(
+  IR_FORBIDDEN_MODULE_PATTERN,
+  'The IR is layer 2. It cannot load a provider, renderer, store, stylesheet, component, or icon library. Move a neutral shape into `~/models/`.',
+  { includeImportType: true },
+)
+const IR_ALIAS_VALUE_IMPORT_SYNTAX = restrictedModuleSyntax(
+  String.raw`^~\/(?!lib\/|generated\/|models\/)`,
+  'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
+)
+const IR_ROOT_RELATIVE_VALUE_IMPORT_SYNTAX = restrictedModuleSyntax(
+  String.raw`^\.\.\/(?!diff\/(diffBuilder|diffTypes|unifiedDiffParser)$)`,
+  'A value import from `ir/` may reach the three pure diff modules and nothing else above the directory.',
+)
+const IR_TOOL_RELATIVE_VALUE_IMPORT_SYNTAX = restrictedModuleSyntax(
+  String.raw`^\.\.\/(?![^/]+$|\.\.\/diff\/(diffBuilder|diffTypes|unifiedDiffParser)$)`,
+  'From `ir/tools/`, a value import may climb to a sibling in `ir/` or to the three pure diff modules. Anything else leaves the layer.',
+)
+const PROVIDER_RESULT_IMPORT_SYNTAX = restrictedModuleSyntax(
+  String.raw`(?:^|\/)results(?:\/|$)`,
+  'A plugin reads its provider bytes into the IR. Move the pure helper into `components/chat/ir/` beside the type it builds.',
+  { includeImportType: true },
+)
+const RESULT_PROVIDER_IMPORT_SYNTAX = restrictedModuleSyntax(
+  String.raw`(?:^|\/)providers(?:\/|$)`,
+  'A renderer draws the row IR. It cannot load a provider plugin. Move the shared shape into `components/chat/ir/`.',
+  { includeImportType: true },
+)
 
 /** The chat pipeline's implementation trees: never a test, a fixture or a harness. */
 const CHAT_IMPLEMENTATION_IGNORES = [
@@ -301,7 +366,7 @@ export default antfu({
   files: ['src/**/*.ts', 'src/**/*.tsx'],
   ignores: ['src/components/chat/providers/**', 'src/generated/**', 'src/test-support/**', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/*.d.ts'],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX],
   },
 }, {
   // The provider-icon exception: an icon is a per-provider asset and no shared
@@ -309,7 +374,7 @@ export default antfu({
   // keeps the wire-token selectors; only the decision selectors lift.
   files: ['src/components/common/AgentProviderIcon.tsx'],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...WIRE_TOKEN_SYNTAX],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX],
   },
 }, {
   // No producer pairs a `ToolKind` with another kind's request, payload or
@@ -319,7 +384,7 @@ export default antfu({
   files: ['src/components/chat/**/*.ts', 'src/components/chat/**/*.tsx'],
   ignores: [...CHAT_IMPLEMENTATION_IGNORES, '**/*.css.ts', 'src/components/chat/providers/**'],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX],
   },
 }, {
   // Layer 2 of the chat render pipeline: `ir/` describes a row and never draws
@@ -352,7 +417,7 @@ export default antfu({
   files: ['src/components/chat/ir/**/*.ts', 'src/components/chat/ir/**/*.tsx'],
   ignores: [...CHAT_IMPLEMENTATION_IGNORES, 'src/components/chat/ir/*.ts'],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...IR_FORBIDDEN_MODULE_SYNTAX, ...IR_ALIAS_VALUE_IMPORT_SYNTAX, ...IR_TOOL_RELATIVE_VALUE_IMPORT_SYNTAX, {
       selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
       message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
     }, {
@@ -366,7 +431,7 @@ export default antfu({
   files: ['src/components/chat/ir/*.ts', 'src/components/chat/ir/*.tsx'],
   ignores: CHAT_IMPLEMENTATION_IGNORES,
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...IR_FORBIDDEN_MODULE_SYNTAX, ...IR_ALIAS_VALUE_IMPORT_SYNTAX, ...IR_ROOT_RELATIVE_VALUE_IMPORT_SYNTAX, {
       selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
       message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
     }, {
@@ -380,7 +445,7 @@ export default antfu({
   // the pairing the check earned, and it is the only one that may.
   files: ['src/components/chat/ir/toolCall.ts'],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...IR_FORBIDDEN_MODULE_SYNTAX, ...IR_ALIAS_VALUE_IMPORT_SYNTAX, ...IR_ROOT_RELATIVE_VALUE_IMPORT_SYNTAX, {
       selector: 'ImportDeclaration[importKind=\'value\'][source.value=/^~\\/(?!lib\\/|generated\\/|models\\/)/]',
       message: 'A value import into `ir/` comes from `~/lib`, `~/generated`, `~/models` or a module `ir/` owns. Move the pure helper beside the type it serves, or make the import type-only.',
     }, {
@@ -397,14 +462,21 @@ export default antfu({
   files: ['src/components/chat/providers/**/*.ts', 'src/components/chat/providers/**/*.tsx'],
   ignores: CHAT_IMPLEMENTATION_IGNORES,
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...PROVIDER_RESULT_IMPORT_SYNTAX],
+  },
+}, {
+  // The registry applies the resolved-content brand after it runs the selected
+  // provider resolver. It keeps the tool assertion and import restrictions.
+  files: ['src/components/chat/providers/registry.ts'],
+  rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...PROVIDER_RESULT_IMPORT_SYNTAX],
   },
 }, {
   // The JSX half of the same rule, for the `.tsx` modules a plugin may hold.
   files: ['src/components/chat/providers/**/*.tsx'],
   ignores: CHAT_IMPLEMENTATION_IGNORES,
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, { selector: 'JSXElement', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }, { selector: 'JSXFragment', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...PROVIDER_RESULT_IMPORT_SYNTAX, { selector: 'JSXElement', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }, { selector: 'JSXFragment', message: 'A plugin reads its provider\'s bytes into the shared row IR; the shared renderers draw it. Move the markup into `components/chat/results/` and state the call through `ToolCallIR`.' }],
   },
 }, {
   // The four control surfaces a provider may draw itself: a permission prompt,
@@ -417,7 +489,7 @@ export default antfu({
     'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
   ],
   rules: {
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX],
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...PROVIDER_RESULT_IMPORT_SYNTAX],
   },
 }, {
   // Layer 1 again, on the import edge: a plugin that imports from `results/`
@@ -442,6 +514,7 @@ export default antfu({
   files: ['src/components/chat/results/**/*.ts', 'src/components/chat/results/**/*.tsx'],
   ignores: [...CHAT_IMPLEMENTATION_IGNORES, '**/*.css.ts'],
   rules: {
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, ...PROVIDER_NEUTRALITY_SYNTAX, ...WIRE_TOKEN_SYNTAX, ...TOOL_CALL_ASSERTION_SYNTAX, ...RESOLVED_CONTENT_ASSERTION_SYNTAX, ...COMPUTED_MODULE_SYNTAX, ...RESULT_PROVIDER_IMPORT_SYNTAX],
     'ts/no-restricted-imports': ['error', {
       paths: [...BASE_RESTRICTED_IMPORT_PATHS],
       patterns: [{
