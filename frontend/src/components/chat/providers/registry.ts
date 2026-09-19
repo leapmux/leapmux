@@ -141,7 +141,7 @@ export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin |
 /**
  * The span role of one RESOLVED parse, through its provider's hook.
  *
- * The one route the four shared readers take: it resolves the parse, asks the
+ * The one route the shared readers take: it resolves the parse, asks the
  * plugin, and answers `other` when no provider exists -- so no production call
  * site hands a provider's `spanRole` a raw parse, and a plugin that registers
  * late is read through the same memo as every other hook.

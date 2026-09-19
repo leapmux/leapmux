@@ -9,6 +9,7 @@ import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
 import { commandCollapseThreshold, commandExit, commandIsError, commandStatusLabel, normalizedCommandOutput } from '../ir/commandResult'
 import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
+import { isFinishedToolStatus } from '../ir/toolRowStatus'
 import { getToolResultExpanded } from '../messageRenderers'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
@@ -74,7 +75,7 @@ export function CommandResultBody(props: {
       return null
     // A call that has not returned yet has no empty output to state: the tail
     // may still arrive.
-    if (props.status !== 'completed' && props.status !== 'failed' && props.status !== 'cancelled' && props.status !== 'declined')
+    if (!isFinishedToolStatus(props.status))
       return null
     const dur = props.source.durationMs
     const code = props.source.exitCode

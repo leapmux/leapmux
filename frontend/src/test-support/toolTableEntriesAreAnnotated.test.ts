@@ -87,7 +87,7 @@ function providerModules(): string[] {
     matches: name => (name.endsWith('.ts') || name.endsWith('.tsx'))
       && !name.endsWith('.test.ts')
       && !name.endsWith('.test.tsx')
-      // Test DATA co-located with the provider it describes; see `providerLayering.test.ts`.
+      // Test data stays with the provider that it describes; see `providers/README.md`.
       && !name.endsWith('.fixtures.ts')
       && name !== 'testUtils.ts'
       && name !== 'testUtils.tsx'

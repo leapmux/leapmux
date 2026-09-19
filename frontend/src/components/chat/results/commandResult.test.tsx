@@ -1,6 +1,8 @@
 import type { CommandResult } from '../ir/commandResult'
+import type { FinishedToolStatus, UnfinishedToolStatus } from '../ir/toolRowStatus'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { FINISHED_TOOL_STATUSES, UNFINISHED_TOOL_STATUSES } from '../ir/toolRowStatus'
 import { CommandResultBody } from './commandResult'
 
 function source(over: Partial<CommandResult> = {}): CommandResult {
@@ -65,5 +67,15 @@ describe('CommandResultBody', () => {
   it('says an output stream could not be recovered, which is not an empty one', () => {
     const { container } = render(() => <CommandResultBody source={source({ output: '', outputUnavailable: true })} status="completed" />)
     expect(container.textContent).toContain('output unavailable')
+  })
+
+  it.each(UNFINISHED_TOOL_STATUSES)('does not describe an unfinished %s stream as empty', (status: UnfinishedToolStatus) => {
+    const { container } = render(() => <CommandResultBody source={source({ output: '' })} status={status} />)
+    expect(container.textContent).not.toContain('[no output]')
+  })
+
+  it.each(FINISHED_TOOL_STATUSES)('states that a finished %s stream is empty', (status: FinishedToolStatus) => {
+    const { container } = render(() => <CommandResultBody source={source({ output: '' })} status={status} />)
+    expect(container.textContent).toContain('[no output]')
   })
 })
