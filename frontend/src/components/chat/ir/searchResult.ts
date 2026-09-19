@@ -103,7 +103,7 @@ function structuredLines(source: SearchResult): SearchResultLine[] | null {
  * function relativizes file paths and reads nothing else, so a narrower parameter
  * keeps this module clear of the renderer.
  */
-export function searchResultText(source: SearchResult, context?: { workingDir?: string, homeDir?: string }): string {
+export function searchResultText(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
   const lines = structuredLines(source)
   if (lines)
     return lines.map(line => `${relativizePath(line.filePath, context?.workingDir, context?.homeDir)}${line.lineNumber !== undefined ? `:${line.lineNumber}` : ''}:${line.text}`).join('\n')
@@ -123,7 +123,7 @@ export function searchResultText(source: SearchResult, context?: { workingDir?: 
  * Separate from {@link searchResultText}, which the BODY draws: the body renders the
  * file list itself, so folding the fallback in there would print it twice.
  */
-export function searchResultCopyable(source: SearchResult, context?: { workingDir?: string, homeDir?: string }): string {
+export function searchResultCopyable(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
   return searchResultText(source, context) || source.filenames.join('\n')
 }
 

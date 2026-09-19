@@ -3,7 +3,9 @@ import type { ChatRowIR, ToolRowRole } from '../../../ir/row'
 import type { FailedResult, ToolCallIR, ToolCallPayload, ToolCallPayloadOf } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
 import type { ToolRowStatus } from '../../../ir/toolRowStatus'
+import type { ExecuteRequest } from '../../../ir/tools/execute'
 import type { FileChangeRequest, FileChangeResult } from '../../../ir/tools/fileChange'
+import type { ImageRequest } from '../../../ir/tools/image'
 import type { WebSearchResult } from '../../../ir/tools/webSearch'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { RowExtractionInput, ToolSpanSides } from '~/components/chat/rowExtractionTypes'
@@ -415,7 +417,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
   'execute': (facts): ToolCallPayload<'execute'> => {
     const command = codexUnwrapCommand(pickString(facts.item, 'command'))
     const cwd = pickString(facts.item, 'cwd') || undefined
-    const request = { command, ...(cwd !== undefined ? { cwd } : {}) }
+    const request: ExecuteRequest = { command, ...(cwd !== undefined ? { cwd } : {}) }
     // Only a call that ENDED has an output stream to state. Codex sends the exit code
     // and the aggregated output on the same item, so the result is the item itself.
     const source = facts.finished ? codexCommandFromItem(facts.item) : null
@@ -436,7 +438,7 @@ export const CODEX_TOOL_READERS: { [P in ToolKind]: CodexToolReader<P> } = {
     // reader asked for, so it belongs on the REQUEST: the result lands only when
     // the picture does, and the row states nothing else while it generates.
     const prompt = pickString(facts.item, 'revisedPrompt') || undefined
-    const request = { ...(prompt !== undefined ? { prompt } : {}) }
+    const request: ImageRequest = { ...(prompt !== undefined ? { prompt } : {}) }
     if (failure)
       return { kind: 'image', request, title: `Generate image ${failure}`, result: failedResult(failure), statusOverride: 'failed' }
     if (facts.images.length > 0)
@@ -740,18 +742,23 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // pairs that word with a finished span's pictures is a draft the validating
   // builder refuses: the row degraded to the generic card and lost the picture.
   // The role's answer states the outcome the frame's own words cannot.
-  const rowStatus = outcome === 'interrupted'
-    ? toolRowStatus('cancelled')
-    : outcome === 'failed'
-      ? toolRowStatus('failed')
-      : status === CODEX_STATUS.IN_PROGRESS
-        ? (finished ? toolRowStatus('completed') : toolRowStatus('in_progress'))
-        : toolRowStatus(status)
   const requestItem = sides.request ? extractItem(sides.request.parentObject) : null
   const resultItem = sides.result ? extractItem(sides.result.parentObject) : null
   // The call reads EVERY side the store resolved: a request row whose result has
   // landed carries it, so its prompt stays compact behind the same expand control.
   const answered = finished || !!resultItem
+  // A row that carries the landed result is a row of a FINISHED call, whatever its
+  // own frame still says: the validating builder refuses an in-progress envelope
+  // over a result, and the degrade it answers would trade the typed card for the
+  // generic one. The span's own outcome words (interrupted / failed above) already
+  // won over the item word, and this is the same precedence for the result side.
+  const rowStatus = outcome === 'interrupted'
+    ? toolRowStatus('cancelled')
+    : outcome === 'failed'
+      ? toolRowStatus('failed')
+      : status === CODEX_STATUS.IN_PROGRESS
+        ? (answered ? toolRowStatus('completed') : toolRowStatus('in_progress'))
+        : toolRowStatus(status)
   const call = codexToolCallIR(codexToolFacts(item, answered, sides), rowStatus)
   return toolCallRow(call, role, { request: !!requestItem, result: !!resultItem })
 }

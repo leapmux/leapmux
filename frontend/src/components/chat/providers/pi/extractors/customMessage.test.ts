@@ -13,22 +13,22 @@ describe('pi custom messages', () => {
     '<task-notification><task-id>child</task-id><result>First</result><result>Second</result></task-notification>',
     '<task-notification><task-id>child</task-id><result>First</result></task-notification><task-notification><task-id>child</task-id><result>Second</result></task-notification>',
   ])('keeps the preview when the full report is invalid or ambiguous: %s', (content) => {
-    expect(piSubagentNotifications(notification(content))?.[0].body).toBe('Preview')
+    expect(piSubagentNotifications(notification(content))?.[0]?.body).toBe('Preview')
   })
 
   it('keeps an explicitly empty full report', () => {
-    expect(piSubagentNotifications(notification('<task-notification><task-id>child</task-id><result></result></task-notification>'))?.[0].body).toBe('')
+    expect(piSubagentNotifications(notification('<task-notification><task-id>child</task-id><result></result></task-notification>'))?.[0]?.body).toBe('')
   })
 
   it('renders every valid group entry with its own outcome', () => {
     const sources = piSubagentNotifications(notification('', { others: [null, { id: 'failed-child', status: 'error', error: 'Missing source', resultPreview: 'Partial report' }, { id: 'stopped-child', status: 'stopped' }] }))
     expect(sources?.map(source => [source.agentId, source.outcome])).toEqual([['child', 'completed'], ['failed-child', 'failed'], ['stopped-child', 'stopped']])
-    expect(sources?.[1].metadata).toContainEqual({ label: 'Error', value: 'Missing source' })
+    expect(sources?.[1]?.metadata).toContainEqual({ label: 'Error', value: 'Missing source' })
   })
 
   it('preserves zero counters and rejects invalid counters', () => {
     const sources = piSubagentNotifications(notification('', { toolUses: 0, totalTokens: -1, turnCount: 1.5, durationMs: 0 }))
-    expect(sources?.[0].metadata).toEqual([{ label: 'Agent ID', value: 'child' }, { label: 'Tool uses', value: '0' }, { label: 'Duration', value: '0ms' }])
+    expect(sources?.[0]?.metadata).toEqual([{ label: 'Agent ID', value: 'child' }, { label: 'Tool uses', value: '0' }, { label: 'Duration', value: '0ms' }])
   })
 
   it('does not render hidden or non-custom messages', () => {

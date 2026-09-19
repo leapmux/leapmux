@@ -28,13 +28,13 @@ export function piAgentRequest(payload: Record<string, unknown>, request?: Parse
   const metadata: NonNullable<AgentRequest['metadata']> = []
   if (tool?.toolName === PI_AGENT_TOOL.GetResult || tool?.toolName === PI_AGENT_TOOL.Steer) {
     const operation = tool.toolName === PI_AGENT_TOOL.GetResult ? 'Get agent result' : 'Send message'
-    for (const [key, label] of [['wait', 'Wait'], ['verbose', 'Full conversation']]) {
+    for (const [key, label] of [['wait', 'Wait'], ['verbose', 'Full conversation']] as const) {
       if (typeof args[key] === 'boolean')
         metadata.push({ label, value: args[key] ? 'Yes' : 'No' })
     }
     return { description: `${operation}${pickString(args, 'agent_id') ? `: ${pickString(args, 'agent_id')}` : ''}`, prompt: pickString(args, 'message'), metadata }
   }
-  for (const [key, label] of [['model', 'Model'], ['thinking', 'Thinking'], ['resume', 'Resume'], ['isolation', 'Isolation']]) {
+  for (const [key, label] of [['model', 'Model'], ['thinking', 'Thinking'], ['resume', 'Resume'], ['isolation', 'Isolation']] as const) {
     const value = pickString(args, key)
     if (value)
       metadata.push({ label, value })
@@ -89,14 +89,14 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
       ? 'partial'
       : state || 'returned a result'
   const metadata: AgentRun['metadata'] = []
-  for (const [key, label] of [['agentId', 'Agent ID'], ['displayName', 'Agent type'], ['modelName', 'Model'], ['tokens', 'Tokens'], ['error', 'Error']]) {
+  for (const [key, label] of [['agentId', 'Agent ID'], ['displayName', 'Agent type'], ['modelName', 'Model'], ['tokens', 'Tokens'], ['error', 'Error']] as const) {
     const value = pickString(details, key)
     if (value)
       metadata.push({ label, value })
   }
   if (!pickString(details, 'displayName') && pickString(details, 'subagentType'))
     metadata.push({ label: 'Agent type', value: pickString(details, 'subagentType') })
-  for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['durationMs', 'Duration']]) {
+  for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['durationMs', 'Duration']] as const) {
     const value = details[key]
     if (counter(value))
       metadata.push({ label, value: key === 'durationMs' ? formatDuration(value) : formatNumber(value) })
@@ -126,16 +126,25 @@ function retrievedAgentReport(text: string, expectedId: string): AgentRun | null
   if (separator < 0)
     return null
   const lines = text.slice(0, separator).split('\n')
-  if (lines.length !== 3 || !lines[0].startsWith('Agent: ') || !lines[2].startsWith('Description: '))
+  // The length checks prove both hoisted lines exist; the null tests are type-level guards alone.
+  const agentLine = lines[0]
+  const descriptionLine = lines[2]
+  if (lines.length !== 3 || !agentLine?.startsWith('Agent: ') || !descriptionLine?.startsWith('Description: '))
     return null
-  const id = lines[0].slice('Agent: '.length)
+  const id = agentLine.slice('Agent: '.length)
   if (!id || (expectedId && expectedId !== id))
     return null
-  const fields = lines[1].split(' | ')
-  if (!fields[0]?.startsWith('Type: ') || !fields[1]?.startsWith('Status: ') || !/^Tool uses: \d+$/.test(fields[2] ?? ''))
+  // The three-line check above proves this line exists; the null test is a type-level guard alone.
+  const fieldsLine = lines[1]
+  if (!fieldsLine)
     return null
-  const stateText = fields[1].slice('Status: '.length)
-  const state = stateText.split(' ', 1)[0]
+  const fields = fieldsLine.split(' | ')
+  const statusField = fields[1]
+  if (!fields[0]?.startsWith('Type: ') || !statusField?.startsWith('Status: ') || !/^Tool uses: \d+$/.test(fields[2] ?? ''))
+    return null
+  const stateText = statusField.slice('Status: '.length)
+  // `split` always answers at least one part, so the empty fallback is a type-level guard alone.
+  const state = stateText.split(' ', 1)[0] ?? ''
   if (!['queued', 'running', 'completed', 'error', 'aborted', 'stopped', 'steered'].includes(state)
     || stateText !== state + pickString(STATUS_NOTES, state)) {
     return null
@@ -152,7 +161,7 @@ function retrievedAgentReport(text: string, expectedId: string): AgentRun | null
   if (note)
     metadata.push({ label: 'Notice', value: note.trim().slice(1, -1) })
   return {
-    description: lines[2].slice('Description: '.length),
+    description: descriptionLine.slice('Description: '.length),
     agentId: id,
     statusLabel: state === 'error' ? 'failed' : state === 'aborted' || state === 'steered' ? 'partial' : state,
     outcome: state === 'completed' ? 'completed' : state === 'error' ? 'failed' : state === 'stopped' ? 'stopped' : state === 'queued' || state === 'running' ? 'running' : 'unknown',

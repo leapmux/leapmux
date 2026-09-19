@@ -21,9 +21,12 @@ function notificationReports(content: string): Map<string, string> {
     const root = document.documentElement
     const ids = [...root.children].filter(child => child.tagName === 'task-id')
     const results = [...root.children].filter(child => child.tagName === 'result')
-    if (ids.length !== 1 || results.length !== 1 || ids[0].children.length || results[0].children.length)
+    // The length checks prove both elements exist; the null tests are type-level guards alone.
+    const idElement = ids[0]
+    const resultElement = results[0]
+    if (ids.length !== 1 || results.length !== 1 || !idElement || !resultElement || idElement.children.length || resultElement.children.length)
       continue
-    const id = ids[0].textContent ?? ''
+    const id = idElement.textContent ?? ''
     if (!id || duplicateIds.has(id))
       continue
     if (reports.has(id)) {
@@ -31,7 +34,7 @@ function notificationReports(content: string): Map<string, string> {
       duplicateIds.add(id)
       continue
     }
-    reports.set(id, results[0].textContent ?? '')
+    reports.set(id, resultElement.textContent ?? '')
   }
   return reports
 }
@@ -55,12 +58,12 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
     if (!id || !status)
       continue
     const metadata: AgentRun['metadata'] = [{ label: 'Agent ID', value: id }]
-    for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['totalTokens', 'Tokens'], ['durationMs', 'Duration']]) {
+    for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['totalTokens', 'Tokens'], ['durationMs', 'Duration']] as const) {
       const value = entry[key]
       if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
         metadata.push({ label, value: key === 'durationMs' ? formatDuration(value) : formatNumber(value) })
     }
-    for (const [key, label] of [['outputFile', 'Transcript'], ['error', 'Error']]) {
+    for (const [key, label] of [['outputFile', 'Transcript'], ['error', 'Error']] as const) {
       const value = pickString(entry, key)
       if (value)
         metadata.push({ label, value })

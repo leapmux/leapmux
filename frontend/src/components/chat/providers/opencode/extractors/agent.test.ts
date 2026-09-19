@@ -13,7 +13,9 @@ describe('opencode task output', () => {
   })
 
   it('keeps an empty completed report distinct from a launch', () => {
-    expect(openCodeTaskResult(wrap(''), null, { prompt: 'Do not substitute this prompt' })).toMatchObject({ outcome: 'completed', body: '', bodyLabel: undefined })
+    // An empty report carries no body label: the key is absent, not undefined.
+    expect(openCodeTaskResult(wrap(''), null, { prompt: 'Do not substitute this prompt' })).toMatchObject({ outcome: 'completed', body: '' })
+    expect('bodyLabel' in (openCodeTaskResult(wrap(''), null, { prompt: 'Do not substitute this prompt' }) ?? {})).toBe(false)
   })
 
   it('retains a failed task report', () => {

@@ -496,7 +496,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'control_response',
@@ -565,7 +567,9 @@ describe('handleControlSend', () => {
 
         result.handleControlSend('Use a safer command')
 
-        const [, bytes] = onControlResponse.mock.calls[0]
+        const sendCall = onControlResponse.mock.calls[0]
+        expect(sendCall).toBeDefined()
+        const [, bytes] = sendCall ?? []
         expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ result: { decision: 'cancel' } })
         expect(onSendMessage).not.toHaveBeenCalled()
         finishResponse()
@@ -598,7 +602,9 @@ describe('handleControlSend', () => {
           onSendControlFeedback,
         })
         result.handleControlSend('Revise the second step.')
-        const [, bytes] = onControlResponse.mock.calls[0]
+        const sendCall = onControlResponse.mock.calls[0]
+        expect(sendCall).toBeDefined()
+        const [, bytes] = sendCall ?? []
         expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ type: 'extension_ui_response', id: 'plan', value: 'Stay in Plan mode' })
         expect(onSendControlFeedback).not.toHaveBeenCalled()
         finishResponse()
@@ -706,7 +712,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'extension_ui_response',
@@ -746,7 +754,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -827,7 +837,9 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const sendCall = onControlResponse.mock.calls[0]
+      expect(sendCall).toBeDefined()
+      const [, bytes] = sendCall ?? []
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',

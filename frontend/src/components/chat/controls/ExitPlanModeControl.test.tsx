@@ -79,7 +79,9 @@ describe('ExitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded).not.toHaveProperty('clearContext')
     expect(options.planApproval.clearContext).toBe(true)
@@ -107,7 +109,9 @@ describe('ExitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-99')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -139,7 +143,9 @@ describe('ExitPlanModeActions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
     expect(options.planApproval.permissionMode).toBe('auto')
     expect(apply).not.toHaveBeenCalled()
@@ -167,7 +173,9 @@ describe('ExitPlanModeActions', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
     expect(options.planApproval.permissionMode).toBe('auto')
   })
@@ -190,7 +198,9 @@ describe('ExitPlanModeActions', () => {
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
     expect(options.planApproval).toEqual({ permissionMode: '', clearContext: false })
   })
@@ -234,7 +244,9 @@ describe('ExitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')

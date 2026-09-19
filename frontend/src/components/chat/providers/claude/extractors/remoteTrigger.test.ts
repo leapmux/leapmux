@@ -98,10 +98,12 @@ describe('claudeTriggerPayload', () => {
     expect(requestOf(input)).toStrictEqual(DEFAULT_TOOL_REQUESTS.trigger(input))
   })
 
-  it('carries the four keys a trigger request declares, and no other one', () => {
-    expect(Object.keys(requestOf({})).sort()).toStrictEqual(['action', 'name', 'schedule', 'triggerId'])
+  it('carries only the keys a trigger request states, and no other one', () => {
+    // An absent field is an omitted key, never an explicit undefined, so the bare
+    // default answers the action alone.
+    expect(Object.keys(requestOf({})).sort()).toStrictEqual(['action'])
     expect(Object.keys(requestOf({ action: 'create', body: { name: 'Nightly' } })).sort())
-      .toStrictEqual(['action', 'name', 'schedule', 'triggerId'])
+      .toStrictEqual(['action', 'name'])
   })
 
   it('reads the action out of the `action` argument, which the shared entry answers `other` for', () => {

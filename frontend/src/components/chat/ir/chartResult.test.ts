@@ -19,10 +19,12 @@ describe('chartResultFromSpec', () => {
     expect(source.labels).toEqual(['A', 'B'])
     // A categorical series carries VALUES and no `points` key at all: one dataset
     // holds one array, so the half it does not plot is absent rather than empty.
-    expect(source.series).toEqual([{ label: 'Hits', values: [1, 2], shape: undefined }])
+    // A series that states no shape of its own omits the key rather than carrying
+    // an explicit undefined -- the chart-level `shape` above is what fills it in.
+    expect(source.series).toEqual([{ label: 'Hits', values: [1, 2] }])
     // The KEYS, because `toEqual` ignores an undefined-valued property -- so a series
     // that grew a field back would still match the expectation above.
-    expect(Object.keys(source.series[0]!).sort()).toEqual(['label', 'shape', 'values'])
+    expect(Object.keys(source.series[0]!).sort()).toEqual(['label', 'values'])
     expect(chartHasData(source)).toBe(true)
   })
 

@@ -74,7 +74,9 @@ describe('codex control request actions', () => {
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } })
   })
 
@@ -85,7 +87,9 @@ describe('codex control request actions', () => {
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Host rule' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(hostDecision)
   })
 
@@ -117,7 +121,9 @@ describe('codex control request actions', () => {
     await fireEvent.click(allowChoices.getByRole('radio', { name: 'Host: b.example.com' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(allowB)
   })
 
@@ -197,7 +203,9 @@ describe('codex control request actions', () => {
     expect(overflow).toHaveTextContent('Allow Host & Remember')
     await fireEvent.click(overflow)
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual(overflowHostRule)
   })
 
@@ -211,7 +219,9 @@ describe('codex control request actions', () => {
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('accept')
   })
 
@@ -222,7 +232,9 @@ describe('codex control request actions', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Allow as' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('cancel')
   })
 
@@ -242,7 +254,9 @@ describe('codex control request actions', () => {
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       jsonrpc: '2.0',
       id: 'request-1',
@@ -264,7 +278,9 @@ describe('codex control request actions', () => {
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
   })
 
@@ -281,7 +297,9 @@ describe('codex control request actions', () => {
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('turn')
   })
 
@@ -297,7 +315,9 @@ describe('codex control request actions', () => {
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Session' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
     expect(answerState.choices()).toEqual({ [CONTROL_ALLOW_CHOICE_ID]: 'session' })
   })
@@ -312,7 +332,9 @@ describe('codex control request actions', () => {
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result).toEqual({ permissions: {}, scope: 'turn' })
   })
 
@@ -359,7 +381,9 @@ describe('codex control request actions', () => {
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('accept')
   })
 
@@ -415,7 +439,9 @@ describe('codex control request actions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })
@@ -430,7 +456,9 @@ describe('codex control request actions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [bytes, options] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })

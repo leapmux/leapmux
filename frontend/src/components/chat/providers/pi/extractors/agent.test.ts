@@ -82,7 +82,7 @@ describe('pi agent source', () => {
       ['aborted', ' (aborted — hit the turn limit before completion; output may be incomplete)'],
       ['steered', ' (wrapped up at the turn limit — output may be partial)'],
       ['stopped', ' (STOPPED BY THE USER before completion — output is partial; the task was NOT finished)'],
-    ]) {
+    ] as const) {
       const source = piAgentResult(result({ status, toolUses: 0 }, `Agent completed in 1.0s (0 tool uses)${note}.\n\nPartial report`))
       expect(source.body).toBe('Partial report')
       expect(source.metadata).toContainEqual({ label: 'Notice', value: note.trim().slice(1, -1) })

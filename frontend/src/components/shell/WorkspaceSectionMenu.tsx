@@ -200,8 +200,8 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                   data-testid="sidebar-new-workspace-repo"
                   onClick={() => props.onNewWorkspace(repo.startPoint)}
                 >
-                  // `detail` is omitted when no git mode is remembered, which
-                  // renders the same as the undefined the memo computes.
+                  {/* `detail` is omitted when no git mode is remembered, which
+                      renders the same as the undefined the memo computes. */}
                   <DropdownMenuItemContent
                     label={repo.label}
                     {...(repo.detail === undefined ? {} : { detail: repo.detail })}

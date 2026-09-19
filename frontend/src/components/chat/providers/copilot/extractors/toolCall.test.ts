@@ -1031,10 +1031,9 @@ describe('a cancelled Copilot call', () => {
   it('draws the output of a stopped server call as content rather than as an error', () => {
     const call = cancelledCall('a_tool_no_table_holds', { q: 'needle' }, { content: 'two hits so far' })
     expect(call.kind).toBe('mcp')
+    // No error and no structured copy: both keys are absent rather than undefined.
     expect(typedResult(call)).toStrictEqual({
       content: [{ type: 'text', text: 'two hits so far' }],
-      structuredJson: undefined,
-      error: undefined,
     })
   })
 

@@ -47,9 +47,12 @@ export function describePiNotification(parsed: unknown): string | null {
  * unknown post. The `reason` (manual, threshold, overflow) is the trigger.
  */
 function piCompactionDetail(m: Record<string, unknown>): CompactionBoundaryMeta {
+  // Each fact rides only when the frame stated it, never as an explicitly undefined key.
+  const trigger = pickString(m, 'reason') || undefined
+  const pre = toTokenCount(pickNumber(pickObject(m, 'result'), 'tokensBefore') ?? undefined)
   return {
-    trigger: pickString(m, 'reason') || undefined,
-    pre: toTokenCount(pickNumber(pickObject(m, 'result'), 'tokensBefore') ?? undefined),
+    ...(trigger !== undefined ? { trigger } : {}),
+    ...(pre !== undefined ? { pre } : {}),
   }
 }
 
@@ -85,38 +88,49 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
   }
 
   if (type === PI_EVENT.AutoRetryStart) {
+    const attempt = pickNumber(msg, 'attempt', undefined)
+    const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
+    const delayMs = pickNumber(msg, 'delayMs', undefined)
+    const error = pickString(msg, 'errorMessage') || undefined
     return [{
       kind: 'retry',
       scope: 'api',
-      attempt: pickNumber(msg, 'attempt') ?? undefined,
-      maxAttempts: pickNumber(msg, 'maxAttempts') ?? undefined,
-      delayMs: pickNumber(msg, 'delayMs') ?? undefined,
-      error: pickString(msg, 'errorMessage') || undefined,
+      ...(attempt !== undefined ? { attempt } : {}),
+      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+      ...(delayMs !== undefined ? { delayMs } : {}),
+      ...(error !== undefined ? { error } : {}),
     }]
   }
   if (type === PI_EVENT.AutoRetryEnd) {
     // A retry that SUCCEEDED ends the stall, and the row says so. One that failed
     // gave up, which is what `willRetry: false` states.
+    const attempt = pickNumber(msg, 'attempt', undefined)
+    const succeeded = msg.success === true
+    const error = succeeded ? undefined : pickString(msg, 'finalError') || undefined
     return [{
       kind: 'retry',
       scope: 'api',
-      attempt: pickNumber(msg, 'attempt') ?? undefined,
-      willRetry: msg.success === true ? undefined : false,
-      error: msg.success === true ? undefined : pickString(msg, 'finalError') || undefined,
-      succeeded: msg.success === true || undefined,
+      ...(attempt !== undefined ? { attempt } : {}),
+      ...(succeeded ? {} : { willRetry: false }),
+      ...(error !== undefined ? { error } : {}),
+      ...(succeeded ? { succeeded: true } : {}),
     }]
   }
 
   // The three summarization-retry events state the same stall for the SUMMARY that
   // compaction writes, which is why they carry their own scope.
   if (type === PI_EVENT.SummarizationRetryScheduled) {
+    const attempt = pickNumber(msg, 'attempt', undefined)
+    const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
+    const delayMs = pickNumber(msg, 'delayMs', undefined)
+    const error = pickString(msg, 'errorMessage') || undefined
     return [{
       kind: 'retry',
       scope: 'summarization',
-      attempt: pickNumber(msg, 'attempt') ?? undefined,
-      maxAttempts: pickNumber(msg, 'maxAttempts') ?? undefined,
-      delayMs: pickNumber(msg, 'delayMs') ?? undefined,
-      error: pickString(msg, 'errorMessage') || undefined,
+      ...(attempt !== undefined ? { attempt } : {}),
+      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+      ...(delayMs !== undefined ? { delayMs } : {}),
+      ...(error !== undefined ? { error } : {}),
     }]
   }
   if (type === PI_EVENT.SummarizationRetryAttemptStart) {

@@ -375,7 +375,9 @@ describe('pi extension UI integration', () => {
     )
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-1',

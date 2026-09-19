@@ -19,10 +19,11 @@ const SMART = { sets: { permissionMode: 'auto' } }
 const BYPASS = { sets: { permissionMode: 'bypassPermissions' } }
 
 /**
- * The controller double. An override passed as `undefined` DROPS the member:
- * `PermissionPresetController` spells "not carried" as an absent key, which
- * `Partial` can no longer state explicitly, and every reader treats the two
- * the same.
+ * The controller double. An override KEY that is PRESENT with `undefined` drops
+ * the member: `PermissionPresetController` spells "not carried" as an absent key,
+ * and `Partial` can no longer state that explicitly. An override that is simply
+ * not passed keeps the default, so the presence check is `Object.hasOwn`, never
+ * a `=== undefined` test on the value alone.
  */
 function controller(overrides: {
   smart?: PermissionPresetController['smart']
@@ -31,18 +32,24 @@ function controller(overrides: {
   active?: PermissionPresetController['active']
 } = {}): PermissionPresetController {
   const controller: PermissionPresetController = { smart: SMART, bypass: BYPASS, apply: vi.fn() }
-  if (overrides.smart === undefined)
-    delete controller.smart
-  else
-    controller.smart = overrides.smart
-  if (overrides.bypass === undefined)
-    delete controller.bypass
-  else
-    controller.bypass = overrides.bypass
-  if (overrides.apply === undefined)
-    delete controller.apply
-  else
-    controller.apply = overrides.apply
+  if (Object.hasOwn(overrides, 'smart')) {
+    if (overrides.smart === undefined)
+      delete controller.smart
+    else
+      controller.smart = overrides.smart
+  }
+  if (Object.hasOwn(overrides, 'bypass')) {
+    if (overrides.bypass === undefined)
+      delete controller.bypass
+    else
+      controller.bypass = overrides.bypass
+  }
+  if (Object.hasOwn(overrides, 'apply')) {
+    if (overrides.apply === undefined)
+      delete controller.apply
+    else
+      controller.apply = overrides.apply
+  }
   if (overrides.active !== undefined)
     controller.active = overrides.active
   return controller

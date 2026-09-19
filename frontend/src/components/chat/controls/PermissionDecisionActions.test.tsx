@@ -51,7 +51,9 @@ describe('the selected-option reply of the Agent Client Protocol family', () => 
     await providerFor(AgentProvider.GOOSE)!.controls?.sendPermissionOption!(onRespond, '7', 'proceed_once')
 
     expect(onRespond).toHaveBeenCalledTimes(1)
-    const [content] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [content] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(content))).toEqual({
       jsonrpc: '2.0',
       id: '7',

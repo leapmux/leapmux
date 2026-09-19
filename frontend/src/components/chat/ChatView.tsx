@@ -125,6 +125,11 @@ export interface ChatPaginationProps extends PaginationCallbacks {
  * Agent-lifecycle inputs: status + startup phase, plus the in-flight working / thinking
  * telemetry. Together they drive the empty-state startup banner and the thinking
  * indicator. Grouped so the lifecycle surface is one typed object on the prop list.
+ *
+ * The telemetry members allow an explicit `undefined`: the host (TileRenderer) supplies
+ * them through per-field getters whose answers are legitimately absent while the agent
+ * runs, and presence is checked at every read, so undefined is the live "absent for now"
+ * state rather than a construction mistake.
  */
 export interface AgentLifecycleProps {
   /** Whether the agent is actively working (for showing the thinking indicator). */
@@ -133,21 +138,21 @@ export interface AgentLifecycleProps {
    * Running estimate of the in-flight turn's thinking (reasoning) tokens, forwarded to
    * the thinking indicator. Broadcast-only telemetry, cleared at turn boundaries.
    */
-  thinkingTokens?: number
+  thinkingTokens?: number | undefined
   /** Live bytes from process and tool output. */
-  outputBytes?: number
+  outputBytes?: number | undefined
   /** True when outputBytes is a minimum because the provider limits output. */
-  outputBytesMinimum?: boolean
+  outputBytesMinimum?: boolean | undefined
   /**
    * Agent status. STARTING shows a loader with the provider name in the empty-state
    * area; STARTUP_FAILED shows the server error in --danger. The editor beneath remains
    * interactive during STARTING so the user can type ahead.
    */
-  agentStatus?: AgentStatus
+  agentStatus?: AgentStatus | undefined
   /** Error text from the backend's AgentStatusChange.startup_error. */
-  startupError?: string
+  startupError?: string | undefined
   /** Phase label from AgentStatusChange.startup_message while STARTING (e.g. "Checking Git status…"). */
-  startupMessage?: string
+  startupMessage?: string | undefined
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
   /** Full registry (active + past) for the chip and the popover it opens. */
@@ -158,7 +163,7 @@ export interface AgentLifecycleProps {
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
   /** The root session goal for the Goals & To-dos popover. */
-  goal?: GoalSurface
+  goal?: GoalSurface | undefined
 }
 
 /**

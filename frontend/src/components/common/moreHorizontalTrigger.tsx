@@ -62,5 +62,5 @@ export function moreHorizontalTrigger(
 export function rowContextMenuTrigger(
   opts: { 'data-testid'?: string } = {},
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {
-  return moreHorizontalTrigger({ 'class': menuTrigger, ...(opts['data-testid'] !== undefined ? { 'data-testid': opts['data-testid'] } : {}) })
+  return moreHorizontalTrigger({ class: menuTrigger, ...(opts['data-testid'] !== undefined ? { 'data-testid': opts['data-testid'] } : {}) })
 }

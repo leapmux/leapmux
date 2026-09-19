@@ -2,7 +2,7 @@ import type { WirePermissionOption } from '../../controls/permissionOptionLabels
 import type { PermissionRequestIR } from '../../ir/controlRequest'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
-import { isObject, assignDefined, pickObject, pickString } from '~/lib/jsonPick'
+import { assignDefined, isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { resolveACPToolCall } from './extractors/toolCall'
 
 /** The `params` of one `session/request_permission`, or undefined for another shape. */

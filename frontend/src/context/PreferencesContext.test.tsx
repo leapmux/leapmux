@@ -929,7 +929,8 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
   /** The golden's limits for one numeric key, whichever pair its kind uses. */
   const boundsOf = (key: GoldenKey) => {
     const field = key.fields[0]
-    if (field === undefined) throw new Error(`golden key ${key.key} declares no fields`)
+    if (field === undefined)
+      throw new Error(`golden key ${key.key} declares no fields`)
     return { min: field.min ?? field.minF!, max: field.max ?? field.maxF! }
   }
 
@@ -946,7 +947,8 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
   it('accepts both limits the hub declares, and refuses just outside them', async () => {
     for (const key of numericKeys) {
       const reader = numericReaders[key.key]
-      if (reader === undefined) throw new Error(`no reader for ${key.key}`)
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
       const { min, max } = boundsOf(key)
       // A step that is small enough to land outside a 0.05-wide float limit
       // and large enough to be a different integer.
@@ -986,7 +988,8 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
   it('accepts every enum value the hub declares', async () => {
     for (const key of enumKeys) {
       const reader = enumReaders[key.key]
-      if (reader === undefined) throw new Error(`no reader for ${key.key}`)
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
       for (const option of key.fields[0]?.enumValues ?? []) {
         localStorageClearForTests()
         listUserSettings.mockResolvedValue({
@@ -1002,7 +1005,8 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
   it('refuses a value outside the declared set and keeps the default', async () => {
     for (const key of enumKeys) {
       const reader = enumReaders[key.key]
-      if (reader === undefined) throw new Error(`no reader for ${key.key}`)
+      if (reader === undefined)
+        throw new Error(`no reader for ${key.key}`)
       localStorageClearForTests()
       listUserSettings.mockResolvedValue({
         descriptors: [],

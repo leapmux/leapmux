@@ -1,5 +1,5 @@
-import type { DiffStats } from '~/stores/repoGit'
 import type { WorkingTreeInfo } from './WorkingTree'
+import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hoverForTooltip } from '~/test-support/clipStub'

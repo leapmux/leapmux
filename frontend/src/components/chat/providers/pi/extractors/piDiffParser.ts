@@ -38,10 +38,11 @@ function parsePiDiffLine(raw: string): ParsedLine | null {
   const m = LINE_RE.exec(raw)
   if (!m)
     return null
-  const lineNum = Number.parseInt(m[2], 10)
+  // A match always carries the number and content groups; the fallbacks are type-level guards alone.
+  const lineNum = Number.parseInt(m[2] ?? '', 10)
   if (!Number.isFinite(lineNum))
     return null
-  return { prefix: m[1] as '+' | '-' | ' ', lineNum, content: m[3] }
+  return { prefix: m[1] as '+' | '-' | ' ', lineNum, content: m[3] ?? '' }
 }
 
 interface HunkAccum {

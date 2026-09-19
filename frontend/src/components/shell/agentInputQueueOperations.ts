@@ -59,19 +59,14 @@ export function createAgentInputQueueOperations(deps: {
   }
   // The one handler whose caller needs the response: the composer loads the
   // full text and the attachments of the input that it starts to edit. The
-  // proto response may carry an explicit-undefined snapshot, while the
-  // composer's result type treats absence and undefined as one case, so the
-  // absent snapshot is omitted rather than passed through.
+  // response object is handed through UNCHANGED -- the composer's edit session
+  // keys off it, so no member is rebuilt or dropped here.
   const beginQueueEdit = (item: QueuedAgentInput, takeover: boolean) =>
     runQueueRpc('Failed to edit queued input', () => workerRpc.beginQueuedAgentInputEdit(queueWorkerID(item), {
       agentId: item.agentId,
       inputId: item.id,
       clientId: deps.clientId(),
       takeover,
-    })).then(response => ({
-      attachments: response.attachments,
-      text: response.text,
-      ...(response.snapshot !== undefined ? { snapshot: response.snapshot } : {}),
     }))
   const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[]) => {
     await runQueueRpc('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {

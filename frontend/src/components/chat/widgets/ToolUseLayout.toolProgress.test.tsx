@@ -5,7 +5,6 @@ import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createToolProgressStore } from '~/stores/chatToolProgress'
-import { testMessageSources } from '~/test-support/messageRenderSources'
 import { ToolUseLayout } from './ToolUseLayout'
 
 /** The tool_use row the live-store case renders: one span of one provider session. */
@@ -18,7 +17,7 @@ const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
 function renderCard(initial?: ToolProgressEntry) {
   const [progress, setProgress] = createSignal<ToolProgressEntry | undefined>(initial)
   const [selecting, setSelecting] = createSignal(false)
-  const context = { textSelectionActive: selecting, sources: testMessageSources({ progress }) } as unknown as RenderContext
+  const context = { textSelectionActive: selecting, toolProgress: { liveTail: progress } } as unknown as RenderContext
   const result = render(() => (
     <ToolUseLayout
       icon={SquareTerminal}
@@ -98,7 +97,7 @@ describe('ToolUseLayout running-tool badge', () => {
     const store = createToolProgressStore()
     store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const [selecting, setSelecting] = createSignal(false)
-    const context = { textSelectionActive: selecting, sources: testMessageSources({ progress: () => store.get('a1', SPAN) }) } as unknown as RenderContext
+    const context = { textSelectionActive: selecting, toolProgress: { liveTail: () => store.get('a1', SPAN) } } as unknown as RenderContext
     const { getByText, getByTestId } = render(() => (
       <ToolUseLayout
         icon={SquareTerminal}

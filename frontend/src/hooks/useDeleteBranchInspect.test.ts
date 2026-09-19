@@ -66,7 +66,9 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      expect(inspectCall).toBeDefined()
+      const [, req] = inspectCall ?? []
       expect(req).toMatchObject({
         path: '/repo',
         branchNameHint: 'doomed',
@@ -85,7 +87,9 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const [, req] = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      expect(inspectCall).toBeDefined()
+      const [, req] = inspectCall ?? []
       expect(req).toMatchObject({ branchNameHint: '' })
       dispose()
     })

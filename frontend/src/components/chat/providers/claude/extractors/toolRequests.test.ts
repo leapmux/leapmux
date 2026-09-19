@@ -167,7 +167,8 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     CLAUDE_TOOL_NAMES.SLEEP,
     { durationMs: 1500 },
     { durationMs: 1500 },
-    { durationMs: undefined },
+    // The shared entry omits an absent duration rather than stating undefined.
+    {},
   ],
 ]
 
@@ -284,11 +285,13 @@ describe('claudeRequestFor', () => {
   // it changes no transcript -- the fallback fires only when the key Claude DOES send
   // is absent.
   it('reads the file path under the three spellings the shared entry states', () => {
+    // The shared entry omits an offset and a limit the call did not state, so a bare
+    // path answers the path alone.
     expect(requestOf(CLAUDE_TOOL_NAMES.READ, { file_path: '/a.ts' }))
-      .toStrictEqual({ path: '/a.ts', offset: undefined, limit: undefined })
+      .toStrictEqual({ path: '/a.ts' })
     // `filePath` and `path` outrank `file_path`, and no Claude Read call sends either.
     expect(DEFAULT_TOOL_REQUESTS.read({ path: '/b.ts', file_path: '/a.ts' }))
-      .toStrictEqual({ path: '/b.ts', offset: undefined, limit: undefined })
+      .toStrictEqual({ path: '/b.ts' })
   })
 
   it('falls back to `uri` for a fetch that states no url, which Claude never sends', () => {
@@ -312,10 +315,10 @@ describe('claudeRequestFor', () => {
 
   // The ONE widening that changes an input Claude CAN produce. A result row whose
   // paired request is unresolved carries no arguments at all, and the shared entry
-  // states an ABSENT payload for that call rather than an empty record -- which is what
-  // `ReportRequest.payload` being optional means.
+  // OMITS the payload for that call rather than stating an empty record -- which is
+  // what `ReportRequest.payload` being optional means.
   it('states an absent report payload for a call that carries no arguments', () => {
-    expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, {})).toStrictEqual({ payload: undefined })
+    expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, {})).toStrictEqual({})
     expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, { summary: 'done' })).toStrictEqual({ payload: { summary: 'done' } })
   })
 })

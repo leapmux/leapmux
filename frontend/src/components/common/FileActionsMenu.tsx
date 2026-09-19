@@ -161,7 +161,7 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
       onToggle={setMenuOpen}
       {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
       trigger={moreHorizontalTrigger({
-        ...(props.triggerClass !== undefined ? { 'class': props.triggerClass } : {}),
+        ...(props.triggerClass !== undefined ? { class: props.triggerClass } : {}),
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',
       })}
     >

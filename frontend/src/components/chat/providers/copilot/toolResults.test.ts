@@ -17,7 +17,7 @@ const KINDS: ToolVocabularyCheck = {
 }
 
 /** The call one fixture's completion reads, or thrown when the name holds no fixture. */
-const callOf = (name: string) => {
+function callOf(name: string) {
   const fixture = COPILOT_TOOL_RESULTS.fixtures[name]
   if (fixture === undefined)
     throw new Error(`No copilot result fixture for ${name}`)

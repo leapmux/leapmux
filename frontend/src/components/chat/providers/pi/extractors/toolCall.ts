@@ -225,13 +225,16 @@ export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
   write: (_args, facts): ToolRequests['write'] => piFileChangeRequest(facts),
   // Pi's own tool NAME picks the highlighter: `powershell` and `bash` send the same
   // arguments and only the name tells them apart. The shared entry sees no name.
-  execute: (args, facts): ToolRequests['execute'] => ({
-    command: pickString(args, 'command'),
-    language: facts.toolName === PI_POWERSHELL_TOOL ? 'powershell' : undefined,
+  execute: (args, facts): ToolRequests['execute'] => {
     // `pickString` answers `''` for a key the arguments do not hold, and the renderer
     // reads an EMPTY description as one the agent never sent.
-    description: pickString(args, 'description') || undefined,
-  }),
+    const description = pickString(args, 'description') || undefined
+    return {
+      command: pickString(args, 'command'),
+      ...(facts.toolName === PI_POWERSHELL_TOOL ? { language: 'powershell' as const } : {}),
+      ...(description !== undefined ? { description } : {}),
+    }
+  },
   // The server and the tool, which pi-mcp-adapter states in the paired RESULT and the
   // namespace proxy states in its own name; the shared entry reads two arguments Pi
   // never sends.
@@ -246,7 +249,11 @@ export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
   question: (args): ToolRequests['question'] => ({ questions: piQuestionsFromArgs(args) }),
   // The checklist this row resolved, which Pi sends in the result rather than in the
   // arguments; the shared entry states an empty list.
-  todo: (_args, facts): ToolRequests['todo'] => ({ items: facts.todo?.list.todos ?? [], note: facts.todo?.description }),
+  todo: (_args, facts): ToolRequests['todo'] => {
+    const todo = facts.todo
+    // `note` rides only when a checklist was resolved, never as an explicit undefined.
+    return { items: todo?.list.todos ?? [], ...(todo ? { note: todo.description } : {}) }
+  },
 }
 
 /** One kind's declared request: Pi's own reading where it states one, the shared table's elsewhere. */
@@ -262,8 +269,9 @@ function piRequestFor<K extends ToolKind>(kind: K, facts: PiToolFacts): ToolRequ
  * NO title: the command is the header on every other surface, and a title here would
  * put `Bash` above the very command it ran.
  */
-function piHeader(facts: PiToolFacts): { label: string | undefined, title: string } {
-  return { label: facts.label, title: facts.label ?? 'Tool' }
+function piHeader(facts: PiToolFacts): { label?: string, title: string } {
+  // `label` rides only when the table or the wire name stated one, never as an explicit undefined.
+  return { ...(facts.label !== undefined ? { label: facts.label } : {}), title: facts.label ?? 'Tool' }
 }
 
 /**
@@ -327,8 +335,9 @@ function piFileChangeParts(kind: 'edit' | 'write', facts: PiToolFacts): { reques
   if (sources.length > 0)
     return { request, result: { changes: sources } }
   // A diff this build cannot read stays unparsed: the row draws the raw diff, and
-  // the Copy button hands over the same words.
-  return { request, result: piUnreadResult(facts, resolvePiResultDiff(facts.payload, facts.args).rawDiff || facts.text) }
+  // the Copy button hands over the same words. No words state no result at all.
+  const unread = piUnreadResult(facts, resolvePiResultDiff(facts.payload, facts.args).rawDiff || facts.text)
+  return unread !== undefined ? { request, result: unread } : { request }
 }
 
 /** The search card's two halves. `grep` and `glob` declare the same pair, as above. */
@@ -339,7 +348,10 @@ function piSearchParts(kind: 'grep' | 'glob', facts: PiToolFacts): { request: Se
   if (facts.isError)
     return { request, result: failedResult(facts.text) }
   const search = extractPiSearch(facts.payload)
-  return search ? { request, result: search } : { request, result: piUnreadResult(facts, facts.text) }
+  if (search)
+    return { request, result: search }
+  const unread = piUnreadResult(facts, facts.text)
+  return unread !== undefined ? { request, result: unread } : { request }
 }
 
 /**
@@ -397,33 +409,44 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     // Pi reports a refused to-do operation in `details.error` and still flags the call
     // a success, so the reason comes from the checklist rather than from the flag.
     if (facts.todo?.error)
-      return { kind: 'todo', ...header, title, metadata, request, result: failedResult(facts.todo.error) }
+      return { kind: 'todo', ...header, title, ...(metadata !== undefined ? { metadata } : {}), request, result: failedResult(facts.todo.error) }
     // The request's own items and note, so the two halves of the card cannot state two
     // different readings of one checklist.
+    const emptyText = facts.todo?.list.emptyText
     return {
       kind: 'todo',
       ...header,
       title,
-      metadata,
+      ...(metadata !== undefined ? { metadata } : {}),
       request,
-      ...(facts.finished ? { result: { items: request.items, emptyText: facts.todo?.list.emptyText, note: request.note } } : {}),
+      ...(facts.finished
+        ? {
+            result: {
+              items: request.items,
+              ...(emptyText !== undefined ? { emptyText } : {}),
+              ...(request.note !== undefined ? { note: request.note } : {}),
+            },
+          }
+        : {}),
     }
   },
   'execute': (facts): ToolCallPayload<'execute'> => {
     const request = piRequestFor('execute', facts)
     const label = facts.label
     if (!facts.finished)
-      return { kind: 'execute', label, request }
+      return { kind: 'execute', ...(label !== undefined ? { label } : {}), request }
     const resolved = extractPiCommand(facts.payload)
-    if (!resolved)
-      return { kind: 'execute', label, request, result: piUnreadResult(facts, facts.text) }
+    if (!resolved) {
+      const unread = piUnreadResult(facts, facts.text)
+      return { kind: 'execute', ...(label !== undefined ? { label } : {}), request, ...(unread !== undefined ? { result: unread } : {}) }
+    }
     // Pi reports a stop and a timeout as errors, so the envelope's own status words
     // BOTH as `failed` -- the row then headed a command the reader stopped "Error",
     // with no exit code, and with the marker that explained it stripped from the body.
     // The marker parser is the only reader that knows, so it states the word here.
     return {
       kind: 'execute',
-      label,
+      ...(label !== undefined ? { label } : {}),
       request,
       result: { commands: [piCommandResult(resolved)], unresolvedTerminals: [] },
       ...(resolved.cancelled ? { statusOverride: 'cancelled' as const } : {}),
@@ -437,9 +460,10 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     if (facts.isError)
       return { kind: 'read', ...header, request, result: failedResult(facts.text) }
     const read = extractPiRead(facts.payload, facts.args)
-    return read
-      ? { kind: 'read', ...header, request, result: read, images: facts.images }
-      : { kind: 'read', ...header, request, result: piUnreadResult(facts, facts.text) }
+    if (read)
+      return { kind: 'read', ...header, request, result: read, images: facts.images }
+    const unread = piUnreadResult(facts, facts.text)
+    return { kind: 'read', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
   },
   'edit': (facts): ToolCallPayload<'edit'> => ({ kind: 'edit', ...piHeader(facts), ...piFileChangeParts('edit', facts) }),
   'write': (facts): ToolCallPayload<'write'> => ({ kind: 'write', ...piHeader(facts), ...piFileChangeParts('write', facts) }),
@@ -455,9 +479,12 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     // Pi lists a directory through the same tool that searches it, so the listing
     // arrives as the search body's file names.
     const search = extractPiSearch(facts.payload)
-    return search
-      ? { kind: 'list', ...header, request, result: { entries: search.filenames.map(path => ({ path })), truncated: search.truncated, notice: search.notice } }
-      : { kind: 'list', ...header, request, result: piUnreadResult(facts, facts.text) }
+    if (search) {
+      const notice = search.notice
+      return { kind: 'list', ...header, request, result: { entries: search.filenames.map(path => ({ path })), truncated: search.truncated, ...(notice !== undefined ? { notice } : {}) } }
+    }
+    const unread = piUnreadResult(facts, facts.text)
+    return { kind: 'list', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
   },
   'question': (facts): ToolCallPayload<'question'> => {
     const request = piRequestFor('question', facts)
@@ -507,12 +534,20 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     const content = source?.content.length
       ? source.content
       : facts.images.map(image => ({ type: 'image' as const, source: image }))
+    const structuredJson = source?.structuredJson
+    const error = source?.error
+    const durationMs = source?.durationMs
     return {
       kind: 'mcp',
       ...header,
       request,
-      result: { content, structuredJson: source?.structuredJson, error: source?.error, durationMs: source?.durationMs },
-      statusOverride: source?.failed && facts.status !== 'failed' ? 'failed' : undefined,
+      result: {
+        content,
+        ...(structuredJson !== undefined ? { structuredJson } : {}),
+        ...(error !== undefined ? { error } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      },
+      ...(source?.failed && facts.status !== 'failed' ? { statusOverride: 'failed' as const } : {}),
     }
   },
   // The eighteen kinds Pi states no tool for. Each still declares its own request, so

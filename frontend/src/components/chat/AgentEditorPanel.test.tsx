@@ -633,7 +633,9 @@ describe('AgentEditorPanel control request lifecycle', () => {
 
     await vi.waitFor(async () => expect(await localStorageLoad(key)).toBeUndefined())
     // The choice still reached the response; only the saved copy is gone.
-    const [, content, options] = onControlResponse.mock.calls[0]
+    const planCall = onControlResponse.mock.calls[0]
+    expect(planCall).toBeDefined()
+    const [, content, options] = planCall ?? []
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
     expect(options).toHaveProperty('planApproval.clearContext', true)
   })

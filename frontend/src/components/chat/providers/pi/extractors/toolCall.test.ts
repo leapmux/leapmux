@@ -371,7 +371,9 @@ describe('piToolCallIR execute outcome', () => {
   ])('words %s as cancelled rather than failed', (_name, output) => {
     const call = piToolCallIR(resultRow(PI_TOOL.Bash, { command: 'sleep 99' }, { content: text(output) }, true))
     expect(call.status).toBe('cancelled')
-    expect(call.result).toMatchObject({ commands: [{ output: 'partial output', exitCode: undefined }] })
+    // The process the reader stopped reported no code: `null` states "code: none",
+    // which is not the same key being absent.
+    expect(call.result).toMatchObject({ commands: [{ output: 'partial output', exitCode: null }] })
   })
 
   it('leaves a non-zero exit as a failure, with its exit code', () => {

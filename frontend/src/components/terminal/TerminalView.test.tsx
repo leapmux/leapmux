@@ -947,12 +947,12 @@ describe('TerminalView IME wiring', () => {
 
   /** The handler TerminalView passed to xterm's attachCustomKeyEventHandler. */
   function keyHandler(instance: TerminalInstance): (e: KeyboardEvent) => boolean {
-  const attach = instance.terminal.attachCustomKeyEventHandler as unknown as ReturnType<typeof vi.fn>
-  expect(attach).toHaveBeenCalledTimes(1)
-  const handler = attach.mock.calls[0]?.[0]
-  if (handler === undefined)
-    throw new Error('no custom key handler was attached')
-  return handler
+    const attach = instance.terminal.attachCustomKeyEventHandler as unknown as ReturnType<typeof vi.fn>
+    expect(attach).toHaveBeenCalledTimes(1)
+    const handler = attach.mock.calls[0]?.[0]
+    if (handler === undefined)
+      throw new Error('no custom key handler was attached')
+    return handler
   }
 
   it('attaches the key handler and the IME layer on every platform', async () => {

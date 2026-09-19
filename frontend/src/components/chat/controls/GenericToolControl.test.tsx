@@ -84,7 +84,9 @@ describe('GenericToolActions', () => {
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-10')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -108,7 +110,9 @@ describe('GenericToolActions', () => {
     fireEvent.click(screen.getByTestId('control-deny-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       response: { request_id: 'req-deny', response: { behavior: 'deny' } },
     })
@@ -141,7 +145,9 @@ describe('GenericToolActions', () => {
 
     // Verify allow response was sent
     expect(onRespond).toHaveBeenCalledOnce()
-    const [bytes] = onRespond.mock.calls[0]
+    const respondCall = onRespond.mock.calls[0]
+    expect(respondCall).toBeDefined()
+    const [bytes] = respondCall ?? []
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')

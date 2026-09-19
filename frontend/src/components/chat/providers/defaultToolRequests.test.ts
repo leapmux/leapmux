@@ -136,10 +136,11 @@ describe('DEFAULT_TOOL_REQUESTS', () => {
   // one file twice, and a `previousPath` equal to `filePath` would draw a move
   // arrow that starts where it ends.
   it('states the source alone for a move that names no destination, and drops a previousPath the destination repeats', () => {
+    // An absent previousPath is an omitted key, never an explicit undefined.
     expect(DEFAULT_TOOL_REQUESTS.move({ sourcePath: '/old.ts' }))
-      .toStrictEqual({ changes: [{ filePath: '/old.ts', previousPath: undefined, operation: 'move', oldStr: '', newStr: '', structuredPatch: null }] })
+      .toStrictEqual({ changes: [{ filePath: '/old.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null }] })
     expect(DEFAULT_TOOL_REQUESTS.move({ sourcePath: '/same.ts', destinationPath: '/same.ts' }))
-      .toStrictEqual({ changes: [{ filePath: '/same.ts', previousPath: undefined, operation: 'move', oldStr: '', newStr: '', structuredPatch: null }] })
+      .toStrictEqual({ changes: [{ filePath: '/same.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null }] })
     expect(DEFAULT_TOOL_REQUESTS.move({})).toStrictEqual({ changes: [] })
   })
 
