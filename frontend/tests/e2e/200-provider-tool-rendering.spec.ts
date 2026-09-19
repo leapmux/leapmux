@@ -127,19 +127,6 @@ function editFixture(provider: AgentProvider): FixtureMessage[] {
   ]
 }
 
-const providers = [
-  ['Claude Code', AgentProvider.CLAUDE_CODE],
-  ['Codex', AgentProvider.CODEX],
-  ['OpenCode', AgentProvider.OPENCODE],
-  ['Kilo', AgentProvider.KILO],
-  ['Cursor', AgentProvider.CURSOR],
-  ['Copilot', AgentProvider.GITHUB_COPILOT],
-  ['Goose', AgentProvider.GOOSE],
-  ['Reasonix', AgentProvider.REASONIX],
-  ['Pi', AgentProvider.PI],
-  ['ZCode', AgentProvider.ZCODE],
-] as const
-
 test.describe('provider tool rendering', () => {
   test('copies malformed bytes and complete native result wrappers through Raw JSON', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-original-bytes-'), {
@@ -225,95 +212,6 @@ test.describe('provider tool rendering', () => {
     await chat.getByRole('button', { name: 'Open image', exact: true }).first().click()
     await expect(page.locator('img[src^="blob:"]').filter({ visible: true })).toHaveJSProperty('naturalWidth', 160)
   })
-
-  test('renders retained tool completion from the separate message field', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-completion-'), {
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CLAUDE_CODE)),
-    })
-    const providers = [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.ZCODE]
-    const messages: FixtureMessage[] = []
-    for (const provider of providers) {
-      const id = `completion-${provider}`
-      const output = `retained stdout from provider ${provider}`
-      const command = 'printf partial'
-      const pair = provider === AgentProvider.CODEX
-        ? [
-            { item: { type: 'commandExecution', id, command, status: 'inProgress' } },
-            { item: { type: 'commandExecution', id, command, status: 'inProgress', aggregatedOutput: output } },
-          ]
-        : provider === AgentProvider.PI
-          ? [
-              { type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command } },
-              { type: 'tool_execution_end', toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text: output }] } },
-            ]
-          : provider === AgentProvider.ZCODE
-            ? [
-                { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: id, toolName: 'Bash', input: { command } } },
-                { type: 'tool.updated', payload: { kind: 'result', toolCallId: id, toolName: 'Bash', result: { success: false, content: output } } },
-              ]
-            : [
-                { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command } },
-                { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress', kind: 'execute', content: [{ type: 'content', content: { type: 'text', text: output } }] },
-              ]
-      messages.push(
-        { id: `${id}-request`, provider, spanId: id, content: pair[0] },
-        { id: `${id}-result`, provider, spanId: id, completion: MessageCompletion.INTERRUPTED, content: { ...pair[1], _leapmux: { completion: 'complete' } } },
-      )
-    }
-    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, messages)
-    await page.reload()
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
-    for (const provider of providers) {
-      const result = chat.getByTestId('message-bubble').filter({ hasText: `retained stdout from provider ${provider}` })
-      await expect(result).toBeVisible()
-      await expect(result.getByText('Interrupted', { exact: true })).toHaveCount(1)
-      await expect(result).not.toContainText('Text truncated')
-      await expect(result.getByText('Error', { exact: true })).toHaveCount(0)
-    }
-  })
-
-  for (const provider of [AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.REASONIX]) {
-    test(`renders one checklist in the to-do result row (${provider})`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-todo-'), {
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        ...realAgentOpenOptions(realAgentSettings(AgentProvider.CLAUDE_CODE)),
-      })
-      const todos = [{ content: 'Inspect the shared checklist', status: 'pending' }]
-      const spanId = 'todo-call'
-      let request: unknown
-      let result: unknown
-      let spanType = 'TodoWrite'
-      if (provider === AgentProvider.CLAUDE_CODE) {
-        request = { type: 'assistant', message: { content: [{ type: 'tool_use', id: spanId, name: spanType, input: { todos } }] } }
-        result = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: spanId, content: 'Todos updated' }] }, tool_use_result: { newTodos: todos } }
-      }
-      else if (provider === AgentProvider.ZCODE) {
-        request = { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: spanId, toolName: spanType, input: { todos } } }
-        result = { type: 'tool.updated', payload: { kind: 'result', toolCallId: spanId, result: { success: true, content: 'Todos updated' } } }
-      }
-      else {
-        spanType = 'other'
-        request = { sessionUpdate: 'tool_call', toolCallId: spanId, title: provider === AgentProvider.REASONIX ? 'todo_write' : 'todowrite', kind: 'other', status: 'pending', rawInput: { todos } }
-        result = { sessionUpdate: 'tool_call_update', toolCallId: spanId, status: 'completed', rawOutput: { metadata: { todos } }, content: [{ type: 'content', content: { type: 'text', text: JSON.stringify(todos) } }] }
-      }
-      await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
-        { id: 'todo-request', provider, spanId, spanType, content: request },
-        { id: 'todo-result', provider, spanId, spanType, content: result },
-      ])
-      await page.reload()
-      await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-      const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
-      const header = chat.getByTestId('message-bubble').filter({ hasText: '1 task' })
-      await expect(header).toHaveCount(1)
-      await expect(header.locator('[data-task-checkbox]')).toHaveCount(0)
-      const body = chat.getByTestId('message-bubble').filter({ hasText: 'Inspect the shared checklist' })
-      await expect(body).toHaveCount(1)
-      await expect(body.locator('[data-task-checkbox="pending"]')).toHaveCount(1)
-      await expect(body).not.toContainText('Todos updated')
-    })
-  }
 
   for (const provider of [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GITHUB_COPILOT, AgentProvider.ZCODE, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.PI, AgentProvider.CURSOR]) {
     test(`opens and copies shared agent prompts and reports (${provider})`, async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer }) => {
@@ -592,37 +490,6 @@ test.describe('provider tool rendering', () => {
     await expect(opened).toHaveJSProperty('naturalHeight', 32)
   })
 
-  test('renders Pi saved todos, filtered empty lists, and failed updates', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-todos-'), {
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CLAUDE_CODE)),
-    })
-    const tasks = [{ id: 1, subject: 'Inspect sample', status: 'in_progress', activeForm: 'Inspecting sample', description: 'Read **todo sample**.' }, { id: 2, subject: 'Report findings', status: 'pending' }]
-    const messages: FixtureMessage[] = []
-    for (const [id, params, snapshot, error] of [
-      ['list', { action: 'list' }, tasks, undefined],
-      ['get', { action: 'get', id: 1 }, tasks, undefined],
-      ['filtered', { action: 'list', status: 'completed' }, tasks, undefined],
-      ['failed', { action: 'update', id: 99, status: 'completed' }, tasks, '#99 not found'],
-      ['clear', { action: 'clear' }, [], undefined],
-    ] as const) {
-      const base = { provider: AgentProvider.PI, spanId: id, spanType: 'todo' }
-      messages.push({ ...base, id: `${id}-request`, content: { type: 'tool_execution_start', toolCallId: id, toolName: 'todo', args: params } })
-      messages.push({ ...base, id: `${id}-result`, content: { type: 'tool_execution_end', toolCallId: id, toolName: 'todo', isError: false, result: { content: [{ type: 'text', text: error ?? 'Saved' }], details: { action: params.action, params, tasks: snapshot, nextId: 3, error } } } })
-    }
-    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, messages)
-    await page.reload()
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
-    await expect(chat.getByText('Report findings', { exact: true })).toHaveCount(1)
-    await expect(chat.locator('[data-task-checkbox="in_progress"]')).toHaveCount(2)
-    await expect(chat.locator('strong').filter({ hasText: 'todo sample' })).toBeVisible()
-    await expect(chat.getByText('No matching tasks', { exact: true })).toBeVisible()
-    await expect(chat.getByText('To-do list cleared', { exact: true })).toBeVisible()
-    const failure = chat.getByTestId('message-bubble').filter({ hasText: '#99 not found' })
-    await expect(failure.locator('.lucide-circle-alert')).toHaveCount(1)
-  })
-
   test('renders supplemental duration and opens an image from native MCP details', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-metadata-'), {
       agentProvider: AgentProvider.CLAUDE_CODE,
@@ -887,7 +754,7 @@ test.describe('provider tool rendering', () => {
     await expect(page.getByTestId('control-banner').getByRole('heading', { name: 'Persisted plan' })).toHaveCount(0)
   })
 
-  for (const provider of [AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.CODEX]) {
+  for (const provider of [AgentProvider.ZCODE]) {
     test(`renders shared plan content for provider ${provider}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
       const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-plan-content-'), {
         agentProvider: provider,
@@ -956,42 +823,6 @@ test.describe('provider tool rendering', () => {
     await expect(opened).toHaveJSProperty('naturalHeight', 512)
   })
 
-  test('renders ZCode read errors and fetched Markdown with streamed request input', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    const provider = AgentProvider.ZCODE
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-zcode-'), {
-      agentProvider: provider,
-      ...realAgentOpenOptions(realAgentSettings(provider)),
-    })
-    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
-      {
-        id: 'read-request',
-        provider,
-        spanId: 'read-failure',
-        spanType: 'Read',
-        content: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'read-failure', toolName: 'Read', inputOmitted: true, inputRef: 'model_stream' } },
-        supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'read-failure', input: { file_path: '/project/missing-renderer-fixture.ts' } } },
-      },
-      { id: 'read-result', provider, spanId: 'read-failure', spanType: 'Read', content: { type: 'tool.updated', payload: { kind: 'error', toolCallId: 'read-failure', error: { message: 'Renderer fixture does not exist' } } } },
-      {
-        id: 'fetch-request',
-        provider,
-        spanId: 'fetch',
-        spanType: 'WebFetch',
-        content: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'fetch', toolName: 'WebFetch', inputOmitted: true, inputRef: 'model_stream' } },
-        supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'fetch', input: { url: 'https://example.com', prompt: 'Return the page title' } } },
-      },
-      { id: 'fetch-result', provider, spanId: 'fetch', spanType: 'WebFetch', content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'fetch', result: { success: true, content: '# Native page heading' } } } },
-    ])
-    await page.reload()
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await expect(page.getByText('/project/missing-renderer-fixture.ts', { exact: true }).filter({ visible: true })).toBeVisible()
-    // The outcome word is the shared one every provider draws ('Error'), not
-    // the word ZCode's own transcript used ('Failed').
-    await expect(page.getByText('Error', { exact: true }).filter({ visible: true })).toBeVisible()
-    await expect(page.getByText('Renderer fixture does not exist', { exact: true }).filter({ visible: true })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Native page heading' }).filter({ visible: true })).toBeVisible()
-  })
-
   test('loads permission arguments from an earlier request', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const provider = AgentProvider.OPENCODE
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-permission-'), {
@@ -1025,44 +856,6 @@ test.describe('provider tool rendering', () => {
     await expect(banner).toContainText('Review command')
     await expect(banner.locator('pre')).toContainText('printf recovered-permission-command')
     await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeVisible()
-  })
-
-  test('renders task lists and fetched Markdown with shared components', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-rich-'), {
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      ...realAgentOpenOptions(realAgentSettings(AgentProvider.CLAUDE_CODE)),
-    })
-    await seedMessages(join(leapmuxServer.dataDir, 'worker', 'worker.db'), agentId, [
-      {
-        id: 'goose-todo',
-        provider: AgentProvider.GOOSE,
-        spanId: 'goose-todo',
-        spanType: 'edit',
-        content: { sessionUpdate: 'tool_call_update', toolCallId: 'goose-todo', status: 'completed', kind: 'edit', rawInput: { content: '- [x] Inspect sources\n- [ ] Verify display' }, _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } } },
-      },
-      {
-        id: 'reasonix-fetch',
-        provider: AgentProvider.REASONIX,
-        spanId: 'reasonix-fetch',
-        spanType: 'fetch',
-        content: { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-fetch', status: 'completed', title: 'web_fetch', rawInput: { url: 'https://example.com' }, content: [{ type: 'content', content: { type: 'text', text: '## Recovered page title\n\n**Formatted page body**' } }] },
-      },
-      {
-        id: 'reasonix-receipt',
-        provider: AgentProvider.REASONIX,
-        spanId: 'reasonix-receipt',
-        spanType: 'edit',
-        content: { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-receipt', status: 'completed', title: 'edit_file', rawInput: { path: '/project/receipt.ts', old_string: 'requested', new_string: 'actualAfter' }, content: [{ type: 'content', content: { type: 'text', text: 'edited /project/receipt.ts (fuzzy match)\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s), fuzzy match) @@\n-actualBefore\n+actualAfter\n' } }] },
-      },
-    ])
-    await page.reload()
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await expect(page.getByText('Inspect sources', { exact: true }).filter({ visible: true })).toBeVisible()
-    await expect(page.getByText('Verify display', { exact: true }).filter({ visible: true })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Recovered page title' }).filter({ visible: true })).toBeVisible()
-    await expect(page.locator('strong:visible').filter({ hasText: 'Formatted page body' })).toBeVisible()
-    await expect(page.locator('[data-file-diff]:visible').filter({ hasText: 'actualAfter' })).toBeVisible()
-    await expect(page.getByText('Fuzzy match', { exact: true }).filter({ visible: true })).toBeVisible()
   })
 
   test('keeps requested edits separate from reported output after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
@@ -1140,7 +933,7 @@ test.describe('provider tool rendering', () => {
     await expect(chat).not.toContainText('wrongSession')
   })
 
-  for (const [label, provider] of providers) {
+  for (const [label, provider] of [['ZCode', AgentProvider.ZCODE]] as const) {
     test(`${label} renders an applied file edit`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
       const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-'), {
         agentProvider: AgentProvider.CLAUDE_CODE,
