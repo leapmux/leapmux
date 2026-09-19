@@ -38,13 +38,13 @@ const CHAT_SCOPED_FILES: Array<{ file: string, marker: string }> = [
   // The provider-neutrality block covers shared modules outside the plugin layer.
   { file: 'src/stores/chatTypes.ts', marker: 'TSTypeReference[typeName.name=\'Record\'] TSTypeReference[typeName.name=\'AgentProvider\']' },
   // The chat-wide block adds the tool-call assertion ban.
-  { file: 'src/components/chat/results/ToolMessage.tsx', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
+  { file: 'src/components/chat/results/ToolMessage.tsx', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
   // The IR blocks add the value-import boundary, one selector per depth.
   { file: 'src/components/chat/ir/toolCall.ts', marker: 'source.value=/^~\\/(?!lib' },
   { file: 'src/components/chat/ir/tools/generic.ts', marker: 'source.value=/^\\.\\.\\/(?![^/]+$' },
   // The provider JSX ban reaches a non-control `.tsx` but not the control surfaces.
-  { file: 'src/components/chat/providers/claude/extractors/toolCall.ts', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
-  { file: 'src/components/chat/providers/pi/PiControlActions.tsx', marker: 'TSAsExpression[typeAnnotation.typeName.name=/^(ToolCallIR' },
+  { file: 'src/components/chat/providers/claude/extractors/toolCall.ts', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
+  { file: 'src/components/chat/providers/pi/PiControlActions.tsx', marker: 'TSAsExpression TSTypeReference[typeName.name=/^(ToolCallIR' },
 ]
 
 interface LintSample {
@@ -79,11 +79,18 @@ const RESTRICTED_ASSERTION_SAMPLES: LintSample[] = [
   { label: 'tool call as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallIR' },
   { label: 'tool call angle-bracket assertion', file: 'src/components/chat/results/auditProbe.ts', source: '<ToolCallIR>value' },
   { label: 'tool call helper assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolCallForKind<\'read\'>' },
+  { label: 'qualified tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolCallIR' },
+  { label: 'wrapped tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as Readonly<ToolCallIR>' },
+  { label: 'imported tool call assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as import(\'../ir/toolCall\').ToolCallIR' },
   { label: 'tool payload helper assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as ToolCallPayloadForKind<\'read\'>' },
   { label: 'tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ToolRequests[\'read\']' },
+  { label: 'qualified tool request indexed assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ChatIR.ToolRequests[\'read\']' },
   { label: 'tool result indexed angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ToolResults[\'read\']>value' },
   { label: 'resolved content as assertion', file: 'src/components/chat/results/auditProbe.ts', source: 'value as ResolvedMessageContent' },
   { label: 'resolved content angle-bracket assertion', file: 'src/components/chat/providers/auditProbe.ts', source: '<ResolvedMessageContent>value' },
+  { label: 'qualified resolved content assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as Pipeline.ResolvedMessageContent' },
+  { label: 'wrapped resolved content assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as Readonly<ResolvedMessageContent>' },
+  { label: 'imported resolved content assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as import(\'../rowExtractionTypes\').ResolvedMessageContent' },
 ]
 
 const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [

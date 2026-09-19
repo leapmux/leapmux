@@ -3,7 +3,6 @@ import { basename, join } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { TOOL_KINDS } from '~/components/chat/ir/toolKind'
-import { lineNumberAt, stripCommentLines } from '~/test-support/sourceScan'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { importedNames } from '~/test-support/typescriptImports'
 
@@ -50,6 +49,9 @@ const PROVIDER_COMPARISON_ALLOWED = [
 /** The IR's own builder: the one module the assertion ban exempts. */
 const IR_BUILDER = 'ir/toolCall.ts'
 
+/** The resolved-content constructor: the one module the brand ban exempts. */
+const RESOLVED_CONTENT_BUILDER = 'providers/registry.ts'
+
 /**
  * The provider that registers a classifier, and the module it takes one from.
  *
@@ -81,14 +83,16 @@ const FORBIDDEN_ASSERTION_TYPES = [
   'ToolCallIR',
   'ToolCallPayloadIR',
   'ToolCallPayloadOf',
-  'ToolCallPayloadForKind<',
-  'ToolCallOf<',
-  'ToolCallOfKinds<',
-  'ToolRequests[',
-  'ToolResults[',
-  'ToolResultOf<',
-  'ParsedCall<',
-  'ResolvedCall<',
+  'ToolCallPayloadForKind',
+  'ToolCallPayload',
+  'ToolCallForKind',
+  'ToolCallOf',
+  'ToolCallOfKinds',
+  'ToolRequests',
+  'ToolResults',
+  'ToolResultOf',
+  'ParsedCall',
+  'ResolvedCall',
 ]
 
 /**
@@ -213,15 +217,44 @@ function isClassificationModule(specifier: string): boolean {
   return specifier.endsWith('/classification')
 }
 
-/** Each `as <Type>` in one file, with the line it sits on. Comments are stripped first. */
+/** Each forbidden assertion in one TypeScript source, with its line. */
 function assertionsTo(source: string, types: string[]): Array<{ type: string, line: number }> {
-  const text = stripCommentLines(source)
+  const file = ts.createSourceFile('assertionProbe.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const found: Array<{ type: string, line: number }> = []
-  for (const type of types) {
-    const needle = `as ${type}`
-    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1))
-      found.push({ type, line: lineNumberAt(text, at) })
+  const forbiddenTypes = new Set(types)
+
+  function rightmostTypeName(name: ts.EntityName): string {
+    return ts.isIdentifier(name) ? name.text : rightmostTypeName(name.right)
   }
+
+  function containsForbiddenType(type: ts.TypeNode): boolean {
+    let forbidden = false
+    function inspect(node: ts.Node): void {
+      if (ts.isTypeReferenceNode(node) && forbiddenTypes.has(rightmostTypeName(node.typeName)))
+        forbidden = true
+      if (ts.isImportTypeNode(node) && node.qualifier !== undefined && forbiddenTypes.has(rightmostTypeName(node.qualifier)))
+        forbidden = true
+      if (!forbidden)
+        ts.forEachChild(node, inspect)
+    }
+    inspect(type)
+    return forbidden
+  }
+
+  function visit(node: ts.Node): void {
+    if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+      const assertedType = node.type.getText(file)
+      if (containsForbiddenType(node.type)) {
+        found.push({
+          type: assertedType,
+          line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
+        })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(file, visit)
   return found
 }
 
@@ -392,5 +425,23 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
     expect(existsSync(builder), `\`${IR_BUILDER}\` is the one file the assertion ban exempts; the ESLint config entry is stale without it.`).toBe(true)
     const found = assertionsTo(readFileSync(builder, 'utf8'), FORBIDDEN_ASSERTION_TYPES)
     expect(found.map(entry => `${IR_BUILDER}:${entry.line} asserts to ${entry.type}`)).toHaveLength(1)
+  })
+
+  it('keeps the provider registry to one resolved-content assertion', () => {
+    const builder = join(CHAT_DIR, RESOLVED_CONTENT_BUILDER)
+    expect(existsSync(builder), `\`${RESOLVED_CONTENT_BUILDER}\` is the one file the resolved-content assertion ban exempts.`).toBe(true)
+    const found = assertionsTo(readFileSync(builder, 'utf8'), ['ResolvedMessageContent'])
+    expect(found.map(entry => `${RESOLVED_CONTENT_BUILDER}:${entry.line} asserts to ${entry.type}`)).toHaveLength(1)
+  })
+
+  it('finds direct and nested TypeScript assertions in a builder exception', () => {
+    const found = assertionsTo([
+      'const byAs = value as ToolCallIR',
+      'const byAngle = <ToolCallOf<\'read\'>>value',
+      'const qualified = value as ChatIR.ToolCallIR',
+      'const wrapped = value as Readonly<ToolCallIR>',
+      'const imported = value as import(\'./toolCall\').ToolCallIR',
+    ].join('\n'), FORBIDDEN_ASSERTION_TYPES)
+    expect(found.map(entry => entry.line)).toEqual([1, 2, 3, 4, 5])
   })
 })

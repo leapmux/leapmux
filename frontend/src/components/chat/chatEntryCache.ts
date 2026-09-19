@@ -194,14 +194,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     }
   }
   /**
-   * A cached entry is reusable only if its freshness signature still matches the
-   * message's seq, in-place content version,
-   * the paired tool_use availability, AND (for a tool_result) the request's content
-   * version are all unchanged. seq alone is not enough -- a same-seq in-place body
-   * replacement keeps the seq (and the proxy reference), so the content version is
-   * what reveals it; and a request edit moves only the REQUEST's version, so a result
-   * row needs that folded in too. Compared STRUCTURALLY against a freshly-built
-   * signature so the dimension list lives only in freshnessOf.
+   * Reuse a cached entry only when its revision key and child-transcript flag
+   * match the current source. `freshnessOf` owns both values.
    */
   const isEntryFresh = (cached: ClassifiedEntry | undefined, message: AgentChatMessage): cached is ClassifiedEntry =>
     !!cached && shallowEqual(cached.freshness, freshnessOf(message))
@@ -231,11 +225,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     }
   }
   /**
-   * The classified entry for a message: reused when still fresh (same seq AND
-   * freshness inputs, otherwise freshly built and cached. The single
-   * home for the cache-fill dance both the emptiness check (hasVisibleMessage)
-   * and the full materialization (visibleEntries) share, so populating the cache
-   * for the visibleEntries memo can't drift from the freshness rule.
+   * Return the cached classified entry when it is fresh. Otherwise, rebuild and
+   * cache it. Both visibility checks and materialization use this function.
    */
   const resolveEntry = (message: AgentChatMessage): ClassifiedEntry => {
     const cached = entryCache.get(message.id)

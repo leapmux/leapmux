@@ -128,24 +128,46 @@ const WIRE_TOKEN_SYNTAX = WIRE_TOKEN_REGEXPS.flatMap(pattern => [
  * there stands on the check immediately above it.
  */
 const TYPE_ASSERTION_NODES = ['TSAsExpression', 'TSTypeAssertion'] as const
-const TOOL_CALL_TYPE_NAMES = '^(ToolCallIR|ToolCallPayloadIR|ToolCallPayloadOf|ToolCallPayload|ToolCallForKind|ToolCallPayloadForKind|ToolCallOf|ToolCallOfKinds|ToolResultOf|ParsedCall|ResolvedCall)$'
+const TOOL_CALL_TYPE_NAMES = '^(ToolCallIR|ToolCallPayloadIR|ToolCallPayloadOf|ToolCallPayload|ToolCallForKind|ToolCallPayloadForKind|ToolCallOf|ToolCallOfKinds|ToolRequests|ToolResults|ToolResultOf|ParsedCall|ResolvedCall)$'
 
 const TOOL_CALL_ASSERTION_SYNTAX = TYPE_ASSERTION_NODES.flatMap(node => [
   {
-    selector: `${node}[typeAnnotation.typeName.name=/${TOOL_CALL_TYPE_NAMES}/]`,
-    message: 'An assertion to a tool-call type re-pairs a kind with a request or a result the kind does not declare. Build the payload at a LITERAL kind instead: narrow with `if (kind === ...)` and return inside the branch, or answer from a mapped table. Hand the finished payload to `toolCall`, which is the one function allowed to state the pairing.',
+    selector: `${node} TSTypeReference[typeName.name=/${TOOL_CALL_TYPE_NAMES}/]`,
+    message: 'An assertion that contains a tool-call type re-pairs a kind with a request or a result the kind does not declare. Build the payload at a literal kind and hand it to `toolCall`.',
   },
   {
-    selector: `${node}[typeAnnotation.objectType.typeName.name=/^(ToolRequests|ToolResults)$/]`,
-    message: 'An assertion to `ToolRequests[...]`/`ToolResults[...]` re-pairs a kind with a payload the kind does not declare. Build the payload at a LITERAL kind instead and hand it to `toolCall`.',
+    selector: `${node} TSTypeReference[typeName.right.name=/${TOOL_CALL_TYPE_NAMES}/]`,
+    message: 'An assertion that contains a qualified tool-call type re-pairs a kind with an unrelated payload. Build the payload at a literal kind and hand it to `toolCall`.',
+  },
+  {
+    selector: `${node} TSImportType[qualifier.name=/${TOOL_CALL_TYPE_NAMES}/]`,
+    message: 'An assertion through an imported tool-call type re-pairs a kind with an unrelated payload. Import the type normally and build the payload at a literal kind.',
+  },
+  {
+    selector: `${node} TSImportType[qualifier.right.name=/${TOOL_CALL_TYPE_NAMES}/]`,
+    message: 'An assertion through a qualified imported tool-call type re-pairs a kind with an unrelated payload. Import the type normally and build the payload at a literal kind.',
   },
 ])
 
 /** Only the provider registry can apply the brand after it resolves a message. */
-const RESOLVED_CONTENT_ASSERTION_SYNTAX = TYPE_ASSERTION_NODES.map(node => ({
-  selector: `${node}[typeAnnotation.typeName.name='ResolvedMessageContent']`,
-  message: 'Only `providers/registry.ts` can assert `ResolvedMessageContent`. Call `resolveMessageContent`, then pass the returned value through the pipeline.',
-}))
+const RESOLVED_CONTENT_ASSERTION_SYNTAX = TYPE_ASSERTION_NODES.flatMap(node => [
+  {
+    selector: `${node} TSTypeReference[typeName.name='ResolvedMessageContent']`,
+    message: 'Only `providers/registry.ts` can assert a type that contains `ResolvedMessageContent`. Call `resolveMessageForRendering`, then pass its result through the pipeline.',
+  },
+  {
+    selector: `${node} TSTypeReference[typeName.right.name='ResolvedMessageContent']`,
+    message: 'Only `providers/registry.ts` can assert a type that contains qualified `ResolvedMessageContent`. Call `resolveMessageForRendering`, then pass its result through the pipeline.',
+  },
+  {
+    selector: `${node} TSImportType[qualifier.name='ResolvedMessageContent']`,
+    message: 'Only `providers/registry.ts` can assert imported `ResolvedMessageContent`. Call `resolveMessageForRendering`, then pass its result through the pipeline.',
+  },
+  {
+    selector: `${node} TSImportType[qualifier.right.name='ResolvedMessageContent']`,
+    message: 'Only `providers/registry.ts` can assert qualified imported `ResolvedMessageContent`. Call `resolveMessageForRendering`, then pass its result through the pipeline.',
+  },
+])
 
 interface RestrictedModuleSyntaxOptions {
   includeImportType?: boolean
