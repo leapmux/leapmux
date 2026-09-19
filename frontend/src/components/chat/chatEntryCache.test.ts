@@ -372,7 +372,7 @@ describe('createClassifiedEntryCache', () => {
     createRoot((dispose) => {
       // Result arrival is distinct from result content changing: a Task* request may
       // first classify with no hidden result and later gain one under the same id/seq.
-      // The sibling-presence bit must invalidate the cached request entry and height key.
+      // The result member's arrival must invalidate the cached request entry and height key.
       const [hasResult, setHasResult] = createSignal(false)
       const messages = [claudeToolUse('tu1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
