@@ -1,5 +1,5 @@
 import type { SearchBodyKind, SearchResult } from '../../../ir/searchResult'
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { GlobRequest } from '../../../ir/tools/glob'
 import type { GrepRequest } from '../../../ir/tools/grep'
 import type { ClaudeToolRow } from './toolCommon'
@@ -223,7 +223,7 @@ export function claudeSearchFromToolResult(
  * name -- which drew "File does not exist." as a file hit under the summary
  * "Found 1 file".
  */
-export function claudeGrepPayload(request: GrepRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'grep'> {
+export function claudeGrepPayload(request: GrepRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'grep'> {
   if (!result)
     return { kind: 'grep', request }
   const failure = claudeFailedResult(result)
@@ -233,7 +233,7 @@ export function claudeGrepPayload(request: GrepRequest, result: ClaudeToolRow | 
 }
 
 /** The glob pair: the pattern and the paths it ran in. The failure rung leads, as above. */
-export function claudeGlobPayload(request: GlobRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'glob'> {
+export function claudeGlobPayload(request: GlobRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'glob'> {
   if (!result)
     return { kind: 'glob', request }
   const failure = claudeFailedResult(result)

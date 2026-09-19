@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ToolMetadataItem } from '../../../ir/toolMetadata'
 import type { TaskOutcome, TaskRequest } from '../../../ir/tools/task'
 import type { ClaudeToolRow } from './toolCommon'
@@ -29,7 +29,7 @@ function claudeTaskOutcome(status: string): TaskOutcome {
  * completed and contradicts the row's own failed status, and `TaskStop` drew the error
  * SENTENCE as the title of the task it stopped.
  */
-export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'task'> {
+export function claudeTaskPayload(request: TaskRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'task'> {
   const toolName = args.toolName
   // Both rows of the span share one call, so a title set only on the no-result
   // branch disappears from BOTH headers the moment the result lands -- and a

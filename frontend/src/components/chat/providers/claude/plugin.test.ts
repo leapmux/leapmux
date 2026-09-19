@@ -1,9 +1,10 @@
 import type { MessageCategory } from '../../messageClassification'
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerQuotableText, providerRowPreviewText } from '~/test-support/toolCallIr'
-import { providerFor } from '../registry'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 
 // Side-effect import to register the Claude plugin.
@@ -199,12 +200,12 @@ describe('claude spanRole', () => {
 
   // spanRole only reads `parsed.parentObject`; build a minimal parsed shape whose
   // `message.content` holds the Anthropic-style content blocks getMessageContent reads.
-  function parsedWithBlocks(blocks: unknown[]): ParsedMessageContent {
-    return { rawText: '', topLevel: null, parentObject: { message: { content: blocks } }, wrapper: null }
+  function parsedWithBlocks(blocks: unknown[]): ResolvedMessageContent {
+    return resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: { message: { content: blocks } }, wrapper: null }, AgentProvider.CLAUDE_CODE)
   }
 
   it('classifies a tool_use block as the opener', () => {
-    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }]))).toBe('opener')
+    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }]))).toBe('request')
   })
 
   it('classifies a tool_result block as the result', () => {
@@ -212,8 +213,8 @@ describe('claude spanRole', () => {
   })
 
   it('lets the tool_use opener win when a message carries BOTH block types, regardless of order', () => {
-    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_result' }, { type: 'tool_use' }]))).toBe('opener')
-    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }, { type: 'tool_result' }]))).toBe('opener')
+    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_result' }, { type: 'tool_use' }]))).toBe('request')
+    expect(plugin?.transcript.spanRole!(parsedWithBlocks([{ type: 'tool_use' }, { type: 'tool_result' }]))).toBe('request')
   })
 
   it('skips non-object blocks and classifies text-only content as other', () => {
@@ -221,7 +222,7 @@ describe('claude spanRole', () => {
   })
 
   it('returns other when there is no content array', () => {
-    expect(plugin?.transcript.spanRole!({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null })).toBe('other')
+    expect(plugin?.transcript.spanRole!(resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null }, AgentProvider.CLAUDE_CODE))).toBe('other')
   })
 })
 

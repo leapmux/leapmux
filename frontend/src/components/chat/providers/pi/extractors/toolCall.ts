@@ -1,7 +1,6 @@
 import type { ToolRowRole } from '../../../ir/row'
-import type { FailedResult, ToolCallEnvelope, ToolCallIR, ToolCallPayload, ToolResultOf, UnparsedResult } from '../../../ir/toolCall'
+import type { FailedResult, ToolCallEnvelope, ToolCallIR, ToolCallPayloadForKind, ToolLifecycleFacts, ToolResultOf, UnparsedResult } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRowStatus } from '../../../ir/toolRowStatus'
 import type { ToolRequests } from '../../../ir/tools'
 import type { AgentRequest, AgentRun } from '../../../ir/tools/agent'
 import type { FileChangeRequest } from '../../../ir/tools/fileChange'
@@ -14,8 +13,7 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { failedResult, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
-import { toolStatusFor } from '../../../ir/toolRowStatus'
+import { deriveToolCallStatus, failedResult, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { PI_POWERSHELL_TOOL } from '../protocol'
@@ -140,10 +138,10 @@ export interface PiToolFacts {
   images: ImageResultSource[]
   /** True when this row is the last one of its call. */
   finished: boolean
-  /** Pi flagged THIS frame as an error. Read the note above: this is not `status`. */
+  /** Pi flagged THIS frame as an error. Read the note above: this is not a status. */
   isError: boolean
-  /** The row's ONE outcome word, with LeapMux's own completion folded in. */
-  status: ToolRowStatus
+  /** The call's lifecycle as RAW FACTS; the shared derivation owns the precedence. */
+  lifecycle: ToolLifecycleFacts
 }
 
 /** Collect everything the payload decisions read, in one pass. */
@@ -165,7 +163,14 @@ export function piToolFacts(row: PiToolRow, completion: MessageCompletion | unde
     images: piToolResultImages(row.payload, undefined, row.request),
     finished: row.finished,
     isError: row.tool.isError,
-    status: toolStatusFor(retainedOutcome(completion), row.isError, row.finished),
+    lifecycle: {
+      frameStatus: '',
+      providerOutcome: row.isError ? 'failed' : null,
+      retainedOutcome: retainedOutcome(completion),
+      // Pi's own finished reading: the paired end event landed, or the turn's
+      // completion column says the row is final.
+      resultLanded: row.finished,
+    },
   }
 }
 
@@ -284,12 +289,12 @@ function piHeader(facts: PiToolFacts): { label?: string, title: string } {
  * to `PI_TOOL_KINDS` but not to the builder drew a wrench where its own card belongs.
  * Here it draws its own card from the first row.
  */
-function piDeclaredOnly<K extends ToolKind>(kind: K): (facts: PiToolFacts) => ToolCallPayload<K> {
+function piDeclaredOnly<K extends ToolKind>(kind: K): (facts: PiToolFacts) => ToolCallPayloadForKind<K> {
   // The inner arrow states its OWN return type, although the signature above already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every table entry
   // closes, one level down.
-  return (facts): ToolCallPayload<K> => ({ kind, ...piHeader(facts), request: piRequestFor(kind, facts) })
+  return (facts): ToolCallPayloadForKind<K> => ({ kind, ...piHeader(facts), request: piRequestFor(kind, facts) })
 }
 
 /**
@@ -306,7 +311,7 @@ function piDeclaredOnly<K extends ToolKind>(kind: K): (facts: PiToolFacts) => To
  * Error header, and the status admits an absent result.
  */
 function piUnreadResult(facts: PiToolFacts, text: string): UnparsedResult | FailedResult | undefined {
-  if (facts.status !== 'failed')
+  if (deriveToolCallStatus(facts.lifecycle) !== 'failed')
     return unparsedResult(text)
   return text ? failedResult(text) : undefined
 }
@@ -369,7 +374,7 @@ function piSearchParts(kind: 'grep' | 'glob', facts: PiToolFacts): { request: Se
  * arrow's return type from the literals it returns, so the object loses its freshness
  * before any property is checked. That is why every entry above declares its own return
  * type. `'read': facts => ({ kind: 'read', request, patchText })` compiles with the
- * undeclared key; `'read': (facts): ToolCallPayload<'read'> =>` rejects it.
+ * undeclared key; `'read': (facts): ToolCallPayloadForKind<'read'> =>` rejects it.
  *
  * The same rule holds one step in: do NOT lift a request into an un-annotated `const`
  * and return it by reference. A variable is not a fresh literal, so the check never runs
@@ -387,8 +392,8 @@ function piSearchParts(kind: 'grep' | 'glob', facts: PiToolFacts): { request: Se
  * fills the shared declared request. The last one is the only mechanical check that the
  * overrides map has not grown past its deviations.
  */
-export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCallPayload<K> } = {
-  'agent': (facts): ToolCallPayload<'agent'> => {
+export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCallPayloadForKind<K> } = {
+  'agent': (facts): ToolCallPayloadForKind<'agent'> => {
     const request = piRequestFor('agent', facts)
     return {
       kind: 'agent',
@@ -400,7 +405,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
       ...(facts.finished ? { result: { agents: [piAgentPayload(facts)] } } : {}),
     }
   },
-  'todo': (facts): ToolCallPayload<'todo'> => {
+  'todo': (facts): ToolCallPayloadForKind<'todo'> => {
     const request = piRequestFor('todo', facts)
     const header = piHeader(facts)
     // The checklist's own header words: `Create task: ...`, or the count of a listing.
@@ -430,7 +435,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
         : {}),
     }
   },
-  'execute': (facts): ToolCallPayload<'execute'> => {
+  'execute': (facts): ToolCallPayloadForKind<'execute'> => {
     const request = piRequestFor('execute', facts)
     const label = facts.label
     if (!facts.finished)
@@ -452,7 +457,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
       ...(resolved.cancelled ? { statusOverride: 'cancelled' as const } : {}),
     }
   },
-  'read': (facts): ToolCallPayload<'read'> => {
+  'read': (facts): ToolCallPayloadForKind<'read'> => {
     const request = piRequestFor('read', facts)
     const header = piHeader(facts)
     if (!facts.finished)
@@ -465,11 +470,11 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     const unread = piUnreadResult(facts, facts.text)
     return { kind: 'read', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
   },
-  'edit': (facts): ToolCallPayload<'edit'> => ({ kind: 'edit', ...piHeader(facts), ...piFileChangeParts('edit', facts) }),
-  'write': (facts): ToolCallPayload<'write'> => ({ kind: 'write', ...piHeader(facts), ...piFileChangeParts('write', facts) }),
-  'grep': (facts): ToolCallPayload<'grep'> => ({ kind: 'grep', ...piHeader(facts), ...piSearchParts('grep', facts) }),
-  'glob': (facts): ToolCallPayload<'glob'> => ({ kind: 'glob', ...piHeader(facts), ...piSearchParts('glob', facts) }),
-  'list': (facts): ToolCallPayload<'list'> => {
+  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', ...piHeader(facts), ...piFileChangeParts('edit', facts) }),
+  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', ...piHeader(facts), ...piFileChangeParts('write', facts) }),
+  'grep': (facts): ToolCallPayloadForKind<'grep'> => ({ kind: 'grep', ...piHeader(facts), ...piSearchParts('grep', facts) }),
+  'glob': (facts): ToolCallPayloadForKind<'glob'> => ({ kind: 'glob', ...piHeader(facts), ...piSearchParts('glob', facts) }),
+  'list': (facts): ToolCallPayloadForKind<'list'> => {
     const request = piRequestFor('list', facts)
     const header = piHeader(facts)
     if (!facts.finished)
@@ -486,7 +491,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
     const unread = piUnreadResult(facts, facts.text)
     return { kind: 'list', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
   },
-  'question': (facts): ToolCallPayload<'question'> => {
+  'question': (facts): ToolCallPayloadForKind<'question'> => {
     const request = piRequestFor('question', facts)
     const header = piHeader(facts)
     const title = piQuestionTitle(request.questions) ?? header.title
@@ -500,7 +505,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
       ...(facts.finished && facts.text ? { result: { answers: [{ header: request.questions[0]?.header || title || 'Answer', answer: facts.text }] } } : {}),
     }
   },
-  'switch_mode': (facts): ToolCallPayload<'switch_mode'> => {
+  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => {
     // The plan the tool wrote, which it states in its own `details` rather than in a
     // content block.
     const plan = pickString(facts.details, 'plan').trim()
@@ -512,7 +517,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
       ...(facts.isError ? { statusOverride: 'failed' as const, result: failedResult(facts.text) } : {}),
     }
   },
-  'mcp': (facts): ToolCallPayload<'mcp'> => {
+  'mcp': (facts): ToolCallPayloadForKind<'mcp'> => {
     const request = piRequestFor('mcp', facts)
     const header = piHeader(facts)
     // NO result until the call finishes, exactly as every other entry here waits.
@@ -547,7 +552,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
         ...(error !== undefined ? { error } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
       },
-      ...(source?.failed && facts.status !== 'failed' ? { statusOverride: 'failed' as const } : {}),
+      ...(source?.failed && deriveToolCallStatus(facts.lifecycle) !== 'failed' ? { statusOverride: 'failed' as const } : {}),
     }
   },
   // The eighteen kinds Pi states no tool for. Each still declares its own request, so
@@ -575,7 +580,7 @@ export const PI_TOOL_READERS: { [K in ToolKind]: (facts: PiToolFacts) => ToolCal
 /** One Pi tool call, as the kind-discriminated pair. */
 export function piToolCallIR(row: PiToolRow, completion?: MessageCompletion): ToolCallIR {
   const facts = piToolFacts(row, completion)
-  const envelope: ToolCallEnvelope = { id: row.tool.toolCallId, name: facts.toolName, status: facts.status }
+  const envelope: ToolCallEnvelope = { id: row.tool.toolCallId, name: facts.toolName, lifecycle: facts.lifecycle }
   return toolCall(envelope, PI_TOOL_READERS[piReclassify(facts)](facts))
 }
 

@@ -1,5 +1,5 @@
 import type { McpCallFacts, McpContentItem } from '../../../ir/mcpToolCall'
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { McpRequest } from '../../../ir/tools/mcp'
 import type { ClaudeToolRow } from './toolCommon'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
@@ -78,7 +78,7 @@ function parseClaudeResultContent(raw: unknown): McpContentItem[] {
 }
 
 /** The MCP pair: the server and tool the name spells, with the blocks it answered. */
-export function claudeMcpPayload(request: McpRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'mcp'> {
+export function claudeMcpPayload(request: McpRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'mcp'> {
   if (!result)
     return { kind: 'mcp', request }
   const source = claudeMcpFromToolResult({

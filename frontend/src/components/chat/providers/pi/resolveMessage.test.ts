@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { parsedMessageForRendering } from '../registry'
+import { resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 
@@ -20,9 +20,9 @@ describe('pi supplemental artifact conformance', () => {
   it.each(fixture.cases)('$name', ({ original, supplemental, expected }) => {
     const before = JSON.stringify({ original, supplemental })
     const parsed = { ...input(original), supplementalContent: supplemental }
-    const resolved = parsedMessageForRendering(parsed, AgentProvider.PI)
+    const resolved = resolveMessageForRendering(parsed, AgentProvider.PI)
     expect(resolved.parentObject).toEqual(expected)
-    expect(parsedMessageForRendering(resolved, AgentProvider.PI)).toBe(resolved)
+    expect(resolveMessageForRendering(resolved, AgentProvider.PI)).toBe(resolved)
     expect(JSON.stringify({ original, supplemental })).toBe(before)
   })
 })

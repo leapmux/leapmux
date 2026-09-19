@@ -1,9 +1,11 @@
 import type { McpContentItem } from './mcpToolCall'
 import type { ToolKind } from './toolKind'
 import type { ToolMetadataItem } from './toolMetadata'
+import type { ToolOutcomeWord, ToolRowOutcome } from './toolOutcomeLabel'
 import type { ToolRowStatus } from './toolRowStatus'
 import type { ToolRequests, ToolResults } from './tools'
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import { isFinishedToolStatus, statusForOutcome } from './toolRowStatus'
 import { isGenericResult } from './tools/generic'
 
 /**
@@ -210,8 +212,21 @@ export interface ToolCallDegradation {
   originalKind: ToolKind
 }
 
-export type ToolCallOf<K extends ToolKind> = ToolCallCommon & { kind: K, request: ToolRequests[K] } & ToolCallLifecycle<K>
-export type ToolCallIR = { [K in ToolKind]: ToolCallOf<K> }[ToolKind]
+/** One kind's call before distribution; the non-deferred generic the dispatch and the renderers join over. */
+export type ToolCallForKind<K extends ToolKind> = ToolCallCommon & { kind: K, request: ToolRequests[K] } & ToolCallLifecycle<K>
+
+/**
+ * One call of ONE of the kinds in `K`, as a union rather than an intersection.
+ *
+ * A DISTRIBUTIVE conditional, which is what keeps the correlation: `ToolCallOf<ToolKind>`
+ * IS {@link ToolCallIR}, and `ToolCallOf<'edit' | 'read'>` is one call or the other,
+ * never a mixture whose `request` is both kinds' at once. Because the conditional
+ * distributes over a still-generic `K` too, a builder that returns
+ * `ToolCallOf<K>` for a kind it computed at runtime hands the value back typed --
+ * no second mapped alias, no assertion.
+ */
+export type ToolCallOf<K extends ToolKind> = K extends ToolKind ? ToolCallForKind<K> : never
+export type ToolCallIR = ToolCallOf<ToolKind>
 
 /**
  * The kind-specific half of one call: what a per-kind extractor produces. The
@@ -226,7 +241,8 @@ export type ToolCallIR = { [K in ToolKind]: ToolCallOf<K> }[ToolKind]
  * rules are checked. A payload therefore states any of the kind's result shapes, and
  * a draft that pairs the wrong one with the envelope's status degrades there.
  */
-export type ToolCallPayload<K extends ToolKind>
+/** One kind's payload before distribution; the non-deferred generic the builder joins. */
+export type ToolCallPayloadForKind<K extends ToolKind>
   = { kind: K, request: ToolRequests[K], result?: ToolResultOf<K> }
     // `title` alone admits an EXPLICIT undefined, and no other dressing does: the ACP
     // wrapper joins a payload over its own frame-title default, and a provider whose
@@ -239,7 +255,7 @@ export type ToolCallPayload<K extends ToolKind>
       extraContent?: readonly McpContentItem[]
       truncated?: boolean
       /**
-       * The outcome the PAYLOAD read, when the envelope's own status cannot state it.
+       * The outcome the PAYLOAD read, when the derived status cannot state it.
        *
        * A frame says `completed` and its body says the call failed; a plan the reader
        * refused arrives as an error. The extractor that read the body is the only one
@@ -248,32 +264,85 @@ export type ToolCallPayload<K extends ToolKind>
        */
       statusOverride?: Exclude<ToolRowStatus, ''>
     }
+
 /**
  * One payload of ONE of the kinds in `K`, as a union rather than an intersection.
  *
- * The sibling of {@link ToolCallOfKinds}, and it exists for the same reason:
- * `ToolCallPayload<ToolKind>` is a SINGLE object whose `request` is every kind's
- * request at once, and no real payload satisfies it -- so a builder that returned it
- * for a kind it computed at runtime could not hand the value back without an
- * `as unknown as`, which erased the request and the result along with the kind.
- * Distributing keeps the pair correlated: `ToolCallPayloadOf<'edit' | 'write'>` is one
- * payload or the other, never a mixture.
+ * The distributive sibling of {@link ToolCallOf}, for the reason its own comment
+ * gives: `ToolCallPayload<ToolKind>` without distribution is a SINGLE object whose
+ * `request` is every kind's request at once, and no real payload satisfies it -- so a
+ * builder that returned it for a kind it computed at runtime could not hand the value
+ * back without an `as unknown as`, which erased the request and the result along
+ * with the kind. Distributing keeps the pair correlated: `ToolCallPayload<'edit' |
+ * 'write'>` is one payload or the other, never a mixture.
  */
-export type ToolCallPayloadOf<K extends ToolKind> = { [P in K]: ToolCallPayload<P> }[K]
-
-export type ToolCallPayloadIR = ToolCallPayloadOf<ToolKind>
-export type ToolCallEnvelope = Pick<ToolCallCommon, 'id' | 'name'> & { status: ToolRowStatus }
+export type ToolCallPayload<K extends ToolKind> = K extends ToolKind ? ToolCallPayloadForKind<K> : never
+export type ToolCallPayloadIR = ToolCallPayload<ToolKind>
 
 /**
- * One call of ONE of the kinds in `K`, as a union rather than an intersection.
- *
- * `ToolCallOf<ToolKind>` is a single object whose `request` is every kind's request at
- * once, which no real call satisfies; this distributes, so `ToolCallOfKinds<ToolKind>`
- * IS {@link ToolCallIR} and `ToolCallOfKinds<'read'>` is still `ToolCallOf<'read'>`.
- * {@link toolCall} returns it, which is what lets a provider that builds a payload of
- * a kind it computed at runtime keep the result typed instead of casting it.
+ * The raw facts of one call's lifecycle, exactly as the provider's frames state
+ * them. Adapters supply these SEPARATELY -- the frame's own status word, the
+ * outcome the provider's body concluded, the outcome LeapMux's completion column
+ * retained, and whether the result row landed -- and the derivation below owns the
+ * precedence. No adapter derives a status of its own.
  */
-export type ToolCallOfKinds<K extends ToolKind> = { [P in K]: ToolCallOf<P> }[K]
+export interface ToolLifecycleFacts {
+  /** The frame's own status word, normalized. '' when the protocol sends none. */
+  frameStatus: ToolRowStatus
+  /** The outcome the provider's OWN body concluded (`isError`, an error code), or null. */
+  providerOutcome: ToolOutcomeWord | null
+  /** The outcome LeapMux's completion column retained for the turn, or null. */
+  retainedOutcome: ToolRowOutcome | null
+  /** Whether the result side of this call landed, by the protocol's own reading. */
+  resultLanded: boolean
+}
+
+export type ToolCallEnvelope = Pick<ToolCallCommon, 'id' | 'name'> & { lifecycle: ToolLifecycleFacts }
+
+/**
+ * The lifecycle of a synthetic one-row call a reader composed -- a plan update, a
+ * subagent notification: finished by construction, with no outcome any frame stated.
+ */
+export const SYNTHETIC_TOOL_LIFECYCLE: ToolLifecycleFacts = { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: true }
+
+/**
+ * Derive the one status a call carries, from the facts its adapter supplied.
+ *
+ * The precedence, each step over the one below it:
+ *
+ * 1. A payload's `statusOverride` wins: the extractor that read the body is the
+ *    only one that knows a kind-specific fact such as a rejected plan, an HTTP
+ *    failure or a timeout.
+ * 2. A provider body outcome wins: the frame's own conclusion beats a status word
+ *    the wire carried and every retained reading.
+ * 3. An explicit finished frame status wins: a frame that states how it ended is
+ *    the most specific witness, and a retained outcome at the turn's end does not
+ *    retract what the call itself reported.
+ * 4. A failed or interrupted retained outcome applies to an unfinished frame: a
+ *    retained frame still reads as running, and only the completion states that
+ *    the turn cut it.
+ * 5. `resultLanded` produces `completed`: an answered call is a finished one,
+ *    whatever its last frame still said.
+ * 6. Otherwise the frame's own word stands, unfinished included.
+ *
+ * A `succeeded` provider or retained outcome does NOT complete a call by itself:
+ * a turn that later stopped is not a tool that finished, and only the landed
+ * result states the second fact. This keeps a completed tool distinct from a turn
+ * that later stops.
+ */
+export function deriveToolCallStatus(facts: ToolLifecycleFacts, statusOverride?: Exclude<ToolRowStatus, ''>): ToolRowStatus {
+  if (statusOverride !== undefined)
+    return statusOverride
+  if (facts.providerOutcome !== null && facts.providerOutcome !== 'succeeded')
+    return statusForOutcome(facts.providerOutcome)
+  if (isFinishedToolStatus(facts.frameStatus))
+    return facts.frameStatus
+  if (facts.retainedOutcome === 'failed' || facts.retainedOutcome === 'interrupted')
+    return statusForOutcome(facts.retainedOutcome)
+  if (facts.resultLanded)
+    return 'completed'
+  return facts.frameStatus
+}
 
 /** The four kinds whose request names the files the call operates on. */
 export const FILE_CHANGE_KINDS = ['edit', 'write', 'delete', 'move'] as const
@@ -326,7 +395,7 @@ export interface NormalizedToolCallDraft<K extends ToolKind> {
 
 /** The built call, or the reason and the normalized draft behind the refusal. */
 export type ToolCallBuild<K extends ToolKind>
-  = { ok: true, call: ToolCallOfKinds<K> }
+  = { ok: true, call: ToolCallOf<K> }
     | { ok: false, fault: ToolCallFault, draft: NormalizedToolCallDraft<K> }
 
 /**
@@ -342,7 +411,10 @@ export type ToolCallBuild<K extends ToolKind>
  * member carries the NORMALIZED draft, so the degrade reads exactly what the check
  * read and repeats none of the joining.
  */
-export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadOf<K>): ToolCallBuild<K> {
+export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadForKind<K>): ToolCallBuild<K> {
+  // The lifecycle is the derivation's INPUT; the status it derives is the call's
+  // own field, so the facts do not ride onto the built object.
+  const { lifecycle, ...envelopeFields } = envelope
   const { statusOverride, name, images, extraContent, truncated, ...rest } = payload
   // `name` and `images` are pulled OUT of the spread and re-applied. Both are
   // required on the call, and `exactOptionalPropertyTypes` used to be off, so a
@@ -355,11 +427,11 @@ export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, pa
   // re-applied only when the payload states them, so a stated undefined lands as an
   // ABSENT key, which is the one spelling `toolCallFault` reads either way.
   const draft: NormalizedToolCallDraft<K> = {
-    ...envelope,
+    ...envelopeFields,
     ...rest,
     name: name ?? envelope.name,
     images: images ?? [],
-    status: statusOverride ?? envelope.status,
+    status: deriveToolCallStatus(envelope.lifecycle, statusOverride),
     ...(extraContent !== undefined ? { extraContent } : {}),
     ...(truncated !== undefined ? { truncated } : {}),
   }
@@ -369,7 +441,7 @@ export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, pa
   // The invariants the check just walked ARE the lifecycle union's own rules, one for
   // one, and no narrowing carries a runtime answer back into the type system. This is
   // the single assertion the IR needs, and it stands on the check above it.
-  return { ok: true, call: draft as ToolCallOfKinds<K> }
+  return { ok: true, call: draft as ToolCallOf<K> }
 }
 
 /**
@@ -420,8 +492,7 @@ export interface ToolCallDraft {
  * refuse the shape the codebase states.
  */
 export function toolCallFault(draft: ToolCallDraft): ToolCallFault | null {
-  const finished = draft.status === 'completed' || draft.status === 'failed'
-    || draft.status === 'cancelled' || draft.status === 'declined'
+  const finished = isFinishedToolStatus(draft.status)
   if (draft.result !== undefined && !finished)
     return 'result-before-the-call-finished'
   if (!finished && (draft.images.length > 0 || draft.extraContent !== undefined || draft.truncated !== undefined))
@@ -514,7 +585,7 @@ function statesAFile(request: ToolRequests[ToolKind]): boolean {
  * knows what the wire said. That is the rule for a malformed file operation: build
  * the generic payload from the arguments instead of an `edit` with no changes.
  */
-export function toolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadOf<K>): ToolCallOfKinds<K> | ToolCallOf<'other'> {
+export function toolCall<K extends ToolKind>(envelope: ToolCallEnvelope, payload: ToolCallPayloadForKind<K>): ToolCallOf<K> | ToolCallOf<'other'> {
   const built = buildToolCall(envelope, payload)
   return built.ok ? built.call : degradedToolCall(built)
 }
@@ -563,7 +634,7 @@ function degradedToolCall<K extends ToolKind>(built: { fault: ToolCallFault, dra
   warnDegraded(built)
   const { draft } = built
   const status = draft.status
-  const finished = status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'declined'
+  const finished = isFinishedToolStatus(status)
   // The generic trio's three results ARE the `other` kind's result, so a refused
   // draft of one keeps everything the tool produced. The generic-images fault is the
   // case: only the pictures broke the rule, and dropping the content blocks with them
@@ -694,6 +765,6 @@ export function isGenericKind(kind: ToolKind): kind is GenericToolKind {
 }
 
 /** Whether one CALL is the generic trio's, narrowing the call itself. */
-export function isGenericCall(call: ToolCallIR): call is ToolCallOfKinds<GenericToolKind> {
+export function isGenericCall(call: ToolCallIR): call is ToolCallOf<GenericToolKind> {
   return isGenericKind(call.kind)
 }

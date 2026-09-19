@@ -8,7 +8,7 @@ import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { classifyMessage } from '../../messageClassification'
 import { renderMessageContent } from '../../rowRenderers'
-import { parsedMessageForRendering } from '../registry'
+import { resolveMessageForRendering } from '../registry'
 import { resolveCodexMessage } from './resolveMessage'
 import '../testMocks'
 import './plugin'
@@ -57,8 +57,8 @@ describe('resolveCodexMessage', () => {
 })
 
 describe('a codex tool row whose output the worker recovered', () => {
-  // The renderer must read the RESOLVED payload. `category.toolUse` holds the row's
-  // own bytes, which classification reads, and those carry no recovered output.
+  // The renderer must read the RESOLVED payload: the category alone states none of
+  // the recovered output, so the row's body reads it from the resolved parent object.
   it('renders the recovered output rather than an empty result', () => {
     const message = makeMessage({
       agentProvider: AgentProvider.CODEX,
@@ -72,8 +72,8 @@ describe('a codex tool row whose output the worker recovered', () => {
         },
       }),
     })
-    const parsed = parsedMessageForRendering(parseMessageContent(message), AgentProvider.CODEX)
-    const category = classifyMessage({ ...parseMessageContent(message), agentProvider: AgentProvider.CODEX })
+    const parsed = resolveMessageForRendering(parseMessageContent(message), AgentProvider.CODEX)
+    const category = classifyMessage({ ...parsed, agentProvider: AgentProvider.CODEX })
     const { container } = render(() => renderMessageContent(
       parsed.parentObject,
       { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) },

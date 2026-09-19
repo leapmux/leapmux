@@ -81,7 +81,7 @@ const FORBIDDEN_ASSERTION_TYPES = [
   'ToolCallIR',
   'ToolCallPayloadIR',
   'ToolCallPayloadOf',
-  'ToolCallPayload<',
+  'ToolCallPayloadForKind<',
   'ToolCallOf<',
   'ToolCallOfKinds<',
   'ToolRequests[',

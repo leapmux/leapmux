@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ToolRequests } from '../../../ir/tools'
 import type { ClaudeToolRow } from './toolCommon'
 import { prettifyJson } from '~/lib/jsonFormat'
@@ -108,7 +108,7 @@ export function claudeTriggerRequest(input: Record<string, unknown>): ToolReques
  * that answered outside 2xx failed the call although it answered, so the payload
  * overrides the status with `failed`.
  */
-export function claudeTriggerPayload(request: ToolRequests['trigger'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'trigger'> {
+export function claudeTriggerPayload(request: ToolRequests['trigger'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'trigger'> {
   if (!result) {
     // An action the tool does not spell falls back to the tool's own name.
     return {

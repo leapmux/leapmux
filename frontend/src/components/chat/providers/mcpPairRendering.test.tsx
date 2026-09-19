@@ -94,7 +94,7 @@ describe.each([
 it('identifies Codex request and result roles before either counterpart loads', () => {
   const { request, result } = mcpMessages(AgentProvider.CODEX)
   const plugin = providerFor(AgentProvider.CODEX)!
-  expect(plugin?.transcript.spanRole?.(input(request))).toBe('opener')
+  expect(plugin?.transcript.spanRole?.(input(request))).toBe('request')
   expect(plugin?.transcript.spanRole?.(input(result))).toBe('result')
   expect(plugin?.transcript.relatedMessages?.(input(result))).toEqual(['request'])
 })

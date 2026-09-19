@@ -54,7 +54,7 @@ describe('cursor native tool rendering', () => {
       }
     }
 
-    function renderRow(tool: Record<string, unknown>, role: 'opener' | 'result', result?: Record<string, unknown>) {
+    function renderRow(tool: Record<string, unknown>, role: 'request' | 'result', result?: Record<string, unknown>) {
       const parsed = parse(tool)
       const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
       const sources = testMessageSources({
@@ -68,13 +68,13 @@ describe('cursor native tool rendering', () => {
     // While the approval is open there is no completing row, so the proposing row is where
     // the reader has to be able to read the plan.
     it('renders the recovered plan while the call is still open', () => {
-      const { container } = renderRow(call, 'opener')
+      const { container } = renderRow(call, 'request')
       expect(container.textContent).toContain('PLANMARKER-7')
       expect(container.textContent).toContain('Seed an Unreleased section.')
     })
 
     it('names the row by the plan it writes', () => {
-      expect(renderRow(call, 'opener').container.textContent).toContain('Add CHANGELOG.md')
+      expect(renderRow(call, 'request').container.textContent).toContain('Add CHANGELOG.md')
     })
 
     // Once the call completes, the completing row draws the plan and the proposing row
@@ -84,12 +84,12 @@ describe('cursor native tool rendering', () => {
     })
 
     it('does not repeat the plan on the proposing row once a result exists', () => {
-      const { container } = renderRow(call, 'opener', done)
+      const { container } = renderRow(call, 'request', done)
       expect(container.textContent).not.toContain('PLANMARKER-7')
     })
 
     // The whole plan as JSON is what a reader saw where the plan belonged.
-    it.each([['opener', call], ['result', done]] as const)('states no raw arguments on the %s row', (role, tool) => {
+    it.each([['request', call], ['result', done]] as const)('states no raw arguments on the %s row', (role, tool) => {
       expect(renderRow(tool, role).container.textContent).not.toContain('"_toolName"')
     })
   })

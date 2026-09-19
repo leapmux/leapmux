@@ -13,7 +13,7 @@ import { copilotEvent } from './protocol'
 export function copilotSpanRole(parsed: ParsedMessageContent) {
   switch (copilotEvent(parsed.parentObject)?.type) {
     case COPILOT_EVENT.ToolStarted:
-      return retainedRowIsFinal(parsed.completion) ? 'result' as const : 'opener' as const
+      return retainedRowIsFinal(parsed.completion) ? 'result' as const : 'request' as const
     case COPILOT_EVENT.ToolCompleted:
       return 'result' as const
     default:

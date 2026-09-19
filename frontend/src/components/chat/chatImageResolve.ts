@@ -58,14 +58,14 @@ export function messageToolResultImages(message: AgentChatMessage, sources: Imag
     // this carries: the tab used to classify the raw bytes and extract the merged
     // ones, so an ACP result wrapped in a native envelope was extracted as a row its
     // own category contradicted and its pictures were lost.
-    const resolved = sources.resolved?.parsed
+    const resolved = sources.resolved?.resolved
     const prepared = prepareMessage(message, ...(resolved === undefined ? [{}] : [{ resolved }]))
     // `role: 'result'` is deliberate and not the row's own place in its span: a
     // resolver that runs outside the render tree must read the FINISHED side, or a
     // provider that requires a completed call before it states its picture (Codex
     // states no status on an `imageView` item) resolves every image tab to nothing.
     const extraction = extractPreparedRow(prepared, {
-      sides: { current: prepared.resolved, request: sources.request?.parsed, result: undefined, role: 'result' },
+      sides: { current: prepared.resolved, request: sources.request?.resolved, result: undefined, role: 'result' },
       ...(sources.todoById === undefined ? {} : { todoById: sources.todoById }),
     })
     return imagesForIR(extractedRow(extraction))

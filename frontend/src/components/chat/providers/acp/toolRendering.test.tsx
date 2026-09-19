@@ -269,7 +269,7 @@ describe('acp tool rendering', () => {
 
   it('identifies request and result roles without arrival-order assumptions', () => {
     const plugin = providerFor(AgentProvider.OPENCODE)!
-    expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('opener')
+    expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('request')
     expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' }))).toBe('result')
   })
   it('renders every changed file in a completed call', () => {

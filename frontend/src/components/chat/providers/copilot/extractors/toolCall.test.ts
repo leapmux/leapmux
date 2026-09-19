@@ -9,7 +9,7 @@ import { copilotFrame, copilotToolComplete, copilotToolStart } from '~/test-supp
 import { todoTitleOf } from '~/test-support/toolCallIr'
 import { imagesForIR } from '../../../ir/derivations'
 import { toolCallRow } from '../../../ir/row'
-import { isFailedResult, typedResult } from '../../../ir/toolCall'
+import { deriveToolCallStatus, isFailedResult, typedResult } from '../../../ir/toolCall'
 import { TOOL_KINDS } from '../../../ir/toolKind'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
@@ -54,7 +54,7 @@ describe('copilotToolRow', () => {
       result: { content: 'partial output' },
       error: { code: 'ENOENT', message: 'no such file' },
     })
-    expect(row.status).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
     expect(row.raw).toEqual({ code: 'ENOENT', message: 'no such file' })
   })
 
@@ -64,7 +64,7 @@ describe('copilotToolRow', () => {
       result: { content: 'partial output' },
       error: { code: 'interrupted', message: 'aborted' },
     })
-    expect(row.status).toBe('cancelled')
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('cancelled')
     expect(row.raw).toEqual({ content: 'partial output' })
   })
 
@@ -73,7 +73,7 @@ describe('copilotToolRow', () => {
       success: false,
       error: { code: 'interrupted', message: 'aborted' },
     })
-    expect(row.status).toBe('cancelled')
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('cancelled')
     expect(row.raw).toEqual({ code: 'interrupted', message: 'aborted' })
   })
 })
@@ -460,13 +460,13 @@ describe('copilot retained rows', () => {
       parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })),
       MessageCompletion.ERROR,
     )
-    expect(row?.status).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
   })
 
   it('reports a failed turn on a retained start row', () => {
     const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), COPILOT_TOOL.Bash, undefined, MessageCompletion.ERROR)
     expect(row?.finished).toBe(true)
-    expect(row?.status).toBe('failed')
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('failed')
   })
 
   // A start row carries NO result, so `completed` over it claims an answer that never
@@ -475,7 +475,9 @@ describe('copilot retained rows', () => {
   it('refuses to call a retained start row completed', () => {
     const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' }), COPILOT_TOOL.Bash, undefined, MessageCompletion.COMPLETE)
     expect(row?.finished).toBe(true)
-    expect(row?.status).toBe('cancelled')
+    // A succeeded outcome completes nothing and a start lands no result, so the
+    // row states no status word at all -- never a completed one.
+    expect(row && deriveToolCallStatus(row.lifecycle)).toBe('')
   })
 })
 

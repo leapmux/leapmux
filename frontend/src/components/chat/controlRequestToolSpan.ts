@@ -56,6 +56,6 @@ export function useControlRequestToolSpan(
   return () => {
     const resolver = context()
     const target = identity()
-    return resolver && target ? resolver.request(target)?.parsed : undefined
+    return resolver && target ? resolver.request(target)?.resolved : undefined
   }
 }

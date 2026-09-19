@@ -1,5 +1,5 @@
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from './toolVocabulary'
-import type { ToolCallFault, ToolCallIR, ToolCallPayload, ToolCallPayloadOf } from '~/components/chat/ir/toolCall'
+import type { ToolCallFault, ToolCallIR, ToolCallPayloadForKind } from '~/components/chat/ir/toolCall'
 import type { ToolKind } from '~/components/chat/ir/toolKind'
 import type { ToolRowStatus } from '~/components/chat/ir/toolRowStatus'
 import { describe, expect, it } from 'vitest'
@@ -104,8 +104,8 @@ describe('invariantViolations', () => {
  * because the status it will meet lives on the envelope.
  */
 describe('buildToolCall', () => {
-  function faultOf<K extends ToolKind>(kind: K, status: ToolRowStatus, payload: Omit<ToolCallPayload<K>, 'kind'>): ToolCallFault | 'built' {
-    const built = buildToolCall<K>({ id: 'c1', name: 'tool', status }, { kind, ...payload } as ToolCallPayloadOf<K>)
+  function faultOf<K extends ToolKind>(kind: K, status: ToolRowStatus, payload: Omit<ToolCallPayloadForKind<K>, 'kind'>): ToolCallFault | 'built' {
+    const built = buildToolCall<K>({ id: 'c1', name: 'tool', lifecycle: { frameStatus: status, providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind, ...payload } as ToolCallPayloadForKind<K>)
     return built.ok ? 'built' : built.fault
   }
 
@@ -194,7 +194,7 @@ describe('buildToolCall', () => {
  */
 describe('toolCall', () => {
   it('degrades a refused draft to the uncategorized row', () => {
-    const call = toolCall({ id: 'c1', name: 'Edit', status: 'failed' }, { kind: 'edit', request: { changes: [] }, result: failedResult('no such file') })
+    const call = toolCall({ id: 'c1', name: 'Edit', lifecycle: { frameStatus: 'failed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'edit', request: { changes: [] }, result: failedResult('no such file') })
     expect(call.kind).toBe('other')
     expect(call.name).toBe('Edit')
     expect(call.status).toBe('failed')
@@ -204,20 +204,20 @@ describe('toolCall', () => {
   // The degrade must not restate the very rule it exists to enforce, so an unfinished
   // status keeps no result at all.
   it('drops the result of a refused draft that had not finished', () => {
-    const call = toolCall({ id: 'c1', name: 'Read', status: 'in_progress' }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
+    const call = toolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'in_progress', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
     expect(call.kind).toBe('other')
     expect(call.result).toBeUndefined()
     expect(invariantViolations(call)).toStrictEqual([])
   })
 
   it('states the fault when the refused draft carried no words of its own', () => {
-    const call = toolCall({ id: 'c1', name: 'Write', status: 'completed' }, { kind: 'write', request: { changes: [] }, result: { changes: [] } })
+    const call = toolCall({ id: 'c1', name: 'Write', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'write', request: { changes: [] }, result: { changes: [] } })
     expect(call.kind).toBe('other')
     expect(call.result).toStrictEqual(unparsedResult('This build could not read the call: a file change states no file.'))
   })
 
   it('keeps the arguments of a refused draft that carried them', () => {
-    const call = toolCall({ id: 'c1', name: 'weird', status: 'completed' }, { kind: 'mcp', request: { args: { q: 1 }, server: 's', tool: 't' }, result: { content: [] }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
+    const call = toolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'mcp', request: { args: { q: 1 }, server: 's', tool: 't' }, result: { content: [] }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
     expect(call.kind === 'other' && call.request.args).toStrictEqual({ q: 1 })
   })
 
@@ -226,13 +226,13 @@ describe('toolCall', () => {
   // away the whole of what the tool answered.
   it('keeps the body of a refused draft the uncategorized kind can hold', () => {
     const content = [{ type: 'text' as const, text: 'the tool answered this' }]
-    const call = toolCall({ id: 'c1', name: 'weird', status: 'completed' }, { kind: 'mcp', request: { args: {}, server: 's', tool: 't' }, result: { content }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
+    const call = toolCall({ id: 'c1', name: 'weird', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'mcp', request: { args: {}, server: 's', tool: 't' }, result: { content }, images: [{ data: 'aGk=', mimeType: 'image/png' }] })
     expect(call.kind === 'other' && call.result).toStrictEqual({ content })
     expect(call.images).toStrictEqual([])
   })
 
   it('builds every valid draft unchanged', () => {
-    const call = toolCall({ id: 'c1', name: 'Read', status: 'completed' }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
+    const call = toolCall({ id: 'c1', name: 'Read', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, resultLanded: false } }, { kind: 'read', request: { path: '/p/a.ts' }, result: { lines: null, fallbackContent: '' } })
     expect(call.kind).toBe('read')
   })
 })

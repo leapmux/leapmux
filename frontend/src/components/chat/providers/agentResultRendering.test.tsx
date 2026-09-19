@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolMeta } from '~/test-support/toolCallIr'
+import { resolveMessageForRendering } from './registry'
 import './testMocks'
 
 const { renderMessageContent } = await import('../rowRenderers')
@@ -54,7 +55,7 @@ function renderAgentResult(
 ): HTMLElement {
   const category: MessageCategory = { kind: 'tool_result' }
   const toolUseParsed = toolUseInput
-    ? {
+    ? resolveMessageForRendering({
         rawText: '',
         topLevel: null,
         parentObject: {
@@ -62,7 +63,7 @@ function renderAgentResult(
           message: { role: 'assistant', content: [{ type: 'tool_use', id: 'test-agent', name: 'Agent', input: toolUseInput }] },
         },
         wrapper: null,
-      }
+      }, AgentProvider.CLAUDE_CODE)
     : undefined
   const result = renderMessageContent(
     agentToolResult(resultContent, toolUseResult),

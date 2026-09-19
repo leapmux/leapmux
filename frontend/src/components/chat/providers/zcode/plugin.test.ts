@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../../messageClassification'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -8,7 +8,7 @@ import { providerQuotableText, providerToolMeta } from '~/test-support/toolCallI
 import { buildDenyResponse } from '~/utils/controlResponse'
 import { toolCallMeta } from '../../results/tools/meta'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
-import { providerFor } from '../registry'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 
 // Side-effect import to register the ZCode plugin.
@@ -26,8 +26,8 @@ function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<
   return event(ZCODE_EVENT.ToolUpdated, { kind, toolCallId: 'call-1', ...payload })
 }
 
-function parsedOf(parent: Record<string, unknown>): ParsedMessageContent {
-  return { rawText: '', topLevel: parent, parentObject: parent, wrapper: null }
+function parsedOf(parent: Record<string, unknown>): ResolvedMessageContent {
+  return resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, AgentProvider.ZCODE)
 }
 
 describe('zcode plugin metadata', () => {
@@ -91,7 +91,7 @@ describe('zcode plugin metadata', () => {
 
 describe('zcode spanRole', () => {
   it('routes a scheduled row to opener and each finishing kind to result', () => {
-    expect(plugin?.transcript.spanRole!(parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled)))).toBe('opener')
+    expect(plugin?.transcript.spanRole!(parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled)))).toBe('request')
     for (const kind of [ZCODE_TOOL_KIND.Result, ZCODE_TOOL_KIND.Error, ZCODE_TOOL_KIND.Batch]) {
       expect(plugin?.transcript.spanRole!(parsedOf(toolEvent(kind)))).toBe('result')
     }
@@ -103,7 +103,7 @@ describe('zcode spanRole', () => {
   })
 
   it('reports other for a row with no parent object', () => {
-    expect(plugin?.transcript.spanRole!({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null }))
+    expect(plugin?.transcript.spanRole!(resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null }, AgentProvider.ZCODE)))
       .toBe('other')
   })
 
@@ -113,7 +113,7 @@ describe('zcode spanRole', () => {
   it.each([ZCODE_TOOL_KIND.Scheduled, ZCODE_TOOL_KIND.Started, ZCODE_TOOL_KIND.Progress])(
     'routes a retained %s row to result',
     (kind) => {
-      const parsed = { ...parsedOf(toolEvent(kind)), completion: MessageCompletion.INTERRUPTED }
+      const parsed = resolveMessageForRendering({ ...parsedOf(toolEvent(kind)), completion: MessageCompletion.INTERRUPTED }, AgentProvider.ZCODE)
       expect(plugin?.transcript.spanRole!(parsed)).toBe('result')
     },
   )
@@ -130,10 +130,10 @@ describe('zcode retained tool row', () => {
   // flight, and a call in flight carries no result at all -- `ToolMessage` draws the
   // live output the worker broadcasts there.
   it('presents the progress output tails as the partial result, one stream per line', () => {
-    const parsed: ParsedMessageContent = {
+    const parsed = resolveMessageForRendering({
       ...parsedOf(toolEvent(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial ', stderrTail: 'output' })),
       completion: MessageCompletion.INTERRUPTED,
-    }
+    }, AgentProvider.ZCODE)
     const row = extractedRow(extractChatRow(AgentProvider.ZCODE, parsed, { kind: 'tool_result' }, {
       spanType: ZCODE_TOOL.Bash,
       sides: { current: parsed, request: undefined, result: undefined, role: 'result' },
@@ -242,7 +242,7 @@ describe('zcode quotable text', () => {
 })
 
 describe('zcode contextUsageFromMessage', () => {
-  const usageRow = (usage: Record<string, unknown>): ParsedMessageContent =>
+  const usageRow = (usage: Record<string, unknown>): ResolvedMessageContent =>
     parsedOf(event(ZCODE_EVENT.SessionUpdated, { usage }))
 
   it('normalizes a usage snapshot onto the shared context-usage shape', () => {

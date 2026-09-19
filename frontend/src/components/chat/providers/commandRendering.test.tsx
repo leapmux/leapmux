@@ -13,7 +13,7 @@ import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolMeta } from '~/test-support/toolCallIr'
 import { MessageBubble } from '../MessageBubble'
 import { commandInputCollapsed, toolInputSummary } from '../toolStyles.css'
-import { providerFor } from './registry'
+import { providerFor, resolveMessageForRendering } from './registry'
 import { input } from './testUtils'
 import './index'
 import './claude/plugin'
@@ -164,7 +164,7 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
   // fixture carries no `item.id`, so Codex's own classifier calls it `unknown`, and
   // these cases are about the mounted row's toolbar rather than the classification.
   const content: ParsedMessageContent = { rawText: JSON.stringify(parsed), topLevel: parsed, parentObject: parsed, wrapper: null }
-  const prepared: PreparedMessage = { message, original: content, resolved: content, category: { kind: 'tool_use' } }
+  const prepared: PreparedMessage = { message, original: content, resolved: resolveMessageForRendering(content, AgentProvider.CODEX), category: { kind: 'tool_use' } }
   return render(() => (
     <MessageBubble
       message={message}

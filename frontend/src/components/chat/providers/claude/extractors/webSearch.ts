@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { WebSearchRequest, WebSearchResult } from '../../../ir/tools/webSearch'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickNumber } from '~/lib/jsonPick'
@@ -37,7 +37,7 @@ export function claudeWebSearchFromToolResult(
  * no `results` array either, so it fell to the unparsed rung, which states that the
  * call completed and contradicts the row's own failed status.
  */
-export function claudeWebSearchPayload(request: WebSearchRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'web_search'> {
+export function claudeWebSearchPayload(request: WebSearchRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'web_search'> {
   if (!result)
     return { kind: 'web_search', request }
   const failure = claudeFailedResult(result)

@@ -1,5 +1,5 @@
 import type { CommandExit } from '../../../ir/commandResult'
-import type { ToolCallPayloadIR, ToolCallPayloadOf } from '../../../ir/toolCall'
+import type { ToolCallPayload, ToolCallPayloadIR } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
 import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
@@ -34,7 +34,7 @@ import { GOOSE_DEVELOPER_EXTENSION, GOOSE_DEVELOPER_TOOL, GOOSE_TODO_EXTENSION, 
  * `originalWidth` / `originalHeight` are deliberately unread: they describe the file
  * before Goose scaled it down, and the row draws the bytes it received.
  */
-function gooseImagePayload<K extends ToolKind>(payload: ToolCallPayloadOf<K>, tool: Record<string, unknown>, input: Record<string, unknown>): ToolCallPayloadOf<K> {
+function gooseImagePayload<K extends ToolKind>(payload: ToolCallPayload<K>, tool: Record<string, unknown>, input: Record<string, unknown>): ToolCallPayload<K> {
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
   const filePath = pickString(raw, 'source') || pickString(input, 'source')
   const width = pickNumber(raw, 'width', undefined)

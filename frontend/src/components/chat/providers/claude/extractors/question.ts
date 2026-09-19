@@ -1,5 +1,5 @@
 import type { QuestionIR } from '../../../ir/questionBody'
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { QuestionRequest } from '../../../ir/tools/question'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -76,7 +76,7 @@ export function claudeQuestions(input: Record<string, unknown>): QuestionIR[] {
  * Claude keys its answers by the full question text; an older LeapMux build
  * keyed them by the header. Both are read, so a saved row keeps its answer.
  */
-export function claudeQuestionPayload(request: QuestionRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'question'> {
+export function claudeQuestionPayload(request: QuestionRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'question'> {
   // The row's header word: one question states itself, several state their count.
   const title = claudeAskUserQuestionTitle(args.input)
   if (!result || result.role !== 'result')

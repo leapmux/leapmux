@@ -7,6 +7,7 @@ import type { ImageRenderActions } from '../renderContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { isFinishedToolStatus } from '../ir/toolRowStatus'
 import { getToolResultExpanded } from '../messageRenderers'
 import { toolInputSummary, toolMessage, toolResultError, toolResultPrompt } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
@@ -101,7 +102,7 @@ export function GenericToolBody(props: {
       <Show when={props.result.error}>
         <div class={toolResultError}><McpTextView text={props.result.error!} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} /></div>
       </Show>
-      <Show when={props.status !== 'in_progress' && props.status !== 'pending' && props.result.content.length === 0 && !props.result.structuredJson && !props.result.error}>
+      <Show when={isFinishedToolStatus(props.status) && props.result.content.length === 0 && !props.result.structuredJson && !props.result.error}>
         <div class={toolResultPrompt}>{EMPTY_RESULT_NOTICE}</div>
       </Show>
     </div>

@@ -215,7 +215,7 @@ describe('cursor protocol errors', () => {
    * The shared build answers this row, and Cursor's branch keeps its result only when
    * that answer states `kind: 'mcp'`. It did not: no case list of the old
    * `acpPayloadFor` switch held `mcp`, so the frame fell to the generic case and came back
-   * as `kind: ''` from behind a declared `ToolCallPayloadOf<'mcp'>`. The test below
+   * as `kind: ''` from behind a declared `ToolCallPayload<'mcp'>`. The test below
    * therefore matched nothing, `result` was always undefined, and the card drew empty.
    */
   it('draws the content blocks of an MCP call that saved no tool result', () => {

@@ -8,6 +8,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { resolveMessageForRendering } from './providers/registry'
 import { renderMessageContent } from './rowRenderers'
 import './providers'
 
@@ -136,7 +137,7 @@ describe('write/edit tool_use messages state the change they request', () => {
   })
 
   it('drops the request once the paired tool_result lands', () => {
-    const toolResultParsed = parseMessageContent(makeFakeMessage({
+    const toolResultParsed = resolveMessageForRendering(parseMessageContent(makeFakeMessage({
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'test-id', content: 'Updated successfully.' }] },
       tool_use_result: {
@@ -144,7 +145,7 @@ describe('write/edit tool_use messages state the change they request', () => {
         filePath: '/tmp/test.go',
         structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
       },
-    }))
+    })), AgentProvider.CLAUDE_CODE)
     const context: RenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
     const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>

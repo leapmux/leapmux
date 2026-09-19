@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { MessageRequest } from '../../../ir/tools/message'
 import type { ClaudeToolRow } from './toolCommon'
 import { proseResult } from '../../../ir/toolCall'
@@ -11,7 +11,7 @@ import { claudeFailedResult } from './failure'
  * A send that FAILED states its reason alone. It drew as the delivery receipt
  * otherwise, under the same header as a message that arrived.
  */
-export function claudeMessagePayload(request: MessageRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'message'> {
+export function claudeMessagePayload(request: MessageRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'message'> {
   // With no addressee the tool's own name words the header; with one, the header
   // key stays absent rather than present-and-undefined.
   const header = request.to ? {} : { title: args.toolName }

@@ -4,13 +4,15 @@ import type { ChatRowIR } from './ir/row'
 import type { MessageCategory } from './messageClassification'
 import type { RenderContext } from './messageRenderers'
 import type { ChatRowExtraction } from './rowExtraction'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
-import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { TodoItem } from '~/models/todo'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import { createMemo, untrack } from 'solid-js'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assertNever } from '~/lib/assertNever'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
@@ -32,6 +34,7 @@ import {
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
+import { resolveMessageForRendering } from './providers/registry'
 import { ResultDivider } from './resultDividerRenderers'
 import { ToolMessage } from './results/ToolMessage'
 import { ToolStatusHeader } from './results/ToolStatusHeader'
@@ -282,7 +285,7 @@ function todoReadsHold(
 export function cachedChatRow(
   context: RowExtractionContext | undefined,
   agentProvider: AgentProvider | undefined,
-  parsed: ParsedMessageContent,
+  parsed: ResolvedMessageContent,
   category: MessageCategory,
   completion: MessageCompletion | undefined,
 ): ChatRowExtraction {
@@ -479,10 +482,15 @@ export function renderMessageContent(
     // original content beside it can be a frame that never parsed -- an unparseable
     // original used to draw the unrecognized card instead of the answer, which is the
     // one thing the row exists to state.
+    // The isolated-render fallback builds a parse no provider merged, so it
+    // reaches the same resolved brand every mounted row reads.
     const parsed = context?.sources?.current()
-      ?? (category?.kind === 'control_response'
-        ? parsedMessageOf(undefined)
-        : parsedMessageOf(typeof parsedOrRawJson === 'string' ? JSON.parse(parsedOrRawJson) : parsedOrRawJson))
+      ?? resolveMessageForRendering(
+        category?.kind === 'control_response'
+          ? parsedMessageOf(undefined)
+          : parsedMessageOf(typeof parsedOrRawJson === 'string' ? JSON.parse(parsedOrRawJson) : parsedOrRawJson),
+        agentProvider ?? AgentProvider.UNSPECIFIED,
+      )
 
     // The extraction is cached under the row's render-cache key, which already folds
     // the row's own content version and BOTH span siblings' revisions

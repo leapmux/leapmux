@@ -175,7 +175,7 @@ describe('zcodeToolCallIR truncation', () => {
 describe('zcodeToolCallIR', () => {
   it('reads a scheduled row as the request of its span', () => {
     const call = zcodeToolCallIR(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } })))!
-    expect(call).toMatchObject({ id: 'call', status: 'in_progress' })
+    expect(call).toMatchObject({ id: 'call', status: '' })
     expect(call.label).toBe(ZCODE_TOOL.Bash)
   })
 

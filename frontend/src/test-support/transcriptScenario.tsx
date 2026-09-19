@@ -94,7 +94,7 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     requestRevision: identity => resolver.request(identity)?.revision,
     resultRevision: identity => resolver.result(identity)?.revision,
     contentVersionById: id => resolver.contentVersion(id),
-    resolvedParsed: message => resolver.current(message).parsed,
+    resolvedParsed: message => resolver.current(message).resolved,
     showHiddenMessages: () => false,
   })
 

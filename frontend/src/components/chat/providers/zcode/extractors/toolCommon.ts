@@ -1,5 +1,6 @@
-import type { SpanRole } from '../../registry'
+import type {} from '../../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 import { ZCODE_EVENT, ZCODE_STORED_PART, ZCODE_STORED_PART_STATUS, ZCODE_STORED_PART_TYPE, ZCODE_STORED_TOOL, ZCODE_SUPPLEMENT, ZCODE_SUPPLEMENT_PAYLOAD, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
@@ -376,11 +377,11 @@ export function zcodeNativeTool(row: ZCodeRow): {
  * with no message store. The kind then decides, which is what the agent's own frames
  * say.
  */
-export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): SpanRole {
+export function zcodeToolSpanRole(kind: string, parsed: ParsedMessageContent | undefined): ToolSpanRole {
   if (retainedRowIsFinal(parsed?.completion) || parseToolOutcome(parsed?.messageMetadata) !== null)
     return 'result'
   if (kind === ZCODE_TOOL_KIND.Scheduled)
-    return 'opener'
+    return 'request'
   if (kind === ZCODE_TOOL_KIND.Result || kind === ZCODE_TOOL_KIND.Error || kind === ZCODE_TOOL_KIND.Batch)
     return 'result'
   return 'other'

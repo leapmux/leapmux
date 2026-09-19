@@ -1,4 +1,4 @@
-import type { ToolCallOf, ToolResultOf } from '../../../ir/toolCall'
+import type { ToolCallForKind, ToolResultOf } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
 import type { ACPToolCallAdapter } from './toolCall'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +13,7 @@ import { imagesForIR } from '../../../ir/derivations'
 import { failedResult, isFailedResult, isUnparsedResult, typedResult, unparsedResult } from '../../../ir/toolCall'
 import { TOOL_KINDS } from '../../../ir/toolKind'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
+import { resolveMessageForRendering } from '../../registry'
 import { input } from '../../testUtils'
 import { classifyACPMessage } from '../classification'
 import { ACP_PAYLOAD_BUILDERS, ACP_TOOL_REQUEST_OVERRIDES, acpPayloadFor, acpResultStatesNothing, acpToolCallIR, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
@@ -23,7 +24,7 @@ import { ACP_PAYLOAD_BUILDERS, ACP_TOOL_REQUEST_OVERRIDES, acpPayloadFor, acpRes
  * present `undefined` the exact-optional rule refuses. Each test hands the call's
  * own two fields over, so the question it asks stays the one it asked.
  */
-function resultArgs<K extends ToolKind>(call: ToolCallOf<K>): { kind: K, result?: ToolResultOf<K> } {
+function resultArgs<K extends ToolKind>(call: ToolCallForKind<K>): { kind: K, result?: ToolResultOf<K> } {
   return call.result === undefined ? { kind: call.kind } : { kind: call.kind, result: call.result }
 }
 
@@ -34,7 +35,7 @@ describe('result wrapper resolution (ACP)', () => {
     const parsed = parseMessageContent(message)
     const resolved = resolveACPMessage(parsed)
     expect(resolved).toEqual({ stopReason: 'end_turn', usage: { totalTokens: 0 } })
-    expect(classifyACPMessage()({ ...parsed, parentObject: resolved }).kind).toBe('result_divider')
+    expect(classifyACPMessage()(resolveMessageForRendering({ ...parsed, parentObject: resolved }, AgentProvider.OPENCODE)).kind).toBe('result_divider')
     expect(parsed.parentObject?.role).toBe('result')
     expect(parsed.rawText).toBe(raw)
     expect(buildRawJsonEnvelope(message, parsed, 'agent')).toContain(`"content":${raw}`)
@@ -116,7 +117,7 @@ describe('an interrupted tool call (ACP)', () => {
 
   it('classifies the row as a tool use although its status is not final', () => {
     const parsed = parseMessageContent(message)
-    expect(classifyACPMessage()({ ...parsed, completion: message.completion }).kind).toBe('tool_use')
+    expect(classifyACPMessage()(resolveMessageForRendering({ ...parsed, completion: message.completion }, AgentProvider.OPENCODE)).kind).toBe('tool_use')
   })
 })
 

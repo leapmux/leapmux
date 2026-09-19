@@ -52,7 +52,7 @@ function fixture(initial: AgentChatMessage[] = []) {
       messages,
       messageVersion: version,
       contentVersion: () => 0,
-      spanMessage: (spanId, side) => side === 'request' ? index.getOpenerMessage('agent', spanId) : index.getResultMessage('agent', spanId),
+      spanMessage: (spanId, side) => side === 'request' ? index.getRequestMessage('agent', spanId) : index.getResultMessage('agent', spanId),
       messageBySeq: seq => messages().find(message => message.seq === seq),
       fetchSpan,
       fetchMessage,
@@ -215,7 +215,7 @@ describe('message context resolver', () => {
     expect(fetchSpan).toHaveBeenCalledTimes(1)
     finish([result, request])
     await Promise.all([first, second])
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.parsed.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.resolved.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
     expect(resolver.result({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('result')
   })
 
@@ -240,7 +240,7 @@ describe('message context resolver', () => {
     finish([request, result])
     await loading
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.supplementalRevision).toBe(2n)
-    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.parsed.parentObject?.rawInput).toEqual({ filePath: '/project/recovered.ts' })
+    expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.resolved.parentObject?.rawInput).toEqual({ filePath: '/project/recovered.ts' })
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.original.parentObject?.rawInput).toEqual({ filePath: '/project/file.ts' })
   })
 

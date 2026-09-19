@@ -121,7 +121,7 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
     if (role === 'result') {
       return { kind: 'tool_result' }
     }
-    if (role === 'opener') {
+    if (role === 'request') {
       return { kind: 'tool_use' }
     }
     // The Worker consumes `started` and `progress` for live counters. One

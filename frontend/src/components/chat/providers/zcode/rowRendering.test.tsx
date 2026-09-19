@@ -1,8 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolBodyContent, toolUseHeader } from '../../toolStyles.css'
+import { resolveMessageForRendering } from '../registry'
 import { ZCODE_DISPLAY } from './protocol'
 import { ZCodeRowView } from './testUtils'
 
@@ -15,7 +17,7 @@ function scheduled(toolName: string, input: Record<string, unknown> = {}) {
 }
 
 function parsedOf(parent: Record<string, unknown>) {
-  return { rawText: '', topLevel: parent, parentObject: parent, wrapper: null }
+  return resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, AgentProvider.ZCODE)
 }
 
 describe('zcode assistant renderer', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TOOL_ROW_STATUSES, toolRowStatus, toolRowStatusOutcome, toolStatusFor } from './toolRowStatus'
+import { FINISHED_TOOL_STATUSES, isFinishedToolStatus, statusForOutcome, TOOL_ROW_STATUSES, toolRowStatus, toolRowStatusOutcome, UNFINISHED_TOOL_STATUSES } from './toolRowStatus'
 
 describe('toolRowStatus', () => {
   it('keeps every status the row header reads', () => {
@@ -17,19 +17,22 @@ describe('toolRowStatus', () => {
   })
 })
 
-describe('toolStatusFor', () => {
-  it('lets an interruption win over a finished row', () => {
-    expect(toolStatusFor('interrupted', false, true)).toBe('cancelled')
+describe('the finished/unfinished split', () => {
+  it('names every finished status and no unfinished one', () => {
+    for (const status of FINISHED_TOOL_STATUSES)
+      expect(isFinishedToolStatus(status), status).toBe(true)
+    for (const status of UNFINISHED_TOOL_STATUSES)
+      expect(isFinishedToolStatus(status), status).toBe(false)
+    // The two halves are the whole union, stated once, with nothing shared.
+    expect([...UNFINISHED_TOOL_STATUSES, ...FINISHED_TOOL_STATUSES].sort()).toEqual([...TOOL_ROW_STATUSES].sort())
   })
+})
 
-  it('reports a failure from the row and from the outcome', () => {
-    expect(toolStatusFor(null, true, true)).toBe('failed')
-    expect(toolStatusFor('failed', false, true)).toBe('failed')
-  })
-
-  it('separates a finished row from a running one', () => {
-    expect(toolStatusFor(null, false, true)).toBe('completed')
-    expect(toolStatusFor(null, false, false)).toBe('in_progress')
+describe('statusForOutcome', () => {
+  it('maps every outcome word that ends a call to its status', () => {
+    expect(statusForOutcome('failed')).toBe('failed')
+    expect(statusForOutcome('interrupted')).toBe('cancelled')
+    expect(statusForOutcome('declined')).toBe('declined')
   })
 })
 

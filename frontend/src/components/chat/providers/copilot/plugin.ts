@@ -28,7 +28,7 @@ const copilotPlugin: ProviderPlugin = {
       // its request. A request wants its result only when the body comes from there.
       if (role === 'result')
         return ['request']
-      if (role !== 'opener')
+      if (role !== 'request')
         return []
       const row = copilotToolRow(parsed.parentObject)
       return row && (row.kind === 'agent' || Object.keys(row.input).length === 0) ? ['result'] : []

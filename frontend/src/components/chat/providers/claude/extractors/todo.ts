@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ToolRequests } from '../../../ir/tools'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import type { TodoItem } from '~/models/todo'
@@ -68,7 +68,7 @@ export function claudeTodoRequest(
  * the result reports. A failed call keeps the list it carried and states its
  * error text alone.
  */
-export function claudeTodoPayload(request: ToolRequests['todo'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'todo'> {
+export function claudeTodoPayload(request: ToolRequests['todo'], args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'todo'> {
   if (!result)
     return { kind: 'todo', request }
   const failure = claudeFailedResult(result)
@@ -98,7 +98,7 @@ export function claudeTaskGetUnresolved(args: ClaudeToolRow, result: ClaudeToolR
  * A `Task*` result row is HIDDEN, so the request row draws the item: when the
  * paired result has landed, its task rides the result slot of this one row.
  */
-export function claudeTaskTodoPayload(request: ToolRequests['todo'], result: ClaudeToolRow | undefined, context: ClaudeRowContext, title: string): ToolCallPayload<'todo'> {
+export function claudeTaskTodoPayload(request: ToolRequests['todo'], result: ClaudeToolRow | undefined, context: ClaudeRowContext, title: string): ToolCallPayloadForKind<'todo'> {
   // Nothing to draw: the call states no task yet, or no answer has landed beside it.
   // An empty list is what {@link claudeTodoRequest} answers for the first of those.
   if (request.items.length === 0 || (!result && !context.pairedResult))

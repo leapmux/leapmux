@@ -14,7 +14,7 @@ import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { extraImages, resultImages, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../ir/derivations'
 import { isFailedResult, isUnparsedResult } from '../ir/toolCall'
 import { toolOutcomeLabel } from '../ir/toolOutcomeLabel'
-import { toolRowStatusOutcome } from '../ir/toolRowStatus'
+import { isFinishedToolStatus, toolRowStatusOutcome } from '../ir/toolRowStatus'
 import { useSharedExpandedState } from '../messageRenderers'
 import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { toolInputSummary } from '../toolStyles.css'
@@ -116,7 +116,7 @@ export function ToolMessage(props: { row: ToolCallRow, context?: RenderContext, 
   // The live output of a call that has NOT returned. The worker broadcasts it on
   // the ephemeral channel and drops it when the result row lands, so the finished
   // row keeps drawing its own persisted text and the row never re-lays out.
-  const liveTail = () => call().status === 'in_progress' && call().result === undefined ? props.progress?.liveTail() : undefined
+  const liveTail = () => !isFinishedToolStatus(call().status) && call().result === undefined ? props.progress?.liveTail() : undefined
   const truncated = () => call().truncated || liveTail()?.outputTruncated === true
   const statusOutcome = () => toolRowStatusOutcome(call().status)
   // The image tabs' name: the call's own title when it stated one, else the

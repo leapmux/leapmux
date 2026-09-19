@@ -1,27 +1,27 @@
 import type { FileImageLoadOptions, FileImageReader } from './fileImageResolver'
-import type { SpanRole } from './providers/registry'
+import type {} from './providers/registry'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { MessageRevision, MessageSpanIdentity, ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import type { SpanMessageRevision, ToolMessageSide } from '~/stores/chatTypes'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { preferNewerSupplement } from '~/stores/chatMessageOrder'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createFileImageResolver } from './fileImageResolver'
-import { parsedMessageForRendering, pluginFor } from './providers/registry'
+import { pluginFor, resolveMessageForRendering } from './providers/registry'
 
 /** A message and the revision of the data that its renderer receives. */
 export interface ResolvedMessage {
   message: AgentChatMessage
   original: ParsedMessageContent
-  parsed: ParsedMessageContent
-  revision: SpanMessageRevision
+  resolved: ResolvedMessageContent
+  revision: MessageRevision
 }
 
 /** The data sources for one agent. Entity getters read live stores. */
@@ -44,7 +44,7 @@ export interface MessageContextSources {
   messages: () => AgentChatMessage[]
   messageVersion: () => number
   contentVersion: (messageId: string) => number
-  spanMessage: (identity: MessageSpanIdentity, side: ToolMessageSide) => AgentChatMessage | undefined
+  spanMessage: (identity: MessageSpanIdentity, side: ToolSpanSide) => AgentChatMessage | undefined
   messageBySeq: (seq: bigint) => AgentChatMessage | undefined
   fetchSpan: (identity: MessageSpanIdentity, signal: AbortSignal) => Promise<AgentChatMessage[]>
   fetchMessage: (seq: bigint, signal: AbortSignal) => Promise<AgentChatMessage | undefined>
@@ -78,10 +78,10 @@ export interface MessageContextResolver {
 
 /** Reactive sources for one rendered row. Only the consuming component subscribes. */
 export interface MessageRenderSources {
-  current: () => ParsedMessageContent | undefined
-  request: () => ParsedMessageContent | undefined
-  result: () => ParsedMessageContent | undefined
-  role: () => SpanRole
+  current: () => ResolvedMessageContent | undefined
+  request: () => ResolvedMessageContent | undefined
+  result: () => ResolvedMessageContent | undefined
+  role: () => ToolSpanRole
   fileImage: MessageContextResolver['fileImage']
   cachedFileImage: MessageContextResolver['cachedFileImage']
   todo: MessageContextResolver['todo']
@@ -89,19 +89,19 @@ export interface MessageRenderSources {
   progress: () => ToolProgressEntry | undefined
 }
 
-export function createMessageRenderSources(resolver: () => MessageContextResolver | undefined, message: () => AgentChatMessage, current: () => ParsedMessageContent): MessageRenderSources {
+export function createMessageRenderSources(resolver: () => MessageContextResolver | undefined, message: () => AgentChatMessage, current: () => ResolvedMessageContent): MessageRenderSources {
   const span = () => messageSpanIdentity(message())
   return {
     current,
-    request: () => resolver()?.request(span())?.parsed,
-    result: () => resolver()?.result(span())?.parsed,
+    request: () => resolver()?.request(span())?.resolved,
+    result: () => resolver()?.result(span())?.resolved,
     role: () => {
       const context = resolver()
       const own = message()
       if (context?.result(messageSpanIdentity(own))?.message.id === own.id)
         return 'result'
       if (context?.request(messageSpanIdentity(own))?.message.id === own.id)
-        return 'opener'
+        return 'request'
       return pluginFor(own.agentProvider)?.transcript.spanRole?.(current()) ?? 'other'
     },
     fileImage: (path, options) => resolver()?.fileImage(path, { ...options, reference: message().id }) ?? Promise.reject(new Error('The image source is unavailable')),
@@ -170,7 +170,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     const value: ResolvedMessage = {
       message,
       original,
-      parsed: parsedMessageForRendering(original, message.agentProvider),
+      resolved: resolveMessageForRendering(original, message.agentProvider),
       revision: { id: message.id, seq: message.seq, contentVersion: version, supplementalRevision: message.supplementalRevision },
     }
     if (cache)
@@ -224,14 +224,14 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     }
   }
 
-  function related(identity: MessageSpanIdentity, side: ToolMessageSide): ResolvedMessage | undefined {
+  function related(identity: MessageSpanIdentity, side: ToolSpanSide): ResolvedMessage | undefined {
     source.messageVersion()
     cacheVersion()
     if (!identity.spanId || disposed)
       return undefined
     const matches = (message: AgentChatMessage | undefined) => message && messageSpanKey(message) === messageSpanKey(identity) ? message : undefined
     const resident = matches(source.spanMessage(identity, side))
-    const cached = matches(side === 'request' ? spans.getOpenerMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
+    const cached = matches(side === 'request' ? spans.getRequestMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
     const message = newestRelatedMessage(resident, cached)
     return message ? reference(message) : undefined
   }
@@ -430,7 +430,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     loadSpan,
     loadRelated: (message, parsed) => untrack(async () => {
       const resolved = current(message, parsed)
-      const sides = pluginFor(message.agentProvider)?.transcript.relatedMessages?.(resolved.parsed) ?? []
+      const sides = pluginFor(message.agentProvider)?.transcript.relatedMessages?.(resolved.resolved) ?? []
       if (sides.some(side => related(messageSpanIdentity(message), side) === undefined))
         await loadSpan(messageSpanIdentity(message))
     }),

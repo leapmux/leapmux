@@ -27,7 +27,7 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       messageVersion: () => 0,
       contentVersion: () => 0,
       messageBySeq: seq => messages().find(message => message.seq === seq),
-      spanMessage: (spanId, side) => side === 'request' ? index().getOpenerMessage('test', spanId) : index().getResultMessage('test', spanId),
+      spanMessage: (spanId, side) => side === 'request' ? index().getRequestMessage('test', spanId) : index().getResultMessage('test', spanId),
       fetchMessage: async () => undefined,
       fetchSpan: async () => [],
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
@@ -132,7 +132,7 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
         }
         return undefined
       },
-      spanMessage: (identity, side) => side === 'request' ? index().getOpenerMessage('test', identity) : index().getResultMessage('test', identity),
+      spanMessage: (identity, side) => side === 'request' ? index().getRequestMessage('test', identity) : index().getResultMessage('test', identity),
       // The default span fetch answers from the COMPLETE archive, filtered by the
       // whole span identity: the session AND the span id, which is what keeps one
       // session from answering another's reused tool id.

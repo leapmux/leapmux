@@ -1,5 +1,5 @@
 import type { ReadFileResult } from '../../../ir/readFileResult'
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ReadRequest } from '../../../ir/tools/read'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
@@ -67,7 +67,7 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
  * A read that FAILED states its reason alone. The file viewer took it as the file's
  * own body otherwise, which reads as a one-line file rather than as an error.
  */
-export function claudeReadPayload(request: ReadRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'read'> {
+export function claudeReadPayload(request: ReadRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'read'> {
   if (!result)
     return { kind: 'read', request }
   const failure = claudeFailedResult(result)

@@ -1,8 +1,8 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
-import type { SavedViewportScroll, ToolMessageSide } from './chatTypes'
+import type { SavedViewportScroll } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
 import { toBinary } from '@bufbuild/protobuf'
 import { batch, untrack } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
@@ -608,9 +608,9 @@ export function createChatStore() {
       }
     },
 
-    getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolMessageSide): AgentChatMessage | undefined {
+    getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolSpanSide): AgentChatMessage | undefined {
       void state.messageVersion[agentId]
-      return side === 'request' ? spanIdx.getOpenerMessage(agentId, identity) : spanIdx.getResultMessage(agentId, identity)
+      return side === 'request' ? spanIdx.getRequestMessage(agentId, identity) : spanIdx.getResultMessage(agentId, identity)
     },
 
     getMessages(agentId: string): AgentChatMessage[] {

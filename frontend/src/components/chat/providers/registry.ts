@@ -10,9 +10,11 @@
 // and lookup alone.
 
 import type { ToolRowOutcome } from '../ir/toolOutcomeLabel'
+import type { ResolvedMessageContent } from '../rowExtractionTypes'
 import type { ProviderPlugin } from './capabilities'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { messageCompletionFromProto } from '../assembledMessage'
@@ -34,7 +36,6 @@ export type {
   ProviderSessionCapability,
   ProviderTranscriptCapability,
 } from './capabilities'
-export type { SpanRole } from '~/components/chat/rowExtractionTypes'
 
 /**
  * How LeapMux itself says a retained tool row ended, or null when it says nothing.
@@ -131,13 +132,72 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  * the no-guessing contract lives in one place instead of a ternary at every
  * call site.
  */
+/**
+ * The span role of one RESOLVED parse, through its provider's hook.
+ *
+ * The one route the four shared readers take: it resolves the parse, asks the
+ * plugin, and answers `other` when no provider exists -- so no production call
+ * site hands a provider's `spanRole` a raw parse, and a plugin that registers
+ * late is read through the same memo as every other hook.
+ */
+export function resolvedSpanRole(parsed: ParsedMessageContent, provider: AgentProvider): ToolSpanRole {
+  return pluginFor(provider)?.transcript.spanRole?.(resolveMessageForRendering(parsed, provider)) ?? 'other'
+}
+
 export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin | undefined {
   return provider != null ? providerFor(provider) : undefined
 }
 
-/** Resolve display data without changing the parsed original used by the Raw JSON view. */
-export function parsedMessageForRendering(parsed: ParsedMessageContent, provider: AgentProvider): ParsedMessageContent {
+/**
+ * The resolved-parse memo: one parse, one entry per provider.
+ *
+ * `WeakMap` keyed on the parse, because the parse is cached on the message
+ * reference -- the same object reaches this function for every reader of one row,
+ * and resolving it twice built a second object for the same bytes, which put the
+ * transcript, the toolbar and the image tab on different copies. The resolved
+ * object is stored as its OWN cached result too, so a second resolution of an
+ * already-resolved parse returns the same reference.
+ *
+ * Replaced wholesale when provider registration changes or a test resets the
+ * registry: a plugin that registered later must not answer from a memo the
+ * previous registration wrote.
+ */
+let resolvedMemo = new WeakMap<ParsedMessageContent, Map<AgentProvider, ResolvedMessageContent>>()
+
+/** Drop the resolved-parse memo. Test-only: the registry reset must invalidate it. */
+export function __resetResolvedMessageMemoForTest(): void {
+  resolvedMemo = new WeakMap()
+}
+
+/**
+ * Resolve display data without changing the parsed original used by the Raw JSON view.
+ *
+ * The ONE constructor of {@link ResolvedMessageContent}: the merge runs once per
+ * parse and provider, and the brand it returns is what the classifiers, the
+ * span-role readers and the extractors accept -- never the raw parse.
+ */
+export function resolveMessageForRendering(parsed: ParsedMessageContent, provider: AgentProvider): ResolvedMessageContent {
+  let byProvider = resolvedMemo.get(parsed)
+  if (byProvider === undefined) {
+    byProvider = new Map()
+    resolvedMemo.set(parsed, byProvider)
+  }
+  const cached = byProvider.get(provider)
+  if (cached !== undefined)
+    return cached
   const providerData = providerFor(provider)?.transcript.resolveMessage?.(parsed) ?? parsed.parentObject
   const parentObject = providerData && isObject(parsed.messageMetadata) ? applyMessageMetadata(providerData, parsed.messageMetadata) : providerData
-  return parentObject === parsed.parentObject ? parsed : { ...parsed, parentObject }
+  const resolved = (parentObject === parsed.parentObject ? parsed : { ...parsed, parentObject }) as ResolvedMessageContent
+  byProvider.set(provider, resolved)
+  // The resolved object answers for itself: a second resolution of it -- a caller
+  // that held the merged parse and passed it back -- returns the same reference
+  // rather than running the provider hook over its own output.
+  let selfEntry = resolvedMemo.get(resolved)
+  if (selfEntry === undefined) {
+    selfEntry = new Map()
+    resolvedMemo.set(resolved, selfEntry)
+  }
+  if (!selfEntry.has(provider))
+    selfEntry.set(provider, resolved)
+  return resolved
 }

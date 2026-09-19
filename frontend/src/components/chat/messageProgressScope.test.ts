@@ -1,17 +1,19 @@
 import type { MessageContextResolver } from './messageContextResolver'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createToolProgressStore } from '~/stores/chatToolProgress'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage } from '~/test-support/messageFactory'
 import { createMessageRenderSources } from './messageContextResolver'
+import { resolveMessageForRendering } from './providers/registry'
 
 /** The provider session every span below belongs to, unless a test states another. */
 const SESSION = 'sess-1'
 
 function renderSources(context: MessageContextResolver, message: AgentChatMessage) {
-  return createMessageRenderSources(() => context, () => message, () => parseMessageContent(message))
+  return createMessageRenderSources(() => context, () => message, () => resolveMessageForRendering(parseMessageContent(message), AgentProvider.CLAUDE_CODE))
 }
 
 function runningToolContext(spanId: string, elapsedSeconds: number, agentSessionId: string = SESSION) {

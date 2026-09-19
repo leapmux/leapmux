@@ -1,14 +1,14 @@
 import type { Accessor } from 'solid-js'
 import type { ContentKeyInputs } from './chatRowGeometry'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { PreparedMessage } from './rowPreparation'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import type { SpanMessageRevision } from '~/stores/chatTypes'
+import type { MessageRevision, MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { shallowEqual } from '~/lib/shallowEqual'
+import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
 import { prepareMessage } from './rowPreparation'
 import { parseSpanLines } from './spanLinesParse'
@@ -27,87 +27,21 @@ import { parseSpanLines } from './spanLinesParse'
 
 /**
  * The dimensions that decide whether a cached entry is still reusable for a message
- * under a STABLE id: the seq plus derived signals that can move while the
- * seq+id stay put. Built once per (re)classify (freshnessOf) and compared
- * structurally by isEntryFresh, so adding a freshness dimension is a single edit
- * here -- the builder and the comparison can't drift out of a parallel hand-synced
- * field list, the exact hazard this cache's surrounding comments repeatedly warn of.
+ * under a STABLE id: the row's exact revision dependencies as one key, plus the
+ * child-transcript flag.
+ *
+ * Built once per (re)classify (freshnessOf) and compared structurally by
+ * isEntryFresh, so adding a freshness dimension is a single edit in the builder
+ * -- the exact hazard this cache's surrounding comments repeatedly warn of. The
+ * revision key carries the message's own revision ALWAYS (a reseq, an in-place
+ * body replacement, a late supplement), the REQUEST revision only on a result
+ * row, and the RESULT revision only on a tool-use row; an unrelated sibling's
+ * revision appears in no member, so a change to it rebuilds nothing.
  */
 export interface EntryFreshness {
-  /**
-   * The message seq at classify time. A new seq is a different message instance under
-   * the same id (a reseq / notification consolidation), so it always rebuilds.
-   */
-  seq: bigint
-  /**
-   * The message's content version at classify time. A same-seq in-place body
-   * replacement (the store's updateExistingMessage same-seq path) keeps the id,
-   * seq, AND store-proxy reference, so neither seq nor `cached.message` identity moves
-   * -- only this counter does. Folding it into the freshness check rebuilds the row
-   * on such an update instead of rendering the pre-update classification.
-   */
-  contentVersion: number
-  /**
-   * The message's supplemental revision at classify time.
-   *
-   * The preparation MERGES the supplemental content into the payload before it
-   * classifies, so a supplement that arrives late can change the category as well as
-   * the body -- a ZCode `result` frame whose recovered output lands afterwards is the
-   * case that named this rule. The store bumps `contentVersion` for such an arrival
-   * today, so this dimension is currently redundant with the one above; it is stated
-   * anyway, because the cache must not depend on the store keeping that discipline
-   * for a field the cache itself reads.
-   */
-  supplementalRevision: bigint
-  /**
-   * Whether the row's span had a paired tool_use (opener) parse available at
-   * classify time. A tool_result's renderer reads its sibling opener (Claude's edit
-   * input, Pi's start args); if the opener arrives LATER (older-page prepend /
-   * reseq / re-broadcast) while the result is off-screen, the cache must re-build
-   * (and bust the measured-height cache key) so the row isn't frozen at its
-   * no-sibling shape. (A tool_use row's own span resolves to itself, so this stays
-   * stably true for openers — no spurious rebuilds.)
-   */
-  hasToolUseSibling: boolean
-  /**
-   * The paired tool_use OPENER's content version at classify time (0 for non-result
-   * rows or when no opener is indexed). Retained separately for tests/debugging and
-   * for the height debug view. The revision key also identifies replacement messages.
-   */
-  toolUseSiblingContentVersion: number
-  /**
-   * Stable token for the paired tool_use opener identity/seq/content version. A
-   * present-to-different-present sibling replacement can keep contentVersion at 0,
-   * so the version alone is not enough to bust cached result rows.
-   */
-  toolUseSiblingRevisionKey: string
-  /**
-   * Whether the row's span had a paired tool_result parse available at classify
-   * time. Some tool_use rows (Claude Task*) render from hidden result data, so
-   * late result arrival must rebuild the opener row instead of freezing it at its
-   * no-result shape.
-   */
-  hasToolResultSibling: boolean
-  /**
-   * The paired tool_result's content version at classify time (0 for non-opener
-   * rows or when no result is indexed). Retained separately for tests/debugging and
-   * the height debug view. The revision key also identifies replacement messages.
-   */
-  toolResultSiblingContentVersion: number
-  /** Stable token for the paired tool_result identity/seq/content version. */
-  toolResultSiblingRevisionKey: string
-  /**
-   * Whether these messages were a SUBAGENT's own transcript at classify time. The
-   * flag decides whether a forwarded `parent_tool_use_id` row is the prompt SENT
-   * to a subagent (the parent's view) or an ordinary message INSIDE it, so a row
-   * classified under the wrong value renders as the collapsed "Prompt" card
-   * forever.
-   *
-   * It is not constant for the life of a view: a subagent tab is placed before
-   * `listAgents` hydrates its `parentAgentId`, and the child's own messages are
-   * subscribed immediately, so a row can be classified in that window. Tracking it
-   * here rebuilds those rows when the link lands.
-   */
+  /** The row's exact revision dependencies (see chatRevisionKey.ts). */
+  revisionKey: string
+  /** Whether these messages were a SUBAGENT's own transcript at classify time. */
   isChildTranscript: boolean
 }
 
@@ -145,15 +79,7 @@ export type ClassifiedEntry = PreparedMessage & {
  */
 function contentKeyInputsOf(entry: ClassifiedEntry): ContentKeyInputs {
   return {
-    seq: entry.message.seq,
-    hasToolUseSibling: entry.freshness.hasToolUseSibling,
-    toolUseContentVersion: entry.freshness.toolUseSiblingContentVersion,
-    toolUseRevisionKey: entry.freshness.toolUseSiblingRevisionKey,
-    hasToolResultSibling: entry.freshness.hasToolResultSibling,
-    toolResultContentVersion: entry.freshness.toolResultSiblingContentVersion,
-    toolResultRevisionKey: entry.freshness.toolResultSiblingRevisionKey,
-    contentVersion: entry.freshness.contentVersion,
-    supplementalRevision: entry.freshness.supplementalRevision,
+    revisionKey: entry.freshness.revisionKey,
     isChildTranscript: entry.freshness.isChildTranscript,
   }
 }
@@ -187,9 +113,9 @@ export interface ClassifiedEntryCacheDeps {
   /** The window's messages, in display order (read reactively). */
   messages: () => readonly AgentChatMessage[]
   /** The shared resolver's current request revision for this span. */
-  requestRevision?: (identity: MessageSpanIdentity) => SpanMessageRevision | undefined
+  requestRevision?: (identity: MessageSpanIdentity) => MessageRevision | undefined
   /** The shared resolver's current result revision for this span. */
-  resultRevision?: (identity: MessageSpanIdentity) => SpanMessageRevision | undefined
+  resultRevision?: (identity: MessageSpanIdentity) => MessageRevision | undefined
   /**
    * The row's content version (the store's getMessageContentVersion), bumped on a
    * same-seq in-place body replacement. MUST read REACTIVELY: that merge changes
@@ -206,7 +132,7 @@ export interface ClassifiedEntryCacheDeps {
    * the image tab would then each read the row from a different one. Reading the
    * resolver's copy here is what keeps them on one.
    */
-  resolvedParsed?: (message: AgentChatMessage) => ParsedMessageContent | undefined
+  resolvedParsed?: (message: AgentChatMessage) => ResolvedMessageContent | undefined
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
   /**
@@ -230,9 +156,6 @@ export interface ClassifiedEntryCache {
 
 export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): ClassifiedEntryCache {
   const entryCache = new Map<string, ClassifiedEntry>()
-  const revisionKeyOf = (revision: SpanMessageRevision | undefined): string =>
-    revision === undefined ? '' : `${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
-
   /**
    * Build the freshness signature for `message` classified as `kind`. The SINGLE place
    * the freshness dimensions are enumerated: isEntryFresh compares against this and
@@ -242,25 +165,29 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
    * the same slots the entry was built with.
    */
   const freshnessOf = (message: AgentChatMessage, kind: string): EntryFreshness => {
-    const request = message.spanId ? deps.requestRevision?.(messageSpanIdentity(message)) : undefined
-    // The opener's REVISION, for a tool_result row alone -- the only kind that
-    // sizes itself from a sibling opener. A tool_use row's own span resolves to
-    // ITSELF, so an ungated read records that row's own content version a second
-    // time, in a slot whose name states that it holds a sibling's. The presence
-    // flag below stays ungated: an opener that resolves to itself holds that flag
-    // stable at true, which is what keeps an opener row from rebuilding.
-    const opener = kind === 'tool_result' ? request : undefined
-    const result = message.spanId && kind.startsWith('tool_use') ? deps.resultRevision?.(messageSpanIdentity(message)) : undefined
-    return {
+    const own: MessageRevision = {
+      id: message.id,
       seq: message.seq,
       contentVersion: deps.contentVersionById?.(message.id) ?? 0,
       supplementalRevision: message.supplementalRevision,
-      hasToolUseSibling: request !== undefined,
-      toolUseSiblingContentVersion: opener?.contentVersion ?? 0,
-      toolUseSiblingRevisionKey: revisionKeyOf(opener),
-      hasToolResultSibling: result !== undefined,
-      toolResultSiblingContentVersion: result?.contentVersion ?? 0,
-      toolResultSiblingRevisionKey: revisionKeyOf(result),
+    }
+    // Both sibling members, for a TOOL row alone: a tool_result draws its opener's
+    // input, a tool_use may render from hidden result data, and an UPDATE frame
+    // the wire classified under the tool_use category is the span's closing side
+    // whose request arrives late. A tool row's own span resolves to ITSELF on
+    // its own side, so the self-referential member is stable and carries nothing
+    // the own member does not. Every other row keys on its own revision alone,
+    // so an unrelated sibling's change rebuilds nothing; a member ARRIVING is
+    // itself a change, which the key states.
+    const toolRow = kind.startsWith('tool_') && message.spanId !== ''
+    const request = toolRow ? deps.requestRevision?.(messageSpanIdentity(message)) : undefined
+    const result = toolRow ? deps.resultRevision?.(messageSpanIdentity(message)) : undefined
+    return {
+      revisionKey: rowRevisionKey({
+        own,
+        ...(request !== undefined ? { request } : {}),
+        ...(result !== undefined ? { result } : {}),
+      }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     }
   }

@@ -130,25 +130,26 @@ describe('createClassifiedEntryCache', () => {
   it('rebuilds a span row\'s entry when its paired tool_use sibling becomes available', () => {
     createRoot((dispose) => {
       const [hasSibling, setHasSibling] = createSignal(false)
-      // A span-bearing row (a tool_result reads its paired tool_use opener for its
-      // rendered shape). When the opener arrives LATER (older-page prepend / reseq)
-      // the entry must rebuild so the row's measured-height key changes instead of
-      // staying frozen at its no-sibling shape.
-      const messages = [emptyCodexReasoning('r1', 2n, 'span-1')]
+      // A tool_result reads its paired tool_use opener for its rendered shape.
+      // When the opener arrives LATER (older-page prepend / reseq) the entry must
+      // rebuild so the row's measured-height key changes instead of staying frozen
+      // at its no-sibling shape.
+      const messages = [claudeToolResult('r1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
         requestRevision: () => hasSibling() ? { id: 'request', seq: 1n, contentVersion: 0, supplementalRevision: 0n } : undefined,
-        showHiddenMessages: () => false,
+        showHiddenMessages: () => true,
       })
       cache.visibleEntries()
       const before = cache.getEntry('r1')!
-      expect(before.freshness.hasToolUseSibling).toBe(false)
+      expect(before.category.kind).toBe('tool_result')
+      expect(before.freshness.revisionKey).not.toContain('~request=')
       // The opener is indexed -> the freshness check rebuilds the entry (a new ref,
       // which busts the virtualizer's cached DOM height via the changed heightKey).
       setHasSibling(true)
       cache.visibleEntries()
       const after = cache.getEntry('r1')!
-      expect(after.freshness.hasToolUseSibling).toBe(true)
+      expect(after.freshness.revisionKey).toContain('~request=')
       expect(after).not.toBe(before)
       dispose()
     })
@@ -170,13 +171,13 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('tr1')!
       expect(before.category.kind).toBe('tool_result')
-      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
+      expect(before.freshness.revisionKey).toMatch(/~request=\d+:request\|1\|0\|0$/)
       // The opener's body is replaced in place -> its version bumps -> the result
       // rebuilds even though nothing on the result's own id/seq moved.
       setOpenerVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('tr1')!
-      expect(after.freshness.toolUseSiblingContentVersion).toBe(1)
+      expect(after.freshness.revisionKey).toMatch(/~request=\d+:request\|1\|1\|0$/)
       expect(after).not.toBe(before)
       dispose()
     })
@@ -221,13 +222,13 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       expect(before.category.kind).toBe('tool_use')
-      expect(before.freshness.toolResultSiblingContentVersion).toBe(0)
+      expect(before.freshness.revisionKey).toMatch(/~result=\d+:result\|\d+\|0\|0$/)
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
       setResultVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
-      expect(after.freshness.toolResultSiblingContentVersion).toBe(1)
+      expect(after.freshness.revisionKey).toMatch(/~result=\d+:result\|\d+\|1\|0$/)
       expect(after).not.toBe(before)
       expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()
@@ -257,6 +258,31 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
+  // A result-side SUPPLEMENT is the one change that reaches the request row from
+  // the other side of the span: the merged result body can change what the
+  // request row renders, so the request's own row rebuilds off a revision it
+  // does not hold.
+  it('rebuilds a tool_use entry when its paired result\'s supplemental revision bumps', () => {
+    createRoot((dispose) => {
+      const [resultSupplement, setResultSupplement] = createSignal(0n)
+      const messages = [claudeToolUse('tu1', 1n, 'span-1')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        resultRevision: () => ({ id: 'result', seq: 2n, contentVersion: 0, supplementalRevision: resultSupplement() }),
+        showHiddenMessages: () => false,
+      })
+      cache.visibleEntries()
+      const before = cache.getEntry('tu1')!
+      expect(before.freshness.revisionKey).toMatch(/~result=\d+:result\|2\|0\|0$/)
+      setResultSupplement(1n)
+      cache.visibleEntries()
+      const after = cache.getEntry('tu1')!
+      expect(after.freshness.revisionKey).toMatch(/~result=\d+:result\|2\|0\|1$/)
+      expect(after).not.toBe(before)
+      dispose()
+    })
+  })
+
   it('rebuilds a tool_use entry and height key when its paired hidden result arrives', () => {
     createRoot((dispose) => {
       // Result arrival is distinct from result content changing: a Task* opener may
@@ -272,13 +298,13 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       expect(before.category.kind).toBe('tool_use')
-      expect(before.freshness.hasToolResultSibling).toBe(false)
+      expect(before.freshness.revisionKey).not.toContain('~result=')
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
       setHasResult(true)
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
-      expect(after.freshness.hasToolResultSibling).toBe(true)
+      expect(after.freshness.revisionKey).toContain('~result=')
       expect(after).not.toBe(before)
       expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()
@@ -302,7 +328,7 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('z1')!
       expect(before.category.kind).toBe('tool_use')
-      expect(before.freshness.supplementalRevision).toBe(0n)
+      expect(before.freshness.revisionKey).toMatch(/own=\d+:z1\|\d+\|0\|0\d*$/)
       const beforeHeightKey = heightKeyForEntry(before, 0)
 
       // The supplement lands: same id, same seq, a bumped supplemental revision. The
@@ -312,7 +338,6 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const after = cache.getEntry('z1')!
       expect(after.category.kind).toBe('assistant_plan')
-      expect(after.freshness.supplementalRevision).toBe(1n)
       expect(after).not.toBe(before)
       expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()
@@ -398,7 +423,7 @@ describe('createClassifiedEntryCache', () => {
       })
       cache.visibleEntries()
       const before = cache.getEntry('a1')!
-      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
+      expect(before.freshness.revisionKey).not.toContain('~request=')
       const readsAfterFirst = openerProbeReads
       const resultReadsAfterFirst = resultProbeReads
       setOpenerVersion(1)
@@ -430,19 +455,18 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       expect(before.category.kind).toBe('tool_use')
-      // The presence flag stays ungated, so it holds stable at true for an opener.
-      expect(before.freshness.hasToolUseSibling).toBe(true)
-      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
-      expect(before.freshness.toolUseSiblingRevisionKey).toBe('')
+      // A tool_use row's own span resolves to ITSELF, so the request member
+      // mirrors the own member: it is stable, and it carries nothing the own
+      // member does not.
+      expect(before.freshness.revisionKey).toContain('own=3:tu1|2|0|0~request=3:tu1|2|0|0')
 
       setOwnVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
-      // The row rebuilds off its OWN content version, and off that alone.
+      // The row rebuilds off its OWN content version, and off that alone: the
+      // request member moved with it because it IS the own side.
       expect(after).not.toBe(before)
-      expect(after.freshness.contentVersion).toBe(1)
-      expect(after.freshness.toolUseSiblingContentVersion).toBe(0)
-      expect(after.freshness.toolUseSiblingRevisionKey).toBe('')
+      expect(after.freshness.revisionKey).toContain('own=3:tu1|2|1|0~request=3:tu1|2|1|0')
       dispose()
     })
   })
@@ -461,9 +485,7 @@ describe('createClassifiedEntryCache', () => {
       cache.visibleEntries()
       const before = cache.getEntry('r1')!
       expect(before.category.kind).not.toBe('tool_result')
-      expect(before.freshness.hasToolUseSibling).toBe(true)
-      expect(before.freshness.toolUseSiblingContentVersion).toBe(0)
-      expect(before.freshness.toolUseSiblingRevisionKey).toBe('')
+      expect(before.freshness.revisionKey).not.toContain('~request=')
 
       setOpenerVersion(1)
       cache.visibleEntries()
@@ -560,11 +582,11 @@ describe('createClassifiedEntryCache', () => {
       })
       const first = cache.visibleEntries()[0]
       // `?.` is the type-level guard alone; the toBe below fails just as hard without an entry.
-      expect(first?.freshness.seq).toBe(1n)
+      expect(first?.freshness.revisionKey).toContain('own=2:a1|1|')
       setMessages([assistantText('a1', 7n, 'hi')]) // same id, new seq
       const second = cache.visibleEntries()[0]
       expect(second).not.toBe(first) // rebuilt off the seq change
-      expect(second?.freshness.seq).toBe(7n)
+      expect(second?.freshness.revisionKey).toContain('own=2:a1|7|')
       dispose()
     })
   })
@@ -729,21 +751,15 @@ describe('renderKeyForEntry', () => {
     expect(renderKeyForEntry(first)).not.toBe(renderKeyForEntry(second))
   })
 
-  it('answers a new key when the row\'s own content version moves', () => {
+  it('answers a new key when the row\'s own revision key moves', () => {
     const before = entryOf('m1', 1n, 'hello')
-    const after = { ...before, freshness: { ...before.freshness, contentVersion: before.freshness.contentVersion + 1 } }
+    const after = { ...before, freshness: { ...before.freshness, revisionKey: `${before.freshness.revisionKey}~request=1:x|1|0|0` } }
     expect(renderKeyForEntry(after)).not.toBe(renderKeyForEntry(before))
   })
 
-  it.each([
-    ['toolUseSiblingContentVersion', { toolUseSiblingContentVersion: 9 }],
-    ['toolUseSiblingRevisionKey', { toolUseSiblingRevisionKey: 'opener-b' }],
-    ['toolResultSiblingContentVersion', { toolResultSiblingContentVersion: 9 }],
-    ['toolResultSiblingRevisionKey', { toolResultSiblingRevisionKey: 'result-b' }],
-    ['isChildTranscript', { isChildTranscript: true }],
-  ] as const)('answers a new key when %s moves', (_field, patch) => {
+  it('answers a new key when the child-transcript flag moves', () => {
     const before = entryOf('m1', 1n, 'hello')
-    const after = { ...before, freshness: { ...before.freshness, ...patch } }
+    const after = { ...before, freshness: { ...before.freshness, isChildTranscript: true } }
     expect(renderKeyForEntry(after)).not.toBe(renderKeyForEntry(before))
   })
 

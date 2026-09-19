@@ -1,13 +1,14 @@
 import type { MessageCategory } from './messageClassification'
 import type { ClassificationContext } from './providers/registry'
 import type { ChatRowExtraction } from './rowExtraction'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { TodoItem } from '~/models/todo'
 import { parseMessageContent } from '~/lib/messageParser'
 import { classifyMessage, toClassificationInput } from './messageClassification'
-import { parsedMessageForRendering, pluginFor } from './providers/registry'
+import { pluginFor, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
 // ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ export interface PreparedMessage {
   /** The stored bytes, exactly as the Raw JSON view shows them. */
   original: ParsedMessageContent
   /** `original` with the provider's supplemental content merged in. Every display reads this. */
-  resolved: ParsedMessageContent
+  resolved: ResolvedMessageContent
   /** The category, decided from {@link PreparedMessage.resolved}. */
   category: MessageCategory
 }
@@ -62,7 +63,7 @@ export interface PrepareMessageOptions extends ClassificationContext {
    * message and per supplemental revision, and passing it is what keeps the
    * transcript, the toolbar and the image tab on one object.
    */
-  resolved?: ParsedMessageContent
+  resolved?: ResolvedMessageContent
 }
 
 /** What reading a prepared message into a row needs beyond the message itself. */
@@ -111,7 +112,7 @@ function soleSide(prepared: PreparedMessage): ToolSpanSides {
  */
 export function prepareMessage(message: AgentChatMessage, options: PrepareMessageOptions = {}): PreparedMessage {
   const original = options.original ?? parseMessageContent(message)
-  const resolved = options.resolved ?? parsedMessageForRendering(original, message.agentProvider)
+  const resolved = options.resolved ?? resolveMessageForRendering(original, message.agentProvider)
   const category = classifyMessage(
     toClassificationInput(resolved, message),
     ...(options.isChildTranscript === undefined ? [] : [{ isChildTranscript: options.isChildTranscript }]),

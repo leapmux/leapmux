@@ -172,7 +172,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       spanRole: (parsed) => {
         const tool = parsed.parentObject
         if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
-          return acpToolFinished(tool, parsed.completion) ? 'result' : 'opener'
+          return acpToolFinished(tool, parsed.completion) ? 'result' : 'request'
         if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE && acpToolFinished(tool, parsed.completion))
           return 'result'
         return 'other'

@@ -23,7 +23,7 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
-import { parsedMessageForRendering, providerFor } from '~/components/chat/providers/registry'
+import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
@@ -361,7 +361,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
   // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
   if (msg.source === MessageSource.AGENT) {
-    const resolved = parsedMessageForRendering(parsed, msg.agentProvider)
+    const resolved = resolveMessageForRendering(parsed, msg.agentProvider)
     const usage = extractContextUsage(resolved, p => plugin?.session?.contextUsageFromMessage?.(p) ?? null)
     if (usage)
       agentSessionStore.updateInfo(agentId, usage)
@@ -494,7 +494,7 @@ export function dropFinishedToolProgress(
   // messageSpanIdentity, not the bare span id: the store keys an entry by the
   // session and the span together, so this path must key it the same way the
   // apply path and the read path do.
-  if (providerFor(msg.agentProvider)?.transcript.spanRole?.(parsed) === 'result')
+  if (resolvedSpanRole(parsed, msg.agentProvider) === 'result')
     chatStore.dropToolProgress(agentId, messageSpanIdentity(msg))
 }
 

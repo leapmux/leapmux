@@ -23,12 +23,12 @@ import type { ChatRowIR } from '../ir/row'
 import type { MessageCategory } from '../messageClassification'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
-import type { RowExtractionInput } from '../rowExtractionTypes'
-import type { SpanRole } from '~/components/chat/rowExtractionTypes'
+import type { ResolvedMessageContent, RowExtractionInput } from '../rowExtractionTypes'
+import type { ToolSpanRole } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanSide } from '~/lib/messageSpan'
 import type { ContextUsageInfo, RateLimitInfo } from '~/models/agentSession'
-import type { ToolMessageSide } from '~/stores/chatTypes'
 import type { ControlRequest } from '~/stores/control.store'
 
 export interface AttachmentCapabilities {
@@ -62,7 +62,13 @@ export interface ProviderAskUserQuestion {
   ) => Promise<void>
 }
 
-export interface ClassificationInput extends ParsedMessageContent {
+/**
+ * What one provider's classifier reads: a RESOLVED parse plus the envelope
+ * fields the shared carve-outs need. An intersection rather than an interface,
+ * because an interface extending the branded parse drops the symbol member and
+ * with it the compile-time boundary.
+ */
+export type ClassificationInput = ResolvedMessageContent & {
   agentProvider?: AgentProvider
   /**
    * Who wrote the row. Read ONLY by the provider-neutral carve-outs in
@@ -138,10 +144,10 @@ export interface ProviderTranscriptCapability {
    * wire shape, so chatSpanIndex can pair a tool_use with its result regardless of arrival order.
    * Claude reads Anthropic `tool_use`/`tool_result` content blocks; Pi routes by envelope `type`.
    */
-  spanRole: (parsed: ParsedMessageContent) => SpanRole
+  spanRole: (parsed: ResolvedMessageContent) => ToolSpanRole
 
   /** Linked messages that this row needs for rendering. Omit for self-contained rows. */
-  relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolMessageSide[]
+  relatedMessages?: (parsed: ParsedMessageContent) => readonly ToolSpanSide[]
 
   /**
    * Read one message of this provider's wire format into the shared row IR.

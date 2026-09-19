@@ -5,7 +5,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject } from '~/lib/jsonPick'
 import { toolCallRow } from '../../../ir/row'
-import { toolCall } from '../../../ir/toolCall'
+import { SYNTHETIC_TOOL_LIFECYCLE, toolCall } from '../../../ir/toolCall'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { piContentText } from '../messageContent'
 import { piSubagentNotifications } from './customMessage'
@@ -119,7 +119,7 @@ function piResultRow(
     if (!first)
       return null
     const call = toolCall(
-      { id: '', name: PI_TOOL.Agent, status: 'completed' },
+      { id: '', name: PI_TOOL.Agent, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
       { kind: 'agent', title: first.description || 'Subagent', request: { description: first.description || 'Subagent', prompt: '' }, result: { agents: [first, ...rest] } },
     )
     return toolCallRow(call, 'result', { request: false, result: false })

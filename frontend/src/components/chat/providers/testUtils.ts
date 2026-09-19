@@ -6,6 +6,7 @@ import {
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
+import { resolveMessageForRendering } from './registry'
 
 /**
  * Build a ClassificationInput from a parent object and optional wrapper, for
@@ -24,14 +25,15 @@ export function input(
   agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE,
   source?: MessageSource,
 ): ClassificationInput {
-  return {
+  // The one constructor of the resolved brand: a test's classification input
+  // reaches the same merge the production reader takes.
+  const resolved = resolveMessageForRendering({
     rawText: '',
     topLevel: parent ?? null,
     parentObject: parent,
     wrapper: wrapper ?? null,
-    agentProvider,
-    ...(source !== undefined ? { source } : {}),
-  }
+  }, agentProvider)
+  return { ...resolved, agentProvider, ...(source !== undefined ? { source } : {}) }
 }
 
 interface ModelOpts {

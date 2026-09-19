@@ -148,7 +148,7 @@ describe('a copilot tool row the turn interrupted', () => {
 
   it('reads the retained start frame as the call result', () => {
     expect(plugin?.transcript.spanRole!({ ...input(start), completion: MessageCompletion.INTERRUPTED })).toBe('result')
-    expect(plugin?.transcript.spanRole!(input(start))).toBe('opener')
+    expect(plugin?.transcript.spanRole!(input(start))).toBe('request')
   })
 
   it('classifies the retained copy as a result and the first copy as a request', () => {

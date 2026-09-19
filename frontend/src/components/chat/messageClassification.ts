@@ -1,8 +1,8 @@
 import type { MessageBandKind } from './chatRowGeometry'
 import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerWrittenNotification } from '~/lib/notificationTypes'
@@ -10,7 +10,7 @@ import { parseAssembledMessage } from './assembledMessage'
 import { messageBandKind } from './chatRowGeometry'
 import * as chatStyles from './messageStyles.css'
 import { parsePersistedControlResponse } from './persistedControlResponse'
-import { pluginFor } from './providers/registry'
+import { pluginFor, resolveMessageForRendering } from './providers/registry'
 import './providers'
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export type MessageCategory
  * (`classifyMessage(toClassificationInput(parsed, msg))`) terse.
  */
 export function toClassificationInput(
-  parsed: ParsedMessageContent,
+  parsed: ResolvedMessageContent,
   message: AgentChatMessage,
 ): ClassificationInput {
   return {
@@ -183,7 +183,7 @@ export function classifyAgentMessage(message: AgentChatMessage): MessageCategory
   const cached = classifyCache.get(message)
   if (cached)
     return cached
-  const result = classifyMessage(toClassificationInput(parseMessageContent(message), message))
+  const result = classifyMessage(toClassificationInput(resolveMessageForRendering(parseMessageContent(message), message.agentProvider), message))
   classifyCache.set(message, result)
   return result
 }

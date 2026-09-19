@@ -4,6 +4,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './opencode/plugin'
 import './pi/plugin'
@@ -44,12 +45,12 @@ function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: Render
 }
 
 function parsed(parentObject: Record<string, unknown>) {
-  return {
+  return resolveMessageForRendering({
     rawText: JSON.stringify(parentObject),
     topLevel: parentObject,
     parentObject,
     wrapper: null,
-  }
+  }, AgentProvider.PI)
 }
 
 function renderPiReadResult(content: string, startArgs: Record<string, unknown> = {}) {

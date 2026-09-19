@@ -1,9 +1,10 @@
 import type { ChatRowIR } from './ir/row'
 import type { ChatRowExtraction } from './rowExtraction'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { resolveMessageForRendering } from './providers/registry'
 import { extractChatRow, extractedRow } from './rowExtraction'
 // Side-effect import: the three branches below dispatch through the registry.
 import './providers'
@@ -18,8 +19,8 @@ import './providers'
  * which left the matching `ChatRowIR` variant declared and never produced, and the
  * render case behind it unreachable.
  */
-function parsed(parent: Record<string, unknown>): ParsedMessageContent {
-  return { wrapper: null, topLevel: parent, parentObject: parent, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+function parsed(parent: Record<string, unknown>, provider: AgentProvider = AgentProvider.CLAUDE_CODE): ResolvedMessageContent {
+  return resolveMessageForRendering({ wrapper: null, topLevel: parent, parentObject: parent, rawText: '', supplementalContent: undefined, messageMetadata: undefined }, provider)
 }
 
 /** The row an extraction produced, or null for either rowless outcome. */
@@ -112,7 +113,7 @@ describe('extractChatRow control response', () => {
   // falling to the card that says LeapMux has no display for the row.
   it('degrades to the neutral label for a response no derivation reads', () => {
     const unreadable = { requestId: 'r2', claimToken: 'c2', request: undefined, response: {} }
-    expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed({}), { kind: 'control_response', response: unreadable })))
+    expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed({}, AgentProvider.CODEX), { kind: 'control_response', response: unreadable })))
       .toEqual({ kind: 'control-response', display: { kind: 'label', text: 'Responded' } })
   })
 
@@ -121,7 +122,7 @@ describe('extractChatRow control response', () => {
   // unreadable one must not cost the reader the row -- `renderMessageContent` reads
   // this category BEFORE it parses anything for the same reason.
   it('states the answer even when the original frame is unreadable', () => {
-    expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed(exploding()), { kind: 'control_response', response })))
+    expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed(exploding(), AgentProvider.CODEX), { kind: 'control_response', response })))
       .toEqual({ kind: 'control-response', display: { kind: 'label', text: 'Allow' } })
   })
 })

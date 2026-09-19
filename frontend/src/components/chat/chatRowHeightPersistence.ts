@@ -45,8 +45,12 @@ type StoredRow = [id: string, digest: string, height: number]
  *
  * 2: assistant messages and thoughts became full-bleed bands (row borders and
  *    band padding replaced the bubble's border, padding and 85% width cap).
+ * 3: the height key became the one exact row revision key (chatRevisionKey.ts),
+ *    so every stored digest names a key format no code builds any more. The old
+ *    payload is discarded on load, never retained as a pending digest a new key
+ *    cannot match.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 2
+export const STORED_ROW_HEIGHTS_VERSION = 3
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION

@@ -1,9 +1,9 @@
 import type { MessageCompletion } from './assembledMessage'
 import type { ChatRowIR } from './ir/row'
 import type { MessageCategory } from './messageClassification'
+import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { ToolSpanSides } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { TodoItem } from '~/models/todo'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
@@ -90,7 +90,7 @@ export function extractedRow(extraction: ChatRowExtraction): ChatRowIR | null {
  */
 export function extractChatRow(
   agentProvider: AgentProvider | undefined,
-  parsed: ParsedMessageContent,
+  parsed: ResolvedMessageContent,
   category: MessageCategory,
   options: RowExtractionOptions = {},
 ): ChatRowExtraction {

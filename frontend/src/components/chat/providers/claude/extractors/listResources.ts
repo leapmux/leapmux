@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ListRequest } from '../../../ir/tools/list'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -13,7 +13,7 @@ import { claudeFailedResult } from './failure'
  * reason. It carries no resource array either, so it fell to the unparsed rung, which
  * states that the call completed and contradicts the row's own failed status.
  */
-export function claudeListResourcesPayload(request: ListRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'list'> {
+export function claudeListResourcesPayload(request: ListRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'list'> {
   if (!result)
     return { kind: 'list', request }
   const failure = claudeFailedResult(result)

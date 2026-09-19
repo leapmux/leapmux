@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ReportRequest } from '../../../ir/tools/report'
 import type { SkillRequest } from '../../../ir/tools/skill'
 import type { WaitRequest } from '../../../ir/tools/wait'
@@ -14,7 +14,7 @@ import { claudeFailedResult } from './failure'
  * prose: without it the error text drew as the skill's own answer, and an EMPTY error
  * fell to `unparsedResult`, which claims the call completed.
  */
-export function claudeSkillPayload(request: SkillRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'skill'> {
+export function claudeSkillPayload(request: SkillRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'skill'> {
   if (!result)
     return { kind: 'skill', request }
   const failure = claudeFailedResult(result)
@@ -26,7 +26,7 @@ export function claudeSkillPayload(request: SkillRequest, result: ClaudeToolRow 
 }
 
 /** The wait pair: how long the call waited, and the words it answered with. */
-export function claudeWaitPayload(request: WaitRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'wait'> {
+export function claudeWaitPayload(request: WaitRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'wait'> {
   if (!result)
     return { kind: 'wait', request }
   const failure = claudeFailedResult(result)
@@ -41,7 +41,7 @@ export function claudeWaitPayload(request: WaitRequest, result: ClaudeToolRow | 
  * The report pair: the turn's own structured answer. The payload is free-form
  * by design -- the schema is the model's to state -- so it rides raw.
  */
-export function claudeReportPayload(request: ReportRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'report'> {
+export function claudeReportPayload(request: ReportRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'report'> {
   if (!result)
     return { kind: 'report', request }
   const failure = claudeFailedResult(result)

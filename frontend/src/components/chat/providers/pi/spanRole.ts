@@ -1,5 +1,6 @@
-import type { SpanRole } from '../registry'
+import type {} from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { retainedRowIsFinal } from '../registry'
@@ -10,7 +11,7 @@ import { retainedRowIsFinal } from '../registry'
  * would mis-bucket it as `other` -- routing by `type` files it as a result regardless of arrival
  * order.
  */
-export function piSpanRole(parsed: ParsedMessageContent): SpanRole {
+export function piSpanRole(parsed: ParsedMessageContent): ToolSpanRole {
   const type = pickString(parsed.parentObject, 'type')
   if (type === PI_EVENT.ToolExecutionEnd)
     return 'result'
@@ -18,5 +19,5 @@ export function piSpanRole(parsed: ParsedMessageContent): SpanRole {
     return 'other'
   // A turn that ended while the call ran stores the start frame AGAIN as the closing
   // row, so the completion is what separates the two copies.
-  return retainedRowIsFinal(parsed.completion) ? 'result' : 'opener'
+  return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
 }

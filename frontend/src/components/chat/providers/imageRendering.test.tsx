@@ -8,6 +8,7 @@ import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages, providerToolMeta } from '~/test-support/toolCallIr'
 import { imageActionsFrom } from '../renderContext'
 import { toolUseHeader } from '../toolStyles.css'
+import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
@@ -28,8 +29,8 @@ const { renderMessageContent } = await import('../rowRenderers')
 const PNG = 'iVBORw0KGgo='
 const PNG_DATA_URL = `data:image/png;base64,${PNG}`
 
-function parsed(parentObject: Record<string, unknown>) {
-  return { rawText: JSON.stringify(parentObject), topLevel: parentObject, parentObject, wrapper: null }
+function parsed(parentObject: Record<string, unknown>, provider: AgentProvider = AgentProvider.CLAUDE_CODE) {
+  return resolveMessageForRendering({ rawText: JSON.stringify(parentObject), topLevel: parentObject, parentObject, wrapper: null }, provider)
 }
 
 function renderToolResult(provider: AgentProvider, payload: unknown, context?: RenderContext) {
@@ -164,11 +165,11 @@ describe('codex image items', () => {
     // frame states its own status. The picture rides the finished one: a row that
     // says the call still runs carries none (invariant I1).
     const item = { type: 'imageView', id: 'view-1', path: '/repo/shot.png' }
-    const request = parsed({ item: { ...item, status: 'inProgress' }, threadId: 't1' })
-    const result = parsed({ item: { ...item, status: 'completed' }, threadId: 't1' })
+    const request = parsed({ item: { ...item, status: 'inProgress' }, threadId: 't1' }, AgentProvider.CODEX)
+    const result = parsed({ item: { ...item, status: 'completed' }, threadId: 't1' }, AgentProvider.CODEX)
     const fileImage = vi.fn(async () => ({ filePath: '/repo/shot.png', mimeType: 'image/png', data: PNG }))
-    const sources = (role: 'opener' | 'result') => testMessageSources({
-      current: () => role === 'opener' ? request : result,
+    const sources = (role: 'request' | 'result') => testMessageSources({
+      current: () => role === 'request' ? request : result,
       request: () => request,
       result: () => result,
       role: () => role,
@@ -178,7 +179,7 @@ describe('codex image items', () => {
     // One actions object serves both rows: it closes over `fileImage` alone.
     const images = imageActionsFrom({ fileImage })
     const { container } = render(() => [
-      renderMessageContent(request.parentObject, { sources: sources('opener'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
+      renderMessageContent(request.parentObject, { sources: sources('request'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
       renderMessageContent(result.parentObject, { sources: sources('result'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
     ])
     await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL))
@@ -239,7 +240,7 @@ describe('pi read on an image', () => {
       result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] },
     }
     const start = { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'read', args: { filePath: '/repo/shot.png' } }
-    const { container } = renderToolResult(AgentProvider.PI, payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start)) }) } as RenderContext)
+    const { container } = renderToolResult(AgentProvider.PI, payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start, AgentProvider.PI)) }) } as RenderContext)
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').not.toContain('base64,')
   })
@@ -284,7 +285,7 @@ describe('shared image guardrails', () => {
 function imagesOf(provider: AgentProvider, parsedMessage: Record<string, unknown>, spanType?: string, toolUse?: Record<string, unknown>) {
   return providerRowImages(provider, parsedMessage, {
     ...(spanType !== undefined ? { spanType } : {}),
-    ...(toolUse !== undefined ? { request: parsed(toolUse) } : {}),
+    ...(toolUse !== undefined ? { request: parsed(toolUse, provider) } : {}),
   })
 }
 

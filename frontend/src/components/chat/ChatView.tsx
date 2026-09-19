@@ -302,7 +302,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
     // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
     // that draws it and the toolbar beside it all read one object for one row.
-    resolvedParsed: message => props.messageContext?.current(message).parsed,
+    resolvedParsed: message => props.messageContext?.current(message).resolved,
     isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })

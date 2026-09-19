@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Accessor, JSX } from 'solid-js'
 import type { ToolRowPosition } from '../../ir/row'
-import type { ToolCallOf } from '../../ir/toolCall'
+import type { ToolCallForKind } from '../../ir/toolCall'
 import type { ToolKind } from '../../ir/toolKind'
 import type { ToolResults } from '../../ir/tools'
 import type { RenderContext } from '../../messageRenderers'
@@ -9,12 +9,12 @@ import type { MessageUiKey } from '../../messageUiKeys'
 import { typedResult } from '../../ir/toolCall'
 
 /** A call whose result, when present, is the kind's own payload. Failed and unparsed results are stripped BEFORE any hook runs. */
-export type ParsedCall<K extends ToolKind> = Omit<ToolCallOf<K>, 'result'> & { result?: ToolResults[K] }
+export type ParsedCall<K extends ToolKind> = Omit<ToolCallForKind<K>, 'result'> & { result?: ToolResults[K] }
 /** A call that carries the kind's own result. `result()` and `resultMeta()` take this alone. */
-export type ResolvedCall<K extends ToolKind> = Omit<ToolCallOf<K>, 'result'> & { result: ToolResults[K] }
+export type ResolvedCall<K extends ToolKind> = Omit<ToolCallForKind<K>, 'result'> & { result: ToolResults[K] }
 
 /** The call with its failed and unparsed results stripped, so a kind hook reads its own payload alone. */
-export function parsedCall<K extends ToolKind>(call: ToolCallOf<K>): ParsedCall<K> {
+export function parsedCall<K extends ToolKind>(call: ToolCallForKind<K>): ParsedCall<K> {
   const { result, ...rest } = call
   const parsed = typedResult({ kind: call.kind, result })
   // A stripped or empty slot re-applies as ABSENT rather than an explicitly
@@ -31,7 +31,7 @@ export function parsedCall<K extends ToolKind>(call: ToolCallOf<K>): ParsedCall<
  * spread states the pair -- every field but `result` from the call, `result` from the
  * stripped slot -- the way {@link parsedCall} does.
  */
-export function resolvedCall<K extends ToolKind>(call: ToolCallOf<K>): ResolvedCall<K> | undefined {
+export function resolvedCall<K extends ToolKind>(call: ToolCallForKind<K>): ResolvedCall<K> | undefined {
   const result = typedResult(call)
   return result === undefined ? undefined : { ...call, result }
 }

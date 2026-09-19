@@ -6,7 +6,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { ACP_SUPPLEMENT_IDENTITY } from '~/generated/contracts/acp-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { toolCallRow } from '../../../ir/row'
-import { toolCall } from '../../../ir/toolCall'
+import { SYNTHETIC_TOOL_LIFECYCLE, toolCall } from '../../../ir/toolCall'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { ACP_SESSION_UPDATE } from '../updateVocabulary'
 import { acpPlanTodos } from './plan'
@@ -49,7 +49,7 @@ function acpPlanRow(update: Record<string, unknown>): ChatRowIR | null {
   if (todos === null)
     return null
   const call = toolCall(
-    { id: '', name: ACP_SESSION_UPDATE.PLAN, status: 'completed' },
+    { id: '', name: ACP_SESSION_UPDATE.PLAN, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
     { kind: 'todo', label: 'Plan', title: 'Plan', request: { items: todos }, result: { items: todos } },
   )
   return toolCallRow(call, 'result', { request: false, result: false })

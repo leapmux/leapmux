@@ -1,4 +1,3 @@
-import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
@@ -10,6 +9,7 @@ import {
   MessageSource,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { resolveMessageForRendering } from './providers/registry'
 import { extractedRow } from './rowExtraction'
 import { extractPreparedRow, prepareChatRow, prepareMessage } from './rowPreparation'
 // Side-effect import: the preparation dispatches resolution and classification through
@@ -94,7 +94,7 @@ describe('prepareMessage', () => {
   it('takes a caller supplied parse rather than parsing again', () => {
     const source = message({ provider: AgentProvider.OPENCODE, content: ACP_INNER })
     const original = parseMessageContent(source)
-    const resolved: ParsedMessageContent = { ...original, parentObject: { ...ACP_INNER, status: 'pending' } }
+    const resolved = resolveMessageForRendering({ ...original, parentObject: { ...ACP_INNER, status: 'pending' } }, AgentProvider.OPENCODE)
     const prepared = prepareMessage(source, { original, resolved })
     expect(prepared.original).toBe(original)
     expect(prepared.resolved).toBe(resolved)

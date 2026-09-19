@@ -13,7 +13,7 @@ import { imageFromMessage } from '../../chatImageResolve'
 import { MessageBubble } from '../../MessageBubble'
 import { renderMessageContent } from '../../rowRenderers'
 import { toolUseHeader } from '../../toolStyles.css'
-import { parsedMessageForRendering, providerFor } from '../registry'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 import '../testMocks'
@@ -463,7 +463,7 @@ describe('a pi tool row the turn ended before the call did', () => {
   const plugin = () => providerFor(AgentProvider.PI)!
 
   it('reads the retained start frame as the call result', () => {
-    expect(plugin().transcript.spanRole!(parseMessageContent(message))).toBe('result')
+    expect(plugin().transcript.spanRole!(resolveMessageForRendering(parseMessageContent(message), AgentProvider.PI))).toBe('result')
     // The same frame with no completion is the call's OPENER, which is the row the
     // agent sent when the call began. A COPY first -- `parseMessageContent` caches by
     // message, and a `delete` on the cached object would reach every later reader of
@@ -471,12 +471,12 @@ describe('a pi tool row the turn ended before the call did', () => {
     // exact-optional rule reads as a different object.
     const uncompleted = { ...parseMessageContent(message) }
     delete uncompleted.completion
-    expect(plugin().transcript.spanRole!(uncompleted)).toBe('opener')
+    expect(plugin().transcript.spanRole!(resolveMessageForRendering(uncompleted, AgentProvider.PI))).toBe('request')
   })
 
   it('shows the partial output under one Interrupted header', () => {
-    const parsed = parsedMessageForRendering(parseMessageContent(message), AgentProvider.PI)
-    const category = plugin().transcript.classify({ ...parseMessageContent(message), agentProvider: AgentProvider.PI })
+    const parsed = resolveMessageForRendering(parseMessageContent(message), AgentProvider.PI)
+    const category = plugin().transcript.classify({ ...parsed, agentProvider: AgentProvider.PI })
     const { container } = render(() => renderMessageContent(
       parsed.parentObject,
       { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) },

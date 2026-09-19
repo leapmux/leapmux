@@ -1,13 +1,10 @@
-import type { FailedResult, ToolCallEnvelope, ToolCallIR, ToolCallPayload, ToolCallPayloadIR, ToolCallPayloadOf } from '../../../ir/toolCall'
+import type { FailedResult, ToolCallEnvelope, ToolCallIR, ToolCallPayloadForKind, ToolCallPayloadIR } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
-import type { ToolRowStatus } from '../../../ir/toolRowStatus'
 import type { ToolRequests } from '../../../ir/tools'
 import type { GenericResult } from '../../../ir/tools/generic'
 import type { ClaudeRowContext, ClaudeToolRow } from '../extractors/toolCommon'
-import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMcpToolName } from '../../../ir/mcpToolCall'
 import { failedResult, isGenericKind, toolCall, unparsedResult } from '../../../ir/toolCall'
-import { toolStatusFor } from '../../../ir/toolRowStatus'
 import { retainedOutcome } from '../../registry'
 import { claudeAgentPayload } from '../extractors/agent'
 import { claudeExecutePayload } from '../extractors/execute'
@@ -34,30 +31,29 @@ import { claudeQuestionPayload } from './question'
 /** Everything one Claude row reads beyond its own bytes. */
 export type { ClaudeRowContext } from '../extractors/toolCommon'
 
-/**
- * The row status, from the three facts that state it.
- *
- * Claude reports a failure with the `is_error` flag on its result block alone: a
- * request row is always still in flight, and a result row with no flag
- * completed. LeapMux's own completion wins over both, for the reason
- * {@link retainedOutcome} gives -- a retained frame still reads as a call in
- * flight, and only the completion says the turn cut it.
- */
-export function claudeRowStatus(row: ClaudeToolRow, completion: MessageCompletion | undefined): ToolRowStatus {
-  // A Bash payload that states `interrupted` says the reader stopped the call,
-  // and the one outcome word must carry it: the command body reads its label
-  // from the status alone.
-  if (row.toolUseResult?.interrupted === true)
-    return 'cancelled'
-  return toolStatusFor(retainedOutcome(completion), row.isError === true, row.role === 'result')
-}
-
 /** A kind payload, with the one Claude-specific extra: an outcome-word override. */
 export type ClaudePayload = ToolCallPayloadIR
 
-/** The provider's envelope: the call's own identity and outcome word. */
+/**
+ * The provider's envelope: the call's own identity, and its lifecycle as RAW FACTS.
+ *
+ * Claude sends no status word of its own -- `frameStatus` is empty -- so the facts
+ * are the ones its blocks state: an `interrupted` Bash payload or an `is_error`
+ * result block is the provider's own conclusion, the completion column carries
+ * what LeapMux retained, and a landed result row is the one reading of "finished"
+ * the protocol has. The shared derivation owns the precedence between them.
+ */
 export function claudeEnvelope(row: ClaudeToolRow, context: ClaudeRowContext): ToolCallEnvelope {
-  return { id: row.id, name: row.toolName, status: claudeRowStatus(row, context.completion) }
+  return {
+    id: row.id,
+    name: row.toolName,
+    lifecycle: {
+      frameStatus: '',
+      providerOutcome: row.toolUseResult?.interrupted === true ? 'interrupted' : row.isError === true ? 'failed' : null,
+      retainedOutcome: retainedOutcome(context.completion),
+      resultLanded: row.role === 'result',
+    },
+  }
 }
 
 /**
@@ -139,40 +135,40 @@ function claudeReaderRequest<K extends ToolKind>(kind: K, facts: ClaudeCallFacts
  * reads rides into the IR. `toolTableEntriesAreAnnotated.test.ts` keeps every entry in
  * this form.
  */
-export const CLAUDE_TOOL_READERS: { [K in ToolKind]: (facts: ClaudeCallFacts) => ToolCallPayload<K> } = {
-  'execute': (facts): ToolCallPayload<'execute'> => claudeExecutePayload(claudeReaderRequest('execute', facts), facts.result),
-  'read': (facts): ToolCallPayload<'read'> => claudeReadPayload(claudeReaderRequest('read', facts), facts.result),
+export const CLAUDE_TOOL_READERS: { [K in ToolKind]: (facts: ClaudeCallFacts) => ToolCallPayloadForKind<K> } = {
+  'execute': (facts): ToolCallPayloadForKind<'execute'> => claudeExecutePayload(claudeReaderRequest('execute', facts), facts.result),
+  'read': (facts): ToolCallPayloadForKind<'read'> => claudeReadPayload(claudeReaderRequest('read', facts), facts.result),
   // Two entries for one reading, because each states its OWN kind. `CLAUDE_TOOL_KINDS`
   // maps the four file tools onto these two kinds, and it is now the only place that
   // does: the shared builder read the tool name a second time to choose between them.
-  'edit': (facts): ToolCallPayload<'edit'> => ({ kind: 'edit', request: claudeReaderRequest('edit', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
-  'write': (facts): ToolCallPayload<'write'> => ({ kind: 'write', request: claudeReaderRequest('write', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
-  'grep': (facts): ToolCallPayload<'grep'> => claudeGrepPayload(claudeReaderRequest('grep', facts), facts.result),
-  'glob': (facts): ToolCallPayload<'glob'> => claudeGlobPayload(claudeReaderRequest('glob', facts), facts.result),
-  'fetch': (facts): ToolCallPayload<'fetch'> => claudeFetchPayload(claudeReaderRequest('fetch', facts), facts.result),
-  'web_search': (facts): ToolCallPayload<'web_search'> => claudeWebSearchPayload(claudeReaderRequest('web_search', facts), facts.result),
-  'agent': (facts): ToolCallPayload<'agent'> => claudeAgentPayload(claudeReaderRequest('agent', facts), facts.args, facts.result),
-  'todo': (facts): ToolCallPayload<'todo'> => claudeTodoToolPayload(facts),
-  'question': (facts): ToolCallPayload<'question'> => claudeQuestionPayload(claudeReaderRequest('question', facts), facts.args, facts.result),
-  'task': (facts): ToolCallPayload<'task'> => claudeTaskPayload(claudeReaderRequest('task', facts), facts.args, facts.result),
-  'trigger': (facts): ToolCallPayload<'trigger'> => claudeTriggerPayload(claudeReaderRequest('trigger', facts), facts.args, facts.result),
-  'switch_mode': (facts): ToolCallPayload<'switch_mode'> => claudeSwitchModePayload(claudeReaderRequest('switch_mode', facts), facts.args, facts.result),
-  'agents': (facts): ToolCallPayload<'agents'> => claudeAgentsPayload(claudeReaderRequest('agents', facts), facts.args, facts.result),
-  'message': (facts): ToolCallPayload<'message'> => claudeMessagePayload(claudeReaderRequest('message', facts), facts.args, facts.result),
-  'skill': (facts): ToolCallPayload<'skill'> => claudeSkillPayload(claudeReaderRequest('skill', facts), facts.result),
-  'wait': (facts): ToolCallPayload<'wait'> => claudeWaitPayload(claudeReaderRequest('wait', facts), facts.result),
-  'report': (facts): ToolCallPayload<'report'> => claudeReportPayload(claudeReaderRequest('report', facts), facts.result),
-  'list': (facts): ToolCallPayload<'list'> => claudeListResourcesPayload(claudeReaderRequest('list', facts), facts.result),
-  'mcp': (facts): ToolCallPayload<'mcp'> => claudeMcpPayload(claudeReaderRequest('mcp', facts), facts.args, facts.result),
+  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', request: claudeReaderRequest('edit', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
+  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', request: claudeReaderRequest('write', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
+  'grep': (facts): ToolCallPayloadForKind<'grep'> => claudeGrepPayload(claudeReaderRequest('grep', facts), facts.result),
+  'glob': (facts): ToolCallPayloadForKind<'glob'> => claudeGlobPayload(claudeReaderRequest('glob', facts), facts.result),
+  'fetch': (facts): ToolCallPayloadForKind<'fetch'> => claudeFetchPayload(claudeReaderRequest('fetch', facts), facts.result),
+  'web_search': (facts): ToolCallPayloadForKind<'web_search'> => claudeWebSearchPayload(claudeReaderRequest('web_search', facts), facts.result),
+  'agent': (facts): ToolCallPayloadForKind<'agent'> => claudeAgentPayload(claudeReaderRequest('agent', facts), facts.args, facts.result),
+  'todo': (facts): ToolCallPayloadForKind<'todo'> => claudeTodoToolPayload(facts),
+  'question': (facts): ToolCallPayloadForKind<'question'> => claudeQuestionPayload(claudeReaderRequest('question', facts), facts.args, facts.result),
+  'task': (facts): ToolCallPayloadForKind<'task'> => claudeTaskPayload(claudeReaderRequest('task', facts), facts.args, facts.result),
+  'trigger': (facts): ToolCallPayloadForKind<'trigger'> => claudeTriggerPayload(claudeReaderRequest('trigger', facts), facts.args, facts.result),
+  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => claudeSwitchModePayload(claudeReaderRequest('switch_mode', facts), facts.args, facts.result),
+  'agents': (facts): ToolCallPayloadForKind<'agents'> => claudeAgentsPayload(claudeReaderRequest('agents', facts), facts.args, facts.result),
+  'message': (facts): ToolCallPayloadForKind<'message'> => claudeMessagePayload(claudeReaderRequest('message', facts), facts.args, facts.result),
+  'skill': (facts): ToolCallPayloadForKind<'skill'> => claudeSkillPayload(claudeReaderRequest('skill', facts), facts.result),
+  'wait': (facts): ToolCallPayloadForKind<'wait'> => claudeWaitPayload(claudeReaderRequest('wait', facts), facts.result),
+  'report': (facts): ToolCallPayloadForKind<'report'> => claudeReportPayload(claudeReaderRequest('report', facts), facts.result),
+  'list': (facts): ToolCallPayloadForKind<'list'> => claudeListResourcesPayload(claudeReaderRequest('list', facts), facts.result),
+  'mcp': (facts): ToolCallPayloadForKind<'mcp'> => claudeMcpPayload(claudeReaderRequest('mcp', facts), facts.args, facts.result),
   // The generic card, for a tool no vocabulary lists. Claude's own table answers the
   // EMPTY kind for such a name, which is the state "the provider states no kind".
-  '': (facts): ToolCallPayload<''> => ({ kind: '', request: claudeReaderRequest('', facts), ...claudeGenericResult(facts.result) }),
+  '': (facts): ToolCallPayloadForKind<''> => ({ kind: '', request: claudeReaderRequest('', facts), ...claudeGenericResult(facts.result) }),
   // UNREACHABLE, and the one entry here a Claude row could otherwise reach: `other` is
   // the state "the provider called the tool uncategorized", and Claude never says it --
   // `claudeToolKind` answers `''` for every name its table does not hold. The entry
   // states the same card at its OWN kind, so a build that starts producing `other`
   // draws the card rather than an empty row.
-  'other': (facts): ToolCallPayload<'other'> => ({ kind: 'other', request: claudeReaderRequest('other', facts), ...claudeGenericResult(facts.result) }),
+  'other': (facts): ToolCallPayloadForKind<'other'> => ({ kind: 'other', request: claudeReaderRequest('other', facts), ...claudeGenericResult(facts.result) }),
   // `ToolSearch` asks which DEFERRED tools exist before the model calls one. The tool
   // registry is a corpus, so `search` is the kind it takes (`ir/toolKind.ts`), and the
   // matches are TOOL NAMES. `filenames` and `lines` are the two fields of
@@ -203,7 +199,7 @@ export const CLAUDE_TOOL_READERS: { [K in ToolKind]: (facts: ClaudeCallFacts) =>
  * no assertion stands between the table and the result --
  * the assertion ban in `eslint.config.ts` refuses exactly that assertion.
  */
-function claudeReaderFor<K extends ToolKind>(facts: ClaudeCallFacts, kind: K): ToolCallPayloadOf<K> {
+function claudeReaderFor<K extends ToolKind>(facts: ClaudeCallFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
   return CLAUDE_TOOL_READERS[kind](facts)
 }
 
@@ -215,12 +211,12 @@ function claudeReaderFor<K extends ToolKind>(facts: ClaudeCallFacts, kind: K): T
  * so a row that reaches one of these draws the kind's card rather than throwing inside
  * a renderer that reads `request.changes[0]` or `request.path` with no guard.
  */
-function claudeUnreadKind<P extends ToolKind>(kind: P): (facts: ClaudeCallFacts) => ToolCallPayload<P> {
+function claudeUnreadKind<P extends ToolKind>(kind: P): (facts: ClaudeCallFacts) => ToolCallPayloadForKind<P> {
   // The inner arrow states its OWN return type, although the signature above already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every table entry
   // closes, one level down.
-  return (facts): ToolCallPayload<P> => {
+  return (facts): ToolCallPayloadForKind<P> => {
     const request = claudeReaderRequest(kind, facts)
     if (!facts.result)
       return { kind, request }
@@ -232,7 +228,7 @@ function claudeUnreadKind<P extends ToolKind>(kind: P): (facts: ClaudeCallFacts)
 }
 
 /** The todo family: `TodoWrite` states a list; a `Task*` call states one item. */
-function claudeTodoToolPayload(facts: ClaudeCallFacts): ToolCallPayload<'todo'> {
+function claudeTodoToolPayload(facts: ClaudeCallFacts): ToolCallPayloadForKind<'todo'> {
   const request = claudeReaderRequest('todo', facts)
   switch (facts.args.toolName) {
     case CLAUDE_TOOL_NAMES.TASK_CREATE:

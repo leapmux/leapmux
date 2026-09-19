@@ -1,20 +1,21 @@
 import type { McpContentItem } from '~/components/chat/ir/mcpToolCall'
 import type { ChatRowIR, ToolCallRow, ToolRowRole, ToolSpanRows } from '~/components/chat/ir/row'
-import type { ToolCallCommon, ToolCallIR, ToolCallOfKinds, ToolCallPayloadOf, ToolResultOf } from '~/components/chat/ir/toolCall'
+import type { ToolCallCommon, ToolCallIR, ToolCallOf, ToolCallPayload, ToolResultOf } from '~/components/chat/ir/toolCall'
 import type { ToolKind } from '~/components/chat/ir/toolKind'
 import type { ToolRowStatus } from '~/components/chat/ir/toolRowStatus'
 import type { ToolRequests, ToolResults } from '~/components/chat/ir/tools'
 import type { MessageCategory } from '~/components/chat/messageClassification'
-import type { SpanRole } from '~/components/chat/providers/registry'
+import type {} from '~/components/chat/providers/registry'
 import type { ToolResultMeta } from '~/components/chat/results/tools/meta'
 import type { RowExtractionOptions } from '~/components/chat/rowExtraction'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { imagesForIR, quotableTextForIR } from '~/components/chat/ir/derivations'
 import { toolCallRow } from '~/components/chat/ir/row'
 import { buildToolCall } from '~/components/chat/ir/toolCall'
-import { providerFor } from '~/components/chat/providers/registry'
+import { providerFor, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { input } from '~/components/chat/providers/testUtils'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
 import { parsedCall } from '~/components/chat/results/tools/renderer'
@@ -121,13 +122,13 @@ export function todoTitleOf(call: ToolCallIR): string {
 /**
  * A complete call of one kind, so a test states only the fields it is about.
  *
- * Answers {@link ToolCallOfKinds}, the DISTRIBUTED form, exactly as `toolCall` does.
+ * Answers {@link ToolCallOf}, the DISTRIBUTED form, exactly as `toolCall` does.
  * `ToolCallOf<'read' | 'grep'>` is one object whose request is both kinds' requests at
  * once, which no real call satisfies and which `ToolCallIR` does not accept -- so a
  * table-driven test that passed its kind through a union could not hand the result to
  * anything that takes a call.
  */
-export function toolCallIr<K extends ToolKind>(kind: K, overrides: ToolCallIrOverrides<K> = {}): ToolCallOfKinds<K> {
+export function toolCallIr<K extends ToolKind>(kind: K, overrides: ToolCallIrOverrides<K> = {}): ToolCallOf<K> {
   // The same strip `toolCall` applies, for the same reason. An override may
   // state an explicit `undefined` (the six fields the interface allows it on),
   // and a plain spread would copy that undefined straight over the default and
@@ -137,7 +138,7 @@ export function toolCallIr<K extends ToolKind>(kind: K, overrides: ToolCallIrOve
   const { id, status, name, images, request, result, ...rest } = overrides
   const rowStatus = status ?? 'completed'
   const built = buildToolCall<K>(
-    { id: id ?? 'call-1', name: name ?? (kind || 'tool'), status: rowStatus },
+    { id: id ?? 'call-1', name: name ?? (kind || 'tool'), lifecycle: { frameStatus: rowStatus, providerOutcome: null, retainedOutcome: null, resultLanded: false } },
     {
       kind,
       ...rest,
@@ -148,7 +149,7 @@ export function toolCallIr<K extends ToolKind>(kind: K, overrides: ToolCallIrOve
       // what completes it. Every other status admits no result and takes none.
       result: result ?? (rowStatus === 'completed' ? MINIMAL_RESULT[kind] : undefined),
       images: images ?? [],
-    } as ToolCallPayloadOf<K>,
+    } as ToolCallPayload<K>,
   )
   // A test must not be able to build what production cannot, so the helper routes
   // through the one validating builder and refuses a draft that breaks an invariant.
@@ -240,12 +241,12 @@ export function providerRowIr(
   options: ProviderRowOptions = {},
 ): ChatRowIR | null {
   const plugin = providerFor(provider)!
-  const parsed = { ...input(payload, undefined, provider), supplementalContent: options.supplementalContent }
+  const parsed = resolveMessageForRendering({ ...input(payload, undefined, provider), supplementalContent: options.supplementalContent }, provider)
   const category = options.category ?? plugin?.transcript.classify(parsed)
   const sides = options.sides ?? {
     current: parsed,
-    request: options.request,
-    result: options.result,
+    request: options.request === undefined ? undefined : resolveMessageForRendering(options.request, provider),
+    result: options.result === undefined ? undefined : resolveMessageForRendering(options.result, provider),
     role: options.role ?? 'result',
   }
   return extractedRow(extractChatRow(provider, parsed, category, { ...options, sides }))
@@ -268,7 +269,7 @@ export interface ProviderRowOptions extends RowExtractionOptions {
    * side every reader of a finished row resolves: the toolbar, the image tab and
    * the rail all address the row that carries the answer.
    */
-  role?: SpanRole
+  role?: ToolSpanRole
   /** The LeapMux half of the message, which several providers read for a recovered body. */
   supplementalContent?: unknown
 }

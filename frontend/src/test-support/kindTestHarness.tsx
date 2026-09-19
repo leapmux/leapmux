@@ -34,7 +34,7 @@ interface KindModuleCheckOf<K extends ToolKind> {
  *
  * A union rather than a type parameter, and the difference is what removes an
  * assertion this harness used to carry. A generic body typechecks against an
- * ABSTRACT `K`, and `ToolCallOfKinds<K>` is not assignable to `ToolCallIR` while `K`
+ * ABSTRACT `K`, and `ToolCallOf<K>` is not assignable to `ToolCallIR` while `K`
  * stays abstract -- so every mounted row here needed `as ToolCallIR`, which is the
  * one form that can re-pair a kind with another kind's request. The union states the
  * correlation at the site that writes it instead: a case whose `kind` is `'read'` and

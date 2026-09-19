@@ -1,10 +1,11 @@
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
 import { providerQuotableText, providerRowIr, providerToolMeta } from '~/test-support/toolCallIr'
 import { createControlAnswerState } from '../../controls/types'
-import { providerFor } from '../registry'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 // Side-effect imports. The first two let the sweep below read every provider out of
 // the registry; the third REGISTERS the Pi plugin, which the metadata cases read back
@@ -429,12 +430,12 @@ describe('pi extension UI integration', () => {
 describe('pi spanRole', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
-  function parsedWithType(type: string): ParsedMessageContent {
-    return { rawText: '', topLevel: null, parentObject: { type }, wrapper: null }
+  function parsedWithType(type: string): ResolvedMessageContent {
+    return resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: { type }, wrapper: null }, AgentProvider.PI)
   }
 
   it('routes tool_execution_start to opener and _end to result by envelope type', () => {
-    expect(plugin?.transcript.spanRole!(parsedWithType('tool_execution_start'))).toBe('opener')
+    expect(plugin?.transcript.spanRole!(parsedWithType('tool_execution_start'))).toBe('request')
     expect(plugin?.transcript.spanRole!(parsedWithType('tool_execution_end'))).toBe('result')
   })
 

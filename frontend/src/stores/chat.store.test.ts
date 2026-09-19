@@ -234,7 +234,7 @@ describe('chatstore span content versions', () => {
       claudeToolResult('result-1', 2n, spanId, 'first result'),
     ])
 
-    expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.parsed?.parentObject)).toContain('first result')
+    expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved?.parentObject)).toContain('first result')
     expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'opener-1', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
     expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 0, supplementalRevision: 0n })
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
@@ -242,7 +242,7 @@ describe('chatstore span content versions', () => {
 
     store.addMessage(agentId, claudeToolResult('result-1', 2n, spanId, 'updated result'))
 
-    expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.parsed?.parentObject)).toContain('updated result')
+    expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved?.parentObject)).toContain('updated result')
     expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 1, supplementalRevision: 0n })
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(1)
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
@@ -274,7 +274,7 @@ describe('chatstore span content versions', () => {
 
     store.setMessages(agentId, [claudeToolUse('opener-1', 1n, spanId)])
 
-    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.parsed).toBeUndefined()
+    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved).toBeUndefined()
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
   })
 })
@@ -1932,15 +1932,15 @@ describe('createChatStore', () => {
           const result = makeSpanMessage('res', 200n, 's-new', 'RESULT')
           store.setMessages('a1', [...filler, opener, result])
           // Indexed and resolvable while in the window.
-          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.parsed?.parentObject?.content).toBe('OPENER')
-          expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.parsed?.parentObject?.content).toBe('RESULT')
+          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('RESULT')
           // Trimming the newest end (older history loaded) evicts seq 199/200.
           store.trimNewestEnd('a1', 150)
           expect(store.getMessages('a1').some(m => m.spanId === 's-new')).toBe(false)
           // The span index must not retain the trimmed opener/result — otherwise
           // it grows unbounded across a long scroll-through and leaks the messages.
-          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.parsed).toBeUndefined()
-          expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.parsed).toBeUndefined()
+          expect(storeContext(store, 'a1').request({ spanId: 's-new', agentSessionId: '' })?.resolved).toBeUndefined()
+          expect(storeContext(store, 'a1').result({ spanId: 's-new', agentSessionId: '' })?.resolved).toBeUndefined()
           dispose()
         })
       })
@@ -1960,8 +1960,8 @@ describe('createChatStore', () => {
           await store.loadOlderMessages('w1', 'a1')
           // After the prepend + reindex over the seq-ascending window, opener and
           // result are correctly separated rather than swapped.
-          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.content).toBe('OPENER')
-          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.content).toBe('RESULT')
+          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('OPENER')
+          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.content).toBe('RESULT')
           dispose()
         })
       })
@@ -1975,12 +1975,12 @@ describe('createChatStore', () => {
           // misfiling it as the opener (the old insertion-order heuristic would).
           store.addMessage('a1', makeToolResultSpan('res', 51n, 's1'))
           // With only the result seen, the opener lookup is empty (not the result).
-          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.parsed).toBeUndefined()
-          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved).toBeUndefined()
+          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
           // The opener arrives afterward (lower seq); it must land on the opener side.
           store.addMessage('a1', makeToolUseSpan('op', 50n, 's1'))
-          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.type).toBe('assistant')
-          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').request({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('assistant')
+          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
           dispose()
         })
       })
@@ -1990,14 +1990,14 @@ describe('createChatStore', () => {
           const store = createChatStore()
           // A server tool_result occupies seq 51 (span s1).
           store.setMessages('a1', [makeToolResultSpan('res', 51n, 's1')])
-          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.parsed?.parentObject?.type).toBe('user')
+          expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
           // A re-broadcast arrives with the SAME seq under a DIFFERENT id and span.
           // addMessage's dedup short-circuit discards it (seq 51 already present),
           // so it never enters the window -- and its span (s2) must NOT be indexed,
           // or the lookup would resolve to a never-rendered message no reindex heals.
           store.addMessage('a1', makeToolResultSpan('res-dup', 51n, 's2'))
           expect(store.getMessages('a1').some(m => m.id === 'res-dup')).toBe(false)
-          expect(storeContext(store, 'a1').result({ spanId: 's2', agentSessionId: '' })?.parsed).toBeUndefined()
+          expect(storeContext(store, 'a1').result({ spanId: 's2', agentSessionId: '' })?.resolved).toBeUndefined()
           dispose()
         })
       })

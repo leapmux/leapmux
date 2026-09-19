@@ -64,51 +64,17 @@ export const BAND_BORDER_PX = 1
  * Per-row inputs that make a row's CONTENT stale even when the message id stays
  * stable.
  *
- * Every one of these changes what the row DRAWS, so each reader that caches
- * anything derived from the row -- its extracted IR, its normalized command body,
- * its Myers diff, its rendered markdown -- re-keys on them. The UI state that
- * changes only the row's HEIGHT lives on {@link HeightKeyInputs} instead, one level
- * out, so an expand or a diff-view toggle re-measures the row without discarding
- * work the click did not change.
+ * The one revision key from `chatRevisionKey.ts` -- the exact dependency set the
+ * row renders from -- plus the child-transcript flag, which re-classifies a
+ * forwarded row without touching any revision. Everything that caches anything
+ * derived from the row re-keys on these two; the UI state that changes only the
+ * row's HEIGHT lives on {@link HeightKeyInputs} instead, one level out, so an
+ * expand or a diff-view toggle re-measures the row without discarding work the
+ * click did not change.
  */
 export interface ContentKeyInputs {
-  /** Message seq -- a reseq / in-place consolidation bumps it. */
-  seq: bigint
-  /** A paired tool_use sibling is available. */
-  hasToolUseSibling: boolean
-  /**
-   * The paired tool_use opener's content version (0 for non-result rows / no
-   * opener). A tool_result can render from that opener, so the measurement cache
-   * must change when the opener changes.
-   */
-  toolUseContentVersion: number
-  /**
-   * Paired tool_use opener identity/seq/content-version token. Content version
-   * alone misses present-to-different-present sibling replacement at version 0.
-   */
-  toolUseRevisionKey: string
-  /** A paired tool_result sibling is available. */
-  hasToolResultSibling: boolean
-  /**
-   * The paired tool_result's content version (0 for non-opener rows / no result).
-   * Some tool_use rows render from hidden result data, so the measurement cache
-   * must change when that result changes.
-   */
-  toolResultContentVersion: number
-  /** Paired tool_result identity/seq/content-version token. */
-  toolResultRevisionKey: string
-  /** Content version -- a same-seq in-place body replacement bumps it. */
-  contentVersion: number
-  /**
-   * Supplemental revision -- a late supplement arrival bumps it.
-   *
-   * The row's preparation MERGES the supplemental content into the payload before it
-   * classifies, so a supplement changes the body, the category and therefore the
-   * height. Redundant with `contentVersion` while the store bumps that for the same
-   * arrival; stated anyway, so the measurement does not rest on the store keeping
-   * that discipline for a field the row reads directly.
-   */
-  supplementalRevision: bigint
+  /** The row's exact revision dependencies, as one string (see chatRevisionKey.ts). */
+  revisionKey: string
   /**
    * Whether the row was classified as part of a SUBAGENT's own transcript. The
    * flag re-classifies a forwarded row between a collapsed "Prompt" card and a
@@ -120,7 +86,7 @@ export interface ContentKeyInputs {
 
 /**
  * Per-row inputs that make a cached DOM measurement stale even when the message
- * id stays stable: every content signal, plus the row's own UI state.
+ * id stays stable: the content signals, plus the row's own UI state.
  */
 export interface HeightKeyInputs extends ContentKeyInputs {
   /** Per-message UI version -- a per-row expand / diff-view toggle bumps it. */
@@ -128,9 +94,7 @@ export interface HeightKeyInputs extends ContentKeyInputs {
 }
 
 export function buildContentKey(inputs: ContentKeyInputs): string {
-  const toolUseRevision = `${inputs.toolUseRevisionKey.length}:${inputs.toolUseRevisionKey}`
-  const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
-  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.contentVersion}|${inputs.supplementalRevision}|${inputs.isChildTranscript ? 'k' : ''}`
+  return `${inputs.revisionKey}|${inputs.isChildTranscript ? 'k' : ''}`
 }
 
 /**

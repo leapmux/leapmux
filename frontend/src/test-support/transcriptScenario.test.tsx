@@ -97,8 +97,8 @@ describe('the transcript scenario harness', () => {
     // The other session's row under the same tool ID never entered the resolver:
     // its identity resolves to nothing, and its bytes reach no resolved side.
     expect(scenario.resolver.request({ spanId: CALL, agentSessionId: 'session-b' })).toBeUndefined()
-    expect(JSON.stringify(request?.parsed)).toContain('printf mine')
-    expect(JSON.stringify(request?.parsed)).not.toContain('rm -rf')
+    expect(JSON.stringify(request?.resolved)).toContain('printf mine')
+    expect(JSON.stringify(request?.resolved)).not.toContain('rm -rf')
   })
 
   it('replaces the resident row with a late supplement', () => {
@@ -133,7 +133,7 @@ describe('the transcript scenario harness', () => {
     })
     const after = scenario.entry('request')
     expect(after).not.toBe(before)
-    expect(after.freshness.contentVersion).toBe(before.freshness.contentVersion + 1)
+    expect(after.freshness.revisionKey).not.toBe(before.freshness.revisionKey)
   })
 
   it('changes the rendered bubble after the supplement', () => {
@@ -165,16 +165,17 @@ describe('the transcript scenario harness', () => {
       ],
     })
     const before = renderKeyForEntry(scenario.entry('request'))
+    const beforeEntry = scenario.entry('request')
     scenario.replace({
       ...zcodeResult('result', 'the recovered body'),
       supplementalRevision: 2n,
     })
     const after = renderKeyForEntry(scenario.entry('request'))
     // The request row's key carries its sibling result's revision, so a
-    // result-side change rebuilds the request row too.
+    // result-side change rebuilds the request row too: a new render key AND a
+    // new classified-entry object, keyed by the one exact revision key.
     expect(after).not.toBe(before)
-    // Its own entry object is new as well, while the result row stays the row
-    // that changed.
-    expect(scenario.entry('request').freshness.hasToolResultSibling).toBe(true)
+    expect(scenario.entry('request')).not.toBe(beforeEntry)
+    expect(scenario.entry('request').freshness.revisionKey).toContain('~result=')
   })
 })

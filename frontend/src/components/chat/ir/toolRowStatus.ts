@@ -1,4 +1,4 @@
-import type { ToolOutcomeWord, ToolRowOutcome } from './toolOutcomeLabel'
+import type { ToolOutcomeWord } from './toolOutcomeLabel'
 
 /**
  * Every state a tool row's header can draw.
@@ -17,6 +17,28 @@ export const TOOL_ROW_STATUSES = ['', 'pending', 'in_progress', 'completed', 'fa
 
 export type ToolRowStatus = (typeof TOOL_ROW_STATUSES)[number]
 
+/** The statuses a call that has not answered yet can hold. Invariant I1's left half. */
+export type UnfinishedToolStatus = '' | 'pending' | 'in_progress'
+
+/** The statuses that end a call. Every one of them admits a result; each states how it ended. */
+export type FinishedToolStatus = 'completed' | 'failed' | 'cancelled' | 'declined'
+
+/** The two halves as values, so a test can walk them without restating the union. */
+export const UNFINISHED_TOOL_STATUSES = ['', 'pending', 'in_progress'] as const
+export const FINISHED_TOOL_STATUSES = ['completed', 'failed', 'cancelled', 'declined'] as const
+
+/**
+ * Whether one status ends its call.
+ *
+ * The finished/unfinished split is the rule the whole lifecycle turns on -- the
+ * result a call may carry, the pictures it may hold, the header it draws -- and it
+ * was restated as a four-way comparison at every site that needed it. One
+ * predicate states it once, over the two halves of the union above.
+ */
+export function isFinishedToolStatus(status: ToolRowStatus): status is FinishedToolStatus {
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'declined'
+}
+
 const KNOWN_TOOL_ROW_STATUSES: ReadonlySet<string> = new Set(TOOL_ROW_STATUSES)
 
 /**
@@ -29,24 +51,16 @@ export function toolRowStatus(value: string | undefined): ToolRowStatus {
   return value !== undefined && KNOWN_TOOL_ROW_STATUSES.has(value) ? value as ToolRowStatus : ''
 }
 
-/**
- * The status of a row whose provider reports no status word of its own.
- *
- * Pi and ZCode each derive it from the same three facts, in the same order, with
- * the same answers, so it lives here once. LeapMux's own completion wins over the
- * frame, for the reason `retainedOutcome` gives: a retained frame still reads as a
- * call in progress, and only the completion states that the turn cut it.
- *
- * Copilot does NOT use this. Its own derivation carries an `error.code` case and a
- * separate retained-start row, so it keeps its local four-member union, which this
- * type admits.
- */
-export function toolStatusFor(outcome: ToolRowOutcome | null, isError: boolean, finished: boolean): ToolRowStatus {
-  if (outcome === 'interrupted')
-    return 'cancelled'
-  if (isError || outcome === 'failed')
-    return 'failed'
-  return finished ? 'completed' : 'in_progress'
+/** The status an outcome word states, for the three that end a call. */
+export function statusForOutcome(outcome: ToolOutcomeWord): FinishedToolStatus {
+  switch (outcome) {
+    case 'failed':
+      return 'failed'
+    case 'interrupted':
+      return 'cancelled'
+    default:
+      return 'declined'
+  }
 }
 
 /**

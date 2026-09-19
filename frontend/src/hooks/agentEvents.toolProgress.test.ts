@@ -433,6 +433,22 @@ describe('dropFinishedToolProgress', () => {
     })
   })
 
+  // The drop reads the role of the RESOLVED parse, so a result whose bytes only
+  // the merge exposes still clears the entry a reader was watching.
+  it('drops the span from the resolved result role', () => {
+    createRoot((dispose) => {
+      const chatStore = seeded()
+      const msg = agentMessage(
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] }, tool_use_result: { stdout: 'recovered' } },
+        { spanId: 'toolu_A' },
+      )
+      const parsed = parseMessageContent(msg)
+      dropFinishedToolProgress('a1', msg, parsed, chatStore)
+      expect(chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
+      dispose()
+    })
+  })
+
   // The DROP path must key exactly as the apply path does. A result row of
   // another provider session addresses another tool, so it must leave this
   // entry alone -- and the matching row must still reclaim it.

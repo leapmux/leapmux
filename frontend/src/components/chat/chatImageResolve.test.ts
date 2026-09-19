@@ -5,7 +5,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { classifyMessage, toClassificationInput } from './messageClassification'
-import { parsedMessageForRendering } from './providers/registry'
+import { resolveMessageForRendering } from './providers/registry'
 import './providers/claude/plugin'
 import './providers/opencode/plugin'
 import './providers/cursor/plugin'
@@ -90,7 +90,7 @@ describe('messageToolResultImages over a resolved payload', () => {
 
   it('reads a wrapped result into the row the transcript classified', () => {
     const message = openCodeMessage({ id: 'n1', role: 'result', seq: 3, content: inner })
-    const resolved = parsedMessageForRendering(parseMessageContent(message), AgentProvider.OPENCODE)
+    const resolved = resolveMessageForRendering(parseMessageContent(message), AgentProvider.OPENCODE)
     // The transcript classifies the RESOLVED payload, which is the row the reader
     // clicked. The resolver must reach the same one.
     expect(classifyMessage(toClassificationInput(resolved, message)).kind).toBe('tool_use')

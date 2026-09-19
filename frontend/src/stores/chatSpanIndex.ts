@@ -1,6 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import { pluginFor } from '~/components/chat/providers/registry'
+import { resolvedSpanRole } from '~/components/chat/providers/registry'
 import { getOrCreate } from '~/lib/getOrCreate'
 import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanKey } from '~/lib/messageSpan'
@@ -33,7 +33,7 @@ export interface ChatSpanIndex {
   /** Replace an agent's index with exactly `messages` (clear, then index). */
   reindex: (agentId: string, messages: AgentChatMessage[]) => void
   /** The opener message for a spanId, or undefined. */
-  getOpenerMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
+  getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
   /** The result message for a spanId, or undefined. */
   getResultMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
 
@@ -90,12 +90,12 @@ export function createSpanIndex(): ChatSpanIndex {
       // The shared message parser caches this parse for later renderer lookups.
       // Each provider identifies its request and result roles from the protocol.
       // Unknown roles use sequence order. Known results must never depend on arrival order.
-      const role = pluginFor(msg.agentProvider)?.transcript.spanRole?.(parseMessageContent(msg)) ?? 'other'
+      const role = resolvedSpanRole(parseMessageContent(msg), msg.agentProvider)
       if (role === 'result') {
         // Always the result side, regardless of arrival order.
         fileInto(results, openers, msg)
       }
-      else if (role === 'opener') {
+      else if (role === 'request') {
         fileInto(openers, results, msg)
       }
       else {
@@ -139,7 +139,7 @@ export function createSpanIndex(): ChatSpanIndex {
   return {
     index,
     reindex,
-    getOpenerMessage: (agentId: string, identity: MessageSpanIdentity) => openers.get(agentId)?.get(messageSpanKey(identity)),
+    getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => openers.get(agentId)?.get(messageSpanKey(identity)),
     getResultMessage: (agentId: string, identity: MessageSpanIdentity) => results.get(agentId)?.get(messageSpanKey(identity)),
   }
 }

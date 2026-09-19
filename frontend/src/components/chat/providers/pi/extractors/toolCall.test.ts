@@ -303,7 +303,8 @@ describe('piToolCall copy text', () => {
 describe('piToolCall', () => {
   it('reads a start event as the request of its span', () => {
     const requestCall = piToolCallIR(requestRow(PI_TOOL.Bash, { command: 'ls' }))
-    expect(requestCall).toMatchObject({ id: 'call', status: 'in_progress' })
+    // A start event states no status word; the unfinished frame keeps it.
+    expect(requestCall).toMatchObject({ id: 'call', status: '' })
     expect(piToolRowRole(requestRow(PI_TOOL.Bash, { command: 'ls' }))).toBe('request')
   })
 
@@ -792,7 +793,7 @@ describe('piToolCallIR on a retained row the turn failed', () => {
  * A call that has NOT returned states no result at all.
  *
  * `ToolMessage` draws the live output the worker broadcasts only while the row is
- * `in_progress` AND its result is absent, so a result attached to a running row replaces
+ * UNFINISHED AND its result is absent, so a result attached to a running row replaces
  * the streaming tail with an empty card. The `mcp` entry is the one that pays for it:
  * `piReclassify` routes every tool `PI_TOOL_KINDS` does not hold to that kind, so the
  * rule covers each Pi extension and each Model Context Protocol bridge.
@@ -801,7 +802,7 @@ describe('piToolCallIR on a call that has not returned', () => {
   it('states no result for an unrecognized extension that is still running', () => {
     const call = piToolCallIR(requestRow('extension_lookup', { query: 'marker' }))
     expect(call.kind).toBe('mcp')
-    expect(call.status).toBe('in_progress')
+    expect(call.status).toBe('')
     expect(call.result).toBeUndefined()
     expect(call.request).toMatchObject({ tool: 'extension_lookup' })
   })

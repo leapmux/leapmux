@@ -1,5 +1,5 @@
 import type { FileEditDiff } from '../../../ir/fileEditDiff'
-import type { FailedResult, ProseResult, ToolCallEnvelope, ToolCallIR, ToolCallPayload, ToolCallPayloadOf, UnparsedResult } from '../../../ir/toolCall'
+import type { FailedResult, ProseResult, ToolCallEnvelope, ToolCallIR, ToolCallPayloadForKind, UnparsedResult } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
 import type { ToolRequests } from '../../../ir/tools'
 import type { FileChangeResult } from '../../../ir/tools/fileChange'
@@ -18,7 +18,6 @@ import { isObject, pickFirstString, pickObject, pickString } from '~/lib/jsonPic
 import { applyPatchFileChanges } from '../../../ir/applyPatch'
 import { parseMcpToolName } from '../../../ir/mcpToolCall'
 import { failedResult, proseResult, toolCall, unparsedResult } from '../../../ir/toolCall'
-import { toolStatusFor } from '../../../ir/toolRowStatus'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
@@ -136,7 +135,12 @@ export function zcodeToolCallIR(row: ZCodeRow, parsed?: ParsedMessageContent): T
   const envelope: ToolCallEnvelope = {
     id: update.toolCallId,
     name: row.toolName,
-    status: toolStatusFor(retainedOutcome(parsed?.completion), update.isError, facts.finished),
+    lifecycle: {
+      frameStatus: '',
+      providerOutcome: update.isError ? 'failed' : null,
+      retainedOutcome: retainedOutcome(parsed?.completion),
+      resultLanded: facts.finished,
+    },
   }
   const payload = zcodePayloadFor(facts, facts.kind)
   // The provider CUT the content. Every body outside the set below states nothing
@@ -394,8 +398,8 @@ function zcodeRequestFor<K extends ToolKind>(kind: K, facts: ZCodeToolFacts): To
  * of its own: a variable reference is not a fresh literal either.
  * `toolTableEntriesAreAnnotated.test.ts` keeps both halves in place.
  */
-export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => ToolCallPayload<K> } = {
-  'mcp': (facts): ToolCallPayload<'mcp'> => {
+export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => ToolCallPayloadForKind<K> } = {
+  'mcp': (facts): ToolCallPayloadForKind<'mcp'> => {
     const request = zcodeRequestFor('mcp', facts)
     if (!facts.finished)
       return { kind: 'mcp', request }
@@ -417,7 +421,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'mcp', request, result: failedResult(facts.text) }
     return { kind: 'mcp', request, result: unparsedResult(facts.text) }
   },
-  'task': (facts): ToolCallPayload<'task'> => {
+  'task': (facts): ToolCallPayloadForKind<'task'> => {
     const request = zcodeRequestFor('task', facts)
     const title = zcodeCallTitle(facts)
     if (!facts.finished)
@@ -435,7 +439,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'task', request, title, result: failedResult(facts.text) }
     return { kind: 'task', request, title, result: { outcome: 'completed', output: facts.text } }
   },
-  'message': (facts): ToolCallPayload<'message'> => {
+  'message': (facts): ToolCallPayloadForKind<'message'> => {
     const request = zcodeRequestFor('message', facts)
     const title = zcodeCallTitle(facts)
     const display = facts.display?.kind === 'status' ? facts.display : null
@@ -449,7 +453,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'message', request, title, statusOverride: 'failed', result: failedResult(words || facts.text) }
     return { kind: 'message', request, title, result: proseResult(words || facts.text) }
   },
-  'agent': (facts): ToolCallPayload<'agent'> => {
+  'agent': (facts): ToolCallPayloadForKind<'agent'> => {
     const request = zcodeRequestFor('agent', facts)
     const title = zcodeCallTitle(facts)
     if (!facts.finished)
@@ -459,7 +463,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'agent', request, title, result: { agents: [source] } }
     return { kind: 'agent', request, title, ...(facts.text ? { result: unparsedResult(facts.text) } : {}) }
   },
-  'todo': (facts): ToolCallPayload<'todo'> => {
+  'todo': (facts): ToolCallPayloadForKind<'todo'> => {
     // NEVER empty by accident here: `zcodeReclassify` answers `other` for an input
     // that carries no todos array, so a row that reaches this reader states a list.
     const request = zcodeRequestFor('todo', facts)
@@ -471,7 +475,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'todo', request, result: failedResult(facts.text) }
     return { kind: 'todo', request, result: { items: request.items } }
   },
-  'question': (facts): ToolCallPayload<'question'> => {
+  'question': (facts): ToolCallPayloadForKind<'question'> => {
     const request = zcodeRequestFor('question', facts)
     const title = zcodeCallTitle(facts)
     if (!facts.finished)
@@ -484,7 +488,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
     const header = request.questions[0]?.header || request.questions[0]?.question || 'Question'
     return { kind: 'question', request, title, ...(facts.text ? { result: { answers: [{ header, answer: facts.text }] } } : {}) }
   },
-  'execute': (facts): ToolCallPayload<'execute'> => {
+  'execute': (facts): ToolCallPayloadForKind<'execute'> => {
     // NO title. The command states itself in the shared header, and every other kind's
     // title falls back to the tool name -- which would sit above the command it ran.
     const request = zcodeRequestFor('execute', facts)
@@ -517,7 +521,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'execute', request, result: failedResult(facts.text), images: facts.nodeImages }
     return { kind: 'execute', request, result: unparsedResult(facts.text), images: facts.nodeImages }
   },
-  'read': (facts): ToolCallPayload<'read'> => {
+  'read': (facts): ToolCallPayloadForKind<'read'> => {
     const request = zcodeRequestFor('read', facts)
     if (!facts.finished)
       return { kind: 'read', request }
@@ -531,11 +535,11 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
   // Two entries for one reading, because each states its OWN kind. A shared generic
   // entry would put the kind and the request beyond the checker again, which is the
   // defect this table exists to remove.
-  'glob': (facts): ToolCallPayload<'glob'> => ({ kind: 'glob', request: zcodeRequestFor('glob', facts), ...zcodeSearchResult(facts) }),
-  'grep': (facts): ToolCallPayload<'grep'> => ({ kind: 'grep', request: zcodeRequestFor('grep', facts), ...zcodeSearchResult(facts) }),
-  'edit': (facts): ToolCallPayload<'edit'> => ({ kind: 'edit', request: zcodeRequestFor('edit', facts), ...zcodeFileChangeResult(facts) }),
-  'write': (facts): ToolCallPayload<'write'> => ({ kind: 'write', request: zcodeRequestFor('write', facts), ...zcodeFileChangeResult(facts) }),
-  'fetch': (facts): ToolCallPayload<'fetch'> => {
+  'glob': (facts): ToolCallPayloadForKind<'glob'> => ({ kind: 'glob', request: zcodeRequestFor('glob', facts), ...zcodeSearchResult(facts) }),
+  'grep': (facts): ToolCallPayloadForKind<'grep'> => ({ kind: 'grep', request: zcodeRequestFor('grep', facts), ...zcodeSearchResult(facts) }),
+  'edit': (facts): ToolCallPayloadForKind<'edit'> => ({ kind: 'edit', request: zcodeRequestFor('edit', facts), ...zcodeFileChangeResult(facts) }),
+  'write': (facts): ToolCallPayloadForKind<'write'> => ({ kind: 'write', request: zcodeRequestFor('write', facts), ...zcodeFileChangeResult(facts) }),
+  'fetch': (facts): ToolCallPayloadForKind<'fetch'> => {
     const request = zcodeRequestFor('fetch', facts)
     if (!facts.finished)
       return { kind: 'fetch', request }
@@ -543,7 +547,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
       return { kind: 'fetch', request, result: failedResult(facts.text) }
     return { kind: 'fetch', request, result: { result: facts.text, ...(facts.update.durationMs != null ? { durationMs: facts.update.durationMs } : {}) } }
   },
-  'web_search': (facts): ToolCallPayload<'web_search'> => {
+  'web_search': (facts): ToolCallPayloadForKind<'web_search'> => {
     const request = zcodeRequestFor('web_search', facts)
     if (!facts.finished)
       return { kind: 'web_search', request }
@@ -553,17 +557,17 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
   },
   // The three kinds whose declared result IS prose. Each states its own kind for the
   // reason the search pair states theirs.
-  'switch_mode': (facts): ToolCallPayload<'switch_mode'> => ({ kind: 'switch_mode', request: zcodeRequestFor('switch_mode', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  'skill': (facts): ToolCallPayload<'skill'> => ({ kind: 'skill', request: zcodeRequestFor('skill', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  'trigger': (facts): ToolCallPayload<'trigger'> => ({ kind: 'trigger', request: zcodeRequestFor('trigger', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  'switch_mode': (facts): ToolCallPayloadForKind<'switch_mode'> => ({ kind: 'switch_mode', request: zcodeRequestFor('switch_mode', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  'skill': (facts): ToolCallPayloadForKind<'skill'> => ({ kind: 'skill', request: zcodeRequestFor('skill', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  'trigger': (facts): ToolCallPayloadForKind<'trigger'> => ({ kind: 'trigger', request: zcodeRequestFor('trigger', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
   // The generic card, for a tool no vocabulary lists.
-  'other': (facts): ToolCallPayload<'other'> => ({ kind: 'other', request: zcodeRequestFor('other', facts), ...zcodeGenericResult(facts) }),
+  'other': (facts): ToolCallPayloadForKind<'other'> => ({ kind: 'other', request: zcodeRequestFor('other', facts), ...zcodeGenericResult(facts) }),
   // UNREACHABLE, and the one entry here that a ZCode row could otherwise reach:
   // `zcodeReclassify` folds `''` to `other`, because a row with no tool name has no
   // label to separate it from an uncategorized one. The entry exists because the table
   // is total, and it states the same card at its OWN kind -- so a build that stops
   // folding draws the card rather than an empty row.
-  '': (facts): ToolCallPayload<''> => ({ kind: '', request: zcodeRequestFor('', facts), ...zcodeGenericResult(facts) }),
+  '': (facts): ToolCallPayloadForKind<''> => ({ kind: '', request: zcodeRequestFor('', facts), ...zcodeGenericResult(facts) }),
   // The eleven kinds no ZCode tool takes: `ZCODE_TOOL_KINDS` maps no name to any of
   // them, and no display hint reaches one. With `''` above, twelve of the thirty kinds
   // are unreachable and the other eighteen are what ZCode produces.
@@ -581,7 +585,7 @@ export const ZCODE_TOOL_READERS: { [K in ToolKind]: (facts: ZCodeToolFacts) => T
 }
 
 /** The payload of ONE kind, read from the facts. Total over `ToolKind` by the table. */
-function zcodePayloadFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): ToolCallPayloadOf<K> {
+function zcodePayloadFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): { [P in K]: ToolCallPayloadForKind<P> }[K] {
   return ZCODE_TOOL_READERS[kind](facts)
 }
 
@@ -593,12 +597,12 @@ function zcodePayloadFor<K extends ToolKind>(facts: ZCodeToolFacts, kind: K): To
  * build could not read the payload into the kind's shape" -- true for a kind no ZCode
  * tool reaches.
  */
-function zcodeArgumentsOnly<P extends ToolKind>(kind: P): (facts: ZCodeToolFacts) => ToolCallPayload<P> {
+function zcodeArgumentsOnly<P extends ToolKind>(kind: P): (facts: ZCodeToolFacts) => ToolCallPayloadForKind<P> {
   // The inner arrow states its OWN return type, although the signature above already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every table entry
   // closes, one level down.
-  return (facts): ToolCallPayload<P> => ({ kind, request: zcodeRequestFor(kind, facts), title: zcodeCallTitle(facts), ...zcodeUnreadResult(facts) })
+  return (facts): ToolCallPayloadForKind<P> => ({ kind, request: zcodeRequestFor(kind, facts), title: zcodeCallTitle(facts), ...zcodeUnreadResult(facts) })
 }
 
 /** The row's own header words: the description the arguments state, then the tool's name. */

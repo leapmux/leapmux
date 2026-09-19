@@ -12,7 +12,7 @@ import { COLLAPSED_RESULT_ROWS } from '../../ir/collapse'
 import { toolOutcomeLabel } from '../../ir/toolOutcomeLabel'
 import { renderMessageContent } from '../../rowRenderers'
 import { toolInputPath, toolResultCollapsed } from '../../toolStyles.css'
-import { parsedMessageForRendering, providerFor } from '../registry'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 import '../testMocks'
@@ -90,7 +90,7 @@ describe('zcode tool rendering', () => {
     const request = event('scheduled', { toolName: 'Bash', inputOmitted: true, inputRef: 'model_stream' })
     const original = JSON.stringify(request)
     const parsed = { ...input(request), supplementalContent: event('scheduled', { input: { command: 'printf recovered' } }) }
-    const resolved = parsedMessageForRendering(parsed, AgentProvider.ZCODE)
+    const resolved = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
     const { container } = render(() => renderMessageContent(resolved.parentObject, { premeasureMode: true }, provider().transcript.classify(resolved), AgentProvider.ZCODE))
     expect(container.textContent).toContain('printf recovered')
     expect(JSON.stringify(request)).toBe(original)
@@ -102,13 +102,13 @@ describe('zcode tool rendering', () => {
     event('scheduled', { input: ['wrong'] }),
   ])('rejects a supplemental input with another identity or an invalid shape: %j', (supplementalContent) => {
     const request = event('scheduled', { toolName: 'Bash', inputOmitted: true })
-    const resolved = parsedMessageForRendering({ ...input(request), supplementalContent }, AgentProvider.ZCODE)
+    const resolved = resolveMessageForRendering({ ...input(request), supplementalContent }, AgentProvider.ZCODE)
     expect(resolved.parentObject).toEqual(request)
   })
 
   it('keeps an explicit provider input when supplemental content also supplies one', () => {
     const request = event('scheduled', { toolName: 'Bash', input: { command: 'original' } })
-    const resolved = parsedMessageForRendering({ ...input(request), supplementalContent: event('scheduled', { input: { command: 'stale' } }) }, AgentProvider.ZCODE)
+    const resolved = resolveMessageForRendering({ ...input(request), supplementalContent: event('scheduled', { input: { command: 'stale' } }) }, AgentProvider.ZCODE)
     expect(resolved.parentObject).toEqual(request)
   })
 

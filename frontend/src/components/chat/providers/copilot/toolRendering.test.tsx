@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { ToolCallIR } from '../../ir/toolCall'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
@@ -27,8 +27,8 @@ function frame(type: string, data: Record<string, unknown>): Record<string, unkn
   }
 }
 
-function parsed(row: Record<string, unknown>): ParsedMessageContent {
-  return { ...input(row), supplementalContent: undefined } as ParsedMessageContent
+function parsed(row: Record<string, unknown>): ResolvedMessageContent {
+  return { ...input(row, undefined, AgentProvider.GITHUB_COPILOT), supplementalContent: undefined }
 }
 
 function start(args: Record<string, unknown>, toolName: string, toolCallId = CALL) {

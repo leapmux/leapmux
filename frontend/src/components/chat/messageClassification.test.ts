@@ -2,6 +2,7 @@ import type { MessageCategory } from '~/components/chat/messageClassification'
 import { describe, expect, it } from 'vitest'
 import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass, rowIsWidened } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
+import { resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { input } from '~/components/chat/providers/testUtils'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, AssembledMessageKind, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -378,7 +379,7 @@ describe('classifyMessage', () => {
     for (const provider of ALL_PROVIDERS) {
       const message = makeControlResponseMessage(provider, { result: { decision: 'accept' } })
       const parsed = parseMessageContent(message)
-      expect(classifyMessage({ ...parsed, agentProvider: provider }).kind).toBe('control_response')
+      expect(classifyMessage({ ...resolveMessageForRendering(parsed, provider), agentProvider: provider }).kind).toBe('control_response')
     }
   })
 

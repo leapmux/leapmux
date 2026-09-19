@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
@@ -108,7 +109,7 @@ function renderPiToolResult(toolName: string, resultPayload: Record<string, unkn
   const start = makePiToolStart(toolName, startArgs)
   const end = makePiToolEnd(toolName, resultPayload, isError)
   const category: MessageCategory = { kind: 'tool_result' }
-  return render(() => renderMessageContent(end, { spanType: toolName, sources: testMessageSources({ request: () => (parseMessageContent(makeFakeMessage(start))) }) }, category, AgentProvider.PI))
+  return render(() => renderMessageContent(end, { spanType: toolName, sources: testMessageSources({ request: () => resolveMessageForRendering(parseMessageContent(makeFakeMessage(start)), AgentProvider.PI) }) }, category, AgentProvider.PI))
 }
 
 // ---------------------------------------------------------------------------
@@ -149,13 +150,13 @@ describe('claude Edit/Write tool_use states its requested change', () => {
 // ---------------------------------------------------------------------------
 
 describe('claude Edit tool_result diff selection', () => {
-  const editToolUseParsed = parseMessageContent(makeFakeMessage(
+  const editToolUseParsed = resolveMessageForRendering(parseMessageContent(makeFakeMessage(
     makeClaudeToolUseMessage('Edit', {
       file_path: '/tmp/file.ts',
       old_string: 'fallbackOldZZZ',
       new_string: 'fallbackNewZZZ',
     }) as unknown as Record<string, unknown>,
-  ))
+  )), AgentProvider.CLAUDE_CODE)
 
   it('renders the result-side structuredPatch when present (and ignores tool_use fallback)', () => {
     const parsed = makeClaudeToolResultMessage({
@@ -201,9 +202,9 @@ describe('claude Edit tool_result diff selection', () => {
   })
 
   it('renders the result content text when neither result nor tool_use carries a diff', () => {
-    const noDiffToolUse = parseMessageContent(makeFakeMessage(
+    const noDiffToolUse = resolveMessageForRendering(parseMessageContent(makeFakeMessage(
       makeClaudeToolUseMessage('Edit', { file_path: '/tmp/x.ts' }) as unknown as Record<string, unknown>,
-    ))
+    )), AgentProvider.CLAUDE_CODE)
     const parsed = makeClaudeToolResultMessage({ tool_name: 'Edit' }, 'Plain text result.')
     const { container } = renderClaudeToolResult(parsed, { sources: testMessageSources({ request: () => (noDiffToolUse) }) })
     const text = container.textContent ?? ''
@@ -244,12 +245,12 @@ describe('claude Edit tool_result diff selection', () => {
 })
 
 describe('claude Write tool_result diff selection', () => {
-  const writeToolUseParsed = parseMessageContent(makeFakeMessage(
+  const writeToolUseParsed = resolveMessageForRendering(parseMessageContent(makeFakeMessage(
     makeClaudeToolUseMessage('Write', {
       file_path: '/tmp/new.ts',
       content: 'fallbackWriteBodyZZZ\n',
     }) as unknown as Record<string, unknown>,
-  ))
+  )), AgentProvider.CLAUDE_CODE)
 
   it('renders the result-side structuredPatch when present', () => {
     const parsed = makeClaudeToolResultMessage({
@@ -592,7 +593,7 @@ describe('opencode tool_call_update diff selection', () => {
   // apart, so this pair must draw both halves however many times the message
   // was parsed.
   it('keeps the requested edit beside reported words when the result side is a re-parse of the row', () => {
-    const parse = (content: Record<string, unknown>) => parseMessageContent(makeFakeMessage(content))
+    const parse = (content: Record<string, unknown>) => resolveMessageForRendering(parseMessageContent(makeFakeMessage(content)), AgentProvider.OPENCODE)
     const opener = parse({
       sessionUpdate: 'tool_call',
       toolCallId: 'unconfirmed-edit',

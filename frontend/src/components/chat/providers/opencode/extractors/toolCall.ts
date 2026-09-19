@@ -1,5 +1,5 @@
 import type { QuestionIR } from '../../../ir/questionBody'
-import type { ToolCallPayloadIR, ToolCallPayloadOf } from '../../../ir/toolCall'
+import type { ToolCallPayload, ToolCallPayloadIR } from '../../../ir/toolCall'
 import type { ToolKind } from '../../../ir/toolKind'
 import type { FileChangeRequest } from '../../../ir/tools/fileChange'
 import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
@@ -480,7 +480,7 @@ function basePayload(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: 
  * The shared build owns the card's content blocks, so its payload stands except
  * for the tool name: the registry id identifies the call, which the wire kind cannot.
  */
-function genericPayload(facts: ACPToolFacts, toolName: string): ToolCallPayloadOf<'mcp'> {
+function genericPayload(facts: ACPToolFacts, toolName: string): ToolCallPayload<'mcp'> {
   const request = { server: '', tool: toolName || 'tool', args: facts.args }
   if (!facts.finished)
     return { kind: 'mcp', request }

@@ -1,11 +1,13 @@
 import type { JSXElement } from 'solid-js'
-import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ResolvedMessageContent } from '~/components/chat/rowExtractionTypes'
+import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { flattenNotificationEntries } from '~/components/chat/notificationEntries'
 import { renderNotificationBlocks } from '~/components/chat/notificationRenderers'
+import { resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { ResultDivider } from '~/components/chat/resultDividerRenderers'
 import { extractChatRow, extractedRow } from '~/components/chat/rowExtraction'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 
 // Shared render-and-probe helpers for the two shared message render paths: the
@@ -18,9 +20,9 @@ import { isObject } from '~/lib/jsonPick'
 // each test file.
 
 /** The parse a category-driven extraction does not read. Both helpers state their row's category. */
-function parsedOf(parsed: unknown): ParsedMessageContent {
+function parsedOf(parsed: unknown, provider?: AgentProvider): ResolvedMessageContent {
   const parentObject = isObject(parsed) ? parsed : undefined
-  return { wrapper: null, topLevel: parentObject ?? null, parentObject, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+  return resolveMessageForRendering({ wrapper: null, topLevel: parentObject ?? null, parentObject, rawText: '', supplementalContent: undefined, messageMetadata: undefined }, provider ?? AgentProvider.CLAUDE_CODE)
 }
 
 /**
@@ -32,7 +34,7 @@ function parsedOf(parsed: unknown): ParsedMessageContent {
  * are about. Null when the thread states nothing, exactly as the transcript row is.
  */
 export function renderThreadElement(messages: unknown[], provider?: AgentProvider): JSXElement | null {
-  const row = extractedRow(extractChatRow(provider, parsedOf(undefined), { kind: 'notification', messages }, {}))
+  const row = extractedRow(extractChatRow(provider, parsedOf(undefined, provider), { kind: 'notification', messages }, {}))
   return row?.kind === 'notification' ? renderNotificationBlocks(flattenNotificationEntries(row.thread.entries)) : null
 }
 
@@ -78,7 +80,7 @@ export function renderThreadHasIcon(messages: unknown[], provider?: AgentProvide
  * is false when the divider hook returns null (nothing rendered).
  */
 export function renderDivider(parsed: unknown, provider: AgentProvider, completion?: MessageCompletion): { text: string, isError: boolean } {
-  const row = extractedRow(extractChatRow(provider, parsedOf(parsed), { kind: 'result_divider' }, { ...(completion !== undefined ? { completion } : {}) }))
+  const row = extractedRow(extractChatRow(provider, parsedOf(parsed, provider), { kind: 'result_divider' }, { ...(completion !== undefined ? { completion } : {}) }))
   if (row?.kind !== 'divider')
     return { text: '', isError: false }
   const { container } = render(() => <ResultDivider model={row.divider} />)

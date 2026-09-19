@@ -120,7 +120,7 @@ export function useControlRequestSource(
     if (!seq || seq <= 0n || !resolver)
       return undefined
     if (loaded && loaded.message.agentProvider === agentProvider && loaded.message.agentSessionId === agentSessionId)
-      return loaded.parsed
+      return loaded.resolved
     return undefined
   }
 }

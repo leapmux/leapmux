@@ -1,4 +1,4 @@
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { AgentsRequest } from '../../../ir/tools/agents'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
@@ -38,7 +38,7 @@ export function claudeListAgentsListing(
  * The failure rung leads, and this kind needs it most: the listing renders as
  * MARKDOWN, so a reason that holds a `#` or a `*` drew as a heading or as emphasis.
  */
-export function claudeAgentsPayload(request: AgentsRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayload<'agents'> {
+export function claudeAgentsPayload(request: AgentsRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'agents'> {
   // The roster question, as the row's own header word. It reads the REQUEST rather than
   // the arguments a second time, so the header and the body cannot state two different
   // filters. `TeamCreate` and `TeamDelete` share this kind and name a TEAM rather than a

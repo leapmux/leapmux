@@ -1,6 +1,7 @@
 import type { MessageCategory } from './messageClassification'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 
 // ---------------------------------------------------------------------------
@@ -18,23 +19,34 @@ import type { TodoItem } from '~/models/todo'
 // payload through it has a second route to the provider's wire format.
 // ---------------------------------------------------------------------------
 
+/** The role a MESSAGE plays in its tool span; the per-provider `spanRole` hook decides it. */
+export type { ToolSpanRole } from '~/lib/messageSpan'
+
 /**
- * The role a MESSAGE plays in a tool span: the opener that states the call, the
- * result that completes it, or neither. Providers mark opener vs result
- * differently, so the classifier is the per-provider `spanRole` hook.
+ * A parse with the provider's supplemental content merged in, and nothing else.
+ *
+ * The BRAND is the compile-time boundary: only `resolveMessageForRendering()`
+ * constructs this type, so a classifier, a span-role reader or an extractor
+ * cannot accept the raw bytes the worker stored -- the merge has to have run.
+ * `extractRow` therefore receives resolved content by construction.
  */
-export type SpanRole = 'opener' | 'result' | 'other'
+declare const resolvedMessageContent: unique symbol
+
+export type ResolvedMessageContent
+  = ParsedMessageContent & {
+    readonly [resolvedMessageContent]: true
+  }
 
 /** Every side of one tool span the row's extractor reads, resolved once by the caller. */
 export interface ToolSpanSides {
   /** The message the extractor was called for. */
-  current: ParsedMessageContent | undefined
-  /** The span's opener, or undefined when the span states none. */
-  request: ParsedMessageContent | undefined
+  current: ResolvedMessageContent | undefined
+  /** The span's request, or undefined when the span states none. */
+  request: ResolvedMessageContent | undefined
   /** The span's result, or undefined while the call still runs. */
-  result: ParsedMessageContent | undefined
+  result: ResolvedMessageContent | undefined
   /** Where the CURRENT message sits in the span, decided by message id. */
-  role: SpanRole
+  role: ToolSpanRole
 }
 
 /**
@@ -45,8 +57,8 @@ export interface ToolSpanSides {
  * resolution outside the memo that produced this input.
  */
 export interface RowExtractionInput {
-  /** The row's own parsed content, with its supplemental data already merged. */
-  parsed: ParsedMessageContent
+  /** The row's own content with its supplemental data merged: the resolved brand, by construction. */
+  parsed: ResolvedMessageContent
   /** The classification the shared classifier already reached for this row. */
   category: MessageCategory
   /** The three sides of this row's tool span, plus this row's place among them. */

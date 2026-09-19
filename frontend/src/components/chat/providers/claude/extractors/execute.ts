@@ -1,5 +1,5 @@
 import type { CommandResult } from '../../../ir/commandResult'
-import type { ToolCallPayload } from '../../../ir/toolCall'
+import type { ToolCallPayloadForKind } from '../../../ir/toolCall'
 import type { ExecuteRequest } from '../../../ir/tools/execute'
 import type { ClaudeToolRow } from './toolCommon'
 import { pickString } from '~/lib/jsonPick'
@@ -50,7 +50,7 @@ export function claudeBashFromToolResult(args: ClaudeBashArgs): CommandResult {
  * The execute pair of a `Bash` or `PowerShell` call: the command it ran and the
  * stream it printed. A call that has not returned states the command alone.
  */
-export function claudeExecutePayload(request: ExecuteRequest, result: ClaudeToolRow | undefined): ToolCallPayload<'execute'> {
+export function claudeExecutePayload(request: ExecuteRequest, result: ClaudeToolRow | undefined): ToolCallPayloadForKind<'execute'> {
   if (!result)
     return { kind: 'execute', request }
   return {

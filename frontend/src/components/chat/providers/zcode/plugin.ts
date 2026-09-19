@@ -41,7 +41,7 @@ const zcodePlugin: ProviderPlugin = {
       if (role === 'result')
         return ['request']
       const tool = zcodeExtractTool(parsed.parentObject)
-      return role === 'opener' && (tool?.toolName === ZCODE_TOOL.Agent || tool?.toolName === ZCODE_TOOL.TodoWrite || Object.keys(tool?.input ?? {}).length === 0 || !ZCODE_REQUESTS_WITH_TITLES.has(tool?.toolName ?? '')) ? ['result'] : []
+      return role === 'request' && (tool?.toolName === ZCODE_TOOL.Agent || tool?.toolName === ZCODE_TOOL.TodoWrite || Object.keys(tool?.input ?? {}).length === 0 || !ZCODE_REQUESTS_WITH_TITLES.has(tool?.toolName ?? '')) ? ['result'] : []
     },
     classify: classifyZCodeMessage,
     extractRow: zcodeExtractRow,

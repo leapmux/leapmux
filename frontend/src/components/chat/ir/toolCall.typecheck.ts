@@ -1,5 +1,7 @@
 import type { ReadFileResult } from './readFileResult'
-import type { ToolCallOf } from './toolCall'
+import type { ToolCallIR, ToolCallOf, ToolCallPayload, ToolCallPayloadIR, ToolResultOf } from './toolCall'
+import type { ToolKind } from './toolKind'
+import type { ToolRequests } from './tools'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { failedResult, proseResult, unparsedResult } from './toolCall'
 
@@ -72,3 +74,37 @@ void pictured
 // @ts-expect-error I6: a generic kind's pictures ride in its result content, never on the call.
 const withPictures: ToolCallOf<'mcp'> = { id: 'g', name: 'Tool', kind: 'mcp', request: { server: 's', tool: 't', args: {} }, status: 'completed', images: [picture], result: { content: [] } }
 void withPictures
+
+// ---------------------------------------------------------------------------
+// Distribution preserves correlation, compile-only.
+//
+// `ToolCallOf` and `ToolCallPayload` are distributive conditionals: a UNION of
+// kinds must answer the UNION of each kind's correlated member -- never one
+// object whose request is every kind's request at once. These expectations pin
+// that, and pin the request/result correlation inside one member, so a refactor
+// that loses the distribution fails `tsc` here rather than silently widening a
+// renderer's input.
+// ---------------------------------------------------------------------------
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
+type Expect<T extends true> = T
+
+/** The six expectations, joined so the linter reads each name as used. */
+export type ToolCallCorrelationChecks = [
+  Expect<Equal<ToolCallOf<'edit' | 'read'>, ToolCallOf<'edit'> | ToolCallOf<'read'>>>,
+  Expect<Equal<ToolCallOf<ToolKind>, ToolCallIR>>,
+  Expect<Equal<ToolCallPayload<'edit' | 'read'>, ToolCallPayload<'edit'> | ToolCallPayload<'read'>>>,
+  Expect<Equal<ToolCallPayload<ToolKind>, ToolCallPayloadIR>>,
+  Expect<Equal<ToolCallOf<'edit'>['request'], ToolRequests['edit']>>,
+  Expect<Equal<ToolCallPayload<'read'>['result'], ToolResultOf<'read'> | undefined>>,
+]
+
+/** Named for the error message a violated check prints. */
+export type ToolCallCorrelationCheckNames = keyof {
+  callsDistribute: ToolCallCorrelationChecks[0]
+  callsCoverTheUnion: ToolCallCorrelationChecks[1]
+  payloadsDistribute: ToolCallCorrelationChecks[2]
+  payloadsCoverTheUnion: ToolCallCorrelationChecks[3]
+  oneMemberKeepsItsRequest: ToolCallCorrelationChecks[4]
+  onePayloadKeepsItsResult: ToolCallCorrelationChecks[5]
+}

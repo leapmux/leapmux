@@ -1,7 +1,8 @@
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { __resetProviderRegistryForTest, pluginFor, providerFor, registerProvider, retainedOutcome, retainedRowIsFinal } from './registry'
+import { __resetProviderRegistryForTest, __resetResolvedMessageMemoForTest, pluginFor, providerFor, registerProvider, resolveMessageForRendering, retainedOutcome, retainedRowIsFinal } from './registry'
 // Side-effect import: register every provider plugin so the registry is populated.
 import '.'
 
@@ -23,6 +24,63 @@ describe('pluginFor', () => {
 
   it('returns undefined for an unregistered enum value (backend/frontend skew)', () => {
     expect(pluginFor(999 as AgentProvider)).toBeUndefined()
+  })
+})
+
+/** One parse with the shape the parser hands the resolver. */
+function rawParse(parent: Record<string, unknown> = {}): ParsedMessageContent {
+  return { wrapper: null, topLevel: parent, parentObject: parent, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+}
+
+describe('resolveMessageForRendering', () => {
+  it('returns a stable identity for one parse under one provider', () => {
+    const parsed = rawParse({ type: 'assistant' })
+    expect(resolveMessageForRendering(parsed, AgentProvider.CLAUDE_CODE))
+      .toBe(resolveMessageForRendering(parsed, AgentProvider.CLAUDE_CODE))
+  })
+
+  it('returns the parse itself when the provider merges nothing', () => {
+    const parsed = rawParse({ type: 'tool.updated' })
+    // ZCode's merge only repairs a `scheduled` input; this frame states none, so
+    // the resolved object IS the parse -- one object for every reader.
+    const resolved = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
+    expect(resolved).toBe(parsed)
+    expect(resolveMessageForRendering(resolved, AgentProvider.ZCODE)).toBe(resolved)
+  })
+
+  // One parse whose ZCode merge repairs an omitted input, so ZCode answers a
+  // NEW object and a provider that merges nothing answers the parse itself.
+  function scheduledParse(): ParsedMessageContent {
+    return {
+      wrapper: null,
+      topLevel: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', toolName: 'Bash', inputOmitted: true } },
+      parentObject: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', toolName: 'Bash', inputOmitted: true } },
+      rawText: '',
+      supplementalContent: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', input: { command: 'ls' } } },
+      messageMetadata: undefined,
+    }
+  }
+
+  it('answers a different object per provider for the same parse', () => {
+    const parsed = scheduledParse()
+    const claude = resolveMessageForRendering(parsed, AgentProvider.CLAUDE_CODE)
+    const zcode = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
+    // Claude merges nothing for this frame: the parse itself. ZCode repairs the
+    // omitted input: a new object, memoized per provider.
+    expect(claude).toBe(parsed)
+    expect(zcode).not.toBe(parsed)
+    expect(claude).not.toBe(zcode)
+    expect(claude).toBe(resolveMessageForRendering(parsed, AgentProvider.CLAUDE_CODE))
+    expect(zcode).toBe(resolveMessageForRendering(parsed, AgentProvider.ZCODE))
+  })
+
+  it('drops the memo when the test resets it', () => {
+    const parsed = scheduledParse()
+    const before = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
+    __resetResolvedMessageMemoForTest()
+    const after = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
+    expect(after).not.toBe(before)
+    expect(after).toBe(resolveMessageForRendering(parsed, AgentProvider.ZCODE))
   })
 })
 

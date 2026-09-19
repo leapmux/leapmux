@@ -4,6 +4,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
@@ -53,10 +54,7 @@ function renderClaudeToolUse(name: string, input: Record<string, unknown>, conte
 function renderCodexItem(item: Record<string, unknown>, context?: RenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category = classifyMessage({
-    rawText: '',
-    topLevel: parsed,
-    parentObject: parsed,
-    wrapper: null,
+    ...resolveMessageForRendering({ rawText: '', topLevel: parsed, parentObject: parsed, wrapper: null }, AgentProvider.CODEX),
     agentProvider: AgentProvider.CODEX,
   })
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
@@ -232,15 +230,17 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
 describe('claude classifies TaskList tool_use as hidden', () => {
   it('hides the TaskList tool_use so the chat surface stays quiet', () => {
     const category = classifyMessage({
-      rawText: '',
-      topLevel: null,
-      parentObject: {
-        type: 'assistant',
-        message: {
-          content: [{ type: 'tool_use', id: 'toolu_x', name: 'TaskList', input: {} }],
+      ...resolveMessageForRendering({
+        rawText: '',
+        topLevel: null,
+        parentObject: {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', id: 'toolu_x', name: 'TaskList', input: {} }],
+          },
         },
-      },
-      wrapper: null,
+        wrapper: null,
+      }, AgentProvider.CLAUDE_CODE),
       agentProvider: AgentProvider.CLAUDE_CODE,
       spanId: 'span',
       spanType: 'TaskList',
@@ -317,13 +317,15 @@ describe('claude classifies Task* tool_result messages as hidden', () => {
   for (const tool of taskTools) {
     it(`hides the ${tool} tool_result`, () => {
       const category = classifyMessage({
-        rawText: '',
-        topLevel: null,
-        parentObject: {
-          type: 'user',
-          message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }] },
-        },
-        wrapper: null,
+        ...resolveMessageForRendering({
+          rawText: '',
+          topLevel: null,
+          parentObject: {
+            type: 'user',
+            message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }] },
+          },
+          wrapper: null,
+        }, AgentProvider.CLAUDE_CODE),
         agentProvider: AgentProvider.CLAUDE_CODE,
         spanId: 'span',
         spanType: tool,

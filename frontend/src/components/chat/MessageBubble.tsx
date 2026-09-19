@@ -203,7 +203,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // prepares the message itself.
   const resolved = createMemo(() => props.host?.messages?.current(props.message, props.prepared?.original))
   const prepared = createMemo<PreparedMessage>(() => {
-    const resolvedParsed = resolved()?.parsed
+    const resolvedParsed = resolved()?.resolved
     return props.prepared ?? prepareMessage(props.message, resolvedParsed !== undefined ? { resolved: resolvedParsed } : {})
   })
   const parsed = () => prepared().original
